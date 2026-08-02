@@ -1,0 +1,48 @@
+{
+  "name": "@splendor/pq-bridge",
+  "version": "1.0.0",
+  "description": "Non-custodial EVM→PQ (Dilithium) bridge SDK for Splendor Quantum Chain. Node.js-first; loads Go WASM signer internally.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm/dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build:wasm": "powershell -ExecutionPolicy Bypass -File ./wasm/build.ps1",
+    "build:wasm:sh": "bash ./wasm/build.sh",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run build:ts",
+    "prepare": "npm run build:ts",
+    "example:node": "node examples/node-transfer.mjs",
+    "test:e2e": "node examples/e2e-offline.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "keywords": [
+    "splendor",
+    "post-quantum",
+    "dilithium",
+    "metamask",
+    "bridge",
+    "wasm"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,17 @@
+# Run gateway against a local (or remote) SQC node RPC
+services:
+  pq-bridge-gateway:
+    build:
+      context: ..
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "3090:3090"
+    environment:
+      SQC_RPC: ${SQC_RPC:-http://host.docker.internal:8080}
+      MODE: ${MODE:-proxy}
+      # For service-wallet mode, set one of:
+      # SERVICE_SEED: "0123...64 hex chars"
+      # SERVICE_EVM_KEY: "0x..."
+      PORT: "3090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,0 +1,17 @@
+{
+  "name": "@splendor/pq-bridge-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --import tsx server.ts",
+    "start:js": "node server.mjs"
+  },
+  "dependencies": {
+    "@splendor/pq-bridge": "file:..",
+    "fastify": "^5.2.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}
