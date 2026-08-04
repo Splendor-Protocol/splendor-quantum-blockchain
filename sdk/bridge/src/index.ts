@@ -2,6 +2,7 @@
  * @splendor/pq-bridge — Node.js-first EVM→PQ wallet bridge for Splendor Quantum Chain.
  *
  * Internally loads Go Dilithium (circl mode3) via WASM for wire-compatible signing.
+ * Each SplendorPQBridge instance owns an isolated WASM session.
  */
 import {
   DERIVATION_DOMAIN_MESSAGE,
@@ -12,7 +13,34 @@ import {
 } from './derive.js';
 import { loadWasmSigner, parseWasmJson, unwrap, type WasmSignerApi } from './wasm-loader.js';
 import { SqRpc, fromSPLD, toSPLD, type RpcOptions } from './rpc.js';
-import { connectMetaMask, signDerivationWithMetaMask } from './metamask.js';
+import { SqcProvider, type ProviderOptions } from './provider.js';
+import {
+  connectMetaMask,
+  signDerivationWithMetaMask,
+  onMetaMaskAccountsChanged,
+} from './metamask.js';
+import { BridgeError, isBridgeError, wrapUnknown } from './errors.js';
+import { assertAddress, isValidAddress } from './address.js';
+import {
+  MIN_FEE,
+  assertFeeAtLeastMin,
+  encodePayload,
+  bytesToHex,
+  hexToBytes,
+  isHexString,
+} from './encoding.js';
+import {
+  encodeFunctionData,
+  encodeFunctionDataHex,
+  functionSelector,
+  functionSelectorHex,
+  decodeAddress,
+  decodeUint256,
+  decodeArgAddress,
+  decodeArgUint256,
+  type AbiArg,
+} from './abi.js';
+import { BridgeEmitter, type BridgeEventMap } from './events.js';
 
 export {
   DERIVATION_DOMAIN_MESSAGE,
@@ -22,13 +50,37 @@ export {
   fromSPLD,
   toSPLD,
   SqRpc,
+  SqcProvider,
   connectMetaMask,
   signDerivationWithMetaMask,
+  onMetaMaskAccountsChanged,
+  BridgeError,
+  isBridgeError,
+  isValidAddress,
+  assertAddress,
+  MIN_FEE,
+  bytesToHex,
+  hexToBytes,
+  isHexString,
+  encodeFunctionData,
+  encodeFunctionDataHex,
+  functionSelector,
+  functionSelectorHex,
+  decodeAddress,
+  decodeUint256,
+  decodeArgAddress,
+  decodeArgUint256,
 };
+
+export type { RpcOptions, ProviderOptions, AbiArg, BridgeEventMap };
 
 export type BridgeOptions = RpcOptions & {
   wasmUrl?: string;
   execUrl?: string;
+  /** When true (default), MetaMask account switches re-derive the PQ wallet. */
+  watchMetaMaskAccounts?: boolean;
+  /** Optional shared read provider; RPC options are taken from it when provided. */
+  provider?: SqcProvider;
 };
 
 export type DeriveInfo = {
@@ -38,17 +90,25 @@ export type DeriveInfo = {
   evmAddress?: string;
 };
 
+export type ConnectionState = 'disconnected' | 'connected';
+
 export type TransferOpts = {
   to: string;
-  amount: string; // smallest units OR use amountSPLD
+  amount: string;
   amountSPLD?: string;
   fee?: string;
   memo?: string;
+  waitForConfirmation?: boolean;
+  confirmTimeoutMs?: number;
 };
 
 export type CallOpts = {
   contract: string;
-  calldata: Uint8Array | string; // bytes or hex/base64
+  /** Raw calldata (hex / bytes). Ignored when `function` is set. */
+  calldata?: Uint8Array | string;
+  /** QSol signature e.g. `transfer(sqaddress,uint256)` — encodes via SHA3-256 selector. */
+  function?: string;
+  args?: AbiArg[];
   value?: string;
   valueSPLD?: string;
   fee?: string;
@@ -71,68 +131,138 @@ export type X402PayOpts = {
 
 export class SplendorPQBridge {
   readonly rpc: SqRpc;
+  readonly provider: SqcProvider;
   private wasm: WasmSignerApi | null = null;
+  private sessionId: string | null = null;
   private info: DeriveInfo | null = null;
   private readonly opts: BridgeOptions;
+  private readonly emitter = new BridgeEmitter();
+  private unwatchMetaMask: (() => void) | null = null;
+  private metaMaskWatchEnabled: boolean;
 
   constructor(options: BridgeOptions = {}) {
     this.opts = options;
-    this.rpc = new SqRpc(options);
+    this.metaMaskWatchEnabled = options.watchMetaMaskAccounts !== false;
+    if (options.provider) {
+      this.provider = options.provider;
+      this.rpc = options.provider.rpc;
+    } else {
+      this.rpc = new SqRpc(options);
+      this.provider = new SqcProvider(options, this.rpc);
+    }
   }
 
-  /** Load WASM signer (idempotent). */
+  /** Build a signing wallet that shares an existing read-only provider's RPC. */
+  static fromProvider(provider: SqcProvider, extra?: Omit<BridgeOptions, 'provider'>): SplendorPQBridge {
+    return new SplendorPQBridge({ ...provider.toBridgeOptions(), ...extra, provider });
+  }
+
+  on<K extends keyof BridgeEventMap>(event: K, handler: (payload: BridgeEventMap[K]) => void): () => void {
+    return this.emitter.on(event, handler);
+  }
+
+  off<K extends keyof BridgeEventMap>(event: K, handler: (payload: BridgeEventMap[K]) => void): void {
+    this.emitter.off(event, handler);
+  }
+
+  /** Load WASM module and create an isolated session. */
   async init(): Promise<void> {
-    if (this.wasm) return;
+    if (this.wasm && this.sessionId) return;
     this.wasm = await loadWasmSigner({
       wasmUrl: this.opts.wasmUrl,
       execUrl: this.opts.execUrl,
     });
+    this.sessionId = this.wasm.sqCreateSession();
   }
 
   private api(): WasmSignerApi {
-    if (!this.wasm) throw new Error('Call init() or connect*() first');
+    if (!this.wasm || !this.sessionId) {
+      throw BridgeError.notConnected('Call init() or connect*() first');
+    }
     return this.wasm;
   }
 
-  /** Connect from a raw 32-byte Dilithium seed (hex). */
+  private sid(): string {
+    if (!this.sessionId) throw BridgeError.notConnected();
+    return this.sessionId;
+  }
+
+  private emitConnect(info: DeriveInfo, changed = false): void {
+    const payload = { address: info.address, evmAddress: info.evmAddress };
+    if (changed) this.emitter.emit('accountsChanged', payload);
+    else this.emitter.emit('connect', payload);
+  }
+
+  private ensureMetaMaskWatch(): void {
+    if (!this.metaMaskWatchEnabled || this.unwatchMetaMask) return;
+    try {
+      this.unwatchMetaMask = onMetaMaskAccountsChanged(async (accounts) => {
+        if (!accounts.length) {
+          this.lock();
+          this.emitter.emit('disconnect', {});
+          return;
+        }
+        const next = accounts[0];
+        if (this.info?.evmAddress && next.toLowerCase() === this.info.evmAddress.toLowerCase()) {
+          return;
+        }
+        try {
+          const { evmAddress, signatureHex } = await signDerivationWithMetaMask(next);
+          await this.init();
+          const raw = unwrap(this.api().sqDeriveFromSigHex(this.sid(), strip0x(signatureHex)));
+          this.info = parseWasmJson<DeriveInfo>(raw as string);
+          this.info.evmAddress = evmAddress;
+          this.emitConnect(this.info, true);
+        } catch (e) {
+          // User may reject re-sign; leave prior key until they reconnect
+          void e;
+        }
+      });
+    } catch {
+      /* MetaMask not available (Node) */
+    }
+  }
+
   async connectFromSeed(seedHex: string): Promise<DeriveInfo> {
     await this.init();
-    const raw = unwrap(this.api().sqDeriveFromSeedHex(strip0x(seedHex)));
+    const raw = unwrap(this.api().sqDeriveFromSeedHex(this.sid(), strip0x(seedHex)));
     this.info = parseWasmJson<DeriveInfo>(raw as string);
+    this.emitConnect(this.info);
     return this.info;
   }
 
-  /** Connect from an EVM personal_sign signature (hex) of the domain message. */
   async connectFromEvmSignature(signatureHex: string, evmAddress?: string): Promise<DeriveInfo> {
     await this.init();
-    const raw = unwrap(this.api().sqDeriveFromSigHex(strip0x(signatureHex)));
+    const raw = unwrap(this.api().sqDeriveFromSigHex(this.sid(), strip0x(signatureHex)));
     this.info = parseWasmJson<DeriveInfo>(raw as string);
     if (evmAddress) this.info.evmAddress = evmAddress;
+    this.emitConnect(this.info);
     return this.info;
   }
 
-  /**
-   * Connect from an EVM secp256k1 private key (hex).
-   * Signs the domain message locally, then derives the PQ wallet.
-   */
   async connectFromEvmPrivateKey(evmPrivateKeyHex: string): Promise<DeriveInfo> {
     const sig = signDerivationMessage(evmPrivateKeyHex);
     return this.connectFromEvmSignature(sig);
   }
 
-  /** Browser: MetaMask personal_sign → PQ wallet. */
   async connectFromMetaMask(): Promise<DeriveInfo> {
-    const { evmAddress, signatureHex } = await signDerivationWithMetaMask();
-    return this.connectFromEvmSignature(signatureHex, evmAddress);
+    try {
+      const { evmAddress, signatureHex } = await signDerivationWithMetaMask();
+      const info = await this.connectFromEvmSignature(signatureHex, evmAddress);
+      this.ensureMetaMaskWatch();
+      return info;
+    } catch (e) {
+      throw wrapUnknown(e, 'USER_REJECTED');
+    }
   }
 
   getAddress(): string {
-    if (!this.info) throw new Error('Not connected');
+    if (!this.info) throw BridgeError.notConnected();
     return this.info.address;
   }
 
   getPublicKeyB64(): string {
-    if (!this.info) throw new Error('Not connected');
+    if (!this.info) throw BridgeError.notConnected();
     return this.info.public_key_b64;
   }
 
@@ -140,13 +270,36 @@ export class SplendorPQBridge {
     return this.info;
   }
 
-  isUnlocked(): boolean {
-    return !!this.wasm && this.api().sqIsUnlocked();
+  getConnectionState(): ConnectionState {
+    return this.info && this.sessionId && this.wasm?.sqIsUnlocked(this.sessionId)
+      ? 'connected'
+      : 'disconnected';
   }
 
+  isUnlocked(): boolean {
+    return !!this.wasm && !!this.sessionId && this.wasm.sqIsUnlocked(this.sessionId);
+  }
+
+  /** Clear derived key for this session (keeps WASM module loaded). */
   lock(): void {
-    if (this.wasm) this.api().sqLock();
+    if (this.wasm && this.sessionId) {
+      this.wasm.sqLock(this.sessionId);
+    }
     this.info = null;
+  }
+
+  /** Lock and destroy the WASM session entirely. */
+  disconnect(): void {
+    if (this.unwatchMetaMask) {
+      this.unwatchMetaMask();
+      this.unwatchMetaMask = null;
+    }
+    if (this.wasm && this.sessionId) {
+      this.wasm.sqDestroySession(this.sessionId);
+    }
+    this.sessionId = null;
+    this.info = null;
+    this.emitter.emit('disconnect', {});
   }
 
   async getBalance(address?: string) {
@@ -161,44 +314,107 @@ export class SplendorPQBridge {
     return this.rpc.getStatus();
   }
 
-  async sendTransfer(opts: TransferOpts): Promise<{ status: string; hash: string; signedTx: object }> {
+  async getLatestBlock() {
+    return this.rpc.getLatestBlock();
+  }
+
+  async getBlockByHeight(height: number | string) {
+    return this.rpc.getBlockByHeight(height);
+  }
+
+  async getBlockByHash(hash: string) {
+    return this.rpc.getBlockByHash(hash);
+  }
+
+  async waitForConfirmation(opts: {
+    nonceBefore: number;
+    from?: string;
+    hash?: string;
+    timeoutMs?: number;
+    pollMs?: number;
+  }) {
+    return this.rpc.waitForConfirmation({
+      from: opts.from || this.getAddress(),
+      nonceBefore: opts.nonceBefore,
+      hash: opts.hash,
+      timeoutMs: opts.timeoutMs,
+      pollMs: opts.pollMs,
+    });
+  }
+
+  async sendTransfer(opts: TransferOpts): Promise<{
+    status: string;
+    hash: string;
+    signedTx: object;
+    confirmation?: { confirmed: true; nonce: number };
+  }> {
     await this.init();
+    assertAddress(opts.to);
     const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
+    if (!amount || BigInt(amount) < 0n) {
+      throw BridgeError.invalidAmount('amount must be a non-negative integer string');
+    }
+    let fee: string;
+    try {
+      fee = assertFeeAtLeastMin(opts.fee);
+    } catch (e) {
+      throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
+    }
+
+    await this.rpc.assertChainId();
     const { nonce } = await this.getNonce();
     const params = {
       to: opts.to,
       amount,
-      fee: opts.fee || '1000',
+      fee,
       nonce,
       memo: opts.memo || '',
     };
-    const wireStr = unwrap(this.api().sqSignTransfer(JSON.stringify(params))) as string;
+    const wireStr = unwrap(this.api().sqSignTransfer(this.sid(), JSON.stringify(params))) as string;
     const signedTx = JSON.parse(wireStr);
     const result = await this.rpc.submitTransaction(signedTx);
-    return { ...result, signedTx };
+
+    let confirmation: { confirmed: true; nonce: number } | undefined;
+    if (opts.waitForConfirmation) {
+      confirmation = await this.waitForConfirmation({
+        nonceBefore: nonce,
+        hash: result.hash,
+        timeoutMs: opts.confirmTimeoutMs,
+      });
+    }
+    return { ...result, signedTx, confirmation };
   }
 
   async callContract(opts: CallOpts): Promise<{ status: string; hash: string; signedTx: object }> {
     await this.init();
-    const value =
-      opts.valueSPLD != null ? fromSPLD(opts.valueSPLD) : opts.value || '0';
+    assertAddress(opts.contract);
+    const value = opts.valueSPLD != null ? fromSPLD(opts.valueSPLD) : opts.value || '0';
+    let fee: string;
+    try {
+      fee = assertFeeAtLeastMin(opts.fee);
+    } catch (e) {
+      throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
+    }
+
+    let calldata: Uint8Array | string;
+    if (opts.function) {
+      calldata = '0x' + bytesToHex(encodeFunctionData(opts.function, opts.args || []));
+    } else if (opts.calldata != null) {
+      calldata = opts.calldata;
+    } else {
+      throw BridgeError.invalidAmount('callContract requires `function`+args or `calldata`');
+    }
+
     const { nonce } = await this.getNonce();
-    const calldata =
-      typeof opts.calldata === 'string'
-        ? opts.calldata
-        : Buffer.from(opts.calldata).toString('base64');
+    const enc = encodePayload(calldata);
     const params: Record<string, unknown> = {
       contract: opts.contract,
       value,
-      fee: opts.fee || '1000',
+      fee,
       nonce,
+      ...(enc.calldata_hex ? { calldata_hex: enc.calldata_hex } : { calldata_b64: enc.calldata_b64 }),
     };
-    if (typeof opts.calldata === 'string' && /^[0-9a-fA-Fx]+$/.test(opts.calldata.replace(/^0x/, ''))) {
-      params.calldata_hex = opts.calldata;
-    } else {
-      params.calldata_b64 = calldata;
-    }
-    const wireStr = unwrap(this.api().sqSignCall(JSON.stringify(params))) as string;
+    const wireStr = unwrap(this.api().sqSignCall(this.sid(), JSON.stringify(params))) as string;
     const signedTx = JSON.parse(wireStr);
     const result = await this.rpc.submitTransaction(signedTx);
     return { ...result, signedTx };
@@ -206,21 +422,20 @@ export class SplendorPQBridge {
 
   async deployContract(opts: DeployOpts): Promise<{ status: string; hash: string; signedTx: object }> {
     await this.init();
-    const { nonce } = await this.getNonce();
-    const params: Record<string, unknown> = {
-      fee: opts.fee || '1000',
-      nonce,
-    };
-    if (typeof opts.bytecode === 'string') {
-      if (opts.bytecode.includes('=') || opts.bytecode.length % 4 === 0 && !/^[0-9a-fA-F]+$/.test(strip0x(opts.bytecode))) {
-        params.bytecode_b64 = opts.bytecode;
-      } else {
-        params.bytecode_hex = opts.bytecode;
-      }
-    } else {
-      params.bytecode_b64 = Buffer.from(opts.bytecode).toString('base64');
+    let fee: string;
+    try {
+      fee = assertFeeAtLeastMin(opts.fee);
+    } catch (e) {
+      throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
     }
-    const wireStr = unwrap(this.api().sqSignDeploy(JSON.stringify(params))) as string;
+    const { nonce } = await this.getNonce();
+    const enc = encodePayload(opts.bytecode);
+    const params: Record<string, unknown> = {
+      fee,
+      nonce,
+      ...(enc.bytecode_hex ? { bytecode_hex: enc.bytecode_hex } : { bytecode_b64: enc.bytecode_b64 }),
+    };
+    const wireStr = unwrap(this.api().sqSignDeploy(this.sid(), JSON.stringify(params))) as string;
     const signedTx = JSON.parse(wireStr);
     const result = await this.rpc.submitTransaction(signedTx);
     return { ...result, signedTx };
@@ -232,6 +447,7 @@ export class SplendorPQBridge {
     settle?: object;
   }> {
     await this.init();
+    assertAddress(opts.to);
     const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
     const params = {
       to: opts.to,
@@ -239,7 +455,7 @@ export class SplendorPQBridge {
       valid_after: opts.validAfter || 0,
       valid_before: opts.validBefore || 0,
     };
-    const wireStr = unwrap(this.api().sqSignX402(JSON.stringify(params))) as string;
+    const wireStr = unwrap(this.api().sqSignX402(this.sid(), JSON.stringify(params))) as string;
     const payload = JSON.parse(wireStr);
     const out: {
       payload: object;
@@ -255,16 +471,23 @@ export class SplendorPQBridge {
     return out;
   }
 
-  /** Sign a transfer without submitting (for proxy gateway mode). */
   async signTransferOnly(opts: TransferOpts & { nonce: number }): Promise<object> {
     await this.init();
+    assertAddress(opts.to);
     const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
+    let fee: string;
+    try {
+      fee = assertFeeAtLeastMin(opts.fee);
+    } catch (e) {
+      throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
+    }
     const wireStr = unwrap(
       this.api().sqSignTransfer(
+        this.sid(),
         JSON.stringify({
           to: opts.to,
           amount,
-          fee: opts.fee || '1000',
+          fee,
           nonce: opts.nonce,
           memo: opts.memo || '',
         }),

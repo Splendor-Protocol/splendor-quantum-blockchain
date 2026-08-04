@@ -60,9 +60,14 @@ Artifacts:
 ## Node usage
 
 ```js
-import { SplendorPQBridge } from '@splendor/pq-bridge';
+import { SplendorPQBridge, SqcProvider } from '@splendor/pq-bridge';
 
-const bridge = new SplendorPQBridge({ rpcUrl: 'http://localhost:8080' });
+// Read-only first (no WASM)
+const provider = new SqcProvider({
+  rpcUrls: ['http://localhost:8080'],
+});
+
+const bridge = SplendorPQBridge.fromProvider(provider);
 
 // From EVM private key (backends / agents)
 await bridge.connectFromEvmPrivateKey(process.env.EVM_KEY);
@@ -76,9 +81,10 @@ console.log(await bridge.getBalance());
 await bridge.sendTransfer({
   to: 'SQ:...',
   amountSPLD: '0.01',
+  waitForConfirmation: true,
 });
 
-bridge.lock();
+bridge.disconnect();
 ```
 
 Example script:
@@ -150,7 +156,26 @@ sdk/bridge/
   examples/        Node script + MetaMask HTML demo
 ```
 
-## Security notes
+## dApp helpers (v1.2)
+
+- **`SqcProvider`** — read-only RPC client (no WASM until connect)
+- **`SplendorPQBridge.fromProvider(provider)`** — signing wallet sharing RPC
+- **QSol ABI** — `encodeFunctionData` / `decodeAddress` / `decodeUint256` (SHA3-256 selectors)
+- **`callContract({ function, args })`** — encode + sign in one call
+- **Events** — `on('connect'|'disconnect'|'accountsChanged')`; MetaMask switch re-derives
+- **`rpcUrls` + retries** — read failover; sticky URL after successful submit
+- `isValidAddress` / `BridgeError` / `waitForConfirmation` (nonce poll)
+- Browser import: `@splendor/pq-bridge/browser`
+- Guide: [`docs/DAPP_INTEGRATION.md`](docs/DAPP_INTEGRATION.md) · React sketch: `examples/useSplendorPQ.ts`
+
+```bash
+npm test              # vitest unit + WASM session + phase2
+npm run test:e2e      # offline smoke
+npm run test:live     # optional live node (skips if RPC down; LIVE_E2E=1 to require)
+# from repo root:
+go test ./sdk/bridge/signer -count=1
+```
+
 
 - Prefer **proxy** mode for end users; never put user EVM keys on a public gateway.
 - `service-wallet` is for **your** automation keys only.

@@ -55,9 +55,10 @@ async function main() {
   }
   console.log('   mapped SQ:', info2.address);
 
-  console.log('5) Lock...');
+  console.log('5) Lock / disconnect...');
   bridge.lock();
-  if (bridge.isUnlocked()) throw new Error('still unlocked');
+  if (bridge.isUnlocked()) throw new Error('still unlocked after lock');
+  bridge.disconnect();
 
   console.log('\nAll offline e2e checks passed.');
 }

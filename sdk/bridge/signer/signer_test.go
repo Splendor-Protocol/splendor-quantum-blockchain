@@ -182,7 +182,130 @@ func TestSignX402(t *testing.T) {
 }
 
 func TestDomainMessageConstant(t *testing.T) {
-	if DerivationDomainMessage == "" {
-		t.Fatal("empty domain message")
+	const want = "Splendor Quantum Chain\nKey derivation v1\nchain: splendor-quantum-1"
+	if DerivationDomainMessage != want {
+		t.Fatalf("domain message mismatch:\n got %q\nwant %q", DerivationDomainMessage, want)
+	}
+}
+
+func TestSignCallAndDeploy(t *testing.T) {
+	var seed [SeedSize]byte
+	for i := range seed {
+		seed[i] = byte(0x42)
+	}
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	callWire, err := w.SignCall(CallParams{
+		Contract: w.Address.String(),
+		Calldata: []byte{0xde, 0xad},
+		Value:    "0",
+		Fee:      "1000",
+		Nonce:    0,
+	})
+	if err != nil {
+		t.Fatalf("SignCall: %v", err)
+	}
+	var callTx types.Transaction
+	if err := json.Unmarshal(callWire, &callTx); err != nil {
+		t.Fatal(err)
+	}
+	if callTx.Type != types.TxCall {
+		t.Fatalf("want TxCall, got %v", callTx.Type)
+	}
+	if err := callTx.VerifySignature(w.PublicKey); err != nil {
+		t.Fatalf("call verify: %v", err)
+	}
+
+	deployWire, err := w.SignDeploy(DeployParams{
+		Bytecode: []byte{0x01, 0x02, 0x03},
+		Fee:      "1000",
+		Nonce:    1,
+	})
+	if err != nil {
+		t.Fatalf("SignDeploy: %v", err)
+	}
+	var deployTx types.Transaction
+	if err := json.Unmarshal(deployWire, &deployTx); err != nil {
+		t.Fatal(err)
+	}
+	if deployTx.Type != types.TxDeploy {
+		t.Fatalf("want TxDeploy, got %v", deployTx.Type)
+	}
+	if len(deployTx.PublicKey) != 0 {
+		t.Fatal("nonce 1 should omit pubkey")
+	}
+	if err := deployTx.VerifySignature(w.PublicKey); err != nil {
+		t.Fatalf("deploy verify: %v", err)
+	}
+}
+
+func TestInvalidSeedAndAddress(t *testing.T) {
+	if _, err := SeedFromHex("dead"); err == nil {
+		t.Fatal("expected short seed error")
+	}
+	if _, err := SeedFromHex("zz"); err == nil {
+		t.Fatal("expected bad hex error")
+	}
+
+	var seed [SeedSize]byte
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.SignTransfer(TransferParams{
+		To:     "not-an-address",
+		Amount: "1",
+		Fee:    "1000",
+		Nonce:  0,
+	})
+	if err == nil {
+		t.Fatal("expected invalid address error")
+	}
+}
+
+func TestX402Deterministic(t *testing.T) {
+	var seed [SeedSize]byte
+	copy(seed[:], []byte("yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"))
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonceHex := hex.EncodeToString(make([]byte, 32))
+	p := X402Params{
+		To:          w.Address.String(),
+		Amount:      "5000",
+		ValidAfter:  100,
+		ValidBefore: 200,
+		NonceHex:    nonceHex,
+	}
+	a, err := w.SignX402(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := w.SignX402(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Dilithium signatures are randomized — payloads differ in signature bytes,
+	// but signed bodies (everything except signature) must match.
+	var pa, pb map[string]interface{}
+	if err := json.Unmarshal(a, &pa); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &pb); err != nil {
+		t.Fatal(err)
+	}
+	delete(pa, "signature")
+	delete(pb, "signature")
+	ja, _ := json.Marshal(pa)
+	jb, _ := json.Marshal(pb)
+	if string(ja) != string(jb) {
+		t.Fatalf("x402 bodies differ:\n%s\n%s", ja, jb)
+	}
+	if pa["amount"] == nil || pa["from"] == nil {
+		t.Fatal("missing fields")
 	}
 }

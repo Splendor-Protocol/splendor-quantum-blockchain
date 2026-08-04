@@ -6,6 +6,7 @@ import { DERIVATION_DOMAIN_MESSAGE, strip0x } from './derive.js';
 export type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
 };
 
 function getProvider(): EthereumProvider {
@@ -34,7 +35,6 @@ export async function signDerivationWithMetaMask(address?: string): Promise<{
 }> {
   const eth = getProvider();
   const evmAddress = address || (await connectMetaMask());
-  // MetaMask personal_sign params: [message, address] — message as hex UTF-8
   const msgHex =
     '0x' +
     Array.from(new TextEncoder().encode(DERIVATION_DOMAIN_MESSAGE))
@@ -45,4 +45,23 @@ export async function signDerivationWithMetaMask(address?: string): Promise<{
     params: [msgHex, evmAddress],
   })) as string;
   return { evmAddress, signatureHex: strip0x(signature) };
+}
+
+/**
+ * Subscribe to MetaMask account switches. Returns an unsubscribe function.
+ */
+export function onMetaMaskAccountsChanged(
+  handler: (accounts: string[]) => void,
+): () => void {
+  const eth = getProvider();
+  if (!eth.on) {
+    return () => undefined;
+  }
+  const listener = (accounts: unknown) => {
+    handler(Array.isArray(accounts) ? (accounts as string[]) : []);
+  };
+  eth.on('accountsChanged', listener);
+  return () => {
+    eth.removeListener?.('accountsChanged', listener);
+  };
 }

@@ -1,6 +1,6 @@
 {
   "name": "@splendor/pq-bridge",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Non-custodial EVM→PQ (Dilithium) bridge SDK for Splendor Quantum Chain. Node.js-first; loads Go WASM signer internally.",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,12 +9,17 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
     }
   },
   "files": [
     "dist",
     "wasm/dist",
-    "README.md"
+    "README.md",
+    "docs"
   ],
   "scripts": {
     "build:wasm": "powershell -ExecutionPolicy Bypass -File ./wasm/build.ps1",
@@ -22,8 +27,12 @@
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run build:ts",
     "prepare": "npm run build:ts",
+    "test": "vitest run",
+    "test:go": "go test github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer -count=1",
+    "test:e2e": "node examples/e2e-offline.mjs",
+    "test:live": "node examples/live-e2e.mjs",
     "example:node": "node examples/node-transfer.mjs",
-    "test:e2e": "node examples/e2e-offline.mjs"
+    "gateway:smoke": "node examples/gateway-smoke.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -34,7 +43,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
   },
   "keywords": [
     "splendor",
