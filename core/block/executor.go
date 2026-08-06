@@ -16,23 +16,31 @@ import (
 )
 
 const (
-	// Maximum transactions per block
 	MaxTxPerBlock = 10_000
-
-	// Block key prefix in chain database
-	prefixBlock  = "block:"
-	prefixHeight = "height:"
-	keyLatest    = "latest"
+	prefixBlock   = "block:"
+	prefixHeight  = "height:"
+	keyLatest     = "latest"
 )
 
 // Executor executes blocks and manages the chain database.
+// It supports pluggable middleware hooks and generates transaction receipts.
 type Executor struct {
 	state    *state.StateDB
 	chainDB  *leveldb.DB
 	vmEngine *vm.Engine
+	hooks    *HookRegistry  // optional; nil = no hooks
+	txIndex  receiptStorer  // optional; nil = don't store receipts
 }
 
-// NewExecutor creates a new block executor.
+// receiptStorer is satisfied by *state.TxIndexStore.
+// Using an interface keeps executor.go from importing the state package's txindex.
+type receiptStorer interface {
+	StoreReceipt(r *types.Receipt) error
+	StoreBlockReceipts(receipts []*types.Receipt) error
+	IndexBlock(b *types.Block) error
+}
+
+// NewExecutor creates a new block executor with default settings.
 func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) {
 	db, err := leveldb.OpenFile(chainDBPath, nil)
 	if err != nil {
@@ -45,47 +53,125 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 	}, nil
 }
 
+// WithHooks attaches a hook registry to the executor.
+// If called, all registered hooks will run before/after each transaction and block.
+func (e *Executor) WithHooks(h *HookRegistry) *Executor {
+	e.hooks = h
+	return e
+}
+
+// WithTxIndex attaches a receipt/tx index store.
+// If set, receipts are stored after every executed transaction.
+func (e *Executor) WithTxIndex(idx receiptStorer) *Executor {
+	e.txIndex = idx
+	return e
+}
+
 // Close closes the chain database.
 func (e *Executor) Close() error {
 	return e.chainDB.Close()
 }
 
-// ExecuteBlock applies all transactions in a block to the state, validates
-// signatures, nonces, and balances, and commits the resulting state.
-// Returns the new state root.
+// ExecuteBlock applies all transactions in a block to the state.
+// It verifies signatures, nonces, balances, runs hooks, generates receipts,
+// and stores the block.
 func (e *Executor) ExecuteBlock(b *types.Block) error {
 	log.Info().
 		Uint64("height", b.Header.Height).
 		Int("txs", len(b.Transactions)).
 		Msg("executing block")
 
-	for i, tx := range b.Transactions {
-		if err := e.executeTx(tx, b.Header.Height); err != nil {
-			return fmt.Errorf("tx %d failed: %w", i, err)
+	// Run pre-block hooks
+	if e.hooks != nil {
+		if err := e.hooks.RunPreBlock(b); err != nil {
+			return fmt.Errorf("pre-block hook rejected block: %w", err)
 		}
 	}
 
-	// Commit all state changes and get new state root
+	var receipts []*types.Receipt
+
+	for i, tx := range b.Transactions {
+		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Hash)
+		if err != nil {
+			return fmt.Errorf("tx %d failed: %w", i, err)
+		}
+		receipts = append(receipts, receipt)
+
+		// Run post-tx hooks (non-fatal)
+		if e.hooks != nil {
+			e.hooks.RunPostTx(tx, receipt)
+		}
+	}
+
+	// Commit all state changes
 	stateRoot, err := e.state.Commit()
 	if err != nil {
 		return fmt.Errorf("state commit failed: %w", err)
 	}
 
-	// Verify the state root matches the block header's declared state root
+	// Verify state root
 	if stateRoot != b.Header.StateRoot {
 		return fmt.Errorf("state root mismatch: computed %x, header %x",
-			stateRoot, b.Header.StateRoot)
+			stateRoot[:8], b.Header.StateRoot[:8])
 	}
 
-	// Persist the block to chain database
-	return e.storeBlock(b)
+	// Store block
+	if err := e.storeBlock(b); err != nil {
+		return fmt.Errorf("block store failed: %w", err)
+	}
+
+	// Index block transactions and store receipts
+	if e.txIndex != nil {
+		if err := e.txIndex.IndexBlock(b); err != nil {
+			log.Warn().Err(err).Msg("tx index: failed to index block")
+		}
+		if err := e.txIndex.StoreBlockReceipts(receipts); err != nil {
+			log.Warn().Err(err).Msg("tx index: failed to store receipts")
+		}
+	}
+
+	// Run post-block hooks (non-fatal)
+	if e.hooks != nil {
+		e.hooks.RunPostBlock(b, stateRoot)
+	}
+
+	return nil
 }
 
-// executeTx processes a single transaction.
-func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64) error {
-	// 1. Basic structural validation
+// executeTxWithReceipt processes a single transaction and returns a receipt.
+func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockHash [32]byte) (*types.Receipt, error) {
+	// Build receipt shell
+	receipt, err := types.NewReceipt(tx, txIndex, blockHeight, blockHash)
+	if err != nil {
+		return nil, fmt.Errorf("receipt init failed: %w", err)
+	}
+
+	// Run pre-tx hook
+	if e.hooks != nil {
+		if err := e.hooks.RunPreTx(tx, blockHeight); err != nil {
+			receipt.SetFailed(fmt.Sprintf("pre-tx hook: %v", err))
+			return receipt, nil // hook rejection: skip but don't abort block
+		}
+	}
+
+	if err := e.executeTx(tx, blockHeight, receipt); err != nil {
+		receipt.SetFailed(err.Error())
+		log.Warn().Err(err).
+			Str("from", tx.From.String()).
+			Uint64("nonce", tx.Nonce).
+			Msg("transaction failed")
+		// Return receipt even on failure (records the failure)
+		return receipt, nil
+	}
+
+	return receipt, nil
+}
+
+// executeTx processes a single transaction, updating receipt with logs and gas.
+func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, receipt *types.Receipt) error {
+	// 1. Basic validation
 	if err := tx.Validate(); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+		return fmt.Errorf("validation: %w", err)
 	}
 
 	// 2. Get sender account
@@ -94,80 +180,64 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64) error {
 		return err
 	}
 
-	// 3. Handle public key registration (first transaction from this address)
+	// 3. Public key registration / lookup
 	var pubKeyBytes []byte
 	if fromAcc.HasPublicKey() {
 		pubKeyBytes = fromAcc.PublicKey
 	} else if len(tx.PublicKey) == qcrypto.PublicKeySize {
-		// First transaction: public key must be included and must hash to the From address
 		pub, err := qcrypto.PublicKeyFromBytes(tx.PublicKey)
 		if err != nil {
-			return fmt.Errorf("invalid public key in transaction: %w", err)
+			return fmt.Errorf("invalid public key: %w", err)
 		}
-		derivedAddr := qcrypto.DeriveAddress(pub)
-		if derivedAddr != tx.From {
+		if qcrypto.DeriveAddress(pub) != tx.From {
 			return fmt.Errorf("public key does not match from address")
 		}
 		pubKeyBytes = tx.PublicKey
-		// Register the public key
 		fromAcc.PublicKey = tx.PublicKey
 		e.state.SetAccount(fromAcc)
 	} else {
 		return types.ErrNoPublicKey
 	}
 
-	// 4. Verify Dilithium signature
+	// 4. Signature verification
 	if err := tx.VerifySignature(pubKeyBytes); err != nil {
-		return fmt.Errorf("signature verification failed: %w", err)
+		return types.ErrInvalidSignature
 	}
 
-	// 5. Check nonce
+	// 5. Nonce check
 	if tx.Nonce != fromAcc.Nonce {
-		return fmt.Errorf("%w: expected %d, got %d",
-			types.ErrInvalidNonce, fromAcc.Nonce, tx.Nonce)
+		return fmt.Errorf("%w: want %d got %d", types.ErrInvalidNonce, fromAcc.Nonce, tx.Nonce)
 	}
 
-	// 6. Check balance (amount + fee)
+	// 6. Balance check
 	total := new(types.BigInt).Add(tx.Amount, tx.Fee)
 	if fromAcc.Balance.Cmp(total) < 0 {
 		return types.ErrInsufficientBalance
 	}
 
-	// 7. Execute by type
+	// 7. Type-specific execution
 	switch tx.Type {
 	case types.TxTransfer:
-		if err := e.execTransfer(tx, fromAcc); err != nil {
-			return err
-		}
+		return e.execTransfer(tx, fromAcc, receipt)
 	case types.TxDeploy:
-		if err := e.execDeploy(tx, fromAcc); err != nil {
-			return err
-		}
+		return e.execDeploy(tx, fromAcc, receipt)
 	case types.TxCall:
-		if err := e.execCall(tx, fromAcc); err != nil {
-			return err
-		}
+		return e.execCall(tx, fromAcc, receipt, blockHeight)
 	case types.TxX402:
-		if err := e.execX402(tx, fromAcc, blockHeight); err != nil {
-			return err
-		}
+		return e.execX402(tx, fromAcc, receipt, blockHeight)
 	default:
-		return fmt.Errorf("unknown transaction type: %x", tx.Type)
+		return fmt.Errorf("unknown tx type 0x%02x", tx.Type)
 	}
-
-	return nil
 }
 
-func (e *Executor) execTransfer(tx *types.Transaction, fromAcc *types.Account) error {
-	// Deduct amount + fee from sender
-	total := new(bigInt).Add(tx.Amount, tx.Fee)
+func (e *Executor) execTransfer(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt) error {
+	total := addBig(tx.Amount, tx.Fee)
 	if err := fromAcc.SubBalance(total); err != nil {
 		return err
 	}
 	fromAcc.IncrNonce()
 	e.state.SetAccount(fromAcc)
 
-	// Credit amount to recipient
 	toAcc, err := e.state.GetAccount(tx.To)
 	if err != nil {
 		return err
@@ -175,7 +245,6 @@ func (e *Executor) execTransfer(tx *types.Transaction, fromAcc *types.Account) e
 	toAcc.AddBalance(tx.Amount)
 	e.state.SetAccount(toAcc)
 
-	// Fee goes to validator (handled at block level — credited in ProduceBlock)
 	log.Debug().
 		Str("from", tx.From.String()).
 		Str("to", tx.To.String()).
@@ -184,19 +253,20 @@ func (e *Executor) execTransfer(tx *types.Transaction, fromAcc *types.Account) e
 	return nil
 }
 
-func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account) error {
-	// Deduct fee
+func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt) error {
 	if err := fromAcc.SubBalance(tx.Fee); err != nil {
 		return err
 	}
 	fromAcc.IncrNonce()
 	e.state.SetAccount(fromAcc)
 
-	// Deploy contract via VM
 	contractAddr, err := e.vmEngine.Deploy(tx.From, tx.Data, tx.Nonce)
 	if err != nil {
-		return fmt.Errorf("contract deploy failed: %w", err)
+		return fmt.Errorf("deploy failed: %w", err)
 	}
+
+	// Record contract address in receipt
+	receipt.ContractAddress = &contractAddr
 
 	log.Debug().
 		Str("deployer", tx.From.String()).
@@ -205,8 +275,7 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account) err
 	return nil
 }
 
-func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account) error {
-	// Deduct amount + fee
+func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
 	total := addBig(tx.Amount, tx.Fee)
 	if err := fromAcc.SubBalance(total); err != nil {
 		return err
@@ -214,27 +283,39 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account) error
 	fromAcc.IncrNonce()
 	e.state.SetAccount(fromAcc)
 
-	// Execute contract call via VM
-	if _, err := e.vmEngine.Call(tx.From, tx.To, tx.Data, tx.Amount); err != nil {
-		return fmt.Errorf("contract call failed: %w", err)
+	result, err := e.vmEngine.CallWithContext(
+		tx.From, tx.From, tx.To, tx.Data, tx.Amount,
+		blockHeight, time.Now().Unix(), false,
+	)
+	if err != nil {
+		return fmt.Errorf("call failed: %w", err)
+	}
+
+	// Record VM execution results in receipt
+	if result != nil {
+		receipt.GasUsed = result.GasUsed
+		for _, l := range result.Logs {
+			receipt.AddLog(l)
+		}
+		if result.Reverted {
+			receipt.SetFailed("execution reverted")
+		}
 	}
 
 	log.Debug().
 		Str("caller", tx.From.String()).
 		Str("contract", tx.To.String()).
+		Uint64("gas_used", receipt.GasUsed).
 		Msg("contract called")
 	return nil
 }
 
-func (e *Executor) execX402(tx *types.Transaction, fromAcc *types.Account, blockHeight uint64) error {
-	// X402 settlement: deduct fee from sender (amount already validated by x402 RPC layer)
+func (e *Executor) execX402(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
 	if err := fromAcc.SubBalance(tx.Fee); err != nil {
 		return err
 	}
 	fromAcc.IncrNonce()
-	e.state.SetAccount(fromAcc)
 
-	// Transfer payment amount
 	toAcc, err := e.state.GetAccount(tx.To)
 	if err != nil {
 		return err
@@ -246,22 +327,20 @@ func (e *Executor) execX402(tx *types.Transaction, fromAcc *types.Account, block
 	e.state.SetAccount(fromAcc)
 	e.state.SetAccount(toAcc)
 
-	// Mark X402 nonce as used
 	nonceKey := qcrypto.Hash32(append(tx.From[:], tx.Data...))
 	if err := e.state.MarkX402NonceUsed(nonceKey, blockHeight); err != nil {
-		return fmt.Errorf("failed to mark X402 nonce: %w", err)
+		return fmt.Errorf("X402 nonce: %w", err)
 	}
 
 	log.Debug().
 		Str("payer", tx.From.String()).
 		Str("receiver", tx.To.String()).
 		Str("amount", tx.Amount.String()).
-		Msg("X402 payment settled")
+		Msg("X402 settled")
 	return nil
 }
 
-// ProduceBlock creates a new block from the given transactions, executes them,
-// and signs the block with the validator's Dilithium key.
+// ProduceBlock creates, executes, and signs a new block.
 func (e *Executor) ProduceBlock(
 	txs []*types.Transaction,
 	validatorAddr qcrypto.Address,
@@ -271,52 +350,47 @@ func (e *Executor) ProduceBlock(
 	height uint64,
 ) (*types.Block, error) {
 
-	// Cap transactions
 	if len(txs) > MaxTxPerBlock {
 		txs = txs[:MaxTxPerBlock]
 	}
 
-	// Execute all transactions and collect fees
-	totalFees := new(bigInt)
-	var executed []*types.Transaction
-	for _, tx := range txs {
-		fromAcc, err := e.state.GetAccount(tx.From)
-		if err != nil {
-			log.Warn().Err(err).Str("tx_from", tx.From.String()).Msg("skipping tx: account error")
+	var (
+		totalFees  = new(bigInt)
+		executed   []*types.Transaction
+		receipts   []*types.Receipt
+	)
+
+	for i, tx := range txs {
+		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{}) // hash filled below
+		if err := e.executeTx(tx, height, receipt); err != nil {
+			log.Warn().Err(err).Msg("skipping invalid tx")
 			continue
 		}
-		_ = fromAcc
-		if err := e.executeTx(tx, height); err != nil {
-			log.Warn().Err(err).Msg("skipping invalid tx during block production")
-			continue
-		}
-		totalFees = totalFees.Add(totalFees, tx.Fee)
+		totalFees.Add(totalFees, tx.Fee)
 		executed = append(executed, tx)
+		receipts = append(receipts, receipt)
 	}
 
-	// Credit total fees to validator
+	// Credit fees to validator
 	if totalFees.Sign() > 0 {
-		validatorAcc, err := e.state.GetAccount(validatorAddr)
+		va, err := e.state.GetAccount(validatorAddr)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load validator account: %w", err)
+			return nil, fmt.Errorf("validator account: %w", err)
 		}
-		validatorAcc.AddBalance(totalFees)
-		e.state.SetAccount(validatorAcc)
+		va.AddBalance(totalFees)
+		e.state.SetAccount(va)
 	}
 
-	// Commit state
 	stateRoot, err := e.state.Commit()
 	if err != nil {
-		return nil, fmt.Errorf("state commit failed: %w", err)
+		return nil, fmt.Errorf("state commit: %w", err)
 	}
 
-	// Build tx merkle root
 	txMerkleRoot, err := types.ComputeTxMerkleRoot(executed)
 	if err != nil {
-		return nil, fmt.Errorf("merkle root failed: %w", err)
+		return nil, fmt.Errorf("merkle root: %w", err)
 	}
 
-	// Build block header
 	header := types.BlockHeader{
 		Height:        height,
 		Timestamp:     time.Now().Unix(),
@@ -328,26 +402,29 @@ func (e *Executor) ProduceBlock(
 		TxCount:       uint32(len(executed)),
 	}
 
-	b := &types.Block{
-		Header:       header,
-		Transactions: executed,
-	}
+	b := &types.Block{Header: header, Transactions: executed}
 
-	// Compute and set block hash
 	hash, err := b.ComputeHash()
 	if err != nil {
-		return nil, fmt.Errorf("block hash failed: %w", err)
+		return nil, fmt.Errorf("block hash: %w", err)
 	}
 	b.Hash = hash
 
-	// Sign block with validator's Dilithium key
 	if err := b.SignBlock(validatorPrivKey); err != nil {
-		return nil, fmt.Errorf("block signing failed: %w", err)
+		return nil, fmt.Errorf("block sign: %w", err)
 	}
 
-	// Persist block
 	if err := e.storeBlock(b); err != nil {
-		return nil, fmt.Errorf("block store failed: %w", err)
+		return nil, fmt.Errorf("store block: %w", err)
+	}
+
+	// Back-fill block hash in receipts and store them
+	if e.txIndex != nil {
+		for _, r := range receipts {
+			r.BlockHash = hash
+		}
+		_ = e.txIndex.IndexBlock(b)
+		_ = e.txIndex.StoreBlockReceipts(receipts)
 	}
 
 	log.Info().
@@ -359,13 +436,13 @@ func (e *Executor) ProduceBlock(
 	return b, nil
 }
 
-// storeBlock persists a block to the chain LevelDB.
+// ── Chain DB helpers ───────────────────────────────────────────────────────────
+
 func (e *Executor) storeBlock(b *types.Block) error {
 	data, err := json.Marshal(b)
 	if err != nil {
-		return fmt.Errorf("failed to marshal block: %w", err)
+		return err
 	}
-
 	hashHex := fmt.Sprintf("%x", b.Hash[:])
 	heightKey := fmt.Sprintf("%s%d", prefixHeight, b.Header.Height)
 
@@ -373,10 +450,9 @@ func (e *Executor) storeBlock(b *types.Block) error {
 	batch.Put([]byte(prefixBlock+hashHex), data)
 	batch.Put([]byte(heightKey), []byte(hashHex))
 	if err := e.chainDB.Write(batch, nil); err != nil {
-		return fmt.Errorf("failed to write block to chain DB: %w", err)
+		return err
 	}
 
-	// Update latest block pointer
 	latestData, _ := json.Marshal(map[string]interface{}{
 		"height": b.Header.Height,
 		"hash":   hashHex,
@@ -384,26 +460,20 @@ func (e *Executor) storeBlock(b *types.Block) error {
 	return e.chainDB.Put([]byte(keyLatest), latestData, nil)
 }
 
-// GetBlock retrieves a block by its SHA3-256 hash (hex string).
 func (e *Executor) GetBlock(hashHex string) (*types.Block, error) {
 	data, err := e.chainDB.Get([]byte(prefixBlock+hashHex), nil)
 	if err == leveldb.ErrNotFound {
 		return nil, types.ErrBlockNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("chain DB read error: %w", err)
+		return nil, err
 	}
 	var b types.Block
-	if err := json.Unmarshal(data, &b); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal block: %w", err)
-	}
-	return &b, nil
+	return &b, json.Unmarshal(data, &b)
 }
 
-// GetBlockByHeight retrieves a block by height.
 func (e *Executor) GetBlockByHeight(height uint64) (*types.Block, error) {
-	heightKey := fmt.Sprintf("%s%d", prefixHeight, height)
-	hashHex, err := e.chainDB.Get([]byte(heightKey), nil)
+	hashHex, err := e.chainDB.Get([]byte(fmt.Sprintf("%s%d", prefixHeight, height)), nil)
 	if err == leveldb.ErrNotFound {
 		return nil, types.ErrBlockNotFound
 	}
@@ -413,7 +483,6 @@ func (e *Executor) GetBlockByHeight(height uint64) (*types.Block, error) {
 	return e.GetBlock(string(hashHex))
 }
 
-// LatestHeight returns the height of the most recently committed block.
 func (e *Executor) LatestHeight() (uint64, error) {
 	data, err := e.chainDB.Get([]byte(keyLatest), nil)
 	if err == leveldb.ErrNotFound {
@@ -425,13 +494,9 @@ func (e *Executor) LatestHeight() (uint64, error) {
 	var info struct {
 		Height uint64 `json:"height"`
 	}
-	if err := json.Unmarshal(data, &info); err != nil {
-		return 0, err
-	}
-	return info.Height, nil
+	return info.Height, json.Unmarshal(data, &info)
 }
 
-// LatestBlock returns the most recently committed block.
 func (e *Executor) LatestBlock() (*types.Block, error) {
 	data, err := e.chainDB.Get([]byte(keyLatest), nil)
 	if err == leveldb.ErrNotFound {
@@ -449,10 +514,18 @@ func (e *Executor) LatestBlock() (*types.Block, error) {
 	return e.GetBlock(info.Hash)
 }
 
-// helper: add two *big.Int safely
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+// StoreBlockReceipts exposes batch receipt storage for external callers.
+func (e *Executor) StoreBlockReceipts(receipts []*types.Receipt) error {
+	if e.txIndex == nil {
+		return nil
+	}
+	return e.txIndex.StoreBlockReceipts(receipts)
+}
+
 func addBig(a, b *bigInt) *bigInt {
 	return new(bigInt).Add(a, b)
 }
 
-// bigInt is an alias for math/big.Int for clarity in this file
 type bigInt = types.BigInt
