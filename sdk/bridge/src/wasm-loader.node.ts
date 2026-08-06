@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
 import {
+  assertWasmSha256,
   bindWasmApi,
   waitForWasmReady,
   type LoadWasmOpts,
@@ -31,10 +32,16 @@ function resolveDistDir(): string {
   );
 }
 
-export async function loadWasmInNode(_opts?: LoadWasmOpts): Promise<WasmSignerApi> {
+export async function loadWasmInNode(opts?: LoadWasmOpts): Promise<WasmSignerApi> {
   const dist = resolveDistDir();
-  const wasmPath = path.join(dist, 'sqc_signer.wasm');
-  const execPath = path.join(dist, 'wasm_exec.js');
+  const wasmPath =
+    opts?.wasmUrl && !opts.wasmUrl.startsWith('http') && !opts.wasmUrl.startsWith('/')
+      ? path.resolve(opts.wasmUrl)
+      : path.join(dist, 'sqc_signer.wasm');
+  const execPath =
+    opts?.execUrl && !opts.execUrl.startsWith('http') && !opts.execUrl.startsWith('/')
+      ? path.resolve(opts.execUrl)
+      : path.join(dist, 'wasm_exec.js');
 
   const require = createRequire(import.meta.url);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,7 +51,11 @@ export async function loadWasmInNode(_opts?: LoadWasmOpts): Promise<WasmSignerAp
     const nodeCrypto = await import('crypto');
     g.crypto = {
       getRandomValues: (arr: Uint8Array) => nodeCrypto.webcrypto.getRandomValues(arr),
+      subtle: nodeCrypto.webcrypto.subtle,
     };
+  } else if (!g.crypto.subtle) {
+    const nodeCrypto = await import('crypto');
+    g.crypto.subtle = nodeCrypto.webcrypto.subtle;
   }
 
   if (typeof g.sqCreateSession === 'function') {
@@ -72,6 +83,11 @@ export async function loadWasmInNode(_opts?: LoadWasmOpts): Promise<WasmSignerAp
 
   const go = new GoCtor();
   const wasmBytes = fs.readFileSync(wasmPath);
+  const ab = wasmBytes.buffer.slice(
+    wasmBytes.byteOffset,
+    wasmBytes.byteOffset + wasmBytes.byteLength,
+  );
+  await assertWasmSha256(ab, opts?.wasmSha256);
   const result = await WebAssembly.instantiate(wasmBytes, go.importObject);
   go.run(result.instance);
   await waitForWasmReady(g);

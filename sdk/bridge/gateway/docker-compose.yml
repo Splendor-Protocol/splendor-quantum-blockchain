@@ -12,6 +12,11 @@ services:
       SQC_RPC: ${SQC_RPC:-http://host.docker.internal:8080}
       MODE: ${MODE:-proxy}
       PORT: "3090"
+      # Public proxy rejects seed/sig by default. Private backends only:
+      # ALLOW_CUSTODIAL_PROXY: "1"
+      # PUBLIC_HEALTH: "0"
+      # CORS_ORIGINS: "https://app.example"
+      # GATEWAY_API_KEY: "..."
       # SERVICE_SEED / SERVICE_EVM_KEY only for MODE=service-wallet
     extra_hosts:
       - "host.docker.internal:host-gateway"

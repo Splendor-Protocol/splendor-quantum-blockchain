@@ -6,7 +6,7 @@
 import type { LoadWasmOpts, WasmSignerApi } from './wasm-types.js';
 
 export type { WasmSignerApi, LoadWasmOpts } from './wasm-types.js';
-export { unwrap, parseWasmJson } from './wasm-types.js';
+export { unwrap, parseWasmJson, assertWasmSha256, sha256Hex } from './wasm-types.js';
 
 let loadPromise: Promise<WasmSignerApi> | null = null;
 
@@ -22,13 +22,23 @@ export async function loadWasmSigner(opts?: LoadWasmOpts): Promise<WasmSignerApi
   if (loadPromise) return loadPromise;
 
   loadPromise = (async () => {
-    if (isNode()) {
-      const { loadWasmInNode } = await import('./wasm-loader.node.js');
-      return loadWasmInNode(opts);
+    try {
+      if (isNode()) {
+        const { loadWasmInNode } = await import('./wasm-loader.node.js');
+        return await loadWasmInNode(opts);
+      }
+      const { loadWasmInBrowser } = await import('./wasm-loader.browser.js');
+      return await loadWasmInBrowser(opts);
+    } catch (e) {
+      loadPromise = null;
+      throw e;
     }
-    const { loadWasmInBrowser } = await import('./wasm-loader.browser.js');
-    return loadWasmInBrowser(opts);
   })();
 
   return loadPromise;
+}
+
+/** Reset singleton (tests / failed init recovery). */
+export function resetWasmLoader(): void {
+  loadPromise = null;
 }

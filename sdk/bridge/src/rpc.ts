@@ -115,14 +115,17 @@ export class SqRpc {
   }
 
   /**
-   * Best-effort confirmation: wait until account nonce > nonceBefore
-   * (node tx-by-hash index is not implemented yet).
+   * Best-effort confirmation: wait until account nonce > nonceBefore.
+   * Node tx-by-hash is not implemented — `hash` only appears in timeout errors
+   * for operator correlation (does not prove inclusion).
+   * Caveat: another tx from the same account can advance the nonce.
    */
   async waitForConfirmation(opts: {
     from: string;
     nonceBefore: number;
     timeoutMs?: number;
     pollMs?: number;
+    /** Correlates timeout errors only; not used for receipt lookup. */
     hash?: string;
   }): Promise<{ confirmed: true; nonce: number }> {
     const from = assertAddress(opts.from);
@@ -135,18 +138,11 @@ export class SqRpc {
       if (nonce > opts.nonceBefore) {
         return { confirmed: true, nonce };
       }
-      if (opts.hash) {
-        try {
-          await this.getLatestBlock();
-        } catch {
-          /* ignore */
-        }
-      }
       await new Promise((r) => setTimeout(r, pollMs));
     }
     throw BridgeError.txNotConfirmed(
       `nonce for ${from} did not advance past ${opts.nonceBefore} within ${timeoutMs}ms` +
-        (opts.hash ? ` (hash ${opts.hash})` : ''),
+        (opts.hash ? ` (submitted hash ${opts.hash}; receipt index not available)` : ''),
     );
   }
 

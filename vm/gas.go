@@ -318,9 +318,9 @@ func (g *GasTable) lookupOp(op byte) uint64 {
 		return g.PUSH32
 	case OpPOP:
 		return g.POP
-	case OpDUP, OpDUP2:
+	case OpDUP1, OpDUP2:
 		return g.DUP
-	case OpSWAP, OpSWAP2:
+	case OpSWAP1, OpSWAP2:
 		return g.SWAP
 	case OpMLOAD:
 		return g.MLOAD

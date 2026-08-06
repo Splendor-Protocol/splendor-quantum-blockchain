@@ -10,7 +10,15 @@ export {
   CHAIN_ID,
   seedFromEvmSignature,
   signDerivationMessage,
+  recoverPersonalSignAddress,
+  recoverEip712Address,
+  assertSignatureMatchesAddress,
+  evmAddressFromPrivateKey,
+  eip712DerivationTypedData,
+  eip712Hash,
+  personalSignHash,
 } from './derive.js';
+export type { DerivationScheme, Eip712DeriveTypedData } from './derive.js';
 export { fromSPLD, toSPLD, SqRpc } from './rpc.js';
 export type { RpcOptions } from './rpc.js';
 export { SqcProvider } from './provider.js';
@@ -20,6 +28,7 @@ export {
   signDerivationWithMetaMask,
   onMetaMaskAccountsChanged,
 } from './metamask.js';
+export type { EthereumProvider, SignDerivationOpts } from './metamask.js';
 export { BridgeError, isBridgeError } from './errors.js';
 export type { BridgeErrorCode } from './errors.js';
 export { isValidAddress, assertAddress, canonicalizeAddress } from './address.js';
@@ -73,6 +82,8 @@ export type {
   CallOpts,
   DeployOpts,
   X402PayOpts,
+  PreflightResult,
 } from './types.js';
+export { loadWasmSigner, resetWasmLoader } from './wasm-loader.js';
 
 export { SplendorPQBridge as default } from './wallet.js';

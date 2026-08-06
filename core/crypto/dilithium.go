@@ -87,6 +87,18 @@ func (sk *PrivateKey) Bytes() []byte {
 	return b
 }
 
+// Zeroize overwrites Dilithium private key material then drops the pointer.
+// Best-effort: replaces key bytes with a deterministic zero-seed key, then nils.
+func (sk *PrivateKey) Zeroize() {
+	if sk == nil || sk.k == nil {
+		return
+	}
+	var zeroSeed [32]byte
+	_, junk := mode3.NewKeyFromSeed(&zeroSeed)
+	*sk.k = *junk
+	sk.k = nil
+}
+
 // Public derives the public key from a private key.
 func (sk *PrivateKey) Public() *PublicKey {
 	pub := sk.k.Public().(*mode3.PublicKey)

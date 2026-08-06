@@ -61,6 +61,30 @@ func TestSeedFromEVMSignature(t *testing.T) {
 	}
 }
 
+func TestDerivedWalletZeroize(t *testing.T) {
+	var seed [SeedSize]byte
+	for i := range seed {
+		seed[i] = byte(i + 7)
+	}
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Private == nil {
+		t.Fatal("expected private key")
+	}
+	w.Zeroize()
+	if w.Private != nil {
+		t.Fatal("private key pointer should be nil after Zeroize")
+	}
+	if w.PublicKey != nil {
+		t.Fatal("public key bytes should be nil after Zeroize")
+	}
+	if !w.Address.IsZero() {
+		t.Fatal("address should be zero after Zeroize")
+	}
+}
+
 func TestSignTransferVerifyAndRoundTrip(t *testing.T) {
 	var seed [SeedSize]byte
 	copy(seed[:], []byte("splendor-bridge-test-seed-012345")) // 32 bytes

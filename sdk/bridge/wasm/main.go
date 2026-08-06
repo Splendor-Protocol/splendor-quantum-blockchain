@@ -77,6 +77,9 @@ func sqCreateSession(this js.Value, args []js.Value) interface{} {
 func sqDestroySession(this js.Value, args []js.Value) interface{} {
 	id := sessionID(args, 0)
 	mu.Lock()
+	if w, ok := wallets[id]; ok && w != nil {
+		w.Zeroize()
+	}
 	delete(wallets, id)
 	mu.Unlock()
 	return map[string]interface{}{"ok": true}
@@ -279,6 +282,9 @@ func sqSignX402(this js.Value, args []js.Value) interface{} {
 func sqLock(this js.Value, args []js.Value) interface{} {
 	id := sessionID(args, 0)
 	mu.Lock()
+	if w, ok := wallets[id]; ok && w != nil {
+		w.Zeroize()
+	}
 	wallets[id] = nil
 	mu.Unlock()
 	return map[string]interface{}{"ok": true}

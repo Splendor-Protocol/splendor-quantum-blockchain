@@ -25,6 +25,7 @@ export const ADDRESS_PATTERN = new RegExp(
 export const PROTOCOL = {
   version: SQDP_VERSION,
   chainId: CHAIN_ID,
+  wireChainId: proto.wireChainId || CHAIN_ID,
   addressPrefix: ADDRESS_PREFIX,
   addressHexLen: ADDRESS_HEX_LEN,
   minFee: proto.minFee,
@@ -35,6 +36,8 @@ export const PROTOCOL = {
   abiHash: proto.abiHash,
   goldenTransferSelector: proto.goldenTransferSelector,
   defaultNetwork: file.defaultNetwork,
+  /** Confirmation is nonce-poll only; hash is correlational. */
+  confirmationCaveat: 'nonce-race',
 } as const;
 
 export type ProtocolConstants = typeof PROTOCOL;

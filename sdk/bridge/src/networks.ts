@@ -1,6 +1,6 @@
 /**
  * Single source of truth for SQDP networks + protocol dynamics.
- * Edit: src/config/sqc.networks.json (do not scatter RPC/chain defaults elsewhere).
+ * Edit: src/config/sqc.networks.json (mirrored to config/ via npm run sync:config).
  */
 import raw from './config/sqc.networks.json' with { type: 'json' };
 import { BridgeError } from './errors.js';
@@ -10,12 +10,17 @@ export type NetworkId = keyof typeof raw.networks | (string & {});
 export type NetworkConfig = {
   id: string;
   name: string;
+  /** Client-facing network identity (local/testnet/mainnet). Distinct per env. */
+  networkId: string;
+  /** Wire / protocol chain_id (must match node types.ChainID). */
   chainId: string;
   rpcUrls: string[];
   gatewayUrl: string;
   gatewayPort: number;
   wasmUrl: string;
   execUrl: string;
+  /** Optional SHA-256 hex pin for sqc_signer.wasm (empty = skip verify). */
+  wasmSha256: string;
   timeoutMs: number;
   retries: number;
 };
@@ -29,6 +34,8 @@ export type ProtocolConfig = {
   goldenTransferSelector: string;
   derivationDomainVersion: string;
   bridgeClientVersion: string;
+  /** Canonical wire chain id used in txs (node constant). */
+  wireChainId?: string;
 };
 
 export type NetworksFile = {
@@ -79,7 +86,10 @@ export function getDefaultNetwork(): NetworkConfig {
   return resolveNetwork(CONFIG.defaultNetwork);
 }
 
-/** Build SQDP derivation domain message for a chain id. */
+/**
+ * Build SQDP derivation domain message for a wire chain id.
+ * Must stay in sync with Go signer.DerivationDomainMessage (CI: sync:domain).
+ */
 export function derivationDomainMessage(chainId: string): string {
   const v = CONFIG.protocol.derivationDomainVersion;
   return `Splendor Quantum Chain\nKey derivation ${v}\nchain: ${chainId}`;

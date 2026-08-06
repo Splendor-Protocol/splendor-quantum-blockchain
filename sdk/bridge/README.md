@@ -59,9 +59,9 @@ chain: splendor-quantum-1
 3. `Dilithium keypair = mode3.NewKeyFromSeed(seed)`
 4. `SQ address = "SQ:" + hex(SHA3-256(pubkey))`
 
-Same EVM account → same PQ wallet, every time. Non-custodial: the private Dilithium key stays in WASM memory and is wiped on `lock()`.
+Same EVM account → same PQ wallet, every time. Non-custodial: the private Dilithium key stays in WASM memory and is **zeroized** on `lock()` / `disconnect()`.
 
-**Important:** The `SQ:` address is **not** your MetaMask `0x` address. Funds live on the PQ address.
+**Important:** The derivation signature **is key material** (`seed = SHA3-256(sig)`). Never log it or post it to a public gateway. The `SQ:` address is **not** your MetaMask `0x` address. Funds live on the PQ address.
 
 ## Install / build
 
@@ -152,16 +152,20 @@ Env:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `SQC_RPC` | `http://localhost:8080` | Chain node RPC |
+| `SQC_RPC` | from network config | Chain node RPC |
 | `MODE` | `proxy` | `proxy` or `service-wallet` |
+| `ALLOW_CUSTODIAL_PROXY` | unset | Set `1` only on private backends to allow seed/evmSignature |
+| `GATEWAY_API_KEY` | — | Required for service-wallet mutating routes when set |
+| `CORS_ORIGINS` | `*` | Comma-separated allowlist |
+| `PUBLIC_HEALTH` | `1` | Set `0` to hide `sqc_rpc` from `/health` |
 | `SERVICE_SEED` | — | 32-byte hex Dilithium seed (service-wallet) |
 | `SERVICE_EVM_KEY` | — | EVM key to derive service PQ wallet |
 | `PORT` | `3090` | HTTP port |
 
 ### Modes
 
-- **`proxy` (default, non-custodial):** clients sign (or send one-shot credentials); gateway relays to the chain.
-- **`service-wallet`:** gateway holds one PQ wallet for backends / AI agents / faucets.
+- **`proxy` (default, non-custodial):** clients sign locally; gateway accepts **`signedTx` only** (rejects seed / private key / signature unless `ALLOW_CUSTODIAL_PROXY=1`).
+- **`service-wallet`:** gateway holds one PQ wallet for backends / AI agents / faucets (protect with `GATEWAY_API_KEY`).
 
 ### HTTP API
 
@@ -169,9 +173,9 @@ Env:
 - `GET /v1/status`
 - `GET /v1/balance/:address`
 - `GET /v1/nonce/:address`
-- `POST /v1/derive` — `{ evmSignature | seed | evmPrivateKey }`
-- `POST /v1/tx/submit` — `{ signedTx }`
-- `POST /v1/tx/transfer` — transfer (signedTx or credentials + to/amount)
+- `POST /v1/derive` — disabled on public proxy; private backends only with `ALLOW_CUSTODIAL_PROXY=1`
+- `POST /v1/tx/submit` — `{ signedTx }` (preferred)
+- `POST /v1/tx/transfer` — transfer (`signedTx` preferred)
 - `POST /v1/tx/call`
 - `POST /v1/x402/pay`
 
@@ -186,34 +190,37 @@ sdk/bridge/
   examples/        Node script + MetaMask HTML demo
 ```
 
-## dApp helpers (v1.3)
+## dApp helpers (v1.3.1)
 
-- **`sqc.networks.json`** — single source for RPC / gateway / fees / WASM paths
-- **`connectSplendor` / `createSplendorClient`** — one-touch dApp entry
+- **`sqc.networks.json`** — single source for RPC / gateway / fees / WASM paths / `networkId` / optional `wasmSha256`
+- **`connectSplendor` / `createSplendorClient`** — one-touch dApp entry (EIP-1193 `ethereumProvider`, optional EIP-712 derivation)
+- **`@splendor/pq-bridge/react`** — published `useSplendorPQ` hook
+- **`preflight()`** — balance / nonce / fee dry-run before send
 - **SQDP-1** — normative protocol + `PROTOCOL` / `SQDP_VERSION` exports
 - **`SqcProvider`** — read-only RPC client (no WASM until connect)
 - **`SplendorPQBridge.fromProvider(provider)`** — signing wallet sharing RPC
 - **QSol ABI** — `encodeFunctionData` / decode helpers (SHA3-256 selectors)
-- **Events** — `connect` / `disconnect` / `accountsChanged`
+- **Events** — `connect` / `disconnect` / `accountsChanged` / `error`
 - **`rpcUrls` + retries** — failover; sticky submit URL
 - Canonical `SQ:` addresses; gateway errors `{ code, message }`
 - Guide: [`docs/DAPP_INTEGRATION.md`](docs/DAPP_INTEGRATION.md) · Protocol: [`docs/SQDP-1.md`](docs/SQDP-1.md)
 
 
 ```bash
-npm test              # vitest unit + WASM session + phase2
-npm run test:e2e      # offline smoke
-npm run test:live     # optional live node (skips if RPC down; LIVE_E2E=1 to require)
+npm run sync:config    # mirror networks JSON + check Go domain message
+npm test               # vitest unit + WASM session + phase2
+npm run test:e2e       # offline smoke
+npm run test:live      # optional live node (skips if RPC down; LIVE_E2E=1 to require)
 # from repo root:
 go test ./sdk/bridge/signer -count=1
 ```
 
 
-- Prefer **proxy** mode for end users; never put user EVM keys on a public gateway.
+- Prefer **proxy** mode for end users; never put user EVM keys or Dilithium seeds on a public gateway.
 - `service-wallet` is for **your** automation keys only.
 - Domain message is versioned (`v1`); changing it remaps all derived addresses — treat as a breaking change.
 - This is an **identity bridge**, not a cross-chain token bridge.
-
+- Pin `wasmSha256` in production browser deploys.
 ## License
 
 MIT

@@ -1,5 +1,6 @@
 /** Browser WASM loader (fetch only — no Node builtins). */
 import {
+  assertWasmSha256,
   bindWasmApi,
   waitForWasmReady,
   type LoadWasmOpts,
@@ -10,11 +11,11 @@ import { BridgeError } from './errors.js';
 export async function loadWasmInBrowser(opts?: LoadWasmOpts): Promise<WasmSignerApi> {
   const g = globalThis as unknown as Record<string, unknown>;
 
-  if (typeof (g as any).sqCreateSession === 'function') {
+  if (typeof (g as { sqCreateSession?: unknown }).sqCreateSession === 'function') {
     return bindWasmApi(g);
   }
 
-  if (!(g as any).Go) {
+  if (!(g as { Go?: unknown }).Go) {
     const src = opts?.execUrl || '/wasm_exec.js';
     await new Promise<void>((resolve, reject) => {
       const script = document.createElement('script');
@@ -37,6 +38,7 @@ export async function loadWasmInBrowser(opts?: LoadWasmOpts): Promise<WasmSigner
     throw BridgeError.wasm(`Failed to fetch WASM: ${resp.status}`);
   }
   const bytes = await resp.arrayBuffer();
+  await assertWasmSha256(bytes, opts?.wasmSha256);
   const result = await WebAssembly.instantiate(bytes, go.importObject);
   go.run(result.instance);
   await waitForWasmReady(g);

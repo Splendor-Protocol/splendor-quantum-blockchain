@@ -107,6 +107,25 @@ func (w *DerivedWallet) PublicResult() DeriveResult {
 	}
 }
 
+// Zeroize clears Dilithium private key material and public key bytes from memory.
+func (w *DerivedWallet) Zeroize() {
+	if w == nil {
+		return
+	}
+	if w.Private != nil {
+		w.Private.Zeroize()
+		w.Private = nil
+	}
+	if w.PublicKey != nil {
+		for i := range w.PublicKey {
+			w.PublicKey[i] = 0
+		}
+		w.PublicKey = nil
+	}
+	w.Public = nil
+	w.Address = qcrypto.Address{}
+}
+
 // TransferParams are inputs for building and signing a transfer.
 type TransferParams struct {
 	To        string `json:"to"`        // SQ: address or raw 64-char hex

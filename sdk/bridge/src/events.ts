@@ -4,12 +4,13 @@ export type BridgeEventMap = {
   connect: { address: string; evmAddress?: string };
   disconnect: Record<string, never>;
   accountsChanged: { address: string; evmAddress?: string };
+  error: { code: string; message: string };
 };
 
 type Handler<T> = (payload: T) => void;
 
 export class BridgeEmitter {
-  private listeners = new Map<string, Set<Handler<any>>>();
+  private listeners = new Map<string, Set<Handler<unknown>>>();
 
   on<K extends keyof BridgeEventMap>(event: K, handler: Handler<BridgeEventMap[K]>): () => void {
     let set = this.listeners.get(event);
@@ -17,12 +18,12 @@ export class BridgeEmitter {
       set = new Set();
       this.listeners.set(event, set);
     }
-    set.add(handler);
+    set.add(handler as Handler<unknown>);
     return () => this.off(event, handler);
   }
 
   off<K extends keyof BridgeEventMap>(event: K, handler: Handler<BridgeEventMap[K]>): void {
-    this.listeners.get(event)?.delete(handler);
+    this.listeners.get(event)?.delete(handler as Handler<unknown>);
   }
 
   emit<K extends keyof BridgeEventMap>(event: K, payload: BridgeEventMap[K]): void {

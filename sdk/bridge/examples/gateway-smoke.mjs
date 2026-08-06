@@ -1,6 +1,9 @@
 /**
- * Gateway smoke: start is assumed external; this hits /health and /v1/derive with a seed.
+ * Gateway smoke against hardened proxy defaults.
  * Usage: GATEWAY_URL=http://127.0.0.1:3090 node examples/gateway-smoke.mjs
+ *
+ * Public proxy MUST reject seed / evmPrivateKey / derive-with-creds.
+ * Prefer signedTx submit path.
  */
 const base = (process.env.GATEWAY_URL || 'http://127.0.0.1:3090').replace(/\/$/, '');
 
@@ -9,27 +12,37 @@ async function main() {
   console.log('health:', health);
   if (!health.ok) throw new Error('health not ok');
 
-  const derive = await fetch(`${base}/v1/derive`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ seed: '01'.repeat(32) }),
-  }).then(async (r) => {
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || r.statusText);
-    return j;
-  });
-  console.log('derive:', derive.address);
-  if (!String(derive.address).startsWith('SQ:')) throw new Error('bad address');
+  if (health.mode === 'proxy' && !health.custodialProxy) {
+    const derive = await fetch(`${base}/v1/derive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed: '01'.repeat(32) }),
+    });
+    const deriveBody = await derive.json();
+    if (derive.ok) throw new Error('proxy should reject /v1/derive with seed');
+    console.log('proxy correctly rejected seed derive:', deriveBody.code);
 
-  // proxy must reject private key
-  const rej = await fetch(`${base}/v1/derive`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ evmPrivateKey: '11'.repeat(32) }),
-  });
-  if (health.mode === 'proxy') {
-    if (rej.ok) throw new Error('proxy should reject evmPrivateKey');
+    const transfer = await fetch(`${base}/v1/tx/transfer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        seed: '01'.repeat(32),
+        to: 'SQ:' + 'ab'.repeat(32),
+        amount: '1',
+      }),
+    });
+    if (transfer.ok) throw new Error('proxy should reject transfer with seed');
+    console.log('proxy correctly rejected custodial transfer');
+
+    const rejKey = await fetch(`${base}/v1/derive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ evmPrivateKey: '11'.repeat(32) }),
+    });
+    if (rejKey.ok) throw new Error('proxy should reject evmPrivateKey');
     console.log('proxy correctly rejected evmPrivateKey');
+  } else {
+    console.log('skipping custodial rejection checks (custodialProxy or non-proxy mode)');
   }
 
   console.log('gateway smoke passed');

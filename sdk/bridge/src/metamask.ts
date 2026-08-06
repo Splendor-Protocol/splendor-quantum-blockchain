@@ -1,7 +1,15 @@
 /**
- * Browser MetaMask helpers for PQ bridge derivation.
+ * Browser MetaMask / EIP-1193 helpers for PQ bridge derivation.
+ *
+ * The derivation signature is Dilithium key material (SQDP-1) — never log it
+ * or post it to a public gateway.
  */
-import { DERIVATION_DOMAIN_MESSAGE, strip0x } from './derive.js';
+import {
+  DERIVATION_DOMAIN_MESSAGE,
+  eip712DerivationTypedData,
+  strip0x,
+  type DerivationScheme,
+} from './derive.js';
 
 export type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -9,42 +17,68 @@ export type EthereumProvider = {
   removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
 };
 
-function getProvider(): EthereumProvider {
-  const eth = (globalThis as any).ethereum as EthereumProvider | undefined;
+export type SignDerivationOpts = {
+  address?: string;
+  /** Injected EIP-1193 provider; defaults to window.ethereum */
+  provider?: EthereumProvider;
+  /** Default eip191-v1 (SQDP-1). eip712-v1 is optional SQDP-1.1 path. */
+  scheme?: DerivationScheme;
+};
+
+function getProvider(explicit?: EthereumProvider): EthereumProvider {
+  if (explicit?.request) return explicit;
+  const eth = (globalThis as { ethereum?: EthereumProvider }).ethereum;
   if (!eth?.request) {
-    throw new Error('MetaMask (window.ethereum) not found');
+    throw new Error('EIP-1193 provider (window.ethereum) not found');
   }
   return eth;
 }
 
 /** Request accounts and return the first address. */
-export async function connectMetaMask(): Promise<string> {
-  const eth = getProvider();
+export async function connectMetaMask(provider?: EthereumProvider): Promise<string> {
+  const eth = getProvider(provider);
   const accounts = (await eth.request({ method: 'eth_requestAccounts' })) as string[];
   if (!accounts?.length) throw new Error('No MetaMask accounts');
   return accounts[0];
 }
 
 /**
- * personal_sign the PQ derivation domain message.
- * Returns hex signature without requiring a specific chain.
+ * Sign the PQ derivation domain (EIP-191 personal_sign or EIP-712).
+ * Returns hex signature without requiring a specific EVM chain.
  */
-export async function signDerivationWithMetaMask(address?: string): Promise<{
+export async function signDerivationWithMetaMask(
+  addressOrOpts?: string | SignDerivationOpts,
+): Promise<{
   evmAddress: string;
   signatureHex: string;
+  scheme: DerivationScheme;
 }> {
-  const eth = getProvider();
-  const evmAddress = address || (await connectMetaMask());
-  const msgHex =
-    '0x' +
-    Array.from(new TextEncoder().encode(DERIVATION_DOMAIN_MESSAGE))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-  const signature = (await eth.request({
-    method: 'personal_sign',
-    params: [msgHex, evmAddress],
-  })) as string;
-  return { evmAddress, signatureHex: strip0x(signature) };
+  const opts: SignDerivationOpts =
+    typeof addressOrOpts === 'string' ? { address: addressOrOpts } : addressOrOpts || {};
+  const scheme: DerivationScheme = opts.scheme || 'eip191-v1';
+  const eth = getProvider(opts.provider);
+  const evmAddress = opts.address || (await connectMetaMask(eth));
+
+  let signature: string;
+  if (scheme === 'eip712-v1') {
+    const typed = eip712DerivationTypedData();
+    signature = (await eth.request({
+      method: 'eth_signTypedData_v4',
+      params: [evmAddress, JSON.stringify(typed)],
+    })) as string;
+  } else {
+    const msgHex =
+      '0x' +
+      Array.from(new TextEncoder().encode(DERIVATION_DOMAIN_MESSAGE))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    signature = (await eth.request({
+      method: 'personal_sign',
+      params: [msgHex, evmAddress],
+    })) as string;
+  }
+
+  return { evmAddress, signatureHex: strip0x(signature), scheme };
 }
 
 /**
@@ -52,8 +86,9 @@ export async function signDerivationWithMetaMask(address?: string): Promise<{
  */
 export function onMetaMaskAccountsChanged(
   handler: (accounts: string[]) => void,
+  provider?: EthereumProvider,
 ): () => void {
-  const eth = getProvider();
+  const eth = getProvider(provider);
   if (!eth.on) {
     return () => undefined;
   }

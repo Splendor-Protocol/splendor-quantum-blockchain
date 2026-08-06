@@ -2,10 +2,17 @@
  * Separately deployable PQ bridge gateway.
  * Modes: proxy (non-custodial relay) | service-wallet (holds derived PQ key).
  *
+ * Public proxy accepts pre-signed `signedTx` only.
+ * Custodial credentials (seed / evmSignature / evmPrivateKey) require
+ * ALLOW_CUSTODIAL_PROXY=1 (private backends) or MODE=service-wallet.
+ *
  * Network defaults from sqc.networks.json (override with SQC_NETWORK / SQC_RPC / PORT).
  * Errors follow SQDP-1: { code, message }.
  */
 import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
+import helmet from '@fastify/helmet';
 import {
   SplendorPQBridge,
   fromSPLD,
@@ -23,6 +30,17 @@ const SQC_RPC = (process.env.SQC_RPC || net.rpcUrls[0]).replace(/\/$/, '');
 const MODE = (process.env.MODE || 'proxy').toLowerCase(); // proxy | service-wallet
 const SERVICE_SEED = process.env.SERVICE_SEED || '';
 const SERVICE_EVM_KEY = process.env.SERVICE_EVM_KEY || '';
+/** Escape hatch: allow seed/evmSignature on proxy (private backends only). */
+const ALLOW_CUSTODIAL_PROXY = process.env.ALLOW_CUSTODIAL_PROXY === '1';
+/** Required for service-wallet mutating routes when set. */
+const API_KEY = process.env.GATEWAY_API_KEY || '';
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || '*')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const PUBLIC_HEALTH = process.env.PUBLIC_HEALTH !== '0';
+const RATE_MAX = Number(process.env.RATE_LIMIT_MAX || 120);
+const BODY_LIMIT = Number(process.env.BODY_LIMIT_BYTES || 1_048_576);
 
 type Creds = {
   seed?: string;
@@ -45,7 +63,7 @@ function errorFromCaught(e: unknown): ApiError {
     return apiError(e.code, e.message);
   }
   const message = e instanceof Error ? e.message : String(e);
-  if (/proxy mode rejects evmPrivateKey/i.test(message)) {
+  if (/proxy mode rejects|custodial credentials/i.test(message)) {
     return apiError('USER_REJECTED', message);
   }
   if (/invalid sq address/i.test(message)) {
@@ -63,16 +81,39 @@ function errorFromCaught(e: unknown): ApiError {
   return apiError('UNKNOWN', message);
 }
 
-/** Posting seed to a public gateway is custodial for that request (SQDP-1). */
-const SEED_WARNING =
-  'Posting Dilithium seed to a gateway is custodial for this request. Prefer client-side WASM + signedTx on public deployments.';
+/**
+ * Public proxy MUST reject custodial credentials unless ALLOW_CUSTODIAL_PROXY=1.
+ * Prefer client-side WASM + signedTx.
+ */
+function assertProxyAllowsCreds(creds: Creds): void {
+  if (MODE !== 'proxy') return;
+  if (creds.evmPrivateKey) {
+    throw Object.assign(
+      new Error('proxy mode rejects evmPrivateKey — submit signedTx only'),
+      { code: 'USER_REJECTED' },
+    );
+  }
+  if (creds.seed) {
+    throw Object.assign(
+      new Error(
+        'proxy mode rejects Dilithium seed — sign client-side and POST signedTx' +
+          (ALLOW_CUSTODIAL_PROXY ? '' : ' (set ALLOW_CUSTODIAL_PROXY=1 for private backends)'),
+      ),
+      { code: 'USER_REJECTED' },
+    );
+  }
+  if (creds.evmSignature && !ALLOW_CUSTODIAL_PROXY) {
+    throw Object.assign(
+      new Error(
+        'proxy mode rejects evmSignature (key material) — submit signedTx, or set ALLOW_CUSTODIAL_PROXY=1',
+      ),
+      { code: 'USER_REJECTED' },
+    );
+  }
+}
 
 async function connectEphemeral(creds: Creds): Promise<SplendorPQBridge> {
-  if (MODE === 'proxy' && creds.evmPrivateKey) {
-    throw Object.assign(new Error(
-      'proxy mode rejects evmPrivateKey — use signedTx, seed, or evmSignature',
-    ), { code: 'USER_REJECTED' });
-  }
+  assertProxyAllowsCreds(creds);
   const tmp = new SplendorPQBridge({
     rpcUrl: SQC_RPC,
     chainId: net.chainId,
@@ -88,10 +129,26 @@ async function connectEphemeral(creds: Creds): Promise<SplendorPQBridge> {
     await tmp.connectFromEvmPrivateKey(creds.evmPrivateKey);
   } else {
     throw new Error(
-      'provide seed or evmSignature' + (MODE === 'service-wallet' ? ' or evmPrivateKey' : ''),
+      MODE === 'proxy' && !ALLOW_CUSTODIAL_PROXY
+        ? 'proxy requires signedTx (custodial credentials disabled)'
+        : 'provide seed or evmSignature' +
+            (MODE === 'service-wallet' ? ' or evmPrivateKey' : ''),
     );
   }
   return tmp;
+}
+
+function requireApiKey(
+  headers: Record<string, string | string[] | undefined>,
+): ApiError | null {
+  if (!API_KEY) return null;
+  const got = headers['x-api-key'] ?? headers['authorization'];
+  const raw = Array.isArray(got) ? got[0] : got;
+  const token = raw?.startsWith('Bearer ') ? raw.slice(7) : raw;
+  if (token !== API_KEY) {
+    return apiError('USER_REJECTED', 'invalid or missing API key');
+  }
+  return null;
 }
 
 async function main() {
@@ -114,29 +171,74 @@ async function main() {
       console.error('MODE=service-wallet requires SERVICE_SEED or SERVICE_EVM_KEY');
       process.exit(1);
     }
+    if (!API_KEY) {
+      console.warn(
+        '[gateway] WARNING: service-wallet without GATEWAY_API_KEY — set GATEWAY_API_KEY in production',
+      );
+    }
   } else {
-    console.log('[gateway] MODE=proxy (non-custodial — clients sign, gateway relays)');
+    console.log('[gateway] MODE=proxy (non-custodial — clients sign, gateway relays signedTx)');
+    if (ALLOW_CUSTODIAL_PROXY) {
+      console.warn('[gateway] ALLOW_CUSTODIAL_PROXY=1 — seed/evmSignature accepted (private use only)');
+    }
     console.log(`[gateway] SQDP-${SQDP_VERSION} network=${net.id} rpc=${SQC_RPC}`);
   }
 
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    bodyLimit: BODY_LIMIT,
+  });
 
-  app.get('/health', async () => ({
-    ok: true,
-    mode: MODE,
-    network: net.id,
-    sqc_rpc: SQC_RPC,
-    sqdp: SQDP_VERSION,
-    protocol: {
-      chainId: PROTOCOL.chainId,
-      confirmation: PROTOCOL.confirmation,
-      minFee: PROTOCOL.minFee,
-    },
-    service_address:
-      MODE === 'service-wallet' && bridge.getConnectionState() === 'connected'
-        ? bridge.getAddress()
-        : null,
-  }));
+  await app.register(helmet, {
+    global: true,
+    contentSecurityPolicy: false,
+  });
+
+  await app.register(cors, {
+    origin: CORS_ORIGINS.includes('*') ? true : CORS_ORIGINS,
+  });
+
+  await app.register(rateLimit, {
+    max: RATE_MAX,
+    timeWindow: '1 minute',
+  });
+
+  app.addHook('onRequest', async (req, reply) => {
+    if (MODE === 'service-wallet' && API_KEY) {
+      const path = req.url.split('?')[0];
+      if (path === '/health') return;
+      const err = requireApiKey(req.headers as Record<string, string | string[] | undefined>);
+      if (err) {
+        return reply.code(401).send(err);
+      }
+    }
+  });
+
+  app.get('/health', async () => {
+    const body: Record<string, unknown> = {
+      ok: true,
+      mode: MODE,
+      network: net.id,
+      sqdp: SQDP_VERSION,
+      protocol: {
+        chainId: PROTOCOL.chainId,
+        confirmation: PROTOCOL.confirmation,
+        minFee: PROTOCOL.minFee,
+      },
+      custodialProxy: MODE === 'proxy' && ALLOW_CUSTODIAL_PROXY,
+      service_address:
+        MODE === 'service-wallet' && bridge.getConnectionState() === 'connected'
+          ? bridge.getAddress()
+          : null,
+    };
+    if (PUBLIC_HEALTH || MODE === 'service-wallet') {
+      // Internal RPC URL only when not locked down; public proxy hides it by default via PUBLIC_HEALTH=0
+      if (PUBLIC_HEALTH) {
+        body.sqc_rpc = SQC_RPC;
+      }
+    }
+    return body;
+  });
 
   app.get('/v1/status', async () => bridge.getStatus());
 
@@ -161,20 +263,19 @@ async function main() {
   }>('/v1/derive', async (req, reply) => {
     let tmp: SplendorPQBridge | null = null;
     try {
-      if (MODE === 'proxy' && req.body.evmPrivateKey && !req.body.seed && !req.body.evmSignature) {
+      if (MODE === 'proxy' && !ALLOW_CUSTODIAL_PROXY) {
         return reply.code(400).send(
-          apiError('USER_REJECTED', 'proxy mode rejects evmPrivateKey — use seed or evmSignature'),
+          apiError(
+            'USER_REJECTED',
+            'proxy /v1/derive disabled — derive client-side with WASM (or set ALLOW_CUSTODIAL_PROXY=1)',
+          ),
         );
       }
-      tmp = await connectEphemeral(req.body);
+      tmp = await connectEphemeral(req.body || {});
       const info = tmp.getDeriveInfo();
       tmp.disconnect();
-      const out: Record<string, unknown> = { ...info };
-      if (req.body.seed && MODE === 'proxy') {
-        out.warning = SEED_WARNING;
-      }
-      return out;
-    } catch (e: any) {
+      return { ...info };
+    } catch (e: unknown) {
       tmp?.disconnect();
       return reply.code(400).send(errorFromCaught(e));
     }
@@ -182,8 +283,9 @@ async function main() {
 
   app.post<{ Body: { signedTx: object | string } }>('/v1/tx/submit', async (req, reply) => {
     try {
+      await bridge.rpc.assertChainId();
       return await bridge.rpc.submitTransaction(req.body.signedTx);
-    } catch (e: any) {
+    } catch (e: unknown) {
       return reply.code(400).send(errorFromCaught(e));
     }
   });
@@ -204,6 +306,7 @@ async function main() {
     let ephemeral: SplendorPQBridge | null = null;
     try {
       if (req.body.signedTx) {
+        await bridge.rpc.assertChainId();
         return await bridge.rpc.submitTransaction(req.body.signedTx);
       }
 
@@ -229,11 +332,8 @@ async function main() {
         memo: req.body.memo,
       });
       ephemeral?.disconnect();
-      if (req.body.seed && MODE === 'proxy') {
-        return { ...result, warning: SEED_WARNING };
-      }
       return result;
-    } catch (e: any) {
+    } catch (e: unknown) {
       ephemeral?.disconnect();
       return reply.code(400).send(errorFromCaught(e));
     }
@@ -255,6 +355,7 @@ async function main() {
     let ephemeral: SplendorPQBridge | null = null;
     try {
       if (req.body.signedTx) {
+        await bridge.rpc.assertChainId();
         return await bridge.rpc.submitTransaction(req.body.signedTx);
       }
       let signer = bridge;
@@ -270,11 +371,8 @@ async function main() {
         fee: req.body.fee,
       });
       ephemeral?.disconnect();
-      if (req.body.seed && MODE === 'proxy') {
-        return { ...result, warning: SEED_WARNING };
-      }
       return result;
-    } catch (e: any) {
+    } catch (e: unknown) {
       ephemeral?.disconnect();
       return reply.code(400).send(errorFromCaught(e));
     }
@@ -310,18 +408,15 @@ async function main() {
         settle: req.body.settle,
       });
       ephemeral?.disconnect();
-      if (req.body.seed && MODE === 'proxy') {
-        return { ...result, warning: SEED_WARNING };
-      }
       return result;
-    } catch (e: any) {
+    } catch (e: unknown) {
       ephemeral?.disconnect();
       return reply.code(400).send(errorFromCaught(e));
     }
   });
 
   await app.listen({ port: PORT, host: '0.0.0.0' });
-  console.log(`[gateway] listening on :${PORT} mode=${MODE} network=${net.id} rpc=${SQC_RPC}`);
+  console.log(`[gateway] listening on :${PORT} mode=${MODE} network=${net.id}`);
 }
 
 main().catch((err) => {

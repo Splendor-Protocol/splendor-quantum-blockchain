@@ -134,12 +134,14 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 
 | Mode | Use |
 |------|-----|
-| `proxy` (default) | End-user / public — relays; rejects client `evmPrivateKey` |
+| `proxy` (default) | End-user / public — relays **pre-signed** `signedTx` only |
 | `service-wallet` | Operator automation only — holds one PQ key |
 
 1. Public gateways MUST run `proxy` mode for end users.
-2. Posting a Dilithium `seed` to a public gateway is **custodial** for that request. Public deployments SHOULD prefer pre-signed `signedTx` only.
-3. `service-wallet` MUST NOT be used to hold end-user keys.
+2. Public proxy MUST reject `seed`, `evmPrivateKey`, and (unless `ALLOW_CUSTODIAL_PROXY=1`) `evmSignature`. Prefer client-side WASM signing + `POST /v1/tx/submit`.
+3. Posting a Dilithium `seed` or derivation signature to a gateway is **custodial** for that request. `ALLOW_CUSTODIAL_PROXY=1` is for private backends only.
+4. `service-wallet` MUST NOT be used to hold end-user keys. Production service-wallet SHOULD require `GATEWAY_API_KEY`.
+5. Gateways SHOULD enable rate limiting, CORS allowlists, and body size limits.
 
 ---
 
@@ -147,15 +149,21 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 
 | Threat | Mitigation |
 |--------|------------|
-| Phishing a different derivation message | MUST use exact SQDP-1 domain text; show it in UI before sign |
+| Phishing a different derivation message | MUST use exact SQDP-1 domain text; show it in UI before sign — the signature **is key material** |
 | Confusing `0x` with `SQ:` | UI MUST display `SQ:` after connect; never send EVM ETH as “funding” |
-| Wrong chain | MUST `assertChainId` before submit |
-| Seed / EVM key theft via gateway | MUST NOT send `evmPrivateKey` in proxy; avoid `seed` on public hosts |
-| Session residue | MUST `lock` / `disconnect` on logout |
-| Fake confirmation | MUST NOT treat `/tx/{hash}` 404 stub as success |
-| MetaMask account race | SHOULD await re-derive before signing after `accountsChanged` |
+| Wrong chain | MUST `assertChainId` before submit (all tx types) |
+| Seed / EVM key / derivation sig theft via gateway | Public proxy MUST reject custodial credentials; submit `signedTx` only |
+| Session residue | MUST `lock` / `disconnect` on logout (`lock` zeroizes Dilithium key material) |
+| Fake confirmation | MUST NOT treat `/tx/{hash}` 404 stub as success; nonce poll can race with other txs |
+| MetaMask account race | MUST fail-closed (lock + disconnect) if re-derive fails after `accountsChanged` |
+| Tampered WASM | Browser SHOULD set `wasmSha256` network pin and fail closed on mismatch |
+| Signature / address mismatch | MUST `ecrecover` and bind claimed EVM address before derive |
 
 Encrypted browser session cache of Dilithium seeds is **out of scope** for SQDP-1 (default remains re-sign each session).
+
+Optional SQDP-1.1 path: EIP-712 `SplendorPQDerive` typed data (`derivation: 'eip712-v1'`). Seed rule remains `SHA3-256(signature_bytes)`. Default remains EIP-191 `personal_sign` (`eip191-v1`).
+
+Wire `chain_id` remains `splendor-quantum-1` for all deployments until the node defines otherwise. Client configs expose distinct `networkId` values (`splendor-local` / `splendor-testnet` / `splendor-mainnet`) for UX and failover selection.
 
 ---
 

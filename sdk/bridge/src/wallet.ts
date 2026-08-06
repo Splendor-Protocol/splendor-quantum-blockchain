@@ -2,8 +2,11 @@
  * SplendorPQBridge — signing wallet (WASM Dilithium sessions).
  */
 import {
+  assertSignatureMatchesAddress,
+  evmAddressFromPrivateKey,
   signDerivationMessage,
   strip0x,
+  type DerivationScheme,
 } from './derive.js';
 import { loadWasmSigner, parseWasmJson, unwrap, type WasmSignerApi } from './wasm-loader.js';
 import { SqRpc, fromSPLD } from './rpc.js';
@@ -11,6 +14,7 @@ import { SqcProvider } from './provider.js';
 import {
   signDerivationWithMetaMask,
   onMetaMaskAccountsChanged,
+  type EthereumProvider,
 } from './metamask.js';
 import { BridgeError, wrapUnknown } from './errors.js';
 import { assertAddress } from './address.js';
@@ -18,6 +22,7 @@ import {
   assertFeeAtLeastMin,
   encodePayload,
   bytesToHex,
+  MIN_FEE,
 } from './encoding.js';
 import { encodeFunctionData } from './abi.js';
 import { BridgeEmitter, type BridgeEventMap } from './events.js';
@@ -29,6 +34,7 @@ import type {
   CallOpts,
   DeployOpts,
   X402PayOpts,
+  PreflightResult,
 } from './types.js';
 
 export type {
@@ -39,6 +45,7 @@ export type {
   CallOpts,
   DeployOpts,
   X402PayOpts,
+  PreflightResult,
 };
 
 export class SplendorPQBridge {
@@ -51,10 +58,14 @@ export class SplendorPQBridge {
   private readonly emitter = new BridgeEmitter();
   private unwatchMetaMask: (() => void) | null = null;
   private metaMaskWatchEnabled: boolean;
+  private readonly ethereumProvider?: EthereumProvider;
+  private readonly derivation: DerivationScheme;
 
   constructor(options: BridgeOptions = {}) {
     this.opts = options;
     this.metaMaskWatchEnabled = options.watchMetaMaskAccounts !== false;
+    this.ethereumProvider = options.ethereumProvider;
+    this.derivation = options.derivation || 'eip191-v1';
     if (options.provider) {
       this.provider = options.provider;
       this.rpc = options.provider.rpc;
@@ -81,6 +92,7 @@ export class SplendorPQBridge {
     this.wasm = await loadWasmSigner({
       wasmUrl: this.opts.wasmUrl,
       execUrl: this.opts.execUrl,
+      wasmSha256: this.opts.wasmSha256,
     });
     this.sessionId = this.wasm.sqCreateSession();
   }
@@ -97,10 +109,23 @@ export class SplendorPQBridge {
     return this.sessionId;
   }
 
+  /** SQDP-1: assert chain before any sign/submit. */
+  private async beforeSignAndSubmit(): Promise<void> {
+    this.opts.onRequest?.({ method: 'assertChainId' });
+    await this.rpc.assertChainId();
+  }
+
   private emitConnect(info: DeriveInfo, changed = false): void {
     const payload = { address: info.address, evmAddress: info.evmAddress };
     if (changed) this.emitter.emit('accountsChanged', payload);
     else this.emitter.emit('connect', payload);
+  }
+
+  private failAccountSwitch(err: unknown): void {
+    const be = wrapUnknown(err, 'USER_REJECTED');
+    this.lock();
+    this.emitter.emit('error', { code: be.code, message: be.message });
+    this.emitter.emit('disconnect', {});
   }
 
   private ensureMetaMaskWatch(): void {
@@ -117,16 +142,21 @@ export class SplendorPQBridge {
           return;
         }
         try {
-          const { evmAddress, signatureHex } = await signDerivationWithMetaMask(next);
+          const { evmAddress, signatureHex, scheme } = await signDerivationWithMetaMask({
+            address: next,
+            provider: this.ethereumProvider,
+            scheme: this.derivation,
+          });
+          assertSignatureMatchesAddress(signatureHex, evmAddress, scheme);
           await this.init();
           const raw = unwrap(this.api().sqDeriveFromSigHex(this.sid(), strip0x(signatureHex)));
           this.info = parseWasmJson<DeriveInfo>(raw as string);
           this.info.evmAddress = evmAddress;
           this.emitConnect(this.info, true);
         } catch (e) {
-          void e;
+          this.failAccountSwitch(e);
         }
-      });
+      }, this.ethereumProvider);
     } catch {
       /* MetaMask not available (Node) */
     }
@@ -140,27 +170,37 @@ export class SplendorPQBridge {
     return this.info;
   }
 
-  async connectFromEvmSignature(signatureHex: string, evmAddress?: string): Promise<DeriveInfo> {
+  async connectFromEvmSignature(
+    signatureHex: string,
+    evmAddress?: string,
+    scheme: DerivationScheme = this.derivation,
+  ): Promise<DeriveInfo> {
+    const recovered = assertSignatureMatchesAddress(signatureHex, evmAddress, scheme);
     await this.init();
     const raw = unwrap(this.api().sqDeriveFromSigHex(this.sid(), strip0x(signatureHex)));
     this.info = parseWasmJson<DeriveInfo>(raw as string);
-    if (evmAddress) this.info.evmAddress = evmAddress;
+    this.info.evmAddress = evmAddress || recovered;
     this.emitConnect(this.info);
     return this.info;
   }
 
   async connectFromEvmPrivateKey(evmPrivateKeyHex: string): Promise<DeriveInfo> {
-    const sig = signDerivationMessage(evmPrivateKeyHex);
-    return this.connectFromEvmSignature(sig);
+    const sig = signDerivationMessage(evmPrivateKeyHex, this.derivation);
+    const addr = evmAddressFromPrivateKey(evmPrivateKeyHex);
+    return this.connectFromEvmSignature(sig, addr, this.derivation);
   }
 
-  async connectFromMetaMask(): Promise<DeriveInfo> {
+  async connectFromMetaMask(provider?: EthereumProvider): Promise<DeriveInfo> {
     try {
-      const { evmAddress, signatureHex } = await signDerivationWithMetaMask();
-      const info = await this.connectFromEvmSignature(signatureHex, evmAddress);
+      const { evmAddress, signatureHex, scheme } = await signDerivationWithMetaMask({
+        provider: provider || this.ethereumProvider,
+        scheme: this.derivation,
+      });
+      const info = await this.connectFromEvmSignature(signatureHex, evmAddress, scheme);
       this.ensureMetaMaskWatch();
       return info;
     } catch (e) {
+      this.opts.onError?.(e);
       throw wrapUnknown(e, 'USER_REJECTED');
     }
   }
@@ -189,6 +229,10 @@ export class SplendorPQBridge {
     return !!this.wasm && !!this.sessionId && this.wasm.sqIsUnlocked(this.sessionId);
   }
 
+  /**
+   * Clear Dilithium key material from WASM (best-effort zeroize) and drop local info.
+   * Session id is retained so re-connect can reuse the session slot.
+   */
   lock(): void {
     if (this.wasm && this.sessionId) {
       this.wasm.sqLock(this.sessionId);
@@ -233,6 +277,36 @@ export class SplendorPQBridge {
     return this.rpc.getBlockByHash(hash);
   }
 
+  /**
+   * Preflight: balance, nonce, fee, and whether balance covers amount+fee.
+   * Does not sign.
+   */
+  async preflight(opts: {
+    amount?: string;
+    amountSPLD?: string;
+    fee?: string;
+    address?: string;
+  }): Promise<PreflightResult> {
+    const from = opts.address || this.getAddress();
+    await this.rpc.assertChainId();
+    const bal = await this.rpc.getBalance(from);
+    const { nonce } = await this.rpc.getNonce(from);
+    const fee = assertFeeAtLeastMin(opts.fee);
+    const amount =
+      opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount || '0';
+    const need = BigInt(amount) + BigInt(fee);
+    const have = BigInt(bal.balance);
+    return {
+      from,
+      balance: bal.balance,
+      balance_spld: bal.balance_spld,
+      nonce,
+      fee,
+      chainId: this.rpc.chainId,
+      sufficient: have >= need,
+    };
+  }
+
   async waitForConfirmation(opts: {
     nonceBefore: number;
     from?: string;
@@ -268,7 +342,7 @@ export class SplendorPQBridge {
       throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
     }
 
-    await this.rpc.assertChainId();
+    await this.beforeSignAndSubmit();
     const { nonce } = await this.getNonce();
     const params = {
       to: opts.to,
@@ -277,6 +351,7 @@ export class SplendorPQBridge {
       nonce,
       memo: opts.memo || '',
     };
+    this.opts.onRequest?.({ method: 'signTransfer' });
     const wireStr = unwrap(this.api().sqSignTransfer(this.sid(), JSON.stringify(params))) as string;
     const signedTx = JSON.parse(wireStr);
     const result = await this.rpc.submitTransaction(signedTx);
@@ -305,6 +380,12 @@ export class SplendorPQBridge {
 
     let calldata: Uint8Array | string;
     if (opts.function) {
+      if (/\baddress\b/.test(opts.function) && !/\bsqaddress\b/.test(opts.function)) {
+        console.warn(
+          '[sqc] QSol ABI uses `sqaddress`, not Solidity `address`. Signature:',
+          opts.function,
+        );
+      }
       calldata = '0x' + bytesToHex(encodeFunctionData(opts.function, opts.args || []));
     } else if (opts.calldata != null) {
       calldata = opts.calldata;
@@ -312,6 +393,7 @@ export class SplendorPQBridge {
       throw BridgeError.invalidAmount('callContract requires `function`+args or `calldata`');
     }
 
+    await this.beforeSignAndSubmit();
     const { nonce } = await this.getNonce();
     const enc = encodePayload(calldata);
     const params: Record<string, unknown> = {
@@ -321,6 +403,7 @@ export class SplendorPQBridge {
       nonce,
       ...(enc.calldata_hex ? { calldata_hex: enc.calldata_hex } : { calldata_b64: enc.calldata_b64 }),
     };
+    this.opts.onRequest?.({ method: 'signCall' });
     const wireStr = unwrap(this.api().sqSignCall(this.sid(), JSON.stringify(params))) as string;
     const signedTx = JSON.parse(wireStr);
     const result = await this.rpc.submitTransaction(signedTx);
@@ -335,6 +418,7 @@ export class SplendorPQBridge {
     } catch (e) {
       throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
     }
+    await this.beforeSignAndSubmit();
     const { nonce } = await this.getNonce();
     const enc = encodePayload(opts.bytecode);
     const params: Record<string, unknown> = {
@@ -342,6 +426,7 @@ export class SplendorPQBridge {
       nonce,
       ...(enc.bytecode_hex ? { bytecode_hex: enc.bytecode_hex } : { bytecode_b64: enc.bytecode_b64 }),
     };
+    this.opts.onRequest?.({ method: 'signDeploy' });
     const wireStr = unwrap(this.api().sqSignDeploy(this.sid(), JSON.stringify(params))) as string;
     const signedTx = JSON.parse(wireStr);
     const result = await this.rpc.submitTransaction(signedTx);
@@ -355,6 +440,7 @@ export class SplendorPQBridge {
   }> {
     await this.init();
     assertAddress(opts.to);
+    await this.beforeSignAndSubmit();
     const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
     const params = {
       to: opts.to,
@@ -362,6 +448,7 @@ export class SplendorPQBridge {
       valid_after: opts.validAfter || 0,
       valid_before: opts.validBefore || 0,
     };
+    this.opts.onRequest?.({ method: 'signX402' });
     const wireStr = unwrap(this.api().sqSignX402(this.sid(), JSON.stringify(params))) as string;
     const payload = JSON.parse(wireStr);
     const out: {
@@ -378,7 +465,7 @@ export class SplendorPQBridge {
     return out;
   }
 
-  async signTransferOnly(opts: TransferOpts & { nonce: number }): Promise<object> {
+  async signTransferOnly(opts: TransferOpts & { nonce: number; assertChain?: boolean }): Promise<object> {
     await this.init();
     assertAddress(opts.to);
     const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
@@ -387,6 +474,9 @@ export class SplendorPQBridge {
       fee = assertFeeAtLeastMin(opts.fee);
     } catch (e) {
       throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
+    }
+    if (opts.assertChain !== false) {
+      await this.beforeSignAndSubmit();
     }
     const wireStr = unwrap(
       this.api().sqSignTransfer(
@@ -405,3 +495,6 @@ export class SplendorPQBridge {
 }
 
 export default SplendorPQBridge;
+
+/** Re-export for callers that only need the fee constant near preflight. */
+export { MIN_FEE };

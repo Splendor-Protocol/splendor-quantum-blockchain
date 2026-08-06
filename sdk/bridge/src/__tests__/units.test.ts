@@ -6,8 +6,15 @@ import {
   DERIVATION_DOMAIN_MESSAGE,
   seedFromEvmSignature,
   signDerivationMessage,
+  recoverPersonalSignAddress,
+  assertSignatureMatchesAddress,
+  evmAddressFromPrivateKey,
+  eip712DerivationTypedData,
+  eip712Hash,
+  recoverEip712Address,
 } from '../derive.js';
 import { MIN_FEE, assertFeeAtLeastMin, isHexString, encodePayload } from '../encoding.js';
+import { listNetworks, resolveNetwork } from '../networks.js';
 
 describe('units', () => {
   it('round-trips whole SPLD', () => {
@@ -57,6 +64,35 @@ describe('derive', () => {
     const seed2 = seedFromEvmSignature(sig2);
     expect(seed1).toBe(seed2);
     expect(seed1).toHaveLength(64);
+  });
+
+  it('ecrecover binds signature to EVM address', () => {
+    const key = '11'.repeat(32);
+    const addr = evmAddressFromPrivateKey(key);
+    const sig = signDerivationMessage(key);
+    expect(recoverPersonalSignAddress(sig).toLowerCase()).toBe(addr.toLowerCase());
+    expect(assertSignatureMatchesAddress(sig, addr).toLowerCase()).toBe(addr.toLowerCase());
+    expect(() => assertSignatureMatchesAddress(sig, '0x' + '00'.repeat(20))).toThrow(BridgeError);
+  });
+
+  it('eip712 derivation recovers stably', () => {
+    const key = '22'.repeat(32);
+    const sig = signDerivationMessage(key, 'eip712-v1');
+    const typed = eip712DerivationTypedData();
+    expect(eip712Hash(typed)).toHaveLength(32);
+    const recovered = recoverEip712Address(sig, typed);
+    expect(recovered.toLowerCase()).toBe(evmAddressFromPrivateKey(key).toLowerCase());
+  });
+});
+
+describe('networks', () => {
+  it('gives distinct networkId per env while sharing wire chainId', () => {
+    const nets = listNetworks();
+    const ids = new Set(nets.map((n) => n.networkId));
+    expect(ids.size).toBe(nets.length);
+    expect(resolveNetwork('local').chainId).toBe('splendor-quantum-1');
+    expect(resolveNetwork('testnet').networkId).toBe('splendor-testnet');
+    expect(resolveNetwork('mainnet').networkId).toBe('splendor-mainnet');
   });
 });
 

@@ -16,6 +16,8 @@ import {
   type NetworkId,
 } from './networks.js';
 import { BridgeError } from './errors.js';
+import type { EthereumProvider } from './metamask.js';
+import type { DerivationScheme } from './derive.js';
 
 export type ConnectMode = 'none' | 'metamask' | 'seed' | 'evmKey' | 'evmSignature';
 
@@ -29,7 +31,12 @@ export type CreateClientOptions = {
   retries?: number;
   wasmUrl?: string;
   execUrl?: string;
+  wasmSha256?: string;
   watchMetaMaskAccounts?: boolean;
+  ethereumProvider?: EthereumProvider;
+  derivation?: DerivationScheme;
+  onRequest?: BridgeOptions['onRequest'];
+  onError?: BridgeOptions['onError'];
 };
 
 export type ConnectSplendorOptions = CreateClientOptions & {
@@ -61,7 +68,12 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
     retries: opts.retries ?? rpc.retries,
     wasmUrl: opts.wasmUrl ?? network.wasmUrl,
     execUrl: opts.execUrl ?? network.execUrl,
+    wasmSha256: opts.wasmSha256 ?? (network.wasmSha256 || undefined),
     watchMetaMaskAccounts: opts.watchMetaMaskAccounts,
+    ethereumProvider: opts.ethereumProvider,
+    derivation: opts.derivation,
+    onRequest: opts.onRequest,
+    onError: opts.onError,
   };
   return { network, bridgeOpts };
 }
@@ -92,7 +104,7 @@ export async function connectSplendor(opts: ConnectSplendorOptions = {}): Promis
 
   switch (mode) {
     case 'metamask':
-      info = await client.wallet.connectFromMetaMask();
+      info = await client.wallet.connectFromMetaMask(opts.ethereumProvider);
       break;
     case 'seed':
       if (!opts.seed) throw BridgeError.notConnected('connect: seed requires opts.seed');
@@ -108,7 +120,11 @@ export async function connectSplendor(opts: ConnectSplendorOptions = {}): Promis
       if (!opts.evmSignature) {
         throw BridgeError.notConnected('connect: evmSignature requires opts.evmSignature');
       }
-      info = await client.wallet.connectFromEvmSignature(opts.evmSignature, opts.evmAddress);
+      info = await client.wallet.connectFromEvmSignature(
+        opts.evmSignature,
+        opts.evmAddress,
+        opts.derivation || 'eip191-v1',
+      );
       break;
     default:
       throw BridgeError.rpc(`Unknown connect mode: ${mode}`);

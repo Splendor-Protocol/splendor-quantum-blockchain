@@ -41,6 +41,7 @@ describe('WASM offline integration', () => {
       amount: '1000',
       fee: '1000',
       nonce: 0,
+      assertChain: false,
     })) as {
       from: number[];
       public_key: string;
@@ -66,12 +67,14 @@ describe('WASM offline integration', () => {
       amount: '1',
       fee: '1000',
       nonce: 0,
+      assertChain: false,
     })) as { from: number[] };
     const sb = (await b.signTransferOnly({
       to: b.getAddress(),
       amount: '1',
       fee: '1000',
       nonce: 0,
+      assertChain: false,
     })) as { from: number[] };
 
     expect(sa.from).not.toEqual(sb.from);
