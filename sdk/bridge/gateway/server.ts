@@ -2,14 +2,24 @@
  * Separately deployable PQ bridge gateway.
  * Modes: proxy (non-custodial relay) | service-wallet (holds derived PQ key).
  *
- * Each request that signs uses its own SplendorPQBridge session (WASM multi-session).
- * In proxy mode, evmPrivateKey is rejected on public routes.
+ * Network defaults from sqc.networks.json (override with SQC_NETWORK / SQC_RPC / PORT).
+ * Errors follow SQDP-1: { code, message }.
  */
 import Fastify from 'fastify';
-import { SplendorPQBridge, fromSPLD } from '../dist/index.js';
+import {
+  SplendorPQBridge,
+  fromSPLD,
+  isBridgeError,
+  PROTOCOL,
+  SQDP_VERSION,
+  resolveNetwork,
+  type BridgeErrorCode,
+} from '../dist/index.js';
 
-const PORT = Number(process.env.PORT || 3090);
-const SQC_RPC = process.env.SQC_RPC || 'http://localhost:8080';
+const NETWORK_ID = process.env.SQC_NETWORK || process.env.NETWORK || undefined;
+const net = resolveNetwork(NETWORK_ID);
+const PORT = Number(process.env.PORT || net.gatewayPort);
+const SQC_RPC = (process.env.SQC_RPC || net.rpcUrls[0]).replace(/\/$/, '');
 const MODE = (process.env.MODE || 'proxy').toLowerCase(); // proxy | service-wallet
 const SERVICE_SEED = process.env.SERVICE_SEED || '';
 const SERVICE_EVM_KEY = process.env.SERVICE_EVM_KEY || '';
@@ -20,13 +30,55 @@ type Creds = {
   evmPrivateKey?: string;
 };
 
+type ApiError = { code: string; message: string; warning?: string };
+
+function apiError(
+  code: BridgeErrorCode | string,
+  message: string,
+  extra?: { warning?: string },
+): ApiError {
+  return { code, message, ...extra };
+}
+
+function errorFromCaught(e: unknown): ApiError {
+  if (isBridgeError(e)) {
+    return apiError(e.code, e.message);
+  }
+  const message = e instanceof Error ? e.message : String(e);
+  if (/proxy mode rejects evmPrivateKey/i.test(message)) {
+    return apiError('USER_REJECTED', message);
+  }
+  if (/invalid sq address/i.test(message)) {
+    return apiError('INVALID_ADDRESS', message);
+  }
+  if (/fee/i.test(message) && /minimum|invalid/i.test(message)) {
+    return apiError('INVALID_FEE', message);
+  }
+  if (/chain_id mismatch/i.test(message)) {
+    return apiError('CHAIN_MISMATCH', message);
+  }
+  if (/timeout|abort/i.test(message)) {
+    return apiError('TIMEOUT', message);
+  }
+  return apiError('UNKNOWN', message);
+}
+
+/** Posting seed to a public gateway is custodial for that request (SQDP-1). */
+const SEED_WARNING =
+  'Posting Dilithium seed to a gateway is custodial for this request. Prefer client-side WASM + signedTx on public deployments.';
+
 async function connectEphemeral(creds: Creds): Promise<SplendorPQBridge> {
   if (MODE === 'proxy' && creds.evmPrivateKey) {
-    throw new Error(
+    throw Object.assign(new Error(
       'proxy mode rejects evmPrivateKey — use signedTx, seed, or evmSignature',
-    );
+    ), { code: 'USER_REJECTED' });
   }
-  const tmp = new SplendorPQBridge({ rpcUrl: SQC_RPC });
+  const tmp = new SplendorPQBridge({
+    rpcUrl: SQC_RPC,
+    chainId: net.chainId,
+    timeoutMs: net.timeoutMs,
+    retries: net.retries,
+  });
   await tmp.init();
   if (creds.seed) {
     await tmp.connectFromSeed(creds.seed);
@@ -35,13 +87,20 @@ async function connectEphemeral(creds: Creds): Promise<SplendorPQBridge> {
   } else if (creds.evmPrivateKey && MODE === 'service-wallet') {
     await tmp.connectFromEvmPrivateKey(creds.evmPrivateKey);
   } else {
-    throw new Error('provide seed or evmSignature' + (MODE === 'service-wallet' ? ' or evmPrivateKey' : ''));
+    throw new Error(
+      'provide seed or evmSignature' + (MODE === 'service-wallet' ? ' or evmPrivateKey' : ''),
+    );
   }
   return tmp;
 }
 
 async function main() {
-  const bridge = new SplendorPQBridge({ rpcUrl: SQC_RPC });
+  const bridge = new SplendorPQBridge({
+    rpcUrl: SQC_RPC,
+    chainId: net.chainId,
+    timeoutMs: net.timeoutMs,
+    retries: net.retries,
+  });
   await bridge.init();
 
   if (MODE === 'service-wallet') {
@@ -57,6 +116,7 @@ async function main() {
     }
   } else {
     console.log('[gateway] MODE=proxy (non-custodial — clients sign, gateway relays)');
+    console.log(`[gateway] SQDP-${SQDP_VERSION} network=${net.id} rpc=${SQC_RPC}`);
   }
 
   const app = Fastify({ logger: true });
@@ -64,7 +124,14 @@ async function main() {
   app.get('/health', async () => ({
     ok: true,
     mode: MODE,
+    network: net.id,
     sqc_rpc: SQC_RPC,
+    sqdp: SQDP_VERSION,
+    protocol: {
+      chainId: PROTOCOL.chainId,
+      confirmation: PROTOCOL.confirmation,
+      minFee: PROTOCOL.minFee,
+    },
     service_address:
       MODE === 'service-wallet' && bridge.getConnectionState() === 'connected'
         ? bridge.getAddress()
@@ -73,12 +140,20 @@ async function main() {
 
   app.get('/v1/status', async () => bridge.getStatus());
 
-  app.get<{ Params: { address: string } }>('/v1/balance/:address', async (req) => {
-    return bridge.rpc.getBalance(req.params.address);
+  app.get<{ Params: { address: string } }>('/v1/balance/:address', async (req, reply) => {
+    try {
+      return await bridge.rpc.getBalance(req.params.address);
+    } catch (e) {
+      return reply.code(400).send(errorFromCaught(e));
+    }
   });
 
-  app.get<{ Params: { address: string } }>('/v1/nonce/:address', async (req) => {
-    return bridge.rpc.getNonce(req.params.address);
+  app.get<{ Params: { address: string } }>('/v1/nonce/:address', async (req, reply) => {
+    try {
+      return await bridge.rpc.getNonce(req.params.address);
+    } catch (e) {
+      return reply.code(400).send(errorFromCaught(e));
+    }
   });
 
   app.post<{
@@ -87,17 +162,21 @@ async function main() {
     let tmp: SplendorPQBridge | null = null;
     try {
       if (MODE === 'proxy' && req.body.evmPrivateKey && !req.body.seed && !req.body.evmSignature) {
-        return reply.code(400).send({
-          error: 'proxy mode rejects evmPrivateKey — use seed or evmSignature',
-        });
+        return reply.code(400).send(
+          apiError('USER_REJECTED', 'proxy mode rejects evmPrivateKey — use seed or evmSignature'),
+        );
       }
       tmp = await connectEphemeral(req.body);
       const info = tmp.getDeriveInfo();
       tmp.disconnect();
-      return info;
+      const out: Record<string, unknown> = { ...info };
+      if (req.body.seed && MODE === 'proxy') {
+        out.warning = SEED_WARNING;
+      }
+      return out;
     } catch (e: any) {
       tmp?.disconnect();
-      return reply.code(400).send({ error: e.message });
+      return reply.code(400).send(errorFromCaught(e));
     }
   });
 
@@ -105,7 +184,7 @@ async function main() {
     try {
       return await bridge.rpc.submitTransaction(req.body.signedTx);
     } catch (e: any) {
-      return reply.code(400).send({ error: e.message });
+      return reply.code(400).send(errorFromCaught(e));
     }
   });
 
@@ -135,12 +214,12 @@ async function main() {
       }
 
       if (!req.body.to) {
-        return reply.code(400).send({ error: 'to is required' });
+        return reply.code(400).send(apiError('INVALID_ADDRESS', 'to is required'));
       }
       const amount =
         req.body.amountSPLD != null ? fromSPLD(req.body.amountSPLD) : req.body.amount;
       if (!amount) {
-        return reply.code(400).send({ error: 'amount or amountSPLD required' });
+        return reply.code(400).send(apiError('INVALID_AMOUNT', 'amount or amountSPLD required'));
       }
 
       const result = await signer.sendTransfer({
@@ -150,10 +229,13 @@ async function main() {
         memo: req.body.memo,
       });
       ephemeral?.disconnect();
+      if (req.body.seed && MODE === 'proxy') {
+        return { ...result, warning: SEED_WARNING };
+      }
       return result;
     } catch (e: any) {
       ephemeral?.disconnect();
-      return reply.code(400).send({ error: e.message });
+      return reply.code(400).send(errorFromCaught(e));
     }
   });
 
@@ -188,10 +270,13 @@ async function main() {
         fee: req.body.fee,
       });
       ephemeral?.disconnect();
+      if (req.body.seed && MODE === 'proxy') {
+        return { ...result, warning: SEED_WARNING };
+      }
       return result;
     } catch (e: any) {
       ephemeral?.disconnect();
-      return reply.code(400).send({ error: e.message });
+      return reply.code(400).send(errorFromCaught(e));
     }
   });
 
@@ -225,15 +310,18 @@ async function main() {
         settle: req.body.settle,
       });
       ephemeral?.disconnect();
+      if (req.body.seed && MODE === 'proxy') {
+        return { ...result, warning: SEED_WARNING };
+      }
       return result;
     } catch (e: any) {
       ephemeral?.disconnect();
-      return reply.code(400).send({ error: e.message });
+      return reply.code(400).send(errorFromCaught(e));
     }
   });
 
   await app.listen({ port: PORT, host: '0.0.0.0' });
-  console.log(`[gateway] listening on :${PORT} mode=${MODE} rpc=${SQC_RPC}`);
+  console.log(`[gateway] listening on :${PORT} mode=${MODE} network=${net.id} rpc=${SQC_RPC}`);
 }
 
 main().catch((err) => {

@@ -1,0 +1,52 @@
+{
+  "sqdpVersion": "1",
+  "defaultNetwork": "local",
+  "protocol": {
+    "minFee": "1000",
+    "addressPrefix": "SQ:",
+    "addressHexLen": 64,
+    "confirmation": "nonce",
+    "abiHash": "sha3-256",
+    "goldenTransferSelector": "14cde9ab",
+    "derivationDomainVersion": "v1",
+    "bridgeClientVersion": "1.3.0"
+  },
+  "networks": {
+    "local": {
+      "id": "local",
+      "name": "Local development",
+      "chainId": "splendor-quantum-1",
+      "rpcUrls": ["http://127.0.0.1:8080"],
+      "gatewayUrl": "http://127.0.0.1:3090",
+      "gatewayPort": 3090,
+      "wasmUrl": "/sqc_signer.wasm",
+      "execUrl": "/wasm_exec.js",
+      "timeoutMs": 15000,
+      "retries": 2
+    },
+    "testnet": {
+      "id": "testnet",
+      "name": "Splendor Quantum Testnet",
+      "chainId": "splendor-quantum-1",
+      "rpcUrls": ["https://testnet-rpc.splendor.example"],
+      "gatewayUrl": "https://testnet-gateway.splendor.example",
+      "gatewayPort": 443,
+      "wasmUrl": "/sqc_signer.wasm",
+      "execUrl": "/wasm_exec.js",
+      "timeoutMs": 20000,
+      "retries": 3
+    },
+    "mainnet": {
+      "id": "mainnet",
+      "name": "Splendor Quantum Mainnet",
+      "chainId": "splendor-quantum-1",
+      "rpcUrls": ["https://rpc.splendor.example"],
+      "gatewayUrl": "https://gateway.splendor.example",
+      "gatewayPort": 443,
+      "wasmUrl": "/sqc_signer.wasm",
+      "execUrl": "/wasm_exec.js",
+      "timeoutMs": 20000,
+      "retries": 3
+    }
+  }
+}

@@ -4,6 +4,36 @@ Node.js-first bridge that maps an **EVM wallet** (MetaMask or secp256k1 key) to 
 
 No changes to the core blockchain. The Dilithium signer is the **same Go code the node uses**, compiled to **WASM** and loaded inside Node (or the browser).
 
+## Protocol (SQDP-1)
+
+All dApps MUST follow the **Splendor dApp Protocol**:
+
+- Normative: [`docs/SQDP-1.md`](docs/SQDP-1.md)
+- Conformance checklist: [`docs/SQDP-1-CONFORMANCE.md`](docs/SQDP-1-CONFORMANCE.md)
+- Constants: `import { PROTOCOL, SQDP_VERSION } from '@splendor/pq-bridge'`
+
+### Single config (networks + fees + ports)
+
+**Edit one file:** [`src/config/sqc.networks.json`](src/config/sqc.networks.json) (mirrored at [`config/sqc.networks.json`](config/sqc.networks.json)).
+
+Set RPC URLs, gateway port, WASM paths, min fee, default network — SDK, gateway, and Docker all read this.
+
+### One-touch connect (dApps)
+
+```js
+import { connectSplendor, createSplendorClient } from '@splendor/pq-bridge';
+
+// Reads only — no MetaMask yet
+const { provider, wallet, network } = createSplendorClient({ network: 'local' });
+
+// Or unlock in one call
+const session = await connectSplendor({
+  network: 'local',       // local | testnet | mainnet
+  connect: 'metamask',    // none | metamask | seed | evmKey | evmSignature
+});
+console.log(session.info.address, session.network.rpcUrls);
+```
+
 ## Why WASM inside Node?
 
 This chain uses Cloudflare circl **Dilithium mode3 (round 3)**. Pure-JS ML-DSA libraries (FIPS 204) are **not wire-compatible**. The Go WASM module guarantees signatures the node will accept.
@@ -156,17 +186,19 @@ sdk/bridge/
   examples/        Node script + MetaMask HTML demo
 ```
 
-## dApp helpers (v1.2)
+## dApp helpers (v1.3)
 
+- **`sqc.networks.json`** — single source for RPC / gateway / fees / WASM paths
+- **`connectSplendor` / `createSplendorClient`** — one-touch dApp entry
+- **SQDP-1** — normative protocol + `PROTOCOL` / `SQDP_VERSION` exports
 - **`SqcProvider`** — read-only RPC client (no WASM until connect)
 - **`SplendorPQBridge.fromProvider(provider)`** — signing wallet sharing RPC
-- **QSol ABI** — `encodeFunctionData` / `decodeAddress` / `decodeUint256` (SHA3-256 selectors)
-- **`callContract({ function, args })`** — encode + sign in one call
-- **Events** — `on('connect'|'disconnect'|'accountsChanged')`; MetaMask switch re-derives
-- **`rpcUrls` + retries** — read failover; sticky URL after successful submit
-- `isValidAddress` / `BridgeError` / `waitForConfirmation` (nonce poll)
-- Browser import: `@splendor/pq-bridge/browser`
-- Guide: [`docs/DAPP_INTEGRATION.md`](docs/DAPP_INTEGRATION.md) · React sketch: `examples/useSplendorPQ.ts`
+- **QSol ABI** — `encodeFunctionData` / decode helpers (SHA3-256 selectors)
+- **Events** — `connect` / `disconnect` / `accountsChanged`
+- **`rpcUrls` + retries** — failover; sticky submit URL
+- Canonical `SQ:` addresses; gateway errors `{ code, message }`
+- Guide: [`docs/DAPP_INTEGRATION.md`](docs/DAPP_INTEGRATION.md) · Protocol: [`docs/SQDP-1.md`](docs/SQDP-1.md)
+
 
 ```bash
 npm test              # vitest unit + WASM session + phase2

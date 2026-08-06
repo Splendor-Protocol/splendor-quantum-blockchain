@@ -1,7 +1,8 @@
-/** Encoding helpers — browser-safe (no Buffer). */
+/** Encoding helpers — browser-safe (no Buffer). Fee floor from sqc.networks.json. */
 import { strip0x } from './derive.js';
+import { getProtocolConfig } from './networks.js';
 
-export const MIN_FEE = '1000';
+export const MIN_FEE = getProtocolConfig().minFee;
 
 export function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)

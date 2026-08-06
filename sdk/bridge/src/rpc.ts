@@ -3,6 +3,9 @@
  */
 import { BridgeError, wrapUnknown } from './errors.js';
 import { assertAddress } from './address.js';
+import { BRIDGE_CLIENT_VERSION } from './protocol.js';
+import { CHAIN_ID } from './derive.js';
+import { getDefaultNetwork } from './networks.js';
 
 export type RpcOptions = {
   /** Primary RPC URL (used if rpcUrls omitted). */
@@ -11,7 +14,7 @@ export type RpcOptions = {
   rpcUrls?: string[];
   timeoutMs?: number;
   chainId?: string;
-  /** Retries per URL on timeout / 5xx (default 2). */
+  /** Retries per URL on timeout / 5xx (default from network config). */
   retries?: number;
 };
 
@@ -24,14 +27,27 @@ export class SqRpc {
   private stickyUrl: string | null = null;
 
   constructor(options: RpcOptions = {}) {
-    const list =
-      options.rpcUrls?.map((u) => u.replace(/\/$/, '')).filter(Boolean) ||
-      [(options.rpcUrl || 'http://localhost:8080').replace(/\/$/, '')];
-    if (!list.length) list.push('http://localhost:8080');
+    const defaults = getDefaultNetwork();
+    let list: string[];
+    if (options.rpcUrls !== undefined) {
+      list = options.rpcUrls
+        .map((u) => String(u).trim().replace(/\/$/, ''))
+        .filter(Boolean);
+      if (!list.length) {
+        throw BridgeError.rpc('rpcUrls must contain at least one non-empty URL');
+      }
+    } else if (options.rpcUrl !== undefined) {
+      list = [options.rpcUrl.trim().replace(/\/$/, '')];
+      if (!list[0]) {
+        throw BridgeError.rpc('rpcUrl must be a non-empty URL');
+      }
+    } else {
+      list = [...defaults.rpcUrls];
+    }
     this.rpcUrls = list;
-    this.timeoutMs = options.timeoutMs ?? 15_000;
-    this.chainId = options.chainId || 'splendor-quantum-1';
-    this.retries = options.retries ?? 2;
+    this.timeoutMs = options.timeoutMs ?? defaults.timeoutMs;
+    this.chainId = options.chainId || defaults.chainId || CHAIN_ID;
+    this.retries = options.retries ?? defaults.retries;
   }
 
   get rpcUrl(): string {
@@ -44,14 +60,14 @@ export class SqRpc {
     balance_spld: string;
     unit: string;
   }> {
-    assertAddress(address);
-    const data = await this.get(`/balance/${encodeURIComponent(address)}`);
+    const canonical = assertAddress(address);
+    const data = await this.get(`/balance/${encodeURIComponent(canonical)}`);
     return { ...data, balance_spld: toSPLD(data.balance) };
   }
 
   async getNonce(address: string): Promise<{ address: string; nonce: number }> {
-    assertAddress(address);
-    return this.get(`/nonce/${encodeURIComponent(address)}`);
+    const canonical = assertAddress(address);
+    return this.get(`/nonce/${encodeURIComponent(canonical)}`);
   }
 
   async getStatus(): Promise<Record<string, unknown>> {
@@ -109,13 +125,13 @@ export class SqRpc {
     pollMs?: number;
     hash?: string;
   }): Promise<{ confirmed: true; nonce: number }> {
-    assertAddress(opts.from);
+    const from = assertAddress(opts.from);
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const pollMs = opts.pollMs ?? 1_000;
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
-      const { nonce } = await this.getNonce(opts.from);
+      const { nonce } = await this.getNonce(from);
       if (nonce > opts.nonceBefore) {
         return { confirmed: true, nonce };
       }
@@ -129,7 +145,7 @@ export class SqRpc {
       await new Promise((r) => setTimeout(r, pollMs));
     }
     throw BridgeError.txNotConfirmed(
-      `nonce for ${opts.from} did not advance past ${opts.nonceBefore} within ${timeoutMs}ms` +
+      `nonce for ${from} did not advance past ${opts.nonceBefore} within ${timeoutMs}ms` +
         (opts.hash ? ` (hash ${opts.hash})` : ''),
     );
   }
@@ -165,7 +181,7 @@ export class SqRpc {
             method,
             headers: {
               Accept: 'application/json',
-              'X-SQC-Bridge': '1.1.0',
+              'X-SQC-Bridge': BRIDGE_CLIENT_VERSION,
               ...(method === 'POST'
                 ? { 'Content-Type': 'application/json' }
                 : {}),

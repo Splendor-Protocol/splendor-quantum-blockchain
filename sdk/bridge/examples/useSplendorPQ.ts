@@ -1,47 +1,41 @@
 /**
- * Sketch: React hook for Splendor PQ bridge.
- * Copy into your app; peer-depend on react. Not published as a separate package.
- *
- * Usage:
- *   const { provider, wallet, connect, disconnect, address, state } = useSplendorPQ({
- *     rpcUrls: ['https://rpc.example'],
- *     wasmUrl: '/sqc_signer.wasm',
- *     execUrl: '/wasm_exec.js',
- *   });
+ * Sketch: React hook for Splendor PQ bridge (SQDP-1 one-touch).
+ * Copy into your app; peer-depend on react.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  SqcProvider,
-  SplendorPQBridge,
-  type BridgeOptions,
+  createSplendorClient,
+  type NetworkId,
   type ConnectionState,
   type DeriveInfo,
+  type SplendorClient,
 } from '@splendor/pq-bridge/browser';
 
-export type UseSplendorPQOpts = BridgeOptions;
+export type UseSplendorPQOpts = {
+  network?: NetworkId;
+  wasmUrl?: string;
+  execUrl?: string;
+};
 
 export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
-  const providerRef = useRef<SqcProvider | null>(null);
-  if (!providerRef.current) {
-    providerRef.current = new SqcProvider(opts);
+  const clientRef = useRef<SplendorClient | null>(null);
+  if (!clientRef.current) {
+    clientRef.current = createSplendorClient({
+      network: opts.network || 'local',
+      wasmUrl: opts.wasmUrl,
+      execUrl: opts.execUrl,
+    });
   }
-  const provider = providerRef.current;
-
-  const walletRef = useRef<SplendorPQBridge | null>(null);
-  if (!walletRef.current) {
-    walletRef.current = SplendorPQBridge.fromProvider(provider, opts);
-  }
-  const wallet = walletRef.current;
+  const { provider, wallet, network } = clientRef.current;
 
   const [state, setState] = useState<ConnectionState>('disconnected');
   const [info, setInfo] = useState<DeriveInfo | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    const offConnect = wallet.on('connect', (p) => {
+    const offConnect = wallet.on('connect', () => {
       setInfo(wallet.getDeriveInfo());
       setState('connected');
-      void p;
     });
     const offChanged = wallet.on('accountsChanged', () => {
       setInfo(wallet.getDeriveInfo());
@@ -78,6 +72,7 @@ export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
   }, [wallet]);
 
   return {
+    network,
     provider,
     wallet,
     connect,

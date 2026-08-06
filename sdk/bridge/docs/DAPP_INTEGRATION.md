@@ -2,6 +2,37 @@
 
 Connect → fund → transfer → wait. Use a read-only `SqcProvider` until the user connects a signing wallet.
 
+**Protocol standard:** all MUST/SHOULD rules live in **[SQDP-1.md](./SQDP-1.md)**. Ship checklist: **[SQDP-1-CONFORMANCE.md](./SQDP-1-CONFORMANCE.md)**.
+
+```ts
+import { PROTOCOL, SQDP_VERSION, connectSplendor, createSplendorClient } from '@splendor/pq-bridge';
+// PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.confirmation === 'nonce'
+// Networks: edit src/config/sqc.networks.json (single source)
+```
+
+## One-touch connect (recommended)
+
+```ts
+// Browser
+const { wallet, info, network } = await connectSplendor({
+  network: 'local', // or testnet / mainnet — from sqc.networks.json
+  connect: 'metamask',
+});
+// network.wasmUrl / execUrl already applied from config
+console.log(info.address, network.id);
+```
+
+```ts
+// Node agent
+const { wallet } = await connectSplendor({
+  network: 'local',
+  connect: 'seed',
+  seed: process.env.PQ_SEED,
+});
+```
+
+Or create without connecting: `createSplendorClient({ network: 'local' })` then `wallet.connectFromMetaMask()`.
+
 ## Mental model
 
 | Concept | What it is |
@@ -13,6 +44,17 @@ Connect → fund → transfer → wait. Use a read-only `SqcProvider` until the 
 **Security FAQ:** funds and nonces live on the **`SQ:`** address, not the MetaMask address. Never treat them as interchangeable.
 
 ## 1. Read-only provider (no WASM)
+
+Prefer one-touch (loads RPC from `sqc.networks.json`):
+
+```ts
+import { createSplendorClient } from '@splendor/pq-bridge';
+
+const { provider } = createSplendorClient({ network: 'local' });
+const status = await provider.getStatus();
+```
+
+Or construct manually:
 
 ```ts
 import { SqcProvider } from '@splendor/pq-bridge';
@@ -94,15 +136,16 @@ Selector = `SHA3-256(signature)[0:4]` (same as Go `vm.SelectorFromSignature`).
 cd sdk/bridge
 # build wasm first: ./wasm/build.ps1
 cd gateway
-docker compose up --build
-# → http://localhost:3090
+SQC_NETWORK=local docker compose up --build
+# → http://localhost:3090  (port from sqc.networks.json gatewayPort)
 ```
 
 | Env | Default | Notes |
 |-----|---------|--------|
-| `SQC_RPC` | `http://localhost:8080` | Chain node |
+| `SQC_NETWORK` | `local` | Selects entry in `sqc.networks.json` |
+| `SQC_RPC` | network `rpcUrls[0]` | Override chain node |
 | `MODE` | `proxy` | Prefer for end users |
-| `PORT` | `3090` | Gateway listen |
+| `PORT` | network `gatewayPort` | Gateway listen |
 
 **Proxy mode rejects client `evmPrivateKey`** — credentials stay on the client. Use `service-wallet` only for your own automation keys.
 

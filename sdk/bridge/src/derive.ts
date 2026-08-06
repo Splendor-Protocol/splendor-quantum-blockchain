@@ -1,16 +1,16 @@
 /**
  * Domain-separated EVM → PQ seed derivation.
- * Must match Go: signer.DerivationDomainMessage + SeedFromEVMSignature.
+ * Chain id + domain message come from src/config/sqc.networks.json (via networks.ts).
  */
 import { sha3_256 } from '@noble/hashes/sha3';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { derivationDomainMessage, getDefaultNetwork } from './networks.js';
 
-export const DERIVATION_DOMAIN_MESSAGE =
-  'Splendor Quantum Chain\nKey derivation v1\nchain: splendor-quantum-1';
+export const CHAIN_ID = getDefaultNetwork().chainId;
 
-export const CHAIN_ID = 'splendor-quantum-1';
+export const DERIVATION_DOMAIN_MESSAGE = derivationDomainMessage(CHAIN_ID);
 
 /** EIP-191 personal_sign hash of a UTF-8 message. */
 export function personalSignHash(message: string): Uint8Array {
@@ -42,19 +42,12 @@ export function signDerivationMessage(evmPrivateKeyHex: string): string {
   return r + s + v;
 }
 
-/** seed = SHA3-256(signatureBytes) — matches Go SeedFromEVMSignature. */
-export function seedFromEvmSignature(sigHexOrBytes: string | Uint8Array): string {
-  const bytes =
-    typeof sigHexOrBytes === 'string'
-      ? hexToBytes(strip0x(sigHexOrBytes))
-      : sigHexOrBytes;
-  return bytesToHex(sha3_256(bytes));
+/** seed = SHA3-256(evmSignatureBytes) as hex (64 chars). */
+export function seedFromEvmSignature(signatureHex: string): string {
+  const sig = hexToBytes(strip0x(signatureHex));
+  return bytesToHex(sha3_256(sig));
 }
 
-export function strip0x(s: string): string {
-  return s.startsWith('0x') || s.startsWith('0X') ? s.slice(2) : s;
-}
-
-export function ensure0x(s: string): string {
-  return s.startsWith('0x') || s.startsWith('0X') ? s : `0x${s}`;
+export function strip0x(hex: string): string {
+  return hex.startsWith('0x') || hex.startsWith('0X') ? hex.slice(2) : hex;
 }

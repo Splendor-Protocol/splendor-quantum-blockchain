@@ -28,10 +28,10 @@ describe('units', () => {
 });
 
 describe('address', () => {
-  it('accepts valid SQ address', () => {
-    const a = 'SQ:' + 'ab'.repeat(32);
+  it('accepts valid SQ address and canonicalizes case', () => {
+    const a = 'SQ:' + 'AB'.repeat(32);
     expect(isValidAddress(a)).toBe(true);
-    expect(assertAddress(a)).toBe(a);
+    expect(assertAddress(a)).toBe('SQ:' + 'ab'.repeat(32));
   });
 
   it('rejects invalid addresses', () => {
