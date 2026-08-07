@@ -3,6 +3,7 @@ package signer
 import (
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -331,5 +332,124 @@ func TestX402Deterministic(t *testing.T) {
 	}
 	if pa["amount"] == nil || pa["from"] == nil {
 		t.Fatal("missing fields")
+	}
+}
+
+func TestSignTransferRejectsFeeBelowMin(t *testing.T) {
+	var seed [SeedSize]byte
+	for i := range seed {
+		seed[i] = 1
+	}
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.SignTransfer(TransferParams{
+		To:     w.Address.String(),
+		Amount: "1",
+		Fee:    "999",
+		Nonce:  0,
+	})
+	if err == nil {
+		t.Fatal("expected fee below minimum error")
+	}
+	if !strings.Contains(err.Error(), "below minimum") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTamperedTransferFailsVerify(t *testing.T) {
+	var seed [SeedSize]byte
+	copy(seed[:], []byte("tamper-bridge-test-seed-01234567"))
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := w.SignTransfer(TransferParams{
+		To:        w.Address.String(),
+		Amount:    "1000",
+		Fee:       "1000",
+		Nonce:     0,
+		Timestamp: 1700000001,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unmarshal := func() types.Transaction {
+		var tx types.Transaction
+		if err := json.Unmarshal(wire, &tx); err != nil {
+			t.Fatal(err)
+		}
+		return tx
+	}
+
+	tx := unmarshal()
+	if err := tx.VerifySignature(w.PublicKey); err != nil {
+		t.Fatalf("baseline verify: %v", err)
+	}
+
+	tx = unmarshal()
+	tx.Amount.SetInt64(999999)
+	if err := tx.VerifySignature(w.PublicKey); err == nil {
+		t.Fatal("expected verify fail after amount tamper")
+	}
+
+	tx = unmarshal()
+	tx.Nonce = 99
+	if err := tx.VerifySignature(w.PublicKey); err == nil {
+		t.Fatal("expected verify fail after nonce tamper")
+	}
+
+	tx = unmarshal()
+	tx.Signature = tx.Signature[:len(tx.Signature)/2]
+	if err := tx.VerifySignature(w.PublicKey); err == nil {
+		t.Fatal("expected verify fail on truncated signature")
+	}
+
+	tx = unmarshal()
+	shortPub := tx.PublicKey[:8]
+	if err := tx.VerifySignature(shortPub); err == nil {
+		t.Fatal("expected verify fail on truncated pubkey")
+	}
+}
+
+func TestInvalidAmountStrings(t *testing.T) {
+	var seed [SeedSize]byte
+	for i := range seed {
+		seed[i] = 9
+	}
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []string{"", "-1", "1.5", "abc", "0x10"}
+	for _, amount := range cases {
+		_, err := w.SignTransfer(TransferParams{
+			To:     w.Address.String(),
+			Amount: amount,
+			Fee:    "1000",
+			Nonce:  0,
+		})
+		if err == nil {
+			t.Fatalf("expected error for amount %q", amount)
+		}
+	}
+}
+
+func TestGoldenSeedAddressMatchesTS(t *testing.T) {
+	// Must match testdata/golden-vectors.json and wasm-session Vitest golden.
+	seedHex := "0101010101010101010101010101010101010101010101010101010101010101"
+	seed, err := SeedFromHex(seedHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SQ:c3ee306a4d69ecdaf2a43837ae475a54857578533bb919740a5e4dfe9579e44e"
+	if w.Address.String() != want {
+		t.Fatalf("golden address mismatch:\n got %s\nwant %s", w.Address.String(), want)
 	}
 }

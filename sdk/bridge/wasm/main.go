@@ -104,6 +104,9 @@ func sqDeriveFromSeedHex(this js.Value, args []js.Value) interface{} {
 		return errVal(e.Error())
 	}
 	mu.Lock()
+	if old, ok := wallets[id]; ok && old != nil {
+		old.Zeroize()
+	}
 	wallets[id] = w
 	mu.Unlock()
 	b, _ := json.Marshal(w.PublicResult())
@@ -124,6 +127,9 @@ func sqDeriveFromSigHex(this js.Value, args []js.Value) interface{} {
 		return errVal(e.Error())
 	}
 	mu.Lock()
+	if old, ok := wallets[id]; ok && old != nil {
+		old.Zeroize()
+	}
 	wallets[id] = w
 	mu.Unlock()
 	b, _ := json.Marshal(w.PublicResult())

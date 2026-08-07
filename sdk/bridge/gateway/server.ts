@@ -9,7 +9,8 @@
  * Network defaults from sqc.networks.json (override with SQC_NETWORK / SQC_RPC / PORT).
  * Errors follow SQDP-1: { code, message }.
  */
-import Fastify from 'fastify';
+import { timingSafeEqual } from 'node:crypto';
+import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import helmet from '@fastify/helmet';
@@ -23,24 +24,25 @@ import {
   type BridgeErrorCode,
 } from '../dist/index.js';
 
-const NETWORK_ID = process.env.SQC_NETWORK || process.env.NETWORK || undefined;
-const net = resolveNetwork(NETWORK_ID);
-const PORT = Number(process.env.PORT || net.gatewayPort);
-const SQC_RPC = (process.env.SQC_RPC || net.rpcUrls[0]).replace(/\/$/, '');
-const MODE = (process.env.MODE || 'proxy').toLowerCase(); // proxy | service-wallet
-const SERVICE_SEED = process.env.SERVICE_SEED || '';
-const SERVICE_EVM_KEY = process.env.SERVICE_EVM_KEY || '';
-/** Escape hatch: allow seed/evmSignature on proxy (private backends only). */
-const ALLOW_CUSTODIAL_PROXY = process.env.ALLOW_CUSTODIAL_PROXY === '1';
-/** Required for service-wallet mutating routes when set. */
-const API_KEY = process.env.GATEWAY_API_KEY || '';
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || '*')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-const PUBLIC_HEALTH = process.env.PUBLIC_HEALTH !== '0';
-const RATE_MAX = Number(process.env.RATE_LIMIT_MAX || 120);
-const BODY_LIMIT = Number(process.env.BODY_LIMIT_BYTES || 1_048_576);
+export type GatewayMode = 'proxy' | 'service-wallet';
+
+export type GatewayConfig = {
+  networkId?: string;
+  rpcUrl?: string;
+  mode?: GatewayMode;
+  serviceSeed?: string;
+  serviceEvmKey?: string;
+  allowCustodialProxy?: boolean;
+  apiKey?: string;
+  corsOrigins?: string[];
+  publicHealth?: boolean;
+  rateMax?: number;
+  bodyLimit?: number;
+  /** When false, skip listen (for inject tests). Default true in main(). */
+  listen?: boolean;
+  port?: number;
+  logger?: boolean;
+};
 
 type Creds = {
   seed?: string;
@@ -81,77 +83,142 @@ function errorFromCaught(e: unknown): ApiError {
   return apiError('UNKNOWN', message);
 }
 
+/** Constant-time string compare; length mismatch is always a fail. */
+export function safeEqualString(a: string, b: string): boolean {
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
+}
+
+function configFromEnv(): GatewayConfig {
+  const net = resolveNetwork(process.env.SQC_NETWORK || process.env.NETWORK || undefined);
+  return {
+    networkId: process.env.SQC_NETWORK || process.env.NETWORK || undefined,
+    rpcUrl: (process.env.SQC_RPC || net.rpcUrls[0]).replace(/\/$/, ''),
+    mode: ((process.env.MODE || 'proxy').toLowerCase() as GatewayMode),
+    serviceSeed: process.env.SERVICE_SEED || '',
+    serviceEvmKey: process.env.SERVICE_EVM_KEY || '',
+    allowCustodialProxy: process.env.ALLOW_CUSTODIAL_PROXY === '1',
+    apiKey: process.env.GATEWAY_API_KEY || '',
+    corsOrigins: (process.env.CORS_ORIGINS || '*')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    publicHealth: process.env.PUBLIC_HEALTH !== '0',
+    rateMax: Number(process.env.RATE_LIMIT_MAX || 120),
+    bodyLimit: Number(process.env.BODY_LIMIT_BYTES || 1_048_576),
+    port: Number(process.env.PORT || net.gatewayPort),
+    listen: true,
+    logger: true,
+  };
+}
+
+export type BuiltGateway = {
+  app: FastifyInstance;
+  bridge: SplendorPQBridge;
+  config: Required<
+    Pick<
+      GatewayConfig,
+      | 'rpcUrl'
+      | 'mode'
+      | 'allowCustodialProxy'
+      | 'apiKey'
+      | 'corsOrigins'
+      | 'publicHealth'
+      | 'rateMax'
+      | 'bodyLimit'
+    >
+  > & { networkId: string; chainId: string };
+  close: () => Promise<void>;
+};
+
 /**
- * Public proxy MUST reject custodial credentials unless ALLOW_CUSTODIAL_PROXY=1.
- * Prefer client-side WASM + signedTx.
+ * Build a Fastify gateway app (no listen unless cfg.listen).
+ * Exported for inject-based security tests.
  */
-function assertProxyAllowsCreds(creds: Creds): void {
-  if (MODE !== 'proxy') return;
-  if (creds.evmPrivateKey) {
-    throw Object.assign(
-      new Error('proxy mode rejects evmPrivateKey — submit signedTx only'),
-      { code: 'USER_REJECTED' },
-    );
-  }
-  if (creds.seed) {
-    throw Object.assign(
-      new Error(
-        'proxy mode rejects Dilithium seed — sign client-side and POST signedTx' +
-          (ALLOW_CUSTODIAL_PROXY ? '' : ' (set ALLOW_CUSTODIAL_PROXY=1 for private backends)'),
-      ),
-      { code: 'USER_REJECTED' },
-    );
-  }
-  if (creds.evmSignature && !ALLOW_CUSTODIAL_PROXY) {
-    throw Object.assign(
-      new Error(
-        'proxy mode rejects evmSignature (key material) — submit signedTx, or set ALLOW_CUSTODIAL_PROXY=1',
-      ),
-      { code: 'USER_REJECTED' },
-    );
-  }
-}
+export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltGateway> {
+  const env = configFromEnv();
+  const net = resolveNetwork(overrides.networkId ?? env.networkId);
+  const MODE = (overrides.mode ?? env.mode ?? 'proxy').toLowerCase() as GatewayMode;
+  const SQC_RPC = (overrides.rpcUrl ?? env.rpcUrl ?? net.rpcUrls[0]).replace(/\/$/, '');
+  const ALLOW_CUSTODIAL_PROXY =
+    overrides.allowCustodialProxy ?? env.allowCustodialProxy ?? false;
+  const API_KEY = overrides.apiKey ?? env.apiKey ?? '';
+  const SERVICE_SEED = overrides.serviceSeed ?? env.serviceSeed ?? '';
+  const SERVICE_EVM_KEY = overrides.serviceEvmKey ?? env.serviceEvmKey ?? '';
+  const CORS_ORIGINS = overrides.corsOrigins ?? env.corsOrigins ?? ['*'];
+  const PUBLIC_HEALTH = overrides.publicHealth ?? env.publicHealth ?? true;
+  const RATE_MAX = overrides.rateMax ?? env.rateMax ?? 120;
+  const BODY_LIMIT = overrides.bodyLimit ?? env.bodyLimit ?? 1_048_576;
+  const logger = overrides.logger ?? false;
 
-async function connectEphemeral(creds: Creds): Promise<SplendorPQBridge> {
-  assertProxyAllowsCreds(creds);
-  const tmp = new SplendorPQBridge({
-    rpcUrl: SQC_RPC,
-    chainId: net.chainId,
-    timeoutMs: net.timeoutMs,
-    retries: net.retries,
-  });
-  await tmp.init();
-  if (creds.seed) {
-    await tmp.connectFromSeed(creds.seed);
-  } else if (creds.evmSignature) {
-    await tmp.connectFromEvmSignature(creds.evmSignature);
-  } else if (creds.evmPrivateKey && MODE === 'service-wallet') {
-    await tmp.connectFromEvmPrivateKey(creds.evmPrivateKey);
-  } else {
-    throw new Error(
-      MODE === 'proxy' && !ALLOW_CUSTODIAL_PROXY
-        ? 'proxy requires signedTx (custodial credentials disabled)'
-        : 'provide seed or evmSignature' +
-            (MODE === 'service-wallet' ? ' or evmPrivateKey' : ''),
-    );
+  function assertProxyAllowsCreds(creds: Creds): void {
+    if (MODE !== 'proxy') return;
+    if (creds.evmPrivateKey) {
+      throw Object.assign(
+        new Error('proxy mode rejects evmPrivateKey — submit signedTx only'),
+        { code: 'USER_REJECTED' },
+      );
+    }
+    if (creds.seed) {
+      throw Object.assign(
+        new Error(
+          'proxy mode rejects Dilithium seed — sign client-side and POST signedTx' +
+            (ALLOW_CUSTODIAL_PROXY ? '' : ' (set ALLOW_CUSTODIAL_PROXY=1 for private backends)'),
+        ),
+        { code: 'USER_REJECTED' },
+      );
+    }
+    if (creds.evmSignature && !ALLOW_CUSTODIAL_PROXY) {
+      throw Object.assign(
+        new Error(
+          'proxy mode rejects evmSignature (key material) — submit signedTx, or set ALLOW_CUSTODIAL_PROXY=1',
+        ),
+        { code: 'USER_REJECTED' },
+      );
+    }
   }
-  return tmp;
-}
 
-function requireApiKey(
-  headers: Record<string, string | string[] | undefined>,
-): ApiError | null {
-  if (!API_KEY) return null;
-  const got = headers['x-api-key'] ?? headers['authorization'];
-  const raw = Array.isArray(got) ? got[0] : got;
-  const token = raw?.startsWith('Bearer ') ? raw.slice(7) : raw;
-  if (token !== API_KEY) {
-    return apiError('USER_REJECTED', 'invalid or missing API key');
+  async function connectEphemeral(creds: Creds): Promise<SplendorPQBridge> {
+    assertProxyAllowsCreds(creds);
+    const tmp = new SplendorPQBridge({
+      rpcUrl: SQC_RPC,
+      chainId: net.chainId,
+      timeoutMs: net.timeoutMs,
+      retries: net.retries,
+    });
+    await tmp.init();
+    if (creds.seed) {
+      await tmp.connectFromSeed(creds.seed);
+    } else if (creds.evmSignature) {
+      await tmp.connectFromEvmSignature(creds.evmSignature);
+    } else if (creds.evmPrivateKey && MODE === 'service-wallet') {
+      await tmp.connectFromEvmPrivateKey(creds.evmPrivateKey);
+    } else {
+      throw new Error(
+        MODE === 'proxy' && !ALLOW_CUSTODIAL_PROXY
+          ? 'proxy requires signedTx (custodial credentials disabled)'
+          : 'provide seed or evmSignature' +
+              (MODE === 'service-wallet' ? ' or evmPrivateKey' : ''),
+      );
+    }
+    return tmp;
   }
-  return null;
-}
 
-async function main() {
+  function requireApiKey(
+    headers: Record<string, string | string[] | undefined>,
+  ): ApiError | null {
+    if (!API_KEY) return null;
+    const got = headers['x-api-key'] ?? headers['authorization'];
+    const raw = Array.isArray(got) ? got[0] : got;
+    const token = raw?.startsWith('Bearer ') ? raw.slice(7) : raw;
+    if (!token || !safeEqualString(token, API_KEY)) {
+      return apiError('USER_REJECTED', 'invalid or missing API key');
+    }
+    return null;
+  }
+
   const bridge = new SplendorPQBridge({
     rpcUrl: SQC_RPC,
     chainId: net.chainId,
@@ -163,20 +230,23 @@ async function main() {
   if (MODE === 'service-wallet') {
     if (SERVICE_SEED) {
       await bridge.connectFromSeed(SERVICE_SEED);
-      console.log(`[gateway] service-wallet from SERVICE_SEED → ${bridge.getAddress()}`);
+      if (logger) {
+        console.log(`[gateway] service-wallet from SERVICE_SEED → ${bridge.getAddress()}`);
+      }
     } else if (SERVICE_EVM_KEY) {
       await bridge.connectFromEvmPrivateKey(SERVICE_EVM_KEY);
-      console.log(`[gateway] service-wallet from SERVICE_EVM_KEY → ${bridge.getAddress()}`);
+      if (logger) {
+        console.log(`[gateway] service-wallet from SERVICE_EVM_KEY → ${bridge.getAddress()}`);
+      }
     } else {
-      console.error('MODE=service-wallet requires SERVICE_SEED or SERVICE_EVM_KEY');
-      process.exit(1);
+      throw new Error('MODE=service-wallet requires SERVICE_SEED or SERVICE_EVM_KEY');
     }
-    if (!API_KEY) {
+    if (!API_KEY && logger) {
       console.warn(
         '[gateway] WARNING: service-wallet without GATEWAY_API_KEY — set GATEWAY_API_KEY in production',
       );
     }
-  } else {
+  } else if (logger) {
     console.log('[gateway] MODE=proxy (non-custodial — clients sign, gateway relays signedTx)');
     if (ALLOW_CUSTODIAL_PROXY) {
       console.warn('[gateway] ALLOW_CUSTODIAL_PROXY=1 — seed/evmSignature accepted (private use only)');
@@ -185,7 +255,7 @@ async function main() {
   }
 
   const app = Fastify({
-    logger: true,
+    logger,
     bodyLimit: BODY_LIMIT,
   });
 
@@ -232,7 +302,6 @@ async function main() {
           : null,
     };
     if (PUBLIC_HEALTH || MODE === 'service-wallet') {
-      // Internal RPC URL only when not locked down; public proxy hides it by default via PUBLIC_HEALTH=0
       if (PUBLIC_HEALTH) {
         body.sqc_rpc = SQC_RPC;
       }
@@ -415,11 +484,53 @@ async function main() {
     }
   });
 
-  await app.listen({ port: PORT, host: '0.0.0.0' });
-  console.log(`[gateway] listening on :${PORT} mode=${MODE} network=${net.id}`);
+  const shouldListen = overrides.listen ?? false;
+  if (shouldListen) {
+    const port = overrides.port ?? env.port ?? net.gatewayPort;
+    await app.listen({ port, host: '0.0.0.0' });
+    if (logger) {
+      console.log(`[gateway] listening on :${port} mode=${MODE} network=${net.id}`);
+    }
+  }
+
+  return {
+    app,
+    bridge,
+    config: {
+      networkId: net.id,
+      chainId: net.chainId,
+      rpcUrl: SQC_RPC,
+      mode: MODE,
+      allowCustodialProxy: ALLOW_CUSTODIAL_PROXY,
+      apiKey: API_KEY,
+      corsOrigins: CORS_ORIGINS,
+      publicHealth: PUBLIC_HEALTH,
+      rateMax: RATE_MAX,
+      bodyLimit: BODY_LIMIT,
+    },
+    close: async () => {
+      try {
+        bridge.disconnect();
+      } catch {
+        /* ignore */
+      }
+      await app.close();
+    },
+  };
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main() {
+  await buildServer({ ...configFromEnv(), listen: true, logger: true });
+}
+
+const isDirectRun =
+  typeof process !== 'undefined' &&
+  process.argv[1] &&
+  (process.argv[1].endsWith('server.ts') || process.argv[1].endsWith('server.js'));
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

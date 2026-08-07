@@ -41,6 +41,8 @@
     "prepare": "npm run build:ts",
     "test": "vitest run",
     "test:go": "go test github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer -count=1",
+    "test:gateway": "npm --prefix gateway test",
+    "test:security": "vitest run security- && npm run test:go && npm run test:gateway",
     "test:e2e": "node examples/e2e-offline.mjs",
     "test:live": "node examples/live-e2e.mjs",
     "example:node": "node examples/node-transfer.mjs",

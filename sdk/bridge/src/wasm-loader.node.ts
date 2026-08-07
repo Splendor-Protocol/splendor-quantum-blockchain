@@ -59,6 +59,14 @@ export async function loadWasmInNode(opts?: LoadWasmOpts): Promise<WasmSignerApi
   }
 
   if (typeof g.sqCreateSession === 'function') {
+    if (opts?.wasmSha256) {
+      const wasmBytes = fs.readFileSync(wasmPath);
+      const ab = wasmBytes.buffer.slice(
+        wasmBytes.byteOffset,
+        wasmBytes.byteOffset + wasmBytes.byteLength,
+      );
+      await assertWasmSha256(ab, opts.wasmSha256);
+    }
     return bindWasmApi(g);
   }
 

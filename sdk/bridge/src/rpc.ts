@@ -76,8 +76,12 @@ export class SqRpc {
 
   async assertChainId(): Promise<void> {
     const status = await this.getStatus();
-    const remote = String(status.chain_id ?? '');
-    if (remote && remote !== this.chainId) {
+    const remote = String(status.chain_id ?? '').trim();
+    // Fail-closed: missing/empty chain_id must not pass (SQDP-1).
+    if (!remote) {
+      throw BridgeError.chainMismatch('(missing)', this.chainId);
+    }
+    if (remote !== this.chainId) {
       throw BridgeError.chainMismatch(remote, this.chainId);
     }
   }

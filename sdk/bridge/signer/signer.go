@@ -177,6 +177,9 @@ func (w *DerivedWallet) SignTransfer(p TransferParams) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := assertMinFee(fee); err != nil {
+		return nil, err
+	}
 	ts := p.Timestamp
 	if ts == 0 {
 		ts = time.Now().Unix()
@@ -207,6 +210,9 @@ func (w *DerivedWallet) SignCall(p CallParams) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := assertMinFee(fee); err != nil {
+		return nil, err
+	}
 	ts := p.Timestamp
 	if ts == 0 {
 		ts = time.Now().Unix()
@@ -224,6 +230,9 @@ func (w *DerivedWallet) SignCall(p CallParams) ([]byte, error) {
 func (w *DerivedWallet) SignDeploy(p DeployParams) ([]byte, error) {
 	fee, err := parseBigDefault(p.Fee, "1000")
 	if err != nil {
+		return nil, err
+	}
+	if err := assertMinFee(fee); err != nil {
 		return nil, err
 	}
 	ts := p.Timestamp
@@ -363,6 +372,20 @@ func parseBigDefault(s, def string) (*big.Int, error) {
 		s = def
 	}
 	return parseBig(s, "value")
+}
+
+// MinFee matches SQDP-1 / TS PROTOCOL.minFee (1000 base units).
+const MinFee int64 = 1000
+
+func assertMinFee(fee *big.Int) error {
+	if fee == nil || fee.Cmp(big.NewInt(MinFee)) < 0 {
+		got := "nil"
+		if fee != nil {
+			got = fee.String()
+		}
+		return fmt.Errorf("fee %s below minimum %d", got, MinFee)
+	}
+	return nil
 }
 
 func strip0x(s string) string {

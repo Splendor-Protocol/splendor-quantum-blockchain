@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node --import tsx server.ts",
-    "start:js": "node server.mjs"
+    "start:js": "node server.mjs",
+    "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.1",
@@ -15,6 +16,8 @@
     "fastify": "^5.2.0"
   },
   "devDependencies": {
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
   }
 }
