@@ -29,6 +29,7 @@ const (
 // StateDB is the account state database.
 // It wraps LevelDB and provides account read/write operations.
 // All writes are performed on a pending layer and committed atomically.
+// Use Snapshot() / RevertToSnapshot() for sub-call rollback support.
 type StateDB struct {
 	mu sync.RWMutex
 
@@ -40,6 +41,9 @@ type StateDB struct {
 
 	// In-memory contract code store (keyed by code hash)
 	codeCache map[[32]byte][]byte
+
+	// Active snapshots for rollback support (snapshot ID → snapshot data)
+	snapshots map[uint64]*StateSnapshot
 }
 
 // NewStateDB opens (or creates) the state database at the given path.
@@ -52,6 +56,7 @@ func NewStateDB(path string) (*StateDB, error) {
 		db:        db,
 		dirty:     make(map[qcrypto.Address]*types.Account),
 		codeCache: make(map[[32]byte][]byte),
+		snapshots: make(map[uint64]*StateSnapshot),
 	}, nil
 }
 
