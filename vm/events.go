@@ -1,0 +1,279 @@
+// Package vm — Standard event topic helpers for SQC-VM contracts.
+//
+// Events in SQC use SHA3-256 topic hashing (not keccak256 like Ethereum).
+// Topic[0] is always SHA3-256(EventSignature) — the event identifier.
+// Subsequent topics are SHA3-256(indexed_parameter_value).
+//
+// These helpers make it easy to emit correctly-formatted events from
+// native Go contract implementations (QRC-20, QRC-721, Staking, Governance).
+//
+// Standard event signatures used across all SQC token contracts:
+//   Transfer(sqaddress,sqaddress,uint256)
+//   Approval(sqaddress,sqaddress,uint256)
+//   ApprovalForAll(sqaddress,sqaddress,bool)
+//   Deposit(sqaddress,sqaddress,uint256,uint256)   [QRC-4626]
+//   Withdraw(sqaddress,sqaddress,uint256,uint256)  [QRC-4626]
+//   ValidatorRegistered(sqaddress,uint256)
+//   ValidatorSlashed(sqaddress,uint256,uint256)
+//   ProposalSubmitted(uint256,sqaddress,string)
+//   VoteCast(uint256,sqaddress,uint8,uint256)
+//   ProposalExecuted(uint256)
+package vm
+
+import (
+	"math/big"
+
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+)
+
+// ── Topic computation ─────────────────────────────────────────────────────────
+
+// EventTopic computes SHA3-256(event_signature_string) for use as Topic[0].
+// Example: EventTopic("Transfer(sqaddress,sqaddress,uint256)")
+func EventTopic(signature string) [32]byte {
+	return qcrypto.Hash32([]byte(signature))
+}
+
+// AddrTopic converts an address to a 32-byte topic (left-padded with zeros).
+func AddrTopic(addr qcrypto.Address) [32]byte {
+	var topic [32]byte
+	copy(topic[32-qcrypto.AddressSize:], addr[:])
+	return topic
+}
+
+// Uint256Topic converts a *big.Int to a 32-byte big-endian topic.
+func Uint256Topic(v *big.Int) [32]byte {
+	var topic [32]byte
+	if v == nil || v.Sign() == 0 {
+		return topic
+	}
+	b := v.Bytes()
+	copy(topic[32-len(b):], b)
+	return topic
+}
+
+// BoolTopic converts a bool to a 32-byte topic (0x00...01 or 0x00...00).
+func BoolTopic(v bool) [32]byte {
+	var topic [32]byte
+	if v {
+		topic[31] = 1
+	}
+	return topic
+}
+
+// BytesTopic converts a byte slice to a 32-byte topic (right-padded).
+func BytesTopic(data []byte) [32]byte {
+	var topic [32]byte
+	n := len(data)
+	if n > 32 {
+		n = 32
+	}
+	copy(topic[:n], data)
+	return topic
+}
+
+// ── Pre-built standard events ─────────────────────────────────────────────────
+
+// Standard topic[0] hashes (computed once at package init time).
+var (
+	TopicTransfer           = EventTopic("Transfer(sqaddress,sqaddress,uint256)")
+	TopicApproval           = EventTopic("Approval(sqaddress,sqaddress,uint256)")
+	TopicApprovalForAll     = EventTopic("ApprovalForAll(sqaddress,sqaddress,bool)")
+	TopicMint               = EventTopic("Mint(sqaddress,uint256,uint256)")
+	TopicBurn               = EventTopic("Burn(sqaddress,uint256,uint256)")
+	TopicDeposit            = EventTopic("Deposit(sqaddress,sqaddress,uint256,uint256)")
+	TopicWithdraw           = EventTopic("Withdraw(sqaddress,sqaddress,uint256,uint256)")
+	TopicYield              = EventTopic("Yield(uint256,uint256)")
+	TopicValidatorRegistered = EventTopic("ValidatorRegistered(sqaddress,uint256)")
+	TopicValidatorSlashed    = EventTopic("ValidatorSlashed(sqaddress,uint256,uint256)")
+	TopicValidatorJailed     = EventTopic("ValidatorJailed(sqaddress)")
+	TopicValidatorUnjailed   = EventTopic("ValidatorUnjailed(sqaddress)")
+	TopicRewardsClaimed      = EventTopic("RewardsClaimed(sqaddress,uint256)")
+	TopicProposalSubmitted   = EventTopic("ProposalSubmitted(uint256,sqaddress)")
+	TopicProposalCanceled    = EventTopic("ProposalCanceled(uint256)")
+	TopicProposalPassed      = EventTopic("ProposalPassed(uint256)")
+	TopicProposalRejected    = EventTopic("ProposalRejected(uint256)")
+	TopicProposalExecuted    = EventTopic("ProposalExecuted(uint256)")
+	TopicVoteCast            = EventTopic("VoteCast(uint256,sqaddress,uint8,uint256)")
+)
+
+// ── Event builder ─────────────────────────────────────────────────────────────
+
+// EventBuilder builds a *types.Log with the standard topic-first format.
+type EventBuilder struct {
+	contract qcrypto.Address
+	topics   [][32]byte
+	data     []byte
+}
+
+// NewEvent starts building a new event for the given contract address.
+// sig is the event signature string (e.g. "Transfer(sqaddress,sqaddress,uint256)").
+func NewEvent(contract qcrypto.Address, sig string) *EventBuilder {
+	return &EventBuilder{
+		contract: contract,
+		topics:   [][32]byte{EventTopic(sig)},
+	}
+}
+
+// IndexAddr adds an indexed sqaddress parameter (becomes a topic).
+func (e *EventBuilder) IndexAddr(addr qcrypto.Address) *EventBuilder {
+	e.topics = append(e.topics, AddrTopic(addr))
+	return e
+}
+
+// IndexUint256 adds an indexed uint256 parameter (becomes a topic).
+func (e *EventBuilder) IndexUint256(v *big.Int) *EventBuilder {
+	e.topics = append(e.topics, Uint256Topic(v))
+	return e
+}
+
+// IndexBool adds an indexed bool parameter (becomes a topic).
+func (e *EventBuilder) IndexBool(v bool) *EventBuilder {
+	e.topics = append(e.topics, BoolTopic(v))
+	return e
+}
+
+// DataUint256 appends a non-indexed uint256 to the event data (ABI-encoded as 32 bytes).
+func (e *EventBuilder) DataUint256(v *big.Int) *EventBuilder {
+	var word [32]byte
+	if v != nil && v.Sign() > 0 {
+		b := v.Bytes()
+		copy(word[32-len(b):], b)
+	}
+	e.data = append(e.data, word[:]...)
+	return e
+}
+
+// DataAddr appends a non-indexed address to the event data.
+func (e *EventBuilder) DataAddr(addr qcrypto.Address) *EventBuilder {
+	var word [32]byte
+	copy(word[32-qcrypto.AddressSize:], addr[:])
+	e.data = append(e.data, word[:]...)
+	return e
+}
+
+// DataString appends a non-indexed string to the event data (UTF-8 bytes, not ABI-encoded).
+func (e *EventBuilder) DataString(s string) *EventBuilder {
+	e.data = append(e.data, []byte(s)...)
+	return e
+}
+
+// Build returns the completed *types.Log.
+// BlockHeight, TxHash, TxIndex, LogIndex are filled in by the receipt system.
+func (e *EventBuilder) Build() *types.Log {
+	return &types.Log{
+		Address: e.contract,
+		Topics:  e.topics,
+		Data:    e.data,
+	}
+}
+
+// ── Convenience constructors ──────────────────────────────────────────────────
+
+// TransferEvent builds a standard Transfer event log.
+func TransferEvent(contract, from, to qcrypto.Address, amount *big.Int) *types.Log {
+	return NewEvent(contract, "Transfer(sqaddress,sqaddress,uint256)").
+		IndexAddr(from).
+		IndexAddr(to).
+		DataUint256(amount).
+		Build()
+}
+
+// ApprovalEvent builds a standard Approval event log.
+func ApprovalEvent(contract, owner, spender qcrypto.Address, amount *big.Int) *types.Log {
+	return NewEvent(contract, "Approval(sqaddress,sqaddress,uint256)").
+		IndexAddr(owner).
+		IndexAddr(spender).
+		DataUint256(amount).
+		Build()
+}
+
+// ApprovalForAllEvent builds an ApprovalForAll event log.
+func ApprovalForAllEvent(contract, owner, operator qcrypto.Address, approved bool) *types.Log {
+	return NewEvent(contract, "ApprovalForAll(sqaddress,sqaddress,bool)").
+		IndexAddr(owner).
+		IndexAddr(operator).
+		IndexBool(approved).
+		Build()
+}
+
+// MintEvent builds a standard Mint event (tokenId optional — 0 for QRC-20).
+func MintEvent(contract, to qcrypto.Address, tokenId, amount *big.Int) *types.Log {
+	return NewEvent(contract, "Mint(sqaddress,uint256,uint256)").
+		IndexAddr(to).
+		DataUint256(tokenId).
+		DataUint256(amount).
+		Build()
+}
+
+// BurnEvent builds a standard Burn event.
+func BurnEvent(contract, from qcrypto.Address, tokenId, amount *big.Int) *types.Log {
+	return NewEvent(contract, "Burn(sqaddress,uint256,uint256)").
+		IndexAddr(from).
+		DataUint256(tokenId).
+		DataUint256(amount).
+		Build()
+}
+
+// DepositEvent builds a QRC-4626 Deposit event.
+func DepositEvent(contract, caller, receiver qcrypto.Address, assets, shares *big.Int) *types.Log {
+	return NewEvent(contract, "Deposit(sqaddress,sqaddress,uint256,uint256)").
+		IndexAddr(caller).
+		IndexAddr(receiver).
+		DataUint256(assets).
+		DataUint256(shares).
+		Build()
+}
+
+// WithdrawEvent builds a QRC-4626 Withdraw event.
+func WithdrawEvent(contract, caller, receiver, owner qcrypto.Address, assets, shares *big.Int) *types.Log {
+	return NewEvent(contract, "Withdraw(sqaddress,sqaddress,uint256,uint256)").
+		IndexAddr(caller).
+		IndexAddr(receiver).
+		DataUint256(assets).
+		DataUint256(shares).
+		Build()
+}
+
+// ValidatorRegisteredEvent builds a staking ValidatorRegistered event.
+func ValidatorRegisteredEvent(contract, validator qcrypto.Address, stake *big.Int) *types.Log {
+	return NewEvent(contract, "ValidatorRegistered(sqaddress,uint256)").
+		IndexAddr(validator).
+		DataUint256(stake).
+		Build()
+}
+
+// ValidatorSlashedEvent builds a staking ValidatorSlashed event.
+func ValidatorSlashedEvent(contract, validator qcrypto.Address, slashAmount, remaining *big.Int) *types.Log {
+	return NewEvent(contract, "ValidatorSlashed(sqaddress,uint256,uint256)").
+		IndexAddr(validator).
+		DataUint256(slashAmount).
+		DataUint256(remaining).
+		Build()
+}
+
+// ProposalSubmittedEvent builds a governance ProposalSubmitted event.
+func ProposalSubmittedEvent(contract qcrypto.Address, proposalID uint64, proposer qcrypto.Address) *types.Log {
+	return NewEvent(contract, "ProposalSubmitted(uint256,sqaddress)").
+		IndexUint256(big.NewInt(int64(proposalID))).
+		IndexAddr(proposer).
+		Build()
+}
+
+// VoteCastEvent builds a governance VoteCast event.
+func VoteCastEvent(contract qcrypto.Address, proposalID uint64, voter qcrypto.Address, option VoteOption, votingPower *big.Int) *types.Log {
+	return NewEvent(contract, "VoteCast(uint256,sqaddress,uint8,uint256)").
+		IndexUint256(big.NewInt(int64(proposalID))).
+		IndexAddr(voter).
+		DataUint256(big.NewInt(int64(option))).
+		DataUint256(votingPower).
+		Build()
+}
+
+// ProposalExecutedEvent builds a governance ProposalExecuted event.
+func ProposalExecutedEvent(contract qcrypto.Address, proposalID uint64) *types.Log {
+	return NewEvent(contract, "ProposalExecuted(uint256)").
+		IndexUint256(big.NewInt(int64(proposalID))).
+		Build()
+}
