@@ -41,6 +41,7 @@ function makeMockProvider(opts: {
   rejectConnect?: boolean;
 }): EthereumProvider & {
   emitAccountsChanged: (accounts: string[]) => void;
+  emitDisconnect: () => void;
 } {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
   return {
@@ -60,7 +61,6 @@ function makeMockProvider(opts: {
           opts.signKeyByAddress?.[address] ||
           opts.signKeyByAddress?.[Object.keys(opts.signKeyByAddress || {})[0]];
         if (!key) throw new Error('no key for address');
-        // Ensure domain message is what we expect (params[0] is hex of message)
         void DERIVATION_DOMAIN_MESSAGE;
         return '0x' + signDerivationMessage(key);
       }
@@ -76,6 +76,11 @@ function makeMockProvider(opts: {
     emitAccountsChanged(accounts: string[]) {
       for (const h of listeners.get('accountsChanged') || []) {
         h(accounts);
+      }
+    },
+    emitDisconnect() {
+      for (const h of listeners.get('disconnect') || []) {
+        h();
       }
     },
   };
@@ -97,7 +102,7 @@ describe('security-metamask', () => {
     }
   }, 30_000);
 
-  it('accountsChanged to empty fails closed (lock + disconnect)', async () => {
+  it('accountsChanged to empty destroys session (full disconnect)', async () => {
     const provider = makeMockProvider({
       accounts: [ADDR_A],
       signKeyByAddress: { [ADDR_A.toLowerCase()]: KEY_A },
@@ -117,9 +122,36 @@ describe('security-metamask', () => {
     });
 
     provider.emitAccountsChanged([]);
-    // allow async listener to run
     await new Promise((r) => setTimeout(r, 50));
     expect(b.isUnlocked()).toBe(false);
+    expect(b.getConnectionState()).toBe('disconnected');
+    expect(disconnected).toBe(true);
+    expect(() => b.getAddress()).toThrow();
+  }, 30_000);
+
+  it('EIP-1193 disconnect destroys session', async () => {
+    const provider = makeMockProvider({
+      accounts: [ADDR_A],
+      signKeyByAddress: { [ADDR_A.toLowerCase()]: KEY_A },
+    });
+    const b = track(
+      new SplendorPQBridge({
+        ethereumProvider: provider,
+        watchMetaMaskAccounts: true,
+      }),
+    );
+    await b.connectFromMetaMask(provider);
+    expect(b.isUnlocked()).toBe(true);
+
+    let disconnected = false;
+    b.on('disconnect', () => {
+      disconnected = true;
+    });
+
+    provider.emitDisconnect();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(b.isUnlocked()).toBe(false);
+    expect(b.getConnectionState()).toBe('disconnected');
     expect(disconnected).toBe(true);
   }, 30_000);
 

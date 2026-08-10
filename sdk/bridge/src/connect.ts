@@ -32,6 +32,16 @@ export type CreateClientOptions = {
   wasmUrl?: string;
   execUrl?: string;
   wasmSha256?: string;
+  execSha256?: string;
+  /**
+   * Allow loading WASM without wasmSha256 on non-local browser networks.
+   * Default false — fail closed unless pin is provided.
+   */
+  allowUnpinnedWasm?: boolean;
+  /** Allow http:// RPC/gateway URLs for non-local networks. */
+  allowInsecureHttp?: boolean;
+  /** Auto-lock after this many ms of inactivity (browser). */
+  sessionIdleMs?: number;
   watchMetaMaskAccounts?: boolean;
   ethereumProvider?: EthereumProvider;
   derivation?: DerivationScheme;
@@ -59,8 +69,24 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
   network: NetworkConfig;
   bridgeOpts: BridgeOptions;
 } {
-  const network = resolveNetwork(opts.network as string | undefined);
+  const network = resolveNetwork(opts.network as string | undefined, {
+    allowInsecureHttp: opts.allowInsecureHttp,
+  });
   const rpc = networkToRpcOptions(network);
+  const wasmSha256 = opts.wasmSha256 ?? (network.wasmSha256 || undefined);
+  const execSha256 = opts.execSha256 ?? (network.execSha256 || undefined);
+  const allowUnpinnedWasm = opts.allowUnpinnedWasm === true;
+  const isBrowser =
+    typeof globalThis !== 'undefined' &&
+    typeof (globalThis as { document?: unknown }).document !== 'undefined';
+  const isLocal = network.id === 'local';
+  // Non-local browser: require integrity pin unless explicitly opted out.
+  if (isBrowser && !isLocal && !wasmSha256 && !allowUnpinnedWasm) {
+    throw BridgeError.wasm(
+      `wasmSha256 is required for network "${network.id}" in the browser ` +
+        '(pass wasmSha256 or allowUnpinnedWasm: true)',
+    );
+  }
   const bridgeOpts: BridgeOptions = {
     rpcUrls: opts.rpcUrls?.length ? opts.rpcUrls : rpc.rpcUrls,
     chainId: opts.chainId || rpc.chainId,
@@ -68,7 +94,12 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
     retries: opts.retries ?? rpc.retries,
     wasmUrl: opts.wasmUrl ?? network.wasmUrl,
     execUrl: opts.execUrl ?? network.execUrl,
-    wasmSha256: opts.wasmSha256 ?? (network.wasmSha256 || undefined),
+    wasmSha256,
+    execSha256,
+    allowUnpinnedWasm,
+    networkId: network.id,
+    allowInsecureHttp: opts.allowInsecureHttp,
+    sessionIdleMs: opts.sessionIdleMs,
     watchMetaMaskAccounts: opts.watchMetaMaskAccounts,
     ethereumProvider: opts.ethereumProvider,
     derivation: opts.derivation,

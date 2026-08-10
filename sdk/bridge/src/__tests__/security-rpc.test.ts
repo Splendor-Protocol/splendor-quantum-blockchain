@@ -79,6 +79,18 @@ describe('security-rpc submitTransaction', () => {
     ).rejects.toMatchObject({ code: 'CHAIN_MISMATCH' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('rejects missing chain_id fail-closed', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ status: 'ok', hash: 'h' }),
+    ) as typeof fetch;
+    globalThis.fetch = fetchMock;
+    const rpc = new SqRpc({ rpcUrl: 'http://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
+    await expect(
+      rpc.submitTransaction({ type: 'transfer', amount: '1' }),
+    ).rejects.toMatchObject({ code: 'CHAIN_MISMATCH', message: expect.stringContaining('(missing)') });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('security-rpc failover and sticky submit', () => {
@@ -101,6 +113,47 @@ describe('security-rpc failover and sticky submit', () => {
     expect(fetchMock).toHaveBeenCalled();
     const urls = (fetchMock as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.startsWith('http://rpc-good.test'))).toBe(true);
+  });
+
+  it('does not failover on 4xx from URL A to URL B', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('http://rpc-a.test')) {
+        return jsonResponse({ error: 'bad request' }, 400);
+      }
+      return jsonResponse({ chain_id: CHAIN_ID });
+    }) as typeof fetch;
+    globalThis.fetch = fetchMock;
+
+    const rpc = new SqRpc({
+      rpcUrls: ['http://rpc-a.test', 'http://rpc-b.test'],
+      chainId: CHAIN_ID,
+      retries: 0,
+    });
+    await expect(rpc.assertChainId()).rejects.toMatchObject({ code: 'RPC' });
+    const urls = (fetchMock as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(urls.every((u) => u.startsWith('http://rpc-a.test'))).toBe(true);
+    expect(urls.some((u) => u.startsWith('http://rpc-b.test'))).toBe(false);
+  });
+
+  it('does not set sticky URL on successful read', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('http://rpc-a.test')) {
+        return jsonResponse({ error: 'down' }, 503);
+      }
+      return jsonResponse({ chain_id: CHAIN_ID });
+    }) as typeof fetch;
+    globalThis.fetch = fetchMock;
+
+    const rpc = new SqRpc({
+      rpcUrls: ['http://rpc-a.test', 'http://rpc-b.test'],
+      chainId: CHAIN_ID,
+      retries: 0,
+    });
+    await rpc.assertChainId();
+    // Read failover succeeded on B, but sticky only applies after submit.
+    expect(rpc.rpcUrl).toBe('http://rpc-a.test');
   });
 
   it('sticks submit to accepting URL', async () => {
@@ -126,12 +179,16 @@ describe('security-rpc failover and sticky submit', () => {
       chainId: CHAIN_ID,
       retries: 0,
     });
-    const out = await rpc.submitTransaction({ type: 'transfer', amount: '1' });
+    const out = await rpc.submitTransaction({
+      type: 'transfer',
+      amount: '1',
+      chain_id: CHAIN_ID,
+    });
     expect(out.hash).toBe('abc');
     expect(submitHits).toBeGreaterThanOrEqual(1);
     expect(rpc.rpcUrl).toBe('http://rpc-b.test');
 
-    await rpc.submitTransaction({ type: 'transfer', amount: '2' });
+    await rpc.submitTransaction({ type: 'transfer', amount: '2', chain_id: CHAIN_ID });
     const submitUrls = (fetchMock as ReturnType<typeof vi.fn>).mock.calls
       .map((c) => String(c[0]))
       .filter((u) => u.endsWith('/tx/submit'));

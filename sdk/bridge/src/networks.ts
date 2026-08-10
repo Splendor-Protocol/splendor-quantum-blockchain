@@ -21,6 +21,8 @@ export type NetworkConfig = {
   execUrl: string;
   /** Optional SHA-256 hex pin for sqc_signer.wasm (empty = skip verify). */
   wasmSha256: string;
+  /** Optional SHA-256 hex pin for wasm_exec.js (empty = skip verify). */
+  execSha256: string;
   timeoutMs: number;
   retries: number;
 };
@@ -72,12 +74,38 @@ export function getNetwork(id: string): NetworkConfig | undefined {
  * Resolve a network by id (local | testnet | mainnet | …).
  * Throws BridgeError if unknown.
  */
-export function resolveNetwork(id?: string): NetworkConfig {
+export function resolveNetwork(
+  id?: string,
+  opts?: { allowInsecureHttp?: boolean },
+): NetworkConfig {
   const key = (id || CONFIG.defaultNetwork).trim();
   const net = CONFIG.networks[key];
   if (!net) {
     const known = Object.keys(CONFIG.networks).join(', ');
     throw BridgeError.rpc(`Unknown network "${key}". Known: ${known}`);
+  }
+  if (key !== 'local') {
+    for (const url of net.rpcUrls) {
+      if (/\.example(\/|$)/i.test(url) || /splendor\.example/i.test(url)) {
+        throw BridgeError.rpc(
+          `Network "${key}" still uses placeholder RPC URL (${url}). Configure real endpoints before production use.`,
+        );
+      }
+    }
+    if (!opts?.allowInsecureHttp) {
+      for (const url of net.rpcUrls) {
+        if (!url.startsWith('https://')) {
+          throw BridgeError.rpc(
+            `Network "${key}" RPC URL must use https:// (${url}). Pass allowInsecureHttp: true to override.`,
+          );
+        }
+      }
+      if (!net.gatewayUrl.startsWith('https://')) {
+        throw BridgeError.rpc(
+          `Network "${key}" gatewayUrl must use https:// (${net.gatewayUrl}). Pass allowInsecureHttp: true to override.`,
+        );
+      }
+    }
   }
   return net;
 }

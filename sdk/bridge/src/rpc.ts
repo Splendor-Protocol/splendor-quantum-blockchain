@@ -23,7 +23,7 @@ export class SqRpc {
   readonly timeoutMs: number;
   readonly chainId: string;
   readonly retries: number;
-  /** Sticky URL after a successful submit (or first healthy read). */
+  /** Sticky URL after a successful submit (`stickyOnSuccess`). */
   private stickyUrl: string | null = null;
 
   constructor(options: RpcOptions = {}) {
@@ -100,8 +100,12 @@ export class SqRpc {
 
   async submitTransaction(signedTx: string | object): Promise<{ status: string; hash: string }> {
     const body = typeof signedTx === 'string' ? JSON.parse(signedTx) : signedTx;
-    if (body?.chain_id && body.chain_id !== this.chainId) {
-      throw BridgeError.chainMismatch(String(body.chain_id), this.chainId);
+    const remote = body?.chain_id != null ? String(body.chain_id).trim() : '';
+    if (!remote) {
+      throw BridgeError.chainMismatch('(missing)', this.chainId);
+    }
+    if (remote !== this.chainId) {
+      throw BridgeError.chainMismatch(remote, this.chainId);
     }
     return this.post('/tx/submit', body, true);
   }
@@ -197,21 +201,41 @@ export class SqRpc {
           }
 
           const json = await parseResponse(res, path);
-          if (!this.stickyUrl || stickyOnSuccess) {
+          // Sticky only after successful submit — not on reads.
+          if (stickyOnSuccess) {
             this.stickyUrl = base;
           }
           return json;
         } catch (e) {
           lastError = e;
+          if (e instanceof BridgeError && e.code === 'RPC') {
+            const status = rpcHttpStatus(e);
+            // 4xx: fail closed — do not retry or failover.
+            if (status !== undefined && status >= 400 && status < 500) {
+              throw e;
+            }
+            // 5xx: retry same URL, then failover.
+            if (status !== undefined && status >= 500) {
+              if (attempt < this.retries) {
+                await sleep(100 * (attempt + 1));
+                continue;
+              }
+              break;
+            }
+            // Other RPC (no status): do not failover.
+            throw e;
+          }
           const retryable =
             e instanceof BridgeError &&
-            (e.code === 'TIMEOUT' || e.code === 'RPC' || e.code === 'NETWORK');
+            (e.code === 'TIMEOUT' || e.code === 'NETWORK');
           if (retryable && attempt < this.retries) {
             await sleep(100 * (attempt + 1));
             continue;
           }
-          // try next URL
-          break;
+          if (retryable) {
+            break; // try next URL
+          }
+          throw wrapUnknown(e, 'RPC');
         }
       }
     }
@@ -268,16 +292,35 @@ async function fetchWithTimeout(
   }
 }
 
+function rpcHttpStatus(e: BridgeError): number | undefined {
+  const d = e.details;
+  if (d && typeof d === 'object' && d !== null && 'status' in d) {
+    const s = (d as { status: unknown }).status;
+    if (typeof s === 'number') return s;
+  }
+  return undefined;
+}
+
 async function parseResponse(res: Response, path: string): Promise<any> {
   const text = await res.text();
   let json: any;
   try {
     json = JSON.parse(text);
   } catch {
-    throw BridgeError.rpc(`SQC RPC ${path}: non-JSON (${res.status}): ${text.slice(0, 200)}`);
+    throw BridgeError.rpc(
+      `SQC RPC ${path}: non-JSON (${res.status}): ${text.slice(0, 200)}`,
+      { status: res.status },
+    );
   }
   if (!res.ok) {
-    throw BridgeError.rpc(`SQC RPC ${path}: ${res.status} ${json.error || text.slice(0, 200)}`, json);
+    const details =
+      json && typeof json === 'object'
+        ? { ...json, status: res.status }
+        : { status: res.status, body: json };
+    throw BridgeError.rpc(
+      `SQC RPC ${path}: ${res.status} ${json.error || text.slice(0, 200)}`,
+      details,
+    );
   }
   return json;
 }

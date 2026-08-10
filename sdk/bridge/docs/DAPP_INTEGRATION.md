@@ -145,18 +145,20 @@ SQC_NETWORK=local docker compose up --build
 | `SQC_NETWORK` | `local` | Selects entry in `sqc.networks.json` |
 | `SQC_RPC` | network `rpcUrls[0]` | Override chain node |
 | `MODE` | `proxy` | Prefer for end users |
+| `CORS_ORIGINS` | localhost:3000 | Explicit allowlist (not `*` by default) |
+| `PUBLIC_HEALTH` | local=`1` | Expose `sqc_rpc` on `/health` only when enabled |
+| `TRUST_PROXY` | unset | Enable only behind a trusted load balancer |
 | `PORT` | network `gatewayPort` | Gateway listen |
 
 **Proxy mode rejects client `evmPrivateKey`** — credentials stay on the client. Use `service-wallet` only for your own automation keys.
 
-## React hook sketch
-
-See [`examples/useSplendorPQ.ts`](../examples/useSplendorPQ.ts).
+Serve WASM with correct MIME/CORS: [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 
 ## Checklist
 
 - [ ] Serve `sqc_signer.wasm` + `wasm_exec.js` with correct MIME / CORS
+- [ ] Pin `wasmSha256` / `execSha256` for non-local browser networks
 - [ ] Display **SQ:** address after connect (not 0x)
 - [ ] Handle `BridgeError` codes: `USER_REJECTED`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`
-- [ ] Use `rpcUrls` failover in production
+- [ ] Use `rpcUrls` failover in production (`https://` for non-local)
 - [ ] Confirm via `waitForConfirmation` / nonce poll until tx index exists

@@ -27,6 +27,7 @@ export {
   connectMetaMask,
   signDerivationWithMetaMask,
   onMetaMaskAccountsChanged,
+  onMetaMaskDisconnect,
 } from './metamask.js';
 export type { EthereumProvider, SignDerivationOpts } from './metamask.js';
 export { BridgeError, isBridgeError } from './errors.js';

@@ -8,8 +8,29 @@ import type { DerivationScheme } from './derive.js';
 export type BridgeOptions = RpcOptions & {
   wasmUrl?: string;
   execUrl?: string;
-  /** Optional SHA-256 hex of sqc_signer.wasm — verified in browser when set. */
+  /** Optional SHA-256 hex of sqc_signer.wasm — verified when set. */
   wasmSha256?: string;
+  /** Optional SHA-256 hex of wasm_exec.js — verified when set. */
+  execSha256?: string;
+  /**
+   * Allow loading WASM without wasmSha256 on non-local browser networks.
+   * Default false — fail closed unless pin is provided.
+   */
+  allowUnpinnedWasm?: boolean;
+  /**
+   * Network id from sqc.networks.json (local | testnet | mainnet).
+   * Used for browser pin policy and HTTPS checks.
+   */
+  networkId?: string;
+  /**
+   * Allow http:// RPC URLs for non-local networks (private LAN).
+   * Default false — resolveNetwork requires https for testnet/mainnet.
+   */
+  allowInsecureHttp?: boolean;
+  /**
+   * Auto-lock after this many ms of inactivity (browser). 0 / undefined = disabled.
+   */
+  sessionIdleMs?: number;
   /** When true (default), MetaMask account switches re-derive the PQ wallet. */
   watchMetaMaskAccounts?: boolean;
   /** Optional shared read provider; RPC options are taken from it when provided. */

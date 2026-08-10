@@ -154,10 +154,13 @@ Env:
 |----------|---------|---------|
 | `SQC_RPC` | from network config | Chain node RPC |
 | `MODE` | `proxy` | `proxy` or `service-wallet` |
-| `ALLOW_CUSTODIAL_PROXY` | unset | Set `1` only on private backends to allow seed/evmSignature |
+| `ALLOW_CUSTODIAL_PROXY` | unset | Set `1` only on private backends to allow seed/evmSignature (refused with CORS `*`) |
 | `GATEWAY_API_KEY` | — | Required for service-wallet mutating routes when set |
-| `CORS_ORIGINS` | `*` | Comma-separated allowlist |
-| `PUBLIC_HEALTH` | `1` | Set `0` to hide `sqc_rpc` from `/health` |
+| `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated allowlist (not `*` by default) |
+| `PUBLIC_HEALTH` | `1` on local, else unset/`0` | Set `1` to expose `sqc_rpc` on `/health` |
+| `TRUST_PROXY` | unset/`false` | Set `1` only behind a known LB (spoofed `X-Forwarded-For` otherwise bypasses rate limits) |
+| `RATE_LIMIT_MAX` | `120` | Global requests / minute |
+| `RATE_LIMIT_TX_MAX` | `30` | Stricter cap for `/v1/tx/*`, `/v1/derive`, `/v1/x402/pay` |
 | `SERVICE_SEED` | — | 32-byte hex Dilithium seed (service-wallet) |
 | `SERVICE_EVM_KEY` | — | EVM key to derive service PQ wallet |
 | `PORT` | `3090` | HTTP port |
@@ -169,12 +172,13 @@ Env:
 
 ### HTTP API
 
-- `GET /health`
+- `GET /health` — liveness
+- `GET /ready` — readiness (probes upstream `chain_id`)
 - `GET /v1/status`
 - `GET /v1/balance/:address`
 - `GET /v1/nonce/:address`
 - `POST /v1/derive` — disabled on public proxy; private backends only with `ALLOW_CUSTODIAL_PROXY=1`
-- `POST /v1/tx/submit` — `{ signedTx }` (preferred)
+- `POST /v1/tx/submit` — `{ signedTx }` with required `chain_id` (preferred)
 - `POST /v1/tx/transfer` — transfer (`signedTx` preferred)
 - `POST /v1/tx/call`
 - `POST /v1/x402/pay`
@@ -220,7 +224,9 @@ go test ./sdk/bridge/signer -count=1
 - `service-wallet` is for **your** automation keys only.
 - Domain message is versioned (`v1`); changing it remaps all derived addresses — treat as a breaking change.
 - This is an **identity bridge**, not a cross-chain token bridge.
-- Pin `wasmSha256` in production browser deploys.
+- Pin `wasmSha256` / `execSha256` in production browser deploys (required for non-local browser unless `allowUnpinnedWasm`).
+- Non-local RPC/gateway URLs must be `https://` unless `allowInsecureHttp: true`.
+- Hosting WASM assets: see [`docs/WASM_HOSTING.md`](docs/WASM_HOSTING.md).
 ## License
 
 MIT

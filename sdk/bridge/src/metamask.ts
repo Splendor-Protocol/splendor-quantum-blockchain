@@ -100,3 +100,23 @@ export function onMetaMaskAccountsChanged(
     eth.removeListener?.('accountsChanged', listener);
   };
 }
+
+/**
+ * Subscribe to EIP-1193 provider disconnect. Returns an unsubscribe function.
+ */
+export function onMetaMaskDisconnect(
+  handler: () => void,
+  provider?: EthereumProvider,
+): () => void {
+  const eth = getProvider(provider);
+  if (!eth.on) {
+    return () => undefined;
+  }
+  const listener = () => {
+    handler();
+  };
+  eth.on('disconnect', listener);
+  return () => {
+    eth.removeListener?.('disconnect', listener);
+  };
+}

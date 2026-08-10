@@ -39,6 +39,8 @@ export type LoadWasmOpts = {
   execUrl?: string;
   /** Optional SHA-256 hex of sqc_signer.wasm — fail closed on mismatch when set. */
   wasmSha256?: string;
+  /** Optional SHA-256 hex of wasm_exec.js — fail closed on mismatch when set. */
+  execSha256?: string;
 };
 
 /** Bind session-aware wrappers from global Go exports. */
@@ -90,14 +92,15 @@ export async function sha256Hex(buf: ArrayBuffer): Promise<string> {
 export async function assertWasmSha256(
   bytes: ArrayBuffer,
   expectedHex?: string,
+  label = 'WASM',
 ): Promise<void> {
   if (!expectedHex) return;
   const want = expectedHex.trim().toLowerCase().replace(/^0x/, '');
   if (!/^[0-9a-f]{64}$/.test(want)) {
-    throw BridgeError.wasm(`invalid wasmSha256 pin (want 64 hex chars): ${expectedHex}`);
+    throw BridgeError.wasm(`invalid ${label} pin (want 64 hex chars): ${expectedHex}`);
   }
   const got = (await sha256Hex(bytes)).toLowerCase();
   if (got !== want) {
-    throw BridgeError.wasm(`WASM integrity check failed: expected ${want}, got ${got}`);
+    throw BridgeError.wasm(`${label} integrity check failed: expected ${want}, got ${got}`);
   }
 }

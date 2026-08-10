@@ -3,6 +3,7 @@
  * 1) Copy src/config/sqc.networks.json → config/sqc.networks.json
  * 2) Verify Go DerivationDomainMessage matches TS/JSON domain message
  * 3) Optionally refresh wasmSha256 when wasm/dist/sqc_signer.wasm exists
+ * 4) Optionally refresh execSha256 when wasm/dist/wasm_exec.js exists
  *
  * Usage: node scripts/sync-config.mjs
  */
@@ -17,6 +18,7 @@ const srcConfig = path.join(root, 'src/config/sqc.networks.json');
 const mirrorConfig = path.join(root, 'config/sqc.networks.json');
 const signerGo = path.join(root, 'signer/signer.go');
 const wasmPath = path.join(root, 'wasm/dist/sqc_signer.wasm');
+const execPath = path.join(root, 'wasm/dist/wasm_exec.js');
 
 const raw = JSON.parse(fs.readFileSync(srcConfig, 'utf8'));
 const wireChainId =
@@ -25,6 +27,8 @@ const wireChainId =
   'splendor-quantum-1';
 const v = raw.protocol.derivationDomainVersion || 'v1';
 const expectedDomain = `Splendor Quantum Chain\nKey derivation ${v}\nchain: ${wireChainId}`;
+
+let configDirty = false;
 
 // Update wasmSha256 pins when artifact present
 if (fs.existsSync(wasmPath)) {
@@ -38,9 +42,30 @@ if (fs.existsSync(wasmPath)) {
     }
   }
   if (changed) {
-    fs.writeFileSync(srcConfig, JSON.stringify(raw, null, 2) + '\n');
+    configDirty = true;
     console.log(`[sync] updated wasmSha256 → ${hash}`);
   }
+}
+
+// Update execSha256 pins when artifact present
+if (fs.existsSync(execPath)) {
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(execPath)).digest('hex');
+  let changed = false;
+  for (const net of Object.values(raw.networks)) {
+    const n = net;
+    if (n.execSha256 !== hash) {
+      n.execSha256 = hash;
+      changed = true;
+    }
+  }
+  if (changed) {
+    configDirty = true;
+    console.log(`[sync] updated execSha256 → ${hash}`);
+  }
+}
+
+if (configDirty) {
+  fs.writeFileSync(srcConfig, JSON.stringify(raw, null, 2) + '\n');
 }
 
 // Mirror config

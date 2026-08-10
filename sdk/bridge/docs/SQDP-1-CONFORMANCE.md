@@ -33,24 +33,30 @@ Automated coverage (run from `sdk/bridge`): `npm run test:security` (Vitest `sec
 
 ## Browser / WASM
 
-- [ ] Serves `sqc_signer.wasm` + `wasm_exec.js` with correct MIME and CORS *(ops)*
+- [ ] Serves `sqc_signer.wasm` + `wasm_exec.js` with correct MIME and CORS *(ops)* — checklist: [`WASM_HOSTING.md`](./WASM_HOSTING.md)
 - [ ] Imports `@splendor/pq-bridge/browser` in browser builds *(bundler)*
 - [x] Calls `lock()` or `disconnect()` on logout (zeroizes Dilithium key) — `security-wasm.test.ts` (re-derive Zeroize in WASM)
-- [x] Sets `wasmSha256` when known; fails closed on mismatch — `security-wasm.test.ts`
-- [x] MetaMask `accountsChanged` fail-closed (no stale unlocked session) — `security-metamask.test.ts`
+- [x] Sets `wasmSha256` when known; fails closed on mismatch — `security-wasm.test.ts` / `security-networks.test.ts` (browser pin required)
+- [x] Pins `execSha256` for `wasm_exec.js` when configured — loaders + networks JSON / `sync:config`
+- [x] MetaMask empty accounts / EIP-1193 `disconnect` destroy session — `security-metamask.test.ts`
+- [x] Parallel `sendTransfer` cannot share a nonce — `security-mutex.test.ts`
+- [x] Submits reject missing `signedTx.chain_id` — `security-rpc.test.ts` / `gateway/security.test.ts`
 
 ## Gateway (if used)
 
 - [x] Public / end-user traffic uses **`proxy`** mode — `gateway/security.test.ts`
 - [x] Public proxy rejects `seed`, `evmPrivateKey`, and (by default) `evmSignature` — `gateway/security.test.ts`
 - [x] Prefers pre-signed `signedTx` only on public hosts — `gateway/security.test.ts` (signedTx path not custodial-rejected)
+- [x] `ALLOW_CUSTODIAL_PROXY=1` refused with CORS `*` — `gateway/security.test.ts`
 - [ ] `ALLOW_CUSTODIAL_PROXY=1` never enabled on public internet *(ops)*
 - [x] `service-wallet` only for operator / automation keys + `GATEWAY_API_KEY` — `gateway/security.test.ts` (401 on missing/wrong key; timing-safe compare)
-- [x] Rate limit + CORS allowlist configured — rate limit covered by `gateway/security.test.ts` (429); CORS is env-configured
+- [x] Rate limit + CORS allowlist configured — global + per-route tx limits (`gateway/security.test.ts` 429); `TRUST_PROXY` default false
+- [x] `/ready` probes upstream `assertChainId`; `/health` is liveness — `gateway/security.test.ts`
 
 ## Production RPC
 
 - [x] Configures `rpcUrls` failover for reads — `security-rpc.test.ts`
 - [x] Sticky submit behaviour understood (first accepting URL) — `security-rpc.test.ts`
 - [x] Sets `wasmSha256` pin for browser WASM integrity when serving signer assets — pin check in `security-wasm.test.ts` / networks JSON
+- [x] Non-local RPC/gateway require `https://` unless `allowInsecureHttp` — `security-networks.test.ts`
 - [ ] Uses distinct `networkId` from config (local/testnet/mainnet) even though wire `chain_id` is shared *(ops / config)*

@@ -1,22 +1,39 @@
-# Build context: sdk/bridge (prebuild: npm run build:ts && wasm/build.ps1)
-FROM node:22-bookworm-slim
+# Build context: sdk/bridge (run: npm run build && cd gateway && npm ci)
+FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
-
-COPY package.json ./
-COPY dist ./dist
+COPY package.json package-lock.json ./
+COPY tsconfig.json ./
+COPY src ./src
+COPY config ./config
+COPY scripts ./scripts
 COPY wasm/dist ./wasm/dist
-COPY node_modules ./node_modules
-
-COPY gateway/package.json ./gateway/
-COPY gateway/server.ts ./gateway/
-COPY gateway/node_modules ./gateway/node_modules
+RUN npm ci && npm run build:ts
 
 WORKDIR /app/gateway
+COPY gateway/package.json gateway/package-lock.json ./
+COPY gateway/server.ts ./
+RUN npm ci
 
-ENV SQC_RPC=http://host.docker.internal:8080
+FROM node:22-bookworm-slim AS runtime
+RUN useradd -r -u 10001 sqc && mkdir -p /app && chown -R sqc:sqc /app
+WORKDIR /app
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/wasm/dist ./wasm/dist
+COPY --from=build /app/config ./config
+COPY --from=build /app/package.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/gateway/package.json ./gateway/
+COPY --from=build /app/gateway/node_modules ./gateway/node_modules
+COPY --from=build /app/gateway/server.ts ./gateway/
+
+USER sqc
+WORKDIR /app/gateway
 ENV MODE=proxy
 ENV PORT=3090
-
+ENV PUBLIC_HEALTH=0
 EXPOSE 3090
-CMD ["npx", "tsx", "server.ts"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3090)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "--import", "tsx", "server.ts"]

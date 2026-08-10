@@ -14,7 +14,7 @@ import {
   recoverEip712Address,
 } from '../derive.js';
 import { MIN_FEE, assertFeeAtLeastMin, isHexString, encodePayload } from '../encoding.js';
-import { listNetworks, resolveNetwork } from '../networks.js';
+import { listNetworks, resolveNetwork, getNetwork } from '../networks.js';
 
 describe('units', () => {
   it('round-trips whole SPLD', () => {
@@ -91,8 +91,11 @@ describe('networks', () => {
     const ids = new Set(nets.map((n) => n.networkId));
     expect(ids.size).toBe(nets.length);
     expect(resolveNetwork('local').chainId).toBe('splendor-quantum-1');
-    expect(resolveNetwork('testnet').networkId).toBe('splendor-testnet');
-    expect(resolveNetwork('mainnet').networkId).toBe('splendor-mainnet');
+    expect(getNetwork('testnet')?.networkId).toBe('splendor-testnet');
+    expect(getNetwork('mainnet')?.networkId).toBe('splendor-mainnet');
+    expect(getNetwork('testnet')?.chainId).toBe('splendor-quantum-1');
+    expect(() => resolveNetwork('testnet')).toThrow(/placeholder RPC/);
+    expect(() => resolveNetwork('mainnet')).toThrow(/placeholder RPC/);
   });
 });
 
