@@ -10,6 +10,7 @@ import {
   strip0x,
   type DerivationScheme,
 } from './derive.js';
+import { BridgeError } from './errors.js';
 
 export type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -29,7 +30,7 @@ function getProvider(explicit?: EthereumProvider): EthereumProvider {
   if (explicit?.request) return explicit;
   const eth = (globalThis as { ethereum?: EthereumProvider }).ethereum;
   if (!eth?.request) {
-    throw new Error('EIP-1193 provider (window.ethereum) not found');
+    throw BridgeError.noProvider();
   }
   return eth;
 }

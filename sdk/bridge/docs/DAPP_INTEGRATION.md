@@ -4,13 +4,40 @@ Connect → fund → transfer → wait. Use a read-only `SqcProvider` until the 
 
 **Protocol standard:** all MUST/SHOULD rules live in **[SQDP-1.md](./SQDP-1.md)**. Ship checklist: **[SQDP-1-CONFORMANCE.md](./SQDP-1-CONFORMANCE.md)**.
 
+## Recommended: Connect UI kit (React)
+
+For browser dApps, use **`@splendor/connect-react`** — AppKit-style modal + connectors. PQ Dilithium stays inside WASM; your UI only shows `SQ:` identity.
+
+```tsx
+import '@splendor/connect-react/style.css';
+import {
+  SplendorConnectProvider,
+  ConnectKit,
+  metamaskConnector,
+  seedConnector,
+  useWallet,
+} from '@splendor/connect-react';
+
+<SplendorConnectProvider
+  network="local"
+  connectors={[metamaskConnector(), seedConnector()]}
+  theme="splendor"
+>
+  <ConnectKit />
+</SplendorConnectProvider>
+```
+
+Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
+
+Lower-level (no UI): `connectSplendor` / `useSplendorPQ` from `@splendor/pq-bridge` below.
+
 ```ts
 import { PROTOCOL, SQDP_VERSION, connectSplendor, createSplendorClient } from '@splendor/pq-bridge';
 // PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.confirmation === 'nonce'
 // Networks: edit src/config/sqc.networks.json (single source)
 ```
 
-## One-touch connect (recommended)
+## One-touch connect (headless / agents)
 
 ```ts
 // Browser

@@ -116,4 +116,8 @@ describe('security-errors SQDP-1 codes', () => {
   it('USER_REJECTED factory message', () => {
     expect(BridgeError.userRejected().code).toBe('USER_REJECTED');
   });
+
+  it('NO_PROVIDER factory message', () => {
+    expect(BridgeError.noProvider().code).toBe('NO_PROVIDER');
+  });
 });

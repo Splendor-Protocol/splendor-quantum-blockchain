@@ -3,6 +3,7 @@
 export type BridgeErrorCode =
   | 'NOT_CONNECTED'
   | 'USER_REJECTED'
+  | 'NO_PROVIDER'
   | 'RPC'
   | 'NETWORK'
   | 'WASM'
@@ -68,6 +69,12 @@ export class BridgeError extends Error {
   static userRejected(msg = 'User rejected the request'): BridgeError {
     return new BridgeError('USER_REJECTED', msg);
   }
+
+  static noProvider(
+    msg = 'EIP-1193 provider (window.ethereum) not found',
+  ): BridgeError {
+    return new BridgeError('NO_PROVIDER', msg);
+  }
 }
 
 export function isBridgeError(e: unknown): e is BridgeError {
@@ -78,6 +85,9 @@ export function wrapUnknown(e: unknown, fallback: BridgeErrorCode = 'UNKNOWN'): 
   if (e instanceof BridgeError) return e;
   const msg = e instanceof Error ? e.message : String(e);
   if (/abort|timeout/i.test(msg)) return BridgeError.timeout(msg);
+  if (/EIP-1193 provider|window\.ethereum.*not found|provider.*not found/i.test(msg)) {
+    return BridgeError.noProvider(msg);
+  }
   if (/user rejected|denied/i.test(msg)) return BridgeError.userRejected(msg);
   return new BridgeError(fallback, msg);
 }

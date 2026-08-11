@@ -1,5 +1,6 @@
 /**
- * React hook for Splendor PQ bridge (SQDP-1).
+ * React hook for Splendor PQ bridge (SQDP-1) — lower-level, no UI.
+ * Prefer `@splendor/connect-react` (ConnectKit / SplendorConnectProvider) for dApps.
  * Peer-depend on react. Import: `import { useSplendorPQ } from '@splendor/pq-bridge/react'`
  */
 import { useCallback, useEffect, useRef, useState } from 'react';

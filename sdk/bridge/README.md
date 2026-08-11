@@ -20,13 +20,15 @@ Set RPC URLs, gateway port, WASM paths, min fee, default network — SDK, gatewa
 
 ### One-touch connect (dApps)
 
+**React UI kit (recommended for browsers):** [`@splendor/connect-react`](../connect-react) — `ConnectKit` + modular connectors.
+
 ```js
 import { connectSplendor, createSplendorClient } from '@splendor/pq-bridge';
 
 // Reads only — no MetaMask yet
 const { provider, wallet, network } = createSplendorClient({ network: 'local' });
 
-// Or unlock in one call
+// Or unlock in one call (headless)
 const session = await connectSplendor({
   network: 'local',       // local | testnet | mainnet
   connect: 'metamask',    // none | metamask | seed | evmKey | evmSignature
