@@ -96,6 +96,16 @@ func (s *Server) Stop() error {
 	return s.httpServer.Close()
 }
 
+// ServeHTTP implements http.Handler so the server can be embedded in an external router.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.router.ServeHTTP(w, r)
+}
+
+// Router returns the underlying mux.Router for external route registration.
+func (s *Server) Router() *mux.Router {
+	return s.router
+}
+
 func (s *Server) buildRouter() *mux.Router {
 	r := mux.NewRouter()
 	r.Use(loggingMiddleware)
