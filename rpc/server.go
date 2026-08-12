@@ -56,6 +56,7 @@ type Config struct {
 }
 
 // New creates a new RPC server.
+// broadcaster may be nil — P2P broadcasting is optional.
 func New(
 	cfg Config,
 	stateDB *state.StateDB,
@@ -268,11 +269,15 @@ func (s *Server) handleIncomingBlock(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	height, _ := s.executor.LatestHeight()
+	peerCount := 0
+	if s.broadcaster != nil {
+		peerCount = s.broadcaster.PeerCount()
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"chain_id":     types.ChainID,
 		"height":       height,
 		"mempool_size": s.pool.Size(),
-		"peer_count":   s.broadcaster.PeerCount(),
+		"peer_count":   peerCount,
 		"node_version": "1.0.0-quantum",
 		"timestamp":    time.Now().Unix(),
 	})
