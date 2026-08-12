@@ -7,8 +7,6 @@
 // Usage:
 //   sqc-node --data-dir /var/sqc/data --rpc-addr :8080
 //   sqc-node --data-dir /var/sqc/data --rpc-addr :8080 --validator --wallet validator.sqwallet
-//
-// See DEPLOY.md for full setup instructions.
 package main
 
 import (
@@ -36,8 +34,6 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/rpc"
 )
 
-// ── CLI flags ─────────────────────────────────────────────────────────────────
-
 var (
 	flagDataDir       string
 	flagRPCAddr       string
@@ -55,20 +51,18 @@ func main() {
 		Use:   "sqc-node",
 		Short: "Splendor Quantum Chain full node",
 		Long: `sqc-node runs a Splendor Quantum Chain full node.
-All cryptography uses CRYSTALS-Dilithium Mode 3 (NIST FIPS 204) and SHA-3-256 (NIST FIPS 202).
-No ECDSA. No SHA-256. No conventional cryptography.
-
-See DEPLOY.md for setup instructions.`,
+Cryptography: CRYSTALS-Dilithium Mode 3 (NIST FIPS 204) + SHA3-256 (NIST FIPS 202).
+No ECDSA. No SHA-256. No conventional cryptography.`,
 		RunE: runNode,
 	}
 
-	root.Flags().StringVar(&flagDataDir, "data-dir", "./sqc-data", "Directory for chain data and state DB")
+	root.Flags().StringVar(&flagDataDir, "data-dir", "./sqc-data", "Directory for chain data")
 	root.Flags().StringVar(&flagRPCAddr, "rpc-addr", ":8080", "RPC server listen address")
 	root.Flags().StringVar(&flagMetricsAddr, "metrics-addr", ":9100", "Prometheus metrics listen address")
-	root.Flags().StringVar(&flagWalletPath, "wallet", "", "Path to validator .sqwallet file (required if --validator)")
-	root.Flags().StringVar(&flagWalletPass, "wallet-pass", "", "Wallet password (prefer SQC_WALLET_PASS env var)")
-	root.Flags().StringArrayVar(&flagPeers, "peer", nil, "Bootstrap peer RPC addresses (e.g. http://1.2.3.4:8080)")
-	root.Flags().IntVar(&flagBlockInterval, "block-interval", 2, "Block production interval in seconds (validator only)")
+	root.Flags().StringVar(&flagWalletPath, "wallet", "", "Path to validator .sqwallet file")
+	root.Flags().StringVar(&flagWalletPass, "wallet-pass", "", "Wallet password (prefer SQC_WALLET_PASS env)")
+	root.Flags().StringArrayVar(&flagPeers, "peer", nil, "Bootstrap peer RPC addresses")
+	root.Flags().IntVar(&flagBlockInterval, "block-interval", 2, "Block interval in seconds (validator only)")
 	root.Flags().BoolVar(&flagIsValidator, "validator", false, "Run as block-producing validator")
 	root.Flags().StringVar(&flagLogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 
@@ -87,7 +81,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Str("data_dir", flagDataDir).
 		Str("rpc_addr", flagRPCAddr).
 		Bool("validator", flagIsValidator).
-		Str("version", "1.0.0-quantum").
 		Msg("Splendor Quantum Chain node starting")
 
 	// ── Ensure data directory exists ──────────────────────────────────────
@@ -109,9 +102,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 	defer executor.Close()
 
 	// Optional: TX index + receipt store
-	txIndex, err := state.NewTxIndexStore(flagDataDir + "/txindex")
-	if err != nil {
-		log.Warn().Err(err).Msg("TX index unavailable — receipts will not be stored")
+	txIndex, txErr := state.NewTxIndexStore(flagDataDir + "/txindex")
+	if txErr != nil {
+		log.Warn().Err(txErr).Msg("TX index unavailable — receipts will not be stored")
 	} else {
 		executor.WithTxIndex(txIndex)
 		defer txIndex.Close()
@@ -130,17 +123,13 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// ── AI Scheduler ───────────────────────────────────────────────────────
 	scheduler := ai.NewScheduler()
 	scheduler.StartObservationLoop(func() ai.Metrics {
-		return ai.Metrics{
-			MempoolDepth:   pool.Size(),
-			CPULoadPercent: 0.0,
-		}
+		return ai.Metrics{MempoolDepth: pool.Size()}
 	})
 
 	// ── Metrics server ─────────────────────────────────────────────────────
 	nodeMetrics := rpc.NewNodeMetrics()
 	nodeMetrics.SetLabel("chain_id", types.ChainID)
 	nodeMetrics.SetLabel("version", "1.0.0-quantum")
-
 	metricsServer := rpc.NewMetricsServer(flagMetricsAddr, nodeMetrics)
 	metricsServer.Start()
 	defer metricsServer.Stop()
@@ -171,14 +160,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 		log.Info().Str("validator_addr", validatorAddr.String()).Msg("Validator key loaded")
 	}
 
-	// ── P2P ────────────────────────────────────────────────────────────────
-	broadcaster := network.NewBroadcaster(validatorPKBytes)
+	// ── P2P peer pool + discovery ──────────────────────────────────────────
 	peerPool := network.NewPeerPool("http://localhost"+flagRPCAddr, 50)
 	discoverer := network.NewDiscoverer(peerPool, "http://localhost"+flagRPCAddr, 60*time.Second)
-
 	for _, peer := range flagPeers {
 		peerPool.Add(&network.PeerInfo{Addr: peer, LastSeen: time.Now().Unix()})
-		broadcaster.AddPeer(peer)
 	}
 	discoverer.Bootstrap(flagPeers)
 	discoverer.Start()
@@ -188,13 +174,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 	syncer := network.NewSyncer(
 		network.DefaultSyncConfig(validatorPKBytes),
 		peerPool,
-		func() uint64 {
-			h, _ := executor.LatestHeight()
-			return h
-		},
-		func(b *types.Block) error {
-			return executor.ExecuteBlock(b)
-		},
+		func() uint64 { h, _ := executor.LatestHeight(); return h },
+		func(b *types.Block) error { return executor.ExecuteBlock(b) },
 	)
 
 	// ── Context + signal handling ──────────────────────────────────────────
@@ -203,29 +184,44 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	go func() {
 		<-sigCh
-		log.Info().Msg("Shutdown signal received — stopping node gracefully")
+		log.Info().Msg("Shutdown signal received")
 		cancel()
 	}()
 
-	// ── Block subscription channel ─────────────────────────────────────────
+	// ── Block channel (for WebSocket broadcasts + metrics) ─────────────────
 	blockCh := make(chan *types.Block, 64)
-	go broadcaster.RunBroadcastLoop(blockCh)
 
 	// ── WebSocket hub ──────────────────────────────────────────────────────
 	wsHub := rpc.NewHub()
 	go func() {
-		// Subscribe to new blocks and broadcast to WS clients
 		for b := range blockCh {
 			wsHub.BroadcastNewBlock(b)
-			// Update metrics
 			nodeMetrics.SetChainHeight(b.Header.Height)
 			nodeMetrics.IncrBlocksProduced()
 			nodeMetrics.IncrTxsProcessed(uint64(b.Header.TxCount))
 		}
 	}()
+
+	// ── Genesis block (if chain is empty) ──────────────────────────────────
+	if flagIsValidator && validatorPriv != nil {
+		if _, latestErr := executor.LatestBlock(); latestErr != nil || func() bool {
+			b, _ := executor.LatestBlock(); return b == nil
+		}() {
+			log.Info().Msg("Chain is empty — creating genesis block")
+			stateRoot, _ := stateDB.StateRoot()
+			genesis := types.GenesisBlock(validatorAddr, stateRoot, time.Now().Unix())
+			if hash, hashErr := genesis.ComputeHash(); hashErr == nil {
+				genesis.Hash = hash
+				if signErr := genesis.SignBlock(validatorPriv); signErr == nil {
+					if execErr := executor.ExecuteBlock(genesis); execErr == nil {
+						log.Info().Str("hash", fmt.Sprintf("%x", genesis.Hash[:8])).Msg("Genesis block committed")
+					}
+				}
+			}
+		}
+	}
 
 	// ── Validator consensus ────────────────────────────────────────────────
 	if flagIsValidator && validatorPriv != nil {
@@ -245,32 +241,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
-	// ── Genesis block (if chain is empty and we're the validator) ──────────
-	if flagIsValidator && validatorPriv != nil {
-		height, _ := executor.LatestHeight()
-		if height == 0 {
-			latestBlock, _ := executor.LatestBlock()
-			if latestBlock == nil {
-				log.Info().Msg("Chain is empty — creating genesis block")
-				stateRoot, _ := stateDB.StateRoot()
-				genesis := types.GenesisBlock(validatorAddr, stateRoot, time.Now().Unix())
-				if hash, err := genesis.ComputeHash(); err == nil {
-					genesis.Hash = hash
-					if err := genesis.SignBlock(validatorPriv); err == nil {
-						if err := executor.ExecuteBlock(genesis); err == nil {
-							log.Info().
-								Str("hash", fmt.Sprintf("%x", genesis.Hash[:8])).
-								Msg("Genesis block committed")
-						} else {
-							log.Warn().Err(err).Msg("Genesis block execution skipped")
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// ── Periodic sync (if not validator) ──────────────────────────────────
+	// ── Periodic sync (full nodes) ─────────────────────────────────────────
 	if !flagIsValidator {
 		go func() {
 			ticker := time.NewTicker(30 * time.Second)
@@ -282,9 +253,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 				case <-ticker.C:
 					if !syncer.IsSynced() {
 						if n, err := syncer.SyncOnce(); err != nil {
-							log.Warn().Err(err).Msg("sync: catchup failed")
+							log.Warn().Err(err).Msg("sync failed")
 						} else if n > 0 {
-							log.Info().Int("blocks", n).Msg("sync: applied blocks")
+							log.Info().Int("blocks", n).Msg("synced blocks")
 						}
 					}
 				}
@@ -315,55 +286,46 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// ── Build HTTP router with ALL routes ──────────────────────────────────
+	// ── Build HTTP router ──────────────────────────────────────────────────
 	router := mux.NewRouter()
 
-	// Core RPC
-	isReady := func() bool {
-		h, _ := executor.LatestHeight()
-		return h > 0
-	}
-	coreRPC := rpc.New(
-		rpc.Config{
-			ListenAddr:  flagRPCAddr,
-			ValidatorPK: validatorPKBytes,
-		},
-		stateDB,
-		executor,
-		pool,
-		broadcaster,
-		scheduler,
-	)
-	_ = coreRPC // routes registered via router below
+	isReady := func() bool { h, _ := executor.LatestHeight(); return h > 0 }
 
-	// Register all route groups on the shared router
+	// Core RPC server (handles /tx/submit, /block/*, /balance/*, /status, etc.)
+	coreRPC := rpc.New(
+		rpc.Config{ListenAddr: flagRPCAddr, ValidatorPK: validatorPKBytes},
+		stateDB, executor, pool, nil, scheduler,
+	)
+
+	// VM routes (/vm/disasm, /vm/validate, /healthz, /readyz)
 	rpc.RegisterVMRoutes(router, nodeStartTime, isReady)
+
+	// Explorer routes (/tx/{hash}/receipt, /contract/*, /sync, /peers)
 	if txIndex != nil {
 		rpc.RegisterExplorerRoutes(router, txIndex, stateDB, peerPool, func() uint64 {
-			h, _ := executor.LatestHeight()
-			return h
+			h, _ := executor.LatestHeight(); return h
 		})
 	}
+
+	// Governance + staking routes
 	rpc.RegisterGovRoutes(router, stateDB)
+
+	// DEX routes
 	rpc.RegisterDEXRoutes(router, stateDB)
+
+	// Lending routes
+	rpc.RegisterLendingRoutes(router, stateDB)
 
 	// WebSocket / SSE
 	router.HandleFunc("/ws", wsHub.HandleWebSocket).Methods(http.MethodGet)
 
-	// Core endpoints (inline — avoids double server issue)
-	router.HandleFunc("/tx/submit", func(w http.ResponseWriter, r *http.Request) {
-		coreRPC.ServeHTTP(w, r)
-	})
-
-	// Wire in core RPC routes by wrapping the core server
-	router.PathPrefix("/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		coreRPC.ServeHTTP(w, r)
-	})
+	// Fallback: route everything else to core RPC
+	router.PathPrefix("/").HandlerFunc(coreRPC.ServeHTTP)
 
 	// ── Start HTTP server ──────────────────────────────────────────────────
 	httpServer := &http.Server{
 		Addr:         flagRPCAddr,
-		Handler:      corsMiddlewareStandalone(router),
+		Handler:      addCORSHeaders(router),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -380,20 +342,19 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Str("rpc_addr", flagRPCAddr).
 		Str("metrics_addr", flagMetricsAddr).
 		Bool("validator", flagIsValidator).
-		Msg("Node ready — accepting connections")
+		Msg("Node ready")
 
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		if ctx.Err() == nil {
-			return fmt.Errorf("HTTP server error: %w", err)
+			return fmt.Errorf("HTTP server: %w", err)
 		}
 	}
 
-	log.Info().Msg("Node stopped cleanly")
+	log.Info().Msg("Node stopped")
 	return nil
 }
 
-// corsMiddlewareStandalone adds CORS headers to all responses.
-func corsMiddlewareStandalone(h http.Handler) http.Handler {
+func addCORSHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
