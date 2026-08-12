@@ -1,4 +1,6 @@
 import { useAccount, useBalance, useConnect } from '../react/hooks.js';
+import { ConnectModal } from './ConnectModal.js';
+import { AccountModal } from './AccountModal.js';
 
 function truncateAddress(addr: string, left = 6, right = 4): string {
   if (addr.length <= left + right + 1) return addr;
@@ -8,15 +10,24 @@ function truncateAddress(addr: string, left = 6, right = 4): string {
 export type ConnectButtonProps = {
   label?: string;
   className?: string;
+  /**
+   * When false, only render the button (host must mount ConnectModal/AccountModal).
+   * Default true — self-contained drop-in.
+   */
+  includeModals?: boolean;
 };
 
-export function ConnectButton({ label = 'Connect', className }: ConnectButtonProps) {
+export function ConnectButton({
+  label = 'Connect',
+  className,
+  includeModals = true,
+}: ConnectButtonProps) {
   const { openModal, status } = useConnect();
   const { address, isConnected } = useAccount();
   const { balanceSPLD } = useBalance();
 
-  if (isConnected && address) {
-    return (
+  const button =
+    isConnected && address ? (
       <button
         type="button"
         className={['sqc-btn', 'sqc-account-chip', className].filter(Boolean).join(' ')}
@@ -28,17 +39,24 @@ export function ConnectButton({ label = 'Connect', className }: ConnectButtonPro
         ) : null}
         <span className="sqc-account-chip__addr">{truncateAddress(address)}</span>
       </button>
+    ) : (
+      <button
+        type="button"
+        className={['sqc-btn', 'sqc-connect-btn', className].filter(Boolean).join(' ')}
+        onClick={() => openModal('connect')}
+        disabled={status === 'connecting'}
+      >
+        {status === 'connecting' ? 'Connecting…' : label}
+      </button>
     );
-  }
+
+  if (!includeModals) return button;
 
   return (
-    <button
-      type="button"
-      className={['sqc-btn', 'sqc-connect-btn', className].filter(Boolean).join(' ')}
-      onClick={() => openModal('connect')}
-      disabled={status === 'connecting'}
-    >
-      {status === 'connecting' ? 'Connecting…' : label}
-    </button>
+    <>
+      {button}
+      <ConnectModal />
+      <AccountModal />
+    </>
   );
 }

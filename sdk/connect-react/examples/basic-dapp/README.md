@@ -12,6 +12,13 @@ cd ../connect-react && npm install && npm run build
 cd examples/basic-dapp && npm install && npm run dev
 ```
 
-Serve WASM from `sdk/bridge/wasm/dist` (copied to Vite public root via `vite-plugin-static-copy`).
+WASM is copied from `sdk/bridge/wasm/dist` into the Vite root via `vite-plugin-static-copy`.
+Alternatively, from the example folder:
+
+```bash
+node ../../scripts/copy-wasm-assets.mjs ./public
+```
 
 Open http://localhost:5173 — use **Connect** (MetaMask) or **Advanced → seed**.
+
+`autoReconnect` is enabled: a previously authorized MetaMask session can restore without a cold-prompt when `eth_accounts` is non-empty.

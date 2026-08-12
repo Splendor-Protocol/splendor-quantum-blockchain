@@ -8,13 +8,22 @@ AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors u
 npm install @splendor/connect-react @splendor/pq-bridge react react-dom
 ```
 
-Serve WASM assets from `@splendor/pq-bridge` (`sqc_signer.wasm` + `wasm_exec.js`) — see [WASM_HOSTING.md](../bridge/docs/WASM_HOSTING.md).
+**WASM:** `createSplendorClient` / the Provider already resolve `wasmUrl` / `execUrl` from `sqc.networks.json`. You still must **host** those files (usually `/sqc_signer.wasm` + `/wasm_exec.js`).
+
+```bash
+# from your dApp root (after bridge wasm is built)
+node node_modules/@splendor/connect-react/scripts/copy-wasm-assets.mjs ./public
+# or monorepo:
+node ../scripts/copy-wasm-assets.mjs ./public
+```
+
+See [WASM_HOSTING.md](../bridge/docs/WASM_HOSTING.md).
 
 ```tsx
 import '@splendor/connect-react/style.css';
 import {
   SplendorConnectProvider,
-  ConnectKit,
+  ConnectButton, // self-contained: includes connect + account modals
   metamaskConnector,
   seedConnector,
   useWallet,
@@ -26,10 +35,11 @@ function App() {
       network="local"
       connectors={[metamaskConnector(), seedConnector()]}
       theme="splendor"
+      autoReconnect // only if MetaMask already authorized (eth_accounts)
       allowUnpinnedWasm // local only; pin wasmSha256 on testnet/mainnet
     >
       <header style={{ display: 'flex', justifyContent: 'flex-end', padding: 16 }}>
-        <ConnectKit />
+        <ConnectButton />
       </header>
       <SendDemo />
     </SplendorConnectProvider>
@@ -42,6 +52,8 @@ function SendDemo() {
   return null;
 }
 ```
+
+`ConnectKit` is an alias of self-contained `ConnectButton`. Do **not** also mount `ConnectModal` / `AccountModal` unless you pass `includeModals={false}` on the button.
 
 ## What dApps see vs what stays internal
 
@@ -59,7 +71,7 @@ MetaMask `0x…` is only a **derivation oracle**. Funds live on `SQ:`.
 
 `SplendorConnectProvider` — wraps `createSplendorClient` + connector list.
 
-Props: `network`, `connectors`, `theme` (`'splendor' | 'light' | 'dark' | ThemeOverrides`), `autoReconnect`, plus bridge options (`wasmUrl`, `wasmSha256`, …).
+Props: `network`, `connectors`, `theme` (`'splendor' | 'light' | 'dark' | ThemeOverrides`), `autoReconnect`, plus bridge options (`wasmUrl`, `wasmSha256`, …). Network config already supplies WASM URLs — override only when needed.
 
 ### Hooks
 
@@ -73,18 +85,29 @@ Props: `network`, `connectors`, `theme` (`'splendor' | 'light' | 'dark' | ThemeO
 
 ### UI
 
-- `ConnectKit` — button + connect modal + account modal
-- Or compose: `ConnectButton`, `ConnectModal`, `AccountModal`, `NetworkBadge`
+- `ConnectButton` / `ConnectKit` — button + modals (default)
+- Advanced compose: `<ConnectButton includeModals={false} />` + `<ConnectModal />` + `<AccountModal />`
+- `NetworkBadge`
 
 ### Connectors
 
 ```ts
-metamaskConnector()           // primary
+metamaskConnector()           // primary (+ authorized via eth_accounts)
 injectedConnector({ ethereumProvider })
-seedConnector()               // Advanced accordion in modal
+seedConnector()               // Advanced accordion in modal (64-hex seed)
 ```
 
-Implement `Connector` to add a future wallet without rewriting the modal.
+Implement `Connector` (with optional `authorized()`) to add a future wallet without rewriting the modal.
+
+### autoReconnect
+
+When `autoReconnect` is true, the kit restores the last non-advanced connector **only if** `ready()` and `authorized()` (e.g. `eth_accounts` non-empty). It will not pop MetaMask for a cold session.
+
+## Tests
+
+```bash
+cd sdk/connect-react && npm test
+```
 
 ## Headless / Node
 

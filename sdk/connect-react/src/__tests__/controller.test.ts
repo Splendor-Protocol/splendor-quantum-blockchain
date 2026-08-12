@@ -23,10 +23,12 @@ const mockInfo: DeriveInfo = {
   evmAddress: '0x1111111111111111111111111111111111111111',
 };
 
+type MockWallet = ReturnType<typeof mockWallet>;
+
 function mockWallet() {
   let info: DeriveInfo | null = null;
   const listeners = new Map<string, Set<(p: unknown) => void>>();
-  return {
+  const wallet = {
     init: vi.fn(async () => undefined),
     connectFromMetaMask: vi.fn(async () => {
       info = mockInfo;
@@ -42,21 +44,27 @@ function mockWallet() {
       listeners.get('disconnect')?.forEach((fn) => fn({}));
     }),
     getDeriveInfo: () => info,
-    getConnectionState: () => (info ? 'connected' : 'disconnected'),
+    getConnectionState: () => (info ? ('connected' as const) : ('disconnected' as const)),
     on: (event: string, handler: (p: unknown) => void) => {
       if (!listeners.has(event)) listeners.set(event, new Set());
       listeners.get(event)!.add(handler);
       return () => listeners.get(event)?.delete(handler);
     },
+    emit(event: string, payload: unknown) {
+      listeners.get(event)?.forEach((fn) => fn(payload));
+    },
   };
+  return wallet;
 }
+
+let lastWallet: MockWallet;
 
 vi.mock('@splendor/pq-bridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@splendor/pq-bridge')>();
   return {
     ...actual,
     createSplendorClient: vi.fn(() => {
-      const wallet = mockWallet();
+      lastWallet = mockWallet();
       return {
         network: {
           id: 'local',
@@ -72,7 +80,7 @@ vi.mock('@splendor/pq-bridge', async (importOriginal) => {
             unit: 'atto',
           })),
         },
-        wallet,
+        wallet: lastWallet,
         info: null,
       };
     }),
@@ -109,7 +117,7 @@ describe('createConnectController', () => {
     ctrl.destroy();
   });
 
-  it('does not persist seed connector id', async () => {
+  it('does not persist advanced connector id', async () => {
     const connector: Connector = {
       id: 'seed',
       name: 'Seed',
@@ -141,13 +149,182 @@ describe('createConnectController', () => {
     });
     await expect(ctrl.connect('metamask')).rejects.toMatchObject({ code: 'NO_PROVIDER' });
     expect(ctrl.getState().status).toBe('error');
+    expect(ctrl.getState().activeConnectorId).toBeNull();
     ctrl.destroy();
   });
-});
 
-describe('connectErrorMessage', () => {
-  it('maps BridgeError codes', () => {
-    expect(connectErrorMessage(BridgeError.userRejected())).toMatch(/rejected/i);
-    expect(connectErrorMessage(BridgeError.noProvider())).toMatch(/wallet/i);
+  it('clears activeConnectorId on connect failure', async () => {
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: async () => {
+        throw BridgeError.userRejected();
+      },
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    await expect(ctrl.connect('metamask')).rejects.toMatchObject({ code: 'USER_REJECTED' });
+    expect(ctrl.getState().activeConnectorId).toBeNull();
+    ctrl.destroy();
+  });
+
+  it('throws on unknown connector', async () => {
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: async () => mockInfo,
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    await expect(ctrl.connect('nope')).rejects.toThrow(/Unknown connector/);
+    ctrl.destroy();
+  });
+
+  it('disconnect clears storage and state', async () => {
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: async (ctx) => ctx.wallet.connectFromMetaMask(),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    await ctrl.connect('metamask');
+    await ctrl.disconnect();
+    expect(ctrl.getState().status).toBe('disconnected');
+    expect(ctrl.getState().account).toBeNull();
+    expect(memoryStore.get('splendor.connect.lastConnectorId')).toBeUndefined();
+    ctrl.destroy();
+  });
+
+  it('preserves BridgeError code from wallet error event', () => {
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: async () => mockInfo,
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    lastWallet.emit('error', { code: 'USER_REJECTED', message: 'rejected' });
+    const state = ctrl.getState();
+    expect(state.status).toBe('error');
+    expect(state.error).toBeInstanceOf(BridgeError);
+    expect((state.error as BridgeError).code).toBe('USER_REJECTED');
+    expect(connectErrorMessage(state.error)).toMatch(/rejected/i);
+    ctrl.destroy();
+  });
+
+  it('tryAutoReconnect is no-op when disabled', async () => {
+    memoryStore.set('splendor.connect.lastConnectorId', 'metamask');
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      authorized: () => true,
+      connect: async (ctx) => ctx.wallet.connectFromMetaMask(),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+      autoReconnect: false,
+    });
+    expect(await ctrl.tryAutoReconnect()).toBe(false);
+    expect(ctrl.getState().status).toBe('disconnected');
+    ctrl.destroy();
+  });
+
+  it('tryAutoReconnect skips advanced last connector', async () => {
+    memoryStore.set('splendor.connect.lastConnectorId', 'seed');
+    const seed: Connector = {
+      id: 'seed',
+      name: 'Seed',
+      advanced: true,
+      ready: () => true,
+      connect: async () => mockInfo,
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [seed],
+      allowUnpinnedWasm: true,
+      autoReconnect: true,
+    });
+    expect(await ctrl.tryAutoReconnect()).toBe(false);
+    ctrl.destroy();
+  });
+
+  it('tryAutoReconnect skips when not ready', async () => {
+    memoryStore.set('splendor.connect.lastConnectorId', 'metamask');
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => false,
+      authorized: () => true,
+      connect: async () => mockInfo,
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+      autoReconnect: true,
+    });
+    expect(await ctrl.tryAutoReconnect()).toBe(false);
+    ctrl.destroy();
+  });
+
+  it('tryAutoReconnect skips when not authorized', async () => {
+    memoryStore.set('splendor.connect.lastConnectorId', 'metamask');
+    const connect = vi.fn(async () => mockInfo);
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      authorized: async () => false,
+      connect,
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+      autoReconnect: true,
+    });
+    expect(await ctrl.tryAutoReconnect()).toBe(false);
+    expect(connect).not.toHaveBeenCalled();
+    ctrl.destroy();
+  });
+
+  it('tryAutoReconnect succeeds when authorized', async () => {
+    memoryStore.set('splendor.connect.lastConnectorId', 'metamask');
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      authorized: async () => true,
+      connect: async (ctx) => ctx.wallet.connectFromMetaMask(),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+      autoReconnect: true,
+    });
+    expect(await ctrl.tryAutoReconnect()).toBe(true);
+    expect(ctrl.getState().status).toBe('connected');
+    ctrl.destroy();
   });
 });

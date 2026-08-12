@@ -1,5 +1,6 @@
 import type { DeriveInfo, EthereumProvider } from '@splendor/pq-bridge';
 import type { Connector, ConnectorContext } from './types.js';
+import { hasAuthorizedAccounts } from './metamask.js';
 
 export type InjectedConnectorOpts = {
   /** Required EIP-1193 provider (Rabby, Coinbase inject, etc.). */
@@ -19,6 +20,9 @@ export function injectedConnector(opts: InjectedConnectorOpts): Connector {
     icon: opts.icon,
     ready() {
       return !!opts.ethereumProvider?.request;
+    },
+    authorized() {
+      return hasAuthorizedAccounts(opts.ethereumProvider);
     },
     async connect(ctx: ConnectorContext): Promise<DeriveInfo> {
       return ctx.wallet.connectFromMetaMask(opts.ethereumProvider);

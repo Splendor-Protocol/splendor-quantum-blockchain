@@ -29,7 +29,7 @@ import {
 
 Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
 
-Lower-level (no UI): `connectSplendor` / `useSplendorPQ` from `@splendor/pq-bridge` below.
+Lower-level (no UI): `connectSplendor` from `@splendor/pq-bridge`, or `useSplendorPQ` from `@splendor/pq-bridge/react`.
 
 ```ts
 import { PROTOCOL, SQDP_VERSION, connectSplendor, createSplendorClient } from '@splendor/pq-bridge';
@@ -99,10 +99,14 @@ Share one `SqcProvider` across React components. Load WASM only after connect.
 
 ## 2. Connect (signing wallet)
 
+Prefer one-touch / Connect UI kit so WASM paths come from `sqc.networks.json` automatically.
+You still must **host** the files at those URLs (see [`WASM_HOSTING.md`](./WASM_HOSTING.md)).
+
 ```ts
 import { SplendorPQBridge } from '@splendor/pq-bridge';
 // browser: import from '@splendor/pq-bridge/browser'
 
+// Manual path (overrides network defaults when needed):
 const wallet = SplendorPQBridge.fromProvider(provider, {
   wasmUrl: '/sqc_signer.wasm',
   execUrl: '/wasm_exec.js',
@@ -186,6 +190,7 @@ Serve WASM with correct MIME/CORS: [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 - [ ] Serve `sqc_signer.wasm` + `wasm_exec.js` with correct MIME / CORS
 - [ ] Pin `wasmSha256` / `execSha256` for non-local browser networks
 - [ ] Display **SQ:** address after connect (not 0x)
-- [ ] Handle `BridgeError` codes: `USER_REJECTED`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`
+- [ ] Handle `BridgeError` codes: `USER_REJECTED`, `NO_PROVIDER`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`
 - [ ] Use `rpcUrls` failover in production (`https://` for non-local)
 - [ ] Confirm via `waitForConfirmation` / nonce poll until tx index exists
+- [ ] Host WASM at network `wasmUrl` / `execUrl` from `sqc.networks.json` (one-touch already resolves these; you still must serve the files)

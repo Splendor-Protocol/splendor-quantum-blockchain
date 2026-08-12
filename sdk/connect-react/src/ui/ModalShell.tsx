@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { IconClose } from './icons.js';
 
 type ModalShellProps = {
@@ -9,8 +10,12 @@ type ModalShellProps = {
   children: ReactNode;
 };
 
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function ModalShell({ open, title, subtitle, onClose, children }: ModalShellProps) {
   const titleId = useId();
+  const subtitleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -19,10 +24,13 @@ export function ModalShell({ open, title, subtitle, onClose, children }: ModalSh
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     const prev = document.activeElement as HTMLElement | null;
     panelRef.current?.focus();
     return () => {
       document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
       prev?.focus?.();
     };
   }, [open, onClose]);
@@ -31,28 +39,28 @@ export function ModalShell({ open, title, subtitle, onClose, children }: ModalSh
     if (!open) return;
     const panel = panelRef.current;
     if (!panel) return;
-    const focusables = panel.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
+
     const trap = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab' || focusables.length === 0) return;
+      if (e.key !== 'Tab') return;
+      const focusables = panel.querySelectorAll<HTMLElement>(FOCUSABLE);
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
       if (e.shiftKey && document.activeElement === first) {
         e.preventDefault();
-        last?.focus();
+        last.focus();
       } else if (!e.shiftKey && document.activeElement === last) {
         e.preventDefault();
-        first?.focus();
+        first.focus();
       }
     };
     panel.addEventListener('keydown', trap);
     return () => panel.removeEventListener('keydown', trap);
-  }, [open]);
+  }, [open, children]);
 
-  if (!open) return null;
+  if (!open || typeof document === 'undefined') return null;
 
-  return (
+  return createPortal(
     <div
       className="sqc-backdrop"
       role="presentation"
@@ -66,6 +74,7 @@ export function ModalShell({ open, title, subtitle, onClose, children }: ModalSh
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={subtitle ? subtitleId : undefined}
         tabIndex={-1}
       >
         <div className="sqc-modal__header">
@@ -73,7 +82,11 @@ export function ModalShell({ open, title, subtitle, onClose, children }: ModalSh
             <h2 id={titleId} className="sqc-modal__brand">
               {title}
             </h2>
-            {subtitle ? <p className="sqc-modal__sub">{subtitle}</p> : null}
+            {subtitle ? (
+              <p id={subtitleId} className="sqc-modal__sub">
+                {subtitle}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"
@@ -86,6 +99,7 @@ export function ModalShell({ open, title, subtitle, onClose, children }: ModalSh
         </div>
         <div className="sqc-modal__body">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

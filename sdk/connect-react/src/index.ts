@@ -9,6 +9,8 @@ export {
   metamaskConnector,
   injectedConnector,
   seedConnector,
+  hasAuthorizedAccounts,
+  assertSeedHex,
 } from './connectors/index.js';
 export type {
   Connector,

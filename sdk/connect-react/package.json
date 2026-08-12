@@ -18,12 +18,14 @@
   ],
   "files": [
     "dist",
+    "scripts",
     "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node ./scripts/copy-css.mjs",
     "test": "vitest run",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "copy-wasm": "node ./scripts/copy-wasm-assets.mjs"
   },
   "engines": {
     "node": ">=18"

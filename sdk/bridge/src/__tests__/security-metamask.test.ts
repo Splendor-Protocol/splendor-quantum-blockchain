@@ -27,6 +27,7 @@ afterEach(() => {
     }
   }
   bridges.length = 0;
+  delete (globalThis as { ethereum?: unknown }).ethereum;
 });
 
 function track(b: SplendorPQBridge) {
@@ -207,4 +208,22 @@ describe('security-metamask', () => {
     expect(sawError).toBe(true);
     expect(disconnected).toBe(true);
   }, 30_000);
+
+  it('connectFromMetaMask maps missing provider to NO_PROVIDER', async () => {
+    delete (globalThis as { ethereum?: unknown }).ethereum;
+    const b = track(
+      new SplendorPQBridge({
+        rpcUrl: 'http://127.0.0.1:1',
+        allowUnpinnedWasm: true,
+        networkId: 'local',
+      }),
+    );
+    try {
+      await b.connectFromMetaMask();
+      expect.fail('expected throw');
+    } catch (e) {
+      expect(isBridgeError(e)).toBe(true);
+      expect((e as BridgeError).code).toBe('NO_PROVIDER');
+    }
+  });
 });

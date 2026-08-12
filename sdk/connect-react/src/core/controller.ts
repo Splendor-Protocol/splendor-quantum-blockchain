@@ -2,6 +2,7 @@ import {
   BridgeError,
   createSplendorClient,
   isBridgeError,
+  type BridgeErrorCode,
   type CreateClientOptions,
   type DeriveInfo,
   type NetworkConfig,
@@ -34,6 +35,29 @@ function toAccount(info: DeriveInfo): ConnectAccount {
   };
 }
 
+function errorFromWalletPayload(payload: { code: string; message: string }): Error {
+  const code = payload.code as BridgeErrorCode;
+  const known: BridgeErrorCode[] = [
+    'NOT_CONNECTED',
+    'USER_REJECTED',
+    'NO_PROVIDER',
+    'RPC',
+    'NETWORK',
+    'WASM',
+    'INVALID_ADDRESS',
+    'INVALID_AMOUNT',
+    'INVALID_FEE',
+    'TIMEOUT',
+    'TX_NOT_CONFIRMED',
+    'CHAIN_MISMATCH',
+    'UNKNOWN',
+  ];
+  if (known.includes(code)) {
+    return new BridgeError(code, payload.message);
+  }
+  return new BridgeError('UNKNOWN', payload.message);
+}
+
 export type ConnectController = {
   readonly client: SplendorClient;
   getState(): ConnectControllerState;
@@ -42,7 +66,7 @@ export type ConnectController = {
   closeModal(): void;
   connect(connectorId: string, opts?: Record<string, unknown>): Promise<DeriveInfo>;
   disconnect(): Promise<void>;
-  /** Try last connector (MetaMask/injected only — never seed). */
+  /** Try last connector (MetaMask/injected only — never seed/advanced). */
   tryAutoReconnect(): Promise<boolean>;
   getWallet(): SplendorPQBridge;
   getProvider(): SqcProvider;
@@ -77,11 +101,6 @@ export function createConnectController(
     for (const l of listeners) l();
   };
 
-  const setStatus = (next: ConnectionStatus) => {
-    status = next;
-    emit();
-  };
-
   const syncFromWallet = () => {
     const info = client.wallet.getDeriveInfo();
     if (info && client.wallet.getConnectionState() === 'connected') {
@@ -114,8 +133,9 @@ export function createConnectController(
   );
   unsubs.push(
     client.wallet.on('error', (payload) => {
-      error = new Error(payload.message);
+      error = errorFromWalletPayload(payload);
       account = null;
+      activeConnectorId = null;
       status = 'error';
       emit();
     }),
@@ -159,12 +179,11 @@ export function createConnectController(
       try {
         const ready = await connector.ready();
         if (!ready) {
-          const err = BridgeError.noProvider(
+          throw BridgeError.noProvider(
             connector.id === 'metamask'
               ? 'MetaMask (or compatible wallet) not found. Install an EIP-1193 wallet.'
               : `Connector "${connector.name}" is not ready`,
           );
-          throw err;
         }
 
         await client.wallet.init();
@@ -178,7 +197,7 @@ export function createConnectController(
         );
         account = toAccount(info);
         activeConnectorId = connectorId;
-        setLastConnectorId(connectorId === 'seed' ? null : connectorId);
+        setLastConnectorId(connector.advanced ? null : connectorId);
         status = 'connected';
         modal = 'closed';
         emit();
@@ -187,6 +206,7 @@ export function createConnectController(
         const err = e instanceof Error ? e : new Error(String(e));
         error = err;
         account = null;
+        activeConnectorId = null;
         status = 'error';
         emit();
         throw err;
@@ -211,16 +231,25 @@ export function createConnectController(
     async tryAutoReconnect() {
       if (!options.autoReconnect) return false;
       const last = getLastConnectorId();
-      if (!last || last === 'seed') return false;
+      if (!last) return false;
       const connector = connectors.find((c) => c.id === last);
       if (!connector || connector.advanced) return false;
       try {
         const ready = await connector.ready();
         if (!ready) return false;
+        if (connector.authorized) {
+          const ok = await connector.authorized();
+          if (!ok) return false;
+        }
         await controller.connect(last);
         return true;
       } catch (e) {
         if (isBridgeError(e) && e.code === 'USER_REJECTED') return false;
+        // Surface non-reject failures so UI can show mapped copy; still return false.
+        error = e instanceof Error ? e : new Error(String(e));
+        status = 'error';
+        activeConnectorId = null;
+        emit();
         return false;
       }
     },
@@ -260,6 +289,12 @@ export function connectErrorMessage(err: unknown): string {
         return err.message || 'Network error';
       case 'CHAIN_MISMATCH':
         return 'Chain mismatch — check network config';
+      case 'TIMEOUT':
+        return 'Request timed out';
+      case 'NOT_CONNECTED':
+        return 'Wallet not connected';
+      case 'UNKNOWN':
+        return err.message || 'Connection failed';
       default:
         return err.message || 'Connection failed';
     }

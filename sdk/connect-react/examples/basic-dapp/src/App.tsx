@@ -66,6 +66,7 @@ export function App() {
       network="local"
       connectors={[metamaskConnector(), seedConnector()]}
       theme="splendor"
+      autoReconnect
       allowUnpinnedWasm
     >
       <div className="app-shell">

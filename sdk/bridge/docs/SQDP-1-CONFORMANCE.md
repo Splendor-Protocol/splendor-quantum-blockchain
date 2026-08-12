@@ -27,7 +27,7 @@ Automated coverage (run from `sdk/bridge`): `npm run test:security` (Vitest `sec
 
 ## Errors and events
 
-- [x] Handles at least: `USER_REJECTED`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`, `INVALID_ADDRESS`, `INVALID_FEE` — `security-errors.test.ts` / `security-metamask.test.ts`
+- [x] Handles at least: `USER_REJECTED`, `NO_PROVIDER`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`, `INVALID_ADDRESS`, `INVALID_FEE` — `security-errors.test.ts` / `security-metamask.test.ts`
 - [x] Listens for `connect` / `disconnect` / `accountsChanged` as needed — `security-metamask.test.ts` (fail-closed)
 - [ ] Does not treat MetaMask EVM chain switch as Splendor chain change *(dApp UI practice)*
 

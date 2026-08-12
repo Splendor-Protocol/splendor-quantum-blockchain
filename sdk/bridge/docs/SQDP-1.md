@@ -115,7 +115,7 @@ Clients using `@splendor/pq-bridge` MUST use these event names and payloads:
 
 Clients MUST handle these `BridgeError` codes (string `code` field):
 
-`NOT_CONNECTED`, `USER_REJECTED`, `RPC`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`, `UNKNOWN`.
+`NOT_CONNECTED`, `USER_REJECTED`, `NO_PROVIDER`, `RPC`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`, `UNKNOWN`.
 
 Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` using the same code strings when applicable.
 

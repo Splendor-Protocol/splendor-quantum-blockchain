@@ -27,8 +27,6 @@ export type SplendorConnectProviderProps = Omit<CreateClientOptions, 'network'> 
   autoReconnect?: boolean;
   theme?: ThemeProp;
   children: ReactNode;
-  /** Skip importing CSS when the host already loads @splendor/connect-react/style.css */
-  skipCssImport?: boolean;
 };
 
 const ControllerContext = createContext<ConnectController | null>(null);
@@ -47,7 +45,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     connectors,
     autoReconnect = false,
     theme = 'splendor',
-    skipCssImport: _skip,
     ...clientOpts
   } = props;
 
@@ -60,11 +57,18 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     wasmUrl: clientOpts.wasmUrl,
     execUrl: clientOpts.execUrl,
     wasmSha256: clientOpts.wasmSha256,
+    execSha256: clientOpts.execSha256,
     derivation: clientOpts.derivation || 'eip191-v1',
     autoReconnect,
     connectorsKey,
     rpcUrls: clientOpts.rpcUrls,
+    chainId: clientOpts.chainId,
+    timeoutMs: clientOpts.timeoutMs,
+    retries: clientOpts.retries,
+    sessionIdleMs: clientOpts.sessionIdleMs,
     allowUnpinnedWasm: clientOpts.allowUnpinnedWasm === true,
+    allowInsecureHttp: clientOpts.allowInsecureHttp === true,
+    watchMetaMaskAccounts: clientOpts.watchMetaMaskAccounts,
   });
 
   const connectorsRef = useRef(connectors);
@@ -82,7 +86,13 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       derivation?: CreateClientOptions['derivation'];
       autoReconnect?: boolean;
       allowUnpinnedWasm?: boolean;
+      allowInsecureHttp?: boolean;
       rpcUrls?: string[];
+      chainId?: string;
+      timeoutMs?: number;
+      retries?: number;
+      sessionIdleMs?: number;
+      watchMetaMaskAccounts?: boolean;
     };
     const createOpts: CreateConnectControllerOptions = {
       ...clientOptsRef.current,
@@ -92,7 +102,13 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       wasmSha256: parsed.wasmSha256,
       derivation: parsed.derivation,
       allowUnpinnedWasm: parsed.allowUnpinnedWasm,
+      allowInsecureHttp: parsed.allowInsecureHttp,
       rpcUrls: parsed.rpcUrls,
+      chainId: parsed.chainId,
+      timeoutMs: parsed.timeoutMs,
+      retries: parsed.retries,
+      sessionIdleMs: parsed.sessionIdleMs,
+      watchMetaMaskAccounts: parsed.watchMetaMaskAccounts,
       connectors: connectorsRef.current,
       autoReconnect: parsed.autoReconnect,
     };

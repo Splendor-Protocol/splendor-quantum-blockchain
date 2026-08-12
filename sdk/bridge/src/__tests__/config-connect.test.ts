@@ -45,6 +45,10 @@ describe('one-touch connect', () => {
     const { provider, wallet, network, info } = createSplendorClient({ network: 'local' });
     expect(network.id).toBe('local');
     expect(provider.rpcUrls[0]).toContain('8080');
+    expect(network.wasmUrl).toBeTruthy();
+    expect(network.execUrl).toBeTruthy();
+    expect(network.wasmSha256).toMatch(/^[0-9a-f]{64}$/i);
+    expect(network.execSha256).toMatch(/^[0-9a-f]{64}$/i);
     expect(info).toBeNull();
     expect(wallet.getConnectionState()).toBe('disconnected');
     wallet.disconnect();

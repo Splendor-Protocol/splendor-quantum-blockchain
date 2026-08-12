@@ -2,7 +2,7 @@
  * SQDP-1 required error codes are constructible and thrown from real APIs where cheap.
  */
 import { describe, expect, it } from 'vitest';
-import { BridgeError, isBridgeError } from '../errors.js';
+import { BridgeError, isBridgeError, wrapUnknown } from '../errors.js';
 import { assertAddress } from '../address.js';
 import { assertFeeAtLeastMin } from '../encoding.js';
 import { SqRpc } from '../rpc.js';
@@ -11,6 +11,7 @@ import { CHAIN_ID } from '../derive.js';
 describe('security-errors SQDP-1 codes', () => {
   const codes = [
     'USER_REJECTED',
+    'NO_PROVIDER',
     'TIMEOUT',
     'TX_NOT_CONFIRMED',
     'CHAIN_MISMATCH',
@@ -21,6 +22,7 @@ describe('security-errors SQDP-1 codes', () => {
   it('constructs all required BridgeError codes', () => {
     const errors = [
       BridgeError.userRejected(),
+      BridgeError.noProvider(),
       BridgeError.timeout('timed out'),
       BridgeError.txNotConfirmed('not confirmed'),
       BridgeError.chainMismatch('got', 'want'),
@@ -119,5 +121,24 @@ describe('security-errors SQDP-1 codes', () => {
 
   it('NO_PROVIDER factory message', () => {
     expect(BridgeError.noProvider().code).toBe('NO_PROVIDER');
+  });
+});
+
+describe('wrapUnknown', () => {
+  it('preserves BridgeError instance and code', () => {
+    const original = BridgeError.noProvider();
+    const wrapped = wrapUnknown(original, 'USER_REJECTED');
+    expect(wrapped).toBe(original);
+    expect(wrapped.code).toBe('NO_PROVIDER');
+  });
+
+  it('maps provider-missing messages to NO_PROVIDER', () => {
+    const w = wrapUnknown(new Error('EIP-1193 provider (window.ethereum) not found'));
+    expect(w.code).toBe('NO_PROVIDER');
+  });
+
+  it('maps user reject messages to USER_REJECTED', () => {
+    const w = wrapUnknown(new Error('User rejected the request'));
+    expect(w.code).toBe('USER_REJECTED');
   });
 });

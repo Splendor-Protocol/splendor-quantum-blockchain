@@ -14,6 +14,23 @@ export type MetamaskConnectorOpts = {
 };
 
 /**
+ * True when the EIP-1193 provider already has at least one authorized account
+ * (no popup). Used by autoReconnect to avoid eth_requestAccounts prompts.
+ */
+export async function hasAuthorizedAccounts(
+  provider?: EthereumProvider,
+): Promise<boolean> {
+  const eth = provider ?? getWindowEthereum();
+  if (!eth?.request) return false;
+  try {
+    const accounts = (await eth.request({ method: 'eth_accounts' })) as unknown;
+    return Array.isArray(accounts) && accounts.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Primary connector: MetaMask (or compatible inject) derives PQ keys via personal_sign.
  */
 export function metamaskConnector(opts: MetamaskConnectorOpts = {}): Connector {
@@ -25,6 +42,9 @@ export function metamaskConnector(opts: MetamaskConnectorOpts = {}): Connector {
     ready() {
       const eth = opts.ethereumProvider ?? getWindowEthereum();
       return !!eth?.request;
+    },
+    authorized() {
+      return hasAuthorizedAccounts(opts.ethereumProvider);
     },
     async connect(ctx: ConnectorContext): Promise<DeriveInfo> {
       const provider = opts.ethereumProvider ?? getWindowEthereum();
