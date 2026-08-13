@@ -203,12 +203,28 @@ EOF
 # ── Step 7: RPC node setup ─────────────────────────────────────────────────────
 setup_rpc() {
   log "=== RPC NODE SETUP ==="
-
-  # Prompt for validator IP
   echo ""
-  echo -e "${ORANGE}Enter the validator node's IP address or URL (e.g. http://1.2.3.4:8080):${NC}"
+  echo -e "${ORANGE}The RPC node does NOT generate its own genesis.json.${NC}"
+  echo -e "${ORANGE}It syncs the chain (including the genesis block) from the validator peer.${NC}"
+  echo -e "${ORANGE}You need: the validator's public IP and its RPC port (default: 8080).${NC}"
+  echo ""
+
+  # Prompt for validator URL
+  echo -e "${ORANGE}Enter the validator node's RPC URL (e.g. http://1.2.3.4:8080):${NC}"
   read -r VALIDATOR_URL
   VALIDATOR_URL=${VALIDATOR_URL:-"http://VALIDATOR_IP:8080"}
+
+  # Optionally copy genesis.json from validator (for config reference, not required)
+  echo ""
+  echo -e "${ORANGE}[OPTIONAL] Paste the genesis.json content from your validator server.${NC}"
+  echo -e "${ORANGE}Press ENTER to skip (the RPC node will sync it automatically):${NC}"
+  read -r SKIP_GENESIS
+  if [ -z "$SKIP_GENESIS" ]; then
+    log "Skipping genesis.json — will sync from validator peer automatically."
+  else
+    echo "$SKIP_GENESIS" > /var/sqc/genesis.json
+    log "genesis.json saved to /var/sqc/genesis.json"
+  fi
 
   cat > /etc/systemd/system/sqc-rpc.service << EOF
 [Unit]
@@ -236,11 +252,20 @@ EOF
 
   log "Systemd service created: /etc/systemd/system/sqc-rpc.service"
   echo ""
+  echo -e "${GREEN}Summary for RPC node:${NC}"
+  echo "  • No .sqwallet needed (RPC nodes don't sign blocks)"
+  echo "  • No genesis.json needed (syncs from validator automatically)"
+  echo "  • Validator peer: $VALIDATOR_URL"
+  echo ""
   echo "Start the RPC node:"
   echo "  systemctl daemon-reload"
   echo "  systemctl enable sqc-rpc"
   echo "  systemctl start sqc-rpc"
   echo "  journalctl -u sqc-rpc -f"
+  echo ""
+  echo "Verify sync after starting:"
+  echo "  curl http://localhost:8080/sync"
+  echo "  # {\"is_syncing\":false,\"local_height\":N,\"best_height\":N,\"peer_count\":1}"
 }
 
 # ── Step 8: Firewall ───────────────────────────────────────────────────────────
