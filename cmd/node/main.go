@@ -244,11 +244,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Periodic sync (full nodes) ─────────────────────────────────────────
-	// Sync every 3 seconds so the RPC node stays within ~3 blocks of the validator.
-	// The validator produces 1 block every 2s, so at 3s intervals we stay very close.
+	// Sync every 1 second — realtime sync matching the 2s block interval.
+	// RPC node stays within 1-2 blocks of the validator at all times.
 	if !flagIsValidator {
 		go func() {
-			ticker := time.NewTicker(3 * time.Second)
+			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
 			for {
 				select {
@@ -295,7 +295,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// Core RPC server (handles /tx/submit, /block/*, /balance/*, /status, etc.)
 	coreRPC := rpc.New(
-		rpc.Config{ListenAddr: flagRPCAddr, ValidatorPK: validatorPKBytes},
+		rpc.Config{
+			ListenAddr:  flagRPCAddr,
+			ValidatorPK: validatorPKBytes,
+			PeerCount:   peerPool.Count, // wire live peer count from peerPool
+		},
 		stateDB, executor, pool, nil, scheduler,
 	)
 
