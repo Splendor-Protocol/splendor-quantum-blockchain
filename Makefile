@@ -7,6 +7,14 @@ BINARY_WALLET = sqc-wallet
 DOCKER_IMAGE  = splendor-quantum-chain
 VERSION       = 1.0.0
 
+# Auto-detect Go binary: prefer /usr/local/go/bin/go (installed by install.sh)
+# then fall back to whatever is in PATH.
+ifeq ($(wildcard /usr/local/go/bin/go),/usr/local/go/bin/go)
+  GO := /usr/local/go/bin/go
+else
+  GO := $(shell which go 2>/dev/null || echo go)
+endif
+
 .PHONY: all build node wallet docker docker-run test clean deps tidy fmt lint run-node run-validator help
 
 # ── Default ───────────────────────────────────────────────────────────────
@@ -14,22 +22,22 @@ all: deps build
 
 # ── Dependencies ──────────────────────────────────────────────────────────
 deps:
-	go mod download
+	$(GO) mod download
 
 tidy:
-	go mod tidy
+	$(GO) mod tidy
 
 # ── Build ─────────────────────────────────────────────────────────────────
 build: node wallet
 
 node:
-	@echo "Building sqc-node..."
-	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY_NODE) ./cmd/node
+	@echo "Building sqc-node (Go: $(GO))..."
+	CGO_ENABLED=1 $(GO) build -mod=mod -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY_NODE) ./cmd/node
 	@echo "  → $(BINARY_NODE)"
 
 wallet:
 	@echo "Building sqc-wallet..."
-	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY_WALLET) ./cmd/wallet
+	CGO_ENABLED=1 $(GO) build -mod=mod -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY_WALLET) ./cmd/wallet
 	@echo "  → $(BINARY_WALLET)"
 
 # ── Docker ────────────────────────────────────────────────────────────────
@@ -80,13 +88,13 @@ gen-validator-wallet: build
 
 # ── Test ──────────────────────────────────────────────────────────────────
 test:
-	go test -v -count=1 ./...
+	$(GO) test -v -count=1 ./...
 
 test-crypto:
-	go test -v -count=1 ./core/crypto/...
+	$(GO) test -v -count=1 ./core/crypto/...
 
 test-race:
-	go test -race -count=1 ./...
+	$(GO) test -race -count=1 ./...
 
 # ── Code quality ──────────────────────────────────────────────────────────
 fmt:
@@ -97,7 +105,24 @@ lint:
 	golangci-lint run ./...
 
 vet:
-	go vet ./...
+	$(GO) vet ./...
+
+# ── Install Go 1.23 (if not present) ─────────────────────────────────────
+install-go:
+	@echo "Installing Go 1.23.0..."
+	wget -q https://go.dev/dl/go1.23.0.linux-amd64.tar.gz -O /tmp/go.tar.gz
+	sudo rm -rf /usr/local/go
+	sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+	rm /tmp/go.tar.gz
+	echo 'export PATH=$$PATH:/usr/local/go/bin' >> ~/.bashrc
+	@echo "Done. Run: source ~/.bashrc  then  make build"
+
+# ── Full server setup (validator or rpc) ──────────────────────────────────
+setup-validator:
+	bash install.sh --validator
+
+setup-rpc:
+	bash install.sh --rpc
 
 # ── Clean ─────────────────────────────────────────────────────────────────
 clean:
