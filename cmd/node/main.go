@@ -211,8 +211,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 			log.Info().Msg("Chain is empty — creating genesis block")
 			stateRoot, _ := stateDB.StateRoot()
 			genesis := types.GenesisBlock(validatorAddr, stateRoot, time.Now().Unix())
-			// Embed the validator's Dilithium public key in the genesis block.
-			// This allows RPC nodes to bootstrap signature verification without genesis.json.
 			genesis.ValidatorPubKey = validatorPKBytes
 			if hash, hashErr := genesis.ComputeHash(); hashErr == nil {
 				genesis.Hash = hash
@@ -246,21 +244,21 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Periodic sync (full nodes) ─────────────────────────────────────────
+	// Sync every 3 seconds so the RPC node stays within ~3 blocks of the validator.
+	// The validator produces 1 block every 2s, so at 3s intervals we stay very close.
 	if !flagIsValidator {
 		go func() {
-			ticker := time.NewTicker(30 * time.Second)
+			ticker := time.NewTicker(3 * time.Second)
 			defer ticker.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					if !syncer.IsSynced() {
-						if n, err := syncer.SyncOnce(); err != nil {
-							log.Warn().Err(err).Msg("sync failed")
-						} else if n > 0 {
-							log.Info().Int("blocks", n).Msg("synced blocks")
-						}
+					if n, err := syncer.SyncOnce(); err != nil {
+						log.Warn().Err(err).Msg("sync failed")
+					} else if n > 0 {
+						log.Debug().Int("blocks", n).Msg("synced blocks")
 					}
 				}
 			}
