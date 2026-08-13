@@ -358,6 +358,13 @@ cmd_update() {
   chmod +x sqc-node sqc-wallet sqc 2>/dev/null || true
   ok "Binaries rebuilt: $(ls -lh sqc-node | awk '{print $5}')"
 
+  # Re-install sqc tool globally (in case it was updated)
+  if [ -f "$SQC_DIR/sqc" ]; then
+    cp "$SQC_DIR/sqc" /usr/local/bin/sqc
+    chmod +x /usr/local/bin/sqc
+    ok "sqc tool updated → /usr/local/bin/sqc"
+  fi
+
   # Clean data if requested
   if [ "$CLEAN" = true ]; then
     inf "Wiping chain data..."
