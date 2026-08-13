@@ -161,14 +161,34 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── P2P peer pool + discovery ──────────────────────────────────────────
-	peerPool := network.NewPeerPool("http://localhost"+flagRPCAddr, 50)
-	discoverer := network.NewDiscoverer(peerPool, "http://localhost"+flagRPCAddr, 60*time.Second)
+	// selfURL is our public-facing RPC address for peer announcements.
+	// On a real server this should be the public IP; on localhost it's fine as-is.
+	selfURL := "http://localhost" + flagRPCAddr
+
+	peerPool := network.NewPeerPool(selfURL, 50)
+	broadcaster := network.NewBroadcaster(validatorPKBytes)
+	discoverer := network.NewDiscoverer(peerPool, selfURL, 60*time.Second)
+
 	for _, peer := range flagPeers {
 		peerPool.Add(&network.PeerInfo{Addr: peer, LastSeen: time.Now().Unix()})
+		// Validator nodes: add RPC peers to broadcaster so blocks get pushed
+		if flagIsValidator {
+			broadcaster.AddPeer(peer)
+		}
 	}
 	discoverer.Bootstrap(flagPeers)
 	discoverer.Start()
 	defer discoverer.Stop()
+
+	// Announce ourselves to peers so they can push blocks back to us (RPC nodes)
+	// and so the validator knows about us (bidirectional peer tracking).
+	if len(flagPeers) > 0 {
+		go func() {
+			time.Sleep(3 * time.Second) // wait for node to be ready
+			h, _ := executor.LatestHeight()
+			broadcaster.AnnounceSelf(selfURL, h)
+		}()
+	}
 
 	// ── Block sync ─────────────────────────────────────────────────────────
 	syncer := network.NewSyncer(
@@ -235,7 +255,25 @@ func runNode(cmd *cobra.Command, args []string) error {
 			PrivateKey:    validatorPriv,
 		}
 		v := consensus.New(vCfg, executor, pool, scheduler)
-		v.Subscribe(blockCh)
+
+		// Validator: subscribe to block channel to push blocks to peers immediately.
+		// This provides realtime push-based sync (like geth's block propagation).
+		// The channel fan-out: blockCh → wsHub + broadcaster.
+		broadcastCh := make(chan *types.Block, 64)
+		v.Subscribe(broadcastCh)
+
+		go func() {
+			for b := range broadcastCh {
+				// Send to WebSocket hub
+				select {
+				case blockCh <- b:
+				default:
+				}
+				// Push to all registered RPC peers immediately
+				broadcaster.Broadcast(b)
+			}
+		}()
+
 		go func() {
 			if err := v.Run(ctx); err != nil && ctx.Err() == nil {
 				log.Error().Err(err).Msg("Validator exited with error")
@@ -306,12 +344,13 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// VM routes (/vm/disasm, /vm/validate, /healthz, /readyz)
 	rpc.RegisterVMRoutes(router, nodeStartTime, isReady)
 
-	// Explorer routes (/tx/{hash}/receipt, /contract/*, /sync, /peers)
-	if txIndex != nil {
-		rpc.RegisterExplorerRoutes(router, txIndex, stateDB, peerPool, func() uint64 {
-			h, _ := executor.LatestHeight(); return h
-		})
-	}
+	// Explorer routes (/tx/{hash}/receipt, /contract/*, /sync, /peers).
+	// Pass broadcaster.AddPeer so when a peer announces via POST /peers/announce,
+	// the validator immediately adds it to the broadcast list (push-based realtime sync).
+	// Note: RegisterExplorerRoutes handles nil txIndex gracefully.
+	rpc.RegisterExplorerRoutes(router, txIndex, stateDB, peerPool, func() uint64 {
+		h, _ := executor.LatestHeight(); return h
+	}, broadcaster.AddPeer)
 
 	// Governance + staking routes
 	rpc.RegisterGovRoutes(router, stateDB)

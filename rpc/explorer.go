@@ -33,19 +33,29 @@ import (
 
 // RegisterExplorerRoutes adds block explorer endpoints to an existing router.
 // Call this after building the main router in server.go.
+// onPeerAnnounce is an optional callback called when a peer announces itself
+// (e.g. to add it to the broadcaster on a validator node).
 func RegisterExplorerRoutes(
 	r *mux.Router,
 	txIndex *state.TxIndexStore,
-	stateDB *state.StateDB, // changed from *state.StateDB to accept the interface
+	stateDB *state.StateDB,
 	pool *network.PeerPool,
 	localHeight func() uint64,
+	onPeerAnnounce ...func(addr string),
 ) {
-	// Receipts
-	r.HandleFunc("/tx/{hash}/receipt", makeReceiptHandler(txIndex)).Methods(http.MethodGet)
+	var announceCallback func(addr string)
+	if len(onPeerAnnounce) > 0 {
+		announceCallback = onPeerAnnounce[0]
+	}
+
+	// Receipts (only if txIndex is available)
+	if txIndex != nil {
+		r.HandleFunc("/tx/{hash}/receipt", makeReceiptHandler(txIndex)).Methods(http.MethodGet)
+	}
 
 	// Peer management
 	r.HandleFunc("/peers", makePeersHandler(pool, localHeight)).Methods(http.MethodGet)
-	r.HandleFunc("/peers/announce", makeAnnounceHandler(pool)).Methods(http.MethodPost)
+	r.HandleFunc("/peers/announce", makeAnnounceHandler(pool, announceCallback)).Methods(http.MethodPost)
 
 	// Sync status
 	r.HandleFunc("/sync", makeSyncHandler(pool, localHeight)).Methods(http.MethodGet)
@@ -89,7 +99,7 @@ func makePeersHandler(pool *network.PeerPool, localHeight func() uint64) http.Ha
 	}
 }
 
-func makeAnnounceHandler(pool *network.PeerPool) http.HandlerFunc {
+func makeAnnounceHandler(pool *network.PeerPool, onAnnounce func(addr string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
 		if err != nil {
@@ -107,7 +117,14 @@ func makeAnnounceHandler(pool *network.PeerPool) http.HandlerFunc {
 			return
 		}
 
+		// Add to peer pool for discovery
 		pool.Add(&peer)
+
+		// Notify broadcaster (if validator) to start pushing blocks to this peer
+		if onAnnounce != nil {
+			onAnnounce(peer.Addr)
+		}
+
 		writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
 	}
 }
