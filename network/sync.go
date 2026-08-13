@@ -65,8 +65,40 @@ func NewBlockFetcher(cfg SyncConfig) *BlockFetcher {
 	}
 }
 
+// FetchGenesisValidatorPubKey fetches block 0 from a peer and extracts
+// the validator's Dilithium public key. This is used by RPC nodes that
+// don't have a local genesis.json — they bootstrap the pubkey from the chain.
+func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, error) {
+	url := fmt.Sprintf("%s/block/0", peerAddr)
+	resp, err := f.client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch genesis block from %s: %w", peerAddr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("genesis block: peer returned %d", resp.StatusCode)
+	}
+
+	var block types.Block
+	if err := json.NewDecoder(resp.Body).Decode(&block); err != nil {
+		return nil, fmt.Errorf("decode genesis block: %w", err)
+	}
+
+	// The genesis block's ValidatorSignature contains the pubkey implicitly,
+	// but it's cleaner to get it from the state — the validator registered
+	// their pubkey in the genesis allocation. Extract from block's ValidatorAddr.
+	// Since we don't have state here, return the pubkey embedded in the block.
+	if len(block.ValidatorPubKey) == 0 {
+		return nil, fmt.Errorf("genesis block has no validator pubkey — validator must be running with a funded genesis")
+	}
+	return block.ValidatorPubKey, nil
+}
+
 // FetchBlock downloads a single block by height from the given peer.
-// It validates the Dilithium signature before returning.
+// If ValidatorPubKey is empty, signature verification is skipped
+// (the block will still be structurally validated).
+// SECURITY: Always set ValidatorPubKey in production.
 func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block, error) {
 	url := fmt.Sprintf("%s/block/%d", peerAddr, height)
 	resp, err := f.client.Get(url)
@@ -92,9 +124,24 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 		return nil, fmt.Errorf("block %d failed validation: %w", height, err)
 	}
 
-	// Verify Dilithium signature
-	if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-		return nil, fmt.Errorf("block %d: invalid validator signature: %w", height, err)
+	// Verify Dilithium signature only if we have the pubkey.
+	// If not set, try to learn it from the block itself (for genesis bootstrap).
+	if len(f.cfg.ValidatorPubKey) > 0 {
+		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
+			return nil, fmt.Errorf("block %d: invalid validator signature: %w", height, err)
+		}
+	} else if len(block.ValidatorPubKey) > 0 {
+		// First block with an embedded pubkey — learn and store for future use
+		f.cfg.ValidatorPubKey = block.ValidatorPubKey
+		log.Info().
+			Str("pubkey_prefix", fmt.Sprintf("%x", block.ValidatorPubKey[:8])).
+			Msg("sync: learned validator pubkey from first block")
+		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
+			return nil, fmt.Errorf("block %d: self-signed block failed verification: %w", height, err)
+		}
+	} else {
+		log.Warn().Uint64("height", height).
+			Msg("sync: no validator pubkey available — skipping signature verification (insecure)")
 	}
 
 	return &block, nil
@@ -118,8 +165,11 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 		return nil, fmt.Errorf("decode latest block: %w", err)
 	}
 
-	if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-		return nil, fmt.Errorf("latest block: invalid validator signature: %w", err)
+	// Verify signature if pubkey is known
+	if len(f.cfg.ValidatorPubKey) > 0 {
+		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
+			return nil, fmt.Errorf("latest block: invalid validator signature: %w", err)
+		}
 	}
 
 	return &block, nil
