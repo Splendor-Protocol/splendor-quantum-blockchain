@@ -85,14 +85,21 @@ fi
 cd "$SQC_DIR"
 
 # ── Step 4: Build binaries ─────────────────────────────────────────────────────
+log "Downloading dependencies and building..."
+
+# Ensure go.sum is up to date first
+go get ./... 2>/dev/null || true
+go mod tidy 2>/dev/null || true
+
 log "Building sqc-node and sqc-wallet..."
-CGO_ENABLED=1 go build -mod=mod -ldflags="-s -w -X main.version=1.0.0" \
+CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=1.0.0" \
   -o sqc-node ./cmd/node
-CGO_ENABLED=1 go build -mod=mod -ldflags="-s -w" \
+CGO_ENABLED=1 go build -ldflags="-s -w" \
   -o sqc-wallet ./cmd/wallet
 
 chmod +x sqc-node sqc-wallet
-log "Build complete: $(./sqc-node --help 2>&1 | head -1)"
+log "Build complete ✓"
+ls -lh sqc-node sqc-wallet
 
 # ── Step 5: Create data directory ──────────────────────────────────────────────
 mkdir -p /var/sqc/data
