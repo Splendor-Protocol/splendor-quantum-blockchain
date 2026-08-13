@@ -1,9 +1,9 @@
 /**
  * Splendor Connect design tokens — deep ink + cool teal (quantum-chain identity).
  * Override via [data-sqc-theme] or ThemeOverrides on SplendorConnectProvider.
+ *
+ * Fonts are opt-in: add a <link> for Outfit / IBM Plex Mono, or set --sqc-font-* vars.
  */
-
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root,
 [data-sqc-theme='splendor'],

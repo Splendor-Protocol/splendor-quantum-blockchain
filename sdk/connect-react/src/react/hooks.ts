@@ -1,24 +1,43 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { DeriveInfo, NetworkConfig, SplendorPQBridge, SqcProvider } from '@splendor/pq-bridge';
+import type {
+  CallOpts,
+  DeployOpts,
+  DeriveInfo,
+  NetworkConfig,
+  NetworkId,
+  PreflightResult,
+  SplendorPQBridge,
+  SqcProvider,
+  TransferOpts,
+} from '@splendor/pq-bridge';
+import { listSelectableNetworks, txExplorerUrl } from '@splendor/pq-bridge';
 import type { Connector } from '../connectors/types.js';
 import { connectErrorMessage } from '../core/controller.js';
-import type { ConnectAccount, ConnectionStatus } from '../core/types.js';
-import { useConnectController, useConnectState } from './provider.js';
+import type { ConnectAccount, ConnectingStep, ConnectionStatus } from '../core/types.js';
+import {
+  useBrandLabels,
+  useConnectController,
+  useConnectState,
+  useNetworkSwitch,
+} from './provider.js';
 
 export function useConnect(): {
   connect: (connectorId: string, opts?: Record<string, unknown>) => Promise<DeriveInfo>;
   disconnect: () => Promise<void>;
   connectors: Connector[];
   status: ConnectionStatus;
+  connectingStep: ConnectingStep;
   error: Error | null;
   errorMessage: string | null;
   openModal: (view?: 'connect' | 'account') => void;
   closeModal: () => void;
   modal: 'closed' | 'connect' | 'account';
   activeConnectorId: string | null;
+  labels: ReturnType<typeof useBrandLabels>;
 } {
   const ctrl = useConnectController();
   const state = useConnectState();
+  const labels = useBrandLabels();
 
   const connect = useCallback(
     (connectorId: string, opts?: Record<string, unknown>) => ctrl.connect(connectorId, opts),
@@ -36,12 +55,14 @@ export function useConnect(): {
     disconnect,
     connectors: state.connectors,
     status: state.status,
+    connectingStep: state.connectingStep,
     error: state.error,
     errorMessage: state.error ? connectErrorMessage(state.error) : null,
     openModal,
     closeModal,
     modal: state.modal,
     activeConnectorId: state.activeConnectorId,
+    labels,
   };
 }
 
@@ -77,7 +98,7 @@ export function useBalance(pollMs = 12_000): {
   const [error, setError] = useState<Error | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!address || !isConnected) {
+    if (!address || !isConnected || ctrl.isStub) {
       setBalance(null);
       setBalanceSPLD(null);
       return;
@@ -108,22 +129,294 @@ export function useBalance(pollMs = 12_000): {
 export function useNetwork(): {
   network: NetworkConfig | null;
   chainId: string | null;
+  networkId: NetworkId;
+  switchNetwork: (id: NetworkId) => Promise<void>;
+  networks: NetworkConfig[];
 } {
   const state = useConnectState();
-  const network = state.network;
+  const { switchNetwork, allowPlaceholderNetworks, networkId } = useNetworkSwitch();
+  const networks = listSelectableNetworks({
+    allowPlaceholder: allowPlaceholderNetworks,
+  });
   return {
-    network,
-    chainId: network?.chainId ?? null,
+    network: state.network,
+    chainId: state.network?.chainId ?? null,
+    networkId,
+    switchNetwork,
+    networks,
   };
 }
 
 export function useWallet(): {
-  wallet: SplendorPQBridge;
-  provider: SqcProvider;
+  wallet: SplendorPQBridge | null;
+  provider: SqcProvider | null;
+  ready: boolean;
 } {
   const ctrl = useConnectController();
+  if (ctrl.isStub) {
+    return { wallet: null, provider: null, ready: false };
+  }
   return {
     wallet: ctrl.getWallet(),
     provider: ctrl.getProvider(),
+    ready: true,
   };
+}
+
+export type TxHookStatus = 'idle' | 'pending' | 'success' | 'error';
+
+export function usePreflight(): {
+  preflight: (opts?: {
+    fee?: string;
+    amount?: string;
+    amountSPLD?: string;
+  }) => Promise<PreflightResult>;
+  status: TxHookStatus;
+  result: PreflightResult | null;
+  error: Error | null;
+  reset: () => void;
+} {
+  const { wallet, ready } = useWallet();
+  const [status, setStatus] = useState<TxHookStatus>('idle');
+  const [result, setResult] = useState<PreflightResult | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setResult(null);
+    setError(null);
+  }, []);
+
+  const preflight = useCallback(
+    async (opts?: { fee?: string; amount?: string; amountSPLD?: string }) => {
+      if (!ready || !wallet) throw new Error('Wallet not connected');
+      setStatus('pending');
+      setError(null);
+      try {
+        const res = await wallet.preflight(opts ?? {});
+        setResult(res);
+        setStatus('success');
+        return res;
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus('error');
+        throw err;
+      }
+    },
+    [wallet, ready],
+  );
+
+  return { preflight, status, result, error, reset };
+}
+
+export function useSendTransfer(): {
+  sendTransfer: (
+    opts: TransferOpts,
+  ) => Promise<{ status: string; hash?: string; confirmed?: boolean; explorerUrl?: string | null }>;
+  status: TxHookStatus;
+  hash: string | null;
+  explorerUrl: string | null;
+  confirmed: boolean;
+  error: Error | null;
+  reset: () => void;
+} {
+  const { wallet, ready } = useWallet();
+  const { network } = useNetwork();
+  const [status, setStatus] = useState<TxHookStatus>('idle');
+  const [hash, setHash] = useState<string | null>(null);
+  const [explorerUrl, setExplorerUrl] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setHash(null);
+    setExplorerUrl(null);
+    setConfirmed(false);
+    setError(null);
+  }, []);
+
+  const sendTransfer = useCallback(
+    async (opts: TransferOpts) => {
+      if (!ready || !wallet) throw new Error('Wallet not connected');
+      setStatus('pending');
+      setError(null);
+      setHash(null);
+      setExplorerUrl(null);
+      setConfirmed(false);
+      try {
+        const res = await wallet.sendTransfer(opts);
+        const h = res.hash ?? null;
+        setHash(h);
+        const exp = network && h ? txExplorerUrl(network, h) : null;
+        setExplorerUrl(exp);
+        const didConfirm = !!opts.waitForConfirmation && !!res.confirmation;
+        setConfirmed(didConfirm);
+        setStatus('success');
+        return {
+          status: String(res.status),
+          hash: res.hash,
+          confirmed: didConfirm,
+          explorerUrl: exp,
+        };
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus('error');
+        throw err;
+      }
+    },
+    [wallet, ready, network],
+  );
+
+  return { sendTransfer, status, hash, explorerUrl, confirmed, error, reset };
+}
+
+export function useCallContract(): {
+  callContract: (opts: CallOpts) => Promise<{ status: string; hash?: string; explorerUrl?: string | null }>;
+  status: TxHookStatus;
+  hash: string | null;
+  explorerUrl: string | null;
+  error: Error | null;
+  reset: () => void;
+} {
+  const { wallet, ready } = useWallet();
+  const { network } = useNetwork();
+  const [status, setStatus] = useState<TxHookStatus>('idle');
+  const [hash, setHash] = useState<string | null>(null);
+  const [explorerUrl, setExplorerUrl] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setHash(null);
+    setExplorerUrl(null);
+    setError(null);
+  }, []);
+
+  const callContract = useCallback(
+    async (opts: CallOpts) => {
+      if (!ready || !wallet) throw new Error('Wallet not connected');
+      setStatus('pending');
+      setError(null);
+      setHash(null);
+      setExplorerUrl(null);
+      try {
+        const res = await wallet.callContract(opts);
+        const h = res.hash ?? null;
+        setHash(h);
+        const exp = network && h ? txExplorerUrl(network, h) : null;
+        setExplorerUrl(exp);
+        setStatus('success');
+        return { status: String(res.status), hash: res.hash, explorerUrl: exp };
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus('error');
+        throw err;
+      }
+    },
+    [wallet, ready, network],
+  );
+
+  return { callContract, status, hash, explorerUrl, error, reset };
+}
+
+export function useDeployContract(): {
+  deployContract: (
+    opts: DeployOpts,
+  ) => Promise<{ status: string; hash?: string; explorerUrl?: string | null }>;
+  status: TxHookStatus;
+  hash: string | null;
+  explorerUrl: string | null;
+  error: Error | null;
+  reset: () => void;
+} {
+  const { wallet, ready } = useWallet();
+  const { network } = useNetwork();
+  const [status, setStatus] = useState<TxHookStatus>('idle');
+  const [hash, setHash] = useState<string | null>(null);
+  const [explorerUrl, setExplorerUrl] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setHash(null);
+    setExplorerUrl(null);
+    setError(null);
+  }, []);
+
+  const deployContract = useCallback(
+    async (opts: DeployOpts) => {
+      if (!ready || !wallet) throw new Error('Wallet not connected');
+      setStatus('pending');
+      setError(null);
+      setHash(null);
+      setExplorerUrl(null);
+      try {
+        const res = await wallet.deployContract(opts);
+        const h = res.hash ?? null;
+        setHash(h);
+        const exp = network && h ? txExplorerUrl(network, h) : null;
+        setExplorerUrl(exp);
+        setStatus('success');
+        return { status: String(res.status), hash: res.hash, explorerUrl: exp };
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus('error');
+        throw err;
+      }
+    },
+    [wallet, ready, network],
+  );
+
+  return { deployContract, status, hash, explorerUrl, error, reset };
+}
+
+export function useWaitForConfirmation(): {
+  wait: (opts: {
+    from: string;
+    nonceBefore: number;
+    timeoutMs?: number;
+    pollMs?: number;
+  }) => Promise<void>;
+  status: TxHookStatus;
+  error: Error | null;
+  reset: () => void;
+} {
+  const { provider, ready } = useWallet();
+  const [status, setStatus] = useState<TxHookStatus>('idle');
+  const [error, setError] = useState<Error | null>(null);
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setError(null);
+  }, []);
+
+  const wait = useCallback(
+    async (opts: {
+      from: string;
+      nonceBefore: number;
+      timeoutMs?: number;
+      pollMs?: number;
+    }) => {
+      if (!ready || !provider) throw new Error('Provider not ready');
+      setStatus('pending');
+      setError(null);
+      try {
+        await provider.waitForConfirmation(opts);
+        setStatus('success');
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus('error');
+        throw err;
+      }
+    },
+    [provider, ready],
+  );
+
+  return { wait, status, error, reset };
 }

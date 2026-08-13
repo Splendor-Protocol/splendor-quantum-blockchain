@@ -93,6 +93,22 @@ export function AccountModal() {
         </div>
       </div>
 
+      {network?.explorerUrl ? (
+        <div className="sqc-account-row">
+          <span className="sqc-account-row__label">Explorer</span>
+          <div className="sqc-account-row__value">
+            <a
+              href={network.explorerUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: 'var(--sqc-accent)' }}
+            >
+              Open explorer
+            </a>
+          </div>
+        </div>
+      ) : null}
+
       <div className="sqc-modal__actions">
         <button type="button" className="sqc-btn sqc-btn--ghost" onClick={closeModal}>
           Close

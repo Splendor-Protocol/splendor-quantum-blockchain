@@ -2,19 +2,51 @@
 
 AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors unlock [`@splendor/pq-bridge`](../bridge) WASM Dilithium wallets — PQ crypto stays internal.
 
+## Production readiness (~9/10)
+
+| Capability | Status |
+|------------|--------|
+| Vite plugin auto-copies WASM | Yes — `@splendor/connect-react/vite` |
+| Next / non-Vite WASM copy | Yes — `npx sqc-copy-wasm` / `@splendor/connect-react/next` |
+| Drop-in `<ConnectButton />` | Yes (includes modals + connect steps) |
+| SSR-safe hooks | Yes — stub controller until client |
+| Auto connectors (EIP-6963) | Yes — `connectors="auto"` (default) |
+| Network switch (soft) | Yes — keeps last connector; reconnects after switch |
+| Custom / override RPCs | Yes — `rpcUrls` / `gatewayUrl` / `customNetworks` / `registerNetwork` |
+| Tx hooks + explorer URLs | Yes — transfer / call / deploy / preflight |
+| Generic advanced connectors | Yes — `connectFields` |
+| Multi-tab disconnect sync | Yes — BroadcastChannel + localStorage |
+
+**Not in scope (keeps score under a perfect 10):** WalletConnect v2 protocol, full EIP-1193 SQC provider for wagmi, hosted CDN WASM.
+
+**Done means:** install → Vite/Next WASM helper → `<ConnectButton />` → `useSendTransfer` — no manual WASM paths or PQ crypto knowledge.
+
 ## 5-minute integrate
 
 ```bash
 npm install @splendor/connect-react @splendor/pq-bridge react react-dom
 ```
 
-**WASM:** `createSplendorClient` / the Provider already resolve `wasmUrl` / `execUrl` from `sqc.networks.json`. You still must **host** those files (usually `/sqc_signer.wasm` + `/wasm_exec.js`).
+### Vite (recommended)
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { sqcWasmPlugin } from '@splendor/connect-react/vite';
+
+export default defineConfig({
+  plugins: [react(), sqcWasmPlugin()],
+});
+```
+
+### Next.js / Webpack
 
 ```bash
-# from your dApp root (after bridge wasm is built)
-node node_modules/@splendor/connect-react/scripts/copy-wasm-assets.mjs ./public
-# or monorepo:
-node ../scripts/copy-wasm-assets.mjs ./public
+npx sqc-copy-wasm ./public
+# or in a script:
+# import { copySqcWasmToPublic } from '@splendor/connect-react/next';
+# copySqcWasmToPublic('./public');
 ```
 
 See [WASM_HOSTING.md](../bridge/docs/WASM_HOSTING.md).
@@ -23,85 +55,92 @@ See [WASM_HOSTING.md](../bridge/docs/WASM_HOSTING.md).
 import '@splendor/connect-react/style.css';
 import {
   SplendorConnectProvider,
-  ConnectButton, // self-contained: includes connect + account modals
-  metamaskConnector,
-  seedConnector,
-  useWallet,
+  ConnectButton,
+  useSendTransfer,
 } from '@splendor/connect-react';
 
 function App() {
   return (
     <SplendorConnectProvider
       network="local"
-      connectors={[metamaskConnector(), seedConnector()]}
+      // connectors="auto" is the default (MetaMask + EIP-6963 + seed)
       theme="splendor"
-      autoReconnect // only if MetaMask already authorized (eth_accounts)
+      autoReconnect
       allowUnpinnedWasm // local only; pin wasmSha256 on testnet/mainnet
+      labels={{ connectTitle: 'Connect wallet' }}
     >
-      <header style={{ display: 'flex', justifyContent: 'flex-end', padding: 16 }}>
-        <ConnectButton />
-      </header>
-      <SendDemo />
+      <ConnectButton />
     </SplendorConnectProvider>
   );
 }
-
-function SendDemo() {
-  const { wallet } = useWallet();
-  // After connect: wallet.sendTransfer({ to: 'SQ:…', amountSPLD: '0.01' })
-  return null;
-}
 ```
 
-`ConnectKit` is an alias of self-contained `ConnectButton`. Do **not** also mount `ConnectModal` / `AccountModal` unless you pass `includeModals={false}` on the button.
+### Real testnet / custom RPC
 
-## What dApps see vs what stays internal
+```tsx
+<SplendorConnectProvider
+  network="testnet"
+  rpcUrls={['https://rpc.your-testnet.example']}
+  gatewayUrl="https://gateway.your-testnet.example"
+  // or:
+  // customNetworks={[{ id: 'my-net', rpcUrls: [...], gatewayUrl: '...', explorerUrl: '...', ... }]}
+/>
+```
 
-| Visible | Hidden (managed by bridge) |
-|---------|----------------------------|
-| `SQ:` address, balance, network | Dilithium private key (WASM) |
-| Connect / disconnect | Seed derivation from MetaMask sig |
-| Transfer / call via `useWallet()` | Nonce, fee defaults, tx JSON hash |
+Optional fonts (opt-in):
 
-MetaMask `0x…` is only a **derivation oracle**. Funds live on `SQ:`.
+```html
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet" />
+```
 
-## API
+## Subpath exports
 
-### Provider
+| Import | Contents |
+|--------|----------|
+| `@splendor/connect-react` | Full UI + hooks + connectors |
+| `@splendor/connect-react/hooks` | Provider + hooks |
+| `@splendor/connect-react/connectors` | Connectors only |
+| `@splendor/connect-react/core` | Headless controller (no UI) |
+| `@splendor/connect-react/vite` | `sqcWasmPlugin` |
+| `@splendor/connect-react/next` | `copySqcWasmToPublic` |
+| `@splendor/connect-react/style.css` | Theme tokens |
 
-`SplendorConnectProvider` — wraps `createSplendorClient` + connector list.
-
-Props: `network`, `connectors`, `theme` (`'splendor' | 'light' | 'dark' | ThemeOverrides`), `autoReconnect`, plus bridge options (`wasmUrl`, `wasmSha256`, …). Network config already supplies WASM URLs — override only when needed.
-
-### Hooks
+## Hooks
 
 | Hook | Use |
 |------|-----|
-| `useConnect()` | `connect`, `disconnect`, `openModal`, `status`, `errorMessage` |
-| `useAccount()` | `address`, `evmAddress`, `isConnected` |
-| `useBalance()` | `balanceSPLD`, `refresh` |
-| `useNetwork()` | `network`, `chainId` |
-| `useWallet()` | `wallet` (`SplendorPQBridge`), `provider` |
+| `useConnect()` | connect / disconnect / modal / `connectingStep` / labels |
+| `useAccount()` | `SQ:` address, `isConnected` |
+| `useBalance()` | SPLD balance |
+| `useNetwork()` | network + soft `switchNetwork` + selectable list |
+| `useWallet()` | raw bridge wallet (null on SSR stub) |
+| `usePreflight()` | balance / fee preflight |
+| `useSendTransfer()` | transfer + `hash` / `explorerUrl` / `confirmed` |
+| `useCallContract()` | contract call status machine |
+| `useDeployContract()` | deploy status machine |
+| `useWaitForConfirmation()` | nonce confirmation helper |
 
-### UI
-
-- `ConnectButton` / `ConnectKit` — button + modals (default)
-- Advanced compose: `<ConnectButton includeModals={false} />` + `<ConnectModal />` + `<AccountModal />`
-- `NetworkBadge`
-
-### Connectors
+## Connectors
 
 ```ts
-metamaskConnector()           // primary (+ authorized via eth_accounts)
+// Default: connectors="auto"
+metamaskConnector()
 injectedConnector({ ethereumProvider })
-seedConnector()               // Advanced accordion in modal (64-hex seed)
+seedConnector() // declares connectFields for Advanced UI
+await discoverInjectedConnectors() // EIP-6963
+await defaultBrowserConnectors()
 ```
 
-Implement `Connector` (with optional `authorized()`) to add a future wallet without rewriting the modal.
+Custom advanced connector: set `advanced: true` and `connectFields: [{ name, type, label }]`.
 
-### autoReconnect
+## Session & networks
 
-When `autoReconnect` is true, the kit restores the last non-advanced connector **only if** `ready()` and `authorized()` (e.g. `eth_accounts` non-empty). It will not pop MetaMask for a cold session.
+- Last connector + last network in **localStorage**
+- Soft `switchNetwork` disconnects without clearing last connector, then reconnects when previously connected
+- `autoReconnect` on page load only if `authorized()` (e.g. `eth_accounts`)
+- Cross-tab disconnect via `BroadcastChannel`
+- Non-local networks default `sessionIdleMs` to 15 minutes
+- Bridge: `registerNetwork` / `resolveNetwork(..., { rpcUrls, gatewayUrl })` / `txExplorerUrl`
 
 ## Tests
 
@@ -111,7 +150,7 @@ cd sdk/connect-react && npm test
 
 ## Headless / Node
 
-Agents and CLIs should keep using `@splendor/pq-bridge` (`connectSplendor`, seed / evmKey). This package is for browser React dApps.
+Agents should use `@splendor/pq-bridge` (`connectSplendor`). Or `@splendor/connect-react/core` for the headless controller in browsers without UI.
 
 ## License
 

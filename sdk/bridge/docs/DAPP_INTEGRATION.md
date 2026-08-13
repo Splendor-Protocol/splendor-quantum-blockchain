@@ -10,12 +10,13 @@ For browser dApps, use **`@splendor/connect-react`** — AppKit-style modal + co
 
 ```tsx
 import '@splendor/connect-react/style.css';
+import { sqcWasmPlugin } from '@splendor/connect-react/vite'; // vite.config.ts
 import {
   SplendorConnectProvider,
-  ConnectKit,
+  ConnectButton,
   metamaskConnector,
   seedConnector,
-  useWallet,
+  useSendTransfer,
 } from '@splendor/connect-react';
 
 <SplendorConnectProvider
@@ -23,9 +24,13 @@ import {
   connectors={[metamaskConnector(), seedConnector()]}
   theme="splendor"
 >
-  <ConnectKit />
+  <ConnectButton />
 </SplendorConnectProvider>
 ```
+
+- WASM: prefer `sqcWasmPlugin()` (see [`WASM_HOSTING.md`](./WASM_HOSTING.md)).
+- Networks: `useNetwork().switchNetwork('local')` — placeholder `*.example` RPCs are hidden unless `allowPlaceholderNetworks`.
+- Transfers: `useSendTransfer()` instead of raw wallet calls.
 
 Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
 

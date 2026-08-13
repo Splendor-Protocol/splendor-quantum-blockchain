@@ -1,21 +1,16 @@
 import { useState } from 'react';
 import {
   SplendorConnectProvider,
-  ConnectKit,
-  metamaskConnector,
-  seedConnector,
+  ConnectButton,
   useAccount,
-  useWallet,
+  useSendTransfer,
 } from '@splendor/connect-react';
 
 function TransferPanel() {
   const { isConnected } = useAccount();
-  const { wallet } = useWallet();
+  const { sendTransfer, status, hash, explorerUrl, confirmed, error, reset } = useSendTransfer();
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('0.01');
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   if (!isConnected) {
     return (
@@ -27,20 +22,15 @@ function TransferPanel() {
   }
 
   const onSend = async () => {
-    setBusy(true);
-    setMsg(null);
-    setErr(null);
+    reset();
     try {
-      const res = await wallet.sendTransfer({
+      await sendTransfer({
         to: to.trim(),
         amountSPLD: amount.trim(),
         waitForConfirmation: true,
       });
-      setMsg(`Submitted${res.hash ? `: ${res.hash}` : ''} (status ${res.status})`);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
+    } catch {
+      /* surfaced via error */
     }
   };
 
@@ -51,11 +41,27 @@ function TransferPanel() {
       <input id="to" value={to} onChange={(e) => setTo(e.target.value)} placeholder="SQ:…" />
       <label htmlFor="amt">Amount (SPLD)</label>
       <input id="amt" value={amount} onChange={(e) => setAmount(e.target.value)} />
-      <button type="button" disabled={busy || !to.trim()} onClick={() => void onSend()}>
-        {busy ? 'Sending…' : 'Send'}
+      <button
+        type="button"
+        disabled={status === 'pending' || !to.trim()}
+        onClick={() => void onSend()}
+      >
+        {status === 'pending' ? 'Sending…' : 'Send'}
       </button>
-      {msg ? <p className="msg">{msg}</p> : null}
-      {err ? <p className="msg error">{err}</p> : null}
+      {hash ? (
+        <p className="msg">
+          {confirmed ? 'Confirmed' : 'Submitted'}: {hash}
+          {explorerUrl ? (
+            <>
+              {' · '}
+              <a href={explorerUrl} target="_blank" rel="noreferrer">
+                Explorer
+              </a>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {error ? <p className="msg error">{error.message}</p> : null}
     </div>
   );
 }
@@ -64,7 +70,7 @@ export function App() {
   return (
     <SplendorConnectProvider
       network="local"
-      connectors={[metamaskConnector(), seedConnector()]}
+      connectors="auto"
       theme="splendor"
       autoReconnect
       allowUnpinnedWasm
@@ -74,7 +80,7 @@ export function App() {
           <p className="brand">
             Splendor <span>Quantum</span>
           </p>
-          <ConnectKit />
+          <ConnectButton />
         </header>
         <section className="hero">
           <h1>Connect once. PQ signing stays local.</h1>

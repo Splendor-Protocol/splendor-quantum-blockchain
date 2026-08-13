@@ -2,6 +2,26 @@
 
 Browser dApps must serve `sqc_signer.wasm` and `wasm_exec.js` (from `sdk/bridge/wasm/dist` after `npm run build:wasm`) with correct MIME types and CORS.
 
+## Recommended: Vite plugin
+
+With `@splendor/connect-react`:
+
+```ts
+import { sqcWasmPlugin } from '@splendor/connect-react/vite';
+
+export default defineConfig({
+  plugins: [react(), sqcWasmPlugin()],
+});
+```
+
+The plugin copies both files into Vite `publicDir` on `dev` / `build` and fails with a clear error if WASM is missing.
+
+CLI alternative:
+
+```bash
+node node_modules/@splendor/connect-react/scripts/copy-wasm-assets.mjs ./public
+```
+
 ## MIME types
 
 | File | Content-Type |

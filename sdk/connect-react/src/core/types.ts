@@ -3,6 +3,9 @@ import type { Connector } from '../connectors/types.js';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+/** Fine-grained connect progress for UX (WASM load / wallet sign). */
+export type ConnectingStep = 'init' | 'sign' | null;
+
 export type ConnectAccount = {
   address: string;
   evmAddress?: string;
@@ -13,6 +16,7 @@ export type ModalView = 'closed' | 'connect' | 'account';
 
 export type ConnectControllerState = {
   status: ConnectionStatus;
+  connectingStep: ConnectingStep;
   account: ConnectAccount | null;
   error: Error | null;
   activeConnectorId: string | null;
