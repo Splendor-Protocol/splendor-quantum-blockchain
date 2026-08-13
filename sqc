@@ -1,0 +1,529 @@
+#!/bin/bash
+# sqc — Splendor Quantum Chain Node Management Tool
+#
+# The single command to manage everything on a SQC node.
+# Equivalent to what 'geth', 'systemctl', and 'journalctl' do combined.
+#
+# Usage:
+#   sqc status              — show node status (blocks, peers, mempool)
+#   sqc logs                — coloured, live log stream (like geth console)
+#   sqc console             — interactive node console (query chain state)
+#   sqc update              — dirty update (preserves chain data)
+#   sqc update --clean      — clean update (wipes chain data, full resync)
+#   sqc install --validator — first-time validator setup
+#   sqc install --rpc       — first-time RPC node setup
+#   sqc start               — start the node service
+#   sqc stop                — stop the node service
+#   sqc restart             — restart the node service
+#   sqc peers               — list connected peers
+#   sqc mempool             — show pending transactions
+#   sqc block [height]      — show a block (default: latest)
+#   sqc balance <SQ:addr>   — show account balance
+#   sqc version             — show installed version
+
+set -e
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+SQC_DIR="${SQC_DIR:-$HOME/splendor-quantum-blockchain}"
+DATA_DIR="${SQC_DATA_DIR:-/var/sqc/data}"
+RPC_URL="${SQC_RPC:-http://localhost:8080}"
+VALIDATOR_SERVICE="sqc-validator"
+RPC_SERVICE="sqc-rpc"
+
+GREEN='\033[0;32m'
+ORANGE='\033[0;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+RESET='\033[0m'
+
+# Detect which service is running
+detect_service() {
+  if systemctl is-active --quiet "$VALIDATOR_SERVICE" 2>/dev/null; then
+    echo "$VALIDATOR_SERVICE"
+  elif systemctl is-active --quiet "$RPC_SERVICE" 2>/dev/null; then
+    echo "$RPC_SERVICE"
+  else
+    echo ""
+  fi
+}
+
+detect_installed_service() {
+  if systemctl list-unit-files --quiet "$VALIDATOR_SERVICE.service" 2>/dev/null | grep -q "$VALIDATOR_SERVICE"; then
+    echo "$VALIDATOR_SERVICE"
+  elif systemctl list-unit-files --quiet "$RPC_SERVICE.service" 2>/dev/null | grep -q "$RPC_SERVICE"; then
+    echo "$RPC_SERVICE"
+  else
+    echo ""
+  fi
+}
+
+die() { echo -e "${RED}Error: $1${NC}" >&2; exit 1; }
+ok()  { echo -e "${GREEN}✓${NC} $1"; }
+inf() { echo -e "${CYAN}→${NC} $1"; }
+
+# ── Commands ───────────────────────────────────────────────────────────────────
+
+cmd_status() {
+  echo -e "${BOLD}${CYAN}═══ Splendor Quantum Chain — Node Status ═══${NC}"
+  echo ""
+
+  # Service status
+  SVC=$(detect_service)
+  if [ -n "$SVC" ]; then
+    echo -e "${GREEN}● Service:${NC} $SVC (running)"
+  else
+    INSTALLED=$(detect_installed_service)
+    if [ -n "$INSTALLED" ]; then
+      echo -e "${RED}● Service:${NC} $INSTALLED (stopped)"
+    else
+      echo -e "${DIM}● Service: not installed${NC}"
+    fi
+  fi
+
+  # Node RPC status
+  echo ""
+  STATUS=$(curl -sf "$RPC_URL/status" 2>/dev/null) || STATUS=""
+  if [ -n "$STATUS" ]; then
+    HEIGHT=$(echo "$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('height',0))" 2>/dev/null)
+    MEMPOOL=$(echo "$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('mempool_size',0))" 2>/dev/null)
+    PEERS=$(echo "$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('peer_count',0))" 2>/dev/null)
+    CHAINID=$(echo "$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('chain_id','unknown'))" 2>/dev/null)
+    echo -e "  ${BOLD}Chain ID:${NC}     $CHAINID"
+    echo -e "  ${BOLD}Block Height:${NC} ${GREEN}$HEIGHT${NC}"
+    echo -e "  ${BOLD}Mempool:${NC}      $MEMPOOL pending txs"
+    echo -e "  ${BOLD}Peers:${NC}        $PEERS connected"
+  else
+    echo -e "  ${DIM}Node RPC not responding at $RPC_URL${NC}"
+    echo -e "  ${DIM}(start with: sqc start)${NC}"
+  fi
+
+  # Sync status
+  SYNC=$(curl -sf "$RPC_URL/sync" 2>/dev/null) || SYNC=""
+  if [ -n "$SYNC" ]; then
+    IS_SYNCING=$(echo "$SYNC" | python3 -c "import json,sys; d=json.load(sys.stdin); print('yes' if d.get('is_syncing') else 'no')" 2>/dev/null)
+    BEST=$(echo "$SYNC" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('best_height',0))" 2>/dev/null)
+    if [ "$IS_SYNCING" = "yes" ]; then
+      echo -e "  ${BOLD}Syncing:${NC}      ${ORANGE}yes (best peer: $BEST)${NC}"
+    else
+      echo -e "  ${BOLD}Syncing:${NC}      ${GREEN}no (synced)${NC}"
+    fi
+  fi
+
+  # Health
+  HEALTH=$(curl -sf "$RPC_URL/healthz" 2>/dev/null) || HEALTH=""
+  if [ -n "$HEALTH" ]; then
+    UPTIME=$(echo "$HEALTH" | python3 -c "import json,sys; d=json.load(sys.stdin); u=d.get('uptime_seconds',0); print(f'{u//3600}h {(u%3600)//60}m {u%60}s')" 2>/dev/null)
+    echo -e "  ${BOLD}Uptime:${NC}       $UPTIME"
+  fi
+
+  # Data dir
+  echo ""
+  if [ -d "$DATA_DIR" ]; then
+    SIZE=$(du -sh "$DATA_DIR" 2>/dev/null | cut -f1)
+    echo -e "  ${BOLD}Data dir:${NC}     $DATA_DIR ($SIZE)"
+  fi
+
+  # Version
+  if [ -f "$SQC_DIR/sqc-node" ]; then
+    echo -e "  ${BOLD}Binary:${NC}       $SQC_DIR/sqc-node"
+    COMMIT=$(cd "$SQC_DIR" 2>/dev/null && git log --oneline -1 2>/dev/null || echo "unknown")
+    echo -e "  ${BOLD}Version:${NC}      $COMMIT"
+  fi
+  echo ""
+}
+
+cmd_logs() {
+  SVC=$(detect_installed_service)
+  [ -z "$SVC" ] && die "No SQC service found. Run: sqc install --validator or sqc install --rpc"
+
+  echo -e "${CYAN}Following logs for $SVC (Ctrl+C to stop)...${NC}"
+  echo ""
+
+  # Use systemd-cat for coloured logs via journalctl
+  journalctl -u "$SVC" -f --no-pager \
+    --output=short-precise 2>/dev/null | \
+  sed -u \
+    -e "s/INF /$(printf '\033[0;32m')INFO $(printf '\033[0m')/g" \
+    -e "s/WRN /$(printf '\033[0;33m')WARN $(printf '\033[0m')/g" \
+    -e "s/ERR /$(printf '\033[0;31m')ERROR$(printf '\033[0m')/g" \
+    -e "s/DBG /$(printf '\033[0;36m')DEBUG$(printf '\033[0m')/g" \
+    -e "s/block produced/$(printf '\033[1;32m')block produced$(printf '\033[0m')/g" \
+    -e "s/block committed/$(printf '\033[1;32m')block committed$(printf '\033[0m')/g" \
+    -e "s/sync: /$(printf '\033[0;36m')sync: $(printf '\033[0m')/g" \
+    -e "s/error/$(printf '\033[1;31m')error$(printf '\033[0m')/g"
+}
+
+cmd_console() {
+  echo -e "${BOLD}${CYAN}═══ SQC Interactive Console ═══${NC}"
+  echo -e "${DIM}Type 'help' for commands, 'exit' to quit${NC}"
+  echo ""
+
+  # Check node is up
+  curl -sf "$RPC_URL/status" >/dev/null 2>&1 || {
+    echo -e "${RED}Node not responding at $RPC_URL${NC}"
+    echo "Start the node first: sqc start"
+    exit 1
+  }
+
+  while true; do
+    echo -ne "${CYAN}sqc> ${NC}"
+    read -r input || break
+    [ "$input" = "exit" ] || [ "$input" = "quit" ] || [ "$input" = "q" ] && break
+    [ -z "$input" ] && continue
+
+    cmd=$(echo "$input" | awk '{print $1}')
+    arg=$(echo "$input" | awk '{$1=""; print $0}' | xargs)
+
+    case "$cmd" in
+      help|h)
+        echo -e "${BOLD}Available commands:${NC}"
+        echo "  status              — node status"
+        echo "  height              — current block height"
+        echo "  block [N]           — show block by height (default: latest)"
+        echo "  balance <SQ:addr>   — account balance"
+        echo "  nonce <SQ:addr>     — account nonce"
+        echo "  peers               — list peers"
+        echo "  mempool             — mempool size"
+        echo "  sync                — sync status"
+        echo "  healthz             — health check"
+        echo "  tx <hash>           — transaction receipt"
+        echo "  ai                  — AI scheduler stats"
+        echo "  contract <SQ:addr>  — contract info"
+        echo "  raw <endpoint>      — raw API call (e.g. raw /vm/opcodes)"
+        echo "  exit / quit         — exit console"
+        ;;
+
+      status)
+        curl -sf "$RPC_URL/status" | python3 -m json.tool 2>/dev/null || echo "Error"
+        ;;
+
+      height)
+        curl -sf "$RPC_URL/status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('height'))" 2>/dev/null
+        ;;
+
+      block)
+        if [ -z "$arg" ]; then
+          curl -sf "$RPC_URL/block/latest" | python3 -c "
+import json,sys
+b=json.load(sys.stdin)
+h=b.get('header',{})
+print(f'Height: {h.get(\"height\")}')
+print(f'Hash:   {b.get(\"hash\",\"\")[:32]}...')
+print(f'TxCount:{h.get(\"tx_count\")}')
+print(f'Time:   {h.get(\"timestamp\")}')
+print(f'Validator: {h.get(\"validator_addr\",\"\")[:20]}...')
+" 2>/dev/null
+        else
+          curl -sf "$RPC_URL/block/$arg" | python3 -c "
+import json,sys
+b=json.load(sys.stdin)
+h=b.get('header',{})
+print(f'Height: {h.get(\"height\")}')
+print(f'Hash:   {b.get(\"hash\",\"\")[:32]}...')
+print(f'TxCount:{h.get(\"tx_count\")}')
+print(f'Time:   {h.get(\"timestamp\")}')
+" 2>/dev/null
+        fi
+        ;;
+
+      balance)
+        [ -z "$arg" ] && { echo "Usage: balance SQ:address"; continue; }
+        curl -sf "$RPC_URL/balance/$arg" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+if 'error' in d:
+    print(f'Error: {d[\"error\"]}')
+else:
+    b=int(d.get('balance',0))
+    spld=b/10**18
+    print(f'Balance: {spld:.6f} SPLD ({b} units)')
+" 2>/dev/null
+        ;;
+
+      nonce)
+        [ -z "$arg" ] && { echo "Usage: nonce SQ:address"; continue; }
+        curl -sf "$RPC_URL/nonce/$arg" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Nonce: {d.get(\"nonce\",0)}')" 2>/dev/null
+        ;;
+
+      peers)
+        curl -sf "$RPC_URL/peers" | python3 -c "
+import json,sys
+peers=json.load(sys.stdin)
+print(f'Connected peers: {len(peers)}')
+for p in peers:
+    print(f'  {p.get(\"addr\")}  height={p.get(\"height\")}')
+" 2>/dev/null
+        ;;
+
+      mempool)
+        curl -sf "$RPC_URL/status" | python3 -c "import json,sys; print(f'Mempool: {json.load(sys.stdin).get(\"mempool_size\",0)} pending')" 2>/dev/null
+        ;;
+
+      sync)
+        curl -sf "$RPC_URL/sync" | python3 -m json.tool 2>/dev/null
+        ;;
+
+      healthz)
+        curl -sf "$RPC_URL/healthz" | python3 -m json.tool 2>/dev/null
+        ;;
+
+      tx)
+        [ -z "$arg" ] && { echo "Usage: tx <hash>"; continue; }
+        curl -sf "$RPC_URL/tx/$arg/receipt" | python3 -m json.tool 2>/dev/null || echo "Receipt not found"
+        ;;
+
+      ai)
+        curl -sf "$RPC_URL/ai/stats" | python3 -m json.tool 2>/dev/null
+        ;;
+
+      contract)
+        [ -z "$arg" ] && { echo "Usage: contract SQ:address"; continue; }
+        curl -sf "$RPC_URL/contract/$arg" | python3 -m json.tool 2>/dev/null
+        ;;
+
+      raw)
+        [ -z "$arg" ] && { echo "Usage: raw /endpoint"; continue; }
+        curl -sf "$RPC_URL$arg" | python3 -m json.tool 2>/dev/null
+        ;;
+
+      *)
+        echo -e "${DIM}Unknown command: $cmd. Type 'help' for commands.${NC}"
+        ;;
+    esac
+  done
+
+  echo -e "${DIM}Console exited.${NC}"
+}
+
+cmd_update() {
+  CLEAN=false
+  for arg in "$@"; do
+    [ "$arg" = "--clean" ] && CLEAN=true
+  done
+
+  SVC=$(detect_installed_service)
+
+  echo -e "${BOLD}${CYAN}═══ SQC Node Update ═══${NC}"
+  echo ""
+
+  if [ "$CLEAN" = true ]; then
+    echo -e "${RED}⚠  CLEAN UPDATE — chain data will be WIPED${NC}"
+    echo -e "${RED}   The node will resync from genesis after restart.${NC}"
+    echo ""
+    echo -n "Type 'yes' to confirm clean update: "
+    read -r confirm
+    [ "$confirm" != "yes" ] && { echo "Aborted."; exit 0; }
+  else
+    echo -e "${GREEN}● DIRTY UPDATE — chain data preserved${NC}"
+    echo -e "${DIM}  (use 'sqc update --clean' to wipe data)${NC}"
+  fi
+
+  echo ""
+
+  # Stop service
+  if [ -n "$SVC" ]; then
+    inf "Stopping $SVC..."
+    systemctl stop "$SVC" 2>/dev/null || true
+    ok "Service stopped"
+  fi
+
+  # Pull latest code
+  cd "$SQC_DIR"
+  inf "Pulling latest code from GitHub..."
+  git fetch origin main
+  LOCAL=$(git rev-parse HEAD)
+  REMOTE=$(git rev-parse origin/main)
+  if [ "$LOCAL" = "$REMOTE" ]; then
+    echo -e "  ${DIM}Already up to date ($(git log --oneline -1))${NC}"
+  else
+    echo -e "  ${DIM}Updating from $(git log --oneline -1) to $(git log --oneline origin/main -1)${NC}"
+    git pull --rebase origin main
+    ok "Code updated"
+  fi
+
+  # Rebuild
+  inf "Rebuilding binaries..."
+  export GO111MODULE=on
+  export GOPATH=/root/go
+  export GOMODCACHE=/root/go/pkg/mod
+  mkdir -p "$GOPATH/pkg/mod"
+  go mod download 2>/dev/null
+  CGO_ENABLED=1 GO111MODULE=on go build -ldflags="-s -w -X main.version=$(git rev-parse --short HEAD)" \
+    -o sqc-node ./cmd/node
+  CGO_ENABLED=1 GO111MODULE=on go build -ldflags="-s -w" \
+    -o sqc-wallet ./cmd/wallet
+  chmod +x sqc-node sqc-wallet sqc 2>/dev/null || true
+  ok "Binaries rebuilt: $(ls -lh sqc-node | awk '{print $5}')"
+
+  # Clean data if requested
+  if [ "$CLEAN" = true ]; then
+    inf "Wiping chain data..."
+    rm -rf "$DATA_DIR/chain" "$DATA_DIR/state" "$DATA_DIR/txindex" 2>/dev/null || true
+    ok "Chain data wiped — node will resync from genesis on restart"
+  fi
+
+  # Restart service
+  if [ -n "$SVC" ]; then
+    inf "Starting $SVC..."
+    systemctl daemon-reload
+    systemctl start "$SVC"
+    sleep 2
+    if systemctl is-active --quiet "$SVC"; then
+      ok "Service restarted"
+    else
+      echo -e "${RED}Service failed to start. Check: journalctl -u $SVC -n 50${NC}"
+    fi
+  fi
+
+  echo ""
+  echo -e "${GREEN}✅ Update complete!${NC}"
+  echo ""
+  cmd_status
+}
+
+cmd_install() {
+  # Pass through to install.sh with the correct flag
+  [ -z "$1" ] && die "Usage: sqc install --validator | sqc install --rpc"
+  bash "$SQC_DIR/install.sh" "$1"
+}
+
+cmd_start() {
+  SVC=$(detect_installed_service)
+  [ -z "$SVC" ] && die "No SQC service installed. Run: sqc install --validator or sqc install --rpc"
+  inf "Starting $SVC..."
+  systemctl start "$SVC"
+  sleep 1
+  systemctl is-active --quiet "$SVC" && ok "$SVC started" || die "Failed to start $SVC"
+}
+
+cmd_stop() {
+  SVC=$(detect_installed_service)
+  [ -z "$SVC" ] && die "No SQC service installed"
+  inf "Stopping $SVC..."
+  systemctl stop "$SVC"
+  ok "$SVC stopped"
+}
+
+cmd_restart() {
+  cmd_stop
+  sleep 1
+  cmd_start
+}
+
+cmd_peers() {
+  curl -sf "$RPC_URL/peers" | python3 -c "
+import json,sys
+peers=json.load(sys.stdin)
+print(f'Connected peers: {len(peers)}')
+for p in peers:
+    print(f'  addr={p.get(\"addr\")}  height={p.get(\"height\")}  seen={p.get(\"last_seen\")}')
+" 2>/dev/null || echo "Node not responding"
+}
+
+cmd_mempool() {
+  curl -sf "$RPC_URL/status" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(f'Pending transactions: {d.get(\"mempool_size\",0)}')
+" 2>/dev/null || echo "Node not responding"
+}
+
+cmd_block() {
+  HEIGHT="${1:-latest}"
+  if [ "$HEIGHT" = "latest" ]; then
+    curl -sf "$RPC_URL/block/latest" | python3 -m json.tool 2>/dev/null
+  else
+    curl -sf "$RPC_URL/block/$HEIGHT" | python3 -m json.tool 2>/dev/null
+  fi
+}
+
+cmd_balance() {
+  [ -z "$1" ] && die "Usage: sqc balance SQ:address"
+  curl -sf "$RPC_URL/balance/$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+if 'error' in d:
+    print(f'Error: {d[\"error\"]}')
+else:
+    b=int(d.get('balance',0))
+    print(f'Balance: {b/10**18:.6f} SPLD ({b} smallest units)')
+    print(f'Address: {d.get(\"address\")}')
+" 2>/dev/null
+}
+
+cmd_version() {
+  echo -e "${BOLD}Splendor Quantum Chain${NC}"
+  if [ -f "$SQC_DIR/sqc-node" ]; then
+    echo -n "  Binary: "
+    ls -lh "$SQC_DIR/sqc-node" | awk '{print $5, $6, $7, $8}'
+  fi
+  if [ -d "$SQC_DIR/.git" ]; then
+    echo "  Commit: $(cd $SQC_DIR && git log --oneline -1)"
+    echo "  Branch: $(cd $SQC_DIR && git branch --show-current)"
+  fi
+  HEALTH=$(curl -sf "$RPC_URL/healthz" 2>/dev/null) || HEALTH=""
+  [ -n "$HEALTH" ] && echo "  Node:   $(echo $HEALTH | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('node_version','unknown'))" 2>/dev/null)"
+}
+
+# ── Main dispatch ──────────────────────────────────────────────────────────────
+usage() {
+  echo -e "${BOLD}sqc${NC} — Splendor Quantum Chain Management Tool"
+  echo ""
+  echo -e "Usage: ${BOLD}sqc <command> [options]${NC}"
+  echo ""
+  echo -e "${BOLD}Node management:${NC}"
+  echo "  start                 Start the node service"
+  echo "  stop                  Stop the node service"
+  echo "  restart               Restart the node service"
+  echo "  status                Show node status (blocks, peers, mempool)"
+  echo "  logs                  Live coloured log stream"
+  echo "  console               Interactive node console (like geth console)"
+  echo ""
+  echo -e "${BOLD}Updates & install:${NC}"
+  echo "  update                Dirty update — preserves chain data"
+  echo "  update --clean        Clean update — wipes data, full resync"
+  echo "  install --validator   First-time validator setup"
+  echo "  install --rpc         First-time RPC node setup"
+  echo ""
+  echo -e "${BOLD}Chain queries:${NC}"
+  echo "  peers                 List connected peers"
+  echo "  mempool               Show pending transaction count"
+  echo "  block [height]        Show block (default: latest)"
+  echo "  balance <SQ:addr>     Show account balance"
+  echo "  version               Show version info"
+  echo ""
+  echo -e "${BOLD}Examples:${NC}"
+  echo "  sqc status"
+  echo "  sqc logs"
+  echo "  sqc console"
+  echo "  sqc update"
+  echo "  sqc update --clean"
+  echo "  sqc balance SQ:abc123..."
+  echo "  sqc block 42"
+}
+
+case "${1:-}" in
+  status)      cmd_status ;;
+  logs|log)    cmd_logs ;;
+  console)     cmd_console ;;
+  update)      shift; cmd_update "$@" ;;
+  install)     shift; cmd_install "$@" ;;
+  start)       cmd_start ;;
+  stop)        cmd_stop ;;
+  restart)     cmd_restart ;;
+  peers)       cmd_peers ;;
+  mempool)     cmd_mempool ;;
+  block)       shift; cmd_block "$@" ;;
+  balance)     shift; cmd_balance "$@" ;;
+  version)     cmd_version ;;
+  help|--help|-h|"") usage ;;
+  *)
+    echo -e "${RED}Unknown command: $1${NC}"
+    echo ""
+    usage
+    exit 1
+    ;;
+esac

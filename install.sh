@@ -27,12 +27,33 @@ for arg in "$@"; do
     --validator) IS_VALIDATOR=true ;;
     --rpc)       IS_RPC=true ;;
     --help|-h)
-      echo "Usage: $0 [--validator] [--rpc]"
+      echo "Usage: $0 --validator | --rpc"
       echo "  --validator   Set up as a block-producing validator node"
-      echo "  --rpc         Set up as an RPC node (syncs from validator)"
+      echo "  --rpc         Set up as an RPC (sync) node"
       exit 0 ;;
   esac
 done
+
+# ── Validate arguments EARLY — before doing any work ─────────────────────────
+if [ "$IS_VALIDATOR" = false ] && [ "$IS_RPC" = false ]; then
+  echo ""
+  echo -e "${RED}╔══════════════════════════════════════════════════════╗${NC}"
+  echo -e "${RED}║  ERROR: You must specify --validator or --rpc         ║${NC}"
+  echo -e "${RED}╚══════════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo "Usage:"
+  echo "  bash install.sh --validator    (first-time validator setup)"
+  echo "  bash install.sh --rpc          (first-time RPC node setup)"
+  echo ""
+  echo "After install, use the 'sqc' tool:"
+  echo "  sqc status                     (check node status)"
+  echo "  sqc logs                       (live coloured logs)"
+  echo "  sqc console                    (interactive console)"
+  echo "  sqc update                     (dirty update, keeps data)"
+  echo "  sqc update --clean             (clean update, wipes data)"
+  echo ""
+  exit 1
+fi
 
 # ── Step 1: Install system dependencies ────────────────────────────────────────
 log "Installing system dependencies..."
@@ -116,6 +137,13 @@ log "sqc-wallet built ✓"
 
 chmod +x sqc-node sqc-wallet
 ls -lh sqc-node sqc-wallet
+
+# ── Step 4b: Install sqc management tool globally ─────────────────────────────
+if [ -f "$SQC_DIR/sqc" ]; then
+  chmod +x "$SQC_DIR/sqc"
+  cp "$SQC_DIR/sqc" /usr/local/bin/sqc
+  log "sqc management tool installed → /usr/local/bin/sqc"
+fi
 
 # ── Step 5: Create data directory ──────────────────────────────────────────────
 mkdir -p /var/sqc/data
@@ -303,6 +331,26 @@ setup_firewall() {
   log "Firewall configured"
 }
 
+# ── Validate arguments — MUST have --validator or --rpc ───────────────────────
+if [ "$IS_VALIDATOR" = false ] && [ "$IS_RPC" = false ]; then
+  echo ""
+  echo -e "${RED}╔══════════════════════════════════════════════════════╗${NC}"
+  echo -e "${RED}║  ERROR: You must specify --validator or --rpc         ║${NC}"
+  echo -e "${RED}╚══════════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "${ORANGE}Usage:${NC}"
+  echo "  bash install.sh --validator    Set up a block-producing validator"
+  echo "  bash install.sh --rpc          Set up an RPC (sync) node"
+  echo ""
+  echo -e "${ORANGE}Or use the sqc management tool:${NC}"
+  echo "  sqc install --validator"
+  echo "  sqc install --rpc"
+  echo "  sqc update             (dirty update, preserves chain data)"
+  echo "  sqc update --clean     (clean update, wipes data)"
+  echo ""
+  exit 1
+fi
+
 # ── Run selected setup ──────────────────────────────────────────────────────────
 setup_firewall
 
@@ -310,15 +358,6 @@ if [ "$IS_VALIDATOR" = true ]; then
   setup_validator
 elif [ "$IS_RPC" = true ]; then
   setup_rpc
-else
-  log "No --validator or --rpc flag provided."
-  log "Build complete. To continue:"
-  echo ""
-  echo "  For a VALIDATOR node:"
-  echo "    bash $0 --validator"
-  echo ""
-  echo "  For an RPC node:"
-  echo "    bash $0 --rpc"
 fi
 
 echo ""
