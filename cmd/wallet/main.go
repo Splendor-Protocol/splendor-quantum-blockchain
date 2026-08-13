@@ -43,6 +43,7 @@ Addresses are derived as SHA3-256(dilithium_public_key) — no ECDSA.`,
 	root.AddCommand(
 		cmdGenerate(),
 		cmdAddress(),
+		cmdPubkey(),
 		cmdBalance(),
 		cmdSend(),
 		cmdExportKey(),
@@ -117,6 +118,33 @@ func cmdAddress() *cobra.Command {
 			}
 			addr := qcrypto.DeriveAddress(pub)
 			fmt.Println(addr.String())
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&walletPath, "wallet", "w", "wallet.sqwallet", "Wallet file path")
+	return cmd
+}
+
+// ── pubkey ────────────────────────────────────────────────────────────────
+
+// cmdPubkey prints the hex-encoded Dilithium public key.
+// This is used by install.sh to populate genesis.json's validator_pubkey_hex field.
+func cmdPubkey() *cobra.Command {
+	var walletPath string
+	cmd := &cobra.Command{
+		Use:   "pubkey",
+		Short: "Show the Dilithium public key in hex (for genesis.json)",
+		Long: `Prints the 1952-byte Dilithium Mode 3 public key in hexadecimal.
+This is needed for the validator_pubkey_hex field in genesis.json.
+The pubkey is 3904 hex characters (1952 bytes × 2).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pub, _, err := loadWalletInteractive(walletPath)
+			if err != nil {
+				return err
+			}
+			pubBytes := pub.Bytes()
+			// Print as hex — no newline prefix, pure hex for easy capture
+			fmt.Printf("%x\n", pubBytes)
 			return nil
 		},
 	}
