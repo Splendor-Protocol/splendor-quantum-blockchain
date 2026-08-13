@@ -190,12 +190,42 @@ func NewSyncer(
 	localHeight func() uint64,
 	applyBlock func(*types.Block) error,
 ) *Syncer {
-	return &Syncer{
+	s := &Syncer{
 		fetcher:     NewBlockFetcher(cfg),
 		pool:        pool,
 		localHeight: localHeight,
 		applyBlock:  applyBlock,
 	}
+
+	// If no validator pubkey configured, try to learn it from peers at startup
+	if len(cfg.ValidatorPubKey) == 0 && len(pool.Addrs()) > 0 {
+		go s.bootstrapValidatorPubKey()
+	}
+
+	return s
+}
+
+// bootstrapValidatorPubKey fetches the validator's pubkey from the first
+// available peer's genesis block. This lets RPC nodes start without any
+// manual pubkey configuration.
+func (s *Syncer) bootstrapValidatorPubKey() {
+	peers := s.pool.Addrs()
+	for _, peer := range peers {
+		pubkey, err := s.fetcher.FetchGenesisValidatorPubKey(peer)
+		if err != nil {
+			log.Debug().Err(err).Str("peer", peer).Msg("sync: could not fetch pubkey from peer")
+			continue
+		}
+		if len(pubkey) > 0 {
+			s.fetcher.cfg.ValidatorPubKey = pubkey
+			log.Info().
+				Str("peer", peer).
+				Str("pubkey_prefix", fmt.Sprintf("%x", pubkey[:8])).
+				Msg("sync: bootstrapped validator pubkey from peer's genesis block")
+			return
+		}
+	}
+	log.Warn().Msg("sync: could not bootstrap validator pubkey — signature verification will be skipped until genesis block is downloaded")
 }
 
 // SyncOnce performs one sync pass: check peers, download missing blocks.
