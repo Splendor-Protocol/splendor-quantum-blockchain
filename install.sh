@@ -85,20 +85,36 @@ fi
 cd "$SQC_DIR"
 
 # ── Step 4: Build binaries ─────────────────────────────────────────────────────
-log "Downloading dependencies and building..."
+log "Setting up Go module environment..."
 
-# Ensure go.sum is up to date first
-go get ./... 2>/dev/null || true
-go mod tidy 2>/dev/null || true
+# Force Go modules mode (never use GOPATH mode)
+export GO111MODULE=on
+export GOPATH=/root/go
+export GOMODCACHE=/root/go/pkg/mod
+mkdir -p "$GOPATH/pkg/mod"
 
-log "Building sqc-node and sqc-wallet..."
-CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=1.0.0" \
+# Verify go.mod exists (required for module mode)
+[ -f go.mod ] || err "go.mod not found — is the repo cloned correctly?"
+log "go.mod found: $(head -1 go.mod)"
+
+# Download dependencies into module cache
+log "Downloading Go module dependencies..."
+go mod download
+log "Dependencies downloaded ✓"
+
+log "Building sqc-node..."
+CGO_ENABLED=1 GO111MODULE=on go build \
+  -ldflags="-s -w -X main.version=1.0.0" \
   -o sqc-node ./cmd/node
-CGO_ENABLED=1 go build -ldflags="-s -w" \
+log "sqc-node built ✓"
+
+log "Building sqc-wallet..."
+CGO_ENABLED=1 GO111MODULE=on go build \
+  -ldflags="-s -w" \
   -o sqc-wallet ./cmd/wallet
+log "sqc-wallet built ✓"
 
 chmod +x sqc-node sqc-wallet
-log "Build complete ✓"
 ls -lh sqc-node sqc-wallet
 
 # ── Step 5: Create data directory ──────────────────────────────────────────────
