@@ -47,12 +47,15 @@ type Server struct {
 	validatorPK []byte
 	router      *mux.Router
 	httpServer  *http.Server
+	// peerCount returns the number of connected peers (from peer pool)
+	peerCount func() int
 }
 
 // Config holds server configuration.
 type Config struct {
-	ListenAddr  string // e.g. ":8080"
-	ValidatorPK []byte // Dilithium public key of the genesis validator
+	ListenAddr  string    // e.g. ":8080"
+	ValidatorPK []byte    // Dilithium public key of the genesis validator
+	PeerCount   func() int // optional: returns live peer count
 }
 
 // New creates a new RPC server.
@@ -74,6 +77,7 @@ func New(
 		x402proc:    x402.NewProcessor(stateDB),
 		scheduler:   scheduler,
 		validatorPK: cfg.ValidatorPK,
+		peerCount:   cfg.PeerCount,
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -269,8 +273,11 @@ func (s *Server) handleIncomingBlock(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	height, _ := s.executor.LatestHeight()
+	// Peer count: use peerCount func if set (from peerPool), else broadcaster, else 0
 	peerCount := 0
-	if s.broadcaster != nil {
+	if s.peerCount != nil {
+		peerCount = s.peerCount()
+	} else if s.broadcaster != nil {
 		peerCount = s.broadcaster.PeerCount()
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
