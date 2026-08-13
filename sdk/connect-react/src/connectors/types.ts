@@ -12,6 +12,13 @@ export type ConnectorContext = {
   network: NetworkConfig;
 };
 
+export type ConnectorField = {
+  name: string;
+  type: 'password' | 'text';
+  label: string;
+  placeholder?: string;
+};
+
 /**
  * Modular wallet connector (AppKit-style).
  * Implementations unlock the PQ WASM session via @splendor/pq-bridge.
@@ -20,8 +27,10 @@ export type Connector = {
   id: string;
   name: string;
   icon?: string;
-  /** When true, UI shows this under Advanced (e.g. seed). */
+  /** When true, UI shows this under Advanced. */
   advanced?: boolean;
+  /** Form fields for advanced connectors (rendered by ConnectModal). */
+  connectFields?: ConnectorField[];
   ready: () => boolean | Promise<boolean>;
   /**
    * Optional: already authorized (e.g. eth_accounts non-empty).

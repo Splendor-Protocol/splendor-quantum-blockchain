@@ -61,12 +61,25 @@ export {
   getDefaultNetworkId,
   getDefaultNetwork,
   listNetworks,
+  listSelectableNetworks,
   getNetwork,
   resolveNetwork,
+  isPlaceholderNetwork,
+  registerNetwork,
+  unregisterNetwork,
+  clearRegisteredNetworks,
+  txExplorerUrl,
   derivationDomainMessage,
   networkToRpcOptions,
 } from './networks.js';
-export type { NetworkConfig, NetworkId, ProtocolConfig, NetworksFile } from './networks.js';
+export type {
+  NetworkConfig,
+  NetworkId,
+  ProtocolConfig,
+  NetworksFile,
+  ResolveNetworkOptions,
+} from './networks.js';
+
 export { createSplendorClient, connectSplendor } from './connect.js';
 export type {
   ConnectMode,

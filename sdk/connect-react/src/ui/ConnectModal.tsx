@@ -12,10 +12,12 @@ export function ConnectModal() {
     connect,
     status,
     errorMessage,
+    labels,
+    connectingStep,
   } = useConnect();
   const { network } = useNetwork();
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [seed, setSeed] = useState('');
+  const [fieldValues, setFieldValues] = useState<Record<string, Record<string, string>>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [readyMap, setReadyMap] = useState<Record<string, boolean>>({});
   const advancedPanelId = useId();
@@ -50,7 +52,7 @@ export function ConnectModal() {
     setBusyId(id);
     try {
       await connect(id, opts);
-      setSeed('');
+      setFieldValues({});
       setAdvancedOpen(false);
     } catch {
       /* error surfaced via useConnect */
@@ -66,13 +68,13 @@ export function ConnectModal() {
     return connectorIcon(c.id);
   };
 
+  const title = labels.connectTitle ?? 'Connect to Splendor';
+  const subtitle =
+    labels.connectSubtitle ??
+    'Derive your post-quantum SQ: wallet. Keys stay in the local signer.';
+
   return (
-    <ModalShell
-      open={open}
-      title="Connect to Splendor"
-      subtitle="Derive your post-quantum SQ: wallet. Keys stay in the local signer."
-      onClose={closeModal}
-    >
+    <ModalShell open={open} title={title} subtitle={subtitle} onClose={closeModal}>
       <div style={{ marginBottom: '0.85rem' }}>
         <NetworkBadge />
         {network?.id ? (
@@ -107,7 +109,9 @@ export function ConnectModal() {
                   {c.name}
                   <span className="sqc-connector-item__hint">
                     {busyId === c.id
-                      ? 'Sign to unlock…'
+                      ? connectingStep === 'init'
+                        ? 'Loading signer…'
+                        : 'Sign to unlock…'
                       : unavailable
                         ? 'Wallet not detected'
                         : 'Sign once to unlock PQ wallet'}
@@ -133,28 +137,55 @@ export function ConnectModal() {
           {advancedOpen ? (
             <div id={advancedPanelId} className="sqc-advanced__panel">
               <p className="sqc-modal__sub" style={{ margin: 0 }}>
-                Dev / agent only. Never paste a seed from an untrusted source.
+                Dev / agent only. Never paste secrets from an untrusted source.
               </p>
-              <input
-                className="sqc-input"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="32-byte seed hex (64 chars)"
-                value={seed}
-                onChange={(e) => setSeed(e.target.value)}
-              />
-              {advanced.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className="sqc-btn sqc-btn--ghost"
-                  disabled={!seed.trim() || status === 'connecting'}
-                  onClick={() => void onConnect(c.id, { seed: seed.trim() })}
-                >
-                  {busyId === c.id ? 'Unlocking…' : `Unlock with ${c.name}`}
-                </button>
-              ))}
+              {advanced.map((c) => {
+                const fields = c.connectFields ?? [];
+                const values = fieldValues[c.id] ?? {};
+                const filled =
+                  fields.length === 0 ||
+                  fields.every((f) => String(values[f.name] ?? '').trim().length > 0);
+                return (
+                  <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <div className="sqc-connector-item__meta" style={{ fontWeight: 600 }}>
+                      {c.name}
+                    </div>
+                    {fields.map((f) => (
+                      <label key={f.name} style={{ display: 'block' }}>
+                        <span className="sqc-account-row__label">{f.label}</span>
+                        <input
+                          className="sqc-input"
+                          type={f.type}
+                          autoComplete="off"
+                          spellCheck={false}
+                          placeholder={f.placeholder}
+                          value={values[f.name] ?? ''}
+                          onChange={(e) =>
+                            setFieldValues((prev) => ({
+                              ...prev,
+                              [c.id]: { ...prev[c.id], [f.name]: e.target.value },
+                            }))
+                          }
+                        />
+                      </label>
+                    ))}
+                    <button
+                      type="button"
+                      className="sqc-btn sqc-btn--ghost"
+                      disabled={!filled || status === 'connecting'}
+                      onClick={() => {
+                        const opts: Record<string, unknown> = {};
+                        for (const f of fields) {
+                          opts[f.name] = String(values[f.name] ?? '').trim();
+                        }
+                        void onConnect(c.id, opts);
+                      }}
+                    >
+                      {busyId === c.id ? 'Unlocking…' : `Unlock with ${c.name}`}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           ) : null}
         </div>

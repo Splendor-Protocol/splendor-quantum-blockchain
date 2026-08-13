@@ -11,10 +11,11 @@ import {
   type SqcProvider,
 } from '@splendor/pq-bridge';
 import type { Connector } from '../connectors/types.js';
-import { getLastConnectorId, setLastConnectorId } from './storage.js';
+import { broadcastConnectEvent, getLastConnectorId, setLastConnectorId, subscribeConnectBroadcast } from './storage.js';
 import type {
   ConnectAccount,
   ConnectionStatus,
+  ConnectingStep,
   ConnectControllerState,
   ModalView,
 } from './types.js';
@@ -23,6 +24,8 @@ export type CreateConnectControllerOptions = CreateClientOptions & {
   connectors: Connector[];
   /** Attempt to reconnect last MetaMask/injected connector on init. Default false. */
   autoReconnect?: boolean;
+  /** Called when connect/session errors occur (optional observability). */
+  onError?: (err: Error) => void;
 };
 
 type Listener = () => void;
@@ -60,14 +63,20 @@ function errorFromWalletPayload(payload: { code: string; message: string }): Err
 
 export type ConnectController = {
   readonly client: SplendorClient;
+  readonly isStub?: boolean;
   getState(): ConnectControllerState;
   subscribe(listener: Listener): () => void;
   openModal(view?: 'connect' | 'account'): void;
   closeModal(): void;
   connect(connectorId: string, opts?: Record<string, unknown>): Promise<DeriveInfo>;
   disconnect(): Promise<void>;
-  /** Try last connector (MetaMask/injected only — never seed/advanced). */
-  tryAutoReconnect(): Promise<boolean>;
+  /** Tear down wallet without clearing lastConnectorId (network switch). */
+  softDisconnect(): Promise<void>;
+  /**
+   * Try last connector (MetaMask/injected only — never seed/advanced).
+   * Pass `{ force: true }` after a soft network switch (ignores autoReconnect flag).
+   */
+  tryAutoReconnect(opts?: { force?: boolean }): Promise<boolean>;
   getWallet(): SplendorPQBridge;
   getProvider(): SqcProvider;
   getNetwork(): NetworkConfig;
@@ -89,6 +98,7 @@ export function createConnectController(
   const listeners = new Set<Listener>();
 
   let status: ConnectionStatus = 'disconnected';
+  let connectingStep: ConnectingStep = null;
   let account: ConnectAccount | null = null;
   let error: Error | null = null;
   let activeConnectorId: string | null = null;
@@ -137,12 +147,26 @@ export function createConnectController(
       account = null;
       activeConnectorId = null;
       status = 'error';
+      options.onError?.(error);
       emit();
+    }),
+  );
+
+  unsubs.push(
+    subscribeConnectBroadcast((msg) => {
+      if (msg.type === 'disconnect' && status === 'connected') {
+        client.wallet.disconnect();
+        account = null;
+        activeConnectorId = null;
+        status = 'disconnected';
+        emit();
+      }
     }),
   );
 
   const getState = (): ConnectControllerState => ({
     status,
+    connectingStep,
     account,
     error,
     activeConnectorId,
@@ -173,6 +197,7 @@ export function createConnectController(
 
       error = null;
       status = 'connecting';
+      connectingStep = 'init';
       activeConnectorId = connectorId;
       emit();
 
@@ -187,6 +212,8 @@ export function createConnectController(
         }
 
         await client.wallet.init();
+        connectingStep = 'sign';
+        emit();
         const info = await connector.connect(
           {
             wallet: client.wallet,
@@ -199,7 +226,15 @@ export function createConnectController(
         activeConnectorId = connectorId;
         setLastConnectorId(connector.advanced ? null : connectorId);
         status = 'connected';
+        connectingStep = null;
         modal = 'closed';
+        if (!connector.advanced) {
+          broadcastConnectEvent({
+            type: 'connected',
+            connectorId,
+            address: info.address,
+          });
+        }
         emit();
         return info;
       } catch (e) {
@@ -207,7 +242,9 @@ export function createConnectController(
         error = err;
         account = null;
         activeConnectorId = null;
+        connectingStep = null;
         status = 'error';
+        options.onError?.(err);
         emit();
         throw err;
       }
@@ -222,14 +259,34 @@ export function createConnectController(
       client.wallet.disconnect();
       account = null;
       activeConnectorId = null;
+      connectingStep = null;
       error = null;
       status = 'disconnected';
       setLastConnectorId(null);
       modal = 'closed';
+      broadcastConnectEvent({ type: 'disconnect' });
       emit();
     },
-    async tryAutoReconnect() {
-      if (!options.autoReconnect) return false;
+    async softDisconnect() {
+      const connector = connectors.find((c) => c.id === activeConnectorId);
+      try {
+        await connector?.disconnect?.();
+      } catch {
+        /* ignore */
+      }
+      client.wallet.disconnect();
+      account = null;
+      connectingStep = null;
+      error = null;
+      status = 'disconnected';
+      modal = 'closed';
+      // Keep lastConnectorId for autoReconnect after network switch.
+      // Clear in-memory active connector; storage still has last id.
+      activeConnectorId = null;
+      emit();
+    },
+    async tryAutoReconnect(opts?: { force?: boolean }) {
+      if (!options.autoReconnect && !opts?.force) return false;
       const last = getLastConnectorId();
       if (!last) return false;
       const connector = connectors.find((c) => c.id === last);
@@ -272,6 +329,64 @@ export function createConnectController(
   };
 
   return controller;
+}
+
+/** SSR / pre-hydrate stub — hooks work; connect is a no-op reject. */
+export function createStubConnectController(
+  connectors: Connector[] = [],
+): ConnectController {
+  const listeners = new Set<Listener>();
+  const emit = () => {
+    for (const l of listeners) l();
+  };
+  const state: ConnectControllerState = {
+    status: 'disconnected',
+    connectingStep: null,
+    account: null,
+    error: null,
+    activeConnectorId: null,
+    modal: 'closed',
+    connectors,
+    network: null,
+  };
+  const notReady = () => {
+    throw new Error('@splendor/connect-react: wallet not ready (SSR or hydrating)');
+  };
+  return {
+    isStub: true,
+    client: null as unknown as SplendorClient,
+    getState: () => state,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    openModal(view = 'connect') {
+      state.modal = view;
+      emit();
+    },
+    closeModal() {
+      state.modal = 'closed';
+      emit();
+    },
+    async connect() {
+      throw new Error('@splendor/connect-react: cannot connect during SSR');
+    },
+    async disconnect() {
+      /* no-op */
+    },
+    async softDisconnect() {
+      /* no-op */
+    },
+    async tryAutoReconnect(_opts?: { force?: boolean }) {
+      return false;
+    },
+    getWallet: notReady,
+    getProvider: notReady,
+    getNetwork: notReady,
+    destroy() {
+      listeners.clear();
+    },
+  };
 }
 
 /** Map bridge / connector errors to short UI copy. */

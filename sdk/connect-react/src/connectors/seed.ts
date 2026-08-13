@@ -29,6 +29,14 @@ export function seedConnector(opts: SeedConnectorOpts = {}): Connector {
     name: opts.name ?? 'Seed (Advanced)',
     icon: opts.icon,
     advanced: true,
+    connectFields: [
+      {
+        name: 'seed',
+        type: 'password',
+        label: 'Seed hex',
+        placeholder: '32-byte seed hex (64 chars)',
+      },
+    ],
     ready() {
       return true;
     },

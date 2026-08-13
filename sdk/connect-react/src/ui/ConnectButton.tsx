@@ -22,9 +22,16 @@ export function ConnectButton({
   className,
   includeModals = true,
 }: ConnectButtonProps) {
-  const { openModal, status } = useConnect();
+  const { openModal, status, connectingStep } = useConnect();
   const { address, isConnected } = useAccount();
   const { balanceSPLD } = useBalance();
+
+  const connectingLabel =
+    connectingStep === 'init'
+      ? 'Loading signer…'
+      : connectingStep === 'sign'
+        ? 'Sign in wallet…'
+        : 'Connecting…';
 
   const button =
     isConnected && address ? (
@@ -46,7 +53,7 @@ export function ConnectButton({
         onClick={() => openModal('connect')}
         disabled={status === 'connecting'}
       >
-        {status === 'connecting' ? 'Connecting…' : label}
+        {status === 'connecting' ? connectingLabel : label}
       </button>
     );
 

@@ -1,19 +1,29 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import type { CreateClientOptions, NetworkId } from '@splendor/pq-bridge';
+import {
+  registerNetwork,
+  type CreateClientOptions,
+  type NetworkConfig,
+  type NetworkId,
+} from '@splendor/pq-bridge';
 import type { Connector } from '../connectors/types.js';
+import { defaultBrowserConnectors } from '../connectors/eip6963.js';
 import {
   createConnectController,
+  createStubConnectController,
   type ConnectController,
   type CreateConnectControllerOptions,
 } from '../core/controller.js';
+import { getLastNetworkId, setLastNetworkId } from '../core/storage.js';
 import type { ConnectControllerState } from '../core/types.js';
 import {
   resolveThemeAttr,
@@ -21,15 +31,37 @@ import {
   type ThemeProp,
 } from '../theme/themes.js';
 
+export type ConnectBrandLabels = {
+  connectTitle?: string;
+  connectSubtitle?: string;
+};
+
 export type SplendorConnectProviderProps = Omit<CreateClientOptions, 'network'> & {
   network?: NetworkId;
-  connectors: Connector[];
+  /** Explicit connectors, or `'auto'` for MetaMask + EIP-6963 + seed. */
+  connectors?: Connector[] | 'auto';
   autoReconnect?: boolean;
   theme?: ThemeProp;
   children: ReactNode;
+  onError?: (err: Error) => void;
+  labels?: ConnectBrandLabels;
+  /** Include placeholder *.example networks in the switcher (default false). */
+  allowPlaceholderNetworks?: boolean;
+  /** Register custom networks at runtime (real RPCs / explorer URLs). */
+  customNetworks?: NetworkConfig[];
+  /** Restore last network from localStorage when network prop unset (default true). */
+  persistNetwork?: boolean;
 };
 
+const DEFAULT_IDLE_MS = 15 * 60 * 1000;
+
 const ControllerContext = createContext<ConnectController | null>(null);
+const BrandContext = createContext<ConnectBrandLabels>({});
+const NetworkSwitchContext = createContext<{
+  switchNetwork: (id: NetworkId) => Promise<void>;
+  allowPlaceholderNetworks: boolean;
+  networkId: NetworkId;
+} | null>(null);
 
 function useControllerStore(controller: ConnectController): ConnectControllerState {
   return useSyncExternalStore(
@@ -39,21 +71,83 @@ function useControllerStore(controller: ConnectController): ConnectControllerSta
   );
 }
 
+function initialNetworkId(
+  networkProp: NetworkId | undefined,
+  persistNetwork: boolean,
+): NetworkId {
+  if (networkProp) return networkProp;
+  if (persistNetwork && typeof window !== 'undefined') {
+    const last = getLastNetworkId();
+    if (last) return last;
+  }
+  return 'local';
+}
+
 export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   const {
     children,
-    connectors,
+    connectors: connectorsProp = 'auto',
     autoReconnect = false,
     theme = 'splendor',
+    onError,
+    labels,
+    allowPlaceholderNetworks = false,
+    customNetworks,
+    persistNetwork = true,
+    network: networkProp,
+    sessionIdleMs,
     ...clientOpts
   } = props;
+
+  const [networkId, setNetworkId] = useState<NetworkId>(() =>
+    initialNetworkId(networkProp, persistNetwork),
+  );
+  const [autoConnectors, setAutoConnectors] = useState<Connector[] | null>(null);
+
+  useEffect(() => {
+    if (customNetworks?.length) {
+      for (const n of customNetworks) registerNetwork(n);
+    }
+  }, [customNetworks]);
+
+  useEffect(() => {
+    if (networkProp) setNetworkId(networkProp);
+  }, [networkProp]);
+
+  useEffect(() => {
+    if (connectorsProp !== 'auto') {
+      setAutoConnectors(null);
+      return;
+    }
+    let cancelled = false;
+    void defaultBrowserConnectors().then((list) => {
+      if (!cancelled) setAutoConnectors(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [connectorsProp]);
+
+  const connectors: Connector[] =
+    connectorsProp === 'auto'
+      ? autoConnectors ?? []
+      : connectorsProp;
+
+  const connectorsReady = connectorsProp !== 'auto' || autoConnectors != null;
+
+  const effectiveIdle =
+    sessionIdleMs !== undefined
+      ? sessionIdleMs
+      : networkId !== 'local'
+        ? DEFAULT_IDLE_MS
+        : undefined;
 
   const connectorsKey = useMemo(
     () => connectors.map((c) => c.id).join(','),
     [connectors],
   );
   const optsKey = JSON.stringify({
-    network: clientOpts.network || 'local',
+    network: networkId,
     wasmUrl: clientOpts.wasmUrl,
     execUrl: clientOpts.execUrl,
     wasmSha256: clientOpts.wasmSha256,
@@ -62,22 +156,31 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     autoReconnect,
     connectorsKey,
     rpcUrls: clientOpts.rpcUrls,
+    gatewayUrl: clientOpts.gatewayUrl,
     chainId: clientOpts.chainId,
     timeoutMs: clientOpts.timeoutMs,
     retries: clientOpts.retries,
-    sessionIdleMs: clientOpts.sessionIdleMs,
+    sessionIdleMs: effectiveIdle,
     allowUnpinnedWasm: clientOpts.allowUnpinnedWasm === true,
     allowInsecureHttp: clientOpts.allowInsecureHttp === true,
     watchMetaMaskAccounts: clientOpts.watchMetaMaskAccounts,
+    connectorsReady,
   });
 
   const connectorsRef = useRef(connectors);
   connectorsRef.current = connectors;
   const clientOptsRef = useRef(clientOpts);
   clientOptsRef.current = clientOpts;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   const controller = useMemo(() => {
-    if (typeof window === 'undefined') return null;
+    if (typeof window === 'undefined') {
+      return createStubConnectController(connectorsRef.current);
+    }
+    if (!connectorsReady || !connectorsRef.current.length) {
+      return createStubConnectController([]);
+    }
     const parsed = JSON.parse(optsKey) as {
       network?: NetworkId;
       wasmUrl?: string;
@@ -88,6 +191,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       allowUnpinnedWasm?: boolean;
       allowInsecureHttp?: boolean;
       rpcUrls?: string[];
+      gatewayUrl?: string;
       chainId?: string;
       timeoutMs?: number;
       retries?: number;
@@ -104,6 +208,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       allowUnpinnedWasm: parsed.allowUnpinnedWasm,
       allowInsecureHttp: parsed.allowInsecureHttp,
       rpcUrls: parsed.rpcUrls,
+      gatewayUrl: parsed.gatewayUrl,
       chainId: parsed.chainId,
       timeoutMs: parsed.timeoutMs,
       retries: parsed.retries,
@@ -111,35 +216,88 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       watchMetaMaskAccounts: parsed.watchMetaMaskAccounts,
       connectors: connectorsRef.current,
       autoReconnect: parsed.autoReconnect,
+      onError: (err) => onErrorRef.current?.(err),
     };
     return createConnectController(createOpts);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [optsKey]);
 
+  const controllerRef = useRef(controller);
+  controllerRef.current = controller;
+  const mountedRef = useRef(false);
+  /** Soft network switch: reconnect with last connector even if autoReconnect is off. */
+  const reconnectAfterSwitchRef = useRef(false);
+
   useEffect(() => {
-    if (!controller) return;
-    void controller.tryAutoReconnect();
+    if (controller.isStub) return;
+    const force = reconnectAfterSwitchRef.current;
+    reconnectAfterSwitchRef.current = false;
+    if (force || autoReconnect) {
+      void controller.tryAutoReconnect({ force });
+    }
     return () => {
-      controller.destroy();
+      const doomed = controller;
+      setTimeout(() => {
+        if (controllerRef.current !== doomed) doomed.destroy();
+      }, 0);
     };
-  }, [controller]);
+  }, [controller, autoReconnect]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      const doomed = controllerRef.current;
+      setTimeout(() => {
+        if (!mountedRef.current && controllerRef.current === doomed) {
+          doomed?.destroy();
+        }
+      }, 0);
+    };
+  }, []);
+
+  const switchNetwork = useCallback(
+    async (id: NetworkId) => {
+      if (id === networkId) return;
+      const wasConnected =
+        controllerRef.current &&
+        !controllerRef.current.isStub &&
+        controllerRef.current.getState().status === 'connected';
+      if (controllerRef.current && !controllerRef.current.isStub) {
+        try {
+          await controllerRef.current.softDisconnect();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (wasConnected) reconnectAfterSwitchRef.current = true;
+      if (persistNetwork) setLastNetworkId(String(id));
+      setNetworkId(id);
+    },
+    [persistNetwork, networkId],
+  );
 
   const themeAttr = resolveThemeAttr(theme);
   const themeStyle = themeOverridesToStyle(theme);
 
-  if (!controller) {
-    return (
-      <div data-sqc-theme={themeAttr} style={themeStyle} className="sqc-root">
-        {children}
-      </div>
-    );
-  }
+  const networkCtx = useMemo(
+    () => ({
+      switchNetwork,
+      allowPlaceholderNetworks,
+      networkId,
+    }),
+    [switchNetwork, allowPlaceholderNetworks, networkId],
+  );
 
   return (
     <ControllerContext.Provider value={controller}>
-      <div data-sqc-theme={themeAttr} style={themeStyle} className="sqc-root">
-        {children}
-      </div>
+      <BrandContext.Provider value={labels ?? {}}>
+        <NetworkSwitchContext.Provider value={networkCtx}>
+          <div data-sqc-theme={themeAttr} style={themeStyle} className="sqc-root">
+            {children}
+          </div>
+        </NetworkSwitchContext.Provider>
+      </BrandContext.Provider>
     </ControllerContext.Provider>
   );
 }
@@ -157,4 +315,16 @@ export function useConnectState(): ConnectControllerState {
   return useControllerStore(ctrl);
 }
 
-export { ControllerContext };
+export function useBrandLabels(): ConnectBrandLabels {
+  return useContext(BrandContext);
+}
+
+export function useNetworkSwitch() {
+  const ctx = useContext(NetworkSwitchContext);
+  if (!ctx) {
+    throw new Error('useNetworkSwitch requires <SplendorConnectProvider>');
+  }
+  return ctx;
+}
+
+export { ControllerContext, BrandContext, NetworkSwitchContext };

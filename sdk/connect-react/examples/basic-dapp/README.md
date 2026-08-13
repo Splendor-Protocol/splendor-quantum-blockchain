@@ -4,21 +4,14 @@ Minimal Vite + React app using `@splendor/connect-react`.
 
 ## Run
 
-From repo root (build packages first):
-
 ```bash
 cd sdk/bridge && npm install && npm run build
 cd ../connect-react && npm install && npm run build
 cd examples/basic-dapp && npm install && npm run dev
 ```
 
-WASM is copied from `sdk/bridge/wasm/dist` into the Vite root via `vite-plugin-static-copy`.
-Alternatively, from the example folder:
+WASM is copied automatically by `sqcWasmPlugin()` from `@splendor/connect-react/vite`.
 
-```bash
-node ../../scripts/copy-wasm-assets.mjs ./public
-```
+Open http://localhost:5173 — **Connect** (MetaMask) or **Advanced → seed**. Use the network badge to switch among selectable networks (local by default; placeholder testnet/mainnet URLs are filtered out).
 
-Open http://localhost:5173 — use **Connect** (MetaMask) or **Advanced → seed**.
-
-`autoReconnect` is enabled: a previously authorized MetaMask session can restore without a cold-prompt when `eth_accounts` is non-empty.
+`autoReconnect` restores an authorized MetaMask session via `eth_accounts` without a cold prompt.

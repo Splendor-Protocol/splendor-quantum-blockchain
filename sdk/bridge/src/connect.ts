@@ -26,6 +26,8 @@ export type CreateClientOptions = {
   network?: NetworkId;
   /** Override RPC URLs (still uses network chainId / timeouts unless overridden). */
   rpcUrls?: string[];
+  /** Override gateway URL when resolving non-local networks. */
+  gatewayUrl?: string;
   chainId?: string;
   timeoutMs?: number;
   retries?: number;
@@ -71,6 +73,8 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
 } {
   const network = resolveNetwork(opts.network as string | undefined, {
     allowInsecureHttp: opts.allowInsecureHttp,
+    rpcUrls: opts.rpcUrls,
+    gatewayUrl: opts.gatewayUrl,
   });
   const rpc = networkToRpcOptions(network);
   const wasmSha256 = opts.wasmSha256 ?? (network.wasmSha256 || undefined);
@@ -88,7 +92,7 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
     );
   }
   const bridgeOpts: BridgeOptions = {
-    rpcUrls: opts.rpcUrls?.length ? opts.rpcUrls : rpc.rpcUrls,
+    rpcUrls: rpc.rpcUrls,
     chainId: opts.chainId || rpc.chainId,
     timeoutMs: opts.timeoutMs ?? rpc.timeoutMs,
     retries: opts.retries ?? rpc.retries,

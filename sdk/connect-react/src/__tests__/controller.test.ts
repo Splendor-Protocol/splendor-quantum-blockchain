@@ -5,7 +5,7 @@ import type { DeriveInfo } from '@splendor/pq-bridge';
 import { BridgeError } from '@splendor/pq-bridge';
 
 const memoryStore = new Map<string, string>();
-vi.stubGlobal('sessionStorage', {
+vi.stubGlobal('localStorage', {
   getItem: (k: string) => memoryStore.get(k) ?? null,
   setItem: (k: string, v: string) => {
     memoryStore.set(k, v);
@@ -14,6 +14,12 @@ vi.stubGlobal('sessionStorage', {
     memoryStore.delete(k);
   },
   clear: () => memoryStore.clear(),
+});
+vi.stubGlobal('sessionStorage', {
+  getItem: () => null,
+  setItem: () => undefined,
+  removeItem: () => undefined,
+  clear: () => undefined,
 });
 
 const mockInfo: DeriveInfo = {
@@ -324,6 +330,75 @@ describe('createConnectController', () => {
       autoReconnect: true,
     });
     expect(await ctrl.tryAutoReconnect()).toBe(true);
+    expect(ctrl.getState().status).toBe('connected');
+    ctrl.destroy();
+  });
+
+  it('exposes connectingStep during connect', async () => {
+    let resolveConnect!: (v: DeriveInfo) => void;
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: () =>
+        new Promise<DeriveInfo>((resolve) => {
+          resolveConnect = resolve;
+        }),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    const p = ctrl.connect('metamask');
+    await vi.waitFor(() => {
+      expect(ctrl.getState().connectingStep).toBe('sign');
+    });
+    resolveConnect(mockInfo);
+    await p;
+    expect(ctrl.getState().connectingStep).toBeNull();
+    ctrl.destroy();
+  });
+
+  it('softDisconnect clears account but keeps lastConnectorId', async () => {
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: async (ctx) => ctx.wallet.connectFromMetaMask(),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    await ctrl.connect('metamask');
+    expect(memoryStore.get('splendor.connect.lastConnectorId')).toBe('metamask');
+    await ctrl.softDisconnect();
+    expect(ctrl.getState().status).toBe('disconnected');
+    expect(ctrl.getState().account).toBeNull();
+    expect(ctrl.getState().activeConnectorId).toBeNull();
+    expect(memoryStore.get('splendor.connect.lastConnectorId')).toBe('metamask');
+    ctrl.destroy();
+  });
+
+  it('tryAutoReconnect force works when autoReconnect is false', async () => {
+    memoryStore.set('splendor.connect.lastConnectorId', 'metamask');
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      authorized: async () => true,
+      connect: async (ctx) => ctx.wallet.connectFromMetaMask(),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+      autoReconnect: false,
+    });
+    expect(await ctrl.tryAutoReconnect()).toBe(false);
+    expect(await ctrl.tryAutoReconnect({ force: true })).toBe(true);
     expect(ctrl.getState().status).toBe('connected');
     ctrl.destroy();
   });

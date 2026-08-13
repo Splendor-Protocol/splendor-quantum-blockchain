@@ -98,6 +98,7 @@ describe('seedConnector', () => {
   it('calls connectFromSeed with normalized hex', async () => {
     const connectFromSeed = vi.fn(async () => mockInfo);
     const c = seedConnector();
+    expect(c.connectFields?.[0]?.name).toBe('seed');
     const seed = '0x' + 'aa'.repeat(32);
     await c.connect(
       {
