@@ -42,6 +42,12 @@ type Block struct {
 	// Dilithium Mode 3 signature (3293 bytes) by the validator over the block hash.
 	ValidatorSignature []byte `json:"validator_signature"`
 
+	// ValidatorPubKey is the 1952-byte Dilithium public key of the validator.
+	// Only populated on the genesis block (height 0) so that full nodes and
+	// RPC nodes can bootstrap signature verification without a local genesis.json.
+	// For all other blocks this is nil (pubkey is looked up from state).
+	ValidatorPubKey []byte `json:"validator_pubkey,omitempty"`
+
 	// Ordered list of transactions included in this block.
 	Transactions []*Transaction `json:"transactions"`
 }

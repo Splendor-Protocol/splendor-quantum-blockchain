@@ -206,17 +206,21 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// ── Genesis block (if chain is empty) ──────────────────────────────────
 	if flagIsValidator && validatorPriv != nil {
-		if _, latestErr := executor.LatestBlock(); latestErr != nil || func() bool {
-			b, _ := executor.LatestBlock(); return b == nil
-		}() {
+		latestBlock, _ := executor.LatestBlock()
+		if latestBlock == nil {
 			log.Info().Msg("Chain is empty — creating genesis block")
 			stateRoot, _ := stateDB.StateRoot()
 			genesis := types.GenesisBlock(validatorAddr, stateRoot, time.Now().Unix())
+			// Embed the validator's Dilithium public key in the genesis block.
+			// This allows RPC nodes to bootstrap signature verification without genesis.json.
+			genesis.ValidatorPubKey = validatorPKBytes
 			if hash, hashErr := genesis.ComputeHash(); hashErr == nil {
 				genesis.Hash = hash
 				if signErr := genesis.SignBlock(validatorPriv); signErr == nil {
 					if execErr := executor.ExecuteBlock(genesis); execErr == nil {
 						log.Info().Str("hash", fmt.Sprintf("%x", genesis.Hash[:8])).Msg("Genesis block committed")
+					} else {
+						log.Warn().Err(execErr).Msg("Genesis block execution failed")
 					}
 				}
 			}
