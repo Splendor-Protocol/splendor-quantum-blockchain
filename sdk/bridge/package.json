@@ -1,6 +1,6 @@
 {
   "name": "@splendor/pq-bridge",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Non-custodial EVM→PQ (Dilithium) bridge SDK for Splendor Quantum Chain. Node.js-first; loads Go WASM signer internally.",
   "type": "module",
   "main": "./dist/index.js",
@@ -8,7 +8,9 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "browser": "./dist/browser.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./browser": {
       "types": "./dist/browser.d.ts",
@@ -39,6 +41,7 @@
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run build:ts",
     "prepare": "npm run build:ts",
+    "prepublishOnly": "node ./scripts/check-wasm-dist.mjs && npm run build:ts",
     "test": "vitest run",
     "test:go": "go test github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer -count=1",
     "test:gateway": "npm --prefix gateway test",

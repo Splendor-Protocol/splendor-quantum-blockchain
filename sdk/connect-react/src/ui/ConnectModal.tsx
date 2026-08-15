@@ -12,6 +12,7 @@ export function ConnectModal() {
     connect,
     status,
     errorMessage,
+    clearError,
     labels,
     connectingStep,
   } = useConnect();
@@ -20,6 +21,7 @@ export function ConnectModal() {
   const [fieldValues, setFieldValues] = useState<Record<string, Record<string, string>>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [readyMap, setReadyMap] = useState<Record<string, boolean>>({});
+  const [readyLoading, setReadyLoading] = useState(false);
   const advancedPanelId = useId();
 
   const primary = useMemo(() => connectors.filter((c) => !c.advanced), [connectors]);
@@ -28,8 +30,13 @@ export function ConnectModal() {
   const open = modal === 'connect';
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setFieldValues({});
+      setBusyId(null);
+      return;
+    }
     let cancelled = false;
+    setReadyLoading(true);
     void (async () => {
       const next: Record<string, boolean> = {};
       await Promise.all(
@@ -41,7 +48,10 @@ export function ConnectModal() {
           }
         }),
       );
-      if (!cancelled) setReadyMap(next);
+      if (!cancelled) {
+        setReadyMap(next);
+        setReadyLoading(false);
+      }
     })();
     return () => {
       cancelled = true;
@@ -75,32 +85,30 @@ export function ConnectModal() {
 
   return (
     <ModalShell open={open} title={title} subtitle={subtitle} onClose={closeModal}>
-      <div style={{ marginBottom: '0.85rem' }}>
+      <div className="sqc-modal-network">
         <NetworkBadge />
-        {network?.id ? (
-          <span
-            style={{
-              marginLeft: '0.5rem',
-              fontSize: '0.75rem',
-              color: 'var(--sqc-text-muted)',
-            }}
-          >
-            {network.id}
-          </span>
-        ) : null}
+        {network?.id ? <span className="sqc-modal-network__id">{network.id}</span> : null}
       </div>
+
+      {readyLoading && primary.length === 0 ? (
+        <p className="sqc-modal__sub">Detecting wallets…</p>
+      ) : null}
 
       <ul className="sqc-connector-list">
         {primary.map((c) => {
-          const isReady = readyMap[c.id] !== false;
+          const readyKnown = c.id in readyMap;
           const unavailable = readyMap[c.id] === false;
+          const pendingReady = readyLoading && !readyKnown;
           return (
             <li key={c.id}>
               <button
                 type="button"
                 className="sqc-connector-item"
                 disabled={
-                  status === 'connecting' || busyId != null || unavailable || !isReady
+                  status === 'connecting' ||
+                  busyId != null ||
+                  unavailable ||
+                  pendingReady
                 }
                 onClick={() => void onConnect(c.id)}
               >
@@ -112,9 +120,11 @@ export function ConnectModal() {
                       ? connectingStep === 'init'
                         ? 'Loading signer…'
                         : 'Sign to unlock…'
-                      : unavailable
-                        ? 'Wallet not detected'
-                        : 'Sign once to unlock PQ wallet'}
+                      : pendingReady
+                        ? 'Checking…'
+                        : unavailable
+                          ? 'Wallet not detected'
+                          : 'Sign once to unlock PQ wallet'}
                   </span>
                 </span>
               </button>
@@ -191,7 +201,14 @@ export function ConnectModal() {
         </div>
       ) : null}
 
-      {errorMessage ? <p className="sqc-error">{errorMessage}</p> : null}
+      {errorMessage ? (
+        <div className="sqc-error-row">
+          <p className="sqc-error">{errorMessage}</p>
+          <button type="button" className="sqc-btn sqc-btn--ghost" onClick={() => clearError()}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
     </ModalShell>
   );
 }

@@ -9,7 +9,7 @@
     "abiHash": "sha3-256",
     "goldenTransferSelector": "14cde9ab",
     "derivationDomainVersion": "v1",
-    "bridgeClientVersion": "1.3.1",
+    "bridgeClientVersion": "1.4.0",
     "wireChainId": "splendor-quantum-1"
   },
   "networks": {

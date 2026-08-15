@@ -34,6 +34,14 @@ describe('registerNetwork / resolveNetwork overrides', () => {
     clearRegisteredNetworks();
   });
 
+  it('resolveNetwork accepts rpcUrls override without gatewayUrl', () => {
+    const net = resolveNetwork('testnet', {
+      rpcUrls: ['https://rpc.testnet.real'],
+    });
+    expect(net.rpcUrls).toEqual(['https://rpc.testnet.real']);
+    expect(net.id).toBe('testnet');
+  });
+
   it('resolveNetwork accepts rpcUrls + gatewayUrl overrides over placeholders', () => {
     const net = resolveNetwork('testnet', {
       rpcUrls: ['https://rpc.testnet.real'],

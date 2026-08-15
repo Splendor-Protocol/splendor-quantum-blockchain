@@ -3,6 +3,8 @@
 export type BridgeEventMap = {
   connect: { address: string; evmAddress?: string };
   disconnect: Record<string, never>;
+  /** Dilithium keys cleared; session slot retained for soft reconnect. */
+  lock: Record<string, never>;
   accountsChanged: { address: string; evmAddress?: string };
   error: { code: string; message: string };
 };

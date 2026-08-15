@@ -2,7 +2,7 @@
 
 **Status:** Normative  
 **Version:** `1`  
-**Implements:** `@splendor/pq-bridge` ≥ 1.2.1  
+**Implements:** `@splendor/pq-bridge` ≥ 1.4.0  
 **Keywords:** MUST / SHOULD / MAY (RFC 2119)
 
 This document is the **single source of truth** for how dApps, wallets, and gateways talk to Splendor Quantum Chain via the PQ bridge. Short how-to: [DAPP_INTEGRATION.md](./DAPP_INTEGRATION.md). Conformance checklist: [SQDP-1-CONFORMANCE.md](./SQDP-1-CONFORMANCE.md).
@@ -87,12 +87,12 @@ Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
 
 ## 7. Confirmation
 
-1. The supported confirmation mechanism is **nonce advancement**: wait until account nonce `>` the nonce used when signing.
-2. Clients MUST NOT rely on `GET /tx/{hash}` (stub — not implemented on the node).
-3. Clients MUST NOT rely on `/ws` subscriptions (code exists but is **not mounted** on the live RPC router).
-4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty.
+1. Preferred confirmation: poll `GET /tx/{hash}/receipt` until present (tx index on nodes with explorer routes).
+2. Fallback: **nonce advancement** — wait until account nonce `>` the nonce used when signing (can race with other txs from the same account).
+3. `/ws` is mounted as an SSE/NDJSON stream (not a browser WebSocket). Clients MAY subscribe; `pq-bridge` does not expose a subscribe helper yet.
+4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, the bridge prefers the receipt path.
 
-`PROTOCOL.confirmation === 'nonce'`.
+`PROTOCOL.confirmation === 'nonce'` (fallback) with optional receipt proof when indexed.
 
 ---
 
@@ -107,7 +107,7 @@ Clients using `@splendor/pq-bridge` MUST use these event names and payloads:
 | `accountsChanged` | `{ address: string, evmAddress?: string }` |
 
 1. After MetaMask `accountsChanged`, wallets SHOULD re-`personal_sign` and re-derive (SDK default). Empty accounts SHOULD lock and emit `disconnect`.
-2. `lock()` MUST clear the Dilithium key from WASM memory. `disconnect()` MUST destroy the session.
+2. `lock()` MUST clear the Dilithium key from WASM memory and emit a `lock` event. `disconnect()` MUST destroy the session and emit `disconnect`.
 
 ---
 
@@ -126,7 +126,7 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 1. Clients MAY supply `rpcUrls: string[]` for read failover. Empty lists MUST be rejected.
 2. On timeout / HTTP 5xx, clients SHOULD retry (per-URL) then fail over to the next URL.
 3. After a successful submit, clients SHOULD sticky-route subsequent submits to the accepting URL.
-4. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `1.2.1`).
+4. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `1.4.0`).
 
 ---
 
@@ -154,7 +154,7 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 | Wrong chain | MUST `assertChainId` before submit (all tx types) |
 | Seed / EVM key / derivation sig theft via gateway | Public proxy MUST reject custodial credentials; submit `signedTx` only |
 | Session residue | MUST `lock` / `disconnect` on logout (`lock` zeroizes Dilithium key material) |
-| Fake confirmation | MUST NOT treat `/tx/{hash}` 404 stub as success; nonce poll can race with other txs |
+| Fake confirmation | MUST NOT treat missing receipt as success without nonce fallback; nonce poll can race with other txs |
 | MetaMask account race | MUST fail-closed (lock + disconnect) if re-derive fails after `accountsChanged` |
 | Tampered WASM | Browser SHOULD set `wasmSha256` network pin and fail closed on mismatch |
 | Signature / address mismatch | MUST `ecrecover` and bind claimed EVM address before derive |

@@ -1,7 +1,7 @@
 import type { DeriveInfo, NetworkConfig } from '@splendor/pq-bridge';
 import type { Connector } from '../connectors/types.js';
 
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'locked' | 'error';
 
 /** Fine-grained connect progress for UX (WASM load / wallet sign). */
 export type ConnectingStep = 'init' | 'sign' | null;
@@ -23,6 +23,8 @@ export type ConnectControllerState = {
   modal: ModalView;
   connectors: Connector[];
   network: NetworkConfig | null;
+  /** True while wallets are still being discovered (connectors="auto"). */
+  connectorsLoading?: boolean;
 };
 
 export type ConnectControllerEvents = {

@@ -31,6 +31,11 @@ export type BridgeOptions = RpcOptions & {
    * Auto-lock after this many ms of inactivity (browser). 0 / undefined = disabled.
    */
   sessionIdleMs?: number;
+  /**
+   * When true, also lock immediately when the tab becomes hidden.
+   * Default false — only the idle timer locks (avoids surprise desync on tab switch).
+   */
+  lockOnHidden?: boolean;
   /** When true (default), MetaMask account switches re-derive the PQ wallet. */
   watchMetaMaskAccounts?: boolean;
   /** Optional shared read provider; RPC options are taken from it when provided. */
@@ -55,7 +60,8 @@ export type ConnectionState = 'disconnected' | 'connected';
 
 export type TransferOpts = {
   to: string;
-  amount: string;
+  /** Atto amount string; omit when amountSPLD is set. */
+  amount?: string;
   amountSPLD?: string;
   fee?: string;
   memo?: string;
@@ -71,11 +77,15 @@ export type CallOpts = {
   value?: string;
   valueSPLD?: string;
   fee?: string;
+  waitForConfirmation?: boolean;
+  confirmTimeoutMs?: number;
 };
 
 export type DeployOpts = {
   bytecode: Uint8Array | string;
   fee?: string;
+  waitForConfirmation?: boolean;
+  confirmTimeoutMs?: number;
 };
 
 export type X402PayOpts = {

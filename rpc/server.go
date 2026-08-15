@@ -160,9 +160,10 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetTx(w http.ResponseWriter, r *http.Request) {
-	// Transaction lookup requires scanning blocks — simplified: return 404 for now
-	// A full implementation would maintain a tx index in LevelDB.
-	writeError(w, http.StatusNotFound, "transaction index not yet implemented — use block explorer")
+	// Prefer explorer route when txIndex is registered on the outer mux.
+	// This stub remains for standalone Server usage without explorer routes.
+	writeError(w, http.StatusNotFound,
+		"transaction index not available on this node — mount explorer routes with a TxIndexStore, or use GET /tx/{hash}/receipt")
 }
 
 func (s *Server) handleGetBalance(w http.ResponseWriter, r *http.Request) {

@@ -59,6 +59,10 @@ function mockWallet() {
     emit(event: string, payload: unknown) {
       listeners.get(event)?.forEach((fn) => fn(payload));
     },
+    lock: vi.fn(() => {
+      info = null;
+      listeners.get('lock')?.forEach((fn) => fn({}));
+    }),
   };
   return wallet;
 }
@@ -400,6 +404,53 @@ describe('createConnectController', () => {
     expect(await ctrl.tryAutoReconnect()).toBe(false);
     expect(await ctrl.tryAutoReconnect({ force: true })).toBe(true);
     expect(ctrl.getState().status).toBe('connected');
+    ctrl.destroy();
+  });
+
+  it('maps wallet lock event to locked status and keeps last connector', async () => {
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: async (ctx) => ctx.wallet.connectFromMetaMask(),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    await ctrl.connect('metamask');
+    lastWallet.emit('lock', {});
+    expect(ctrl.getState().status).toBe('locked');
+    expect(ctrl.getState().account).toBeNull();
+    expect(memoryStore.get('splendor.connect.lastConnectorId')).toBe('metamask');
+    ctrl.destroy();
+  });
+
+  it('connect mutex returns same in-flight promise', async () => {
+    let resolveConnect!: (v: DeriveInfo) => void;
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: () =>
+        new Promise<DeriveInfo>((resolve) => {
+          resolveConnect = resolve;
+        }),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    const a = ctrl.connect('metamask');
+    const b = ctrl.connect('metamask');
+    expect(a).toBe(b);
+    await vi.waitFor(() => {
+      expect(typeof resolveConnect).toBe('function');
+    });
+    resolveConnect(mockInfo);
+    await a;
     ctrl.destroy();
   });
 });

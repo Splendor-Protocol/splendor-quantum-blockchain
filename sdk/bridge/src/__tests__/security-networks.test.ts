@@ -2,7 +2,7 @@
  * SQDP-1 security: HTTPS-only non-local RPC, browser WASM pin on wallet.init.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveNetwork, getNetworksFile } from '../networks.js';
+import { resolveNetwork } from '../networks.js';
 import { SplendorPQBridge } from '../wallet.js';
 
 afterEach(() => {
@@ -17,49 +17,35 @@ describe('security-networks HTTPS', () => {
   });
 
   it('rejects non-local http RPC without allowInsecureHttp', () => {
-    const file = getNetworksFile();
-    const net = file.networks.testnet;
-    const origRpc = [...net.rpcUrls];
-    const origGw = net.gatewayUrl;
-    net.rpcUrls = ['http://10.0.0.5:8080'];
-    net.gatewayUrl = 'https://gateway.ok';
-    try {
-      expect(() => resolveNetwork('testnet')).toThrow(/https:\/\//i);
-    } finally {
-      net.rpcUrls = origRpc;
-      net.gatewayUrl = origGw;
-    }
+    expect(() =>
+      resolveNetwork('testnet', { rpcUrls: ['http://10.0.0.5:8080'] }),
+    ).toThrow(/https:\/\//i);
   });
 
-  it('rejects non-local http gatewayUrl', () => {
-    const file = getNetworksFile();
-    const net = file.networks.testnet;
-    const origRpc = [...net.rpcUrls];
-    const origGw = net.gatewayUrl;
-    net.rpcUrls = ['https://rpc.ok'];
-    net.gatewayUrl = 'http://10.0.0.5:3090';
-    try {
-      expect(() => resolveNetwork('testnet')).toThrow(/gatewayUrl must use https/i);
-    } finally {
-      net.rpcUrls = origRpc;
-      net.gatewayUrl = origGw;
-    }
+  it('does not require gatewayUrl for SDK resolve (rpcUrls only)', () => {
+    const net = resolveNetwork('testnet', {
+      rpcUrls: ['https://rpc.ok'],
+      // gateway left as baked-in *.example — must not throw
+    });
+    expect(net.rpcUrls[0]).toBe('https://rpc.ok');
+  });
+
+  it('requireGateway enforces https gateway when asked', () => {
+    expect(() =>
+      resolveNetwork('testnet', {
+        rpcUrls: ['https://rpc.ok'],
+        gatewayUrl: 'http://10.0.0.5:3090',
+        requireGateway: true,
+      }),
+    ).toThrow(/gatewayUrl must use https/i);
   });
 
   it('allowInsecureHttp opts out of HTTPS requirement', () => {
-    const file = getNetworksFile();
-    const net = file.networks.testnet;
-    const origRpc = [...net.rpcUrls];
-    const origGw = net.gatewayUrl;
-    net.rpcUrls = ['http://10.0.0.5:8080'];
-    net.gatewayUrl = 'http://10.0.0.5:3090';
-    try {
-      const resolved = resolveNetwork('testnet', { allowInsecureHttp: true });
-      expect(resolved.rpcUrls[0]).toBe('http://10.0.0.5:8080');
-    } finally {
-      net.rpcUrls = origRpc;
-      net.gatewayUrl = origGw;
-    }
+    const resolved = resolveNetwork('testnet', {
+      rpcUrls: ['http://10.0.0.5:8080'],
+      allowInsecureHttp: true,
+    });
+    expect(resolved.rpcUrls[0]).toBe('http://10.0.0.5:8080');
   });
 
   it('still rejects placeholder .example even with allowInsecureHttp', () => {

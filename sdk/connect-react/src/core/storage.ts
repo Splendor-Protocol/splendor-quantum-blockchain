@@ -2,6 +2,18 @@ const CONNECTOR_KEY = 'splendor.connect.lastConnectorId';
 const NETWORK_KEY = 'splendor.connect.lastNetworkId';
 const CHANNEL = 'splendor-connect';
 
+let sharedChannel: BroadcastChannel | null = null;
+
+function getSharedChannel(): BroadcastChannel | null {
+  try {
+    if (typeof BroadcastChannel === 'undefined') return null;
+    if (!sharedChannel) sharedChannel = new BroadcastChannel(CHANNEL);
+    return sharedChannel;
+  } catch {
+    return null;
+  }
+}
+
 function readKey(store: Storage | undefined, key: string): string | null {
   try {
     if (!store) return null;
@@ -73,10 +85,7 @@ export type ConnectBroadcastMessage =
 
 export function broadcastConnectEvent(msg: ConnectBroadcastMessage): void {
   try {
-    if (typeof BroadcastChannel === 'undefined') return;
-    const ch = new BroadcastChannel(CHANNEL);
-    ch.postMessage(msg);
-    ch.close();
+    getSharedChannel()?.postMessage(msg);
   } catch {
     /* ignore */
   }
@@ -86,8 +95,8 @@ export function subscribeConnectBroadcast(
   handler: (msg: ConnectBroadcastMessage) => void,
 ): () => void {
   try {
-    if (typeof BroadcastChannel === 'undefined') return () => undefined;
-    const ch = new BroadcastChannel(CHANNEL);
+    const ch = getSharedChannel();
+    if (!ch) return () => undefined;
     const onMsg = (ev: MessageEvent) => {
       const data = ev.data as ConnectBroadcastMessage;
       if (data && typeof data === 'object' && 'type' in data) handler(data);
@@ -95,7 +104,6 @@ export function subscribeConnectBroadcast(
     ch.addEventListener('message', onMsg);
     return () => {
       ch.removeEventListener('message', onMsg);
-      ch.close();
     };
   } catch {
     return () => undefined;

@@ -68,6 +68,7 @@ export type ConnectController = {
   subscribe(listener: Listener): () => void;
   openModal(view?: 'connect' | 'account'): void;
   closeModal(): void;
+  clearError(): void;
   connect(connectorId: string, opts?: Record<string, unknown>): Promise<DeriveInfo>;
   disconnect(): Promise<void>;
   /** Tear down wallet without clearing lastConnectorId (network switch). */
@@ -104,6 +105,7 @@ export function createConnectController(
   let activeConnectorId: string | null = null;
   let modal: ModalView = 'closed';
   let destroyed = false;
+  let connectInFlight: Promise<DeriveInfo> | null = null;
 
   const unsubs: Array<() => void> = [];
 
@@ -116,6 +118,8 @@ export function createConnectController(
     if (info && client.wallet.getConnectionState() === 'connected') {
       account = toAccount(info);
       status = 'connected';
+    } else if (status === 'locked') {
+      account = null;
     } else {
       account = null;
       if (status !== 'connecting' && status !== 'error') status = 'disconnected';
@@ -131,6 +135,14 @@ export function createConnectController(
   unsubs.push(
     client.wallet.on('accountsChanged', () => {
       syncFromWallet();
+    }),
+  );
+  unsubs.push(
+    client.wallet.on('lock', () => {
+      account = null;
+      connectingStep = null;
+      status = 'locked';
+      emit();
     }),
   );
   unsubs.push(
@@ -154,7 +166,7 @@ export function createConnectController(
 
   unsubs.push(
     subscribeConnectBroadcast((msg) => {
-      if (msg.type === 'disconnect' && status === 'connected') {
+      if (msg.type === 'disconnect' && (status === 'connected' || status === 'locked')) {
         client.wallet.disconnect();
         account = null;
         activeConnectorId = null;
@@ -183,71 +195,90 @@ export function createConnectController(
       return () => listeners.delete(listener);
     },
     openModal(view = 'connect') {
+      error = null;
       modal = view;
       emit();
     },
     closeModal() {
       modal = 'closed';
+      error = null;
       emit();
     },
-    async connect(connectorId, opts) {
-      if (destroyed) throw new Error('ConnectController destroyed');
-      const connector = connectors.find((c) => c.id === connectorId);
-      if (!connector) throw new Error(`Unknown connector: ${connectorId}`);
-
+    clearError() {
       error = null;
-      status = 'connecting';
-      connectingStep = 'init';
-      activeConnectorId = connectorId;
+      if (status === 'error') status = account ? 'connected' : 'disconnected';
       emit();
-
-      try {
-        const ready = await connector.ready();
-        if (!ready) {
-          throw BridgeError.noProvider(
-            connector.id === 'metamask'
-              ? 'MetaMask (or compatible wallet) not found. Install an EIP-1193 wallet.'
-              : `Connector "${connector.name}" is not ready`,
-          );
-        }
-
-        await client.wallet.init();
-        connectingStep = 'sign';
-        emit();
-        const info = await connector.connect(
-          {
-            wallet: client.wallet,
-            provider: client.provider,
-            network: client.network,
-          },
-          opts,
-        );
-        account = toAccount(info);
-        activeConnectorId = connectorId;
-        setLastConnectorId(connector.advanced ? null : connectorId);
-        status = 'connected';
-        connectingStep = null;
-        modal = 'closed';
-        if (!connector.advanced) {
-          broadcastConnectEvent({
-            type: 'connected',
-            connectorId,
-            address: info.address,
-          });
-        }
-        emit();
-        return info;
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e));
-        error = err;
-        account = null;
-        activeConnectorId = null;
-        connectingStep = null;
-        status = 'error';
-        options.onError?.(err);
-        emit();
-        throw err;
+    },
+    connect(connectorId, opts) {
+      if (destroyed) {
+        return Promise.reject(new Error('ConnectController destroyed'));
       }
+      if (connectInFlight) return connectInFlight;
+
+      const connector = connectors.find((c) => c.id === connectorId);
+      if (!connector) {
+        return Promise.reject(new Error(`Unknown connector: ${connectorId}`));
+      }
+
+      connectInFlight = (async () => {
+        error = null;
+        status = 'connecting';
+        connectingStep = 'init';
+        activeConnectorId = connectorId;
+        emit();
+
+        try {
+          const ready = await connector.ready();
+          if (!ready) {
+            throw BridgeError.noProvider(
+              connector.id === 'metamask'
+                ? 'MetaMask (or compatible wallet) not found. Install an EIP-1193 wallet.'
+                : `Connector "${connector.name}" is not ready`,
+            );
+          }
+
+          await client.wallet.init();
+          connectingStep = 'sign';
+          emit();
+          const info = await connector.connect(
+            {
+              wallet: client.wallet,
+              provider: client.provider,
+              network: client.network,
+            },
+            opts,
+          );
+          account = toAccount(info);
+          activeConnectorId = connectorId;
+          setLastConnectorId(connector.advanced ? null : connectorId);
+          status = 'connected';
+          connectingStep = null;
+          modal = 'closed';
+          if (!connector.advanced) {
+            broadcastConnectEvent({
+              type: 'connected',
+              connectorId,
+              address: info.address,
+            });
+          }
+          emit();
+          return info;
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          error = err;
+          account = null;
+          activeConnectorId = null;
+          connectingStep = null;
+          status = 'error';
+          options.onError?.(err);
+          emit();
+          throw err;
+        } finally {
+          connectInFlight = null;
+        }
+      })();
+
+      return connectInFlight;
     },
     async disconnect() {
       const connector = connectors.find((c) => c.id === activeConnectorId);
@@ -281,7 +312,6 @@ export function createConnectController(
       status = 'disconnected';
       modal = 'closed';
       // Keep lastConnectorId for autoReconnect after network switch.
-      // Clear in-memory active connector; storage still has last id.
       activeConnectorId = null;
       emit();
     },
@@ -302,7 +332,6 @@ export function createConnectController(
         return true;
       } catch (e) {
         if (isBridgeError(e) && e.code === 'USER_REJECTED') return false;
-        // Surface non-reject failures so UI can show mapped copy; still return false.
         error = e instanceof Error ? e : new Error(String(e));
         status = 'error';
         activeConnectorId = null;
@@ -334,6 +363,7 @@ export function createConnectController(
 /** SSR / pre-hydrate stub — hooks work; connect is a no-op reject. */
 export function createStubConnectController(
   connectors: Connector[] = [],
+  opts?: { connectorsLoading?: boolean },
 ): ConnectController {
   const listeners = new Set<Listener>();
   const emit = () => {
@@ -348,6 +378,7 @@ export function createStubConnectController(
     modal: 'closed',
     connectors,
     network: null,
+    connectorsLoading: opts?.connectorsLoading === true,
   };
   const notReady = () => {
     throw new Error('@splendor/connect-react: wallet not ready (SSR or hydrating)');
@@ -362,10 +393,16 @@ export function createStubConnectController(
     },
     openModal(view = 'connect') {
       state.modal = view;
+      state.error = null;
       emit();
     },
     closeModal() {
       state.modal = 'closed';
+      state.error = null;
+      emit();
+    },
+    clearError() {
+      state.error = null;
       emit();
     },
     async connect() {
