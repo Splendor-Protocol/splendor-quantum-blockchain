@@ -445,6 +445,62 @@
   }
 }
 
+.sqc-connect-kit {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.sqc-network-badge-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.sqc-network-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+  z-index: 20;
+  background: var(--sqc-bg-elevated);
+  border: 1px solid var(--sqc-border);
+  border-radius: var(--sqc-radius-sm);
+  padding: 0.35rem;
+  margin: 0;
+  list-style: none;
+}
+
+.sqc-connector-item--active {
+  background: color-mix(in srgb, var(--sqc-accent) 12%, transparent);
+}
+
+.sqc-modal-network {
+  margin-bottom: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sqc-modal-network__id {
+  font-size: 0.75rem;
+  color: var(--sqc-text-muted);
+}
+
+.sqc-error-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.sqc-error-row .sqc-error {
+  flex: 1;
+  margin: 0;
+}
+
+.sqc-account-link {
+  color: var(--sqc-accent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sqc-backdrop,
   .sqc-modal,

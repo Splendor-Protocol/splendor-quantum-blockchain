@@ -159,19 +159,23 @@ export class SplendorPQBridge {
     };
 
     const onActivity = () => reset();
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') this.lock();
-    };
-    const onPageHide = () => this.lock();
 
     document.addEventListener('pointerdown', onActivity);
     this.idleUnsubs.push(() => document.removeEventListener('pointerdown', onActivity));
     document.addEventListener('keydown', onActivity);
     this.idleUnsubs.push(() => document.removeEventListener('keydown', onActivity));
-    document.addEventListener('visibilitychange', onVisibility);
-    this.idleUnsubs.push(() => document.removeEventListener('visibilitychange', onVisibility));
-    globalThis.addEventListener?.('pagehide', onPageHide);
-    this.idleUnsubs.push(() => globalThis.removeEventListener?.('pagehide', onPageHide));
+
+    // Optional: lock when tab is hidden (off by default — avoids UI desync on tab switch).
+    if (this.opts.lockOnHidden === true) {
+      const onVisibility = () => {
+        if (document.visibilityState === 'hidden') this.lock();
+      };
+      const onPageHide = () => this.lock();
+      document.addEventListener('visibilitychange', onVisibility);
+      this.idleUnsubs.push(() => document.removeEventListener('visibilitychange', onVisibility));
+      globalThis.addEventListener?.('pagehide', onPageHide);
+      this.idleUnsubs.push(() => globalThis.removeEventListener?.('pagehide', onPageHide));
+    }
 
     reset();
   }
@@ -269,7 +273,14 @@ export class SplendorPQBridge {
       return info;
     } catch (e) {
       this.opts.onError?.(e);
-      throw wrapUnknown(e, 'USER_REJECTED');
+      // Only map clear user-reject signals; preserve BridgeError and other failures.
+      const msg = e instanceof Error ? e.message : String(e);
+      const code = (e as { code?: number | string })?.code;
+      const rejected =
+        code === 4001 ||
+        code === 'ACTION_REJECTED' ||
+        /user rejected|user denied|rejected by user/i.test(msg);
+      throw wrapUnknown(e, rejected ? 'USER_REJECTED' : 'UNKNOWN');
     }
   }
 
@@ -300,13 +311,16 @@ export class SplendorPQBridge {
   /**
    * Clear Dilithium key material from WASM (best-effort zeroize) and drop local info.
    * Session id is retained so re-connect can reuse the session slot.
+   * Emits `lock` so UI kits can clear the connected chip without destroying the session.
    */
   lock(): void {
+    const hadSession = !!this.info || this.isUnlocked();
     this.clearIdleLock();
     if (this.wasm && this.sessionId) {
       this.wasm.sqLock(this.sessionId);
     }
     this.info = null;
+    if (hadSession) this.emitter.emit('lock', {});
   }
 
   disconnect(): void {
@@ -439,7 +453,12 @@ export class SplendorPQBridge {
     });
   }
 
-  async callContract(opts: CallOpts): Promise<{ status: string; hash: string; signedTx: object }> {
+  async callContract(opts: CallOpts): Promise<{
+    status: string;
+    hash: string;
+    signedTx: object;
+    confirmation?: { confirmed: true; nonce: number };
+  }> {
     return this.withSignLock(async () => {
       await this.init();
       assertAddress(opts.contract);
@@ -463,7 +482,7 @@ export class SplendorPQBridge {
       } else if (opts.calldata != null) {
         calldata = opts.calldata;
       } else {
-        throw BridgeError.invalidAmount('callContract requires `function`+args or `calldata`');
+        throw BridgeError.rpc('callContract requires `function`+args or `calldata`');
       }
 
       await this.beforeSignAndSubmit();
@@ -480,11 +499,24 @@ export class SplendorPQBridge {
       const wireStr = unwrap(this.api().sqSignCall(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
       const result = await this.rpc.submitTransaction(signedTx);
-      return { ...result, signedTx };
+      let confirmation: { confirmed: true; nonce: number } | undefined;
+      if (opts.waitForConfirmation) {
+        confirmation = await this.waitForConfirmation({
+          nonceBefore: nonce,
+          hash: result.hash,
+          timeoutMs: opts.confirmTimeoutMs,
+        });
+      }
+      return { ...result, signedTx, confirmation };
     });
   }
 
-  async deployContract(opts: DeployOpts): Promise<{ status: string; hash: string; signedTx: object }> {
+  async deployContract(opts: DeployOpts): Promise<{
+    status: string;
+    hash: string;
+    signedTx: object;
+    confirmation?: { confirmed: true; nonce: number };
+  }> {
     return this.withSignLock(async () => {
       await this.init();
       let fee: string;
@@ -505,7 +537,15 @@ export class SplendorPQBridge {
       const wireStr = unwrap(this.api().sqSignDeploy(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
       const result = await this.rpc.submitTransaction(signedTx);
-      return { ...result, signedTx };
+      let confirmation: { confirmed: true; nonce: number } | undefined;
+      if (opts.waitForConfirmation) {
+        confirmation = await this.waitForConfirmation({
+          nonceBefore: nonce,
+          hash: result.hash,
+          timeoutMs: opts.confirmTimeoutMs,
+        });
+      }
+      return { ...result, signedTx, confirmation };
     });
   }
 
@@ -544,31 +584,36 @@ export class SplendorPQBridge {
   }
 
   async signTransferOnly(opts: TransferOpts & { nonce: number; assertChain?: boolean }): Promise<object> {
-    await this.init();
-    assertAddress(opts.to);
-    const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
-    let fee: string;
-    try {
-      fee = assertFeeAtLeastMin(opts.fee);
-    } catch (e) {
-      throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
-    }
-    if (opts.assertChain !== false) {
-      await this.beforeSignAndSubmit();
-    }
-    const wireStr = unwrap(
-      this.api().sqSignTransfer(
-        this.sid(),
-        JSON.stringify({
-          to: opts.to,
-          amount,
-          fee,
-          nonce: opts.nonce,
-          memo: opts.memo || '',
-        }),
-      ),
-    ) as string;
-    return JSON.parse(wireStr);
+    return this.withSignLock(async () => {
+      await this.init();
+      assertAddress(opts.to);
+      const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
+      if (!amount || BigInt(amount) < 0n) {
+        throw BridgeError.invalidAmount('amount must be a non-negative integer string');
+      }
+      let fee: string;
+      try {
+        fee = assertFeeAtLeastMin(opts.fee);
+      } catch (e) {
+        throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
+      }
+      if (opts.assertChain !== false) {
+        await this.beforeSignAndSubmit();
+      }
+      const wireStr = unwrap(
+        this.api().sqSignTransfer(
+          this.sid(),
+          JSON.stringify({
+            to: opts.to,
+            amount,
+            fee,
+            nonce: opts.nonce,
+            memo: opts.memo || '',
+          }),
+        ),
+      ) as string;
+      return JSON.parse(wireStr);
+    });
   }
 }
 

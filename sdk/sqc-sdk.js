@@ -1,5 +1,11 @@
 /**
- * Splendor Quantum Chain — JavaScript SDK
+ * @deprecated LEGACY — unsafe for production submit against current Go wire JSON.
+ *
+ * Transaction builders here emit string `from`/`to`/`amount`/`fee`, but the node
+ * expects byte-array addresses and numeric amount/fee. Use `@splendor/pq-bridge`
+ * (WASM signer) for all signing and submit flows.
+ *
+ * Splendor Quantum Chain — JavaScript SDK (legacy read helpers only)
  * 
  * A complete client library for interacting with Splendor Quantum Chain nodes.
  * Zero external dependencies — works in Node.js and modern browsers.

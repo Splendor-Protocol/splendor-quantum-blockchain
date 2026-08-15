@@ -11,6 +11,7 @@ import { SplendorPQBridge } from './wallet.js';
 import type { BridgeOptions, DeriveInfo } from './types.js';
 import {
   resolveNetwork,
+  registerNetwork,
   networkToRpcOptions,
   type NetworkConfig,
   type NetworkId,
@@ -24,9 +25,16 @@ export type ConnectMode = 'none' | 'metamask' | 'seed' | 'evmKey' | 'evmSignatur
 export type CreateClientOptions = {
   /** Network id from sqc.networks.json (default: file defaultNetwork). */
   network?: NetworkId;
+  /**
+   * Inline full network config (preferred for production dApps).
+   * When set, used instead of looking up `network` id (id still taken from config).
+   */
+  networkConfig?: NetworkConfig;
+  /** Register these networks before resolve (sync; safe for React render). */
+  networks?: NetworkConfig[];
   /** Override RPC URLs (still uses network chainId / timeouts unless overridden). */
   rpcUrls?: string[];
-  /** Override gateway URL when resolving non-local networks. */
+  /** Override gateway URL (optional — not used by SqRpc). */
   gatewayUrl?: string;
   chainId?: string;
   timeoutMs?: number;
@@ -44,6 +52,8 @@ export type CreateClientOptions = {
   allowInsecureHttp?: boolean;
   /** Auto-lock after this many ms of inactivity (browser). */
   sessionIdleMs?: number;
+  /** Lock immediately when tab is hidden (default false). */
+  lockOnHidden?: boolean;
   watchMetaMaskAccounts?: boolean;
   ethereumProvider?: EthereumProvider;
   derivation?: DerivationScheme;
@@ -71,11 +81,26 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
   network: NetworkConfig;
   bridgeOpts: BridgeOptions;
 } {
-  const network = resolveNetwork(opts.network as string | undefined, {
-    allowInsecureHttp: opts.allowInsecureHttp,
-    rpcUrls: opts.rpcUrls,
-    gatewayUrl: opts.gatewayUrl,
-  });
+  if (opts.networks?.length) {
+    for (const n of opts.networks) registerNetwork(n);
+  }
+
+  let network: NetworkConfig;
+  if (opts.networkConfig) {
+    registerNetwork(opts.networkConfig);
+    network = resolveNetwork(opts.networkConfig.id, {
+      allowInsecureHttp: opts.allowInsecureHttp,
+      rpcUrls: opts.rpcUrls ?? opts.networkConfig.rpcUrls,
+      gatewayUrl: opts.gatewayUrl ?? opts.networkConfig.gatewayUrl,
+    });
+  } else {
+    network = resolveNetwork(opts.network as string | undefined, {
+      allowInsecureHttp: opts.allowInsecureHttp,
+      rpcUrls: opts.rpcUrls,
+      gatewayUrl: opts.gatewayUrl,
+    });
+  }
+
   const rpc = networkToRpcOptions(network);
   const wasmSha256 = opts.wasmSha256 ?? (network.wasmSha256 || undefined);
   const execSha256 = opts.execSha256 ?? (network.execSha256 || undefined);
@@ -104,6 +129,7 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
     networkId: network.id,
     allowInsecureHttp: opts.allowInsecureHttp,
     sessionIdleMs: opts.sessionIdleMs,
+    lockOnHidden: opts.lockOnHidden,
     watchMetaMaskAccounts: opts.watchMetaMaskAccounts,
     ethereumProvider: opts.ethereumProvider,
     derivation: opts.derivation,

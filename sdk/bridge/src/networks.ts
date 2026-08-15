@@ -1,7 +1,7 @@
 /**
  * Single source of truth for SQDP networks + protocol dynamics.
  * Edit: src/config/sqc.networks.json (mirrored to config/ via npm run sync:config).
- * Runtime: registerNetwork() for dApp-supplied endpoints without forking the package.
+ * Runtime: registerNetwork() / inline networkConfig for dApp-supplied endpoints.
  */
 import raw from './config/sqc.networks.json' with { type: 'json' };
 import { BridgeError } from './errors.js';
@@ -16,6 +16,7 @@ export type NetworkConfig = {
   /** Wire / protocol chain_id (must match node types.ChainID). */
   chainId: string;
   rpcUrls: string[];
+  /** Optional HTTP gateway (operators / X402). Not required for SqRpc clients. */
   gatewayUrl: string;
   gatewayPort: number;
   wasmUrl: string;
@@ -59,14 +60,37 @@ export type ResolveNetworkOptions = {
   gatewayUrl?: string;
   /** Allow resolving even when baked-in URLs are placeholders (UI listing only). */
   allowPlaceholder?: boolean;
+  /**
+   * When true, also reject placeholder / non-https gatewayUrl.
+   * Default false — SDK SqRpc only needs rpcUrls.
+   */
+  requireGateway?: boolean;
 };
 
-const CONFIG = raw as NetworksFile;
+function deepFreeze<T>(obj: T): T {
+  if (obj && typeof obj === 'object' && !Object.isFrozen(obj)) {
+    Object.freeze(obj);
+    for (const v of Object.values(obj as object)) {
+      deepFreeze(v);
+    }
+  }
+  return obj;
+}
+
+const CONFIG: NetworksFile = deepFreeze(structuredClone(raw) as NetworksFile);
 /** Runtime-registered networks (prefer over baked-in when same id). */
 const RUNTIME: Record<string, NetworkConfig> = {};
 
 function isPlaceholderUrl(url: string): boolean {
+  if (!url) return false;
   return /\.example(\/|$)/i.test(url) || /splendor\.example/i.test(url);
+}
+
+function cloneNetwork(net: NetworkConfig): NetworkConfig {
+  return {
+    ...net,
+    rpcUrls: [...net.rpcUrls],
+  };
 }
 
 /** Full config document (protocol + all networks). */
@@ -86,7 +110,20 @@ export function getDefaultNetworkId(): string {
 export function registerNetwork(net: NetworkConfig): void {
   if (!net?.id) throw BridgeError.rpc('registerNetwork: id is required');
   if (!net.rpcUrls?.length) throw BridgeError.rpc('registerNetwork: rpcUrls required');
-  RUNTIME[net.id] = { ...net };
+  if (!net.chainId) throw BridgeError.rpc('registerNetwork: chainId is required');
+  if (!net.wasmUrl) throw BridgeError.rpc('registerNetwork: wasmUrl is required');
+  if (!net.execUrl) throw BridgeError.rpc('registerNetwork: execUrl is required');
+  RUNTIME[net.id] = cloneNetwork({
+    ...net,
+    gatewayUrl: net.gatewayUrl ?? '',
+    gatewayPort: net.gatewayPort ?? 443,
+    networkId: net.networkId || net.id,
+    name: net.name || net.id,
+    wasmSha256: net.wasmSha256 ?? '',
+    execSha256: net.execSha256 ?? '',
+    timeoutMs: net.timeoutMs ?? 20_000,
+    retries: net.retries ?? 2,
+  });
 }
 
 export function unregisterNetwork(id: string): void {
@@ -99,17 +136,19 @@ export function clearRegisteredNetworks(): void {
 
 export function listNetworks(): NetworkConfig[] {
   const map = new Map<string, NetworkConfig>();
-  for (const n of Object.values(CONFIG.networks)) map.set(n.id, n);
-  for (const n of Object.values(RUNTIME)) map.set(n.id, n);
+  for (const n of Object.values(CONFIG.networks)) map.set(n.id, cloneNetwork(n));
+  for (const n of Object.values(RUNTIME)) map.set(n.id, cloneNetwork(n));
   return [...map.values()];
 }
 
-/** True when RPC/gateway still use documentation placeholders (*.example). */
+/**
+ * True when RPC URLs still use documentation placeholders (*.example).
+ * gatewayUrl is ignored for SDK usability (optional for SqRpc).
+ */
 export function isPlaceholderNetwork(net: NetworkConfig | string): boolean {
   const config = typeof net === 'string' ? getNetwork(net) : net;
   if (!config) return true;
-  const urls = [...config.rpcUrls, config.gatewayUrl];
-  return urls.some((url) => isPlaceholderUrl(url));
+  return config.rpcUrls.some((url) => isPlaceholderUrl(url));
 }
 
 /**
@@ -125,12 +164,14 @@ export function listSelectableNetworks(opts?: {
 }
 
 export function getNetwork(id: string): NetworkConfig | undefined {
-  return RUNTIME[id] ?? CONFIG.networks[id];
+  const n = RUNTIME[id] ?? CONFIG.networks[id];
+  return n ? cloneNetwork(n) : undefined;
 }
 
 /**
  * Resolve a network by id (local | testnet | mainnet | registered).
- * Pass rpcUrls/gatewayUrl overrides to use real endpoints over baked-in placeholders.
+ * Pass rpcUrls overrides to use real endpoints over baked-in placeholders.
+ * gatewayUrl is optional for SDK clients (SqRpc); set requireGateway to enforce it.
  */
 export function resolveNetwork(
   id?: string,
@@ -160,12 +201,6 @@ export function resolveNetwork(
         );
       }
     }
-    if (isPlaceholderUrl(merged.gatewayUrl)) {
-      throw BridgeError.rpc(
-        `Network "${key}" still uses placeholder gatewayUrl (${merged.gatewayUrl}). ` +
-          `Pass gatewayUrl or registerNetwork() with a real gateway.`,
-      );
-    }
     if (!opts?.allowInsecureHttp) {
       for (const url of merged.rpcUrls) {
         if (!url.startsWith('https://')) {
@@ -174,9 +209,16 @@ export function resolveNetwork(
           );
         }
       }
-      if (!merged.gatewayUrl.startsWith('https://')) {
+    }
+    if (opts?.requireGateway) {
+      if (!merged.gatewayUrl || isPlaceholderUrl(merged.gatewayUrl)) {
         throw BridgeError.rpc(
-          `Network "${key}" gatewayUrl must use https:// (${merged.gatewayUrl}). Pass allowInsecureHttp: true to override.`,
+          `Network "${key}" requires a real gatewayUrl (got ${merged.gatewayUrl || 'empty'}).`,
+        );
+      }
+      if (!opts?.allowInsecureHttp && !merged.gatewayUrl.startsWith('https://')) {
+        throw BridgeError.rpc(
+          `Network "${key}" gatewayUrl must use https:// (${merged.gatewayUrl}).`,
         );
       }
     }
@@ -201,7 +243,7 @@ export function txExplorerUrl(net: NetworkConfig, hash: string): string | null {
 
 /**
  * Build SQDP derivation domain message for a wire chain id.
- * Must stay in sync with Go signer.DerivationDomainMessage (CI: sync:domain).
+ * Must stay in sync with Go signer.DerivationDomainMessage (checked by sync:config).
  */
 export function derivationDomainMessage(chainId: string): string {
   const v = CONFIG.protocol.derivationDomainVersion;

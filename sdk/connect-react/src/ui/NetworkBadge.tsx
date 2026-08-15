@@ -9,8 +9,9 @@ export type NetworkBadgeProps = {
 };
 
 export function NetworkBadge({ className, switchable = true }: NetworkBadgeProps) {
-  const { network, networks, switchNetwork, networkId } = useNetwork();
+  const { network, networks, switchNetwork, networkId, switching } = useNetwork();
   const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const listId = useId();
 
@@ -19,13 +20,36 @@ export function NetworkBadge({ className, switchable = true }: NetworkBadgeProps
     const onDoc = (e: MouseEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        return;
+      }
+      if (!networks.length) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveIndex((i) => (i + 1) % networks.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveIndex((i) => (i - 1 + networks.length) % networks.length);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const n = networks[activeIndex];
+        if (n) void onPick(n.id as NetworkId);
+      }
+    };
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, networks, activeIndex]);
 
   if (!network && !networkId) return null;
 
-  const label = network?.name || String(networkId);
+  const label = switching ? 'Switching…' : network?.name || String(networkId);
 
   const onPick = async (id: NetworkId) => {
     setOpen(false);
@@ -34,46 +58,34 @@ export function NetworkBadge({ className, switchable = true }: NetworkBadgeProps
   };
 
   return (
-    <div ref={rootRef} style={{ position: 'relative', display: 'inline-block' }}>
+    <div ref={rootRef} className="sqc-network-badge-wrap">
       <button
         type="button"
         className={['sqc-network-badge', className].filter(Boolean).join(' ')}
         aria-haspopup={switchable ? 'listbox' : undefined}
         aria-expanded={switchable ? open : undefined}
         aria-controls={switchable ? listId : undefined}
-        disabled={!switchable || networks.length < 2}
+        disabled={!switchable || networks.length < 2 || switching}
         onClick={() => switchable && setOpen((v) => !v)}
-        style={{ cursor: switchable && networks.length > 1 ? 'pointer' : 'default' }}
       >
         <span className="sqc-network-badge__dot" aria-hidden />
         {label}
       </button>
       {open && networks.length > 0 ? (
-        <ul
-          id={listId}
-          role="listbox"
-          className="sqc-connector-list"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            left: 0,
-            minWidth: 200,
-            zIndex: 20,
-            background: 'var(--sqc-bg-elevated)',
-            border: '1px solid var(--sqc-border)',
-            borderRadius: 'var(--sqc-radius-sm)',
-            padding: '0.35rem',
-            margin: 0,
-          }}
-        >
-          {networks.map((n) => (
+        <ul id={listId} role="listbox" className="sqc-network-menu">
+          {networks.map((n, i) => (
             <li key={n.id}>
               <button
                 type="button"
                 role="option"
                 aria-selected={n.id === networkId}
-                className="sqc-connector-item"
-                style={{ padding: '0.55rem 0.75rem' }}
+                className={[
+                  'sqc-connector-item',
+                  i === activeIndex ? 'sqc-connector-item--active' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                onMouseEnter={() => setActiveIndex(i)}
                 onClick={() => void onPick(n.id as NetworkId)}
               >
                 {n.name || n.id}

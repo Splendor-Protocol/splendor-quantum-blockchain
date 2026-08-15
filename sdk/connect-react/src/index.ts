@@ -75,6 +75,7 @@ export {
   AccountModal,
   NetworkBadge,
   ModalShell,
+  ModalHost,
 } from './ui/index.js';
 export type { ConnectButtonProps } from './ui/ConnectButton.js';
 export type { NetworkBadgeProps } from './ui/NetworkBadge.js';

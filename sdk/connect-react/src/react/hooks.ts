@@ -19,7 +19,7 @@ import {
   useConnectController,
   useConnectState,
   useNetworkSwitch,
-} from './provider.js';
+} from './context.js';
 
 export function useConnect(): {
   connect: (connectorId: string, opts?: Record<string, unknown>) => Promise<DeriveInfo>;
@@ -29,6 +29,7 @@ export function useConnect(): {
   connectingStep: ConnectingStep;
   error: Error | null;
   errorMessage: string | null;
+  clearError: () => void;
   openModal: (view?: 'connect' | 'account') => void;
   closeModal: () => void;
   modal: 'closed' | 'connect' | 'account';
@@ -44,6 +45,7 @@ export function useConnect(): {
     [ctrl],
   );
   const disconnect = useCallback(() => ctrl.disconnect(), [ctrl]);
+  const clearError = useCallback(() => ctrl.clearError(), [ctrl]);
   const openModal = useCallback(
     (view?: 'connect' | 'account') => ctrl.openModal(view),
     [ctrl],
@@ -58,6 +60,7 @@ export function useConnect(): {
     connectingStep: state.connectingStep,
     error: state.error,
     errorMessage: state.error ? connectErrorMessage(state.error) : null,
+    clearError,
     openModal,
     closeModal,
     modal: state.modal,
@@ -132,9 +135,10 @@ export function useNetwork(): {
   networkId: NetworkId;
   switchNetwork: (id: NetworkId) => Promise<void>;
   networks: NetworkConfig[];
+  switching: boolean;
 } {
   const state = useConnectState();
-  const { switchNetwork, allowPlaceholderNetworks, networkId } = useNetworkSwitch();
+  const { switchNetwork, allowPlaceholderNetworks, networkId, switching } = useNetworkSwitch();
   const networks = listSelectableNetworks({
     allowPlaceholder: allowPlaceholderNetworks,
   });
@@ -144,6 +148,7 @@ export function useNetwork(): {
     networkId,
     switchNetwork,
     networks,
+    switching,
   };
 }
 

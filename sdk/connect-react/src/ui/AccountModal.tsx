@@ -101,7 +101,7 @@ export function AccountModal() {
               href={network.explorerUrl}
               target="_blank"
               rel="noreferrer"
-              style={{ color: 'var(--sqc-accent)' }}
+              className="sqc-account-link"
             >
               Open explorer
             </a>

@@ -122,26 +122,44 @@ export class SqRpc {
     return this.post('/x402/settle', { requirements, payload }, true);
   }
 
+  async getTx(hash: string): Promise<Record<string, unknown>> {
+    const h = String(hash).replace(/^0x/i, '');
+    return this.get(`/tx/${encodeURIComponent(h)}`);
+  }
+
+  async getTxReceipt(hash: string): Promise<Record<string, unknown>> {
+    const h = String(hash).replace(/^0x/i, '');
+    return this.get(`/tx/${encodeURIComponent(h)}/receipt`);
+  }
+
   /**
-   * Best-effort confirmation: wait until account nonce > nonceBefore.
-   * Node tx-by-hash is not implemented — `hash` only appears in timeout errors
-   * for operator correlation (does not prove inclusion).
-   * Caveat: another tx from the same account can advance the nonce.
+   * Confirmation: prefer receipt index when `hash` is set; fall back to nonce advance.
+   * Caveat (nonce path): another tx from the same account can advance the nonce.
    */
   async waitForConfirmation(opts: {
     from: string;
     nonceBefore: number;
     timeoutMs?: number;
     pollMs?: number;
-    /** Correlates timeout errors only; not used for receipt lookup. */
+    /** When set, poll GET /tx/{hash}/receipt first. */
     hash?: string;
-  }): Promise<{ confirmed: true; nonce: number }> {
+  }): Promise<{ confirmed: true; nonce: number; receipt?: Record<string, unknown> }> {
     const from = assertAddress(opts.from);
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const pollMs = opts.pollMs ?? 1_000;
     const deadline = Date.now() + timeoutMs;
+    const hash = opts.hash?.replace(/^0x/i, '');
 
     while (Date.now() < deadline) {
+      if (hash) {
+        try {
+          const receipt = await this.getTxReceipt(hash);
+          const { nonce } = await this.getNonce(from);
+          return { confirmed: true, nonce, receipt };
+        } catch {
+          /* not indexed yet — keep polling */
+        }
+      }
       const { nonce } = await this.getNonce(from);
       if (nonce > opts.nonceBefore) {
         return { confirmed: true, nonce };
@@ -149,8 +167,8 @@ export class SqRpc {
       await new Promise((r) => setTimeout(r, pollMs));
     }
     throw BridgeError.txNotConfirmed(
-      `nonce for ${from} did not advance past ${opts.nonceBefore} within ${timeoutMs}ms` +
-        (opts.hash ? ` (submitted hash ${opts.hash}; receipt index not available)` : ''),
+      `confirmation for ${from} did not complete within ${timeoutMs}ms` +
+        (hash ? ` (hash ${hash})` : ` (nonce still <= ${opts.nonceBefore})`),
     );
   }
 

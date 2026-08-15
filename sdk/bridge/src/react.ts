@@ -6,45 +6,44 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createSplendorClient } from './connect.js';
 import type { SplendorClient, CreateClientOptions } from './connect.js';
-import type { NetworkId } from './networks.js';
+import { BridgeError } from './errors.js';
+import type { BridgeErrorCode } from './errors.js';
 import type { ConnectionState, DeriveInfo } from './types.js';
-import type { DerivationScheme } from './derive.js';
-import type { EthereumProvider } from './metamask.js';
 
-export type UseSplendorPQOpts = {
-  network?: NetworkId;
-  wasmUrl?: string;
-  execUrl?: string;
-  wasmSha256?: string;
-  ethereumProvider?: EthereumProvider;
-  derivation?: DerivationScheme;
-};
+export type UseSplendorPQOpts = CreateClientOptions;
 
 export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
   const [client, setClient] = useState<SplendorClient | null>(null);
-  const [state, setState] = useState<ConnectionState>('disconnected');
+  const [state, setState] = useState<ConnectionState | 'locked'>('disconnected');
   const [info, setInfo] = useState<DeriveInfo | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const optsKey = JSON.stringify({
     network: opts.network || 'local',
+    networkConfigId: opts.networkConfig?.id,
     wasmUrl: opts.wasmUrl,
     execUrl: opts.execUrl,
     wasmSha256: opts.wasmSha256,
+    execSha256: opts.execSha256,
+    rpcUrls: opts.rpcUrls,
+    gatewayUrl: opts.gatewayUrl,
+    chainId: opts.chainId,
+    timeoutMs: opts.timeoutMs,
+    retries: opts.retries,
     derivation: opts.derivation || 'eip191-v1',
+    allowUnpinnedWasm: opts.allowUnpinnedWasm === true,
+    allowInsecureHttp: opts.allowInsecureHttp === true,
+    sessionIdleMs: opts.sessionIdleMs,
+    lockOnHidden: opts.lockOnHidden === true,
+    watchMetaMaskAccounts: opts.watchMetaMaskAccounts,
   });
-  const providerRef = useRef(opts.ethereumProvider);
-  providerRef.current = opts.ethereumProvider;
+  const optsRef = useRef(opts);
+  optsRef.current = opts;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const parsed = JSON.parse(optsKey) as UseSplendorPQOpts;
     const createOpts: CreateClientOptions = {
-      network: parsed.network,
-      wasmUrl: parsed.wasmUrl,
-      execUrl: parsed.execUrl,
-      wasmSha256: parsed.wasmSha256,
-      derivation: parsed.derivation,
-      ethereumProvider: providerRef.current,
+      ...optsRef.current,
+      ethereumProvider: optsRef.current.ethereumProvider,
     };
     const next = createSplendorClient(createOpts);
     setClient(next);
@@ -66,18 +65,23 @@ export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
       setInfo(wallet.getDeriveInfo());
       setState(wallet.getConnectionState());
     });
+    const offLock = wallet.on('lock', () => {
+      setInfo(null);
+      setState('locked');
+    });
     const offDisc = wallet.on('disconnect', () => {
       setInfo(null);
       setState('disconnected');
     });
     const offErr = wallet.on('error', (payload) => {
-      setError(new Error(payload.message));
+      setError(new BridgeError((payload.code as BridgeErrorCode) || 'UNKNOWN', payload.message));
       setInfo(null);
       setState('disconnected');
     });
     return () => {
       offConnect();
       offChanged();
+      offLock();
       offDisc();
       offErr();
     };
@@ -87,7 +91,7 @@ export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
     if (!client) throw new Error('Splendor client not ready (SSR or initializing)');
     setError(null);
     try {
-      const derived = await client.wallet.connectFromMetaMask(providerRef.current);
+      const derived = await client.wallet.connectFromMetaMask(optsRef.current.ethereumProvider);
       setInfo(derived);
       setState('connected');
       return derived;

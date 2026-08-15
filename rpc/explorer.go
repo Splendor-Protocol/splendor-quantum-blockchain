@@ -48,9 +48,10 @@ func RegisterExplorerRoutes(
 		announceCallback = onPeerAnnounce[0]
 	}
 
-	// Receipts (only if txIndex is available)
+	// Receipts + tx lookup (only if txIndex is available)
 	if txIndex != nil {
 		r.HandleFunc("/tx/{hash}/receipt", makeReceiptHandler(txIndex)).Methods(http.MethodGet)
+		r.HandleFunc("/tx/{hash}", makeTxHandler(txIndex)).Methods(http.MethodGet)
 	}
 
 	// Peer management
@@ -85,6 +86,36 @@ func makeReceiptHandler(txIndex *state.TxIndexStore) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, receipt)
+	}
+}
+
+// makeTxHandler returns transaction location (+ receipt when present) by hash.
+func makeTxHandler(txIndex *state.TxIndexStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hashHex := mux.Vars(r)["hash"]
+		hashBytes, err := hexToBytes32(hashHex)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid tx hash: %v", err))
+			return
+		}
+
+		loc, err := txIndex.GetTxLocation(hashBytes)
+		if err != nil {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("transaction not found: %v", err))
+			return
+		}
+
+		out := map[string]interface{}{
+			"hash":         hashHex,
+			"block_height": loc.BlockHeight,
+			"block_hash":   fmt.Sprintf("%x", loc.BlockHash),
+			"tx_index":     loc.TxIndex,
+		}
+		if receipt, rerr := txIndex.GetReceipt(hashBytes); rerr == nil && receipt != nil {
+			out["receipt"] = receipt
+			out["status"] = receipt.Status
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

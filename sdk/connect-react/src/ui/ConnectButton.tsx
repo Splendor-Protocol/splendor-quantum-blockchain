@@ -1,6 +1,6 @@
 import { useAccount, useBalance, useConnect } from '../react/hooks.js';
-import { ConnectModal } from './ConnectModal.js';
 import { AccountModal } from './AccountModal.js';
+import { ConnectModal } from './ConnectModal.js';
 
 function truncateAddress(addr: string, left = 6, right = 4): string {
   if (addr.length <= left + right + 1) return addr;
@@ -11,20 +11,24 @@ export type ConnectButtonProps = {
   label?: string;
   className?: string;
   /**
-   * When false, only render the button (host must mount ConnectModal/AccountModal).
-   * Default true — self-contained drop-in.
+   * When true, also mount ConnectModal/AccountModal next to the button.
+   * Default false — prefer provider `hostModals` (single modal host).
    */
   includeModals?: boolean;
+  /** Poll balance for the account chip (ms). 0 disables. Default 12s. */
+  balancePollMs?: number;
 };
 
 export function ConnectButton({
   label = 'Connect',
   className,
-  includeModals = true,
+  includeModals = false,
+  balancePollMs = 12_000,
 }: ConnectButtonProps) {
-  const { openModal, status, connectingStep } = useConnect();
+  const { openModal, status, connectingStep, connectors } = useConnect();
   const { address, isConnected } = useAccount();
-  const { balanceSPLD } = useBalance();
+  const showBalance = isConnected && !!address;
+  const { balanceSPLD } = useBalance(showBalance ? balancePollMs : 0);
 
   const connectingLabel =
     connectingStep === 'init'
@@ -33,8 +37,18 @@ export function ConnectButton({
         ? 'Sign in wallet…'
         : 'Connecting…';
 
+  const detecting = status !== 'connecting' && connectors.length === 0;
+
   const button =
-    isConnected && address ? (
+    status === 'locked' ? (
+      <button
+        type="button"
+        className={['sqc-btn', 'sqc-connect-btn', className].filter(Boolean).join(' ')}
+        onClick={() => openModal('connect')}
+      >
+        Unlock wallet
+      </button>
+    ) : isConnected && address ? (
       <button
         type="button"
         className={['sqc-btn', 'sqc-account-chip', className].filter(Boolean).join(' ')}
@@ -51,9 +65,9 @@ export function ConnectButton({
         type="button"
         className={['sqc-btn', 'sqc-connect-btn', className].filter(Boolean).join(' ')}
         onClick={() => openModal('connect')}
-        disabled={status === 'connecting'}
+        disabled={status === 'connecting' || detecting}
       >
-        {status === 'connecting' ? connectingLabel : label}
+        {status === 'connecting' ? connectingLabel : detecting ? 'Detecting wallets…' : label}
       </button>
     );
 
