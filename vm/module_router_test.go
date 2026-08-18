@@ -75,6 +75,11 @@ func TestQRC20DeployMintTransfer(t *testing.T) {
 		t.Fatalf("deploy addr mismatch: router=%s module=%s", token, got)
 	}
 
+	// token account must be flagged as a contract (explorer discoverability)
+	if acc, _ := sdb.GetAccount(token); !acc.IsContract {
+		t.Fatal("deployed token account not marked is_contract")
+	}
+
 	tok := NewQRC20Token(sdb, token)
 
 	// initial supply credited to owner

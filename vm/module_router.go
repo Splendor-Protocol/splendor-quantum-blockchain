@@ -105,6 +105,7 @@ func dispatchQRC20(stateDB *state.StateDB, caller qcrypto.Address, nonce uint64,
 		if err != nil {
 			return err
 		}
+		markContract(stateDB, addr)
 		receipt.ContractAddress = &addr
 		return nil
 
@@ -222,6 +223,7 @@ func dispatchDEX(stateDB *state.StateDB, caller qcrypto.Address, nonce uint64, a
 		if err != nil {
 			return err
 		}
+		markContract(stateDB, addr)
 		receipt.ContractAddress = &addr
 		return nil
 
@@ -270,6 +272,19 @@ func dispatchDEX(stateDB *state.StateDB, caller qcrypto.Address, nonce uint64, a
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+// markContract flags a module-deployed account as a contract so block explorers
+// and the generic /contract endpoint recognise it. Native modules keep their
+// state in storage slots (not bytecode), so there is no code to set — only the
+// IsContract marker. Best-effort: a marking failure never fails the deploy.
+func markContract(stateDB *state.StateDB, addr qcrypto.Address) {
+	acc, err := stateDB.GetAccount(addr)
+	if err != nil {
+		return
+	}
+	acc.IsContract = true
+	stateDB.SetAccount(acc)
+}
 
 func parseBig(s string) (*big.Int, error) {
 	v, ok := new(big.Int).SetString(s, 10)
