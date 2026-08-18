@@ -5,8 +5,9 @@
 // Zero ECDSA. Zero SHA-256. Zero keccak. Zero secp256k1.
 //
 // Usage:
-//   sqc-node --data-dir /var/sqc/data --rpc-addr :8080
-//   sqc-node --data-dir /var/sqc/data --rpc-addr :8080 --validator --wallet validator.sqwallet
+//
+//	sqc-node --data-dir /var/sqc/data --rpc-addr :8080
+//	sqc-node --data-dir /var/sqc/data --rpc-addr :8080 --validator --wallet validator.sqwallet
 package main
 
 import (
@@ -30,6 +31,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/rpc"
 )
@@ -44,6 +46,7 @@ var (
 	flagBlockInterval int
 	flagIsValidator   bool
 	flagLogLevel      string
+	flagGenesisPath   string
 )
 
 func main() {
@@ -65,6 +68,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().IntVar(&flagBlockInterval, "block-interval", 2, "Block interval in seconds (validator only)")
 	root.Flags().BoolVar(&flagIsValidator, "validator", false, "Run as block-producing validator")
 	root.Flags().StringVar(&flagLogLevel, "log-level", "info", "Log level: debug, info, warn, error")
+	root.Flags().StringVar(&flagGenesisPath, "genesis", "", "Path to genesis.json (allocations applied once on an empty chain)")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -224,19 +228,34 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// ── Genesis block (if chain is empty) ──────────────────────────────────
-	if flagIsValidator && validatorPriv != nil {
-		latestBlock, _ := executor.LatestBlock()
-		if latestBlock == nil {
+	// ── Genesis (if chain is empty) ────────────────────────────────────────
+	if latestBlock, _ := executor.LatestBlock(); latestBlock == nil {
+		// Credit genesis allocations before block 0 so every node — validator
+		// and sync — starts from the same funded state root. Without this the
+		// total_supply declared in genesis.json is never minted, the chain has
+		// zero balance, and no transaction can meet the minimum fee.
+		if flagGenesisPath != "" {
+			g, err := genesiscfg.LoadFile(flagGenesisPath)
+			if err != nil {
+				return fmt.Errorf("load genesis %q: %w", flagGenesisPath, err)
+			}
+			if _, err := g.ApplyToState(stateDB); err != nil {
+				return fmt.Errorf("apply genesis allocations: %w", err)
+			}
+			log.Info().Int("allocations", len(g.Allocations)).Str("total_supply", g.TotalSupply).Msg("Applied genesis allocations")
+		}
+
+		// The validator builds and signs block 0 over the resulting state root.
+		if flagIsValidator && validatorPriv != nil {
 			log.Info().Msg("Chain is empty — creating genesis block")
 			stateRoot, _ := stateDB.StateRoot()
-			genesis := types.GenesisBlock(validatorAddr, stateRoot, time.Now().Unix())
-			genesis.ValidatorPubKey = validatorPKBytes
-			if hash, hashErr := genesis.ComputeHash(); hashErr == nil {
-				genesis.Hash = hash
-				if signErr := genesis.SignBlock(validatorPriv); signErr == nil {
-					if execErr := executor.ExecuteBlock(genesis); execErr == nil {
-						log.Info().Str("hash", fmt.Sprintf("%x", genesis.Hash[:8])).Msg("Genesis block committed")
+			genesisBlock := types.GenesisBlock(validatorAddr, stateRoot, time.Now().Unix())
+			genesisBlock.ValidatorPubKey = validatorPKBytes
+			if hash, hashErr := genesisBlock.ComputeHash(); hashErr == nil {
+				genesisBlock.Hash = hash
+				if signErr := genesisBlock.SignBlock(validatorPriv); signErr == nil {
+					if execErr := executor.ExecuteBlock(genesisBlock); execErr == nil {
+						log.Info().Str("hash", fmt.Sprintf("%x", genesisBlock.Hash[:8])).Msg("Genesis block committed")
 					} else {
 						log.Warn().Err(execErr).Msg("Genesis block execution failed")
 					}
@@ -349,7 +368,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// the validator immediately adds it to the broadcast list (push-based realtime sync).
 	// Note: RegisterExplorerRoutes handles nil txIndex gracefully.
 	rpc.RegisterExplorerRoutes(router, txIndex, stateDB, peerPool, func() uint64 {
-		h, _ := executor.LatestHeight(); return h
+		h, _ := executor.LatestHeight()
+		return h
 	}, broadcaster.AddPeer)
 
 	// Governance + staking routes
