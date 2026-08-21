@@ -5,15 +5,16 @@
 // TX index store (receipts, logs, transaction lookup).
 //
 // New endpoints added here:
-//   GET /tx/{hash}/receipt           — get receipt by tx hash
-//   GET /tx/{hash}                   — get transaction by hash (now implemented via tx index)
-//   GET /logs?address=&from=&to=     — filter logs by contract address and block range
-//   GET /peers                       — list known peers
-//   POST /peers/announce             — announce self to this node
-//   GET /sync                        — sync status (is_syncing, local_height, best_height)
-//   GET /precompiles                 — list registered precompile addresses
-//   GET /contract/{address}          — get contract info (code hash, is_contract)
-//   GET /contract/{address}/storage/{slot} — read a storage slot
+//
+//	GET /tx/{hash}/receipt           — get receipt by tx hash
+//	GET /tx/{hash}                   — get transaction by hash (now implemented via tx index)
+//	GET /logs?address=&from=&to=     — filter logs by contract address and block range
+//	GET /peers                       — list known peers
+//	POST /peers/announce             — announce self to this node
+//	GET /sync                        — sync status (is_syncing, local_height, best_height)
+//	GET /precompiles                 — list registered precompile addresses
+//	GET /contract/{address}          — get contract info (code hash, is_contract)
+//	GET /contract/{address}/storage/{slot} — read a storage slot
 package rpc
 
 import (
@@ -22,12 +23,14 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
 )
 
@@ -48,10 +51,14 @@ func RegisterExplorerRoutes(
 		announceCallback = onPeerAnnounce[0]
 	}
 
-	// Receipts + tx lookup (only if txIndex is available)
+	// Receipts + tx lookup + log filter (only if txIndex is available)
 	if txIndex != nil {
 		r.HandleFunc("/tx/{hash}/receipt", makeReceiptHandler(txIndex)).Methods(http.MethodGet)
 		r.HandleFunc("/tx/{hash}", makeTxHandler(txIndex)).Methods(http.MethodGet)
+		// eth_getLogs analog. The Postgres indexer serves the scalable, unbounded
+		// version at /idx/v1/logs; this native method is for SDK/RPC-standard
+		// parity + bounded ranges (see maxLogBlockRange).
+		r.HandleFunc("/logs", makeLogsHandler(txIndex, localHeight)).Methods(http.MethodPost, http.MethodGet)
 	}
 
 	// Peer management
@@ -257,7 +264,157 @@ func parseLogFilter(r *http.Request) LogFilter {
 	if to := q.Get("to"); to != "" {
 		filter.ToBlock, _ = strconv.ParseUint(to, 10, 64)
 	}
+	if t := q.Get("topics"); t != "" {
+		filter.Topics = strings.Split(t, ",")
+	}
 	return filter
+}
+
+// ── Log query handler (eth_getLogs analog) ──────────────────────────────────────
+
+const (
+	// maxLogBlockRange bounds a single /logs scan (this native method iterates
+	// receipts, so an all-miss filter still costs O(txs in the window)). Kept
+	// deliberately small: this endpoint is for recent/SDK-parity queries;
+	// unbounded history is served by the Postgres indexer (/idx/v1/logs).
+	maxLogBlockRange = 2_000
+	// maxLogResults caps returned logs; truncated=true signals more matched.
+	maxLogResults = 5_000
+)
+
+// makeLogsHandler filters event logs by block range + address + positional
+// topics, reading the receipt index the node already maintains. Accepts a JSON
+// body (POST) or query params (GET). Both /call and this endpoint are read-only.
+func makeLogsHandler(txIndex *state.TxIndexStore, localHeight func() uint64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var filter LogFilter
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "failed to read body")
+				return
+			}
+			if len(body) > 0 {
+				if err := json.Unmarshal(body, &filter); err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+					return
+				}
+			}
+		} else {
+			filter = parseLogFilter(r)
+		}
+
+		var wantAddr *qcrypto.Address
+		if filter.Address != "" {
+			a, err := qcrypto.AddressFromString(filter.Address)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid address: %v", err))
+				return
+			}
+			wantAddr = &a
+		}
+
+		wantTopics, err := parseTopicFilters(filter.Topics)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		// Clamp the range to the current head, then bound the scan window.
+		head := localHeight()
+		if filter.ToBlock == 0 || filter.ToBlock > head {
+			filter.ToBlock = head
+		}
+		if filter.FromBlock > filter.ToBlock {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"logs": []*types.Log{}, "count": 0,
+				"from_block": filter.FromBlock, "to_block": filter.ToBlock, "truncated": false,
+			})
+			return
+		}
+		if filter.ToBlock-filter.FromBlock > maxLogBlockRange {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"block range too large: %d blocks (max %d per request). Narrow the range, or use the indexer's /idx/v1/logs for unbounded history.",
+				filter.ToBlock-filter.FromBlock, maxLogBlockRange))
+			return
+		}
+
+		out := make([]*types.Log, 0, 64)
+		truncated := false
+		for h := filter.FromBlock; h <= filter.ToBlock && !truncated; h++ {
+			hashes, herr := txIndex.GetBlockTxHashes(h)
+			if herr != nil || len(hashes) == 0 {
+				continue
+			}
+			for _, hash := range hashes {
+				rcpt, rerr := txIndex.GetReceipt(hash)
+				if rerr != nil || rcpt == nil {
+					continue
+				}
+				for _, lg := range rcpt.Logs {
+					if wantAddr != nil && lg.Address != *wantAddr {
+						continue
+					}
+					if !topicsMatch(wantTopics, lg.Topics) {
+						continue
+					}
+					out = append(out, lg)
+					if len(out) >= maxLogResults {
+						truncated = true
+						break
+					}
+				}
+				if truncated {
+					break
+				}
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"logs":       out,
+			"count":      len(out),
+			"from_block": filter.FromBlock,
+			"to_block":   filter.ToBlock,
+			"truncated":  truncated,
+		})
+	}
+}
+
+// parseTopicFilters converts positional topic hex strings to [32]byte matchers.
+// An empty string or "null" at a position is a wildcard (matches any topic).
+func parseTopicFilters(topics []string) ([]*[32]byte, error) {
+	out := make([]*[32]byte, 0, len(topics))
+	for i, t := range topics {
+		if t == "" || t == "null" {
+			out = append(out, nil)
+			continue
+		}
+		b, err := hexToBytes32(t)
+		if err != nil {
+			return nil, fmt.Errorf("invalid topic[%d]: %v", i, err)
+		}
+		bb := b
+		out = append(out, &bb)
+	}
+	return out, nil
+}
+
+// topicsMatch applies eth_getLogs positional topic semantics: filter[i] must
+// equal logTopics[i] (a nil filter position is a wildcard). A filter longer than
+// the log's topic list never matches.
+func topicsMatch(filter []*[32]byte, logTopics [][32]byte) bool {
+	if len(filter) > len(logTopics) {
+		return false
+	}
+	for i, f := range filter {
+		if f == nil {
+			continue
+		}
+		if logTopics[i] != *f {
+			return false
+		}
+	}
+	return true
 }
 
 // ── Utility helpers ────────────────────────────────────────────────────────────
