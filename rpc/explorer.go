@@ -32,6 +32,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
 // RegisterExplorerRoutes adds block explorer endpoints to an existing router.
@@ -70,6 +71,7 @@ func RegisterExplorerRoutes(
 
 	// Contract inspection
 	r.HandleFunc("/contract/{address}", makeContractHandler(stateDB)).Methods(http.MethodGet)
+	r.HandleFunc("/contract/{address}/code", makeContractCodeHandler(stateDB)).Methods(http.MethodGet)
 	r.HandleFunc("/contract/{address}/storage/{slot}", makeStorageHandler(stateDB)).Methods(http.MethodGet)
 
 	log.Debug().Msg("explorer routes registered")
@@ -200,6 +202,66 @@ func makeContractHandler(stateDB *state.StateDB) http.HandlerFunc {
 			"storage_root": fmt.Sprintf("%x", acc.StorageRoot[:]),
 			"balance":      acc.Balance.String(),
 			"nonce":        acc.Nonce,
+		})
+	}
+}
+
+// makeContractCodeHandler serves GET /contract/{address}/code — the runtime code
+// of a contract, so explorers/tools can show it.
+//
+// Two cases, because this chain has two kinds of "contract":
+//   - Native-module contracts (QRC-20, DEX) carry NO per-contract bytecode
+//     (code_hash is zero). Their behaviour is the canonical module compiled into
+//     the node. We report native_module=true with empty code.
+//   - Raw-bytecode contracts (TxDeploy) store runtime bytecode; we return it as
+//     hex plus a disassembly listing (same as POST /vm/disasm, but by address).
+func makeContractCodeHandler(stateDB *state.StateDB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		addrStr := mux.Vars(r)["address"]
+		addr, err := qcrypto.AddressFromString(addrStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid address: %v", err))
+			return
+		}
+		acc, err := stateDB.GetAccount(addr)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		codeHashHex := fmt.Sprintf("%x", acc.CodeHash[:])
+		// A zero code hash = no stored bytecode (native module or a plain account).
+		if acc.CodeHash == ([32]byte{}) {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"address":       addrStr,
+				"is_contract":   acc.IsContract,
+				"native_module": acc.IsContract, // a contract with no bytecode is a native module
+				"code_hash":     codeHashHex,
+				"code":          "",
+				"code_size":     0,
+				"disassembly":   []string{},
+			})
+			return
+		}
+
+		code, err := stateDB.GetCode(acc.CodeHash)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("load code: %v", err))
+			return
+		}
+		instructions := vm.Disassemble(code)
+		listing := make([]string, len(instructions))
+		for i, inst := range instructions {
+			listing[i] = inst.String()
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"address":       addrStr,
+			"is_contract":   acc.IsContract,
+			"native_module": false,
+			"code_hash":     codeHashHex,
+			"code":          fmt.Sprintf("%x", code),
+			"code_size":     len(code),
+			"disassembly":   listing,
 		})
 	}
 }
