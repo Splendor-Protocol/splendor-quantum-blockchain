@@ -365,6 +365,21 @@ cmd_update() {
     ok "sqc tool updated → /usr/local/bin/sqc"
   fi
 
+  # Patch existing validator service file to add --genesis flag if needed.
+  # PR #2 merged: genesis allocations are now applied via --genesis flag.
+  GENESIS_FILE="/var/sqc/genesis.json"
+  VALIDATOR_SVC="/etc/systemd/system/sqc-validator.service"
+  if [ -f "$VALIDATOR_SVC" ] && [ -f "$GENESIS_FILE" ]; then
+    if ! grep -q "\-\-genesis" "$VALIDATOR_SVC"; then
+      inf "Patching $VALIDATOR_SVC to add --genesis flag (required after PR#2 merge)..."
+      sed -i "/--block-interval/i\\    --genesis $GENESIS_FILE \\\\" "$VALIDATOR_SVC"
+      systemctl daemon-reload
+      ok "Service file patched with --genesis $GENESIS_FILE"
+      warn "Chain data must be wiped for genesis allocations to take effect."
+      warn "Run: sqc update --clean   (wipes chain, re-applies genesis allocations)"
+    fi
+  fi
+
   # Clean data if requested
   if [ "$CLEAN" = true ]; then
     inf "Wiping chain data..."

@@ -227,6 +227,7 @@ ExecStart=$SQC_DIR/sqc-node \\
     --rpc-addr :8080 \\
     --validator \\
     --wallet /var/sqc/validator.sqwallet \\
+    --genesis /var/sqc/genesis.json \\
     --block-interval 2 \\
     --log-level info
 Restart=always
