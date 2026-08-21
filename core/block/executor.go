@@ -276,6 +276,19 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, rec
 }
 
 func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
+	// Native module router: a TxCall to the reserved module-router address
+	// invokes a built-in module (qrc20/dex/…) which writes state directly,
+	// rather than executing VM bytecode. Fee-only charge, like execDeploy;
+	// the module carries no SPLD value.
+	if tx.To == vm.ModuleRouterAddress {
+		if err := fromAcc.SubBalance(tx.Fee); err != nil {
+			return err
+		}
+		fromAcc.IncrNonce()
+		e.state.SetAccount(fromAcc)
+		return vm.DispatchModuleCall(e.state, tx.From, tx.Nonce, tx.Data, receipt)
+	}
+
 	total := addBig(tx.Amount, tx.Fee)
 	if err := fromAcc.SubBalance(total); err != nil {
 		return err
