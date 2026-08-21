@@ -1,0 +1,280 @@
+// Package rpc — contract-interaction endpoints (read-only view calls + gas/fee
+// estimation) for Splendor Quantum Chain.
+//
+// These are the node methods the explorer/wallet need for mainnet contract
+// interaction that block/tx history can't provide (see issue #4). Both are
+// read-only wrappers over the VM engine + native-module read dispatch; neither
+// mutates state, needs a signature, nor touches consensus.
+//
+//	POST /call      — execute a view call against current state (eth_call analog).
+//	POST /estimate  — dry-run gas + report the mempool fee floor (eth_estimateGas).
+//
+// (The eth_getLogs analog lives in explorer.go as POST /logs, over the receipt
+// index, because that is where the TxIndexStore is wired.)
+package rpc
+
+import (
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"net/http"
+	"time"
+
+	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
+)
+
+// RegisterCallRoutes adds the read-only contract-interaction endpoints to the
+// router. executor may be nil (native-module reads do not need it); the generic
+// bytecode path uses it only to resolve the current block height.
+func RegisterCallRoutes(r *mux.Router, stateDB *state.StateDB, executor *block.Executor) {
+	r.HandleFunc("/call", makeCallHandler(stateDB, executor)).Methods(http.MethodPost)
+	r.HandleFunc("/estimate", makeEstimateHandler(stateDB, executor)).Methods(http.MethodPost)
+	log.Debug().Msg("contract-interaction RPC routes registered (/call, /estimate)")
+}
+
+// ── /call — read-only view call ──────────────────────────────────────────────
+
+type callRequest struct {
+	From     string `json:"from,omitempty"`
+	To       string `json:"to"`
+	Data     string `json:"data,omitempty"`
+	Encoding string `json:"encoding,omitempty"` // "hex" (default) | "base64"
+	Value    string `json:"value,omitempty"`    // decimal string, default "0"
+}
+
+type callResponse struct {
+	ReturnData   string      `json:"return_data"` // hex, for bytecode/precompile calls
+	GasUsed      uint64      `json:"gas_used"`
+	Reverted     bool        `json:"reverted"`
+	RevertReason string      `json:"revert_reason,omitempty"`
+	Decoded      interface{} `json:"decoded,omitempty"` // decoded value for native-module reads
+}
+
+func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req callRequest
+		if err := readJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+			return
+		}
+		to, err := qcrypto.AddressFromString(req.To)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'to' address (want SQ:…): %v", err))
+			return
+		}
+		calldata, err := decodeCallData(req.Data, req.Encoding)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'data': %v", err))
+			return
+		}
+
+		// Native-module read (token / DEX view calls). Routed explicitly: the
+		// module-router address is not a bytecode contract, and its WRITE
+		// dispatch bypasses snapshots — so /call must serve reads via the
+		// read-only dispatch, never via CallWithContext.
+		if to == vm.ModuleRouterAddress {
+			decoded, derr := vm.DispatchModuleReadCall(stateDB, calldata)
+			if derr != nil {
+				writeError(w, http.StatusBadRequest, derr.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, callResponse{Decoded: decoded})
+			return
+		}
+
+		// Generic view call over the VM engine (precompiles + bytecode
+		// contracts). isStatic=true → mutating opcodes are rejected and
+		// precompiles are pure, so no state is written; nothing is committed.
+		from := qcrypto.Address{}
+		if req.From != "" {
+			if from, err = qcrypto.AddressFromString(req.From); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'from' address: %v", err))
+				return
+			}
+		}
+		value, err := parseValue(req.Value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		var height uint64
+		if executor != nil {
+			height, _ = executor.LatestHeight()
+		}
+		res, cerr := vm.NewEngine(stateDB).CallWithContext(from, from, to, calldata, value, height, time.Now().Unix(), true)
+		if res == nil {
+			msg := "call failed"
+			if cerr != nil {
+				msg = cerr.Error()
+			}
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		resp := callResponse{
+			ReturnData: fmt.Sprintf("%x", res.ReturnValue),
+			GasUsed:    res.GasUsed,
+			Reverted:   res.Reverted,
+		}
+		if res.Reverted || res.Err != nil {
+			resp.Reverted = true
+			if res.Err != nil {
+				resp.RevertReason = res.Err.Error()
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// ── /estimate — tx-level gas + fee ───────────────────────────────────────────
+
+type estimateRequest struct {
+	Type     uint8  `json:"type,omitempty"` // 1 transfer, 2 deploy, 3 call, 5 x402; default: 3 if data else 1
+	From     string `json:"from,omitempty"`
+	To       string `json:"to,omitempty"`
+	Data     string `json:"data,omitempty"`
+	Encoding string `json:"encoding,omitempty"`
+	Value    string `json:"value,omitempty"`
+}
+
+type estimateResponse struct {
+	Gas          uint64 `json:"gas"`
+	Fee          string `json:"fee"`          // smallest SPLD unit — the mempool floor
+	FeeIsFloor   bool   `json:"fee_is_floor"` // on this chain fee is flat, not gas-priced
+	Reverted     bool   `json:"reverted"`
+	RevertReason string `json:"revert_reason,omitempty"`
+	Note         string `json:"note,omitempty"`
+}
+
+func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req estimateRequest
+		if err := readJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
+			return
+		}
+		calldata, err := decodeCallData(req.Data, req.Encoding)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'data': %v", err))
+			return
+		}
+		value, err := parseValue(req.Value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		txType := req.Type
+		if txType == 0 {
+			if len(calldata) > 0 {
+				txType = uint8(types.TxCall)
+			} else {
+				txType = uint8(types.TxTransfer)
+			}
+		}
+
+		resp := estimateResponse{
+			Fee:        fmt.Sprintf("%d", mempool.MinFee),
+			FeeIsFloor: true,
+			Note:       "on Splendor Quantum the fee is a mempool floor (MinFee) a sender may exceed for priority; it is decoupled from VM gas — 'gas' is the VM meter and applies to contract calls only",
+		}
+
+		// Read-only affordability check (native SPLD) when 'from' is supplied.
+		if req.From != "" {
+			from, ferr := qcrypto.AddressFromString(req.From)
+			if ferr != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'from' address: %v", ferr))
+				return
+			}
+			if bal, berr := stateDB.GetBalance(from); berr == nil {
+				need := new(big.Int).Add(value, big.NewInt(mempool.MinFee))
+				if bal.Cmp(need) < 0 {
+					resp.Reverted = true
+					resp.RevertReason = fmt.Sprintf("insufficient balance: have %s, need %s (value+fee)", bal.String(), need.String())
+				}
+			}
+		}
+
+		switch types.TxType(txType) {
+		case types.TxCall:
+			to, terr := qcrypto.AddressFromString(req.To)
+			if terr != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'to' address: %v", terr))
+				return
+			}
+			if to == vm.ModuleRouterAddress {
+				// Native-module call: no VM gas meter; only the flat fee applies.
+				// Validate the envelope so a malformed call is flagged (no execution).
+				if _, verr := vm.PreflightModuleCall(calldata); verr != nil {
+					resp.Reverted = true
+					if resp.RevertReason == "" {
+						resp.RevertReason = verr.Error()
+					}
+				}
+				resp.Gas = 0
+			} else {
+				from := qcrypto.Address{}
+				if req.From != "" {
+					from, _ = qcrypto.AddressFromString(req.From)
+				}
+				var height uint64
+				if executor != nil {
+					height, _ = executor.LatestHeight()
+				}
+				res, _ := vm.NewEngine(stateDB).CallWithContext(from, from, to, calldata, value, height, time.Now().Unix(), true)
+				if res != nil {
+					resp.Gas = res.GasUsed
+					if res.Reverted || res.Err != nil {
+						resp.Reverted = true
+						if resp.RevertReason == "" && res.Err != nil {
+							resp.RevertReason = res.Err.Error()
+						}
+					}
+				}
+			}
+		case types.TxDeploy:
+			resp.Gas = vm.GasEstimate(calldata, vm.DefaultGasTable())
+		default:
+			// transfer / x402: no VM gas meter.
+			resp.Gas = 0
+		}
+
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+// decodeCallData decodes calldata from hex (default) or base64.
+func decodeCallData(data, encoding string) ([]byte, error) {
+	if data == "" {
+		return []byte{}, nil
+	}
+	switch encoding {
+	case "", "hex":
+		return hexDecode(data) // shared helper (vm_rpc.go): tolerates a 0x prefix
+	case "base64":
+		return base64.StdEncoding.DecodeString(data)
+	default:
+		return nil, fmt.Errorf("unknown encoding %q (want \"hex\" or \"base64\")", encoding)
+	}
+}
+
+// parseValue parses an optional non-negative decimal SPLD value (default 0).
+func parseValue(s string) (*big.Int, error) {
+	if s == "" {
+		return big.NewInt(0), nil
+	}
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok || v.Sign() < 0 {
+		return nil, fmt.Errorf("invalid 'value' (want a non-negative decimal string)")
+	}
+	return v, nil
+}
