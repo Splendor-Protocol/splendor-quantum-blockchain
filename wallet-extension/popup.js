@@ -23,6 +23,22 @@ function bg(action, extra = {}) {
   });
 }
 
+// rpcCall: sends a provider method request (not a popup action)
+// Uses __sqc_req: true so background routes it through the method switch
+function rpcCall(method, params = []) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ __sqc_req: true, method, params }, (r) => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (r && r.error) {
+        const msg = typeof r.error === 'string' ? r.error
+          : (r.error.message || r.error.msg || JSON.stringify(r.error));
+        return reject(new Error(msg));
+      }
+      resolve(r?.result ?? r);
+    });
+  });
+}
+
 function showPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   $(id).classList.add('active');
@@ -140,9 +156,8 @@ async function renderMain() {
 
 async function refreshBalance() {
   try {
-    const bal = await bg('sqc_getBalance', { method: 'sqc_getBalance', params: [_state.address], __sqc_req: true });
-    const result = bal?.result ?? bal?.balance ?? '0';
-    $('main-balance').textContent = spld(result);
+    const result = await rpcCall('sqc_getBalance', [_state.address]);
+    $('main-balance').textContent = spld(result || '0');
   } catch (e) {
     $('main-balance').textContent = '—';
   }
