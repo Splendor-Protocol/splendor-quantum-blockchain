@@ -78,6 +78,17 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 		return fmt.Errorf("fee too low: minimum %d, got %s", MinFee, tx.Fee.String())
 	}
 
+	// Reject a duplicate pending (from, nonce): a wallet that reads only the
+	// committed nonce re-submits the same nonce while its prior tx is still
+	// pending. Without this, those resends pile up and hit MaxPerAddr, locking the
+	// sender out (observed live as a stuck heartbeat). Replace-by-fee is a future
+	// refinement; today the first tx for a nonce wins until it clears or is pruned.
+	for _, e := range m.byAddr[tx.From] {
+		if e.tx.Nonce == tx.Nonce {
+			return fmt.Errorf("duplicate pending nonce %d for %s", tx.Nonce, tx.From.String())
+		}
+	}
+
 	// Per-address admission cap (checked before the expensive signature verify so
 	// a flooding sender is rejected cheaply).
 	if len(m.byAddr[tx.From]) >= MaxPerAddr {
@@ -181,7 +192,11 @@ func (m *Mempool) Pending(n int) []*types.Transaction {
 func (m *Mempool) Remove(hash [32]byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.removeLocked(hash)
+}
 
+// removeLocked removes a tx by hash. The caller must already hold m.mu.
+func (m *Mempool) removeLocked(hash [32]byte) {
 	entry, ok := m.txs[hash]
 	if !ok {
 		return
@@ -211,6 +226,25 @@ func (m *Mempool) RemoveBlock(b *types.Block) {
 			m.Remove(hash)
 		}
 	}
+}
+
+// PruneStale drops pending txs whose nonce is below the sender's committed nonce
+// (already applied, or superseded). Call it after each produced block: without it
+// a tx that ProduceBlock skips (failed / stale nonce) is never removed, so it pins
+// a per-address slot and eventually locks the sender out at MaxPerAddr — observed
+// live as a jammed heartbeat with mempool_size == MaxPerAddr. Returns the count removed.
+func (m *Mempool) PruneStale() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	removed := 0
+	for hash, e := range m.txs {
+		if committed, err := m.state.GetNonce(e.tx.From); err == nil && e.tx.Nonce < committed {
+			m.removeLocked(hash)
+			removed++
+		}
+	}
+	return removed
 }
 
 // Size returns the current number of pending transactions.
