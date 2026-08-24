@@ -615,6 +615,37 @@ export class SplendorPQBridge {
       return JSON.parse(wireStr);
     });
   }
+
+  /**
+   * Sign an arbitrary message with the connected quantum (Dilithium) key —
+   * the primitive Splendor Connect v2 needs to authenticate an `SQ:` identity
+   * (the tx signers only sign structured payloads). Returns the SQ: address,
+   * the base64 public key, and the base64 signature over the raw message bytes.
+   */
+  async signMessage(
+    message: string,
+  ): Promise<{ address: string; publicKeyB64: string; signatureB64: string }> {
+    return this.withSignLock(async () => {
+      await this.init();
+      return unwrap(this.api().sqSignMessage(this.sid(), message)) as {
+        address: string;
+        publicKeyB64: string;
+        signatureB64: string;
+      };
+    });
+  }
+
+  /**
+   * Verify a Dilithium Mode-3 signature over a message — a PURE check (no key,
+   * no session), so a Node gateway can authenticate a Connect v2 challenge
+   * server-side (there is no native-JS CIRCL Mode-3 verifier). Only the WASM
+   * needs to be loaded.
+   */
+  async verifyMessage(publicKeyB64: string, message: string, signatureB64: string): Promise<boolean> {
+    await this.init();
+    const r = unwrap(this.api().sqVerifyMessage(publicKeyB64, message, signatureB64)) as { valid: boolean };
+    return Boolean(r.valid);
+  }
 }
 
 export default SplendorPQBridge;

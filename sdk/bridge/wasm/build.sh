@@ -8,7 +8,7 @@ export GOOS=js
 export GOARCH=wasm
 
 echo "Building sqc_signer.wasm..."
-go build -o "$OUT/sqc_signer.wasm" "$ROOT/main.go"
+go build -trimpath -o "$OUT/sqc_signer.wasm" "$ROOT/main.go"
 
 GOROOT="$(go env GOROOT)"
 cp "$GOROOT/misc/wasm/wasm_exec.js" "$OUT/wasm_exec.js" 2>/dev/null \
