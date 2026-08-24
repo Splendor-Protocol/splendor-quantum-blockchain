@@ -23,8 +23,10 @@ export GOARCH=wasm
 export GO111MODULE=on
 
 echo "Building sqc_signer.wasm..."
-cd "$ROOT/.."
-$GO build -o "$OUT/sqc_signer.wasm" "$(basename $ROOT)/main.go"
+# Use the resolved $GO binary (robust when go is not on PATH) with -trimpath so
+# the build is byte-reproducible (the wasmSha256 pin in sqc.networks.json depends
+# on this). -trimpath strips the filesystem path, so no cd workaround is needed.
+$GO build -trimpath -o "$OUT/sqc_signer.wasm" "$ROOT/main.go"
 
 GOROOT="$($GO env GOROOT)"
 cp "$GOROOT/misc/wasm/wasm_exec.js" "$OUT/wasm_exec.js" 2>/dev/null \
