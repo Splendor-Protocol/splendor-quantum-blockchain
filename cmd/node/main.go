@@ -39,19 +39,20 @@ import (
 )
 
 var (
-	flagDataDir       string
-	flagRPCAddr       string
-	flagMetricsAddr   string
-	flagWalletPath    string
-	flagWalletPass    string
-	flagPeers         []string
-	flagBlockInterval int
-	flagIsValidator    bool
-	flagLogLevel       string
-	flagGenesisPath    string
-	flagValidatorPKHex string
-	flagRPCAuthToken   string
-	flagEnableX402     bool
+	flagDataDir           string
+	flagRPCAddr           string
+	flagMetricsAddr       string
+	flagWalletPath        string
+	flagWalletPass        string
+	flagPeers             []string
+	flagBlockInterval     int
+	flagIsValidator       bool
+	flagLogLevel          string
+	flagGenesisPath       string
+	flagValidatorPKHex    string
+	flagRPCAuthToken      string
+	flagEnableX402        bool
+	flagAllowPrivatePeers bool
 )
 
 func main() {
@@ -77,6 +78,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagValidatorPKHex, "validator-pubkey-hex", "", "Trusted genesis validator Dilithium public key (hex). Full nodes MUST set this to authenticate pushed blocks on POST /block.")
 	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret required on admin write routes (or SQC_RPC_AUTH_TOKEN env)")
 	root.Flags().BoolVar(&flagEnableX402, "enable-x402-settle", false, "Expose POST /x402/settle (direct, non-consensus settlement; requires --rpc-auth-token)")
+	root.Flags().BoolVar(&flagAllowPrivatePeers, "allow-private-peers", false, "Allow loopback/private-IP peers in discovery + /peers/announce (private-network or local clusters; default off = public SSRF-safe)")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -87,6 +89,9 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 func runNode(cmd *cobra.Command, args []string) error {
 	nodeStartTime := time.Now()
 	setupLogging(flagLogLevel)
+
+	// Opt into private/loopback peers for private-network or local multi-node clusters.
+	network.AllowPrivatePeers = flagAllowPrivatePeers
 
 	log.Info().
 		Str("chain_id", types.ChainID).
