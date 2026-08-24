@@ -355,8 +355,15 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Periodic sync (full nodes) ─────────────────────────────────────────
-	// Sync every 1 second — realtime sync matching the 2s block interval.
-	// RPC node stays within 1-2 blocks of the validator at all times.
+	// Sync every 1 second so an RPC node stays within 1-2 blocks of the validator
+	// (the explorer reads from RPC nodes, so their freshness is user-visible).
+	//
+	// Each tick we first refresh peer heights by polling their /status. Without
+	// this, BestPeerHeight only updated on the 60s peer-exchange cycle, so a full
+	// node believed it was already synced between refreshes and lagged the
+	// validator by up to a minute, catching up in bursts. Polling here makes the
+	// pull path genuinely real-time on any topology, without needing push/announce
+	// or an advertised self-URL.
 	if !flagIsValidator {
 		go func() {
 			ticker := time.NewTicker(1 * time.Second)
@@ -366,6 +373,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					for _, addr := range peerPool.Addrs() {
+						if h, derr := network.DialPeer(addr); derr == nil {
+							peerPool.UpdatePeerHeight(addr, h)
+						}
+					}
 					if n, err := syncer.SyncOnce(); err != nil {
 						log.Warn().Err(err).Msg("sync failed")
 					} else if n > 0 {
