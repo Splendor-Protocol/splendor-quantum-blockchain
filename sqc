@@ -60,9 +60,10 @@ detect_installed_service() {
   fi
 }
 
-die() { echo -e "${RED}Error: $1${NC}" >&2; exit 1; }
-ok()  { echo -e "${GREEN}✓${NC} $1"; }
-inf() { echo -e "${CYAN}→${NC} $1"; }
+die()  { echo -e "${RED}Error: $1${NC}" >&2; exit 1; }
+ok()   { echo -e "${GREEN}✓${NC} $1"; }
+inf()  { echo -e "${CYAN}→${NC} $1"; }
+warn() { echo -e "${ORANGE}⚠${NC} $1"; }
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
