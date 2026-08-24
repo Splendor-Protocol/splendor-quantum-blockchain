@@ -157,6 +157,17 @@ func makeAnnounceHandler(pool *network.PeerPool, onAnnounce func(addr string)) h
 			return
 		}
 
+		// SSRF guard: an announced peer URL becomes an outbound target for block
+		// pushes and sync GETs. Reject non-http(s) schemes and any host that
+		// resolves into loopback / private / link-local ranges — including the
+		// cloud instance-metadata IP 169.254.169.254 — so an anonymous caller
+		// cannot coerce the node into probing internal services. (Same guard is
+		// applied to PEX-discovered peers in network.Discoverer.)
+		if err := network.IsSafePeerURL(peer.Addr); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected peer addr: %v", err))
+			return
+		}
+
 		// Add to peer pool for discovery
 		pool.Add(&peer)
 

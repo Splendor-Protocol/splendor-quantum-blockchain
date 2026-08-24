@@ -1,6 +1,12 @@
 // Package crypto provides all cryptographic primitives for Splendor Quantum Chain.
 // Every operation uses post-quantum algorithms only.
-// Signing:     CRYSTALS-Dilithium Mode 3 (NIST FIPS 204 / ML-DSA-65)
+//
+// Signing:     CRYSTALS-Dilithium Mode 3 (CIRCL round-3 parameter set, "Dilithium3").
+//              NOTE: this is NOT NIST FIPS 204 / ML-DSA-65. ML-DSA is a distinct,
+//              domain-separated scheme (different signatures, not interoperable);
+//              CIRCL v1.3.8 ships only the round-3 dilithium/mode3 API. Both are
+//              post-quantum lattice signatures — this is a standards/naming
+//              distinction, not a weaker algorithm.
 // Hashing:     SHA-3-256 (NIST FIPS 202)
 // Key storage: AES-256-GCM + Argon2id
 // NO ECDSA. NO SHA-256. NO KECCAK.
@@ -17,7 +23,7 @@ import (
 )
 
 const (
-	// Dilithium Mode 3 (NIST FIPS 204 ML-DSA-65) — sizes in bytes
+	// Dilithium Mode 3 (CIRCL round-3 "Dilithium3", NOT FIPS-204 ML-DSA-65) — sizes in bytes
 	PublicKeySize  = mode3.PublicKeySize  // 1952
 	PrivateKeySize = mode3.PrivateKeySize // 4032
 	SignatureSize  = mode3.SignatureSize  // 3293

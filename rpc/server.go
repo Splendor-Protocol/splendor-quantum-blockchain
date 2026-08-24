@@ -16,6 +16,7 @@
 package rpc
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,13 +50,21 @@ type Server struct {
 	httpServer  *http.Server
 	// peerCount returns the number of connected peers (from peer pool)
 	peerCount func() int
+	// authToken gates state-mutating admin routes (e.g. POST /x402/settle).
+	// Empty = those routes stay disabled (fail closed).
+	authToken string
+	// x402SettleEnabled must be explicitly turned on to expose POST /x402/settle,
+	// which moves funds outside the block/consensus path. Off by default.
+	x402SettleEnabled bool
 }
 
 // Config holds server configuration.
 type Config struct {
-	ListenAddr  string    // e.g. ":8080"
-	ValidatorPK []byte    // Dilithium public key of the genesis validator
-	PeerCount   func() int // optional: returns live peer count
+	ListenAddr        string     // e.g. ":8080"
+	ValidatorPK       []byte     // Dilithium public key of the genesis validator
+	PeerCount         func() int // optional: returns live peer count
+	AuthToken         string     // shared secret required on admin write routes
+	X402SettleEnabled bool       // expose POST /x402/settle (off by default)
 }
 
 // New creates a new RPC server.
@@ -74,10 +83,12 @@ func New(
 		executor:    executor,
 		pool:        pool,
 		broadcaster: broadcaster,
-		x402proc:    x402.NewProcessor(stateDB),
-		scheduler:   scheduler,
-		validatorPK: cfg.ValidatorPK,
-		peerCount:   cfg.PeerCount,
+		x402proc:          x402.NewProcessor(stateDB),
+		scheduler:         scheduler,
+		validatorPK:       cfg.ValidatorPK,
+		peerCount:         cfg.PeerCount,
+		authToken:         cfg.AuthToken,
+		x402SettleEnabled: cfg.X402SettleEnabled,
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -305,6 +316,19 @@ func (s *Server) handleX402Verify(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
+	// POST /x402/settle moves funds directly in state, OUTSIDE the block/consensus
+	// path, so it is disabled unless explicitly enabled AND authenticated. This
+	// prevents an anonymous caller over the public RPC tunnel from moving balances
+	// with no on-chain record. (Enable with --enable-x402-settle + --rpc-auth-token.)
+	if !s.x402SettleEnabled {
+		writeError(w, http.StatusServiceUnavailable, "x402 settlement is disabled on this node")
+		return
+	}
+	if !s.checkAuth(r) {
+		writeError(w, http.StatusUnauthorized, "missing or invalid X-Node-Auth token")
+		return
+	}
+
 	var req struct {
 		Requirements x402.PaymentRequirements `json:"requirements"`
 		Payload      x402.PaymentPayload      `json:"payload"`
@@ -322,10 +346,10 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build settlement transaction and add to mempool
-	// Note: In production, the node would use its own key for settlement txs.
-	// For now we add the X402 settlement directly to the mempool as a pre-signed tx.
-	// The validator will pick it up and execute it in the next block.
+	// NOTE: this settlement mutates state directly rather than going through a
+	// signed transaction + block. That is a known Phase-1 shortcut (the moved
+	// funds appear in no block/merkle root); the gating above keeps it to trusted
+	// callers until it is reworked to route through the mempool.
 	payerNonce, err := s.stateDB.GetNonce(req.Payload.From)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "nonce lookup failed")
@@ -380,6 +404,17 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // parseAddress parses an SQ: address string into a qcrypto.Address.
 func parseAddress(s string) (qcrypto.Address, error) {
 	return qcrypto.AddressFromString(s)
+}
+
+// checkAuth reports whether the request carries the configured admin auth token
+// in the X-Node-Auth header, compared in constant time. If no token is
+// configured the answer is always false, so admin routes fail closed.
+func (s *Server) checkAuth(r *http.Request) bool {
+	if s.authToken == "" {
+		return false
+	}
+	got := r.Header.Get("X-Node-Auth")
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) == 1
 }
 
 // buildNonceKey computes SHA3-256(from_address || nonce_bytes).

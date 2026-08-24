@@ -22,6 +22,12 @@ const (
 
 	// MinFee is the minimum accepted transaction fee (1000 units).
 	MinFee = 1000
+
+	// MaxPerAddr caps how many pending transactions a single sender may occupy.
+	// The global cap alone lets one funded address fill the entire pool with
+	// distinct nonces; this bounds that and limits the signature-verification
+	// work an attacker can force per address before admission is refused.
+	MaxPerAddr = 64
 )
 
 // Mempool holds pending transactions ordered by fee (highest first).
@@ -70,6 +76,12 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	// Minimum fee check
 	if tx.Fee.Cmp(big.NewInt(MinFee)) < 0 {
 		return fmt.Errorf("fee too low: minimum %d, got %s", MinFee, tx.Fee.String())
+	}
+
+	// Per-address admission cap (checked before the expensive signature verify so
+	// a flooding sender is rejected cheaply).
+	if len(m.byAddr[tx.From]) >= MaxPerAddr {
+		return fmt.Errorf("per-address mempool limit reached (%d) for %s", MaxPerAddr, tx.From.String())
 	}
 
 	// Compute hash and check for duplicates
