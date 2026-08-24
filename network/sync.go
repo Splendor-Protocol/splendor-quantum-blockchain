@@ -15,6 +15,7 @@ package network
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -22,6 +23,11 @@ import (
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
+
+// maxSyncBodyBytes bounds a block/genesis body pulled from a (possibly malicious)
+// peer, so an unbounded JSON decode can't OOM the node. A full block is at most
+// ~MaxTxPerBlock * max-tx-bytes; 128 MiB is a generous ceiling well above that.
+const maxSyncBodyBytes = 128 << 20
 
 // SyncConfig configures the block sync process.
 type SyncConfig struct {
@@ -82,7 +88,7 @@ func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, err
 	}
 
 	var block types.Block
-	if err := json.NewDecoder(resp.Body).Decode(&block); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSyncBodyBytes)).Decode(&block); err != nil {
 		return nil, fmt.Errorf("decode genesis block: %w", err)
 	}
 
@@ -116,7 +122,7 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 	}
 
 	var block types.Block
-	if err := json.NewDecoder(resp.Body).Decode(&block); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSyncBodyBytes)).Decode(&block); err != nil {
 		return nil, fmt.Errorf("decode block %d: %w", height, err)
 	}
 
@@ -141,8 +147,10 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 			return nil, fmt.Errorf("block %d: self-signed block failed verification: %w", height, err)
 		}
 	} else {
-		log.Warn().Uint64("height", height).
-			Msg("sync: no validator pubkey available — skipping signature verification (insecure)")
+		// Fail closed (matching the push path): never APPLY a block we can't
+		// authenticate. A non-genesis block carries no embedded pubkey, so without
+		// a pinned key we'd otherwise accept an attacker-fabricated chain (TOFU).
+		return nil, fmt.Errorf("block %d: no trusted validator pubkey — refusing to apply an unverified block (set --validator-pubkey-hex)", height)
 	}
 
 	return &block, nil
@@ -162,7 +170,7 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 	}
 
 	var block types.Block
-	if err := json.NewDecoder(resp.Body).Decode(&block); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSyncBodyBytes)).Decode(&block); err != nil {
 		return nil, fmt.Errorf("decode latest block: %w", err)
 	}
 

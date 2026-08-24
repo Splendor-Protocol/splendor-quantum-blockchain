@@ -356,11 +356,15 @@ func (p *PeerPool) GetSyncStatus(localHeight uint64) SyncStatus {
 	}
 }
 
+// dialClient is a shared client for peer /status probes. The full-node sync loop
+// polls this once per second per peer; a fresh http.Client (and TCP connection)
+// per call forfeits keep-alive and wastes sockets, so reuse one transport.
+var dialClient = &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirect}
+
 // DialPeer checks if a peer is reachable by calling GET {addr}/status.
 // Returns the peer's reported height, or an error if unreachable.
 func DialPeer(addr string) (uint64, error) {
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirect}
-	resp, err := client.Get(addr + "/status")
+	resp, err := dialClient.Get(addr + "/status")
 	if err != nil {
 		return 0, fmt.Errorf("peer %s unreachable: %w", addr, err)
 	}

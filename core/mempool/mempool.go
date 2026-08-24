@@ -28,6 +28,12 @@ const (
 	// distinct nonces; this bounds that and limits the signature-verification
 	// work an attacker can force per address before admission is refused.
 	MaxPerAddr = 64
+
+	// MaxTxDataBytes caps the tx Data (calldata / deploy bytecode / memo). Without
+	// it, 50k mempool slots each holding ~512 KiB of Data is ~24 GiB of payload —
+	// an OOM vector and multi-GiB candidate blocks. 128 KiB is generous for real
+	// calldata and contract code.
+	MaxTxDataBytes = 128 * 1024
 )
 
 // Mempool holds pending transactions ordered by fee (highest first).
@@ -76,6 +82,11 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	// Minimum fee check
 	if tx.Fee.Cmp(big.NewInt(MinFee)) < 0 {
 		return fmt.Errorf("fee too low: minimum %d, got %s", MinFee, tx.Fee.String())
+	}
+
+	// Bound the tx payload so the pool can't be filled with multi-hundred-KiB txs.
+	if len(tx.Data) > MaxTxDataBytes {
+		return fmt.Errorf("tx data too large: %d bytes (max %d)", len(tx.Data), MaxTxDataBytes)
 	}
 
 	// Reject a duplicate pending (from, nonce): a wallet that reads only the
