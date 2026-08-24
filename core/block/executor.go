@@ -368,23 +368,35 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 }
 
 func (e *Executor) execX402(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
-	if err := fromAcc.SubBalance(tx.Fee); err != nil {
+	// Replay guard: reject a reused X402 payment nonce.
+	nonceKey := qcrypto.Hash32(append(tx.From[:], tx.Data...))
+	if used, err := e.state.IsX402NonceUsed(nonceKey); err != nil {
+		return fmt.Errorf("X402 nonce check: %w", err)
+	} else if used {
+		return fmt.Errorf("X402 nonce already used")
+	}
+
+	if err := fromAcc.SubBalance(addBig(tx.Amount, tx.Fee)); err != nil {
 		return err
 	}
 	fromAcc.IncrNonce()
 
-	toAcc, err := e.state.GetAccount(tx.To)
-	if err != nil {
-		return err
+	if tx.To == tx.From {
+		// Self-payment: mutate ONE account object. Previously GetAccount(tx.To)
+		// returned a stale copy taken before the from-side writes, and writing it
+		// last silently discarded the fee/nonce updates.
+		fromAcc.AddBalance(tx.Amount)
+		e.state.SetAccount(fromAcc)
+	} else {
+		e.state.SetAccount(fromAcc)
+		toAcc, err := e.state.GetAccount(tx.To)
+		if err != nil {
+			return err
+		}
+		toAcc.AddBalance(tx.Amount)
+		e.state.SetAccount(toAcc)
 	}
-	if err := fromAcc.SubBalance(tx.Amount); err != nil {
-		return err
-	}
-	toAcc.AddBalance(tx.Amount)
-	e.state.SetAccount(fromAcc)
-	e.state.SetAccount(toAcc)
 
-	nonceKey := qcrypto.Hash32(append(tx.From[:], tx.Data...))
 	if err := e.state.MarkX402NonceUsed(nonceKey, blockHeight); err != nil {
 		return fmt.Errorf("X402 nonce: %w", err)
 	}
