@@ -35,8 +35,8 @@ type Executor struct {
 	state    *state.StateDB
 	chainDB  *leveldb.DB
 	vmEngine *vm.Engine
-	hooks    *HookRegistry  // optional; nil = no hooks
-	txIndex  receiptStorer  // optional; nil = don't store receipts
+	hooks   *HookRegistry // optional; nil = no hooks
+	txIndex receiptStorer // optional; nil = don't store receipts
 }
 
 // receiptStorer is satisfied by *state.TxIndexStore.
@@ -61,14 +61,12 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 }
 
 // WithHooks attaches a hook registry to the executor.
-// If called, all registered hooks will run before/after each transaction and block.
 func (e *Executor) WithHooks(h *HookRegistry) *Executor {
 	e.hooks = h
 	return e
 }
 
 // WithTxIndex attaches a receipt/tx index store.
-// If set, receipts are stored after every executed transaction.
 func (e *Executor) WithTxIndex(idx receiptStorer) *Executor {
 	e.txIndex = idx
 	return e
@@ -82,6 +80,10 @@ func (e *Executor) Close() error {
 // ExecuteBlock applies all transactions in a block to the state.
 // It verifies signatures, nonces, balances, runs hooks, generates receipts,
 // and stores the block.
+//
+// IMPORTANT: ExecuteBlock MUST mirror ProduceBlock's state mutations exactly,
+// including crediting transaction fees to b.Header.ValidatorAddr. Omitting the
+// fee credit causes state root mismatch on every block with transactions.
 func (e *Executor) ExecuteBlock(b *types.Block) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -91,10 +93,7 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		Int("txs", len(b.Transactions)).
 		Msg("executing block")
 
-	// Chain-continuity / anti-rewind checks BEFORE any state mutation. Combined
-	// with validator-signature verification on the inbound path, this rejects
-	// forged, replayed, out-of-order, duplicate, and cross-chain blocks before
-	// they can touch state or move the head.
+	// Chain-continuity checks before any state mutation.
 	if err := e.verifyBlockLinkage(b); err != nil {
 		return fmt.Errorf("block linkage rejected: %w", err)
 	}
@@ -107,6 +106,7 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 	}
 
 	var receipts []*types.Receipt
+	totalFees := new(bigInt)
 
 	for i, tx := range b.Transactions {
 		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Hash)
@@ -115,16 +115,31 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		}
 		receipts = append(receipts, receipt)
 
+		// Accumulate fees for validator credit (mirrors ProduceBlock).
+		// Blocks from the validator only contain txs that executed successfully,
+		// so all fees in a synced block should be credited to the validator.
+		totalFees.Add(totalFees, tx.Fee)
+
 		// Run post-tx hooks (non-fatal)
 		if e.hooks != nil {
 			e.hooks.RunPostTx(tx, receipt)
 		}
 	}
 
-	// Verify the declared state root BEFORE persisting. PendingStateRoot computes
-	// the exact root Commit would produce; on a mismatch we discard the pending
-	// writes so a rejected block leaves the committed state untouched. (The old
-	// flow committed first and checked after, durably persisting rejected state.)
+	// Credit accumulated fees to the block's validator address.
+	// This MUST match what ProduceBlock does or state roots will diverge on
+	// any block that contains transactions.
+	if totalFees.Sign() > 0 {
+		va, err := e.state.GetAccount(b.Header.ValidatorAddr)
+		if err != nil {
+			e.state.DiscardPending()
+			return fmt.Errorf("fee credit: get validator account: %w", err)
+		}
+		va.AddBalance(totalFees)
+		e.state.SetAccount(va)
+	}
+
+	// Verify the declared state root BEFORE persisting.
 	stateRoot, err := e.state.PendingStateRoot()
 	if err != nil {
 		e.state.DiscardPending()
@@ -166,17 +181,15 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 
 // executeTxWithReceipt processes a single transaction and returns a receipt.
 func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockHash [32]byte) (*types.Receipt, error) {
-	// Build receipt shell
 	receipt, err := types.NewReceipt(tx, txIndex, blockHeight, blockHash)
 	if err != nil {
 		return nil, fmt.Errorf("receipt init failed: %w", err)
 	}
 
-	// Run pre-tx hook
 	if e.hooks != nil {
 		if err := e.hooks.RunPreTx(tx, blockHeight); err != nil {
 			receipt.SetFailed(fmt.Sprintf("pre-tx hook: %v", err))
-			return receipt, nil // hook rejection: skip but don't abort block
+			return receipt, nil
 		}
 	}
 
@@ -186,7 +199,6 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 			Str("from", tx.From.String()).
 			Uint64("nonce", tx.Nonce).
 			Msg("transaction failed")
-		// Return receipt even on failure (records the failure)
 		return receipt, nil
 	}
 
@@ -195,18 +207,15 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 
 // executeTx processes a single transaction, updating receipt with logs and gas.
 func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, receipt *types.Receipt) error {
-	// 1. Basic validation
 	if err := tx.Validate(); err != nil {
 		return fmt.Errorf("validation: %w", err)
 	}
 
-	// 2. Get sender account
 	fromAcc, err := e.state.GetAccount(tx.From)
 	if err != nil {
 		return err
 	}
 
-	// 3. Public key registration / lookup
 	var pubKeyBytes []byte
 	if fromAcc.HasPublicKey() {
 		pubKeyBytes = fromAcc.PublicKey
@@ -225,23 +234,19 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, receipt 
 		return types.ErrNoPublicKey
 	}
 
-	// 4. Signature verification
 	if err := tx.VerifySignature(pubKeyBytes); err != nil {
 		return types.ErrInvalidSignature
 	}
 
-	// 5. Nonce check
 	if tx.Nonce != fromAcc.Nonce {
 		return fmt.Errorf("%w: want %d got %d", types.ErrInvalidNonce, fromAcc.Nonce, tx.Nonce)
 	}
 
-	// 6. Balance check
 	total := new(types.BigInt).Add(tx.Amount, tx.Fee)
 	if fromAcc.Balance.Cmp(total) < 0 {
 		return types.ErrInsufficientBalance
 	}
 
-	// 7. Type-specific execution
 	switch tx.Type {
 	case types.TxTransfer:
 		return e.execTransfer(tx, fromAcc, receipt)
@@ -291,7 +296,6 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, rec
 		return fmt.Errorf("deploy failed: %w", err)
 	}
 
-	// Record contract address in receipt
 	receipt.ContractAddress = &contractAddr
 
 	log.Debug().
@@ -302,10 +306,6 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, rec
 }
 
 func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
-	// Native module router: a TxCall to the reserved module-router address
-	// invokes a built-in module (qrc20/dex/…) which writes state directly,
-	// rather than executing VM bytecode. Fee-only charge, like execDeploy;
-	// the module carries no SPLD value.
 	if tx.To == vm.ModuleRouterAddress {
 		if err := fromAcc.SubBalance(tx.Fee); err != nil {
 			return err
@@ -330,7 +330,6 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		return fmt.Errorf("call failed: %w", err)
 	}
 
-	// Record VM execution results in receipt
 	if result != nil {
 		receipt.GasUsed = result.GasUsed
 		for _, l := range result.Logs {
@@ -396,13 +395,13 @@ func (e *Executor) ProduceBlock(
 	}
 
 	var (
-		totalFees  = new(bigInt)
-		executed   []*types.Transaction
-		receipts   []*types.Receipt
+		totalFees = new(bigInt)
+		executed  []*types.Transaction
+		receipts  []*types.Receipt
 	)
 
 	for i, tx := range txs {
-		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{}) // hash filled below
+		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{})
 		if err := e.executeTx(tx, height, receipt); err != nil {
 			log.Warn().Err(err).Msg("skipping invalid tx")
 			continue
@@ -459,7 +458,6 @@ func (e *Executor) ProduceBlock(
 		return nil, fmt.Errorf("store block: %w", err)
 	}
 
-	// Back-fill block hash in receipts and store them
 	if e.txIndex != nil {
 		for _, r := range receipts {
 			r.BlockHash = hash
@@ -477,7 +475,7 @@ func (e *Executor) ProduceBlock(
 	return b, nil
 }
 
-// ── Chain DB helpers ───────────────────────────────────────────────────────────
+// ── Chain DB helpers ──────────────────────────────────────────────────────────
 
 func (e *Executor) storeBlock(b *types.Block) error {
 	data, err := json.Marshal(b)
@@ -494,9 +492,6 @@ func (e *Executor) storeBlock(b *types.Block) error {
 		return err
 	}
 
-	// Advance the head pointer forward only. verifyBlockLinkage already enforces
-	// contiguity for the apply path; this is defence-in-depth so no caller can
-	// move the head backward or sideways with a lower/duplicate-height block.
 	if curH, ok := e.latestHeightRaw(); ok && b.Header.Height <= curH {
 		return nil
 	}
@@ -507,9 +502,6 @@ func (e *Executor) storeBlock(b *types.Block) error {
 	return e.chainDB.Put([]byte(keyLatest), latestData, nil)
 }
 
-// latestHeightRaw returns the stored head height and whether a head exists.
-// Unlike LatestHeight (which returns 0 for an empty chain, indistinguishable
-// from genesis height 0), the bool disambiguates "no head yet" from "head at 0".
 func (e *Executor) latestHeightRaw() (uint64, bool) {
 	data, err := e.chainDB.Get([]byte(keyLatest), nil)
 	if err != nil {
@@ -524,12 +516,6 @@ func (e *Executor) latestHeightRaw() (uint64, bool) {
 	return info.Height, true
 }
 
-// verifyBlockLinkage enforces chain-continuity invariants on a block BEFORE it is
-// executed: matching chain ID, height == head+1, prev-hash links to the stored
-// head, monotonic and not-too-future timestamp, and duplicate/backward rejection.
-// Genesis (height 0) is exempt from predecessor checks but may only be applied to
-// an empty chain. On an empty chain only block 1 is accepted for bootstrap; its
-// authenticity rests on validator-signature verification upstream.
 func (e *Executor) verifyBlockLinkage(b *types.Block) error {
 	if b.Header.ChainID != types.ChainID {
 		return fmt.Errorf("wrong chain id: block %q, node %q", b.Header.ChainID, types.ChainID)
@@ -544,14 +530,14 @@ func (e *Executor) verifyBlockLinkage(b *types.Block) error {
 		if latest != nil {
 			return fmt.Errorf("genesis rejected: chain already has a head at height %d", latest.Header.Height)
 		}
-		return nil // genesis on an empty chain
+		return nil
 	}
 
 	if latest == nil {
 		if b.Header.Height != 1 {
 			return fmt.Errorf("cannot apply block %d to an empty chain (expected block 1)", b.Header.Height)
 		}
-		return nil // bootstrapping first block; signature verification is the gate
+		return nil
 	}
 
 	if b.Header.Height != latest.Header.Height+1 {
@@ -560,14 +546,6 @@ func (e *Executor) verifyBlockLinkage(b *types.Block) error {
 	if b.Header.PrevHash != latest.Hash {
 		return fmt.Errorf("prev-hash mismatch at height %d", b.Header.Height)
 	}
-	// NOTE: deliberately NO timestamp monotonicity / future-drift check here.
-	// The producer (ProduceBlock) stamps time.Now().Unix() unclamped and does not
-	// self-verify, so a validator wall-clock step-back (NTP correction, VM
-	// migration) can emit a validly-signed non-monotonic block. A consumer-side
-	// timestamp gate would then permanently wedge every sync/RPC node on that
-	// block (and on any such block already in historical LevelDB). Anti-rewind /
-	// anti-replay is fully covered by chain-id + height==head+1 + prev-hash link +
-	// mandatory validator-signature verification, none of which depend on the clock.
 	return nil
 }
 
@@ -624,8 +602,6 @@ func (e *Executor) LatestBlock() (*types.Block, error) {
 	}
 	return e.GetBlock(info.Hash)
 }
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
 
 // StoreBlockReceipts exposes batch receipt storage for external callers.
 func (e *Executor) StoreBlockReceipts(receipts []*types.Receipt) error {
