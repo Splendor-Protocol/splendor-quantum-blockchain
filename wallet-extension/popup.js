@@ -13,7 +13,11 @@ function bg(action, extra = {}) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ __sqc_popup: true, action, ...extra }, (r) => {
       if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-      if (r && r.error) return reject(new Error(r.error));
+      if (r && r.error) {
+        const msg = typeof r.error === 'string' ? r.error
+          : (r.error.message || r.error.msg || JSON.stringify(r.error));
+        return reject(new Error(msg));
+      }
       resolve(r);
     });
   });
