@@ -193,7 +193,14 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 		}
 	}
 
+	// Execute inside a snapshot so a FAILED tx leaves NO state residue.
+	// execCall/execDeploy/execX402 deduct the fee and bump the nonce BEFORE the
+	// operation; without this revert, a failed op keeps that dirty mutation, so
+	// the block's account state (and thus the state root) reflects a tx that the
+	// producer excluded — producer and followers then compute divergent roots.
+	snap := e.state.Snapshot()
 	if err := e.executeTx(tx, blockHeight, receipt); err != nil {
+		e.state.RevertToSnapshot(snap)
 		receipt.SetFailed(err.Error())
 		log.Warn().Err(err).
 			Str("from", tx.From.String()).
@@ -201,6 +208,7 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 			Msg("transaction failed")
 		return receipt, nil
 	}
+	e.state.CommitSnapshot(snap)
 
 	return receipt, nil
 }
@@ -401,11 +409,18 @@ func (e *Executor) ProduceBlock(
 	)
 
 	for i, tx := range txs {
+		// Snapshot so a skipped (failed) tx leaves NO residue: executeTx deducts
+		// fee + bumps nonce before the op, so without reverting, a failed tx that
+		// is excluded from `executed` would still dirty the state → the block's
+		// root reflects a tx not in Transactions and followers reject it.
+		snap := e.state.Snapshot()
 		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{})
 		if err := e.executeTx(tx, height, receipt); err != nil {
+			e.state.RevertToSnapshot(snap)
 			log.Warn().Err(err).Msg("skipping invalid tx")
 			continue
 		}
+		e.state.CommitSnapshot(snap)
 		totalFees.Add(totalFees, tx.Fee)
 		executed = append(executed, tx)
 		receipts = append(receipts, receipt)
