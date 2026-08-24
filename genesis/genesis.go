@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"time"
@@ -79,6 +80,16 @@ func LoadFile(path string) (*Genesis, error) {
 	var g Genesis
 	if err := json.Unmarshal(data, &g); err != nil {
 		return nil, fmt.Errorf("invalid genesis file %s: %w", path, err)
+	}
+	return &g, nil
+}
+
+// LoadFromReader parses a genesis.json from any io.Reader.
+// Used by RPC nodes to fetch genesis from a validator peer's /genesis endpoint.
+func LoadFromReader(r io.Reader) (*Genesis, error) {
+	var g Genesis
+	if err := json.NewDecoder(r).Decode(&g); err != nil {
+		return nil, fmt.Errorf("invalid genesis JSON: %w", err)
 	}
 	return &g, nil
 }

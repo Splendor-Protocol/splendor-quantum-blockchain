@@ -331,6 +331,24 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// ── RPC node: bootstrap genesis state from validator peer ──────────────
+	// The RPC node starts with empty state. The validator applied genesis.json
+	// allocations before creating block 0, so its state root ≠ empty state root.
+	// Before syncing blocks, the RPC must fetch and apply the same genesis
+	// allocations so its state root matches the validator's.
+	if !flagIsValidator && len(flagPeers) > 0 {
+		go func() {
+			time.Sleep(2 * time.Second) // wait for HTTP server to start
+			for _, peer := range flagPeers {
+				if err := bootstrapGenesisFromPeer(peer, stateDB, executor, flagGenesisPath); err != nil {
+					log.Warn().Err(err).Str("peer", peer).Msg("genesis bootstrap from peer failed")
+					continue
+				}
+				break // success
+			}
+		}()
+	}
+
 	// ── Periodic sync (full nodes) ─────────────────────────────────────────
 	// Sync every 1 second — realtime sync matching the 2s block interval.
 	// RPC node stays within 1-2 blocks of the validator at all times.
@@ -417,6 +435,20 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Lending routes
 	rpc.RegisterLendingRoutes(router, stateDB)
 
+	// GET /genesis — serve genesis.json so RPC nodes can bootstrap genesis state.
+	// Only served if the validator has a --genesis file configured.
+	if flagGenesisPath != "" {
+		router.HandleFunc("/genesis", func(w http.ResponseWriter, r *http.Request) {
+			data, err := os.ReadFile(flagGenesisPath)
+			if err != nil {
+				http.Error(w, "genesis.json not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(data)
+		}).Methods(http.MethodGet)
+	}
+
 	// WebSocket / SSE
 	router.HandleFunc("/ws", wsHub.HandleWebSocket).Methods(http.MethodGet)
 
@@ -452,6 +484,63 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	log.Info().Msg("Node stopped")
+	return nil
+}
+
+// bootstrapGenesisFromPeer fetches genesis.json from a peer validator and applies
+// allocations to the local state. This is called on RPC nodes with an empty chain
+// so their state root matches the validator's before block sync starts.
+func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *block.Executor, localGenesisPath string) error {
+	// If chain already has blocks, no need to bootstrap
+	latest, _ := executor.LatestBlock()
+	if latest != nil {
+		return nil
+	}
+
+	// If local genesis.json is specified, use it directly
+	if localGenesisPath != "" {
+		g, err := genesiscfg.LoadFile(localGenesisPath)
+		if err != nil {
+			return fmt.Errorf("load local genesis: %w", err)
+		}
+		if _, err := g.ApplyToState(stateDB); err != nil {
+			return fmt.Errorf("apply local genesis: %w", err)
+		}
+		log.Info().Str("path", localGenesisPath).Msg("RPC: applied local genesis.json allocations")
+		return nil
+	}
+
+	// Fetch genesis.json from the validator peer
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(peerURL + "/genesis")
+	if err != nil {
+		return fmt.Errorf("fetch /genesis from peer: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		log.Warn().Str("peer", peerURL).Msg("RPC: peer has no /genesis endpoint — state root mismatch may occur")
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("peer /genesis returned %d", resp.StatusCode)
+	}
+
+	g, err := genesiscfg.LoadFromReader(resp.Body)
+	if err != nil {
+		return fmt.Errorf("parse peer genesis.json: %w", err)
+	}
+
+	if _, err := g.ApplyToState(stateDB); err != nil {
+		return fmt.Errorf("apply peer genesis allocations: %w", err)
+	}
+
+	stateRoot, _ := stateDB.StateRoot()
+	log.Info().
+		Str("peer", peerURL).
+		Int("allocations", len(g.Allocations)).
+		Str("state_root", fmt.Sprintf("%x", stateRoot[:8])).
+		Msg("RPC: bootstrapped genesis allocations from validator peer")
 	return nil
 }
 
