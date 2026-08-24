@@ -59,7 +59,8 @@ func NewPeerPool(self string, maxSize int) *PeerPool {
 		maxSize: maxSize,
 		self:    self,
 		client: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout:       5 * time.Second,
+			CheckRedirect: noRedirect,
 		},
 	}
 }
@@ -233,16 +234,23 @@ func (d *Discoverer) fetchPeersFrom(addr string) {
 	// Update this peer's LastSeen
 	d.pool.Add(&PeerInfo{Addr: addr, LastSeen: now})
 
-	// Add newly discovered peers
+	// Add newly discovered peers. These URLs come from a remote (untrusted) peer's
+	// /peers response, so they must pass the SSRF guard before we ever dial them —
+	// otherwise PEX is an unguarded ingress that bypasses the /peers/announce check.
 	for _, p := range peerList {
-		if p.Addr != d.selfAddr && p.Addr != "" {
-			d.pool.Add(&PeerInfo{
-				Addr:     p.Addr,
-				LastSeen: now,
-				Height:   p.Height,
-				Version:  p.Version,
-			})
+		if p.Addr == d.selfAddr || p.Addr == "" {
+			continue
 		}
+		if err := IsSafePeerURL(p.Addr); err != nil {
+			log.Debug().Str("peer", p.Addr).Err(err).Msg("discovery: rejected unsafe discovered peer")
+			continue
+		}
+		d.pool.Add(&PeerInfo{
+			Addr:     p.Addr,
+			LastSeen: now,
+			Height:   p.Height,
+			Version:  p.Version,
+		})
 	}
 }
 
@@ -351,7 +359,7 @@ func (p *PeerPool) GetSyncStatus(localHeight uint64) SyncStatus {
 // DialPeer checks if a peer is reachable by calling GET {addr}/status.
 // Returns the peer's reported height, or an error if unreachable.
 func DialPeer(addr string) (uint64, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirect}
 	resp, err := client.Get(addr + "/status")
 	if err != nil {
 		return 0, fmt.Errorf("peer %s unreachable: %w", addr, err)

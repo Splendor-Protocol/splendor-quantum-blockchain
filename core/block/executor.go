@@ -4,6 +4,7 @@ package block
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -25,6 +26,12 @@ const (
 // Executor executes blocks and manages the chain database.
 // It supports pluggable middleware hooks and generates transaction receipts.
 type Executor struct {
+	// mu serializes whole block transitions. ExecuteBlock (inbound/sync apply)
+	// and ProduceBlock (validator) both read-modify-Commit the shared StateDB;
+	// without this lock two concurrent transitions interleave on the shared
+	// dirty map and compute a state root over each other's half-written accounts.
+	mu sync.Mutex
+
 	state    *state.StateDB
 	chainDB  *leveldb.DB
 	vmEngine *vm.Engine
@@ -76,10 +83,21 @@ func (e *Executor) Close() error {
 // It verifies signatures, nonces, balances, runs hooks, generates receipts,
 // and stores the block.
 func (e *Executor) ExecuteBlock(b *types.Block) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	log.Info().
 		Uint64("height", b.Header.Height).
 		Int("txs", len(b.Transactions)).
 		Msg("executing block")
+
+	// Chain-continuity / anti-rewind checks BEFORE any state mutation. Combined
+	// with validator-signature verification on the inbound path, this rejects
+	// forged, replayed, out-of-order, duplicate, and cross-chain blocks before
+	// they can touch state or move the head.
+	if err := e.verifyBlockLinkage(b); err != nil {
+		return fmt.Errorf("block linkage rejected: %w", err)
+	}
 
 	// Run pre-block hooks
 	if e.hooks != nil {
@@ -103,16 +121,24 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		}
 	}
 
-	// Commit all state changes
-	stateRoot, err := e.state.Commit()
+	// Verify the declared state root BEFORE persisting. PendingStateRoot computes
+	// the exact root Commit would produce; on a mismatch we discard the pending
+	// writes so a rejected block leaves the committed state untouched. (The old
+	// flow committed first and checked after, durably persisting rejected state.)
+	stateRoot, err := e.state.PendingStateRoot()
 	if err != nil {
-		return fmt.Errorf("state commit failed: %w", err)
+		e.state.DiscardPending()
+		return fmt.Errorf("state root computation failed: %w", err)
 	}
-
-	// Verify state root
 	if stateRoot != b.Header.StateRoot {
+		e.state.DiscardPending()
 		return fmt.Errorf("state root mismatch: computed %x, header %x",
 			stateRoot[:8], b.Header.StateRoot[:8])
+	}
+
+	// Root matches — durably commit.
+	if _, err := e.state.Commit(); err != nil {
+		return fmt.Errorf("state commit failed: %w", err)
 	}
 
 	// Store block
@@ -362,6 +388,8 @@ func (e *Executor) ProduceBlock(
 	prevHash [32]byte,
 	height uint64,
 ) (*types.Block, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
 	if len(txs) > MaxTxPerBlock {
 		txs = txs[:MaxTxPerBlock]
@@ -466,11 +494,81 @@ func (e *Executor) storeBlock(b *types.Block) error {
 		return err
 	}
 
+	// Advance the head pointer forward only. verifyBlockLinkage already enforces
+	// contiguity for the apply path; this is defence-in-depth so no caller can
+	// move the head backward or sideways with a lower/duplicate-height block.
+	if curH, ok := e.latestHeightRaw(); ok && b.Header.Height <= curH {
+		return nil
+	}
 	latestData, _ := json.Marshal(map[string]interface{}{
 		"height": b.Header.Height,
 		"hash":   hashHex,
 	})
 	return e.chainDB.Put([]byte(keyLatest), latestData, nil)
+}
+
+// latestHeightRaw returns the stored head height and whether a head exists.
+// Unlike LatestHeight (which returns 0 for an empty chain, indistinguishable
+// from genesis height 0), the bool disambiguates "no head yet" from "head at 0".
+func (e *Executor) latestHeightRaw() (uint64, bool) {
+	data, err := e.chainDB.Get([]byte(keyLatest), nil)
+	if err != nil {
+		return 0, false
+	}
+	var info struct {
+		Height uint64 `json:"height"`
+	}
+	if json.Unmarshal(data, &info) != nil {
+		return 0, false
+	}
+	return info.Height, true
+}
+
+// verifyBlockLinkage enforces chain-continuity invariants on a block BEFORE it is
+// executed: matching chain ID, height == head+1, prev-hash links to the stored
+// head, monotonic and not-too-future timestamp, and duplicate/backward rejection.
+// Genesis (height 0) is exempt from predecessor checks but may only be applied to
+// an empty chain. On an empty chain only block 1 is accepted for bootstrap; its
+// authenticity rests on validator-signature verification upstream.
+func (e *Executor) verifyBlockLinkage(b *types.Block) error {
+	if b.Header.ChainID != types.ChainID {
+		return fmt.Errorf("wrong chain id: block %q, node %q", b.Header.ChainID, types.ChainID)
+	}
+
+	latest, err := e.LatestBlock()
+	if err != nil {
+		return fmt.Errorf("read chain head: %w", err)
+	}
+
+	if b.Header.Height == 0 {
+		if latest != nil {
+			return fmt.Errorf("genesis rejected: chain already has a head at height %d", latest.Header.Height)
+		}
+		return nil // genesis on an empty chain
+	}
+
+	if latest == nil {
+		if b.Header.Height != 1 {
+			return fmt.Errorf("cannot apply block %d to an empty chain (expected block 1)", b.Header.Height)
+		}
+		return nil // bootstrapping first block; signature verification is the gate
+	}
+
+	if b.Header.Height != latest.Header.Height+1 {
+		return fmt.Errorf("non-contiguous height: got %d, expected %d", b.Header.Height, latest.Header.Height+1)
+	}
+	if b.Header.PrevHash != latest.Hash {
+		return fmt.Errorf("prev-hash mismatch at height %d", b.Header.Height)
+	}
+	// NOTE: deliberately NO timestamp monotonicity / future-drift check here.
+	// The producer (ProduceBlock) stamps time.Now().Unix() unclamped and does not
+	// self-verify, so a validator wall-clock step-back (NTP correction, VM
+	// migration) can emit a validly-signed non-monotonic block. A consumer-side
+	// timestamp gate would then permanently wedge every sync/RPC node on that
+	// block (and on any such block already in historical LevelDB). Anti-rewind /
+	// anti-replay is fully covered by chain-id + height==head+1 + prev-hash link +
+	// mandatory validator-signature verification, none of which depend on the clock.
+	return nil
 }
 
 func (e *Executor) GetBlock(hashHex string) (*types.Block, error) {

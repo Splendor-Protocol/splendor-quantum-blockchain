@@ -1,7 +1,7 @@
 // Splendor Quantum Chain — Full Node (v2)
 //
 // 100% quantum-native blockchain node.
-// All crypto: CRYSTALS-Dilithium Mode 3 (NIST FIPS 204) + SHA3-256 (NIST FIPS 202).
+// All crypto: CRYSTALS-Dilithium Mode 3 (round-3, not FIPS-204 ML-DSA) + SHA3-256.
 // Zero ECDSA. Zero SHA-256. Zero keccak. Zero secp256k1.
 //
 // Usage:
@@ -12,10 +12,12 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,9 +46,12 @@ var (
 	flagWalletPass    string
 	flagPeers         []string
 	flagBlockInterval int
-	flagIsValidator   bool
-	flagLogLevel      string
-	flagGenesisPath   string
+	flagIsValidator    bool
+	flagLogLevel       string
+	flagGenesisPath    string
+	flagValidatorPKHex string
+	flagRPCAuthToken   string
+	flagEnableX402     bool
 )
 
 func main() {
@@ -54,7 +59,7 @@ func main() {
 		Use:   "sqc-node",
 		Short: "Splendor Quantum Chain full node",
 		Long: `sqc-node runs a Splendor Quantum Chain full node.
-Cryptography: CRYSTALS-Dilithium Mode 3 (NIST FIPS 204) + SHA3-256 (NIST FIPS 202).
+Cryptography: CRYSTALS-Dilithium Mode 3 (round-3, not FIPS-204 ML-DSA) + SHA3-256.
 No ECDSA. No SHA-256. No conventional cryptography.`,
 		RunE: runNode,
 	}
@@ -69,6 +74,9 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().BoolVar(&flagIsValidator, "validator", false, "Run as block-producing validator")
 	root.Flags().StringVar(&flagLogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	root.Flags().StringVar(&flagGenesisPath, "genesis", "", "Path to genesis.json (allocations applied once on an empty chain)")
+	root.Flags().StringVar(&flagValidatorPKHex, "validator-pubkey-hex", "", "Trusted genesis validator Dilithium public key (hex). Full nodes MUST set this to authenticate pushed blocks on POST /block.")
+	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret required on admin write routes (or SQC_RPC_AUTH_TOKEN env)")
+	root.Flags().BoolVar(&flagEnableX402, "enable-x402-settle", false, "Expose POST /x402/settle (direct, non-consensus settlement; requires --rpc-auth-token)")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -162,6 +170,29 @@ func runNode(cmd *cobra.Command, args []string) error {
 		validatorAddr = qcrypto.DeriveAddress(validatorPub)
 		validatorPKBytes = validatorPub.Bytes()
 		log.Info().Str("validator_addr", validatorAddr.String()).Msg("Validator key loaded")
+	}
+
+	// Full nodes: pin the trusted genesis validator pubkey so inbound (POST /block)
+	// and sync blocks are Dilithium-verified. Without it a full node cannot
+	// authenticate pushed blocks and fails closed on the push path (relying on
+	// pull-sync, which bootstraps the key from the genesis block).
+	if !flagIsValidator && flagValidatorPKHex != "" {
+		pkBytes, decErr := hex.DecodeString(strings.TrimPrefix(flagValidatorPKHex, "0x"))
+		if decErr != nil {
+			return fmt.Errorf("invalid --validator-pubkey-hex: %w", decErr)
+		}
+		if _, perr := qcrypto.PublicKeyFromBytes(pkBytes); perr != nil {
+			return fmt.Errorf("invalid --validator-pubkey-hex: %w", perr)
+		}
+		validatorPKBytes = pkBytes
+		log.Info().Str("pubkey_prefix", fmt.Sprintf("%x", pkBytes[:8])).
+			Msg("Trusted validator pubkey pinned (full node block verification enabled)")
+	}
+
+	// Admin auth token for state-mutating routes (env fallback).
+	authToken := flagRPCAuthToken
+	if authToken == "" {
+		authToken = os.Getenv("SQC_RPC_AUTH_TOKEN")
 	}
 
 	// ── P2P peer pool + discovery ──────────────────────────────────────────
@@ -353,9 +384,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Core RPC server (handles /tx/submit, /block/*, /balance/*, /status, etc.)
 	coreRPC := rpc.New(
 		rpc.Config{
-			ListenAddr:  flagRPCAddr,
-			ValidatorPK: validatorPKBytes,
-			PeerCount:   peerPool.Count, // wire live peer count from peerPool
+			ListenAddr:        flagRPCAddr,
+			ValidatorPK:       validatorPKBytes,
+			PeerCount:         peerPool.Count, // wire live peer count from peerPool
+			AuthToken:         authToken,
+			X402SettleEnabled: flagEnableX402,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)

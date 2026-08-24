@@ -40,8 +40,8 @@ IBM's quantum computers already have over 1,000 qubits. Estimates from NIST, the
 Splendor Quantum Chain is the answer. Not a patch on an existing chain. Not a compatibility layer. A fresh start — where:
 
 - **Accounts** are derived from post-quantum keys, not ECDSA
-- **Signatures** use CRYSTALS-Dilithium (NIST FIPS 204), not ECDSA
-- **Hashing** uses SHA-3 / SHAKE-256, not SHA-256 or Keccak-256
+- **Signatures** use CRYSTALS-Dilithium Mode 3 (round-3 parameter set; this is NOT the FIPS-204 / ML-DSA-65 standard), not ECDSA
+- **Hashing** uses SHA-3-256 (SHA3-256), not SHA-256, SHAKE-256, or Keccak-256
 - **Key exchange** uses CRYSTALS-Kyber (NIST FIPS 203), not ECDH
 - **Smart contracts** are signed, deployed, and called using quantum-safe operations only
 - **Validator messages** are signed with Dilithium
@@ -108,7 +108,7 @@ The chain is structured in four layers. Every layer uses exclusively post-quantu
 ┌─────────────────────────────▼────────────────────────────────────┐
 │  NETWORK & STORAGE LAYER                                          │
 │  P2P communication with quantum-safe channel encryption          │
-│  Ledger stored as Sparse Merkle Tree with SHA-3 hashing          │
+│  Ledger state committed via flat SHA-3-256 over sorted accounts  │
 │  All on-disk data integrity verified with post-quantum MACs      │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -382,7 +382,7 @@ Notes:
 
 The wallet computes:
 ```
-tx_bytes = CBOR_encode(transaction_object)
+tx_bytes = JSON_encode(transaction_object)   // canonical Go json.Marshal of the tx body
 tx_hash  = SHA3-256(tx_bytes)
 signature = Dilithium.Sign(alice_private_key, tx_hash)
 ```
@@ -598,7 +598,7 @@ The contract looks and feels like Solidity. A Solidity developer can learn QSol 
 
 ### Contract state is quantum-safe
 
-All contract state is stored in a Sparse Merkle Tree (SMT). Every leaf and node in the tree is hashed with SHA-3. The root of the SMT is included in every block header — proving the complete state of all contracts at that block.
+Account state is committed with a flat SHA-3-256 hash over the sorted set of account records, and that root is included in every block header. A full Sparse Merkle Tree (with per-account inclusion proofs) is planned but not yet implemented. IMPORTANT: today's commitment covers **accounts only** — contract code and contract storage slots are not yet included in the state root.
 
 There is no SHA-256. No Keccak. SHA-3 everywhere.
 
@@ -638,7 +638,7 @@ block_header = {
   validator: "SQ:validator_address..."
 }
 
-block_hash   = SHA3-256(CBOR_encode(block_header))
+block_hash   = SHA3-256(JSON_encode(block_header))   // Go json.Marshal of the header
 block_sig    = Dilithium.Sign(validator_private_key, block_hash)
 ```
 
@@ -695,9 +695,9 @@ Splendor QC uses SHA-3 because:
 - It is consistent with NIST's overall post-quantum migration framework
 - Using the same standards body across all primitives simplifies compliance and auditing
 
-**State storage — Sparse Merkle Tree:**
+**State storage — flat SHA-3-256 account commitment (SMT planned):**
 
-Account balances and contract state are stored in a Sparse Merkle Tree (SMT) with SHA-3 hashing at every node. The SMT root is included in every block header. This means:
+Account balances are committed with a flat SHA-3-256 hash over the sorted set of account records; that root is in every block header. A full Sparse Merkle Tree (with inclusion proofs) is planned but not yet implemented, and contract code/storage are not yet part of the commitment. This means:
 
 - Any node can prove any account's balance to any other node by providing a short Merkle proof
 - The proof chain: account data → SHA-3 leaf hash → SHA-3 parent hashes → state root in block header → block signed by validator
@@ -871,10 +871,10 @@ This section lists every cryptographic operation in the chain and what algorithm
 
 | Operation | Algorithm | Standard | Quantum Safety |
 |-----------|-----------|----------|----------------|
-| Account key generation | CRYSTALS-Dilithium Mode 3 | NIST FIPS 204 | ✅ Post-quantum |
-| Transaction signing | CRYSTALS-Dilithium Mode 3 | NIST FIPS 204 | ✅ Post-quantum |
-| Signature verification | CRYSTALS-Dilithium Mode 3 | NIST FIPS 204 | ✅ Post-quantum |
-| Block signing (validator) | CRYSTALS-Dilithium Mode 3 | NIST FIPS 204 | ✅ Post-quantum |
+| Account key generation | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
+| Transaction signing | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
+| Signature verification | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
+| Block signing (validator) | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
 | Address derivation hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
 | Block header hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
 | Transaction hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
@@ -884,7 +884,7 @@ This section lists every cryptographic operation in the chain and what algorithm
 | Key derivation (from password) | Argon2id | RFC 9106 | ✅ Memory-hard, quantum-safe |
 | Encrypted P2P communication | Kyber-1024 + AES-256 | NIST FIPS 203 | ✅ Post-quantum |
 | Smart contract hash (keccak replacement) | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
-| Payment signing (X402) | CRYSTALS-Dilithium Mode 3 | NIST FIPS 204 | ✅ Post-quantum |
+| Payment signing (X402) | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
 
 **What is NOT used:**
 - ❌ ECDSA (secp256k1 or any curve) — no quantum safety

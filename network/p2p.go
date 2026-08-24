@@ -41,16 +41,29 @@ type Broadcaster struct {
 	applyBlock   func(*types.Block) error // local apply callback (for loopback, if needed)
 }
 
+// noRedirect stops HTTP clients from following redirects. Peer/P2P requests must
+// hit exactly the announced host — following a 3xx would let an approved public
+// peer URL bounce the node to an internal/metadata address (SSRF), defeating the
+// announce-time host validation. Returning ErrUseLastResponse surfaces the 3xx as
+// the response, which callers treat as a non-200 failure.
+func noRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+
 // NewBroadcaster creates a new block broadcaster.
 func NewBroadcaster(validatorPK []byte) *Broadcaster {
 	return &Broadcaster{
 		peers:       make(map[string]struct{}),
 		validatorPK: validatorPK,
 		client: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout:       5 * time.Second,
+			CheckRedirect: noRedirect,
 		},
 	}
 }
+
+// maxBroadcastPeers caps the broadcast fan-out set. /peers/announce is a public
+// endpoint, so without a cap an attacker could grow this set unboundedly and turn
+// each produced block into an amplified fan-out of outbound POSTs.
+const maxBroadcastPeers = 128
 
 // AddPeer registers a peer URL to receive broadcast blocks.
 func (b *Broadcaster) AddPeer(url string) {
@@ -59,6 +72,11 @@ func (b *Broadcaster) AddPeer(url string) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if _, exists := b.peers[url]; !exists && len(b.peers) >= maxBroadcastPeers {
+		log.Warn().Str("peer", url).Int("max", maxBroadcastPeers).
+			Msg("broadcaster: peer set full, ignoring new peer")
+		return
+	}
 	b.peers[url] = struct{}{}
 	log.Debug().Str("peer", url).Msg("broadcaster: peer added")
 }
@@ -183,11 +201,17 @@ func HandleIncomingBlock(body []byte, validatorPK []byte, applyBlock func(*types
 		return fmt.Errorf("block validation failed: %w", err)
 	}
 
-	// Dilithium signature verification (if pubkey is known)
-	if len(validatorPK) > 0 {
-		if err := block.VerifySignature(validatorPK); err != nil {
-			return fmt.Errorf("invalid validator signature: %w", err)
-		}
+	// Dilithium signature verification is MANDATORY on the inbound push path.
+	// An empty validatorPK previously meant "skip verification", which let any
+	// unauthenticated caller POST a forged block to /block. We now fail closed:
+	// a node with no trusted validator pubkey refuses pushed blocks and relies on
+	// the pull-sync path (which bootstraps the key from the genesis block) instead.
+	// Operators can pin the key explicitly via --validator-pubkey-hex.
+	if len(validatorPK) == 0 {
+		return fmt.Errorf("refusing inbound block: no trusted validator pubkey configured")
+	}
+	if err := block.VerifySignature(validatorPK); err != nil {
+		return fmt.Errorf("invalid validator signature: %w", err)
 	}
 
 	// Apply to local chain

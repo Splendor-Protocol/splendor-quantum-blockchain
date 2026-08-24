@@ -22,7 +22,10 @@ type BlockHeader struct {
 	// SHA3-256 Merkle root of all transactions in this block.
 	TxMerkleRoot [32]byte `json:"tx_merkle_root"`
 
-	// SHA3-256 root of the state Sparse Merkle Tree after applying this block.
+	// State commitment after applying this block: a flat SHA3-256 hash over the
+	// sorted set of account records (NOT a Sparse Merkle Tree — an SMT is future
+	// work). NOTE: this covers accounts only; contract code and storage slots are
+	// not yet included in the commitment.
 	StateRoot [32]byte `json:"state_root"`
 
 	// Address of the validator that produced this block.

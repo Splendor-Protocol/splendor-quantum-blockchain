@@ -25,8 +25,8 @@ const (
 const ChainID = "splendor-quantum-1"
 
 // Transaction is the fundamental unit of state change on Splendor Quantum Chain.
-// All transactions are signed with Dilithium Mode 3.
-// The hash is computed as SHA3-256(CBOR-serialised transaction body).
+// All transactions are signed with Dilithium Mode 3 (round-3, not FIPS-204 ML-DSA).
+// The hash is computed as SHA3-256(JSON-serialised transaction body).
 type Transaction struct {
 	// Header
 	Version   uint8  `json:"version"`

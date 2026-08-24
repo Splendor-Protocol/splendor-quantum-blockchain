@@ -137,9 +137,9 @@ Step 8: Confirmation
 
 | Operation | Algorithm | Standard | Key Size |
 |-----------|-----------|----------|----------|
-| Transaction signing | Dilithium Mode 3 | NIST FIPS 204 | 4,032 byte private key |
-| Signature verification | Dilithium Mode 3 | NIST FIPS 204 | 1,952 byte public key |
-| Block signing (validator) | Dilithium Mode 3 | NIST FIPS 204 | same |
+| Transaction signing | Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | 4,032 byte private key |
+| Signature verification | Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | 1,952 byte public key |
+| Block signing (validator) | Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | same |
 | Address derivation | SHA3-256(pubkey) | NIST FIPS 202 | 32 byte output |
 | Block hash | SHA3-256(header) | NIST FIPS 202 | 32 byte output |
 | State root | SHA3-256(accounts) | NIST FIPS 202 | 32 byte output |

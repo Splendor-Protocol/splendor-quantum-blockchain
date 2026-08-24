@@ -317,3 +317,70 @@ func (s *StateDB) StateRoot() ([32]byte, error) {
 	defer s.mu.RUnlock()
 	return s.computeStateRoot()
 }
+
+// PendingStateRoot computes the state root that Commit() WOULD produce, without
+// persisting anything to disk. It overlays the in-memory dirty accounts on top of
+// the committed account set and hashes them exactly as computeStateRoot does
+// (same key ordering, same per-account JSON encoding Commit writes).
+//
+// This lets a caller verify a block's declared state root BEFORE durably
+// committing: on a mismatch it can DiscardPending() and leave no residue on disk.
+// The previous flow committed first and compared after, so a rejected block's
+// (corrupt) account writes were already persisted and irreversible.
+func (s *StateDB) PendingStateRoot() ([32]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entries := make(map[string][]byte)
+
+	iter := s.db.NewIterator(util.BytesPrefix([]byte(prefixAccount)), nil)
+	for iter.Next() {
+		k := string(iter.Key())
+		v := make([]byte, len(iter.Value()))
+		copy(v, iter.Value())
+		entries[k] = v
+	}
+	iter.Release()
+	if err := iter.Error(); err != nil {
+		return [32]byte{}, fmt.Errorf("pending state root iteration error: %w", err)
+	}
+
+	// Overlay dirty accounts using the identical marshaling Commit() applies, so
+	// the resulting bytes match what would land in LevelDB.
+	for addr, acc := range s.dirty {
+		data, err := json.Marshal(acc)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("failed to marshal account %s: %w", addr, err)
+		}
+		entries[prefixAccount+addr.String()] = data
+	}
+
+	keys := make([]string, 0, len(entries))
+	for k := range entries {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var combined []byte
+	for _, k := range keys {
+		combined = append(combined, []byte(k)...)
+		combined = append(combined, entries[k]...)
+	}
+	return qcrypto.Hash32(combined), nil
+}
+
+// DiscardPending drops all uncommitted (dirty) account and code writes without
+// persisting them. Used to abandon a block whose computed state root does not
+// match its header, so a rejected block leaves the committed state untouched.
+//
+// NOTE: contract storage slots (SetStorageValue) and X402 nonces are written
+// straight to LevelDB during execution and are NOT covered by this rollback.
+// Callers therefore run the block-linkage and validator-signature checks BEFORE
+// executing transactions, so a block that would fail the state-root comparison
+// only ever originates from the trusted validator itself.
+func (s *StateDB) DiscardPending() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dirty = make(map[qcrypto.Address]*types.Account)
+	s.codeCache = make(map[[32]byte][]byte)
+}
