@@ -12,6 +12,11 @@
 
 'use strict';
 
+// ── Load Go WASM runtime at top level (must be top-level in classic SW) ───
+// importScripts is synchronous and must run at service worker startup, not
+// inside an async function. Relative URL resolves to extension root.
+importScripts('wasm/wasm_exec.js');
+
 // ── Constants ──────────────────────────────────────────────────────────────
 const STORAGE_KEY = 'sqc_vault';
 const SESSION_KEY = 'sqc_session';
@@ -112,13 +117,8 @@ let _wasmModule = null;
 async function loadWasm() {
   if (_wasmReady) return;
 
+  // Go class is already available — importScripts('wasm/wasm_exec.js') ran at top level
   const url = chrome.runtime.getURL('wasm/sqc_signer.wasm');
-  const execUrl = chrome.runtime.getURL('wasm/wasm_exec.js');
-
-  // Classic service worker: importScripts loads wasm_exec.js and sets Go on globalThis
-  if (typeof Go === 'undefined') {
-    importScripts(execUrl);
-  }
 
   const go = new Go();
   const bytes = await fetch(url).then(r => r.arrayBuffer());
