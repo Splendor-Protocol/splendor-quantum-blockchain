@@ -174,11 +174,12 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 		return nil, fmt.Errorf("decode latest block: %w", err)
 	}
 
-	// Verify signature if pubkey is known
-	if len(f.cfg.ValidatorPubKey) > 0 {
-		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-			return nil, fmt.Errorf("latest block: invalid validator signature: %w", err)
-		}
+	// Verify signature; fail closed with no pinned key (matches FetchBlock).
+	if len(f.cfg.ValidatorPubKey) == 0 {
+		return nil, fmt.Errorf("latest block: no trusted validator pubkey")
+	}
+	if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
+		return nil, fmt.Errorf("latest block: invalid validator signature: %w", err)
 	}
 
 	return &block, nil

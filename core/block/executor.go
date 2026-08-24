@@ -21,6 +21,13 @@ const (
 	prefixBlock   = "block:"
 	prefixHeight  = "height:"
 	keyLatest     = "latest"
+
+	// MaxBlockGas caps the total VM gas a block may consume (mirrors
+	// config.MaxBlockGas). Without enforcement, 10k txs * MaxGasPerCall (10M) =
+	// 100B gas of compute per block, letting a funded attacker force blocks that
+	// take far longer than the target interval. ProduceBlock stops including txs
+	// past this budget; ExecuteBlock rejects a block that exceeds it.
+	MaxBlockGas uint64 = 500_000_000_000
 )
 
 // Executor executes blocks and manages the chain database.
@@ -107,6 +114,7 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 
 	var receipts []*types.Receipt
 	totalFees := new(bigInt)
+	var blockGas uint64
 
 	for i, tx := range b.Transactions {
 		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
@@ -114,6 +122,14 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 			return fmt.Errorf("tx %d failed: %w", i, err)
 		}
 		receipts = append(receipts, receipt)
+
+		// Reject a block that exceeds the consensus gas budget (defence against a
+		// producer packing far more compute than the interval can process).
+		blockGas += receipt.GasUsed
+		if blockGas > MaxBlockGas {
+			e.state.DiscardPending()
+			return fmt.Errorf("block exceeds gas budget: %d > %d", blockGas, MaxBlockGas)
+		}
 
 		// Accumulate fees for validator credit (mirrors ProduceBlock).
 		// Blocks from the validator only contain txs that executed successfully,
@@ -435,6 +451,7 @@ func (e *Executor) ProduceBlock(
 		totalFees = new(bigInt)
 		executed  []*types.Transaction
 		receipts  []*types.Receipt
+		blockGas  uint64
 	)
 
 	for i, tx := range txs {
@@ -449,7 +466,14 @@ func (e *Executor) ProduceBlock(
 			log.Warn().Err(err).Msg("skipping invalid tx")
 			continue
 		}
+		// Stop packing once the block gas budget is reached (txs are fee-sorted,
+		// so we keep the most valuable ones). Revert this tx's state before break.
+		if blockGas+receipt.GasUsed > MaxBlockGas {
+			e.state.RevertToSnapshot(snap)
+			break
+		}
 		e.state.CommitSnapshot(snap)
+		blockGas += receipt.GasUsed
 		totalFees.Add(totalFees, tx.Fee)
 		executed = append(executed, tx)
 		receipts = append(receipts, receipt)
