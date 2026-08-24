@@ -109,7 +109,7 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 	totalFees := new(bigInt)
 
 	for i, tx := range b.Transactions {
-		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Hash)
+		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
 		if err != nil {
 			return fmt.Errorf("tx %d failed: %w", i, err)
 		}
@@ -180,7 +180,7 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 }
 
 // executeTxWithReceipt processes a single transaction and returns a receipt.
-func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockHash [32]byte) (*types.Receipt, error) {
+func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockTime int64, blockHash [32]byte) (*types.Receipt, error) {
 	receipt, err := types.NewReceipt(tx, txIndex, blockHeight, blockHash)
 	if err != nil {
 		return nil, fmt.Errorf("receipt init failed: %w", err)
@@ -199,7 +199,7 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 	// the block's account state (and thus the state root) reflects a tx that the
 	// producer excluded — producer and followers then compute divergent roots.
 	snap := e.state.Snapshot()
-	if err := e.executeTx(tx, blockHeight, receipt); err != nil {
+	if err := e.executeTx(tx, blockHeight, blockTime, receipt); err != nil {
 		e.state.RevertToSnapshot(snap)
 		receipt.SetFailed(err.Error())
 		log.Warn().Err(err).
@@ -214,7 +214,18 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 }
 
 // executeTx processes a single transaction, updating receipt with logs and gas.
-func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, receipt *types.Receipt) error {
+//
+// It recovers from panics in the VM / native-module execution: crafted bytecode
+// (e.g. a negative make() size from a 256-bit length, or an unbounded EXP) could
+// otherwise panic and CRASH the validator + every follower — halting the chain.
+// A recovered panic becomes an error, which the caller's snapshot reverts, so the
+// tx is recorded as failed and the block continues.
+func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTime int64, receipt *types.Receipt) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("tx execution panic: %v", r)
+		}
+	}()
 	if err := tx.Validate(); err != nil {
 		return fmt.Errorf("validation: %w", err)
 	}
@@ -261,7 +272,7 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, receipt 
 	case types.TxDeploy:
 		return e.execDeploy(tx, fromAcc, receipt)
 	case types.TxCall:
-		return e.execCall(tx, fromAcc, receipt, blockHeight)
+		return e.execCall(tx, fromAcc, receipt, blockHeight, blockTime)
 	case types.TxX402:
 		return e.execX402(tx, fromAcc, receipt, blockHeight)
 	default:
@@ -313,7 +324,7 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, rec
 	return nil
 }
 
-func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
+func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64, blockTime int64) error {
 	if tx.To == vm.ModuleRouterAddress {
 		if err := fromAcc.SubBalance(tx.Fee); err != nil {
 			return err
@@ -332,7 +343,7 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 
 	result, err := e.vmEngine.CallWithContext(
 		tx.From, tx.From, tx.To, tx.Data, tx.Amount,
-		blockHeight, time.Now().Unix(), false,
+		blockHeight, blockTime, false,
 	)
 	if err != nil {
 		return fmt.Errorf("call failed: %w", err)
@@ -402,6 +413,12 @@ func (e *Executor) ProduceBlock(
 		txs = txs[:MaxTxPerBlock]
 	}
 
+	// Stamp the block time ONCE and use it for BOTH execution and the header, so a
+	// contract reading OpTIMESTAMP sees the same value the producer committed to.
+	// (Previously execution used time.Now() at each executeTx, so a follower
+	// re-executing at a different wall-clock computed a divergent state root.)
+	blockTime := time.Now().Unix()
+
 	var (
 		totalFees = new(bigInt)
 		executed  []*types.Transaction
@@ -415,7 +432,7 @@ func (e *Executor) ProduceBlock(
 		// root reflects a tx not in Transactions and followers reject it.
 		snap := e.state.Snapshot()
 		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{})
-		if err := e.executeTx(tx, height, receipt); err != nil {
+		if err := e.executeTx(tx, height, blockTime, receipt); err != nil {
 			e.state.RevertToSnapshot(snap)
 			log.Warn().Err(err).Msg("skipping invalid tx")
 			continue
@@ -448,7 +465,7 @@ func (e *Executor) ProduceBlock(
 
 	header := types.BlockHeader{
 		Height:        height,
-		Timestamp:     time.Now().Unix(),
+		Timestamp:     blockTime,
 		ChainID:       types.ChainID,
 		PrevHash:      prevHash,
 		TxMerkleRoot:  txMerkleRoot,
