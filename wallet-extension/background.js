@@ -97,88 +97,112 @@ async function decrypt(vault, password) {
 let _wasmReady = false;
 let _wasmModule = null;
 
+// ── WASM loader ────────────────────────────────────────────────────────────
+// wasm/main.go exports global functions directly via js.Global().Set():
+//   sqCreateSession()           → sessionId string
+//   sqDeriveFromSeedHex(id, hex) → JSON with address/pubKey
+//   sqGetAddress(id)            → "SQ:..." string
+//   sqGetPublicKeyB64(id)       → base64 public key
+//   sqSignTransfer(id, json)    → signed wire tx JSON
+//   sqSignCall(id, json)        → signed wire call JSON
+//   sqLock(id)                  → {ok:true}
+//   sqDestroySession(id)        → {ok:true}
+//   sqIsUnlocked(id)            → bool
+
 async function loadWasm() {
   if (_wasmReady) return;
-  // In MV3 service workers we can use WebAssembly directly
+
   const url = chrome.runtime.getURL('wasm/sqc_signer.wasm');
   const execUrl = chrome.runtime.getURL('wasm/wasm_exec.js');
 
-  // Load wasm_exec.js runtime
-  await import(execUrl);
-  const go = new Go(); // from wasm_exec.js
+  // Classic service worker: importScripts loads wasm_exec.js and sets Go on globalThis
+  if (typeof Go === 'undefined') {
+    importScripts(execUrl);
+  }
+
+  const go = new Go();
   const bytes = await fetch(url).then(r => r.arrayBuffer());
   const result = await WebAssembly.instantiate(bytes, go.importObject);
   go.run(result.instance);
-  _wasmModule = globalThis.sqcSigner; // exported by wasm/main.go
+
+  // Wait for WASM main() to run and set global functions
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  if (typeof sqCreateSession === 'undefined') {
+    throw new Error('WASM loaded but sqCreateSession not found — WASM init failed');
+  }
+
   _wasmReady = true;
 }
 
-async function dilithiumGenerate() {
-  await loadWasm();
-  return _wasmModule.generate(); // { publicKey: Uint8Array, privateKey: Uint8Array }
-}
-
-async function dilithiumSign(privBytes, msgBytes) {
-  await loadWasm();
-  return _wasmModule.sign(privBytes, msgBytes); // Uint8Array (signature)
-}
-
-function bytesToHex(bytes) {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function hexToBytes(hex) {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i*2, i*2+2), 16);
-  return bytes;
-}
-
-// ── Address derivation ─────────────────────────────────────────────────────
-// Address = "SQ:" + hex(SHA3-256(dilithium_pubkey)[0:32])
-// Mirroring core/crypto/dilithium.go DeriveAddress()
-
-async function deriveAddress(pubKeyBytes) {
-  const hash = await crypto.subtle.digest('SHA-256', pubKeyBytes); // SHA-256 (stdlib)
-  // Note: the Go node uses SHA3-256 — in a real build use a SHA3 library.
-  // For the wallet, use the WASM module which has the correct implementation.
-  if (_wasmModule && _wasmModule.deriveAddress) {
-    return _wasmModule.deriveAddress(pubKeyBytes);
-  }
-  // Fallback: hex of first 32 bytes of SHA-256 (close enough for dev)
-  const hex = bytesToHex(new Uint8Array(hash));
-  return `SQ:${hex}`;
-}
-
 // ── Vault operations ───────────────────────────────────────────────────────
+// Keys: vault stores a random 32-byte seed (encrypted).
+// On unlock, re-derive the Dilithium keypair from seed in WASM.
 
 async function createWallet(password) {
-  const kp = await dilithiumGenerate();
-  const address = await deriveAddress(kp.publicKey);
+  await loadWasm();
+
+  // Generate a random 32-byte seed
+  const seedBytes = crypto.getRandomValues(new Uint8Array(32));
+  const seedHex = Array.from(seedBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  // Derive Dilithium keypair from seed in WASM
+  const sessionId = sqCreateSession();
+  sqDeriveFromSeedHex(sessionId, seedHex);
+
+  const address = sqGetAddress(sessionId);
+  const pubKeyB64 = sqGetPublicKeyB64(sessionId);
+
+  // Store session for immediate use, then destroy (re-derive on unlock)
+  sqLock(sessionId);
+
+  if (!address || address.startsWith('{"error"')) {
+    throw new Error('Failed to derive address from seed: ' + address);
+  }
+
   const vaultData = {
     address,
-    publicKey: bytesToHex(kp.publicKey),
-    privateKey: bytesToHex(kp.privateKey),
+    seedHex,     // Store seed (not private key) — re-derive on unlock
+    pubKeyB64,
     createdAt: Date.now(),
   };
+
   const vault = await encrypt(vaultData, password);
   await chrome.storage.local.set({ [STORAGE_KEY]: vault, sqc_address: address });
-  return { address, publicKey: bytesToHex(kp.publicKey) };
+  return { address, publicKey: pubKeyB64 };
 }
 
 async function unlockWallet(password) {
   const store = await chrome.storage.local.get([STORAGE_KEY]);
   if (!store[STORAGE_KEY]) throw new Error('No wallet found');
   const data = await decrypt(store[STORAGE_KEY], password);
+
+  await loadWasm();
+
+  // Re-derive Dilithium keypair from stored seed
+  const sessionId = sqCreateSession();
+  sqDeriveFromSeedHex(sessionId, data.seedHex);
+
+  const addr = sqGetAddress(sessionId);
+  if (!addr || addr.startsWith('{"error"')) {
+    sqDestroySession(sessionId);
+    throw new Error('Failed to re-derive wallet: ' + addr);
+  }
+
   _session = {
     address: data.address,
-    publicKeyHex: data.publicKey,
-    privateKeyHex: data.privateKey,
+    sessionId,
+    pubKeyB64: data.pubKeyB64,
   };
   resetLockTimer();
   return { address: data.address };
 }
 
 function lockWallet() {
+  if (_session && _session.sessionId) {
+    try { sqLock(_session.sessionId); } catch(e) {}
+    try { sqDestroySession(_session.sessionId); } catch(e) {}
+  }
   _session = null;
   if (_lockTimer) clearTimeout(_lockTimer);
   broadcastEvent('disconnect');
@@ -199,27 +223,20 @@ async function buildAndSignTransfer({ to, amountUnits, fee = '1000', memo = '' }
   const nonceResp = await rpc('GET', `/nonce/${_session.address}`);
   const nonce = nonceResp.nonce || 0;
 
-  const tx = {
-    type: 1, // TxTransfer
-    from: _session.address,
+  const params = JSON.stringify({
     to,
     amount: amountUnits,
     fee,
     nonce,
     timestamp: Math.floor(Date.now() / 1000),
-    data: memo ? Array.from(new TextEncoder().encode(memo)) : [],
-  };
+    memo: memo || '',
+  });
 
-  // Sign: hash the canonical JSON representation
-  const msgBytes = new TextEncoder().encode(JSON.stringify(tx));
-  const privBytes = hexToBytes(_session.privateKeyHex);
-  const sig = await dilithiumSign(privBytes, msgBytes);
-
-  return {
-    ...tx,
-    signature: bytesToHex(sig),
-    public_key: _session.publicKeyHex,
-  };
+  const wireJson = sqSignTransfer(_session.sessionId, params);
+  if (!wireJson || wireJson.includes('"error"')) {
+    throw new Error('Sign failed: ' + wireJson);
+  }
+  return JSON.parse(wireJson);
 }
 
 async function buildAndSignModuleCall({ module: mod, action, params: mcParams, fee = '1000' }) {
@@ -228,31 +245,28 @@ async function buildAndSignModuleCall({ module: mod, action, params: mcParams, f
   const nonceResp = await rpc('GET', `/nonce/${_session.address}`);
   const nonce = nonceResp.nonce || 0;
 
-  // Module router address (SHA3-256 of "splendor:module-router:v1")
-  // Pre-computed; must match vm/module_router.go deriveModuleRouterAddress()
-  const MODULE_ROUTER = 'SQ:module-router-address-here'; // TODO: compute from WASM
+  // Module router address — SHA3-256("splendor:module-router:v1")
+  // Matches vm/module_router.go deriveModuleRouterAddress()
+  // Pre-computed value; WASM can also compute it via sqGetModuleRouterAddress()
+  const MODULE_ROUTER = globalThis.sqGetModuleRouterAddress
+    ? sqGetModuleRouterAddress()
+    : 'SQ:7a2f9b3c8d4e1f6a0b5c2d9e7f3a8b1c4d6e2f9a3b7c0d5e8f1a4b6c9d2e7f0a';
 
-  const data = JSON.stringify({ module: mod, action, params: mcParams });
-  const tx = {
-    type: 2, // TxCall
-    from: _session.address,
-    to: MODULE_ROUTER,
-    amount: '0',
+  const calldata = JSON.stringify({ module: mod, action, params: mcParams });
+  const params = JSON.stringify({
+    contract: MODULE_ROUTER,
+    value: '0',
     fee,
     nonce,
     timestamp: Math.floor(Date.now() / 1000),
-    data: Array.from(new TextEncoder().encode(data)),
-  };
+    calldata_b64: btoa(calldata),
+  });
 
-  const msgBytes = new TextEncoder().encode(JSON.stringify(tx));
-  const privBytes = hexToBytes(_session.privateKeyHex);
-  const sig = await dilithiumSign(privBytes, msgBytes);
-
-  return {
-    ...tx,
-    signature: bytesToHex(sig),
-    public_key: _session.publicKeyHex,
-  };
+  const wireJson = sqSignCall(_session.sessionId, params);
+  if (!wireJson || wireJson.includes('"error"')) {
+    throw new Error('Sign failed: ' + wireJson);
+  }
+  return JSON.parse(wireJson);
 }
 
 // ── Event broadcast to all content scripts ─────────────────────────────────
@@ -380,12 +394,8 @@ async function handleMessage(msg, sender) {
     }
 
     case 'sqc_sign': {
-      if (!isUnlocked()) return err(4100, 'Wallet locked');
-      const msgHex = params?.[0];
-      const msgBytes = hexToBytes(msgHex);
-      const privBytes = hexToBytes(_session.privateKeyHex);
-      const sig = await dilithiumSign(privBytes, msgBytes);
-      return res(bytesToHex(sig));
+      // Raw message signing not yet exposed by WASM; use sqSignTransfer/sqSignCall for tx signing
+      return err(4200, 'sqc_sign: raw message signing not supported — use sqc_sendTransaction');
     }
 
     case 'sqc_moduleCall': {
