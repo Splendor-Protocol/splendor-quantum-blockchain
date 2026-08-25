@@ -784,17 +784,42 @@ sudo certbot --nginx -d YOUR_DOMAIN_HERE
 
 ### Wallet Security
 
+In Phase 1 there is one validator, so this file is the chain's root of trust:
+whoever holds it and its passphrase can sign an alternative history. Treat it
+like a root CA key.
+
+The node enforces two of these rules rather than trusting the operator:
+
+- A wallet readable by group or other is **refused** at startup. Fix with `chmod 600`.
+- A wallet whose Argon2id parameters have been weakened below the floor
+  (time ≥ 1, memory ≥ 32 MB, salt ≥ 16 bytes) is **refused**, so rewriting the
+  file cannot make an offline guess at the passphrase cheap.
+
 ```bash
-# Restrict wallet file permissions (validator only)
+# Restrict wallet file permissions (validator only) — enforced at startup
 chmod 600 /var/sqc/validator.sqwallet
 
 # Never store the password in config files — use environment variable
 # Add to /etc/environment or use a secrets manager
 echo 'SQC_WALLET_PASS=your-password' | sudo tee -a /etc/environment
 
+# Or read it from an owner-only file
+chmod 600 /var/sqc/wallet.pass
+./sqc-node --wallet /var/sqc/validator.sqwallet --wallet-pass-file /var/sqc/wallet.pass
+
 # Or use systemd credentials (systemd 250+)
 sudo systemd-creds encrypt --name=sqc-wallet-pass - /etc/systemd/system/sqc-validator.service.d/wallet-creds.conf
 ```
+
+Avoid `--wallet-pass`: command-line arguments are readable by every local user
+through `ps`, so it leaks the passphrase protecting the signing key. The node
+logs a warning if you use it.
+
+**Offline custody.** Nothing above prevents a compromise of the running host
+from reaching the in-memory key. Removing that exposure needs either an HSM or
+a remote signer holding the key off the node, and neither is implemented; until
+BFT is wired there is also no second validator to bound the damage. Plan the
+validator host accordingly: dedicated machine, no shared shells, no co-tenants.
 
 ---
 

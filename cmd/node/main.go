@@ -47,6 +47,7 @@ var (
 	flagMetricsAddr       string
 	flagWalletPath        string
 	flagWalletPass        string
+	flagWalletPassFile    string
 	flagPeers             []string
 	flagBlockInterval     int
 	flagIsValidator       bool
@@ -83,7 +84,8 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagRPCAddr, "rpc-addr", "127.0.0.1:8080", "RPC server listen address (use 0.0.0.0:8080 to expose publicly)")
 	root.Flags().StringVar(&flagMetricsAddr, "metrics-addr", "127.0.0.1:9100", "Prometheus metrics listen address (metrics leak node internals — keep private)")
 	root.Flags().StringVar(&flagWalletPath, "wallet", "", "Path to validator .sqwallet file")
-	root.Flags().StringVar(&flagWalletPass, "wallet-pass", "", "Wallet password (prefer SQC_WALLET_PASS env)")
+	root.Flags().StringVar(&flagWalletPass, "wallet-pass", "", "Wallet password. Visible to any local user via 'ps' — prefer --wallet-pass-file or SQC_WALLET_PASS.")
+	root.Flags().StringVar(&flagWalletPassFile, "wallet-pass-file", "", "Read the wallet password from a file (must not be readable by other users)")
 	root.Flags().StringArrayVar(&flagPeers, "peer", nil, "Bootstrap peer RPC addresses")
 	root.Flags().IntVar(&flagBlockInterval, "block-interval", 2, "Block interval in seconds (validator only)")
 	root.Flags().BoolVar(&flagIsValidator, "validator", false, "Run as block-producing validator")
@@ -193,17 +195,18 @@ func runNode(cmd *cobra.Command, args []string) error {
 		if flagWalletPath == "" {
 			return fmt.Errorf("--wallet is required when running as validator")
 		}
-		pass := flagWalletPass
-		if pass == "" {
-			pass = os.Getenv("SQC_WALLET_PASS")
-		}
-		if pass == "" {
-			return fmt.Errorf("wallet password required: use --wallet-pass or SQC_WALLET_PASS env var")
+		pass, passErr := validatorPassphrase()
+		if passErr != nil {
+			return passErr
 		}
 		validatorPub, validatorPriv, err = qcrypto.LoadWallet(flagWalletPath, []byte(pass))
 		if err != nil {
 			return fmt.Errorf("failed to load validator wallet: %w", err)
 		}
+		// The signing key stays in memory for the life of the process, but do
+		// not leave it there after shutdown alongside a core dump.
+		defer validatorPriv.Zeroize()
+
 		validatorAddr = qcrypto.DeriveAddress(validatorPub)
 		validatorPKBytes = validatorPub.Bytes()
 		log.Info().Str("validator_addr", validatorAddr.String()).Msg("Validator key loaded")
@@ -688,6 +691,39 @@ func loadNodeIdentity(dataDir string, pub *qcrypto.PublicKey, priv *qcrypto.Priv
 	}
 	log.Info().Str("path", path).Msg("Generated persistent node P2P identity")
 	return network.NewNodeIdentity(newPub, newPriv)
+}
+
+// validatorPassphrase resolves the wallet passphrase from, in order, a file,
+// the environment, or the command line.
+//
+// The command line is last and warns: arguments are world-readable through
+// /proc and 'ps', so passing the passphrase there leaks the secret that
+// protects the block-signing key to every local user on the machine.
+func validatorPassphrase() (string, error) {
+	if flagWalletPassFile != "" {
+		if err := qcrypto.CheckKeyFilePermissions(flagWalletPassFile); err != nil {
+			return "", err
+		}
+		b, err := os.ReadFile(flagWalletPassFile)
+		if err != nil {
+			return "", fmt.Errorf("read --wallet-pass-file: %w", err)
+		}
+		pass := strings.TrimRight(string(b), "\r\n")
+		if pass == "" {
+			return "", fmt.Errorf("--wallet-pass-file %s is empty", flagWalletPassFile)
+		}
+		return pass, nil
+	}
+	if pass := os.Getenv("SQC_WALLET_PASS"); pass != "" {
+		return pass, nil
+	}
+	if flagWalletPass != "" {
+		log.Warn().Msg("--wallet-pass is visible to other local users via 'ps'; " +
+			"prefer --wallet-pass-file or SQC_WALLET_PASS")
+		return flagWalletPass, nil
+	}
+	return "", fmt.Errorf("wallet password required: use --wallet-pass-file, " +
+		"SQC_WALLET_PASS, or --wallet-pass")
 }
 
 // defaultSelfURL derives the address advertised to peers from the listen

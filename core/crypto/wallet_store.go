@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -32,13 +33,44 @@ type WalletFile struct {
 }
 
 const (
-	walletVersion  = 1
-	argon2Time     = 3
-	argon2Memory   = 64 * 1024 // 64 MB
-	argon2Threads  = 4
-	argon2KeyLen   = 32 // AES-256
-	saltSize       = 32
+	walletVersion = 1
+	argon2Time    = 3
+	argon2Memory  = 64 * 1024 // 64 MB
+	argon2Threads = 4
+	argon2KeyLen  = 32 // AES-256
+	saltSize      = 32
+
+	// Floors for the KDF parameters read back from a wallet file. The params
+	// are stored per-file so they can be raised over time, but without a floor
+	// anyone who can rewrite the file could drop them to time=1, memory=8 and
+	// turn an offline guess at the passphrase into something trivial.
+	minArgon2Time   = 1
+	minArgon2Memory = 32 * 1024 // 32 MB
+	minSaltSize     = 16
 )
+
+// CheckKeyFilePermissions refuses a secret file that other local users can
+// read. A validator key is the equivalent of a root CA key: a mode-644 wallet
+// hands the chain to anyone with a shell on the box, and it is a mistake that
+// is invisible until it is exploited.
+//
+// Windows does not expose POSIX modes through os.FileMode, so the check is
+// skipped there rather than reporting a false result.
+func CheckKeyFilePermissions(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to stat key file: %w", err)
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		return fmt.Errorf(
+			"key file %s is readable by other users (mode %04o): run 'chmod 600 %s'",
+			path, mode, path)
+	}
+	return nil
+}
 
 // SaveWallet encrypts the private key with the given password and writes
 // the wallet file to the specified path.
@@ -90,7 +122,15 @@ func SaveWallet(path string, pub *PublicKey, priv *PrivateKey, password []byte) 
 
 // LoadWallet reads a wallet file, decrypts the private key using the password,
 // and returns the public key and private key.
+//
+// On a validator this file is the chain's root of trust: whoever holds it can
+// sign blocks. It is therefore refused if other local users can read it, and
+// if its KDF parameters have been weakened below the floors above.
 func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
+	if err := CheckKeyFilePermissions(path); err != nil {
+		return nil, nil, err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read wallet file: %w", err)
@@ -102,6 +142,16 @@ func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
 	}
 	if wf.Version != walletVersion {
 		return nil, nil, fmt.Errorf("unsupported wallet version: %d", wf.Version)
+	}
+	if wf.Encrypted.Time < minArgon2Time || wf.Encrypted.Memory < minArgon2Memory {
+		return nil, nil, fmt.Errorf(
+			"wallet %s has weakened key-derivation parameters (time=%d, memory=%dKB; "+
+				"minimum is time=%d, memory=%dKB) — re-encrypt it before use",
+			path, wf.Encrypted.Time, wf.Encrypted.Memory, minArgon2Time, minArgon2Memory)
+	}
+	if len(wf.Encrypted.Salt) < minSaltSize {
+		return nil, nil, fmt.Errorf("wallet %s has a %d-byte salt, minimum is %d",
+			path, len(wf.Encrypted.Salt), minSaltSize)
 	}
 
 	// Derive decryption key using Argon2id with stored parameters
