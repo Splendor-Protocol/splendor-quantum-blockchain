@@ -38,7 +38,7 @@ console.log(session.info.address, session.network.rpcUrls);
 
 ## Why WASM inside Node?
 
-This chain uses Cloudflare circl **Dilithium mode3 (round 3)**. Pure-JS ML-DSA libraries (FIPS 204) are **not wire-compatible**. The Go WASM module guarantees signatures the node will accept.
+This chain signs with **ML-DSA-65 (NIST FIPS 204)** via Cloudflare circl, using per-purpose domain-separation context strings (`SPLENDOR-QC-TX-v1` for transactions). A generic ML-DSA library will not produce accepted signatures unless it uses the identical context and the identical Go `encoding/json` body encoding. The Go WASM module guarantees both.
 
 ```
 Your app (Node / browser)
@@ -58,10 +58,22 @@ chain: splendor-quantum-1
 ```
 
 2. `seed = SHA3-256(signature)`
-3. `Dilithium keypair = mode3.NewKeyFromSeed(seed)`
+3. `ML-DSA-65 keypair = mldsa65.NewKeyFromSeed(seed)`
 4. `SQ address = "SQ:" + hex(SHA3-256(pubkey))`
 
-Same EVM account → same PQ wallet, every time. Non-custodial: the private Dilithium key stays in WASM memory and is **zeroized** on `lock()` / `disconnect()`.
+Same EVM account → same PQ wallet, every time. Non-custodial: the private ML-DSA key stays in WASM memory and is **zeroized** on `lock()` / `disconnect()`.
+
+> ### This path is not quantum-safe
+>
+> Transactions are signed with ML-DSA-65, but the key is derived from an ECDSA
+> signature, so the account is only as strong as secp256k1. A quantum adversary
+> can recover the EVM private key from any signature that account has published,
+> replay the deterministic derivation message, and reproduce this ML-DSA key.
+>
+> `connectFromMetaMask` / `connectFromEvmPrivateKey` therefore return
+> `postQuantumSecure: false` and `keyOrigin: 'evm-derived'`, and fire the
+> `onWarning` callback. Use `connectFromSeed` with post-quantum entropy for any
+> account that holds value — it returns `postQuantumSecure: true`.
 
 **Important:** The derivation signature **is key material** (`seed = SHA3-256(sig)`). Never log it or post it to a public gateway. The `SQ:` address is **not** your MetaMask `0x` address. Funds live on the PQ address.
 

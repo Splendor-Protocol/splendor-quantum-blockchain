@@ -18,7 +18,7 @@ Machine-readable constants are exported as `PROTOCOL` / `SQDP_VERSION` from `@sp
 1. On-chain accounts MUST use addresses of the form `SQ:` + **exactly 64 hexadecimal characters** (32 bytes).
 2. Canonical form MUST use **lowercase** hex after the `SQ:` prefix (e.g. `SQ:ab12…`). Implementations MUST accept mixed-case hex and SHOULD normalize via `assertAddress`.
 3. An `SQ:` address MUST NOT be treated as interchangeable with an EVM `0x` address. Balances, nonces, and transfers live **only** on the `SQ:` identity.
-4. Address bytes = `SHA3-256(Dilithium Mode3 public key bytes)`.
+4. Address bytes = `SHA3-256(ML-DSA-65 public key bytes)` (1952-byte public key, NIST FIPS 204).
 
 ---
 
@@ -41,9 +41,17 @@ chain: splendor-quantum-1
 ```
 
 2. The user MUST authenticate via EIP-191 `personal_sign` of that message (MetaMask or local secp256k1).
-3. Dilithium seed MUST be `SHA3-256(signature_bytes)` (65-byte Ethereum-style signature).
-4. Keypair MUST be Cloudflare circl **Dilithium mode3 (round 3)** `NewKeyFromSeed(seed)`. Pure-JS ML-DSA (FIPS 204) MUST NOT be used for wire signatures — it is incompatible.
+3. The ML-DSA seed MUST be `SHA3-256(signature_bytes)` (65-byte Ethereum-style signature).
+4. Keypair MUST be Cloudflare circl **ML-DSA-65 (NIST FIPS 204)** `mldsa65.NewKeyFromSeed(seed)`.
 5. Changing the domain message is a **breaking** protocol change (new address map).
+
+> **This derivation path is NOT post-quantum secure.** The signatures it produces
+> are ML-DSA-65, but the *key* is a deterministic function of an ECDSA
+> signature. An adversary with a quantum computer can recover the secp256k1
+> private key from any signature the EVM account has ever published, recompute
+> the derivation signature, and obtain this exact ML-DSA key. Implementations
+> MUST surface this to the user (see `DeriveInfo.postQuantumSecure`) and SHOULD
+> present native seed generation as the default for accounts holding value.
 
 Exported: `DERIVATION_DOMAIN_MESSAGE`, `CHAIN_ID`.
 
