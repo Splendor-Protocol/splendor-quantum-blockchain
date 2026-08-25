@@ -40,7 +40,7 @@ IBM's quantum computers already have over 1,000 qubits. Estimates from NIST, the
 Splendor Quantum Chain is the answer. Not a patch on an existing chain. Not a compatibility layer. A fresh start — where:
 
 - **Accounts** are derived from post-quantum keys, not ECDSA
-- **Signatures** use CRYSTALS-Dilithium Mode 3 (round-3 parameter set; this is NOT the FIPS-204 / ML-DSA-65 standard), not ECDSA
+- **Signatures** use ML-DSA-65 (NIST FIPS 204), not ECDSA
 - **Hashing** uses SHA-3-256 (SHA3-256), not SHA-256, SHAKE-256, or Keccak-256
 - **Key exchange** uses CRYSTALS-Kyber (NIST FIPS 203), not ECDH
 - **Smart contracts** are signed, deployed, and called using quantum-safe operations only
@@ -253,7 +253,7 @@ The Dilithium private key is written to the secure element of a physical NFC car
 3. The app sends: `SIGN_REQUEST { hash: "sha3_hash_bytes" }` to the card via NFC
 4. The card asks the user to enter their PIN (on a card with a small keypad, or via the phone with secure PIN entry)
 5. The card's secure element runs `dilithium_sig = Dilithium.Sign(private_key, hash)` internally
-6. The card sends back: `{ signature: "3293_bytes_of_dilithium_sig" }` via NFC
+6. The card sends back: `{ signature: "3309_bytes_of_mldsa_sig" }` via NFC
 7. The app attaches the signature to the transaction and broadcasts it
 
 **The private key never touches the internet. Ever.**
@@ -392,7 +392,7 @@ The signed transaction is:
 {
   "transaction": { ...the transaction object... },
   "public_key": "base64_encoded_dilithium_public_key",
-  "signature": "base64_encoded_3293_byte_dilithium_signature"
+  "signature": "base64_encoded_3309_byte_mldsa_signature"
 }
 ```
 
@@ -680,7 +680,7 @@ Block {
         validator_addr:   SQ address (32 bytes)
     }
     block_hash:    SHA3-256(encoded_header)   // 32 bytes
-    validator_sig: Dilithium_signature         // 3293 bytes
+    validator_sig: Dilithium_signature         // 3309 bytes
     transactions:  [signed_transaction, ...]
 }
 ```
@@ -871,10 +871,10 @@ This section lists every cryptographic operation in the chain and what algorithm
 
 | Operation | Algorithm | Standard | Quantum Safety |
 |-----------|-----------|----------|----------------|
-| Account key generation | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
-| Transaction signing | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
-| Signature verification | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
-| Block signing (validator) | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
+| Account key generation | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
+| Transaction signing | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
+| Signature verification | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
+| Block signing (validator) | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
 | Address derivation hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
 | Block header hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
 | Transaction hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
@@ -884,7 +884,7 @@ This section lists every cryptographic operation in the chain and what algorithm
 | Key derivation (from password) | Argon2id | RFC 9106 | ✅ Memory-hard, quantum-safe |
 | Encrypted P2P communication | Kyber-1024 + AES-256 | NIST FIPS 203 | ✅ Post-quantum |
 | Smart contract hash (keccak replacement) | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
-| Payment signing (X402) | CRYSTALS-Dilithium Mode 3 | CRYSTALS-Dilithium round-3 (NOT FIPS-204 ML-DSA) | ✅ Post-quantum |
+| Payment signing (X402) | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
 
 **What is NOT used:**
 - ❌ ECDSA (secp256k1 or any curve) — no quantum safety

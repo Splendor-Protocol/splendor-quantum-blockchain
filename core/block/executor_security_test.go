@@ -154,6 +154,134 @@ func TestExecuteBlockAcceptsValidBlockAndAdvancesHead(t *testing.T) {
 	}
 }
 
+// Crash recovery: if a block's body + chain head were persisted but the node
+// crashed before the state commit, boot reconciliation must replay the stored
+// block so state catches up to the head — instead of wedging on a nonce mismatch.
+func TestReconcileReplaysHeadAheadOfState(t *testing.T) {
+	pub, priv, _ := qcrypto.GenerateKeypair()
+	from := qcrypto.DeriveAddress(pub)
+	to := testAddr(0x77)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	vaddr := qcrypto.DeriveAddress(vpub)
+
+	// Producer A: fund, produce a 3-block chain.
+	exA, sdbA := newTestExecutor(t)
+	defer exA.Close()
+	defer sdbA.Close()
+	fund(t, sdbA, from, 1_000_000)
+	var blocks []*types.Block
+	var prev [32]byte
+	for h := uint64(1); h <= 3; h++ {
+		tx := signedTransfer(t, from, priv, to, 100, h-1)
+		b, err := exA.ProduceBlock([]*types.Transaction{tx}, vaddr, vpub.Bytes(), vpriv, prev, h)
+		if err != nil {
+			t.Fatalf("produce %d: %v", h, err)
+		}
+		blocks = append(blocks, b)
+		prev = b.Hash
+	}
+
+	// Follower B: apply blocks 1..2 cleanly.
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+	fund(t, sdbB, from, 1_000_000)
+	for i := 0; i < 2; i++ {
+		if err := exB.ExecuteBlock(blocks[i]); err != nil {
+			t.Fatalf("apply block %d: %v", i+1, err)
+		}
+	}
+
+	// Simulate the crash window: block 3's body + head are durably stored, but
+	// the state commit never happened (head=3, state=2).
+	if err := exB.storeBlock(blocks[2]); err != nil {
+		t.Fatalf("storeBlock: %v", err)
+	}
+	if h, _ := exB.LatestHeight(); h != 3 {
+		t.Fatalf("chain head = %d, want 3", h)
+	}
+	if sh, ok := sdbB.AppliedHeight(); !ok || sh != 2 {
+		t.Fatalf("state height = %d ok=%v, want 2", sh, ok)
+	}
+
+	// Reconcile must replay block 3 and land exactly on A's height-3 state.
+	if err := exB.ReconcileState(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if sh, _ := sdbB.AppliedHeight(); sh != 3 {
+		t.Fatalf("state height after reconcile = %d, want 3", sh)
+	}
+	aRoot, _ := sdbA.StateRoot()
+	bRoot, _ := sdbB.StateRoot()
+	if aRoot != bRoot {
+		t.Fatalf("state root mismatch after reconcile: A=%x B=%x", aRoot[:8], bRoot[:8])
+	}
+	aBal, _ := sdbA.GetBalance(from)
+	bBal, _ := sdbB.GetBalance(from)
+	if aBal.Cmp(bBal) != 0 {
+		t.Fatalf("sender balance mismatch: A=%s B=%s", aBal, bBal)
+	}
+}
+
+// A value-bearing TxCall must MOVE the value sender->contract, never BURN it.
+// Before the fix execCall debited tx.Amount from the sender and never credited
+// tx.To, destroying the coins out of total supply on every value-bearing call.
+func TestExecCallConservesCallValue(t *testing.T) {
+	ex, sdb := newTestExecutor(t)
+	defer ex.Close()
+	defer sdb.Close()
+
+	// Install a trivial STOP contract at `to` so the call succeeds (non-reverted).
+	code := []byte{0x00} // OpSTOP
+	codeHash := qcrypto.Hash32(code)
+	sdb.SetCode(codeHash, code)
+	to := testAddr(0x22)
+	cacc := types.NewAccount(to)
+	cacc.IsContract = true
+	cacc.CodeHash = codeHash
+	sdb.SetAccount(cacc)
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+
+	pub, priv, _ := qcrypto.GenerateKeypair()
+	from := qcrypto.DeriveAddress(pub)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	vaddr := qcrypto.DeriveAddress(vpub)
+
+	const start = int64(1_000_000)
+	const amount = int64(50_000)
+	fund(t, sdb, from, start)
+
+	tx := types.NewCall(from, to, nil, big.NewInt(amount), big.NewInt(testFee), 0, time.Now().Unix())
+	if err := tx.Sign(priv, true); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := ex.ProduceBlock([]*types.Transaction{tx}, vaddr, vpub.Bytes(), vpriv, [32]byte{}, 1); err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+
+	fromBal, _ := sdb.GetBalance(from)
+	toBal, _ := sdb.GetBalance(to)
+	vBal, _ := sdb.GetBalance(vaddr)
+
+	if toBal.Cmp(big.NewInt(amount)) != 0 {
+		t.Fatalf("contract balance = %s, want %d (call value burned, not credited)", toBal, amount)
+	}
+	if fromBal.Cmp(big.NewInt(start-amount-testFee)) != 0 {
+		t.Fatalf("sender balance = %s, want %d", fromBal, start-amount-testFee)
+	}
+	if vBal.Cmp(big.NewInt(testFee)) != 0 {
+		t.Fatalf("validator fee = %s, want %d", vBal, testFee)
+	}
+	// Conservation: nothing minted, nothing burned.
+	total := new(big.Int).Add(fromBal, toBal)
+	total.Add(total, vBal)
+	if total.Cmp(big.NewInt(start)) != 0 {
+		t.Fatalf("total supply = %s, want %d (value minted or burned)", total, start)
+	}
+}
+
 // A block that MUTATES accounts but declares a wrong state root must be rejected
 // AND leave committed state untouched. Uses a real transfer so the pre-fix
 // commit-then-check code would have persisted the -100 before rejecting.

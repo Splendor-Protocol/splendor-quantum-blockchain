@@ -1,7 +1,7 @@
 // Package consensus implements the single-validator consensus for Phase 1.
 // The validator continuously pulls transactions from the mempool,
 // produces blocks at a configured interval, and broadcasts them.
-// All block and validator messages are signed with Dilithium Mode 3.
+// All block and validator messages are signed with ML-DSA-65.
 package consensus
 
 import (

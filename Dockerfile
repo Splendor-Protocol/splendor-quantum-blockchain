@@ -1,5 +1,6 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────
-FROM golang:1.23-alpine AS builder
+# go 1.25+ required: circl v1.6.5 (FIPS-204 ML-DSA-65) sets go 1.25.0 in its module.
+FROM golang:1.25-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git gcc musl-dev

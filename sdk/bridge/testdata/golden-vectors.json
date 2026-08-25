@@ -1,9 +1,10 @@
 {
-  "description": "Cross-language golden vectors for SQDP-1 / @splendor/pq-bridge. TS Vitest and Go TestDeriveFromSeedStable must stay aligned on domain message + minFee; seed→address pair is locked by WASM session tests.",
+  "description": "Cross-language golden vectors for SQDP-1 / @splendor/pq-bridge. Signature scheme: ML-DSA-65 (NIST FIPS 204). TS Vitest and Go TestDeriveFromSeedStable must stay aligned on domain message + minFee; seed→address pair is locked by WASM session tests (rebuild sqc_signer.wasm from the Go signer after the ML-DSA migration).",
+  "sigScheme": "ML-DSA-65 (FIPS-204)",
   "domainMessage": "Splendor Quantum Chain\nKey derivation v1\nchain: splendor-quantum-1",
   "chainId": "splendor-quantum-1",
   "minFee": "1000",
   "seedHex": "0101010101010101010101010101010101010101010101010101010101010101",
-  "address": "SQ:c3ee306a4d69ecdaf2a43837ae475a54857578533bb919740a5e4dfe9579e44e",
+  "address": "SQ:307f4559431e680933fc1c62503f050140e5740068248d7374461e0311a2728e",
   "goCrossCheck": "signer.TestDomainMessageConstant + wasm-session golden seed"
 }

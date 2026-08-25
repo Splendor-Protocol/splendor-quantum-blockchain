@@ -1,10 +1,21 @@
 // Package state manages the Splendor Quantum Chain account state.
-// Accounts are stored in LevelDB. The state root is a SHA3-256 hash of
-// the sorted set of all account states — a simple but correct Merkle commitment.
-// A full Sparse Merkle Tree is planned for Phase 2.
+// Accounts, contract code, contract storage and X402 nonces are stored in
+// LevelDB. The state root is a binary Merkle commitment over the ENTIRE state
+// (every acc:/code:/store:/x402nonce: leaf), not just accounts — so contract
+// storage divergence can no longer hide behind an accounts-only root. Leaves are
+// length-prefixed and domain-separated before hashing, so distinct (key,value)
+// pairs can never collide through concatenation ambiguity.
+//
+// The root is computed from an in-memory leaf-hash index that is populated once
+// at open and kept in sync exclusively through Commit(), so it can never drift
+// from what is durably on disk. All writes land on an in-memory pending layer
+// (dirty accounts, code cache, raw storage/nonce overlay) and are committed
+// atomically; the same layer is captured by Snapshot()/RevertToSnapshot() so a
+// failed transaction — including its storage writes — leaves no residue.
 package state
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -12,7 +23,6 @@ import (
 	"sync"
 
 	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/syndtr/goleveldb/leveldb/util"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -20,11 +30,20 @@ import (
 
 const (
 	// Key prefixes for LevelDB namespacing
-	prefixAccount  = "acc:"
-	prefixCode     = "code:"
-	prefixStorage  = "store:"
+	prefixAccount   = "acc:"
+	prefixCode      = "code:"
+	prefixStorage   = "store:"
 	prefixX402Nonce = "x402nonce:"
+
+	// prefixMeta namespaces node-local bookkeeping (e.g. the applied-height
+	// marker) that is deliberately EXCLUDED from the state root — it is not
+	// consensus state and must not affect the root every node agrees on.
+	prefixMeta     = "meta:"
+	keyStateHeight = "meta:height"
 )
+
+// stateEmptyRoot is the state root of a state with no leaves at all.
+var stateEmptyRoot = qcrypto.Hash32([]byte("splendor-quantum:empty-state-root:v1"))
 
 // StateDB is the account state database.
 // It wraps LevelDB and provides account read/write operations.
@@ -42,8 +61,35 @@ type StateDB struct {
 	// In-memory contract code store (keyed by code hash)
 	codeCache map[[32]byte][]byte
 
-	// Active snapshots for rollback support (snapshot ID → snapshot data)
-	snapshots map[uint64]*StateSnapshot
+	// In-memory pending raw writes (contract storage slots + X402 nonces),
+	// keyed by their full LevelDB key. These used to be written straight to
+	// LevelDB mid-execution, which bypassed both the snapshot/revert path and
+	// the state root. They now stage here and commit atomically with everything
+	// else.
+	pendingRaw map[string][]byte
+
+	// leaves is the in-memory committed leaf-hash index: LevelDB key -> SHA3-256
+	// of the committed value. It mirrors the durable state and is the sole input
+	// to the Merkle state root. Populated at open, mutated only by Commit().
+	leaves map[string][32]byte
+
+	// appliedHeight is the block height the committed state reflects (persisted
+	// under meta: alongside the state batch). heightKnown is false until the
+	// first CommitWithHeight. Used by boot reconciliation to detect and replay a
+	// block whose body was persisted before its state commit landed.
+	appliedHeight uint64
+	heightKnown   bool
+
+	// journal is an undo-log of every pending mutation since the block started.
+	// Snapshot() records the journal length (O(1)); RevertToSnapshot() replays
+	// the tail undos back to that mark (O(changes-since-mark)). This replaces the
+	// old copy-the-whole-dirty-set-per-snapshot scheme, which was O(N^2) across a
+	// block (a per-tx snapshot deep-copied every account dirtied so far, each with
+	// its ~2 KiB pubkey) and capped block throughput far below the verify bound.
+	journal []func()
+
+	// snapshots maps a snapshot ID to its journal-length mark.
+	snapshots map[uint64]int
 }
 
 // NewStateDB opens (or creates) the state database at the given path.
@@ -52,12 +98,44 @@ func NewStateDB(path string) (*StateDB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open state database at %s: %w", path, err)
 	}
-	return &StateDB{
-		db:        db,
-		dirty:     make(map[qcrypto.Address]*types.Account),
-		codeCache: make(map[[32]byte][]byte),
-		snapshots: make(map[uint64]*StateSnapshot),
-	}, nil
+	s := &StateDB{
+		db:         db,
+		dirty:      make(map[qcrypto.Address]*types.Account),
+		codeCache:  make(map[[32]byte][]byte),
+		pendingRaw: make(map[string][]byte),
+		leaves:     make(map[string][32]byte),
+		snapshots:  make(map[uint64]int),
+	}
+	if err := s.loadLeaves(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to load state leaf index: %w", err)
+	}
+	return s, nil
+}
+
+// loadLeaves scans the committed state once and builds the in-memory leaf-hash
+// index the Merkle root is computed from. Every key/value in the state DB is a
+// state leaf (acc:/code:/store:/x402nonce:), so a full scan is exactly the leaf
+// set.
+func (s *StateDB) loadLeaves() error {
+	iter := s.db.NewIterator(nil, nil)
+	defer iter.Release()
+	for iter.Next() {
+		k := iter.Key()
+		// meta: keys are node-local bookkeeping, not consensus leaves.
+		if len(k) >= len(prefixMeta) && string(k[:len(prefixMeta)]) == prefixMeta {
+			if string(k) == keyStateHeight {
+				var h uint64
+				if json.Unmarshal(iter.Value(), &h) == nil {
+					s.appliedHeight = h
+					s.heightKnown = true
+				}
+			}
+			continue
+		}
+		s.leaves[string(k)] = qcrypto.Hash32(iter.Value())
+	}
+	return iter.Error()
 }
 
 // Close closes the underlying LevelDB.
@@ -101,7 +179,16 @@ func (s *StateDB) GetAccount(addr qcrypto.Address) (*types.Account, error) {
 func (s *StateDB) SetAccount(acc *types.Account) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.dirty[acc.Address] = acc.Copy()
+	addr := acc.Address
+	prev, had := s.dirty[addr]
+	s.journal = append(s.journal, func() {
+		if had {
+			s.dirty[addr] = prev
+		} else {
+			delete(s.dirty, addr)
+		}
+	})
+	s.dirty[addr] = acc.Copy()
 }
 
 // GetBalance returns the SPLD balance of an account (in smallest unit).
@@ -174,6 +261,14 @@ func (s *StateDB) Transfer(from, to qcrypto.Address, amount *big.Int) error {
 func (s *StateDB) SetCode(codeHash [32]byte, code []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	prev, had := s.codeCache[codeHash]
+	s.journal = append(s.journal, func() {
+		if had {
+			s.codeCache[codeHash] = prev
+		} else {
+			delete(s.codeCache, codeHash)
+		}
+	})
 	s.codeCache[codeHash] = code
 }
 
@@ -197,38 +292,91 @@ func (s *StateDB) GetCode(codeHash [32]byte) ([]byte, error) {
 	return data, nil
 }
 
-// SetStorageValue stores a contract storage slot value.
-// key: SHA3-256(contract_address + slot_key)
-func (s *StateDB) SetStorageValue(contract qcrypto.Address, slot [32]byte, value []byte) error {
-	k := append([]byte(prefixStorage+contract.String()+":"), slot[:]...)
-	return s.db.Put(k, value, nil)
+// storageKey builds the full LevelDB key for a contract storage slot.
+func storageKey(contract qcrypto.Address, slot [32]byte) string {
+	var b []byte
+	b = append(b, prefixStorage...)
+	b = append(b, contract.String()...)
+	b = append(b, ':')
+	b = append(b, slot[:]...)
+	return string(b)
 }
 
-// GetStorageValue retrieves a contract storage slot value.
+// SetStorageValue stages a contract storage slot value on the pending layer.
+// It is NOT written to disk (and NOT folded into the state root) until Commit();
+// this keeps it covered by Snapshot()/RevertToSnapshot() so a failed tx's storage
+// writes are rolled back instead of leaving residue that silently forks nodes.
+func (s *StateDB) SetStorageValue(contract qcrypto.Address, slot [32]byte, value []byte) error {
+	k := storageKey(contract, slot)
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.journalRaw(k)
+	s.pendingRaw[k] = cp
+	return nil
+}
+
+// journalRaw records an undo for a pendingRaw key. Caller holds s.mu.
+func (s *StateDB) journalRaw(k string) {
+	prev, had := s.pendingRaw[k]
+	s.journal = append(s.journal, func() {
+		if had {
+			s.pendingRaw[k] = prev
+		} else {
+			delete(s.pendingRaw, k)
+		}
+	})
+}
+
+// GetStorageValue retrieves a contract storage slot value (pending overlay first).
 func (s *StateDB) GetStorageValue(contract qcrypto.Address, slot [32]byte) ([]byte, error) {
-	k := append([]byte(prefixStorage+contract.String()+":"), slot[:]...)
-	data, err := s.db.Get(k, nil)
+	k := storageKey(contract, slot)
+
+	s.mu.RLock()
+	if v, ok := s.pendingRaw[k]; ok {
+		cp := make([]byte, len(v))
+		copy(cp, v)
+		s.mu.RUnlock()
+		return cp, nil
+	}
+	s.mu.RUnlock()
+
+	data, err := s.db.Get([]byte(k), nil)
 	if err == leveldb.ErrNotFound {
 		return nil, nil
 	}
 	return data, err
 }
 
-// MarkX402NonceUsed marks an X402 payment nonce as used.
+// MarkX402NonceUsed stages an X402 payment nonce as used on the pending layer.
 // key = SHA3-256(from_address + nonce_bytes)
 func (s *StateDB) MarkX402NonceUsed(nonceKey [32]byte, blockHeight uint64) error {
-	k := append([]byte(prefixX402Nonce), nonceKey[:]...)
+	k := prefixX402Nonce + string(nonceKey[:])
 	val, err := json.Marshal(blockHeight)
 	if err != nil {
 		return err
 	}
-	return s.db.Put(k, val, nil)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.journalRaw(k)
+	s.pendingRaw[k] = val
+	return nil
 }
 
-// IsX402NonceUsed returns true if the X402 payment nonce has already been used.
+// IsX402NonceUsed returns true if the X402 payment nonce has already been used
+// (checking the pending overlay first, then committed state).
 func (s *StateDB) IsX402NonceUsed(nonceKey [32]byte) (bool, error) {
-	k := append([]byte(prefixX402Nonce), nonceKey[:]...)
-	_, err := s.db.Get(k, nil)
+	k := prefixX402Nonce + string(nonceKey[:])
+
+	s.mu.RLock()
+	if _, ok := s.pendingRaw[k]; ok {
+		s.mu.RUnlock()
+		return true, nil
+	}
+	s.mu.RUnlock()
+
+	_, err := s.db.Get([]byte(k), nil)
 	if err == leveldb.ErrNotFound {
 		return false, nil
 	}
@@ -238,149 +386,206 @@ func (s *StateDB) IsX402NonceUsed(nonceKey [32]byte) (bool, error) {
 	return true, nil
 }
 
-// Commit writes all pending (dirty) changes to LevelDB atomically.
-// It also stores contract code from the cache.
-// Returns the new state root after the commit.
+// Commit writes all pending changes (accounts, code, storage/nonce overlay) to
+// LevelDB in a single atomic batch and returns the new Merkle state root. See
+// commit() for the durability contract.
 func (s *StateDB) Commit() ([32]byte, error) {
+	return s.commit(false, 0)
+}
+
+// CommitWithHeight behaves like Commit but ALSO records, in the SAME atomic
+// batch, the block height this state now reflects (under the meta: namespace,
+// which is excluded from the state root). On boot the node compares this marker
+// against the chain head and replays any block the head advanced past before the
+// state commit landed — so a crash between persisting the block and persisting
+// the state can no longer wedge the chain.
+func (s *StateDB) CommitWithHeight(height uint64) ([32]byte, error) {
+	return s.commit(true, height)
+}
+
+// commit stages every pending write into one LevelDB batch and, only AFTER the
+// durable write succeeds, advances the in-memory leaf index and clears the
+// pending layer. Mutating the index only on success means a failed write can
+// never leave the in-memory root ahead of what is on disk.
+func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	batch := new(leveldb.Batch)
 
-	// Write dirty accounts
+	type leafUpd struct {
+		key  string
+		hash [32]byte
+	}
+	updates := make([]leafUpd, 0, len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
+
+	// Dirty accounts.
 	for addr, acc := range s.dirty {
 		data, err := json.Marshal(acc)
 		if err != nil {
 			return [32]byte{}, fmt.Errorf("failed to marshal account %s: %w", addr, err)
 		}
-		key := []byte(prefixAccount + addr.String())
-		batch.Put(key, data)
+		key := prefixAccount + addr.String()
+		batch.Put([]byte(key), data)
+		updates = append(updates, leafUpd{key, qcrypto.Hash32(data)})
 	}
 
-	// Write code cache
+	// Contract code.
 	for hash, code := range s.codeCache {
-		key := append([]byte(prefixCode), hash[:]...)
-		batch.Put(key, code)
+		key := prefixCode + string(hash[:])
+		batch.Put([]byte(key), code)
+		updates = append(updates, leafUpd{key, qcrypto.Hash32(code)})
+	}
+
+	// Raw storage + X402 nonce overlay.
+	for key, val := range s.pendingRaw {
+		batch.Put([]byte(key), val)
+		updates = append(updates, leafUpd{key, qcrypto.Hash32(val)})
+	}
+
+	// Height marker — meta: namespace, NOT a state leaf.
+	if setHeight {
+		hb, err := json.Marshal(height)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("marshal height marker: %w", err)
+		}
+		batch.Put([]byte(keyStateHeight), hb)
 	}
 
 	if err := s.db.Write(batch, nil); err != nil {
 		return [32]byte{}, fmt.Errorf("state commit failed: %w", err)
 	}
 
-	// Clear dirty caches
+	// Durable — now advance the in-memory index and clear the pending layer.
+	for _, u := range updates {
+		s.leaves[u.key] = u.hash
+	}
+	if setHeight {
+		s.appliedHeight = height
+		s.heightKnown = true
+	}
 	s.dirty = make(map[qcrypto.Address]*types.Account)
 	s.codeCache = make(map[[32]byte][]byte)
+	s.pendingRaw = make(map[string][]byte)
+	s.journal = nil
+	s.snapshots = make(map[uint64]int)
 
-	// Compute and return state root
-	return s.computeStateRoot()
+	return merkleRoot(s.leaves), nil
 }
 
-// computeStateRoot computes a SHA3-256 commitment over all account states.
-// It reads all accounts from LevelDB, sorts by address, and hashes them.
-func (s *StateDB) computeStateRoot() ([32]byte, error) {
-	iter := s.db.NewIterator(util.BytesPrefix([]byte(prefixAccount)), nil)
-	defer iter.Release()
-
-	type entry struct {
-		key string
-		val []byte
-	}
-	var entries []entry
-
-	for iter.Next() {
-		k := string(iter.Key())
-		v := make([]byte, len(iter.Value()))
-		copy(v, iter.Value())
-		entries = append(entries, entry{key: k, val: v})
-	}
-	if err := iter.Error(); err != nil {
-		return [32]byte{}, fmt.Errorf("state root iteration error: %w", err)
-	}
-
-	// Sort by key for determinism
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].key < entries[j].key
-	})
-
-	// Hash all entries together: SHA3-256(key1+val1+key2+val2+...)
-	var combined []byte
-	for _, e := range entries {
-		combined = append(combined, []byte(e.key)...)
-		combined = append(combined, e.val...)
-	}
-	return qcrypto.Hash32(combined), nil
+// AppliedHeight returns the block height the committed state reflects, and
+// ok=false if no height marker has been written yet (e.g. a fresh DB or a node
+// whose genesis state was applied before height markers existed).
+func (s *StateDB) AppliedHeight() (uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appliedHeight, s.heightKnown
 }
 
-// StateRoot returns the current state root without committing.
+// leafDigest hashes one state leaf with a length-prefixed, domain-separated
+// preimage so distinct (key,value) pairs can never collide by concatenation
+// ambiguity (the previous flat concat of key+value was ambiguous).
+func leafDigest(key string, valueHash [32]byte) [32]byte {
+	buf := make([]byte, 0, 1+8+len(key)+32)
+	buf = append(buf, 0x00) // leaf domain tag
+	var lb [8]byte
+	binary.BigEndian.PutUint64(lb[:], uint64(len(key)))
+	buf = append(buf, lb[:]...)
+	buf = append(buf, key...)
+	buf = append(buf, valueHash[:]...)
+	return qcrypto.Hash32(buf)
+}
+
+// internalHash hashes two child digests into their parent, domain-separated from
+// leaves so an internal node can never be forged to equal a leaf.
+func internalHash(l, r [32]byte) [32]byte {
+	var buf [1 + 32 + 32]byte
+	buf[0] = 0x01 // internal domain tag
+	copy(buf[1:], l[:])
+	copy(buf[33:], r[:])
+	return qcrypto.Hash32(buf[:])
+}
+
+// merkleRoot builds a deterministic binary Merkle root over the leaf set (keyed
+// by state key, valued by the value hash). Keys are sorted; an odd node at any
+// level is carried up unchanged (never duplicated, which would be malleable).
+func merkleRoot(leaves map[string][32]byte) [32]byte {
+	if len(leaves) == 0 {
+		return stateEmptyRoot
+	}
+	keys := make([]string, 0, len(leaves))
+	for k := range leaves {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	level := make([][32]byte, len(keys))
+	for i, k := range keys {
+		level[i] = leafDigest(k, leaves[k])
+	}
+	for len(level) > 1 {
+		next := make([][32]byte, 0, (len(level)+1)/2)
+		for i := 0; i < len(level); i += 2 {
+			if i+1 == len(level) {
+				next = append(next, level[i]) // carry odd node up unchanged
+				break
+			}
+			next = append(next, internalHash(level[i], level[i+1]))
+		}
+		level = next
+	}
+	return level[0]
+}
+
+// StateRoot returns the current COMMITTED state root (pending writes excluded).
 func (s *StateDB) StateRoot() ([32]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.computeStateRoot()
+	return merkleRoot(s.leaves), nil
 }
 
 // PendingStateRoot computes the state root that Commit() WOULD produce, without
-// persisting anything to disk. It overlays the in-memory dirty accounts on top of
-// the committed account set and hashes them exactly as computeStateRoot does
-// (same key ordering, same per-account JSON encoding Commit writes).
+// persisting anything. It overlays the pending layer (dirty accounts, code cache,
+// raw storage/nonce writes) onto a copy of the committed leaf index and hashes it
+// with the identical Merkle construction Commit uses — so the two roots are equal
+// by construction whenever the same writes are pending.
 //
 // This lets a caller verify a block's declared state root BEFORE durably
-// committing: on a mismatch it can DiscardPending() and leave no residue on disk.
-// The previous flow committed first and compared after, so a rejected block's
-// (corrupt) account writes were already persisted and irreversible.
+// committing: on a mismatch it can DiscardPending() and leave nothing on disk.
 func (s *StateDB) PendingStateRoot() ([32]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	entries := make(map[string][]byte)
-
-	iter := s.db.NewIterator(util.BytesPrefix([]byte(prefixAccount)), nil)
-	for iter.Next() {
-		k := string(iter.Key())
-		v := make([]byte, len(iter.Value()))
-		copy(v, iter.Value())
-		entries[k] = v
+	eff := make(map[string][32]byte, len(s.leaves)+len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
+	for k, v := range s.leaves {
+		eff[k] = v
 	}
-	iter.Release()
-	if err := iter.Error(); err != nil {
-		return [32]byte{}, fmt.Errorf("pending state root iteration error: %w", err)
-	}
-
-	// Overlay dirty accounts using the identical marshaling Commit() applies, so
-	// the resulting bytes match what would land in LevelDB.
 	for addr, acc := range s.dirty {
 		data, err := json.Marshal(acc)
 		if err != nil {
 			return [32]byte{}, fmt.Errorf("failed to marshal account %s: %w", addr, err)
 		}
-		entries[prefixAccount+addr.String()] = data
+		eff[prefixAccount+addr.String()] = qcrypto.Hash32(data)
 	}
-
-	keys := make([]string, 0, len(entries))
-	for k := range entries {
-		keys = append(keys, k)
+	for hash, code := range s.codeCache {
+		eff[prefixCode+string(hash[:])] = qcrypto.Hash32(code)
 	}
-	sort.Strings(keys)
-
-	var combined []byte
-	for _, k := range keys {
-		combined = append(combined, []byte(k)...)
-		combined = append(combined, entries[k]...)
+	for k, v := range s.pendingRaw {
+		eff[k] = qcrypto.Hash32(v)
 	}
-	return qcrypto.Hash32(combined), nil
+	return merkleRoot(eff), nil
 }
 
-// DiscardPending drops all uncommitted (dirty) account and code writes without
-// persisting them. Used to abandon a block whose computed state root does not
-// match its header, so a rejected block leaves the committed state untouched.
-//
-// NOTE: contract storage slots (SetStorageValue) and X402 nonces are written
-// straight to LevelDB during execution and are NOT covered by this rollback.
-// Callers therefore run the block-linkage and validator-signature checks BEFORE
-// executing transactions, so a block that would fail the state-root comparison
-// only ever originates from the trusted validator itself.
+// DiscardPending drops all uncommitted writes (accounts, code, storage/nonce)
+// without persisting them. Used to abandon a block whose computed state root does
+// not match its header, so a rejected block leaves committed state untouched. The
+// committed leaf index is not touched (it only advances on Commit).
 func (s *StateDB) DiscardPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dirty = make(map[qcrypto.Address]*types.Account)
 	s.codeCache = make(map[[32]byte][]byte)
+	s.pendingRaw = make(map[string][]byte)
+	s.journal = nil
+	s.snapshots = make(map[uint64]int)
 }

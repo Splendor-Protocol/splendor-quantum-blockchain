@@ -42,7 +42,7 @@ type Block struct {
 	// SHA3-256 of the serialised BlockHeader. This is the canonical block ID.
 	Hash [32]byte `json:"hash"`
 
-	// Dilithium Mode 3 signature (3293 bytes) by the validator over the block hash.
+	// ML-DSA-65 signature (3309 bytes) by the validator over the block hash.
 	ValidatorSignature []byte `json:"validator_signature"`
 
 	// ValidatorPubKey is the 1952-byte Dilithium public key of the validator.

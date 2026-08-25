@@ -1,12 +1,12 @@
 // Package crypto provides all cryptographic primitives for Splendor Quantum Chain.
 // Every operation uses post-quantum algorithms only.
 //
-// Signing:     CRYSTALS-Dilithium Mode 3 (CIRCL round-3 parameter set, "Dilithium3").
-//              NOTE: this is NOT NIST FIPS 204 / ML-DSA-65. ML-DSA is a distinct,
-//              domain-separated scheme (different signatures, not interoperable);
-//              CIRCL v1.3.8 ships only the round-3 dilithium/mode3 API. Both are
-//              post-quantum lattice signatures — this is a standards/naming
-//              distinction, not a weaker algorithm.
+// Signing:     ML-DSA-65 (NIST FIPS 204, CIRCL sign/mldsa/mldsa65). This is the
+//              standardized post-quantum lattice signature. Signatures use an
+//              empty context string and deterministic (hedged=false) signing so a
+//              given (key, message) always yields the same signature — required
+//              for consensus reproducibility. NOT interoperable with the earlier
+//              round-3 CRYSTALS-Dilithium mode3 (a fresh genesis is required).
 // Hashing:     SHA-3-256 (NIST FIPS 202)
 // Key storage: AES-256-GCM + Argon2id
 // NO ECDSA. NO SHA-256. NO KECCAK.
@@ -18,15 +18,20 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cloudflare/circl/sign/dilithium/mode3"
+	mldsa65 "github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"golang.org/x/crypto/sha3"
 )
 
+// sigCtx is the ML-DSA context string. Empty and constant across the whole
+// chain — every signer and verifier must use the identical context or
+// signatures will not validate.
+var sigCtx []byte = nil
+
 const (
-	// Dilithium Mode 3 (CIRCL round-3 "Dilithium3", NOT FIPS-204 ML-DSA-65) — sizes in bytes
-	PublicKeySize  = mode3.PublicKeySize  // 1952
-	PrivateKeySize = mode3.PrivateKeySize // 4032
-	SignatureSize  = mode3.SignatureSize  // 3293
+	// ML-DSA-65 (NIST FIPS 204) — sizes in bytes
+	PublicKeySize  = mldsa65.PublicKeySize  // 1952
+	PrivateKeySize = mldsa65.PrivateKeySize // 4032
+	SignatureSize  = mldsa65.SignatureSize  // 3309
 
 	// SQ addresses are 32 bytes derived from SHA3-256(public_key)
 	AddressSize = 32
@@ -35,22 +40,22 @@ const (
 	AddressPrefix = "SQ:"
 )
 
-// PublicKey is a Dilithium Mode 3 public key.
+// PublicKey is an ML-DSA-65 (FIPS-204) public key.
 type PublicKey struct {
-	k *mode3.PublicKey
+	k *mldsa65.PublicKey
 }
 
-// PrivateKey is a Dilithium Mode 3 private key.
+// PrivateKey is an ML-DSA-65 (FIPS-204) private key.
 type PrivateKey struct {
-	k *mode3.PrivateKey
+	k *mldsa65.PrivateKey
 }
 
 // Address is a 32-byte quantum-safe blockchain address.
 type Address [AddressSize]byte
 
-// GenerateKeypair generates a new Dilithium Mode 3 keypair.
+// GenerateKeypair generates a new ML-DSA-65 (FIPS-204) keypair.
 func GenerateKeypair() (*PublicKey, *PrivateKey, error) {
-	pub, priv, err := mode3.GenerateKey(rand.Reader)
+	pub, priv, err := mldsa65.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dilithium keygen: %w", err)
 	}
@@ -62,7 +67,7 @@ func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
 	if len(b) != PublicKeySize {
 		return nil, fmt.Errorf("pubkey: want %d bytes, got %d", PublicKeySize, len(b))
 	}
-	pub := new(mode3.PublicKey)
+	pub := new(mldsa65.PublicKey)
 	if err := pub.UnmarshalBinary(b); err != nil {
 		return nil, fmt.Errorf("pubkey unmarshal: %w", err)
 	}
@@ -74,7 +79,7 @@ func PrivateKeyFromBytes(b []byte) (*PrivateKey, error) {
 	if len(b) != PrivateKeySize {
 		return nil, fmt.Errorf("privkey: want %d bytes, got %d", PrivateKeySize, len(b))
 	}
-	priv := new(mode3.PrivateKey)
+	priv := new(mldsa65.PrivateKey)
 	if err := priv.UnmarshalBinary(b); err != nil {
 		return nil, fmt.Errorf("privkey unmarshal: %w", err)
 	}
@@ -93,41 +98,45 @@ func (sk *PrivateKey) Bytes() []byte {
 	return b
 }
 
-// Zeroize overwrites Dilithium private key material then drops the pointer.
+// Zeroize overwrites ML-DSA private key material then drops the pointer.
 // Best-effort: replaces key bytes with a deterministic zero-seed key, then nils.
 func (sk *PrivateKey) Zeroize() {
 	if sk == nil || sk.k == nil {
 		return
 	}
 	var zeroSeed [32]byte
-	_, junk := mode3.NewKeyFromSeed(&zeroSeed)
+	_, junk := mldsa65.NewKeyFromSeed(&zeroSeed)
 	*sk.k = *junk
 	sk.k = nil
 }
 
 // Public derives the public key from a private key.
 func (sk *PrivateKey) Public() *PublicKey {
-	pub := sk.k.Public().(*mode3.PublicKey)
+	pub := sk.k.Public().(*mldsa65.PublicKey)
 	return &PublicKey{k: pub}
 }
 
-// Sign produces a 3293-byte Dilithium Mode 3 signature over the message.
-// Uses mode3.SignTo which writes into a pre-allocated buffer.
+// Sign produces a 3309-byte ML-DSA-65 (FIPS-204) signature over the message.
+// Signing is DETERMINISTIC (randomized=false) with the chain-wide empty context,
+// so a given (key, message) always yields the same signature — consensus nodes
+// must reproduce validator signatures bit-for-bit.
 func Sign(sk *PrivateKey, message []byte) ([]byte, error) {
 	if sk == nil {
 		return nil, errors.New("nil private key")
 	}
 	sig := make([]byte, SignatureSize)
-	mode3.SignTo(sk.k, message, sig)
+	if err := mldsa65.SignTo(sk.k, message, sigCtx, false, sig); err != nil {
+		return nil, fmt.Errorf("ml-dsa sign: %w", err)
+	}
 	return sig, nil
 }
 
-// Verify checks a Dilithium Mode 3 signature.
+// Verify checks an ML-DSA-65 (FIPS-204) signature over the message.
 func Verify(pk *PublicKey, message []byte, sig []byte) bool {
 	if pk == nil || len(sig) != SignatureSize {
 		return false
 	}
-	return mode3.Verify(pk.k, message, sig)
+	return mldsa65.Verify(pk.k, message, sigCtx, sig)
 }
 
 // DeriveAddress computes SHA3-256(public_key_bytes) as a 32-byte address.
