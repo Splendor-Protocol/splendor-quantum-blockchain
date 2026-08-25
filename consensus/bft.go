@@ -1,20 +1,37 @@
 // Package consensus implements the Splendor Quantum Chain consensus mechanisms.
 //
-// Phase 1: Single validator (validator.go) — block production with ML-DSA-65 signing.
-// Phase 2: Multi-validator BFT (this file) — Byzantine Fault Tolerant consensus
-//           with 2/3 quorum voting, all messages signed with ML-DSA-65.
+// Phase 1: Single validator (validator.go) — block production with ML-DSA-65
+// signing. This is what the chain actually runs.
 //
-// The BFT design:
-//   - Validators are elected by stake weight (registered via governance).
-//   - Each epoch (configurable number of blocks), a new leader is selected.
-//   - The leader proposes a block; validators vote with ML-DSA-65-signed Vote messages.
-//   - A block is committed when 2/3+1 of validators have cast valid votes.
-//   - Safety: no two honest validators will commit conflicting blocks at the same height.
-//   - Liveness: the chain progresses as long as <1/3 of validators are faulty.
+// Phase 2: Multi-validator BFT (this file) — INCOMPLETE AND NOT WIRED UP. It is
+// a skeleton kept in-tree as the starting point for the real engine, and it is
+// gated so it cannot be started by accident.
+//
+// The vote message type, its ML-DSA-65 signing/verification, and the vote-set
+// quorum arithmetic are finished and tested. The consensus protocol around them
+// is not. What is missing is exactly the part that would make it Byzantine
+// fault tolerant:
+//
+//   - Votes are never broadcast to peers, and a remote quorum never commits
+//     anything — handleVote logs and returns.
+//   - No equivocation detection. A validator can sign conflicting votes for the
+//     same height and round and nothing notices or slashes it.
+//   - Proposals are not checked against the leader schedule, so any peer's
+//     block is accepted as the proposal for its height.
+//   - Round timeouts and view change are unimplemented, so a failed leader
+//     stalls the height instead of advancing the round.
+//   - No fork-choice or locking rule, so nothing prevents two honest nodes from
+//     committing different blocks at the same height.
+//
+// Until those exist this code provides neither the safety nor the liveness
+// property the name implies, and it must not be presented as if it did.
+// NewBFTEngine therefore refuses to build an engine unless the caller sets
+// BFTConfig.AcknowledgeIncomplete, and Run refuses to drive consensus at all.
 package consensus
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -255,10 +272,27 @@ type BFTConfig struct {
 	VoteTimeout  time.Duration
 	RoundTimeout time.Duration
 	OnCommit     func(*types.Block) error
+
+	// AcknowledgeIncomplete must be set for NewBFTEngine to return an engine.
+	// It is not a feature switch: it is a statement that the caller knows this
+	// engine does not yet provide BFT safety (see the package comment) and is
+	// building it, not running a chain on it.
+	AcknowledgeIncomplete bool
 }
 
-// NewBFTEngine creates a new BFT consensus engine.
-func NewBFTEngine(cfg BFTConfig) *BFTEngine {
+// ErrBFTIncomplete is returned by NewBFTEngine and Run for the ungated case.
+var ErrBFTIncomplete = errors.New(
+	"consensus: multi-validator BFT is incomplete (no vote gossip, no equivocation " +
+		"detection, no leader enforcement, no view change) and cannot be used to " +
+		"reach consensus; the chain runs the single-validator engine in validator.go")
+
+// NewBFTEngine creates a BFT consensus engine for development of the Phase 2
+// protocol. It fails unless the caller sets AcknowledgeIncomplete, so no code
+// path can quietly stand this up as if it were a working BFT engine.
+func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
+	if !cfg.AcknowledgeIncomplete {
+		return nil, ErrBFTIncomplete
+	}
 	if cfg.VoteTimeout == 0 {
 		cfg.VoteTimeout = 800 * time.Millisecond
 	}
@@ -275,7 +309,7 @@ func NewBFTEngine(cfg BFTConfig) *BFTEngine {
 		voteCh:       make(chan *Vote, 1000),
 		commitCh:     make(chan *types.Block, 16),
 		proposeCh:    make(chan *types.Block, 16),
-	}
+	}, nil
 }
 
 // UpdateValidatorSet updates the active validator set.
@@ -344,23 +378,18 @@ func (e *BFTEngine) castVote(b *types.Block) (*Vote, error) {
 	return vote, nil
 }
 
-// Run starts the BFT consensus loop. Blocks until ctx is cancelled.
-// In Phase 2, this replaces the single-validator loop in validator.go.
-func (e *BFTEngine) Run() {
-	log.Info().
+// Run would start the BFT consensus loop. It does not: the protocol around the
+// vote plumbing is unfinished, so a loop that commits on a locally-satisfied
+// quorum would produce a chain with no BFT guarantee behind it. It returns
+// ErrBFTIncomplete instead of running, and stays here so the eventual
+// implementation has an obvious home.
+//
+// Drive the pieces directly (handleProposal / handleVote) when developing them.
+func (e *BFTEngine) Run() error {
+	log.Error().
 		Str("addr", e.localAddr.String()).
-		Dur("vote_timeout", e.voteTimeout).
-		Msg("BFT engine starting")
-
-	for {
-		select {
-		case block := <-e.proposeCh:
-			e.handleProposal(block)
-
-		case vote := <-e.voteCh:
-			e.handleVote(vote)
-		}
-	}
+		Msg("BFT: refusing to run the incomplete multi-validator engine")
+	return ErrBFTIncomplete
 }
 
 // handleProposal processes a new block proposal.
@@ -369,9 +398,16 @@ func (e *BFTEngine) handleProposal(b *types.Block) {
 	defer e.stateMu.Unlock()
 
 	e.currentHeight = b.Header.Height
+
+	// An empty validator set used to fall back to a count of 1, which makes the
+	// 2/3+1 threshold 1 and lets this node commit a block on its own vote while
+	// still reporting that it reached quorum. Refuse instead: no known set means
+	// no quorum can be computed.
 	nValidators := e.ValidatorCount()
 	if nValidators == 0 {
-		nValidators = 1 // fallback to single-validator mode
+		log.Error().Uint64("height", b.Header.Height).
+			Msg("BFT: no validator set, cannot form a quorum for this proposal")
+		return
 	}
 
 	e.voteSet = NewVoteSet(b.Header.Height, e.currentRound, b.Hash, nValidators)

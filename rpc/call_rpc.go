@@ -35,9 +35,14 @@ import (
 // router. executor may be nil (native-module reads do not need it); the generic
 // bytecode path uses it only to resolve the current block height. pool may be
 // nil, in which case /estimate quotes the static fee floor.
-func RegisterCallRoutes(r *mux.Router, stateDB *state.StateDB, executor *block.Executor, pool *mempool.Mempool) {
-	r.HandleFunc("/call", makeCallHandler(stateDB, executor)).Methods(http.MethodPost)
-	r.HandleFunc("/estimate", makeEstimateHandler(stateDB, executor, pool)).Methods(http.MethodPost)
+//
+// guard may be nil in tests; in production pass Server.SimGuard() so these
+// routes carry the same per-IP rate limit and global concurrency cap as the
+// rest of the metered plane. Each one can run a full gas-limited VM execution,
+// so unmetered they are the cheapest way to spend a validator's CPU.
+func RegisterCallRoutes(r *mux.Router, stateDB *state.StateDB, executor *block.Executor, pool *mempool.Mempool, guard *ExecGuard) {
+	r.Handle("/call", guard.Wrap(makeCallHandler(stateDB, executor))).Methods(http.MethodPost)
+	r.Handle("/estimate", guard.Wrap(makeEstimateHandler(stateDB, executor, pool))).Methods(http.MethodPost)
 	log.Debug().Msg("contract-interaction RPC routes registered (/call, /estimate)")
 }
 
@@ -77,12 +82,18 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 			return
 		}
 
+		// Speculative execution runs against a private overlay. The engine
+		// snapshots and reverts as it goes, and the live StateDB's journal is
+		// shared with block execution — so simulating on it lets an anonymous
+		// caller roll back the block being assembled.
+		sim := stateDB.Simulate()
+
 		// Native-module read (token / DEX view calls). Routed explicitly: the
 		// module-router address is not a bytecode contract, and its WRITE
 		// dispatch bypasses snapshots — so /call must serve reads via the
 		// read-only dispatch, never via CallWithContext.
 		if to == vm.ModuleRouterAddress {
-			decoded, derr := vm.DispatchModuleReadCall(stateDB, calldata)
+			decoded, derr := vm.DispatchModuleReadCall(sim, calldata)
 			if derr != nil {
 				writeError(w, http.StatusBadRequest, derr.Error())
 				return
@@ -111,7 +122,7 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 		if executor != nil {
 			height, _ = executor.LatestHeight()
 		}
-		res, cerr := vm.NewEngine(stateDB).CallWithContext(from, from, to, calldata, value, height, time.Now().Unix(), true)
+		res, cerr := vm.NewEngine(sim).CallWithContext(from, from, to, calldata, value, height, time.Now().Unix(), true)
 		if res == nil {
 			msg := "call failed"
 			if cerr != nil {
@@ -237,7 +248,7 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 				if executor != nil {
 					height, _ = executor.LatestHeight()
 				}
-				res, _ := vm.NewEngine(stateDB).CallWithContext(from, from, to, calldata, value, height, time.Now().Unix(), true)
+				res, _ := vm.NewEngine(stateDB.Simulate()).CallWithContext(from, from, to, calldata, value, height, time.Now().Unix(), true)
 				if res != nil {
 					resp.Gas = res.GasUsed
 					if res.Reverted || res.Err != nil {

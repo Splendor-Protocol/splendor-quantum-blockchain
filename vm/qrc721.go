@@ -288,6 +288,14 @@ func (t *QRC721Token) doTransfer(from, to qcrypto.Address, tokenId *big.Int) err
 	var zero [qcrypto.AddressSize]byte
 	t.stateDB.SetStorageValue(t.contract, nftApprovedSlot(tokenId), zero[:])
 
+	// from == to touches one balance slot. The decrement is skipped whenever
+	// fromBal is 0, but the increment is not, so a self-transfer from an
+	// inconsistent counter would still hand out a token. Ownership is already
+	// correct here, so only the approval reset applies.
+	if from == to {
+		return t.stateDB.SetStorageValue(t.contract, nftOwnerSlot(tokenId), to[:])
+	}
+
 	// Decrease from balance
 	fromBal, _ := t.getBigInt(nftBalanceSlot(from))
 	if fromBal.Sign() > 0 {

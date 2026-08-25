@@ -14,6 +14,7 @@
 package rpc
 
 import (
+	"context"
 	"crypto/subtle"
 	"net"
 	"net/http"
@@ -203,6 +204,72 @@ func (rl *RateLimiter) clientKey(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// ── Simulation plane ─────────────────────────────────────────────────────────
+
+// ExecGuard meters routes that run the VM on behalf of an anonymous caller:
+// /call, /estimate, and the receipt-index scan behind /logs.
+//
+// A rate limit alone is not enough for these. Each request can occupy a core
+// for the whole gas budget, so N concurrent slow calls pin N cores regardless
+// of how few requests per second any single IP is allowed. The guard therefore
+// layers a global in-flight cap on top of the per-IP bucket, and bounds how
+// long a request may hold a slot so a wedged execution cannot retire one
+// permanently.
+type ExecGuard struct {
+	limiter *RateLimiter
+	slots   chan struct{}
+	timeout time.Duration
+}
+
+// NewExecGuard builds a guard allowing ratePerSec requests per IP with the
+// given burst, at most maxInFlight concurrent executions, each bounded by
+// timeout. Non-positive maxInFlight or timeout disables that dimension.
+func NewExecGuard(ratePerSec, burst float64, maxInFlight int, timeout time.Duration, trustProxy bool) *ExecGuard {
+	g := &ExecGuard{
+		limiter: NewRateLimiter(ratePerSec, burst, trustProxy),
+		timeout: timeout,
+	}
+	if maxInFlight > 0 {
+		g.slots = make(chan struct{}, maxInFlight)
+	}
+	return g
+}
+
+// Wrap applies the guard to a handler. A nil guard passes the handler through
+// unchanged, which keeps tests that register routes directly working.
+func (g *ExecGuard) Wrap(h http.HandlerFunc) http.Handler {
+	if g == nil {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !g.limiter.Allow(g.limiter.clientKey(r)) {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+
+		if g.slots != nil {
+			select {
+			case g.slots <- struct{}{}:
+				defer func() { <-g.slots }()
+			default:
+				// Shed rather than queue: a queued request still holds a
+				// connection and a goroutine, which is most of the cost.
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusServiceUnavailable, "node busy: too many concurrent simulations")
+				return
+			}
+		}
+
+		if g.timeout > 0 {
+			ctx, cancel := context.WithTimeout(r.Context(), g.timeout)
+			defer cancel()
+			r = r.WithContext(ctx)
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // ── Write plane ──────────────────────────────────────────────────────────────

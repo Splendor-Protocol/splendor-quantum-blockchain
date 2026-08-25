@@ -264,16 +264,21 @@ func (t *QRC20Token) transferWithEvents(sender, recipient qcrypto.Address, amoun
 		return fmt.Errorf("QRC20 transfer: insufficient balance (%s < %s)", senderBal, amount)
 	}
 
-	recipBal, err := t.BalanceOf(recipient)
-	if err != nil {
-		return err
-	}
-
-	if err := t.setBalance(sender, new(big.Int).Sub(senderBal, amount)); err != nil {
-		return err
-	}
-	if err := t.setBalance(recipient, new(big.Int).Add(recipBal, amount)); err != nil {
-		return err
+	// sender == recipient writes the SAME storage slot twice. Reading both
+	// balances up front gives B for each, so the debit (B-amount) is overwritten
+	// by the credit (B+amount) and the holder gains `amount` while totalSupply
+	// stays put. Settle the balance check and emit the event, but move nothing.
+	if sender != recipient {
+		recipBal, err := t.BalanceOf(recipient)
+		if err != nil {
+			return err
+		}
+		if err := t.setBalance(sender, new(big.Int).Sub(senderBal, amount)); err != nil {
+			return err
+		}
+		if err := t.setBalance(recipient, new(big.Int).Add(recipBal, amount)); err != nil {
+			return err
+		}
 	}
 
 	// Emit Transfer event

@@ -11,7 +11,11 @@ ORANGE='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-GO_VERSION="1.23.0"
+# Must satisfy the `go` directive in go.mod. circl v1.6.5 (FIPS-204 ML-DSA-65)
+# declares go 1.25.0, so anything older cannot build the node at all — this
+# script used to install 1.23.0 and every fresh server failed at `make build`.
+GO_MIN_VERSION="1.25.0"
+GO_VERSION="1.25.0"
 GO_ARCH="linux-amd64"
 SQC_DIR="$HOME/splendor-quantum-blockchain"
 
@@ -65,9 +69,17 @@ apt-get install -y -qq \
 
 # ── Step 2: Install Go ─────────────────────────────────────────────────────────
 install_go() {
-  if command -v go &>/dev/null && [[ "$(go version)" == *"go1.23"* ]]; then
-    log "Go 1.23 already installed: $(go version)"
-    return
+  # Accept any toolchain at or above the minimum. Matching an exact version
+  # string would downgrade a server that already has something newer.
+  if command -v go &>/dev/null; then
+    local have
+    have="$(go env GOVERSION 2>/dev/null | sed 's/^go//')"
+    if [ -n "$have" ] && \
+       [ "$(printf '%s\n%s\n' "$GO_MIN_VERSION" "$have" | sort -V | head -1)" = "$GO_MIN_VERSION" ]; then
+      log "Go ${have} already installed (>= ${GO_MIN_VERSION} required)"
+      return
+    fi
+    warn "Go ${have:-unknown} is older than the required ${GO_MIN_VERSION}; upgrading"
   fi
 
   log "Installing Go ${GO_VERSION}..."
