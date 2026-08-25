@@ -62,7 +62,7 @@
    │    - Broadcasts block to all peers via P2P                        │
    │                                                                    │
    │  Phase 2:  BFT Multi-Validator (future)                           │
-   │    - All validators sign votes with Dilithium                     │
+   │    - All validators sign votes with ML-DSA-65                     │
    │    - 2/3+1 quorum required to commit                             │
    └───────────────────────────────────────────────────────────────────┘
           │
@@ -78,7 +78,7 @@
    │  - Broadcasts new blocks to all known peers                      │
    │  - Peer Exchange (PEX): discovers new peers every 60s           │
    │  - Block Sync: downloads missing blocks on startup              │
-   │  - All blocks Dilithium-verified before applying                │
+   │  - All blocks ML-DSA-65-verified before applying                │
    └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -89,17 +89,17 @@ Step 1: User creates transaction
   wallet.buildTransfer(from, to, amount, fee, nonce)
   → unsigned transaction object
 
-Step 2: User signs with Dilithium key
-  dilithium_sig = Dilithium.Sign(private_key, SHA3-256(tx_body))
-  tx.signature = dilithium_sig  (3,293 bytes)
-  tx.public_key = dilithium_pub (1,952 bytes, first tx only)
+Step 2: User signs with ML-DSA-65 key
+  sig = ML_DSA_65.Sign(private_key, SHA3-256(tx_body), "SPLENDOR-QC-TX-v1")
+  tx.signature = sig      (3,309 bytes)
+  tx.public_key = pub_key (1,952 bytes, first tx only)
 
 Step 3: Submit to node
   POST /tx/submit  { signed transaction JSON }
   
 Step 4: Mempool validation
   ✓ Chain ID check
-  ✓ Dilithium signature verification
+  ✓ ML-DSA-65 signature verification
   ✓ Nonce valid (matches account nonce)
   ✓ Balance sufficient (amount + fee)
   ✓ Fee ≥ minimum (1,000 units)
@@ -119,12 +119,12 @@ Step 6: Block finalisation
   Compute SHA3-256 Merkle root of tx hashes
   Compute SHA3-256 state root (all account states)
   Build block header
-  Sign block header with validator Dilithium key
+  Sign block header with validator ML-DSA-65 key
   Persist block to LevelDB
 
 Step 7: Broadcast
   POST /block → all known peers
-  Peers verify Dilithium block signature
+  Peers verify ML-DSA-65 block signature
   Peers apply block to their state
   Peers index txs and store receipts
 
@@ -335,7 +335,7 @@ curl http://localhost:8080/block/latest
 ### Generate Validator Wallet
 
 ```bash
-# Generate a new Dilithium keypair for the validator
+# Generate a new ML-DSA-65 keypair for the validator
 ./sqc-wallet generate --out /var/sqc/validator.sqwallet
 
 # You will be prompted for a password.
@@ -455,7 +455,7 @@ watch -n 2 "curl -s http://localhost:8080/block/latest | python3 -m json.tool | 
     ],
     "max_peers": 50,
     "peer_exchange_interval": "60s",
-    "validator_pubkey_hex": "abc123..."    // genesis validator's Dilithium pubkey
+    "validator_pubkey_hex": "abc123..."    // genesis validator's ML-DSA-65 pubkey
   },
   "storage": {
     "data_dir": "/var/sqc/data"
@@ -481,7 +481,7 @@ watch -n 2 "curl -s http://localhost:8080/block/latest | python3 -m json.tool | 
 
 The genesis block (block 0) is the first block on the chain. It:
 - Records the initial SPLD balances for all pre-funded accounts
-- Registers the genesis validator's Dilithium public key
+- Registers the genesis validator's ML-DSA-65 public key
 - Is signed by the genesis validator
 - Cannot be changed after creation — it is the chain's root of trust
 

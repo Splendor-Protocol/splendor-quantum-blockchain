@@ -35,7 +35,7 @@ Automated coverage (run from `sdk/bridge`): `npm run test:security` (Vitest `sec
 
 - [ ] Serves `sqc_signer.wasm` + `wasm_exec.js` with correct MIME and CORS *(ops)* — checklist: [`WASM_HOSTING.md`](./WASM_HOSTING.md)
 - [ ] Imports `@splendor/pq-bridge/browser` in browser builds *(bundler)*
-- [x] Calls `lock()` or `disconnect()` on logout (zeroizes Dilithium key) — `security-wasm.test.ts` (re-derive Zeroize in WASM)
+- [x] Calls `lock()` or `disconnect()` on logout (zeroizes ML-DSA-65 key) — `security-wasm.test.ts` (re-derive Zeroize in WASM)
 - [x] Sets `wasmSha256` when known; fails closed on mismatch — `security-wasm.test.ts` / `security-networks.test.ts` (browser pin required)
 - [x] Pins `execSha256` for `wasm_exec.js` when configured — loaders + networks JSON / `sync:config`
 - [x] MetaMask empty accounts / EIP-1193 `disconnect` destroy session — `security-metamask.test.ts`

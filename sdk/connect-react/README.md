@@ -1,6 +1,6 @@
 # `@splendor/connect-react`
 
-AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors unlock [`@splendor/pq-bridge`](../bridge) WASM Dilithium wallets — PQ crypto stays internal.
+AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors unlock [`@splendor/pq-bridge`](../bridge) WASM ML-DSA-65 wallets — PQ crypto stays internal.
 
 ## Production readiness (~9/10 after hardening)
 
