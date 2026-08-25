@@ -33,12 +33,22 @@ export async function hasAuthorizedAccounts(
 /**
  * Primary connector: MetaMask (or compatible inject) derives PQ keys via personal_sign.
  */
+/**
+ * MetaMask connector.
+ *
+ * NOT post-quantum. The ML-DSA key is derived from an ECDSA `personal_sign`
+ * signature, so the account is only as strong as secp256k1 no matter which
+ * algorithm signs the transactions. Offered for onboarding convenience; the
+ * seed connector is the quantum-safe path.
+ */
 export function metamaskConnector(opts: MetamaskConnectorOpts = {}): Connector {
   const id = 'metamask';
   return {
     id,
     name: opts.name ?? 'MetaMask',
     icon: opts.icon,
+    keyOrigin: 'evm-derived',
+    postQuantumSecure: false,
     ready() {
       const eth = opts.ethereumProvider ?? getWindowEthereum();
       return !!eth?.request;

@@ -11,13 +11,17 @@ export type InjectedConnectorOpts = {
 };
 
 /**
- * Generic EIP-1193 inject connector (same PQ derivation path as MetaMask).
+ * Generic EIP-1193 inject connector (same derivation path as MetaMask, and so
+ * carries the same caveat: the key is derived from an ECDSA signature and is
+ * therefore not post-quantum).
  */
 export function injectedConnector(opts: InjectedConnectorOpts): Connector {
   return {
     id: opts.id ?? 'injected',
     name: opts.name ?? 'Browser Wallet',
     icon: opts.icon,
+    keyOrigin: 'evm-derived',
+    postQuantumSecure: false,
     ready() {
       return !!opts.ethereumProvider?.request;
     },

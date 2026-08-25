@@ -29,6 +29,8 @@ export function seedConnector(opts: SeedConnectorOpts = {}): Connector {
     name: opts.name ?? 'Seed (Advanced)',
     icon: opts.icon,
     advanced: true,
+    keyOrigin: 'native',
+    postQuantumSecure: true,
     connectFields: [
       {
         name: 'seed',

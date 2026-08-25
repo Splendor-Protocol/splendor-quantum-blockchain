@@ -286,6 +286,21 @@
   margin-top: 0.15rem;
 }
 
+/* Marks a connector whose key is derived from an ECDSA signature and is
+   therefore not post-quantum, so the user is never shown one as if it were. */
+.sqc-connector-item__badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  vertical-align: middle;
+  background: var(--sqc-danger-soft);
+  color: var(--sqc-danger);
+}
+
 .sqc-error {
   margin: 0.75rem 0 0;
   padding: 0.65rem 0.75rem;
