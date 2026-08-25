@@ -15,7 +15,7 @@
 //   - Voting period: 5 days (in blocks)
 //   - Execution delay: 48 hours (in blocks)
 //
-// All operations: SHA3-256 storage slots, SQ: addresses, Dilithium-signed txns.
+// All operations: SHA3-256 storage slots, SQ: addresses, ML-DSA-65-signed txns.
 package vm
 
 import (

@@ -19,6 +19,7 @@ func TestHandleIncomingBlockMandatorySignature(t *testing.T) {
 	blk := &types.Block{Header: types.BlockHeader{
 		Height:       1,
 		ChainID:      types.ChainID,
+		AlgID:        qcrypto.AlgMLDSA65,
 		TxMerkleRoot: qcrypto.Hash32([]byte{}),
 	}}
 	h, _ := blk.ComputeHash()

@@ -2,7 +2,7 @@
 //
 // This implements the constant-product AMM (x * y = k) — the same model as
 // Uniswap v2 — but entirely quantum-safe: SHA3-256 storage slots, SQ: addresses,
-// Dilithium-signed transactions, zero ECDSA.
+// ML-DSA-65-signed transactions, zero ECDSA.
 //
 // Each liquidity pool is a pair of two QRC-20 tokens.
 // Liquidity providers deposit both tokens and receive LP shares.

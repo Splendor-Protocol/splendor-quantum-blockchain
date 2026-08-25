@@ -3,7 +3,7 @@
 // Precompiles are native Go functions that can be called from SQC contracts
 // via STATICCALL/CALL to well-known addresses. They execute at native speed
 // (no bytecode interpretation overhead) and are useful for:
-//   - Cryptographic operations (Dilithium batch verify, SHA3-512, etc.)
+//   - Cryptographic operations (ML-DSA-65 batch verify, SHA3-512, etc.)
 //   - Math operations (big integer modular exponentiation)
 //   - Cross-contract utilities (ABI encode/decode, address derivation)
 //
@@ -11,8 +11,8 @@
 //   SQ:0000...0001  → SHA3-256 hash (input → 32-byte hash)
 //   SQ:0000...0002  → SHA3-512 hash (input → 64-byte hash)
 //   SQ:0000...0003  → BLAKE3 hash placeholder (input → 32-byte hash)
-//   SQ:0000...0004  → Dilithium public key → SQ: address derivation
-//   SQ:0000...0005  → Dilithium batch verify (verify N signatures)
+//   SQ:0000...0004  → ML-DSA-65 public key → SQ: address derivation
+//   SQ:0000...0005  → ML-DSA-65 batch verify (verify N signatures)
 //   SQ:0000...0006  → BigInt modular exponentiation
 //   SQ:0000...0007  → ABI encode (pack args to 32-byte words)
 //   SQ:0000...0008  → ABI decode (unpack 32-byte words)
@@ -144,8 +144,8 @@ func (r *PrecompileRegistry) registerBuiltins() {
 		},
 	})
 
-	// 0x04 — Derive SQ address from Dilithium public key bytes
-	// Input: 1952-byte Dilithium public key
+	// 0x04 — Derive SQ address from ML-DSA-65 public key bytes
+	// Input: 1952-byte ML-DSA-65 public key
 	// Output: 32-byte SQ address
 	r.Register(&PrecompileEntry{
 		Name:    "dilithium_derive_address",
@@ -166,7 +166,7 @@ func (r *PrecompileRegistry) registerBuiltins() {
 		},
 	})
 
-	// 0x05 — Dilithium verify: verify one signature
+	// 0x05 — ML-DSA-65 verify: verify one signature
 	// Input: [32-byte msg][1952-byte pubkey][3309-byte sig]
 	// Output: [1] if valid, [0] if invalid
 	r.Register(&PrecompileEntry{
@@ -184,7 +184,7 @@ func (r *PrecompileRegistry) registerBuiltins() {
 			sig := input[32+qcrypto.PublicKeySize : 32+qcrypto.PublicKeySize+qcrypto.SignatureSize]
 
 			pub, err := qcrypto.PublicKeyFromBytes(pubKeyBytes)
-			if err != nil || !qcrypto.Verify(pub, msg, sig) {
+			if err != nil || !qcrypto.Verify(pub, msg, qcrypto.CtxMessage, sig) {
 				return []byte{0}, 0, nil
 			}
 			return []byte{1}, 0, nil

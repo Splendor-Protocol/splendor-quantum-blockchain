@@ -1,4 +1,4 @@
-// Package signer provides deterministic Dilithium key derivation and
+// Package signer provides deterministic ML-DSA-65 key derivation and
 // wire-compatible transaction signing for the Splendor QC bridge SDK.
 //
 // It reuses core/crypto and core/types so marshaled JSON matches exactly
@@ -28,7 +28,7 @@ const DerivationDomainMessage = "Splendor Quantum Chain\nKey derivation v1\nchai
 // SeedSize is the ML-DSA-65 seed length (32 bytes).
 const SeedSize = mldsa65.SeedSize
 
-// DerivedWallet holds a Dilithium keypair derived from a seed.
+// DerivedWallet holds a ML-DSA-65 keypair derived from a seed.
 type DerivedWallet struct {
 	Address   qcrypto.Address
 	PublicKey []byte
@@ -36,7 +36,7 @@ type DerivedWallet struct {
 	Public    *qcrypto.PublicKey
 }
 
-// SeedFromEVMSignature derives a 32-byte Dilithium seed from an EVM personal_sign signature.
+// SeedFromEVMSignature derives a 32-byte ML-DSA-65 seed from an EVM personal_sign signature.
 // seed = SHA3-256(signatureBytes)
 func SeedFromEVMSignature(sig []byte) [SeedSize]byte {
 	h := sha3.Sum256(sig)
@@ -63,7 +63,7 @@ func SeedFromHex(hexStr string) ([SeedSize]byte, error) {
 	return seed, nil
 }
 
-// DeriveFromSeed deterministically derives a Dilithium Mode 3 keypair from a 32-byte seed
+// DeriveFromSeed deterministically derives a ML-DSA-65 Mode 3 keypair from a 32-byte seed
 // using the same circl mldsa65.NewKeyFromSeed the chain node uses.
 func DeriveFromSeed(seed [SeedSize]byte) (*DerivedWallet, error) {
 	pub, priv := mldsa65.NewKeyFromSeed(&seed)
@@ -107,7 +107,7 @@ func (w *DerivedWallet) PublicResult() DeriveResult {
 	}
 }
 
-// Zeroize clears Dilithium private key material and public key bytes from memory.
+// Zeroize clears ML-DSA-65 private key material and public key bytes from memory.
 func (w *DerivedWallet) Zeroize() {
 	if w == nil {
 		return
@@ -161,6 +161,11 @@ type X402Params struct {
 	ValidAfter  int64  `json:"valid_after"`
 	ValidBefore int64  `json:"valid_before"`
 	NonceHex    string `json:"nonce_hex"` // 32-byte hex; empty = random
+
+	// Fee and AccountNonce are only used by SignX402Settlement, which builds the
+	// on-chain transaction that actually moves the funds.
+	Fee          string `json:"fee"`
+	AccountNonce uint64 `json:"account_nonce"`
 }
 
 // SignTransfer builds and signs a transfer transaction, returning wire JSON.
@@ -262,11 +267,10 @@ func (w *DerivedWallet) SignX402(p X402Params) ([]byte, error) {
 
 	var nonce [32]byte
 	if p.NonceHex != "" {
-		nb, err := hex.DecodeString(strip0x(p.NonceHex))
-		if err != nil || len(nb) != 32 {
-			return nil, fmt.Errorf("nonce must be 32-byte hex")
+		nonce, err = parseNonceHex(p.NonceHex)
+		if err != nil {
+			return nil, err
 		}
-		copy(nonce[:], nb)
 	} else {
 		if _, err := rand.Read(nonce[:]); err != nil {
 			return nil, err
@@ -309,12 +313,78 @@ func (w *DerivedWallet) SignX402(p X402Params) ([]byte, error) {
 		return nil, err
 	}
 	hash := qcrypto.Hash32(bodyBytes)
-	sig, err := qcrypto.Sign(w.Private, hash[:])
+	sig, err := qcrypto.Sign(w.Private, hash[:], qcrypto.CtxX402)
 	if err != nil {
 		return nil, err
 	}
 	payload.Signature = sig
 	return json.Marshal(payload)
+}
+
+// SignX402Settlement builds and signs the ON-CHAIN settlement transaction for
+// an X402 payment, returning wire JSON.
+//
+// The payment payload authorises a transfer; this transaction performs it. Both
+// are signed by the payer, because settlement debits the payer's account and
+// consumes the payer's account nonce — no node-side key can substitute.
+//
+// p.NonceHex MUST be the same 32-byte payment nonce used for the payload: the
+// node binds the two together, and the executor derives the on-chain replay key
+// from it. A random nonce here would produce a transaction the node refuses.
+func (w *DerivedWallet) SignX402Settlement(p X402Params) ([]byte, error) {
+	to, err := parseAddress(p.To)
+	if err != nil {
+		return nil, err
+	}
+	amount, err := parseBig(p.Amount, "amount")
+	if err != nil {
+		return nil, err
+	}
+	fee, err := parseBigDefault(p.Fee, "1000")
+	if err != nil {
+		return nil, err
+	}
+	if err := assertMinFee(fee); err != nil {
+		return nil, err
+	}
+	if p.NonceHex == "" {
+		return nil, fmt.Errorf("x402 settlement requires the payment nonce_hex used for the payload")
+	}
+	nonce, err := parseNonceHex(p.NonceHex)
+	if err != nil {
+		return nil, err
+	}
+
+	tx := &types.Transaction{
+		Version:   1,
+		ChainID:   types.ChainID,
+		Type:      types.TxX402,
+		AlgID:     qcrypto.AlgMLDSA65,
+		From:      w.Address,
+		To:        to,
+		Amount:    amount,
+		Fee:       fee,
+		Nonce:     p.AccountNonce,
+		Timestamp: time.Now().Unix(),
+		// The raw payment nonce: the executor derives the replay-registry key as
+		// SHA3-256(from || Data).
+		Data: nonce[:],
+	}
+	if err := tx.Sign(w.Private, p.AccountNonce == 0); err != nil {
+		return nil, err
+	}
+	return json.Marshal(tx)
+}
+
+// parseNonceHex decodes a 32-byte X402 payment nonce.
+func parseNonceHex(s string) ([32]byte, error) {
+	var nonce [32]byte
+	nb, err := hex.DecodeString(strip0x(s))
+	if err != nil || len(nb) != 32 {
+		return nonce, fmt.Errorf("nonce must be 32-byte hex")
+	}
+	copy(nonce[:], nb)
+	return nonce, nil
 }
 
 // Local copies of x402 types — keep JSON tags identical to x402.PaymentPayload.

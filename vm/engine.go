@@ -3,7 +3,7 @@
 // # SQC-VM v3 — Production Upgrade
 //
 // This is NOT an EVM. It is a quantum-native VM using only NIST post-quantum
-// algorithms: Dilithium Mode 3 (FIPS 204) for signatures, SHA3-256 (FIPS 202)
+// algorithms: ML-DSA-65 Mode 3 (FIPS 204) for signatures, SHA3-256 (FIPS 202)
 // for all hashing. No ECDSA. No keccak. No secp256k1.
 //
 // # What's new in v3
@@ -925,7 +925,7 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			msgBytes, _ := e.state.GetStorageValue(ctx.Contract, bigToSlot(msgSlot))
 			sigBytes, _ := e.state.GetStorageValue(ctx.Contract, bigToSlot(sigSlot))
 			pub, parseErr := qcrypto.PublicKeyFromBytes(pubKeyBytes)
-			boolPush(stk, parseErr == nil && qcrypto.Verify(pub, msgBytes, sigBytes))
+			boolPush(stk, parseErr == nil && qcrypto.Verify(pub, msgBytes, qcrypto.CtxMessage, sigBytes))
 
 		// ── Events / Logs ─────────────────────────────────────────────────
 		case op >= OpLOG0 && op <= OpLOG4:

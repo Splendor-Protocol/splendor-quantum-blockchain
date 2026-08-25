@@ -2,14 +2,20 @@
 // Every operation uses post-quantum algorithms only.
 //
 // Signing:     ML-DSA-65 (NIST FIPS 204, CIRCL sign/mldsa/mldsa65). This is the
-//              standardized post-quantum lattice signature. Signatures use an
-//              empty context string and deterministic (hedged=false) signing so a
-//              given (key, message) always yields the same signature — required
-//              for consensus reproducibility. NOT interoperable with the earlier
-//              round-3 CRYSTALS-Dilithium mode3 (a fresh genesis is required).
+//              standardized post-quantum lattice signature. Signing is
+//              deterministic (hedged=false) so a given (key, context, message)
+//              always yields the same signature — required for consensus
+//              reproducibility. NOT interoperable with the earlier round-3
+//              CRYSTALS-Dilithium mode3 (a fresh genesis is required).
 // Hashing:     SHA-3-256 (NIST FIPS 202)
 // Key storage: AES-256-GCM + Argon2id
 // NO ECDSA. NO SHA-256. NO KECCAK.
+//
+// Domain separation: FIPS 204 signing is context-aware. Every signature on this
+// chain commits to a purpose-specific context string (see Ctx* below), so a
+// signature produced for one purpose can never be replayed as another — a block
+// signature cannot be presented as a transaction signature even if an attacker
+// finds two purposes that hash the same bytes.
 package crypto
 
 import (
@@ -22,10 +28,41 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// sigCtx is the ML-DSA context string. Empty and constant across the whole
-// chain — every signer and verifier must use the identical context or
-// signatures will not validate.
-var sigCtx []byte = nil
+// AlgID values identify the signature scheme bound to a key, transaction, or
+// block. Recorded on-chain so a future scheme (e.g. SLH-DSA) can coexist without
+// a silent mix-up: verifiers reject anything whose alg_id they do not implement.
+const (
+	// AlgMLDSA65 is ML-DSA-65 (NIST FIPS 204) — the only scheme accepted today.
+	AlgMLDSA65 = "ML-DSA-65"
+)
+
+// Domain separation context strings (FIPS 204 ctx parameter, max 255 bytes).
+// Each signing purpose MUST use its own context. Changing any of these is a
+// consensus-breaking change and requires a new genesis.
+var (
+	// CtxTransaction domain-separates user transaction signatures.
+	CtxTransaction = []byte("SPLENDOR-QC-TX-v1")
+	// CtxBlock domain-separates validator block signatures.
+	CtxBlock = []byte("SPLENDOR-QC-BLOCK-v1")
+	// CtxX402 domain-separates X402 payment authorisations.
+	CtxX402 = []byte("SPLENDOR-QC-X402-v1")
+	// CtxVote domain-separates BFT consensus votes.
+	CtxVote = []byte("SPLENDOR-QC-VOTE-v1")
+	// CtxMessage domain-separates free-form user message signing (wallet
+	// signMessage, and the contract-side verify precompiles that check it).
+	CtxMessage = []byte("SPLENDOR-QC-MSG-v1")
+	// CtxPeerHandshake domain-separates P2P node identity proofs.
+	CtxPeerHandshake = []byte("SPLENDOR-QC-P2P-v1")
+	// CtxOracle domain-separates oracle price-feed attestations.
+	CtxOracle = []byte("SPLENDOR-QC-ORACLE-v1")
+	// CtxPermit domain-separates QRC-20 gasless approval (permit) signatures.
+	CtxPermit = []byte("SPLENDOR-QC-PERMIT-v1")
+	// CtxMultisig domain-separates multisig co-signer approvals.
+	CtxMultisig = []byte("SPLENDOR-QC-MULTISIG-v1")
+)
+
+// maxContextSize is the FIPS 204 limit on the signing context string.
+const maxContextSize = 255
 
 const (
 	// ML-DSA-65 (NIST FIPS 204) — sizes in bytes
@@ -116,27 +153,40 @@ func (sk *PrivateKey) Public() *PublicKey {
 	return &PublicKey{k: pub}
 }
 
-// Sign produces a 3309-byte ML-DSA-65 (FIPS-204) signature over the message.
-// Signing is DETERMINISTIC (randomized=false) with the chain-wide empty context,
-// so a given (key, message) always yields the same signature — consensus nodes
-// must reproduce validator signatures bit-for-bit.
-func Sign(sk *PrivateKey, message []byte) ([]byte, error) {
+// Sign produces a 3309-byte ML-DSA-65 (FIPS-204) signature over the message,
+// bound to the given domain-separation context (one of the Ctx* values).
+//
+// Signing is DETERMINISTIC (randomized=false), so a given (key, context,
+// message) always yields the same signature — consensus nodes must reproduce
+// validator signatures bit-for-bit.
+func Sign(sk *PrivateKey, message []byte, ctx []byte) ([]byte, error) {
 	if sk == nil {
 		return nil, errors.New("nil private key")
 	}
+	if len(ctx) == 0 {
+		return nil, errors.New("empty signing context: every signature must be domain-separated")
+	}
+	if len(ctx) > maxContextSize {
+		return nil, fmt.Errorf("signing context too long: %d bytes (max %d)", len(ctx), maxContextSize)
+	}
 	sig := make([]byte, SignatureSize)
-	if err := mldsa65.SignTo(sk.k, message, sigCtx, false, sig); err != nil {
+	if err := mldsa65.SignTo(sk.k, message, ctx, false, sig); err != nil {
 		return nil, fmt.Errorf("ml-dsa sign: %w", err)
 	}
 	return sig, nil
 }
 
-// Verify checks an ML-DSA-65 (FIPS-204) signature over the message.
-func Verify(pk *PublicKey, message []byte, sig []byte) bool {
+// Verify checks an ML-DSA-65 (FIPS-204) signature over the message under the
+// given domain-separation context. A signature made for a different context
+// fails here, which is what stops cross-purpose signature replay.
+func Verify(pk *PublicKey, message []byte, ctx []byte, sig []byte) bool {
 	if pk == nil || len(sig) != SignatureSize {
 		return false
 	}
-	return mldsa65.Verify(pk.k, message, sigCtx, sig)
+	if len(ctx) == 0 || len(ctx) > maxContextSize {
+		return false
+	}
+	return mldsa65.Verify(pk.k, message, ctx, sig)
 }
 
 // DeriveAddress computes SHA3-256(public_key_bytes) as a 32-byte address.

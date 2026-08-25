@@ -34,11 +34,26 @@ import (
 // This provides true realtime sync — peers receive blocks within milliseconds
 // of the validator producing them, without any polling interval.
 type Broadcaster struct {
-	mu           sync.RWMutex
-	peers        map[string]struct{} // peer RPC URLs
-	validatorPK  []byte
-	client       *http.Client
-	applyBlock   func(*types.Block) error // local apply callback (for loopback, if needed)
+	mu          sync.RWMutex
+	peers       map[string]struct{} // peer RPC URLs
+	validatorPK []byte
+	client      *http.Client
+	applyBlock  func(*types.Block) error // local apply callback (for loopback, if needed)
+
+	// authToken is the shared write-plane token. On the encrypted path it is
+	// sealed inside the envelope; on the plaintext fallback it is sent as the
+	// X-Node-Auth header.
+	authToken string
+
+	// identities fetches and pins peers' signed ML-KEM keys for the encrypted
+	// transport.
+	identities *IdentityCache
+
+	// allowPlaintext permits falling back to unencrypted POST /block when a peer
+	// has no sealed transport. Off by default: an attacker who can block
+	// /p2p/identity could otherwise force every push into plaintext, which
+	// downgrades the channel exactly when someone is tampering with it.
+	allowPlaintext bool
 }
 
 // noRedirect stops HTTP clients from following redirects. Peer/P2P requests must
@@ -48,16 +63,39 @@ type Broadcaster struct {
 // the response, which callers treat as a non-200 failure.
 func noRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 
-// NewBroadcaster creates a new block broadcaster.
-func NewBroadcaster(validatorPK []byte) *Broadcaster {
+// NewBroadcaster creates a new block broadcaster. authToken is the shared
+// write-plane secret; peers reject pushes and announcements without it.
+// allowPlaintext permits the unencrypted fallback when a peer exposes no
+// sealed transport.
+func NewBroadcaster(validatorPK []byte, authToken string, allowPlaintext bool) *Broadcaster {
 	return &Broadcaster{
-		peers:       make(map[string]struct{}),
-		validatorPK: validatorPK,
+		peers:          make(map[string]struct{}),
+		validatorPK:    validatorPK,
+		authToken:      authToken,
+		identities:     NewIdentityCache(),
+		allowPlaintext: allowPlaintext,
 		client: &http.Client{
 			Timeout:       5 * time.Second,
 			CheckRedirect: noRedirect,
 		},
 	}
+}
+
+// Identities exposes the peer identity cache so operators can pin known node
+// keys instead of relying on trust-on-first-use.
+func (b *Broadcaster) Identities() *IdentityCache { return b.identities }
+
+// postAuthed sends an authenticated write-plane POST to a peer.
+func (b *Broadcaster) postAuthed(url string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if b.authToken != "" {
+		req.Header.Set("X-Node-Auth", b.authToken)
+	}
+	return b.client.Do(req)
 }
 
 // maxBroadcastPeers caps the broadcast fan-out set. /peers/announce is a public
@@ -135,12 +173,28 @@ func (b *Broadcaster) Broadcast(block *types.Block) {
 
 // sendBlock sends a serialised block to a single peer.
 func (b *Broadcaster) sendBlock(peerURL string, blockData []byte) error {
-	url := peerURL + "/block"
-	resp, err := b.client.Post(url, "application/json", bytes.NewReader(blockData))
+	// Preferred path: ML-KEM-768 sealed envelope, which also hides the
+	// write-plane token from anyone on the network path.
+	sealErr := b.identities.SendSealed(peerURL, b.authToken, KindBlock, blockData)
+	if sealErr == nil {
+		return nil
+	}
+	if !b.allowPlaintext {
+		return fmt.Errorf("encrypted block push failed and plaintext fallback is disabled "+
+			"(enable with --allow-plaintext-p2p if the peer predates the sealed transport): %w", sealErr)
+	}
+
+	log.Warn().Err(sealErr).Str("peer", peerURL).
+		Msg("broadcaster: falling back to PLAINTEXT block push — token and block body are exposed on the wire")
+
+	resp, err := b.postAuthed(peerURL+"/block", blockData)
 	if err != nil {
 		return fmt.Errorf("POST /block failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusServiceUnavailable {
+		return fmt.Errorf("peer rejected block push (%d): check that both nodes share --rpc-auth-token", resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("peer returned %d", resp.StatusCode)
 	}
@@ -176,20 +230,26 @@ func (b *Broadcaster) AnnounceSelf(selfURL string, selfHeight uint64) {
 
 	for _, peer := range peers {
 		go func(peerURL string) {
-			url := peerURL + "/peers/announce"
-			resp, err := b.client.Post(url, "application/json", bytes.NewReader(data))
+			if err := b.identities.SendSealed(peerURL, b.authToken, KindAnnounce, data); err == nil {
+				log.Debug().Str("peer", peerURL).Str("self", selfURL).Msg("announce: sent (sealed)")
+				return
+			} else if !b.allowPlaintext {
+				log.Debug().Err(err).Str("peer", peerURL).Msg("announce: sealed send failed")
+				return
+			}
+			resp, err := b.postAuthed(peerURL+"/peers/announce", data)
 			if err != nil {
 				log.Debug().Err(err).Str("peer", peerURL).Msg("announce: failed")
 				return
 			}
 			defer resp.Body.Close()
-			log.Debug().Str("peer", peerURL).Str("self", selfURL).Msg("announce: sent")
+			log.Debug().Str("peer", peerURL).Str("self", selfURL).Msg("announce: sent (plaintext)")
 		}(peer)
 	}
 }
 
 // HandleIncomingBlock processes a raw block JSON received from a peer.
-// It validates the block's Dilithium signature and calls applyBlock.
+// It validates the block's ML-DSA-65 signature and calls applyBlock.
 func HandleIncomingBlock(body []byte, validatorPK []byte, applyBlock func(*types.Block) error) error {
 	var block types.Block
 	if err := json.Unmarshal(body, &block); err != nil {
@@ -201,7 +261,7 @@ func HandleIncomingBlock(body []byte, validatorPK []byte, applyBlock func(*types
 		return fmt.Errorf("block validation failed: %w", err)
 	}
 
-	// Dilithium signature verification is MANDATORY on the inbound push path.
+	// ML-DSA-65 signature verification is MANDATORY on the inbound push path.
 	// An empty validatorPK previously meant "skip verification", which let any
 	// unauthenticated caller POST a forged block to /block. We now fail closed:
 	// a node with no trusted validator pubkey refuses pushed blocks and relies on

@@ -34,7 +34,7 @@ type Config struct {
 
 // Validator is the single Phase-1 block producer.
 // It reads from the mempool, produces a block every BlockInterval,
-// signs it with Dilithium, and emits it to subscribers.
+// signs it with ML-DSA-65, and emits it to subscribers.
 type Validator struct {
 	cfg       Config
 	executor  *block.Executor

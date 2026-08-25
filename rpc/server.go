@@ -16,7 +16,6 @@
 package rpc
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,21 +49,33 @@ type Server struct {
 	httpServer  *http.Server
 	// peerCount returns the number of connected peers (from peer pool)
 	peerCount func() int
-	// authToken gates state-mutating admin routes (e.g. POST /x402/settle).
-	// Empty = those routes stay disabled (fail closed).
-	authToken string
-	// x402SettleEnabled must be explicitly turned on to expose POST /x402/settle,
-	// which moves funds outside the block/consensus path. Off by default.
-	x402SettleEnabled bool
+	// writeAuth gates the write plane (block ingest, peer announce). With no
+	// token configured those routes stay disabled, so a misconfigured node fails
+	// closed rather than serving them unauthenticated.
+	writeAuth *WriteAuth
+	// cors is the browser-origin allowlist policy.
+	cors *CORSPolicy
+	// submitLimiter bounds public transaction submission per client IP.
+	submitLimiter *RateLimiter
 }
 
 // Config holds server configuration.
 type Config struct {
-	ListenAddr        string     // e.g. ":8080"
-	ValidatorPK       []byte     // Dilithium public key of the genesis validator
-	PeerCount         func() int // optional: returns live peer count
-	AuthToken         string     // shared secret required on admin write routes
-	X402SettleEnabled bool       // expose POST /x402/settle (off by default)
+	ListenAddr  string     // e.g. "127.0.0.1:8080"
+	ValidatorPK []byte     // ML-DSA public key of the genesis validator
+	PeerCount   func() int // optional: returns live peer count
+	AuthToken   string     // shared secret required on write-plane routes
+
+	// CORSOrigins is the browser-origin allowlist. Empty = emit no CORS headers.
+	CORSOrigins []string
+	// SubmitRatePerSec / SubmitBurst bound public transaction submission per IP.
+	// Zero rate disables limiting.
+	SubmitRatePerSec float64
+	SubmitBurst      float64
+	// TrustProxy reads the client IP from X-Forwarded-For. Only enable behind a
+	// reverse proxy you control — otherwise the header is attacker-controlled and
+	// rate limits can be bypassed by spoofing it.
+	TrustProxy bool
 }
 
 // New creates a new RPC server.
@@ -83,12 +94,13 @@ func New(
 		executor:    executor,
 		pool:        pool,
 		broadcaster: broadcaster,
-		x402proc:          x402.NewProcessor(stateDB),
-		scheduler:         scheduler,
-		validatorPK:       cfg.ValidatorPK,
-		peerCount:         cfg.PeerCount,
-		authToken:         cfg.AuthToken,
-		x402SettleEnabled: cfg.X402SettleEnabled,
+		x402proc:      x402.NewProcessor(stateDB),
+		scheduler:     scheduler,
+		validatorPK:   cfg.ValidatorPK,
+		peerCount:     cfg.PeerCount,
+		writeAuth:     NewWriteAuth(cfg.AuthToken),
+		cors:          NewCORSPolicy(cfg.CORSOrigins),
+		submitLimiter: NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -125,23 +137,42 @@ func (s *Server) Router() *mux.Router {
 func (s *Server) buildRouter() *mux.Router {
 	r := mux.NewRouter()
 	r.Use(loggingMiddleware)
-	r.Use(corsMiddleware)
+	r.Use(s.cors.Middleware)
 
-	r.HandleFunc("/tx/submit", s.handleSubmitTx).Methods(http.MethodPost)
+	// ── Read plane: safe to expose publicly ──────────────────────────────
 	r.HandleFunc("/tx/{hash}", s.handleGetTx).Methods(http.MethodGet)
 	r.HandleFunc("/balance/{address}", s.handleGetBalance).Methods(http.MethodGet)
 	r.HandleFunc("/nonce/{address}", s.handleGetNonce).Methods(http.MethodGet)
 	r.HandleFunc("/block/latest", s.handleGetLatestBlock).Methods(http.MethodGet)
 	r.HandleFunc("/block/hash/{hash}", s.handleGetBlockByHash).Methods(http.MethodGet)
 	r.HandleFunc("/block/{height}", s.handleGetBlockByHeight).Methods(http.MethodGet)
-	r.HandleFunc("/block", s.handleIncomingBlock).Methods(http.MethodPost)
 	r.HandleFunc("/status", s.handleStatus).Methods(http.MethodGet)
-	r.HandleFunc("/x402/verify", s.handleX402Verify).Methods(http.MethodPost)
-	r.HandleFunc("/x402/settle", s.handleX402Settle).Methods(http.MethodPost)
 	r.HandleFunc("/ai/stats", s.handleAIStats).Methods(http.MethodGet)
+
+	// ── Public but metered: each of these costs an ML-DSA verification ───
+	r.Handle("/tx/submit", s.limited(s.handleSubmitTx)).Methods(http.MethodPost)
+	r.Handle("/x402/verify", s.limited(s.handleX402Verify)).Methods(http.MethodPost)
+	r.Handle("/x402/settle", s.limited(s.handleX402Settle)).Methods(http.MethodPost)
+
+	// ── Write plane: authenticated. POST /block applies a block to local
+	// state, so it must never be reachable by an anonymous caller. ───────
+	r.Handle("/block", s.writeAuth.Middleware(http.HandlerFunc(s.handleIncomingBlock))).
+		Methods(http.MethodPost)
 
 	return r
 }
+
+// limited wraps a handler with the public-submission rate limiter.
+func (s *Server) limited(h http.HandlerFunc) http.Handler {
+	return s.submitLimiter.Middleware(h)
+}
+
+// WriteAuth exposes the write-plane guard so routes registered outside this
+// file (explorer peer announce) can enforce the same policy.
+func (s *Server) WriteAuth() *WriteAuth { return s.writeAuth }
+
+// CORS exposes the origin policy so an outer router can apply the same rules.
+func (s *Server) CORS() *CORSPolicy { return s.cors }
 
 // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -266,9 +297,14 @@ func (s *Server) handleGetBlockByHash(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleIncomingBlock(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024*1024)) // 64MB max
+	// Bound the block body at the consensus wire-size limit. A block larger than
+	// this could never be valid, so refusing to buffer it costs nothing and
+	// removes a memory-exhaustion vector.
+	r.Body = http.MaxBytesReader(w, r.Body, block.MaxBlockWireBytes)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
+		writeError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("block body exceeds the %d-byte limit", block.MaxBlockWireBytes))
 		return
 	}
 
@@ -316,23 +352,25 @@ func (s *Server) handleX402Verify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// handleX402Settle settles a verified X402 payment by admitting the payer's
+// signed settlement transaction to the mempool.
+//
+// It does NOT move balances itself. An earlier version called Transfer +
+// Commit directly in this handler, which changed balances with no transaction
+// in any block: replaying the chain could not reproduce the transfer, and nodes
+// that never received the HTTP call diverged from the one that did. Settlement
+// now goes through consensus like any other transaction, so the payment appears
+// in a block and in the state root.
 func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
-	// POST /x402/settle moves funds directly in state, OUTSIDE the block/consensus
-	// path, so it is disabled unless explicitly enabled AND authenticated. This
-	// prevents an anonymous caller over the public RPC tunnel from moving balances
-	// with no on-chain record. (Enable with --enable-x402-settle + --rpc-auth-token.)
-	if !s.x402SettleEnabled {
-		writeError(w, http.StatusServiceUnavailable, "x402 settlement is disabled on this node")
-		return
-	}
-	if !s.checkAuth(r) {
-		writeError(w, http.StatusUnauthorized, "missing or invalid X-Node-Auth token")
-		return
-	}
+	r.Body = http.MaxBytesReader(w, r.Body, 512*1024)
 
 	var req struct {
 		Requirements x402.PaymentRequirements `json:"requirements"`
 		Payload      x402.PaymentPayload      `json:"payload"`
+		// SettlementTx is the payer-signed TxX402 that performs the transfer.
+		// Only the payer can produce it: settlement debits the payer's account
+		// and consumes the payer's account nonce.
+		SettlementTx *types.Transaction `json:"settlement_tx"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
@@ -341,44 +379,38 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 
 	result := s.x402proc.Verify(&req.Requirements, &req.Payload)
 	if !result.Valid {
-		writeJSON(w, http.StatusPaymentRequired, x402.SettleResult{
-			Error: result.Reason,
+		writeJSON(w, http.StatusPaymentRequired, x402.SettleResult{Error: result.Reason})
+		return
+	}
+
+	if req.SettlementTx == nil {
+		writeError(w, http.StatusBadRequest,
+			"settlement_tx is required: sign a TxX402 with the payer key (see payX402 in @splendor/pq-bridge)")
+		return
+	}
+	if err := x402.BindSettlementTx(&req.Payload, req.SettlementTx); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// The mempool verifies the payer's signature, account nonce, fee floor, and
+	// balance. The executor re-checks the X402 replay registry at block time.
+	if err := s.pool.Add(req.SettlementTx); err != nil {
+		writeJSON(w, http.StatusBadRequest, x402.SettleResult{
+			Error: fmt.Sprintf("settlement rejected: %v", err),
 		})
 		return
 	}
 
-	// NOTE: this settlement mutates state directly rather than going through a
-	// signed transaction + block. That is a known Phase-1 shortcut (the moved
-	// funds appear in no block/merkle root); the gating above keeps it to trusted
-	// callers until it is reworked to route through the mempool.
-	payerNonce, err := s.stateDB.GetNonce(req.Payload.From)
+	hash, err := req.SettlementTx.FullHash()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "nonce lookup failed")
+		writeError(w, http.StatusInternalServerError, "failed to hash settlement tx")
 		return
 	}
 
-	_ = payerNonce // settlement tx nonce management handled by x402 processor
-
-	// For Phase 1, we directly mark the nonce and transfer in state
-	// (simplified settlement without full tx round-trip)
-	nonceKey := buildNonceKey(req.Payload.From, req.Payload.Nonce)
-	height, _ := s.executor.LatestHeight()
-	if err := s.stateDB.MarkX402NonceUsed(nonceKey, height); err != nil {
-		writeError(w, http.StatusInternalServerError, "nonce registry error")
-		return
-	}
-	if err := s.stateDB.Transfer(req.Payload.From, req.Payload.To, req.Payload.Amount); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("transfer failed: %v", err))
-		return
-	}
-	if _, err := s.stateDB.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "state commit failed")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, x402.SettleResult{
+	writeJSON(w, http.StatusAccepted, x402.SettleResult{
 		Success: true,
-		TxHash:  fmt.Sprintf("%x", nonceKey[:8]),
+		TxHash:  fmt.Sprintf("%x", hash[:]),
 	})
 }
 
@@ -407,23 +439,6 @@ func parseAddress(s string) (qcrypto.Address, error) {
 	return qcrypto.AddressFromString(s)
 }
 
-// checkAuth reports whether the request carries the configured admin auth token
-// in the X-Node-Auth header, compared in constant time. If no token is
-// configured the answer is always false, so admin routes fail closed.
-func (s *Server) checkAuth(r *http.Request) bool {
-	if s.authToken == "" {
-		return false
-	}
-	got := r.Header.Get("X-Node-Auth")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) == 1
-}
-
-// buildNonceKey computes SHA3-256(from_address || nonce_bytes).
-func buildNonceKey(from qcrypto.Address, nonce [32]byte) [32]byte {
-	combined := append(from[:], nonce[:]...)
-	return qcrypto.Hash32(combined)
-}
-
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Debug().
@@ -435,15 +450,3 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}

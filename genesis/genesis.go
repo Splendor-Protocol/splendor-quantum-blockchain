@@ -1,6 +1,6 @@
 // Package genesis handles the creation and loading of the Splendor Quantum Chain genesis state.
 // The genesis file defines the initial account balances and the validator public key.
-// All addresses use Dilithium-derived SQ: format. No ECDSA.
+// All addresses use ML-DSA-65-derived SQ: format. No ECDSA.
 package genesis
 
 import (
@@ -40,7 +40,7 @@ type Genesis struct {
 	// Timestamp is the unix timestamp of block 0.
 	Timestamp int64 `json:"timestamp"`
 
-	// ValidatorPubKeyHex is the hex-encoded 1952-byte Dilithium public key
+	// ValidatorPubKeyHex is the hex-encoded 1952-byte ML-DSA-65 public key
 	// of the genesis validator. This key's address is the validator address
 	// used in the genesis block header.
 	ValidatorPubKeyHex string `json:"validator_pubkey_hex"`
@@ -117,7 +117,7 @@ func (g *Genesis) ValidatorAddress() (qcrypto.Address, error) {
 	return qcrypto.DeriveAddress(pub), nil
 }
 
-// ValidatorPublicKey returns the parsed Dilithium public key of the genesis validator.
+// ValidatorPublicKey returns the parsed ML-DSA-65 public key of the genesis validator.
 func (g *Genesis) ValidatorPublicKey() (*qcrypto.PublicKey, error) {
 	pubKeyBytes, err := hex.DecodeString(g.ValidatorPubKeyHex)
 	if err != nil {
@@ -192,7 +192,7 @@ func BuildGenesisBlock(g *Genesis, stateRoot [32]byte, validatorPriv *qcrypto.Pr
 	}
 	genesis.Hash = hash
 
-	// Sign with validator Dilithium key
+	// Sign with validator ML-DSA-65 key
 	if err := genesis.SignBlock(validatorPriv); err != nil {
 		return nil, fmt.Errorf("genesis signing failed: %w", err)
 	}

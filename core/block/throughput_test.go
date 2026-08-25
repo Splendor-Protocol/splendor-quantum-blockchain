@@ -16,14 +16,14 @@ import (
 func TestMLDSAVerifyRate(t *testing.T) {
 	pub, priv, _ := qcrypto.GenerateKeypair()
 	msg := qcrypto.Hash32([]byte("throughput probe message"))
-	sig, err := qcrypto.Sign(priv, msg[:])
+	sig, err := qcrypto.Sign(priv, msg[:], qcrypto.CtxTransaction)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const n = 2000
 	start := time.Now()
 	for i := 0; i < n; i++ {
-		if !qcrypto.Verify(pub, msg[:], sig) {
+		if !qcrypto.Verify(pub, msg[:], qcrypto.CtxTransaction, sig) {
 			t.Fatal("verify failed")
 		}
 	}

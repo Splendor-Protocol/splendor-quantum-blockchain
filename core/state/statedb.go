@@ -212,7 +212,7 @@ func (s *StateDB) GetNonce(addr qcrypto.Address) (uint64, error) {
 	return acc.Nonce, nil
 }
 
-// GetPublicKey returns the registered Dilithium public key for an address.
+// GetPublicKey returns the registered ML-DSA-65 public key for an address.
 // Returns nil if the account has no registered key.
 func (s *StateDB) GetPublicKey(addr qcrypto.Address) ([]byte, error) {
 	acc, err := s.GetAccount(addr)

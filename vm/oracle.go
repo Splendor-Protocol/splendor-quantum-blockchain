@@ -1,12 +1,12 @@
 // Package vm — On-chain Price Oracle for Splendor Quantum Chain.
 //
-// The oracle aggregates price data from multiple authorised Dilithium-signed
+// The oracle aggregates price data from multiple authorised ML-DSA-65-signed
 // data providers (feeders). It uses a median of all valid signed prices to
 // resist manipulation from any single feeder.
 //
 // Design:
-//   - Governance registers feeder addresses (Dilithium public keys)
-//   - Feeders submit price updates signed with their Dilithium key
+//   - Governance registers feeder addresses (ML-DSA-65 public keys)
+//   - Feeders submit price updates signed with their ML-DSA-65 key
 //   - Oracle stores the last N prices per feeder (sliding window)
 //   - GetPrice() returns the median of all valid feeder prices
 //   - Prices older than maxAge blocks are rejected as stale
@@ -17,7 +17,7 @@
 //   1 price unit = 1 smallest SPLD / 1 smallest token unit
 //   i.e. how many smallest-SPLD you need to buy 1 smallest-token
 //
-// All storage: SHA3-256 slots. All signatures: Dilithium Mode 3.
+// All storage: SHA3-256 slots. All signatures: ML-DSA-65 Mode 3.
 // No ECDSA. No keccak. No Ethereum address format.
 package vm
 
@@ -61,7 +61,7 @@ func oraclePriceSlot(asset qcrypto.Address, feeder qcrypto.Address) [32]byte {
 // FeederInfo describes an authorised price feeder.
 type FeederInfo struct {
 	Address   string `json:"address"`
-	PublicKey []byte `json:"public_key"` // Dilithium Mode 3 public key (1952 bytes)
+	PublicKey []byte `json:"public_key"` // ML-DSA-65 Mode 3 public key (1952 bytes)
 	Name      string `json:"name"`
 	Active    bool   `json:"active"`
 }
@@ -71,7 +71,7 @@ type PriceFeed struct {
 	Asset       string   `json:"asset"`        // asset address (SQ:...)
 	Price       *big.Int `json:"price"`        // price in oracle units
 	BlockHeight uint64   `json:"block_height"` // when this price was submitted
-	Signature   []byte   `json:"signature"`    // Dilithium sig over message
+	Signature   []byte   `json:"signature"`    // ML-DSA-65 sig over message
 }
 
 // PriceUpdate is the canonical message a feeder signs.
@@ -103,7 +103,7 @@ func PriceUpdateMessage(asset qcrypto.Address, price *big.Int, blockHeight uint6
 
 // ── PriceOracle ───────────────────────────────────────────────────────────────
 
-// PriceOracle aggregates Dilithium-signed price feeds and provides median prices.
+// PriceOracle aggregates ML-DSA-65-signed price feeds and provides median prices.
 type PriceOracle struct {
 	stateDB  *state.StateDB
 	contract qcrypto.Address
@@ -172,7 +172,7 @@ func (o *PriceOracle) GetFeeder(feeder qcrypto.Address) (*FeederInfo, error) {
 // ── Price submission ──────────────────────────────────────────────────────────
 
 // SubmitPrice allows a registered feeder to post a new signed price.
-// The feeder must sign PriceUpdateMessage(asset, price, blockHeight) with their Dilithium key.
+// The feeder must sign PriceUpdateMessage(asset, price, blockHeight) with their ML-DSA-65 key.
 func (o *PriceOracle) SubmitPrice(
 	feeder qcrypto.Address,
 	asset qcrypto.Address,
@@ -190,14 +190,14 @@ func (o *PriceOracle) SubmitPrice(
 		return fmt.Errorf("oracle: feeder %s not authorised", feeder)
 	}
 
-	// Verify Dilithium signature
+	// Verify ML-DSA-65 signature
 	msg := PriceUpdateMessage(asset, price, blockHeight)
 	pub, err := qcrypto.PublicKeyFromBytes(info.PublicKey)
 	if err != nil {
 		return fmt.Errorf("oracle: invalid feeder public key: %w", err)
 	}
-	if !qcrypto.Verify(pub, msg[:], signature) {
-		return fmt.Errorf("oracle: invalid Dilithium signature from feeder %s", feeder)
+	if !qcrypto.Verify(pub, msg[:], qcrypto.CtxOracle, signature) {
+		return fmt.Errorf("oracle: invalid ML-DSA signature from feeder %s", feeder)
 	}
 
 	// Store the price feed
