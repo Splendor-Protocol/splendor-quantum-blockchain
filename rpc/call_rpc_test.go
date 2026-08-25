@@ -102,7 +102,7 @@ func TestEstimateHandlerTransfer(t *testing.T) {
 	}
 	defer sdb.Close()
 
-	h := makeEstimateHandler(sdb, nil)
+	h := makeEstimateHandler(sdb, nil, nil)
 
 	// A plain transfer: gas 0, fee = mempool floor, not reverted.
 	var to qcrypto.Address
