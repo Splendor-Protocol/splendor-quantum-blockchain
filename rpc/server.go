@@ -89,13 +89,19 @@ type Config struct {
 	SimTimeout     time.Duration
 }
 
-// Defaults for the simulation plane. A view call is cheap in the common case
-// and pathological in the worst case, so the sustained rate is generous while
-// the concurrency cap is deliberately small: it is the concurrency, not the
-// request rate, that decides how many cores a caller can occupy.
+// Defaults for the simulation plane.
+//
+// The concurrency cap is the real control and is deliberately small: it bounds
+// how many cores a caller can occupy at once, which is what actually decides
+// whether the node stays responsive. The rate limit is intentionally loose
+// because it usually cannot tell callers apart — public nodes sit behind a
+// tunnel or load balancer, so without TrustProxy every request appears to come
+// from one address and the per-IP bucket degrades into a global throttle. A
+// tight rate there would reject legitimate explorer and wallet traffic while
+// adding nothing that the concurrency cap does not already provide.
 const (
-	defaultSimRatePerSec  = 20
-	defaultSimBurst       = 40
+	defaultSimRatePerSec  = 100
+	defaultSimBurst       = 200
 	defaultSimMaxInFlight = 8
 	defaultSimTimeout     = 5 * time.Second
 )

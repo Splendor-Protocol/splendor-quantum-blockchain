@@ -61,6 +61,10 @@ var (
 	flagRateLimit         float64
 	flagRateBurst         float64
 	flagTrustProxy        bool
+	flagSimRate           float64
+	flagSimBurst          float64
+	flagSimMaxInFlight    int
+	flagSimTimeout        time.Duration
 	flagTLSCert           string
 	flagTLSKey            string
 	flagPublicURL         string
@@ -100,6 +104,10 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().Float64Var(&flagRateLimit, "rpc-rate-limit", 25, "Sustained requests/second per client IP on tx submission and x402 routes (0 disables)")
 	root.Flags().Float64Var(&flagRateBurst, "rpc-rate-burst", 50, "Burst allowance per client IP for rate-limited routes")
 	root.Flags().BoolVar(&flagTrustProxy, "trust-proxy", false, "Read client IP from X-Forwarded-For. ONLY enable behind a proxy you control — otherwise clients can spoof it and bypass rate limits.")
+	root.Flags().Float64Var(&flagSimRate, "sim-rate-limit", 0, "Sustained requests/second per client IP on VM-executing routes (/call, /estimate, /logs). 0 uses the built-in default.")
+	root.Flags().Float64Var(&flagSimBurst, "sim-rate-burst", 0, "Burst allowance for VM-executing routes. 0 uses the built-in default.")
+	root.Flags().IntVar(&flagSimMaxInFlight, "sim-max-inflight", 0, "Maximum concurrent VM simulations across all callers; excess requests get 503. This, not the rate limit, bounds how much CPU anonymous callers can occupy. 0 uses the built-in default.")
+	root.Flags().DurationVar(&flagSimTimeout, "sim-timeout", 0, "Maximum wall time a single simulation may hold a slot. 0 uses the built-in default.")
 	root.Flags().StringVar(&flagTLSCert, "tls-cert", "", "PEM certificate for HTTPS. Enables TLS 1.3 with post-quantum hybrid key exchange (X25519MLKEM768).")
 	root.Flags().StringVar(&flagTLSKey, "tls-key", "", "PEM private key matching --tls-cert")
 	root.Flags().StringVar(&flagPublicURL, "public-url", "", "Externally reachable base URL advertised to peers (default: derived from --rpc-addr)")
@@ -538,6 +546,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 			SubmitRatePerSec: flagRateLimit,
 			SubmitBurst:      flagRateBurst,
 			TrustProxy:       flagTrustProxy,
+			SimRatePerSec:    flagSimRate,
+			SimBurst:         flagSimBurst,
+			SimMaxInFlight:   flagSimMaxInFlight,
+			SimTimeout:       flagSimTimeout,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
