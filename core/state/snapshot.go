@@ -23,7 +23,7 @@ import (
 )
 
 // StateSnapshot captures the dirty (pending) state at a moment in time.
-// It stores deep copies of all dirty accounts so revert is cheap and correct.
+// It stores deep copies of all pending writes so revert is cheap and correct.
 type StateSnapshot struct {
 	// id is a monotonically increasing snapshot counter.
 	id uint64
@@ -33,6 +33,12 @@ type StateSnapshot struct {
 
 	// dirtyCode is a copy of stateDB.codeCache at snapshot time.
 	dirtyCode map[[32]byte][]byte
+
+	// pendingRaw is a copy of stateDB.pendingRaw (contract storage + X402 nonce
+	// overlay) at snapshot time. Capturing it is what lets a failed tx's storage
+	// writes be rolled back — previously they went straight to LevelDB and
+	// survived a revert, silently forking a follower on contract storage.
+	pendingRaw map[string][]byte
 }
 
 // snapCounter is a process-global snapshot ID counter.
@@ -61,11 +67,20 @@ func (s *StateDB) Snapshot() uint64 {
 		code[h] = cp
 	}
 
+	// Deep-copy the raw storage/nonce overlay
+	raw := make(map[string][]byte, len(s.pendingRaw))
+	for k, v := range s.pendingRaw {
+		cp := make([]byte, len(v))
+		copy(cp, v)
+		raw[k] = cp
+	}
+
 	// Store snapshot in the registry
 	s.snapshots[id] = &StateSnapshot{
 		id:            id,
 		dirtyAccounts: accounts,
 		dirtyCode:     code,
+		pendingRaw:    raw,
 	}
 
 	return id
@@ -85,6 +100,7 @@ func (s *StateDB) RevertToSnapshot(id uint64) {
 	// Restore dirty state from snapshot
 	s.dirty = snap.dirtyAccounts
 	s.codeCache = snap.dirtyCode
+	s.pendingRaw = snap.pendingRaw
 
 	// Clean up this snapshot and all newer ones
 	for snapID := range s.snapshots {
