@@ -350,8 +350,12 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		return vm.DispatchModuleCall(e.state, tx.From, tx.Nonce, tx.Data, receipt)
 	}
 
-	total := addBig(tx.Amount, tx.Fee)
-	if err := fromAcc.SubBalance(total); err != nil {
+	// The fee is charged up-front as gas (kept even if the call reverts). The
+	// call value is NOT debited here — it moves sender->contract only if the
+	// call succeeds (see below). Previously tx.Amount was debited from the
+	// sender but never credited to tx.To, so the coins were burned out of total
+	// supply on every value-bearing contract call.
+	if err := fromAcc.SubBalance(tx.Fee); err != nil {
 		return err
 	}
 	fromAcc.IncrNonce()
@@ -365,13 +369,25 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		return fmt.Errorf("call failed: %w", err)
 	}
 
+	reverted := result != nil && result.Reverted
 	if result != nil {
 		receipt.GasUsed = result.GasUsed
 		for _, l := range result.Logs {
 			receipt.AddLog(l)
 		}
-		if result.Reverted {
+		if reverted {
 			receipt.SetFailed("execution reverted")
+		}
+	}
+
+	// Credit the call value to the contract on success. On revert the value
+	// stays with the sender; on a hard error the enclosing per-tx snapshot
+	// reverts the fee debit and nonce bump too. Transfer re-checks the sender's
+	// balance (which still covers tx.Amount after the fee debit, since the
+	// pre-flight check required Amount+Fee) and handles the from==to case.
+	if !reverted && tx.Amount != nil && tx.Amount.Sign() > 0 {
+		if err := e.state.Transfer(tx.From, tx.To, tx.Amount); err != nil {
+			return fmt.Errorf("call value transfer: %w", err)
 		}
 	}
 

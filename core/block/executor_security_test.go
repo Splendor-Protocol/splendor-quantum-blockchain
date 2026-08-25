@@ -154,6 +154,65 @@ func TestExecuteBlockAcceptsValidBlockAndAdvancesHead(t *testing.T) {
 	}
 }
 
+// A value-bearing TxCall must MOVE the value sender->contract, never BURN it.
+// Before the fix execCall debited tx.Amount from the sender and never credited
+// tx.To, destroying the coins out of total supply on every value-bearing call.
+func TestExecCallConservesCallValue(t *testing.T) {
+	ex, sdb := newTestExecutor(t)
+	defer ex.Close()
+	defer sdb.Close()
+
+	// Install a trivial STOP contract at `to` so the call succeeds (non-reverted).
+	code := []byte{0x00} // OpSTOP
+	codeHash := qcrypto.Hash32(code)
+	sdb.SetCode(codeHash, code)
+	to := testAddr(0x22)
+	cacc := types.NewAccount(to)
+	cacc.IsContract = true
+	cacc.CodeHash = codeHash
+	sdb.SetAccount(cacc)
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+
+	pub, priv, _ := qcrypto.GenerateKeypair()
+	from := qcrypto.DeriveAddress(pub)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	vaddr := qcrypto.DeriveAddress(vpub)
+
+	const start = int64(1_000_000)
+	const amount = int64(50_000)
+	fund(t, sdb, from, start)
+
+	tx := types.NewCall(from, to, nil, big.NewInt(amount), big.NewInt(testFee), 0, time.Now().Unix())
+	if err := tx.Sign(priv, true); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := ex.ProduceBlock([]*types.Transaction{tx}, vaddr, vpub.Bytes(), vpriv, [32]byte{}, 1); err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+
+	fromBal, _ := sdb.GetBalance(from)
+	toBal, _ := sdb.GetBalance(to)
+	vBal, _ := sdb.GetBalance(vaddr)
+
+	if toBal.Cmp(big.NewInt(amount)) != 0 {
+		t.Fatalf("contract balance = %s, want %d (call value burned, not credited)", toBal, amount)
+	}
+	if fromBal.Cmp(big.NewInt(start-amount-testFee)) != 0 {
+		t.Fatalf("sender balance = %s, want %d", fromBal, start-amount-testFee)
+	}
+	if vBal.Cmp(big.NewInt(testFee)) != 0 {
+		t.Fatalf("validator fee = %s, want %d", vBal, testFee)
+	}
+	// Conservation: nothing minted, nothing burned.
+	total := new(big.Int).Add(fromBal, toBal)
+	total.Add(total, vBal)
+	if total.Cmp(big.NewInt(start)) != 0 {
+		t.Fatalf("total supply = %s, want %d (value minted or burned)", total, start)
+	}
+}
+
 // A block that MUTATES accounts but declares a wrong state root must be rejected
 // AND leave committed state untouched. Uses a real transfer so the pre-fix
 // commit-then-check code would have persisted the -100 before rejecting.
