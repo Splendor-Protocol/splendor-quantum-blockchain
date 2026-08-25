@@ -33,10 +33,11 @@ import (
 
 // RegisterCallRoutes adds the read-only contract-interaction endpoints to the
 // router. executor may be nil (native-module reads do not need it); the generic
-// bytecode path uses it only to resolve the current block height.
-func RegisterCallRoutes(r *mux.Router, stateDB *state.StateDB, executor *block.Executor) {
+// bytecode path uses it only to resolve the current block height. pool may be
+// nil, in which case /estimate quotes the static fee floor.
+func RegisterCallRoutes(r *mux.Router, stateDB *state.StateDB, executor *block.Executor, pool *mempool.Mempool) {
 	r.HandleFunc("/call", makeCallHandler(stateDB, executor)).Methods(http.MethodPost)
-	r.HandleFunc("/estimate", makeEstimateHandler(stateDB, executor)).Methods(http.MethodPost)
+	r.HandleFunc("/estimate", makeEstimateHandler(stateDB, executor, pool)).Methods(http.MethodPost)
 	log.Debug().Msg("contract-interaction RPC routes registered (/call, /estimate)")
 }
 
@@ -154,7 +155,7 @@ type estimateResponse struct {
 	Note         string `json:"note,omitempty"`
 }
 
-func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
+func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool *mempool.Mempool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req estimateRequest
 		if err := readJSON(r, &req); err != nil {
@@ -180,10 +181,18 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 			}
 		}
 
+		// Quote the live floor: it rises with pool occupancy, so quoting the
+		// static MinFee during congestion would hand back a fee that the
+		// mempool then rejects.
+		minFee := int64(mempool.MinFee)
+		if pool != nil {
+			minFee = pool.MinFeeNow()
+		}
+
 		resp := estimateResponse{
-			Fee:        fmt.Sprintf("%d", mempool.MinFee),
+			Fee:        fmt.Sprintf("%d", minFee),
 			FeeIsFloor: true,
-			Note:       "on Splendor Quantum the fee is a mempool floor (MinFee) a sender may exceed for priority; it is decoupled from VM gas — 'gas' is the VM meter and applies to contract calls only",
+			Note:       "on Splendor Quantum the fee is a mempool floor a sender may exceed for priority; the floor rises while the pool is congested, so re-quote before signing. It is decoupled from VM gas — 'gas' is the VM meter and applies to contract calls only",
 		}
 
 		// Read-only affordability check (native SPLD) when 'from' is supplied.
@@ -194,7 +203,7 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 				return
 			}
 			if bal, berr := stateDB.GetBalance(from); berr == nil {
-				need := new(big.Int).Add(value, big.NewInt(mempool.MinFee))
+				need := new(big.Int).Add(value, big.NewInt(minFee))
 				if bal.Cmp(need) < 0 {
 					resp.Reverted = true
 					resp.RevertReason = fmt.Sprintf("insufficient balance: have %s, need %s (value+fee)", bal.String(), need.String())

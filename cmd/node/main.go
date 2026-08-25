@@ -550,7 +550,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	rpc.RegisterDEXRoutes(router, stateDB)
 
 	// Contract-interaction routes (/call view calls, /estimate gas+fee) — issue #4
-	rpc.RegisterCallRoutes(router, stateDB, executor)
+	rpc.RegisterCallRoutes(router, stateDB, executor, pool)
 
 	// Lending routes
 	rpc.RegisterLendingRoutes(router, stateDB)
