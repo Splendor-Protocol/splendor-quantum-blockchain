@@ -10,6 +10,19 @@ export function bytesToHex(bytes: Uint8Array): string {
     .join('');
 }
 
+/**
+ * Generate a 32-byte X402 payment nonce as hex.
+ *
+ * Single-use and tracked on-chain after settlement, so it must come from a CSPRNG:
+ * a predictable nonce would let an observer pre-compute the replay-registry key
+ * for a payment that has not happened yet.
+ */
+export function randomNonceHex(): string {
+  const bytes = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(bytes);
+  return bytesToHex(bytes);
+}
+
 export function hexToBytes(hex: string): Uint8Array {
   const s = strip0x(hex);
   if (s.length % 2 !== 0) {

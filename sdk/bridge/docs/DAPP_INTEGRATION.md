@@ -71,7 +71,7 @@ Or create without connecting: `createSplendorClient({ network: 'local' })` then 
 |---------|------------|
 | EVM / MetaMask `0x…` | Only used to **derive** the PQ key via `personal_sign` |
 | `SQ:` address | Real on-chain identity (32-byte SHA3-256 of Dilithium pubkey) |
-| WASM signer | Same Go Dilithium (circl mode3) as the node |
+| WASM signer | Same Go ML-DSA-65 (circl, FIPS 204) as the node |
 
 **Security FAQ:** funds and nonces live on the **`SQ:`** address, not the MetaMask address. Never treat them as interchangeable.
 

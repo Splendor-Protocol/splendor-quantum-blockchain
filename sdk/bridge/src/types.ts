@@ -47,13 +47,42 @@ export type BridgeOptions = RpcOptions & {
   /** Optional request/error middleware for observability. */
   onRequest?: (info: { method: string; path?: string }) => void;
   onError?: (err: unknown) => void;
+  /**
+   * Security warnings the caller should surface to the user — currently emitted
+   * when connecting with a key that is not post-quantum secure.
+   */
+  onWarning?: (warning: { code: 'NOT_POST_QUANTUM'; message: string }) => void;
 };
+
+/**
+ * How the ML-DSA key was obtained, and therefore how strong it actually is.
+ *
+ * - `native`: the key comes from post-quantum entropy (a generated or supplied
+ *   seed). Its security rests on ML-DSA-65 alone.
+ *
+ * - `evm-derived`: the seed is SHA3-256 of an ECDSA `personal_sign` signature
+ *   from an Ethereum key. The signing itself is ML-DSA, but the key is only as
+ *   strong as secp256k1: an adversary with a quantum computer recovers the EVM
+ *   private key from any signature that account has ever published, replays the
+ *   deterministic derivation message, and reproduces this exact ML-DSA key.
+ *   Convenient for onboarding — NOT quantum-safe for value at rest.
+ */
+export type KeyOrigin = 'native' | 'evm-derived';
 
 export type DeriveInfo = {
   address: string;
   public_key_b64: string;
   public_key_hex: string;
   evmAddress?: string;
+
+  /** How this key was produced. See KeyOrigin. */
+  keyOrigin?: KeyOrigin;
+
+  /**
+   * False when the key is EVM-derived: the account inherits secp256k1's
+   * vulnerability regardless of the signature algorithm used on the wire.
+   */
+  postQuantumSecure?: boolean;
 };
 
 export type ConnectionState = 'disconnected' | 'connected';
@@ -96,6 +125,12 @@ export type X402PayOpts = {
   validBefore?: number;
   requirements?: object;
   settle?: boolean;
+  /**
+   * Fee for the on-chain settlement transaction. Settlement is a normal
+   * transaction that a validator must include, so it pays a fee like any other.
+   * Defaults to MIN_FEE.
+   */
+  fee?: string;
 };
 
 /** Dry-run / preflight estimate (no signing). */

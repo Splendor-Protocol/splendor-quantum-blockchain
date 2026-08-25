@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-// Package main exposes Dilithium derive/sign helpers to JavaScript via syscall/js.
+// Package main exposes ML-DSA-65 derive/sign helpers to JavaScript via syscall/js.
 // Private keys stay in WASM memory and are never returned to JS.
 // Multiple sessions are supported so concurrent bridge instances do not clobber keys.
 package main
@@ -36,6 +36,7 @@ func main() {
 	js.Global().Set("sqSignCall", js.FuncOf(sqSignCall))
 	js.Global().Set("sqSignDeploy", js.FuncOf(sqSignDeploy))
 	js.Global().Set("sqSignX402", js.FuncOf(sqSignX402))
+	js.Global().Set("sqSignX402Settlement", js.FuncOf(sqSignX402Settlement))
 	js.Global().Set("sqSignMessage", js.FuncOf(sqSignMessage))
 	js.Global().Set("sqVerifyMessage", js.FuncOf(sqVerifyMessage))
 	js.Global().Set("sqLock", js.FuncOf(sqLock))
@@ -161,7 +162,7 @@ func sqGetPublicKeyB64(this js.Value, args []js.Value) interface{} {
 	return base64.StdEncoding.EncodeToString(w.PublicKey)
 }
 
-// sqSignMessage signs an ARBITRARY message with the session's Dilithium key —
+// sqSignMessage signs an ARBITRARY message with the session's ML-DSA-65 key —
 // the generic signer that Splendor Connect v2 needs to authenticate a quantum
 // (SQ:) identity (the on-chain signers only sign structured txs). The signature
 // is over the raw message bytes (qcrypto.Sign/Verify do not hash internally), so
@@ -180,7 +181,7 @@ func sqSignMessage(this js.Value, args []js.Value) interface{} {
 	if !ok {
 		return errVal("wallet locked")
 	}
-	sig, e := qcrypto.Sign(w.Private, []byte(message))
+	sig, e := qcrypto.Sign(w.Private, []byte(message), qcrypto.CtxMessage)
 	if e != nil {
 		return errVal("sign: " + e.Error())
 	}
@@ -191,7 +192,7 @@ func sqSignMessage(this js.Value, args []js.Value) interface{} {
 	}
 }
 
-// sqVerifyMessage verifies a Dilithium Mode-3 signature over a message given a
+// sqVerifyMessage verifies a ML-DSA-65 Mode-3 signature over a message given a
 // base64 public key — a PURE function (no session/key). This is what a Node
 // gateway calls to authenticate a Connect v2 challenge server-side, since there
 // is no native-JS CIRCL Mode-3 verifier.
@@ -218,7 +219,7 @@ func sqVerifyMessage(this js.Value, args []js.Value) interface{} {
 	if e != nil {
 		return errVal("verify: bad signatureB64: " + e.Error())
 	}
-	return map[string]interface{}{"valid": qcrypto.Verify(pk, []byte(message), sig)}
+	return map[string]interface{}{"valid": qcrypto.Verify(pk, []byte(message), qcrypto.CtxMessage, sig)}
 }
 
 // Args: [sessionId, paramsJson] or [paramsJson] for default session.
@@ -342,6 +343,30 @@ func sqSignX402(this js.Value, args []js.Value) interface{} {
 		return errVal("invalid params: " + e.Error())
 	}
 	wire, e := w.SignX402(p)
+	if e != nil {
+		return errVal(e.Error())
+	}
+	return okJSON(wire)
+}
+
+// sqSignX402Settlement signs the on-chain TxX402 that settles a payment.
+// params.nonce_hex must match the nonce used for the payment payload.
+func sqSignX402Settlement(this js.Value, args []js.Value) interface{} {
+	id, paramsJSON, err := parseSessionAndString(args, "params JSON")
+	if err != "" {
+		return errVal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	var p signer.X402Params
+	if e := json.Unmarshal([]byte(paramsJSON), &p); e != nil {
+		return errVal("invalid params: " + e.Error())
+	}
+	wire, e := w.SignX402Settlement(p)
 	if e != nil {
 		return errVal(e.Error())
 	}

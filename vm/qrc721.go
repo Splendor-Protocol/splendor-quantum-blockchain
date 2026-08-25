@@ -2,7 +2,7 @@
 //
 // QRC-721 is the quantum-native NFT standard — the SQC equivalent of ERC-721.
 // Every token is unique, identified by a uint256 tokenId.
-// All addresses use the SQ: format (32 bytes, SHA3-256 derived from Dilithium public key).
+// All addresses use the SQ: format (32 bytes, SHA3-256 derived from ML-DSA-65 public key).
 // All state operations go through the StateDB with SHA3-256 slot keys.
 // No ECDSA. No keccak. No Ethereum address format.
 //

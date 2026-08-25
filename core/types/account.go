@@ -9,7 +9,7 @@ import (
 // Account represents the on-chain state of a Splendor QC account.
 // Balances are stored in the smallest SPLD unit (1 SPLD = 10^18 units).
 type Account struct {
-	// The account's quantum address (32 bytes, derived from Dilithium pubkey).
+	// The account's quantum address (32 bytes, derived from ML-DSA-65 pubkey).
 	Address qcrypto.Address `json:"address"`
 
 	// Current SPLD balance in smallest unit.
@@ -18,7 +18,7 @@ type Account struct {
 	// Monotonically increasing transaction counter. Prevents replay attacks.
 	Nonce uint64 `json:"nonce"`
 
-	// The account's Dilithium public key (1952 bytes).
+	// The account's ML-DSA-65 public key (1952 bytes).
 	// Registered on first outbound transaction.
 	// Empty for accounts that have only ever received funds.
 	PublicKey []byte `json:"public_key,omitempty"`
@@ -70,7 +70,7 @@ func (a *Account) IncrNonce() {
 	a.Nonce++
 }
 
-// HasPublicKey returns true if the account has a registered Dilithium public key.
+// HasPublicKey returns true if the account has a registered ML-DSA-65 public key.
 func (a *Account) HasPublicKey() bool {
 	return len(a.PublicKey) == qcrypto.PublicKeySize
 }

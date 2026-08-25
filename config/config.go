@@ -118,7 +118,7 @@ type P2PConfig struct {
 	// PeerExchangeInterval is how often the node requests peer lists from known peers.
 	PeerExchangeInterval Duration `json:"peer_exchange_interval"`
 
-	// ValidatorPubKeyHex is the hex-encoded Dilithium public key of the genesis validator.
+	// ValidatorPubKeyHex is the hex-encoded ML-DSA-65 public key of the genesis validator.
 	// Required for all nodes to verify incoming blocks.
 	ValidatorPubKeyHex string `json:"validator_pubkey_hex"`
 }

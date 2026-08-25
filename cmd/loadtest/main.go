@@ -239,35 +239,61 @@ func probe(f map[string]string) {
 	rpc := def(f["--rpc"], "http://127.0.0.1:8080")
 	fmt.Printf("=== security probes vs %s ===\n", rpc)
 
-	// 1. SSRF: announce a metadata-service peer — must be rejected by IsSafePeerURL.
+	// 1. Peer announce is on the authenticated write plane. Unauthenticated
+	// callers must be refused before the SSRF guard is even reached (401/503);
+	// if the node is running without a token, 503 is the fail-closed answer.
 	body := `{"addr":"http://169.254.169.254/latest/meta-data/","height":1}`
 	code, resp := postRaw(rpc, "/peers/announce", []byte(body))
-	report("SSRF /peers/announce (metadata IP)", code >= 400 && contains(resp, "disallowed"), code, resp)
+	report("/peers/announce requires write-plane auth", code == 401 || code == 503, code, resp)
 
-	// 2. SSRF: loopback peer — must be rejected (public devnet).
+	// 2. SSRF guard itself: still enforced for callers that DO hold the token.
+	// Without a token these read as auth failures, which is also a pass.
 	code, resp = postRaw(rpc, "/peers/announce", []byte(`{"addr":"http://127.0.0.1:9/","height":1}`))
-	report("SSRF /peers/announce (loopback)", code >= 400 && contains(resp, "disallowed"), code, resp)
+	report("SSRF /peers/announce (loopback) rejected",
+		code >= 400 && (contains(resp, "disallowed") || code == 401 || code == 503), code, resp)
 
-	// 2b. SSRF: internal AWS subnet — must be rejected.
 	code, resp = postRaw(rpc, "/peers/announce", []byte(`{"addr":"http://10.60.0.5:8080/","height":1}`))
-	report("SSRF /peers/announce (private 10.x)", code >= 400 && contains(resp, "disallowed"), code, resp)
+	report("SSRF /peers/announce (private 10.x) rejected",
+		code >= 400 && (contains(resp, "disallowed") || code == 401 || code == 503), code, resp)
 
-	// 3. x402/settle must be disabled by default (503) or auth-gated (401).
+	// 3. x402 settlement must never move funds from the handler. A request with
+	// no payer-signed settlement transaction must be refused outright.
 	code, resp = postRaw(rpc, "/x402/settle", []byte(`{}`))
-	report("x402/settle gated (503/401)", code == 503 || code == 401 || code == 404, code, resp)
+	report("x402/settle refuses unsigned settlement", code >= 400, code, resp)
 
 	// 4. Oversized body must be rejected, not OOM the node.
 	big := bytes.Repeat([]byte("A"), 2<<20)
 	code, resp = postRaw(rpc, "/x402/verify", big)
 	report("oversized /x402/verify body bounded", code >= 400, code, resp)
 
-	// 5. Malformed block push must be rejected (fail-closed), not panic.
+	// 5. Block ingest is write-plane: an anonymous push must be refused on
+	// authentication, before any block parsing or state application.
 	code, resp = postRaw(rpc, "/block", []byte(`{"header":{"height":999999}}`))
-	report("malformed /block push rejected", code >= 400, code, resp)
+	report("/block requires write-plane auth", code == 401 || code == 503, code, resp)
 
 	// 6. Garbage tx must be rejected cleanly.
 	code, resp = postRaw(rpc, "/tx/submit", []byte(`{"garbage":true}`))
 	report("garbage /tx/submit rejected", code >= 400, code, resp)
+
+	// 7. The node must advertise a signed post-quantum identity for the sealed
+	// P2P transport.
+	idCode, idResp := get(rpc, "/p2p/identity")
+	report("/p2p/identity serves a signed ML-KEM key",
+		idCode == 200 && contains(idResp, "ML-KEM-768") && contains(idResp, "ML-DSA-65"), idCode, idResp)
+
+	// 8. A garbage envelope must be refused without revealing why.
+	code, resp = postRaw(rpc, "/p2p/sealed", []byte(`{"kem_ct":"AAAA","nonce":"AAAA","ciphertext":"AAAA"}`))
+	report("/p2p/sealed rejects a bogus envelope", code >= 400, code, resp)
+
+	// 9. Rate limiting must kick in on sustained submission from one IP.
+	limited := false
+	for i := 0; i < 200; i++ {
+		if c, _ := postRaw(rpc, "/tx/submit", []byte(`{"garbage":true}`)); c == 429 {
+			limited = true
+			break
+		}
+	}
+	report("/tx/submit is rate limited per IP", limited, 429, "expected a 429 within 200 requests")
 
 	fmt.Println("=== probes done (node should still be serving /status) ===")
 	if h, mp, ok := status(rpc); ok {

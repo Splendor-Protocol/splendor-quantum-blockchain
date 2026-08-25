@@ -14,6 +14,8 @@ export type WasmSignerApi = {
   sqSignCall: (sessionId: string, paramsJson: string) => string | { error: string };
   sqSignDeploy: (sessionId: string, paramsJson: string) => string | { error: string };
   sqSignX402: (sessionId: string, paramsJson: string) => string | { error: string };
+  /** Sign the on-chain TxX402 that settles a payment through consensus. */
+  sqSignX402Settlement: (sessionId: string, paramsJson: string) => string | { error: string };
   /** Sign an arbitrary message with the session key (Connect v2 challenge). */
   sqSignMessage: (
     sessionId: string,
@@ -72,6 +74,7 @@ export function bindWasmApi(g: Record<string, unknown>): WasmSignerApi {
     sqSignCall: (id, j) => x.sqSignCall(id, j),
     sqSignDeploy: (id, j) => x.sqSignDeploy(id, j),
     sqSignX402: (id, j) => x.sqSignX402(id, j),
+    sqSignX402Settlement: (id, j) => x.sqSignX402Settlement(id, j),
     sqSignMessage: (id, m) => x.sqSignMessage(id, m),
     sqVerifyMessage: (p, m, s) => x.sqVerifyMessage(p, m, s),
     sqLock: (id) => x.sqLock(id),

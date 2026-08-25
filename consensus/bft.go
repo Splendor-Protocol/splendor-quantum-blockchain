@@ -1,13 +1,13 @@
 // Package consensus implements the Splendor Quantum Chain consensus mechanisms.
 //
-// Phase 1: Single validator (validator.go) — block production with Dilithium signing.
+// Phase 1: Single validator (validator.go) — block production with ML-DSA-65 signing.
 // Phase 2: Multi-validator BFT (this file) — Byzantine Fault Tolerant consensus
 //           with 2/3 quorum voting, all messages signed with ML-DSA-65.
 //
 // The BFT design:
 //   - Validators are elected by stake weight (registered via governance).
 //   - Each epoch (configurable number of blocks), a new leader is selected.
-//   - The leader proposes a block; validators vote with Dilithium-signed Vote messages.
+//   - The leader proposes a block; validators vote with ML-DSA-65-signed Vote messages.
 //   - A block is committed when 2/3+1 of validators have cast valid votes.
 //   - Safety: no two honest validators will commit conflicting blocks at the same height.
 //   - Liveness: the chain progresses as long as <1/3 of validators are faulty.
@@ -30,7 +30,7 @@ type ValidatorInfo struct {
 	// Address is the validator's SQ: address.
 	Address qcrypto.Address
 
-	// PublicKey is the validator's 1952-byte Dilithium public key.
+	// PublicKey is the validator's 1952-byte ML-DSA-65 public key.
 	PublicKey []byte
 
 	// StakeAmount is the validator's staked SPLD balance (in smallest units).
@@ -91,13 +91,13 @@ func (v *Vote) Hash() ([32]byte, error) {
 	return qcrypto.Hash32(b), nil
 }
 
-// Sign signs the vote with the given Dilithium private key.
+// Sign signs the vote with the given ML-DSA-65 private key.
 func (v *Vote) Sign(priv *qcrypto.PrivateKey) error {
 	hash, err := v.Hash()
 	if err != nil {
 		return fmt.Errorf("vote hash failed: %w", err)
 	}
-	sig, err := qcrypto.Sign(priv, hash[:])
+	sig, err := qcrypto.Sign(priv, hash[:], qcrypto.CtxVote)
 	if err != nil {
 		return fmt.Errorf("vote sign failed: %w", err)
 	}
@@ -105,7 +105,7 @@ func (v *Vote) Sign(priv *qcrypto.PrivateKey) error {
 	return nil
 }
 
-// Verify verifies the vote's Dilithium signature against the given public key.
+// Verify verifies the vote's ML-DSA-65 signature against the given public key.
 func (v *Vote) Verify(pubKeyBytes []byte) error {
 	pub, err := qcrypto.PublicKeyFromBytes(pubKeyBytes)
 	if err != nil {
@@ -115,8 +115,8 @@ func (v *Vote) Verify(pubKeyBytes []byte) error {
 	if err != nil {
 		return fmt.Errorf("vote hash failed: %w", err)
 	}
-	if !qcrypto.Verify(pub, hash[:], v.Signature) {
-		return fmt.Errorf("invalid vote Dilithium signature from %s", v.ValidatorAddr)
+	if !qcrypto.Verify(pub, hash[:], qcrypto.CtxVote, v.Signature) {
+		return fmt.Errorf("invalid vote ML-DSA signature from %s", v.ValidatorAddr)
 	}
 	return nil
 }
@@ -395,7 +395,7 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 		return
 	}
 
-	// Verify Dilithium signature
+	// Verify ML-DSA-65 signature
 	if err := vote.Verify(pubKey); err != nil {
 		log.Warn().Err(err).Str("from", vote.ValidatorAddr.String()).Msg("BFT: invalid vote signature")
 		return

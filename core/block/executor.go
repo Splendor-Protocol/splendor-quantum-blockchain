@@ -28,7 +28,40 @@ const (
 	// take far longer than the target interval. ProduceBlock stops including txs
 	// past this budget; ExecuteBlock rejects a block that exceeds it.
 	MaxBlockGas uint64 = 500_000_000_000
+
+	// MaxBlockWireBytes caps the serialised size of a block on the wire.
+	//
+	// MaxTxPerBlock alone does not bound block size: each tx may carry
+	// MaxTxDataBytes (128 KiB) of calldata, so 10k txs is theoretically >1 GiB.
+	// That is both a propagation problem and a memory-exhaustion vector on every
+	// receiving node. 32 MiB fits ~4,300 signature-bearing transactions, which is
+	// far above what a 2-second interval can verify and execute, so this bounds
+	// memory without bounding real throughput.
+	//
+	// ProduceBlock stops packing at this budget; the P2P/RPC ingress caps the
+	// request body at the same value, so an oversized block is refused before it
+	// is ever buffered.
+	MaxBlockWireBytes = 32 << 20
+
+	// MaxFutureBlockDrift is how far ahead of local wall-clock a block timestamp
+	// may be. Without a bound, a validator (or anyone replaying its blocks) can
+	// stamp a block far in the future and poison every contract that reads
+	// OpTIMESTAMP — time-locks, vesting, auction deadlines, and oracle staleness
+	// checks all key off block time.
+	MaxFutureBlockDrift = 15 * time.Second
 )
+
+// txWireSizeEstimate returns an UPPER BOUND on a transaction's JSON wire size.
+//
+// It must never under-estimate: ProduceBlock uses it as a packing budget while
+// the receiving side enforces the true byte count, so an under-estimate would
+// let a producer build blocks its own peers reject. Go marshals []byte fields as
+// base64 strings (4 bytes out per 3 in); the fixed slack covers the header
+// fields plus the two 32-number address arrays.
+func txWireSizeEstimate(tx *types.Transaction) int {
+	b64 := func(n int) int { return ((n + 2) / 3) * 4 }
+	return 1024 + b64(len(tx.Data)) + b64(len(tx.PublicKey)) + b64(len(tx.Signature))
+}
 
 // Executor executes blocks and manages the chain database.
 // It supports pluggable middleware hooks and generates transaction receipts.
@@ -567,6 +600,7 @@ func (e *Executor) ProduceBlock(
 		executed  []*types.Transaction
 		receipts  []*types.Receipt
 		blockGas  uint64
+		blockSize int
 	)
 
 	for i, tx := range txs {
@@ -574,6 +608,14 @@ func (e *Executor) ProduceBlock(
 		// fee + bumps nonce before the op, so without reverting, a failed tx that
 		// is excluded from `executed` would still dirty the state → the block's
 		// root reflects a tx not in Transactions and followers reject it.
+		// Stop packing before executing if this tx would push the block past the
+		// wire-size budget. Checked first so we never pay for execution we are
+		// about to discard.
+		txSize := txWireSizeEstimate(tx)
+		if blockSize+txSize > MaxBlockWireBytes {
+			break
+		}
+
 		snap := e.state.Snapshot()
 		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{})
 		if err := e.executeTx(tx, height, blockTime, receipt); err != nil {
@@ -589,6 +631,7 @@ func (e *Executor) ProduceBlock(
 		}
 		e.state.CommitSnapshot(snap)
 		blockGas += receipt.GasUsed
+		blockSize += txSize
 		totalFees.Add(totalFees, tx.Fee)
 		executed = append(executed, tx)
 		receipts = append(receipts, receipt)
@@ -621,6 +664,7 @@ func (e *Executor) ProduceBlock(
 		Height:        height,
 		Timestamp:     blockTime,
 		ChainID:       types.ChainID,
+		AlgID:         qcrypto.AlgMLDSA65,
 		PrevHash:      prevHash,
 		TxMerkleRoot:  txMerkleRoot,
 		StateRoot:     stateRoot,
@@ -709,6 +753,18 @@ func (e *Executor) verifyBlockLinkage(b *types.Block) error {
 	if b.Header.ChainID != types.ChainID {
 		return fmt.Errorf("wrong chain id: block %q, node %q", b.Header.ChainID, types.ChainID)
 	}
+	if b.Header.AlgID != qcrypto.AlgMLDSA65 {
+		return fmt.Errorf("unsupported block alg_id %q: this node only accepts %q",
+			b.Header.AlgID, qcrypto.AlgMLDSA65)
+	}
+
+	// Reject a block stamped too far in the future. Contracts read this value as
+	// OpTIMESTAMP, so an unbounded timestamp is a state-corruption primitive, not
+	// just a cosmetic problem.
+	if drift := time.Until(time.Unix(b.Header.Timestamp, 0)); drift > MaxFutureBlockDrift {
+		return fmt.Errorf("block timestamp %d is %s ahead of local clock (max %s)",
+			b.Header.Timestamp, drift.Truncate(time.Second), MaxFutureBlockDrift)
+	}
 
 	latest, err := e.LatestBlock()
 	if err != nil {
@@ -734,6 +790,13 @@ func (e *Executor) verifyBlockLinkage(b *types.Block) error {
 	}
 	if b.Header.PrevHash != latest.Hash {
 		return fmt.Errorf("prev-hash mismatch at height %d", b.Header.Height)
+	}
+	// Block time must not run backwards. A block that predates its parent would
+	// let a producer rewind OpTIMESTAMP for contracts while still building a
+	// structurally valid chain.
+	if b.Header.Timestamp < latest.Header.Timestamp {
+		return fmt.Errorf("non-monotonic timestamp at height %d: block %d predates parent %d",
+			b.Header.Height, b.Header.Timestamp, latest.Header.Timestamp)
 	}
 	return nil
 }

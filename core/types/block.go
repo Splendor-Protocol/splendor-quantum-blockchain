@@ -8,12 +8,16 @@ import (
 )
 
 // BlockHeader contains the metadata for a block.
-// All hashes use SHA-3-256. The block is signed by the validator using Dilithium.
+// All hashes use SHA-3-256. The block is signed by the validator using ML-DSA-65.
 type BlockHeader struct {
 	// Chain metadata
 	Height    uint64 `json:"height"`
 	Timestamp int64  `json:"timestamp"`
 	ChainID   string `json:"chain_id"`
+
+	// AlgID names the signature scheme the validator signed this block with.
+	// Covered by the block hash, so it cannot be altered after signing.
+	AlgID string `json:"alg_id"`
 
 	// Hash of the previous block header (SHA3-256).
 	// All zeros for genesis block.
@@ -45,7 +49,7 @@ type Block struct {
 	// ML-DSA-65 signature (3309 bytes) by the validator over the block hash.
 	ValidatorSignature []byte `json:"validator_signature"`
 
-	// ValidatorPubKey is the 1952-byte Dilithium public key of the validator.
+	// ValidatorPubKey is the 1952-byte ML-DSA-65 public key of the validator.
 	// Only populated on the genesis block (height 0) so that full nodes and
 	// RPC nodes can bootstrap signature verification without a local genesis.json.
 	// For all other blocks this is nil (pubkey is looked up from state).
@@ -104,10 +108,10 @@ func merkleRoot(hashes [][32]byte) [32]byte {
 	return merkleRoot(parents)
 }
 
-// SignBlock signs the block hash using the given Dilithium private key.
+// SignBlock signs the block hash using the given ML-DSA-65 private key.
 // The Block.Hash must be set before calling this.
 func (b *Block) SignBlock(priv *qcrypto.PrivateKey) error {
-	sig, err := qcrypto.Sign(priv, b.Hash[:])
+	sig, err := qcrypto.Sign(priv, b.Hash[:], qcrypto.CtxBlock)
 	if err != nil {
 		return fmt.Errorf("failed to sign block: %w", err)
 	}
@@ -115,13 +119,17 @@ func (b *Block) SignBlock(priv *qcrypto.PrivateKey) error {
 	return nil
 }
 
-// VerifySignature verifies the validator's Dilithium signature on this block.
+// VerifySignature verifies the validator's ML-DSA-65 signature on this block.
 func (b *Block) VerifySignature(validatorPubKeyBytes []byte) error {
+	if b.Header.AlgID != qcrypto.AlgMLDSA65 {
+		return fmt.Errorf("unsupported block signature algorithm %q: this node only verifies %q",
+			b.Header.AlgID, qcrypto.AlgMLDSA65)
+	}
 	pub, err := qcrypto.PublicKeyFromBytes(validatorPubKeyBytes)
 	if err != nil {
 		return fmt.Errorf("invalid validator public key: %w", err)
 	}
-	if !qcrypto.Verify(pub, b.Hash[:], b.ValidatorSignature) {
+	if !qcrypto.Verify(pub, b.Hash[:], qcrypto.CtxBlock, b.ValidatorSignature) {
 		return fmt.Errorf("invalid block validator signature at height %d", b.Header.Height)
 	}
 	return nil
@@ -170,6 +178,7 @@ func GenesisBlock(validatorAddr qcrypto.Address, stateRoot [32]byte, timestamp i
 		Height:        0,
 		Timestamp:     timestamp,
 		ChainID:       ChainID,
+		AlgID:         qcrypto.AlgMLDSA65,
 		PrevHash:      [32]byte{}, // all zeros
 		TxMerkleRoot:  qcrypto.Hash32([]byte{}),
 		StateRoot:     stateRoot,

@@ -42,10 +42,11 @@ Splendor Quantum Chain is the answer. Not a patch on an existing chain. Not a co
 - **Accounts** are derived from post-quantum keys, not ECDSA
 - **Signatures** use ML-DSA-65 (NIST FIPS 204), not ECDSA
 - **Hashing** uses SHA-3-256 (SHA3-256), not SHA-256, SHAKE-256, or Keccak-256
-- **Key exchange** uses CRYSTALS-Kyber (NIST FIPS 203), not ECDH
+- **Key exchange** uses ML-KEM-768 (NIST FIPS 203), not ECDH
 - **Smart contracts** are signed, deployed, and called using quantum-safe operations only
-- **Validator messages** are signed with Dilithium
+- **Validator messages** are signed with ML-DSA-65
 - **Block headers** are hashed with SHA-3
+- **Node-to-node traffic** is sealed with ML-KEM-768 + AES-256-GCM, and TLS (when enabled) negotiates the hybrid `X25519MLKEM768` group
 
 The result is the world's first blockchain that will still be cryptographically secure the day a quantum computer tries to attack it.
 
@@ -180,10 +181,11 @@ On Splendor Quantum Chain, a wallet consists of:
 
 | Component | Size | What it does |
 |-----------|------|-------------|
-| Dilithium private key | 4,032 bytes | Signs transactions. Must be kept secret forever. |
-| Dilithium public key | 1,952 bytes | Registered on-chain. Anyone can verify your signatures with it. |
+| ML-DSA-65 private key | 4,032 bytes | Signs transactions. Must be kept secret forever. |
+| ML-DSA-65 public key | 1,952 bytes | Registered on-chain. Anyone can verify your signatures with it. |
+| ML-DSA-65 signature | 3,309 bytes | Attached to every transaction and block. |
 | SQ Address | 32 bytes | Your identity on the chain. Like your account number. |
-| Kyber key pair (optional) | varies | Used for encrypted messaging between accounts (future feature) |
+| ML-KEM-768 node key | 1,184 bytes (public) | Per-node, rotating. Encrypts node-to-node traffic. Not an account key. |
 
 ### Creating a wallet
 
@@ -882,7 +884,8 @@ This section lists every cryptographic operation in the chain and what algorithm
 | State root hashing | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
 | Private key encryption at rest | AES-256-GCM | NIST FIPS 197 | ✅ Quantum-safe (128-bit security) |
 | Key derivation (from password) | Argon2id | RFC 9106 | ✅ Memory-hard, quantum-safe |
-| Encrypted P2P communication | Kyber-1024 + AES-256 | NIST FIPS 203 | ✅ Post-quantum |
+| Encrypted P2P communication | ML-KEM-768 + AES-256-GCM | NIST FIPS 203 | ✅ Post-quantum |
+| RPC / WebSocket transport (TLS enabled) | X25519MLKEM768 hybrid | TLS 1.3 hybrid key exchange | ✅ Post-quantum |
 | Smart contract hash (keccak replacement) | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
 | Payment signing (X402) | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
 
@@ -891,7 +894,7 @@ This section lists every cryptographic operation in the chain and what algorithm
 - ❌ RSA — no quantum safety
 - ❌ SHA-256 — not NIST post-quantum suite (though generally safe, replaced with SHA-3 for consistency)
 - ❌ Keccak-256 — not NIST-standardised (SHA-3 is used instead)
-- ❌ ECDH — replaced by Kyber for key exchange
+- ❌ ECDH — replaced by ML-KEM-768 for key exchange (TLS uses the X25519MLKEM768 hybrid, which is never weaker than X25519 alone)
 - ❌ AES-128 — replaced with AES-256 (Grover halves security; 256-bit gives 128-bit quantum security)
 
 ---
@@ -900,10 +903,10 @@ This section lists every cryptographic operation in the chain and what algorithm
 
 | Feature | Ethereum | Solana | Splendor Quantum Chain |
 |---------|----------|--------|------------------------|
-| Quantum-safe signatures | ❌ | ❌ | ✅ (Dilithium, from block 0) |
+| Quantum-safe signatures | ❌ | ❌ | ✅ (ML-DSA-65, from block 0) |
 | Quantum-safe hashing | ❌ | ❌ | ✅ (SHA-3 everywhere) |
-| Quantum-safe addresses | ❌ | ❌ | ✅ (derived from Dilithium pubkey) |
-| Quantum-safe P2P layer | ❌ | ❌ | ✅ (Kyber key exchange) |
+| Quantum-safe addresses | ❌ | ❌ | ✅ (derived from ML-DSA-65 pubkey) |
+| Quantum-safe P2P layer | ❌ | ❌ | ✅ (ML-KEM-768 key exchange) |
 | Native micropayment protocol | ❌ | ❌ | ✅ (X402, built in) |
 | Smart contracts | ✅ | ✅ | ✅ (QSol) |
 | Block finality | ~12 min | ~400ms | < 2 seconds |
@@ -984,8 +987,7 @@ The blockchain industry has not acted. The first quantum-native chain that attra
 
 ### Planned (Phase 2)
 
-📋 Multi-validator consensus — BFT protocol, all Dilithium  
-📋 Kyber-encrypted P2P networking — quantum-safe node communication  
+📋 Multi-validator consensus — BFT protocol, all ML-DSA-65  
 📋 NFC card hardware — partnership with SE manufacturer  
 📋 AI agent SDK — Python and TypeScript libraries for autonomous agents  
 📋 Bridge protocol — connecting Splendor QC to other chains  
@@ -1063,7 +1065,7 @@ Splendor Quantum Chain is not just a "crypto project". It is infrastructure-grad
 **The regulatory timeline is not optional.**
 
 - The US government's NIST post-quantum migration mandate: 2030 deadline for federal systems
-- The NSA's Commercial National Security Algorithm Suite 2.0 (CNSA 2.0): mandates Dilithium and Kyber for all classified systems by 2030
+- The NSA's Commercial National Security Algorithm Suite 2.0 (CNSA 2.0): mandates ML-DSA and ML-KEM (standardised from Dilithium and Kyber) for all classified systems by 2030
 - The Bank for International Settlements (BIS): has published quantum risk guidance for central banks
 - The European Union: has included post-quantum cryptography in its digital finance strategy
 - Financial regulators in Singapore, UK, and India: actively issuing PQC guidance

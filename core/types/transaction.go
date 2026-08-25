@@ -29,9 +29,15 @@ const ChainID = "splendor-quantum-1"
 // The hash is computed as SHA3-256(JSON-serialised transaction body).
 type Transaction struct {
 	// Header
-	Version   uint8  `json:"version"`
-	ChainID   string `json:"chain_id"`
-	Type      TxType `json:"type"`
+	Version uint8  `json:"version"`
+	ChainID string `json:"chain_id"`
+	Type    TxType `json:"type"`
+
+	// AlgID names the signature scheme this transaction is signed with.
+	// Part of the signed body: a verifier that does not implement the named
+	// scheme rejects the tx rather than guessing, and an attacker cannot
+	// downgrade a tx to a weaker scheme without invalidating the signature.
+	AlgID string `json:"alg_id"`
 
 	// Sender / Receiver
 	From qcrypto.Address `json:"from"`
@@ -56,7 +62,7 @@ type Transaction struct {
 	Data []byte `json:"data,omitempty"`
 
 	// Authentication
-	// The sender's Dilithium public key (1952 bytes).
+	// The sender's ML-DSA-65 public key (1952 bytes).
 	// Included on first transaction; subsequent transactions look it up from state.
 	PublicKey []byte `json:"public_key,omitempty"`
 
@@ -70,6 +76,7 @@ type TransactionBody struct {
 	Version   uint8           `json:"version"`
 	ChainID   string          `json:"chain_id"`
 	Type      TxType          `json:"type"`
+	AlgID     string          `json:"alg_id"`
 	From      qcrypto.Address `json:"from"`
 	To        qcrypto.Address `json:"to"`
 	Amount    *big.Int        `json:"amount"`
@@ -86,6 +93,7 @@ func (tx *Transaction) Hash() ([32]byte, error) {
 		Version:   tx.Version,
 		ChainID:   tx.ChainID,
 		Type:      tx.Type,
+		AlgID:     tx.AlgID,
 		From:      tx.From,
 		To:        tx.To,
 		Amount:    tx.Amount,
@@ -120,6 +128,10 @@ func (tx *Transaction) Validate() error {
 	if tx.ChainID != ChainID {
 		return fmt.Errorf("wrong chain ID: got %q, want %q", tx.ChainID, ChainID)
 	}
+	if tx.AlgID != qcrypto.AlgMLDSA65 {
+		return fmt.Errorf("unsupported signature algorithm %q: this node only verifies %q",
+			tx.AlgID, qcrypto.AlgMLDSA65)
+	}
 	if tx.From.IsZero() {
 		return fmt.Errorf("zero from address")
 	}
@@ -135,8 +147,8 @@ func (tx *Transaction) Validate() error {
 	return nil
 }
 
-// VerifySignature verifies the Dilithium signature on a transaction.
-// pubKeyBytes must be the sender's registered Dilithium public key.
+// VerifySignature verifies the ML-DSA-65 signature on a transaction.
+// pubKeyBytes must be the sender's registered ML-DSA-65 public key.
 func (tx *Transaction) VerifySignature(pubKeyBytes []byte) error {
 	pub, err := qcrypto.PublicKeyFromBytes(pubKeyBytes)
 	if err != nil {
@@ -146,20 +158,23 @@ func (tx *Transaction) VerifySignature(pubKeyBytes []byte) error {
 	if err != nil {
 		return fmt.Errorf("failed to compute tx hash: %w", err)
 	}
-	if !qcrypto.Verify(pub, hash[:], tx.Signature) {
-		return fmt.Errorf("invalid Dilithium signature")
+	if !qcrypto.Verify(pub, hash[:], qcrypto.CtxTransaction, tx.Signature) {
+		return fmt.Errorf("invalid ML-DSA signature")
 	}
 	return nil
 }
 
-// Sign signs the transaction using the given Dilithium private key.
+// Sign signs the transaction using the given ML-DSA-65 private key.
 // It sets the Signature field and optionally the PublicKey field.
 func (tx *Transaction) Sign(priv *qcrypto.PrivateKey, includePublicKey bool) error {
+	if tx.AlgID == "" {
+		tx.AlgID = qcrypto.AlgMLDSA65
+	}
 	hash, err := tx.Hash()
 	if err != nil {
 		return err
 	}
-	sig, err := qcrypto.Sign(priv, hash[:])
+	sig, err := qcrypto.Sign(priv, hash[:], qcrypto.CtxTransaction)
 	if err != nil {
 		return fmt.Errorf("signing failed: %w", err)
 	}
@@ -176,6 +191,7 @@ func NewTransfer(from, to qcrypto.Address, amount, fee *big.Int, nonce uint64, t
 		Version:   1,
 		ChainID:   ChainID,
 		Type:      TxTransfer,
+		AlgID:     qcrypto.AlgMLDSA65,
 		From:      from,
 		To:        to,
 		Amount:    new(big.Int).Set(amount),
@@ -191,6 +207,7 @@ func NewDeploy(from qcrypto.Address, bytecode []byte, fee *big.Int, nonce uint64
 		Version:   1,
 		ChainID:   ChainID,
 		Type:      TxDeploy,
+		AlgID:     qcrypto.AlgMLDSA65,
 		From:      from,
 		Amount:    big.NewInt(0),
 		Fee:       new(big.Int).Set(fee),
@@ -206,6 +223,7 @@ func NewCall(from, contract qcrypto.Address, calldata []byte, value, fee *big.In
 		Version:   1,
 		ChainID:   ChainID,
 		Type:      TxCall,
+		AlgID:     qcrypto.AlgMLDSA65,
 		From:      from,
 		To:        contract,
 		Amount:    new(big.Int).Set(value),

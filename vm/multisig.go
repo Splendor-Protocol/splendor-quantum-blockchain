@@ -3,17 +3,17 @@
 // A quantum-safe N-of-M multisig wallet where:
 //   - N = required confirmations (threshold)
 //   - M = total number of owners
-//   - All confirmations use Dilithium Mode 3 signatures (no ECDSA)
+//   - All confirmations use ML-DSA-65 Mode 3 signatures (no ECDSA)
 //
 // Workflow:
 //   1. Any owner submits a transaction proposal (to, value, data, txType)
-//   2. Owners confirm the proposal by submitting their Dilithium signatures
+//   2. Owners confirm the proposal by submitting their ML-DSA-65 signatures
 //   3. Once N confirmations are collected, anyone can execute the proposal
 //   4. Executed proposals cannot be re-executed
 //   5. Any owner can revoke their own confirmation before execution
 //
 // Security properties:
-//   - Each confirmation is a Dilithium signature over the proposal hash
+//   - Each confirmation is a ML-DSA-65 signature over the proposal hash
 //   - No confirmation can be forged without the owner's private key
 //   - Proposals are identified by sequential nonces (prevents replay)
 //   - Executed proposals are marked permanently, preventing re-execution
@@ -82,7 +82,7 @@ const (
 // MSigOwner stores info about a registered wallet owner.
 type MSigOwner struct {
 	Address   string `json:"address"`
-	PublicKey []byte `json:"public_key"` // Dilithium Mode 3 public key
+	PublicKey []byte `json:"public_key"` // ML-DSA-65 Mode 3 public key
 	Name      string `json:"name,omitempty"`
 	Active    bool   `json:"active"`
 }
@@ -101,16 +101,16 @@ type MSigProposal struct {
 	Cancelled   bool       `json:"cancelled"`
 }
 
-// MSigConfirmation is a Dilithium-signed confirmation from one owner.
+// MSigConfirmation is a ML-DSA-65-signed confirmation from one owner.
 type MSigConfirmation struct {
 	Owner     string `json:"owner"`
 	PublicKey []byte `json:"public_key"`
-	Signature []byte `json:"signature"` // Dilithium sig over ProposalHash
+	Signature []byte `json:"signature"` // ML-DSA-65 sig over ProposalHash
 }
 
 // ── MultiSigWallet ────────────────────────────────────────────────────────────
 
-// MultiSigWallet is the N-of-M Dilithium multi-signature wallet.
+// MultiSigWallet is the N-of-M ML-DSA-65 multi-signature wallet.
 type MultiSigWallet struct {
 	stateDB  *state.StateDB
 	contract qcrypto.Address
@@ -122,7 +122,7 @@ func NewMultiSigWallet(stateDB *state.StateDB, contract qcrypto.Address) *MultiS
 }
 
 // DeployMultiSig deploys a new N-of-M multisig wallet.
-// owners: initial owner addresses with their Dilithium public keys.
+// owners: initial owner addresses with their ML-DSA-65 public keys.
 // threshold: required confirmations (must be <= len(owners)).
 func DeployMultiSig(
 	stateDB *state.StateDB,
@@ -254,7 +254,7 @@ func (w *MultiSigWallet) Submit(
 	return nonce, nil
 }
 
-// Confirm adds a Dilithium-signed confirmation from an owner.
+// Confirm adds a ML-DSA-65-signed confirmation from an owner.
 // The owner signs ProposalHash(contract, nonce, to, value, data).
 func (w *MultiSigWallet) Confirm(
 	owner qcrypto.Address,
@@ -290,14 +290,14 @@ func (w *MultiSigWallet) Confirm(
 		return fmt.Errorf("multisig: invalid proposal.To: %w", err)
 	}
 
-	// Verify Dilithium signature
+	// Verify ML-DSA-65 signature
 	hash := ProposalHash(w.contract, nonce, toAddr, proposal.Value, proposal.Data)
 	pub, err := qcrypto.PublicKeyFromBytes(info.PublicKey)
 	if err != nil {
 		return fmt.Errorf("multisig: invalid owner public key: %w", err)
 	}
-	if !qcrypto.Verify(pub, hash[:], signature) {
-		return fmt.Errorf("multisig: invalid Dilithium signature from %s", owner)
+	if !qcrypto.Verify(pub, hash[:], qcrypto.CtxMultisig, signature) {
+		return fmt.Errorf("multisig: invalid ML-DSA signature from %s", owner)
 	}
 
 	// Store confirmation
@@ -555,7 +555,7 @@ func (w *MultiSigWallet) ConfirmationCount(nonce uint64) (int, error) {
 	return len(p.Confirmations), nil
 }
 
-// ConfirmationData returns the full Dilithium confirmation from a specific owner.
+// ConfirmationData returns the full ML-DSA-65 confirmation from a specific owner.
 func (w *MultiSigWallet) ConfirmationData(nonce uint64, owner qcrypto.Address) (*MSigConfirmation, error) {
 	b, err := w.stateDB.GetStorageValue(w.contract, msigConfirmSlot(nonce, owner))
 	if err != nil || len(b) == 0 {

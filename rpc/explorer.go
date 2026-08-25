@@ -37,6 +37,12 @@ import (
 
 // RegisterExplorerRoutes adds block explorer endpoints to an existing router.
 // Call this after building the main router in server.go.
+//
+// writeAuth guards POST /peers/announce. An announced address becomes an
+// outbound target for block pushes and sync GETs, so accepting announcements
+// from anonymous callers lets a stranger steer this node's peer set. The SSRF
+// guard limits where those requests can go; the token limits who can add them.
+//
 // onPeerAnnounce is an optional callback called when a peer announces itself
 // (e.g. to add it to the broadcaster on a validator node).
 func RegisterExplorerRoutes(
@@ -45,6 +51,7 @@ func RegisterExplorerRoutes(
 	stateDB *state.StateDB,
 	pool *network.PeerPool,
 	localHeight func() uint64,
+	writeAuth *WriteAuth,
 	onPeerAnnounce ...func(addr string),
 ) {
 	var announceCallback func(addr string)
@@ -64,7 +71,9 @@ func RegisterExplorerRoutes(
 
 	// Peer management
 	r.HandleFunc("/peers", makePeersHandler(pool, localHeight)).Methods(http.MethodGet)
-	r.HandleFunc("/peers/announce", makeAnnounceHandler(pool, announceCallback)).Methods(http.MethodPost)
+	r.Handle("/peers/announce",
+		writeAuth.Middleware(makeAnnounceHandler(pool, announceCallback))).
+		Methods(http.MethodPost)
 
 	// Sync status
 	r.HandleFunc("/sync", makeSyncHandler(pool, localHeight)).Methods(http.MethodGet)

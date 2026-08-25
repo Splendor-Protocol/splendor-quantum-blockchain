@@ -1,9 +1,12 @@
 // Package x402 implements the native HTTP 402 micropayment protocol for
-// Splendor Quantum Chain. All payment signatures use Dilithium Mode 3.
+// Splendor Quantum Chain. All payment signatures use ML-DSA-65 (FIPS 204)
+// under the CtxX402 domain-separation context, so a payment authorisation can
+// never be replayed as a transaction or a block signature.
 // Replay protection is provided by on-chain nonce registry in the StateDB.
 package x402
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -35,7 +38,7 @@ type PaymentRequirements struct {
 }
 
 // PaymentPayload is the client-side payment authorisation.
-// The payload is signed with the payer's Dilithium private key.
+// The payload is signed with the payer's ML-DSA-65 private key.
 type PaymentPayload struct {
 	// Version of the X402 protocol.
 	Version int `json:"version"`
@@ -59,7 +62,7 @@ type PaymentPayload struct {
 	// 32-byte random nonce. Single-use. Tracked on-chain after settlement.
 	Nonce [32]byte `json:"nonce"`
 
-	// Dilithium Mode 3 signature (3293 bytes) over SHA3-256(canonical_payload_bytes).
+	// ML-DSA-65 signature (3309 bytes) over SHA3-256(canonical_payload_bytes).
 	Signature []byte `json:"signature,omitempty"`
 }
 
@@ -94,13 +97,13 @@ func (p *PaymentPayload) Hash() ([32]byte, error) {
 	return qcrypto.Hash32(b), nil
 }
 
-// Sign signs the payment payload with the given Dilithium private key.
+// Sign signs the payment payload with the given ML-DSA-65 private key.
 func (p *PaymentPayload) Sign(priv *qcrypto.PrivateKey) error {
 	hash, err := p.Hash()
 	if err != nil {
 		return err
 	}
-	sig, err := qcrypto.Sign(priv, hash[:])
+	sig, err := qcrypto.Sign(priv, hash[:], qcrypto.CtxX402)
 	if err != nil {
 		return fmt.Errorf("x402 payment signing failed: %w", err)
 	}
@@ -177,7 +180,7 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 		return &VerifyResult{Reason: "insufficient balance"}
 	}
 
-	// 7. Verify Dilithium signature
+	// 7. Verify ML-DSA-65 signature
 	pubKey, err := p.state.GetPublicKey(payload.From)
 	if err != nil {
 		return &VerifyResult{Reason: fmt.Sprintf("public key not registered for payer: %v", err)}
@@ -190,8 +193,8 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 	if err != nil {
 		return &VerifyResult{Reason: "invalid payer public key"}
 	}
-	if !qcrypto.Verify(pub, hash[:], payload.Signature) {
-		return &VerifyResult{Reason: "invalid Dilithium signature"}
+	if !qcrypto.Verify(pub, hash[:], qcrypto.CtxX402, payload.Signature) {
+		return &VerifyResult{Reason: "invalid ML-DSA signature"}
 	}
 
 	return &VerifyResult{Valid: true}
@@ -204,44 +207,60 @@ type SettleResult struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// BuildSettlementTx creates a signed X402 settlement transaction.
-// This transaction is submitted to the mempool by the RPC layer.
-func (p *Processor) BuildSettlementTx(
-	req *PaymentRequirements,
-	payload *PaymentPayload,
-	validatorPrivKey *qcrypto.PrivateKey,
-	nonce uint64,
-) (*types.Transaction, error) {
-	// Re-verify before building (TOCTOU protection)
-	result := p.Verify(req, payload)
-	if !result.Valid {
-		return nil, fmt.Errorf("payment verification failed: %s", result.Reason)
-	}
-
-	// Store the nonce key as the tx data (for on-chain nonce registry marking)
-	nonceKey := buildNonceKey(payload.From, payload.Nonce)
-
-	tx := &types.Transaction{
+// NewSettlementTx builds the UNSIGNED on-chain settlement transaction for a
+// verified payment payload. The payer must sign it: settlement debits the
+// payer's account and consumes the payer's account nonce, so only the payer's
+// ML-DSA key can authorise it. No node-side key can stand in.
+//
+// Data carries the raw 32-byte payment nonce (NOT the derived registry key) —
+// the executor recomputes the registry key as SHA3-256(from || Data), so
+// anything else here would mark a different key than Verify checks and defeat
+// replay protection.
+func NewSettlementTx(payload *PaymentPayload, fee *big.Int, accountNonce uint64) *types.Transaction {
+	return &types.Transaction{
 		Version:   1,
 		ChainID:   types.ChainID,
 		Type:      types.TxX402,
+		AlgID:     qcrypto.AlgMLDSA65,
 		From:      payload.From,
 		To:        payload.To,
 		Amount:    new(big.Int).Set(payload.Amount),
-		Fee:       big.NewInt(1000), // minimal fee for settlement
-		Nonce:     nonce,
+		Fee:       new(big.Int).Set(fee),
+		Nonce:     accountNonce,
 		Timestamp: time.Now().Unix(),
-		Data:      nonceKey[:],
-		PublicKey: payload.Signature, // store payer's payment sig in PublicKey field for reference
+		Data:      payload.Nonce[:],
 	}
+}
 
-	// Sign the settlement transaction with the validator's key
-	// (settlement txs are created by the node, not the user)
-	if err := tx.Sign(validatorPrivKey, true); err != nil {
-		return nil, fmt.Errorf("failed to sign settlement tx: %w", err)
+// BindSettlementTx checks that a payer-signed settlement transaction actually
+// settles the payment that was verified — same payer, same payee, same amount,
+// same payment nonce.
+//
+// Without this the settle endpoint would verify one payment and mempool an
+// unrelated transaction: an attacker could present a valid small payment
+// authorisation and attach a transaction moving a different amount elsewhere.
+// The transaction's own signature, account nonce, and balance are checked by the
+// mempool; this function only binds it to the authorisation.
+func BindSettlementTx(payload *PaymentPayload, tx *types.Transaction) error {
+	if tx == nil {
+		return fmt.Errorf("settlement transaction is required")
 	}
-
-	return tx, nil
+	if tx.Type != types.TxX402 {
+		return fmt.Errorf("settlement tx must be type X402 (0x05), got 0x%02x", tx.Type)
+	}
+	if tx.From != payload.From {
+		return fmt.Errorf("settlement tx sender does not match the payment payer")
+	}
+	if tx.To != payload.To {
+		return fmt.Errorf("settlement tx receiver does not match the payment payee")
+	}
+	if tx.Amount == nil || payload.Amount == nil || tx.Amount.Cmp(payload.Amount) != 0 {
+		return fmt.Errorf("settlement tx amount does not match the authorised payment amount")
+	}
+	if !bytes.Equal(tx.Data, payload.Nonce[:]) {
+		return fmt.Errorf("settlement tx does not carry the authorised payment nonce")
+	}
+	return nil
 }
 
 // buildNonceKey derives the on-chain nonce registry key.
