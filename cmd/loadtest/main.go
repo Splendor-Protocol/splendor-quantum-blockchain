@@ -184,14 +184,18 @@ func probe(f map[string]string) {
 	rpc := def(f["--rpc"], "http://127.0.0.1:8080")
 	fmt.Printf("=== security probes vs %s ===\n", rpc)
 
-	// 1. SSRF: announce a metadata-service peer — must be rejected.
-	body := `{"address":"http://169.254.169.254/latest/meta-data/","height":1}`
+	// 1. SSRF: announce a metadata-service peer — must be rejected by IsSafePeerURL.
+	body := `{"addr":"http://169.254.169.254/latest/meta-data/","height":1}`
 	code, resp := postRaw(rpc, "/peers/announce", []byte(body))
-	report("SSRF /peers/announce (metadata IP)", code >= 400, code, resp)
+	report("SSRF /peers/announce (metadata IP)", code >= 400 && contains(resp, "disallowed"), code, resp)
 
 	// 2. SSRF: loopback peer — must be rejected (public devnet).
-	code, resp = postRaw(rpc, "/peers/announce", []byte(`{"address":"http://127.0.0.1:9/","height":1}`))
-	report("SSRF /peers/announce (loopback)", code >= 400, code, resp)
+	code, resp = postRaw(rpc, "/peers/announce", []byte(`{"addr":"http://127.0.0.1:9/","height":1}`))
+	report("SSRF /peers/announce (loopback)", code >= 400 && contains(resp, "disallowed"), code, resp)
+
+	// 2b. SSRF: internal AWS subnet — must be rejected.
+	code, resp = postRaw(rpc, "/peers/announce", []byte(`{"addr":"http://10.60.0.5:8080/","height":1}`))
+	report("SSRF /peers/announce (private 10.x)", code >= 400 && contains(resp, "disallowed"), code, resp)
 
 	// 3. x402/settle must be disabled by default (503) or auth-gated (401).
 	code, resp = postRaw(rpc, "/x402/settle", []byte(`{}`))
@@ -318,3 +322,4 @@ func must(err error) {
 		os.Exit(1)
 	}
 }
+func contains(s, sub string) bool { return bytes.Contains([]byte(s), []byte(sub)) }
