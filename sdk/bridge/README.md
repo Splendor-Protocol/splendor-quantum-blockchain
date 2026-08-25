@@ -1,8 +1,8 @@
 # Splendor PQ Bridge SDK (`@splendor/pq-bridge`)
 
-Node.js-first bridge that maps an **EVM wallet** (MetaMask or secp256k1 key) to a **Splendor Quantum Chain Dilithium (PQ) wallet**, then signs and submits transactions.
+Node.js-first bridge that maps an **EVM wallet** (MetaMask or secp256k1 key) to a **Splendor Quantum Chain ML-DSA-65 (PQ) wallet**, then signs and submits transactions.
 
-No changes to the core blockchain. The Dilithium signer is the **same Go code the node uses**, compiled to **WASM** and loaded inside Node (or the browser).
+No changes to the core blockchain. The ML-DSA-65 signer is the **same Go code the node uses**, compiled to **WASM** and loaded inside Node (or the browser).
 
 ## Protocol (SQDP-1)
 
@@ -116,7 +116,7 @@ const bridge = SplendorPQBridge.fromProvider(provider);
 // From EVM private key (backends / agents)
 await bridge.connectFromEvmPrivateKey(process.env.EVM_KEY);
 
-// Or from a 32-byte Dilithium seed hex
+// Or from a 32-byte ML-DSA-65 seed hex
 // await bridge.connectFromSeed('01'.repeat(32));
 
 console.log(bridge.getAddress());
@@ -175,7 +175,7 @@ Env:
 | `TRUST_PROXY` | unset/`false` | Set `1` only behind a known LB (spoofed `X-Forwarded-For` otherwise bypasses rate limits) |
 | `RATE_LIMIT_MAX` | `120` | Global requests / minute |
 | `RATE_LIMIT_TX_MAX` | `30` | Stricter cap for `/v1/tx/*`, `/v1/derive`, `/v1/x402/pay` |
-| `SERVICE_SEED` | — | 32-byte hex Dilithium seed (service-wallet) |
+| `SERVICE_SEED` | — | 32-byte hex ML-DSA-65 seed (service-wallet) |
 | `SERVICE_EVM_KEY` | — | EVM key to derive service PQ wallet |
 | `PORT` | `3090` | HTTP port |
 
@@ -234,7 +234,7 @@ go test ./sdk/bridge/signer -count=1
 ```
 
 
-- Prefer **proxy** mode for end users; never put user EVM keys or Dilithium seeds on a public gateway.
+- Prefer **proxy** mode for end users; never put user EVM keys or ML-DSA-65 seeds on a public gateway.
 - `service-wallet` is for **your** automation keys only.
 - Domain message is versioned (`v1`); changing it remaps all derived addresses — treat as a breaking change.
 - This is an **identity bridge**, not a cross-chain token bridge.

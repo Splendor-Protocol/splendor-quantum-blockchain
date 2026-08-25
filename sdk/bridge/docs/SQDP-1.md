@@ -115,7 +115,7 @@ Clients using `@splendor/pq-bridge` MUST use these event names and payloads:
 | `accountsChanged` | `{ address: string, evmAddress?: string }` |
 
 1. After MetaMask `accountsChanged`, wallets SHOULD re-`personal_sign` and re-derive (SDK default). Empty accounts SHOULD lock and emit `disconnect`.
-2. `lock()` MUST clear the Dilithium key from WASM memory and emit a `lock` event. `disconnect()` MUST destroy the session and emit `disconnect`.
+2. `lock()` MUST clear the ML-DSA-65 key from WASM memory and emit a `lock` event. `disconnect()` MUST destroy the session and emit `disconnect`.
 
 ---
 
@@ -147,7 +147,7 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 
 1. Public gateways MUST run `proxy` mode for end users.
 2. Public proxy MUST reject `seed`, `evmPrivateKey`, and (unless `ALLOW_CUSTODIAL_PROXY=1`) `evmSignature`. Prefer client-side WASM signing + `POST /v1/tx/submit`.
-3. Posting a Dilithium `seed` or derivation signature to a gateway is **custodial** for that request. `ALLOW_CUSTODIAL_PROXY=1` is for private backends only.
+3. Posting an ML-DSA-65 `seed` or derivation signature to a gateway is **custodial** for that request. `ALLOW_CUSTODIAL_PROXY=1` is for private backends only.
 4. `service-wallet` MUST NOT be used to hold end-user keys. Production service-wallet SHOULD require `GATEWAY_API_KEY`.
 5. Gateways SHOULD enable rate limiting, CORS allowlists, and body size limits.
 
@@ -161,13 +161,13 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 | Confusing `0x` with `SQ:` | UI MUST display `SQ:` after connect; never send EVM ETH as “funding” |
 | Wrong chain | MUST `assertChainId` before submit (all tx types) |
 | Seed / EVM key / derivation sig theft via gateway | Public proxy MUST reject custodial credentials; submit `signedTx` only |
-| Session residue | MUST `lock` / `disconnect` on logout (`lock` zeroizes Dilithium key material) |
+| Session residue | MUST `lock` / `disconnect` on logout (`lock` zeroizes ML-DSA-65 key material) |
 | Fake confirmation | MUST NOT treat missing receipt as success without nonce fallback; nonce poll can race with other txs |
 | MetaMask account race | MUST fail-closed (lock + disconnect) if re-derive fails after `accountsChanged` |
 | Tampered WASM | Browser SHOULD set `wasmSha256` network pin and fail closed on mismatch |
 | Signature / address mismatch | MUST `ecrecover` and bind claimed EVM address before derive |
 
-Encrypted browser session cache of Dilithium seeds is **out of scope** for SQDP-1 (default remains re-sign each session).
+Encrypted browser session cache of ML-DSA-65 seeds is **out of scope** for SQDP-1 (default remains re-sign each session).
 
 Optional SQDP-1.1 path: EIP-712 `SplendorPQDerive` typed data (`derivation: 'eip712-v1'`). Seed rule remains `SHA3-256(signature_bytes)`. Default remains EIP-191 `personal_sign` (`eip191-v1`).
 

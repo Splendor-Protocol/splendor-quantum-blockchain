@@ -6,7 +6,7 @@ Connect → fund → transfer → wait. Use a read-only `SqcProvider` until the 
 
 ## Recommended: Connect UI kit (React)
 
-For browser dApps, use **`@splendor/connect-react`** — AppKit-style modal + connectors. PQ Dilithium stays inside WASM; your UI only shows `SQ:` identity.
+For browser dApps, use **`@splendor/connect-react`** — AppKit-style modal + connectors. PQ ML-DSA-65 stays inside WASM; your UI only shows `SQ:` identity.
 
 ```tsx
 import '@splendor/connect-react/style.css';
@@ -70,7 +70,7 @@ Or create without connecting: `createSplendorClient({ network: 'local' })` then 
 | Concept | What it is |
 |---------|------------|
 | EVM / MetaMask `0x…` | Only used to **derive** the PQ key via `personal_sign` |
-| `SQ:` address | Real on-chain identity (32-byte SHA3-256 of Dilithium pubkey) |
+| `SQ:` address | Real on-chain identity (32-byte SHA3-256 of ML-DSA-65 pubkey) |
 | WASM signer | Same Go ML-DSA-65 (circl, FIPS 204) as the node |
 
 **Security FAQ:** funds and nonces live on the **`SQ:`** address, not the MetaMask address. Never treat them as interchangeable.

@@ -85,7 +85,7 @@ export function App() {
         <section className="hero">
           <h1>Connect once. PQ signing stays local.</h1>
           <p>
-            MetaMask signs a fixed domain message to derive your Dilithium wallet. Your dApp never
+            MetaMask signs a fixed domain message to derive your ML-DSA-65 wallet. Your dApp never
             sees the private key — only the SQ: address and signed transactions.
           </p>
         </section>
