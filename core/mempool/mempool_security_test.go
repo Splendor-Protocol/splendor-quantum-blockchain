@@ -127,3 +127,135 @@ func TestPruneStale(t *testing.T) {
 		t.Fatalf("size=%d after prune, want 0", m.Size())
 	}
 }
+
+// fundedSender returns a funded address plus its signing key.
+func fundedSender(t *testing.T, sdb *state.StateDB) (qcrypto.Address, *qcrypto.PrivateKey) {
+	t.Helper()
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	addr := qcrypto.DeriveAddress(pub)
+	acc := types.NewAccount(addr)
+	acc.AddBalance(big.NewInt(1_000_000_000_000))
+	sdb.SetAccount(acc)
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	return addr, priv
+}
+
+// The fee floor must rise as the pool fills, so sustaining congestion costs an
+// attacker progressively more than filling an empty pool did.
+func TestMinFeeRisesWithLoad(t *testing.T) {
+	sdb, err := state.NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatalf("statedb: %v", err)
+	}
+	defer sdb.Close()
+
+	m := New(100, sdb)
+	if got := m.MinFeeNow(); got != MinFee {
+		t.Fatalf("empty pool floor=%d, want %d", got, MinFee)
+	}
+
+	var to qcrypto.Address
+	for i := range to {
+		to[i] = 0x55
+	}
+
+	// Fill to 90% using many senders, since MaxPerAddr bounds each one.
+	added := 0
+	for s := 0; added < 90; s++ {
+		from, priv := fundedSender(t, sdb)
+		for n := 0; n < MaxPerAddr && added < 90; n++ {
+			tx := types.NewTransfer(from, to, big.NewInt(0), big.NewInt(MinFee*64), uint64(n), int64(1_700_000_000+added))
+			if err := tx.Sign(priv, true); err != nil {
+				t.Fatalf("sign: %v", err)
+			}
+			if err := m.Add(tx); err != nil {
+				t.Fatalf("add %d rejected: %v", added, err)
+			}
+			added++
+		}
+	}
+
+	if got, want := m.MinFeeNow(), int64(MinFee*32); got != want {
+		t.Fatalf("floor at 90%% load=%d, want %d", got, want)
+	}
+
+	// A transaction paying the old flat MinFee must now be refused.
+	from, priv := fundedSender(t, sdb)
+	cheap := types.NewTransfer(from, to, big.NewInt(0), big.NewInt(MinFee), 0, 1_700_500_000)
+	if err := cheap.Sign(priv, true); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if err := m.Add(cheap); err == nil || !strings.Contains(err.Error(), "fee too low") {
+		t.Fatalf("expected congestion fee rejection, got %v", err)
+	}
+}
+
+// A full pool must not lock out a higher-paying transaction: the cheapest
+// resident is displaced instead. Otherwise a spammer who filled every slot
+// cheaply could block all later traffic regardless of what it paid.
+func TestFullPoolEvictsCheapestForHigherBid(t *testing.T) {
+	sdb, err := state.NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatalf("statedb: %v", err)
+	}
+	defer sdb.Close()
+
+	const cap = 8
+	m := New(cap, sdb)
+
+	var to qcrypto.Address
+	for i := range to {
+		to[i] = 0x55
+	}
+
+	// Fill every slot. The floor at full load is MinFee*32, so bid above it.
+	squatter, squatterKey := fundedSender(t, sdb)
+	for n := 0; n < cap; n++ {
+		tx := types.NewTransfer(squatter, to, big.NewInt(0), big.NewInt(MinFee*32), uint64(n), int64(1_700_000_000+n))
+		if err := tx.Sign(squatterKey, true); err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		if err := m.Add(tx); err != nil {
+			t.Fatalf("fill %d rejected: %v", n, err)
+		}
+	}
+	if m.Size() != cap {
+		t.Fatalf("size=%d, want %d", m.Size(), cap)
+	}
+
+	// An equal bid must not displace an incumbent (no free churn).
+	rival, rivalKey := fundedSender(t, sdb)
+	equal := types.NewTransfer(rival, to, big.NewInt(0), big.NewInt(MinFee*32), 0, 1_700_400_000)
+	if err := equal.Sign(rivalKey, true); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if err := m.Add(equal); err != types.ErrMempoolFull {
+		t.Fatalf("equal bid: got %v, want ErrMempoolFull", err)
+	}
+
+	// A strictly higher bid must get in, displacing one incumbent.
+	higher := types.NewTransfer(rival, to, big.NewInt(0), big.NewInt(MinFee*64), 0, 1_700_400_001)
+	if err := higher.Sign(rivalKey, true); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if err := m.Add(higher); err != nil {
+		t.Fatalf("higher bid rejected: %v", err)
+	}
+	if m.Size() != cap {
+		t.Fatalf("size=%d after eviction, want %d", m.Size(), cap)
+	}
+
+	// The admitted transaction must actually be resident.
+	hash, err := higher.FullHash()
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if _, ok := m.txs[hash]; !ok {
+		t.Fatal("higher-paying tx was not admitted")
+	}
+}
