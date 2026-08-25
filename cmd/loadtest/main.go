@@ -101,6 +101,23 @@ func refVector() {
 	fmt.Printf("bodyJSON: %s\n", string(bodyJSON))
 	fmt.Printf("bodyHash: %s\n", hex.EncodeToString(body[:]))
 	fmt.Printf("signedTx: %s\n", string(full))
+
+	// Edge-case body vectors (body JSON + hash only) to prove the TS canonical
+	// serializer matches Go beyond the happy path.
+	emitBody := func(name string, amount *big.Int, nonce uint64, data []byte) {
+		b := types.TransactionBody{
+			Version: 1, ChainID: types.ChainID, Type: types.TxTransfer,
+			From: w.Address, To: to, Amount: amount, Fee: big.NewInt(1000),
+			Nonce: nonce, Timestamp: 1700000000, Data: data,
+		}
+		bj, _ := json.Marshal(b)
+		h := qcrypto.Hash32(bj)
+		fmt.Printf("CASE %s\n  bodyJSON: %s\n  bodyHash: %s\n", name, string(bj), hex.EncodeToString(h[:]))
+	}
+	fmt.Println("# edge cases (from=SQ:fa39..., to=0x03^32, fee=1000, ts=1700000000):")
+	emitBody("nonce5-nodata", big.NewInt(42), 5, nil)
+	emitBody("memo-htmlchars", big.NewInt(1000000), 0, []byte("hi <a>&<b>"))
+	emitBody("amount-zero", big.NewInt(0), 3, nil)
 }
 
 func loadKey(path string) (*qcrypto.PrivateKey, qcrypto.Address) {
