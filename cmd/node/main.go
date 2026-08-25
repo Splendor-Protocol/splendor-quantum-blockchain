@@ -99,7 +99,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagTLSCert, "tls-cert", "", "PEM certificate for HTTPS. Enables TLS 1.3 with post-quantum hybrid key exchange (X25519MLKEM768).")
 	root.Flags().StringVar(&flagTLSKey, "tls-key", "", "PEM private key matching --tls-cert")
 	root.Flags().StringVar(&flagPublicURL, "public-url", "", "Externally reachable base URL advertised to peers (default: derived from --rpc-addr)")
-	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Allow unencrypted block push when a peer has no ML-KEM sealed transport. Off by default so the channel cannot be downgraded.")
+	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Allow unencrypted block push and catch-up sync when a peer has no ML-KEM sealed transport. Off by default so the channel cannot be downgraded.")
 	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use.")
 
 	if err := root.Execute(); err != nil {
@@ -297,8 +297,15 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Block sync ─────────────────────────────────────────────────────────
+	// Catch-up pulls ride the same sealed channel and the same pinned peer
+	// identities as block push, so falling behind does not drop the node back
+	// onto cleartext HTTP.
+	syncCfg := network.DefaultSyncConfig(validatorPKBytes)
+	syncCfg.Identities = broadcaster.Identities()
+	syncCfg.AllowPlaintext = flagAllowPlaintextP2P
+
 	syncer := network.NewSyncer(
-		network.DefaultSyncConfig(validatorPKBytes),
+		syncCfg,
 		peerPool,
 		func() uint64 { h, _ := executor.LatestHeight(); return h },
 		func(b *types.Block) error { return executor.ExecuteBlock(b) },
@@ -540,6 +547,22 @@ func runNode(cmd *cobra.Command, args []string) error {
 			peerPool.Add(&peer)
 			broadcaster.AddPeer(peer.Addr)
 			return nil
+		},
+		// Read side of the sealed channel: lets a peer catch up without
+		// dropping to plaintext GET /block/{height}.
+		ServeBlock: func(height uint64) ([]byte, error) {
+			b, err := executor.GetBlockByHeight(height)
+			if err != nil {
+				return nil, fmt.Errorf("block %d not available: %w", height, err)
+			}
+			return json.Marshal(b)
+		},
+		ServeLatestBlock: func() ([]byte, error) {
+			b, err := executor.LatestBlock()
+			if err != nil {
+				return nil, fmt.Errorf("latest block not available: %w", err)
+			}
+			return json.Marshal(b)
 		},
 	})
 
