@@ -21,7 +21,7 @@ export type WasmSignerApi = {
     sessionId: string,
     message: string,
   ) => { address: string; publicKeyB64: string; signatureB64: string } | { error: string };
-  /** Verify a Dilithium Mode-3 signature over a message — pure, no session. */
+  /** Verify an ML-DSA-65 signature over a message — pure, no session. */
   sqVerifyMessage: (
     publicKeyB64: string,
     message: string,

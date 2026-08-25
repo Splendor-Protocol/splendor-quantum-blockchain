@@ -28,7 +28,7 @@ const DerivationDomainMessage = "Splendor Quantum Chain\nKey derivation v1\nchai
 // SeedSize is the ML-DSA-65 seed length (32 bytes).
 const SeedSize = mldsa65.SeedSize
 
-// DerivedWallet holds a ML-DSA-65 keypair derived from a seed.
+// DerivedWallet holds an ML-DSA-65 keypair derived from a seed.
 type DerivedWallet struct {
 	Address   qcrypto.Address
 	PublicKey []byte
@@ -63,7 +63,7 @@ func SeedFromHex(hexStr string) ([SeedSize]byte, error) {
 	return seed, nil
 }
 
-// DeriveFromSeed deterministically derives a ML-DSA-65 Mode 3 keypair from a 32-byte seed
+// DeriveFromSeed deterministically derives an ML-DSA-65 keypair from a 32-byte seed
 // using the same circl mldsa65.NewKeyFromSeed the chain node uses.
 func DeriveFromSeed(seed [SeedSize]byte) (*DerivedWallet, error) {
 	pub, priv := mldsa65.NewKeyFromSeed(&seed)

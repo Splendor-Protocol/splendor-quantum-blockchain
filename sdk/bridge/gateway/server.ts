@@ -427,7 +427,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     if (creds.seed) {
       throw Object.assign(
         new Error(
-          'proxy mode rejects Dilithium seed — sign client-side and POST signedTx' +
+          'proxy mode rejects ML-DSA-65 seed — sign client-side and POST signedTx' +
             (ALLOW_CUSTODIAL_PROXY ? '' : ' (set ALLOW_CUSTODIAL_PROXY=1 for private backends)'),
         ),
         { code: 'USER_REJECTED' },

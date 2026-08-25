@@ -93,7 +93,7 @@ describe('gateway proxy custodial rejection', () => {
       },
     });
     const json = res.json() as { code: string; message: string };
-    expect(json.message || '').not.toMatch(/rejects Dilithium seed|rejects evm/i);
+    expect(json.message || '').not.toMatch(/rejects ML-DSA-65 seed|rejects evm/i);
     // Upstream network/timeout → 502/504 (SQDP code retained in body).
     expect([502, 504]).toContain(res.statusCode);
   }, 60_000);

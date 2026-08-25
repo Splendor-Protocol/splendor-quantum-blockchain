@@ -449,7 +449,7 @@ func TestGoldenSeedAddressMatchesTS(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ML-DSA-65 (FIPS-204) address for the all-0x01 seed. Regenerated when the
-	// chain migrated off round-3 ML-DSA-65 mode3; the WASM signer must be rebuilt
+	// chain migrated off round-3 CRYSTALS-Dilithium mode3; the WASM signer must be rebuilt
 	// from this same Go signer to reproduce it.
 	want := "SQ:307f4559431e680933fc1c62503f050140e5740068248d7374461e0311a2728e"
 	if w.Address.String() != want {

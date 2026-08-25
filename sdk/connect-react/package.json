@@ -1,7 +1,7 @@
 {
   "name": "@splendor/connect-react",
   "version": "1.3.0",
-  "description": "AppKit-style React connect UI kit for Splendor Quantum Chain. Modular connectors unlock @splendor/pq-bridge WASM Dilithium wallets.",
+  "description": "AppKit-style React connect UI kit for Splendor Quantum Chain. Modular connectors unlock @splendor/pq-bridge WASM ML-DSA-65 wallets.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

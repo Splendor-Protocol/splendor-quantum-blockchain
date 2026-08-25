@@ -192,7 +192,7 @@ func sqSignMessage(this js.Value, args []js.Value) interface{} {
 	}
 }
 
-// sqVerifyMessage verifies a ML-DSA-65 Mode-3 signature over a message given a
+// sqVerifyMessage verifies an ML-DSA-65 signature over a message given a
 // base64 public key — a PURE function (no session/key). This is what a Node
 // gateway calls to authenticate a Connect v2 challenge server-side, since there
 // is no native-JS CIRCL Mode-3 verifier.

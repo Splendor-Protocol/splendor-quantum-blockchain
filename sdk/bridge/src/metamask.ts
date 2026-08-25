@@ -1,7 +1,7 @@
 /**
  * Browser MetaMask / EIP-1193 helpers for PQ bridge derivation.
  *
- * The derivation signature is Dilithium key material (SQDP-1) — never log it
+ * The derivation signature is ML-DSA-65 key material (SQDP-1) — never log it
  * or post it to a public gateway.
  */
 import {
