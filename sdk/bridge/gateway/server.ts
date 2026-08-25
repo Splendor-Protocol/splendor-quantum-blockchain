@@ -9,7 +9,8 @@
  * Network defaults from sqc.networks.json (override with SQC_NETWORK / SQC_RPC / PORT).
  * Errors follow SQDP-1: { code, message }.
  */
-import { timingSafeEqual } from 'node:crypto';
+import { createSecureContext, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -52,8 +53,78 @@ export type GatewayConfig = {
   /** When false, skip listen (for inject tests). Default true in main(). */
   listen?: boolean;
   port?: number;
+  /**
+   * Bind address. Defaults to 127.0.0.1 so starting the gateway does not by
+   * itself put it on the internet. Set 0.0.0.0 deliberately, behind TLS.
+   * Env: GATEWAY_HOST.
+   */
+  host?: string;
+  /** PEM cert path for TLS. Env: TLS_CERT_FILE. */
+  tlsCertFile?: string;
+  /** PEM private key path for TLS. Env: TLS_KEY_FILE. */
+  tlsKeyFile?: string;
   logger?: boolean;
 };
+
+/**
+ * TLS key-exchange groups, most preferred first.
+ *
+ * X25519MLKEM768 is a hybrid: the session key is safe unless BOTH X25519 and
+ * ML-KEM-768 are broken, so it is never weaker than plain X25519. It matters
+ * here because the chain's ML-DSA signatures protect transactions but not the
+ * channel they cross — an adversary recording gateway traffic today could
+ * decrypt it later under a classical-only handshake, exposing pre-broadcast
+ * transactions and API keys.
+ *
+ * Requires an OpenSSL 3.5+ Node build; we fall back to classical groups rather
+ * than refuse to start.
+ */
+const PQ_TLS_GROUPS = 'X25519MLKEM768:X25519:P-256';
+
+/**
+ * Build Fastify's https options with post-quantum hybrid key exchange, or
+ * return null to serve plain HTTP.
+ *
+ * Both cert and key must be present; configuring one without the other is a
+ * misconfiguration that would otherwise silently downgrade to HTTP, so it
+ * throws instead.
+ */
+function buildHttpsOptions(
+  certFile: string,
+  keyFile: string,
+  logger: boolean,
+): { cert: Buffer; key: Buffer; minVersion: 'TLSv1.3'; groups?: string } | null {
+  if (!certFile && !keyFile) return null;
+  if (!certFile || !keyFile) {
+    throw new Error(
+      'TLS misconfigured: TLS_CERT_FILE and TLS_KEY_FILE must both be set (refusing to fall back to plaintext)',
+    );
+  }
+
+  const base = {
+    cert: readFileSync(certFile),
+    key: readFileSync(keyFile),
+    minVersion: 'TLSv1.3' as const,
+  };
+
+  // Older Node builds reject an unknown group name at handshake setup. Probe
+  // once so an unsupported runtime loses the PQ property instead of the
+  // ability to serve TLS at all.
+  try {
+    createSecureContext({ ...base, groups: PQ_TLS_GROUPS });
+    if (logger) {
+      console.log(`[gateway] TLS 1.3 enabled, key exchange: ${PQ_TLS_GROUPS}`);
+    }
+    return { ...base, groups: PQ_TLS_GROUPS };
+  } catch {
+    console.warn(
+      '[gateway] WARNING: this Node build does not support X25519MLKEM768 (needs OpenSSL 3.5+). ' +
+        'Serving TLS with classical key exchange only — recorded traffic is decryptable by a future ' +
+        'quantum adversary. Upgrade Node to restore post-quantum confidentiality.',
+    );
+    return base;
+  }
+}
 
 const signedTxSchema = {
   oneOf: [
@@ -451,10 +522,15 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     console.log(`[gateway] SQDP-${SQDP_VERSION} network=${net.id} rpc=${bridgeRpcUrls.join(',')}`);
   }
 
+  const TLS_CERT = overrides.tlsCertFile ?? process.env.TLS_CERT_FILE ?? '';
+  const TLS_KEY = overrides.tlsKeyFile ?? process.env.TLS_KEY_FILE ?? '';
+  const https = buildHttpsOptions(TLS_CERT, TLS_KEY, logger);
+
   const app = Fastify({
     logger,
     bodyLimit: BODY_LIMIT,
     trustProxy: TRUST_PROXY,
+    ...(https ? { https } : {}),
     ajv: {
       customOptions: {
         // Keep unknown fields so additionalProperties: false rejects custodial typos.
@@ -760,9 +836,20 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
   const shouldListen = overrides.listen ?? false;
   if (shouldListen) {
     const port = overrides.port ?? env.port ?? net.gatewayPort;
-    await app.listen({ port, host: '0.0.0.0' });
+    const host = overrides.host ?? process.env.GATEWAY_HOST ?? '127.0.0.1';
+    await app.listen({ port, host });
     if (logger) {
-      console.log(`[gateway] listening on :${port} mode=${MODE} network=${net.id}`);
+      const scheme = https ? 'https' : 'http';
+      console.log(
+        `[gateway] listening on ${scheme}://${host}:${port} mode=${MODE} network=${net.id}`,
+      );
+      if (!https && host !== '127.0.0.1' && host !== 'localhost') {
+        console.warn(
+          '[gateway] WARNING: bound to a non-loopback address without TLS. ' +
+            'Traffic — including API keys and unbroadcast transactions — is readable on the wire. ' +
+            'Set TLS_CERT_FILE/TLS_KEY_FILE or terminate TLS in front of this process.',
+        );
+      }
     }
   }
 

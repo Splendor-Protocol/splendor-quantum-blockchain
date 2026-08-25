@@ -23,6 +23,7 @@ import {
   assertFeeAtLeastMin,
   encodePayload,
   bytesToHex,
+  randomNonceHex,
   MIN_FEE,
 } from './encoding.js';
 import { encodeFunctionData } from './abi.js';
@@ -234,14 +235,28 @@ export class SplendorPQBridge {
     }
   }
 
+  /**
+   * Connect from post-quantum seed entropy. This is the recommended path: the
+   * resulting account's security rests on ML-DSA-65 alone.
+   */
   async connectFromSeed(seedHex: string): Promise<DeriveInfo> {
     await this.init();
     const raw = unwrap(this.api().sqDeriveFromSeedHex(this.sid(), strip0x(seedHex)));
     this.info = parseWasmJson<DeriveInfo>(raw as string);
+    this.info.keyOrigin = 'native';
+    this.info.postQuantumSecure = true;
     this.emitConnect(this.info);
     return this.info;
   }
 
+  /**
+   * Connect by deriving an ML-DSA key from an Ethereum signature.
+   *
+   * NOT quantum-safe. The seed is SHA3-256 of a deterministic ECDSA signature,
+   * so anyone who can break secp256k1 can recover the EVM key, recompute that
+   * signature, and derive this exact ML-DSA key. Use for onboarding
+   * convenience; use connectFromSeed for accounts holding value.
+   */
   async connectFromEvmSignature(
     signatureHex: string,
     evmAddress?: string,
@@ -252,6 +267,15 @@ export class SplendorPQBridge {
     const raw = unwrap(this.api().sqDeriveFromSigHex(this.sid(), strip0x(signatureHex)));
     this.info = parseWasmJson<DeriveInfo>(raw as string);
     this.info.evmAddress = evmAddress || recovered;
+    this.info.keyOrigin = 'evm-derived';
+    this.info.postQuantumSecure = false;
+    this.opts.onWarning?.({
+      code: 'NOT_POST_QUANTUM',
+      message:
+        'This account was derived from an Ethereum signature. Signing uses ML-DSA-65, but the key ' +
+        'is only as strong as secp256k1 — a quantum adversary could reproduce it from any ECDSA ' +
+        'signature this EVM account has published. Use a native seed for funds you intend to hold.',
+    });
     this.emitConnect(this.info);
     return this.info;
   }
@@ -559,24 +583,55 @@ export class SplendorPQBridge {
       assertAddress(opts.to);
       await this.beforeSignAndSubmit();
       const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
+
+      // Pin the payment nonce here so the authorisation payload and the on-chain
+      // settlement transaction commit to the SAME value. The node binds the two
+      // together and the executor derives the replay key from it, so two
+      // independently generated nonces would be rejected.
+      const nonceHex = randomNonceHex();
+
       const params = {
         to: opts.to,
         amount,
         valid_after: opts.validAfter || 0,
         valid_before: opts.validBefore || 0,
+        nonce_hex: nonceHex,
       };
       this.opts.onRequest?.({ method: 'signX402' });
       const wireStr = unwrap(this.api().sqSignX402(this.sid(), JSON.stringify(params))) as string;
       const payload = JSON.parse(wireStr);
+
       const out: {
         payload: object;
         verify?: { valid: boolean; reason?: string };
         settle?: object;
       } = { payload };
+
       if (opts.requirements) {
         out.verify = await this.rpc.x402Verify(opts.requirements, payload);
         if (opts.settle !== false && out.verify.valid) {
-          out.settle = await this.rpc.x402Settle(opts.requirements, payload);
+          // Settlement runs through consensus: the payer signs a TxX402 that the
+          // node admits to the mempool. The node cannot sign this on our behalf,
+          // because it debits this account and consumes this account's nonce.
+          const { nonce: accountNonce } = await this.getNonce();
+          this.opts.onRequest?.({ method: 'signX402Settlement' });
+          const settlementStr = unwrap(
+            this.api().sqSignX402Settlement(
+              this.sid(),
+              JSON.stringify({
+                to: opts.to,
+                amount,
+                nonce_hex: nonceHex,
+                fee: opts.fee ?? MIN_FEE,
+                account_nonce: accountNonce,
+              }),
+            ),
+          ) as string;
+          out.settle = await this.rpc.x402Settle(
+            opts.requirements,
+            payload,
+            JSON.parse(settlementStr),
+          );
         }
       }
       return out;

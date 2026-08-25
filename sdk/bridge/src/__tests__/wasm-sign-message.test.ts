@@ -1,11 +1,12 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { SplendorPQBridge } from '../index.js';
+import golden from '../../testdata/golden-vectors.json' with { type: 'json' };
 
 // Proves the Splendor Connect v2 foundation: the WASM signs an arbitrary
-// challenge with the quantum (CRYSTALS-Dilithium Mode-3) key, and the SAME WASM
+// challenge with the quantum (ML-DSA-65 / FIPS 204) key, and the SAME WASM
 // VERIFIES it — server-side, in Node. This is the exact capability a Node
 // Connect gateway needs to authenticate an SQ: identity, since there is no
-// native-JS CIRCL Mode-3 verifier.
+// native-JS ML-DSA-65 verifier.
 
 const GOLDEN_SEED = '01'.repeat(32);
 
@@ -15,7 +16,7 @@ const challenge = [
   'Splendor Connect v2',
   'Sign in to https://quantum-explorer.splendor.org',
   '',
-  'Address: SQ:c3ee306a4d69ecdaf2a43837ae475a54857578533bb919740a5e4dfe9579e44e',
+  `Address: ${golden.address}`,
   'Session: 0123456789abcdef0123456789abcdef',
   'Nonce: fedcba9876543210fedcba9876543210',
   'Chain ID: splendor-quantum-1',

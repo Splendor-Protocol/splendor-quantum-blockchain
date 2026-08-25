@@ -1,9 +1,12 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { SplendorPQBridge } from '../index.js';
+import golden from '../../testdata/golden-vectors.json' with { type: 'json' };
 
+// Read the seed→address vector from the shared golden file rather than
+// hardcoding it, so the Go signer and the WASM signer can never drift apart
+// silently the way they did across the ML-DSA-65 migration.
 const GOLDEN_SEED = '01'.repeat(32);
-const GOLDEN_ADDRESS =
-  'SQ:c3ee306a4d69ecdaf2a43837ae475a54857578533bb919740a5e4dfe9579e44e';
+const GOLDEN_ADDRESS = golden.address;
 
 const bridges: SplendorPQBridge[] = [];
 
