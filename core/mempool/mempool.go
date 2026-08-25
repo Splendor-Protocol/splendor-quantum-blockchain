@@ -36,6 +36,19 @@ const (
 	MaxTxDataBytes = 128 * 1024
 )
 
+// Fee floor multipliers applied as the pool fills. A flat MinFee makes flooding
+// cheap: an attacker pays the same 1000 units for the last slot as for the
+// first. Raising the floor with occupancy means sustaining congestion costs
+// progressively more, while an empty pool stays cheap for ordinary users.
+var congestionTiers = []struct {
+	loadPercent int
+	multiplier  int64
+}{
+	{90, 32},
+	{75, 8},
+	{50, 2},
+}
+
 // Mempool holds pending transactions ordered by fee (highest first).
 type Mempool struct {
 	mu      sync.RWMutex
@@ -69,19 +82,15 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Check pool capacity
-	if len(m.txs) >= m.maxSize {
-		return types.ErrMempoolFull
-	}
-
 	// Structural validation
 	if err := tx.Validate(); err != nil {
 		return fmt.Errorf("invalid tx: %w", err)
 	}
 
-	// Minimum fee check
-	if tx.Fee.Cmp(big.NewInt(MinFee)) < 0 {
-		return fmt.Errorf("fee too low: minimum %d, got %s", MinFee, tx.Fee.String())
+	// Minimum fee check, scaled by how full the pool currently is.
+	minFee := m.minFeeLocked()
+	if tx.Fee.Cmp(big.NewInt(minFee)) < 0 {
+		return fmt.Errorf("fee too low: minimum %d at current pool load, got %s", minFee, tx.Fee.String())
 	}
 
 	// Bound the tx payload so the pool can't be filled with multi-hundred-KiB txs.
@@ -104,6 +113,22 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	// a flooding sender is rejected cheaply).
 	if len(m.byAddr[tx.From]) >= MaxPerAddr {
 		return fmt.Errorf("per-address mempool limit reached (%d) for %s", MaxPerAddr, tx.From.String())
+	}
+
+	// A full pool used to reject everything, which let a spammer who had already
+	// taken every slot at MinFee lock out all later traffic no matter what it
+	// paid. Instead the pool stays full but repriced: an arrival must outbid the
+	// cheapest resident to displace it. Decided here, before signature
+	// verification, so an underbid costs us nothing.
+	//
+	// Add holds m.mu for its whole body, so the pool cannot change underneath us
+	// and this victim stays valid until the eviction below.
+	var victim *txEntry
+	if len(m.txs) >= m.maxSize {
+		victim = m.cheapestLocked()
+		if victim == nil || tx.Fee.Cmp(victim.tx.Fee) <= 0 {
+			return types.ErrMempoolFull
+		}
 	}
 
 	// Compute hash and check for duplicates
@@ -147,6 +172,17 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 		if balance.Cmp(total) < 0 {
 			return types.ErrInsufficientBalance
 		}
+	}
+
+	// Make room only now that the transaction is known to be valid, so a bad
+	// signature can never cost an honest sender their slot.
+	if victim != nil {
+		log.Debug().
+			Str("evicted", victim.tx.From.String()).
+			Str("evicted_fee", victim.tx.Fee.String()).
+			Str("incoming_fee", tx.Fee.String()).
+			Msg("mempool full: evicted cheapest transaction")
+		m.removeLocked(victim.hash)
 	}
 
 	// Add to pool
@@ -196,6 +232,51 @@ func (m *Mempool) Pending(n int) []*types.Transaction {
 		result[i] = entries[i].tx
 	}
 	return result
+}
+
+// minFeeLocked returns the fee floor for the pool's current occupancy. The
+// caller must already hold m.mu.
+func (m *Mempool) minFeeLocked() int64 {
+	if m.maxSize <= 0 {
+		return MinFee
+	}
+	load := len(m.txs) * 100 / m.maxSize
+	for _, tier := range congestionTiers {
+		if load >= tier.loadPercent {
+			return MinFee * tier.multiplier
+		}
+	}
+	return MinFee
+}
+
+// MinFeeNow reports the fee a transaction must pay to be accepted right now, so
+// callers can quote an accurate floor instead of the static MinFee.
+func (m *Mempool) MinFeeNow() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.minFeeLocked()
+}
+
+// cheapestLocked returns the lowest-fee resident transaction, breaking ties
+// toward the higher nonce so a sender's earlier transactions are not stranded
+// behind an evicted later one. The caller must already hold m.mu.
+func (m *Mempool) cheapestLocked() *txEntry {
+	var cheapest *txEntry
+	for _, e := range m.txs {
+		if cheapest == nil {
+			cheapest = e
+			continue
+		}
+		switch e.tx.Fee.Cmp(cheapest.tx.Fee) {
+		case -1:
+			cheapest = e
+		case 0:
+			if e.tx.Nonce > cheapest.tx.Nonce {
+				cheapest = e
+			}
+		}
+	}
+	return cheapest
 }
 
 // Remove removes a transaction from the mempool by its hash.
