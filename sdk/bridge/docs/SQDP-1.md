@@ -60,8 +60,10 @@ Exported: `DERIVATION_DOMAIN_MESSAGE`, `CHAIN_ID`.
 ## 4. Units and fees
 
 1. Native unit: **SPLD**. `1 SPLD = 10^18` base units.
-2. Transaction `fee` MUST be an integer string of base units and MUST be ≥ `1000` (`MIN_FEE` / mempool minimum).
+2. Transaction `fee` MUST be an integer string of base units and MUST be ≥ `1000` (`MIN_FEE` / protocol floor in `sqc.networks.json`).
 3. Clients SHOULD use `fromSPLD` / `toSPLD` helpers rather than ad-hoc decimal math.
+4. The bridge SDK does **not** charge an extra product/markup fee — only the chain mempool fee applies.
+5. Under congestion the live node MAY raise the accepted floor above `1000` (e.g. `MinFee * N` in mempool). Clients MUST treat node `INVALID_FEE` / reject responses as authoritative and retry with a higher fee; SDK `assertFeeAtLeastMin` only enforces the static protocol floor.
 
 ---
 
@@ -95,12 +97,12 @@ Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
 
 ## 7. Confirmation
 
-1. Preferred confirmation: poll `GET /tx/{hash}/receipt` until present (tx index on nodes with explorer routes).
+1. Preferred confirmation: poll `GET /tx/{hash}/receipt` until present (tx index on nodes with explorer routes — mounted by `cmd/node` via `RegisterExplorerRoutes`).
 2. Fallback: **nonce advancement** — wait until account nonce `>` the nonce used when signing (can race with other txs from the same account).
 3. `/ws` is mounted as an SSE/NDJSON stream (not a browser WebSocket). Clients MAY subscribe; `pq-bridge` does not expose a subscribe helper yet.
-4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, the bridge prefers the receipt path.
+4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, `@splendor/pq-bridge` **prefers the receipt path**, then falls back to nonce.
 
-`PROTOCOL.confirmation === 'nonce'` (fallback) with optional receipt proof when indexed.
+Config field `PROTOCOL.confirmation === 'nonce'` names the **fallback** mechanism for older/minimal RPC mounts. Runtime clients SHOULD treat confirmation as **receipt-first, nonce-fallback**. Caveat string: `PROTOCOL.confirmationCaveat`.
 
 ---
 
@@ -112,7 +114,9 @@ Clients using `@splendor/pq-bridge` MUST use these event names and payloads:
 |-------|---------|
 | `connect` | `{ address: string /* SQ: */, evmAddress?: string }` |
 | `disconnect` | `{}` |
+| `lock` | `{}` |
 | `accountsChanged` | `{ address: string, evmAddress?: string }` |
+| `error` | `{ code: string, message: string }` |
 
 1. After MetaMask `accountsChanged`, wallets SHOULD re-`personal_sign` and re-derive (SDK default). Empty accounts SHOULD lock and emit `disconnect`.
 2. `lock()` MUST clear the ML-DSA-65 key from WASM memory and emit a `lock` event. `disconnect()` MUST destroy the session and emit `disconnect`.

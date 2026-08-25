@@ -4,6 +4,22 @@ Connect → fund → transfer → wait. Use a read-only `SqcProvider` until the 
 
 **Protocol standard:** all MUST/SHOULD rules live in **[SQDP-1.md](./SQDP-1.md)**. Ship checklist: **[SQDP-1-CONFORMANCE.md](./SQDP-1-CONFORMANCE.md)**.
 
+## Client ask → SDK answer (bridge only)
+
+| Ask | Use |
+|-----|-----|
+| Plug-and-play wallet UI (AppKit-style) | `@splendor/connect-react` — `SplendorConnectProvider` + `ConnectKit` / `ConnectButton` (`hostModals` default) |
+| Hide PQ crypto from dApp code | WASM signer only; UI shows `SQ:` identity |
+| One-touch / one config for all dApps | `sqc.networks.json` + `connectSplendor` / `createSplendorClient({ networkConfig })` |
+| Real testnet RPCs without forking package | `rpcUrls: [...]` (gateway optional for SqRpc) or `customNetworks` / `registerNetwork` |
+| Host WASM without manual copy | Vite: `@splendor/connect-react/vite` `sqcWasmPlugin`; Next: `npx sqc-copy-wasm` / `@splendor/connect-react/next` |
+| Idle / tab lock must update UI | Bridge emits `lock`; connect-react sets `status: 'locked'` → Unlock CTA |
+| Soft network switch without losing last wallet | `useNetwork().switchNetwork` (keeps last connector; reconnects when previously connected) |
+| No bridge markup fee | Only chain `minFee` (`PROTOCOL.minFee`); under congestion node may require higher — handle reject and retry |
+| Confirmation that is not fake | `waitForConfirmation` / `waitForConfirmation: true` — receipt-first, nonce fallback ([SQDP §7](./SQDP-1.md)) |
+
+**Out of scope (documented):** WalletConnect v2 protocol, full EIP-1193 SQC provider for wagmi, CDN-hosted WASM.
+
 ## Recommended: Connect UI kit (React)
 
 For browser dApps, use **`@splendor/connect-react`** — AppKit-style modal + connectors. PQ ML-DSA-65 stays inside WASM; your UI only shows `SQ:` identity.
@@ -13,24 +29,19 @@ import '@splendor/connect-react/style.css';
 import { sqcWasmPlugin } from '@splendor/connect-react/vite'; // vite.config.ts
 import {
   SplendorConnectProvider,
-  ConnectButton,
-  metamaskConnector,
-  seedConnector,
+  ConnectKit,
   useSendTransfer,
 } from '@splendor/connect-react';
 
-<SplendorConnectProvider
-  network="local"
-  connectors={[metamaskConnector(), seedConnector()]}
-  theme="splendor"
->
-  <ConnectButton />
+<SplendorConnectProvider network="local" autoReconnect allowUnpinnedWasm>
+  <ConnectKit />
 </SplendorConnectProvider>
 ```
 
 - WASM: prefer `sqcWasmPlugin()` (see [`WASM_HOSTING.md`](./WASM_HOSTING.md)).
 - Networks: `useNetwork().switchNetwork('local')` — placeholder `*.example` RPCs are hidden unless `allowPlaceholderNetworks`.
 - Transfers: `useSendTransfer()` instead of raw wallet calls.
+- Testnet with real RPC only: `rpcUrls={['https://…']}` — `gatewayUrl` not required for chain RPC.
 
 Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
 
@@ -38,7 +49,7 @@ Lower-level (no UI): `connectSplendor` from `@splendor/pq-bridge`, or `useSplend
 
 ```ts
 import { PROTOCOL, SQDP_VERSION, connectSplendor, createSplendorClient } from '@splendor/pq-bridge';
-// PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.confirmation === 'nonce'
+// PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.confirmationCaveat
 // Networks: edit src/config/sqc.networks.json (single source)
 ```
 
@@ -124,6 +135,7 @@ wallet.on('accountsChanged', ({ address }) => {
   console.log('re-derived after MetaMask switch', address);
 });
 wallet.on('disconnect', () => console.log('disconnected'));
+wallet.on('lock', () => console.log('session locked — re-connect to unlock'));
 
 await wallet.connectFromMetaMask();
 // Node / agents: await wallet.connectFromEvmPrivateKey(key)
@@ -139,14 +151,13 @@ Send SPLD to `wallet.getAddress()` (the `SQ:` address) from a faucet or another 
 ## 4. Transfer + confirmation
 
 ```ts
-const { nonce } = await wallet.getNonce();
 const res = await wallet.sendTransfer({
   to: 'SQ:…',
   amountSPLD: '0.01',
   waitForConfirmation: true,
   confirmTimeoutMs: 60_000,
 });
-// confirmation uses nonce advancement (node tx-by-hash index is not live yet)
+// Prefer GET /tx/{hash}/receipt when indexed; else nonce advancement (can race)
 ```
 
 ## 5. QSol contract calls
@@ -197,5 +208,6 @@ Serve WASM with correct MIME/CORS: [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 - [ ] Display **SQ:** address after connect (not 0x)
 - [ ] Handle `BridgeError` codes: `USER_REJECTED`, `NO_PROVIDER`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`
 - [ ] Use `rpcUrls` failover in production (`https://` for non-local)
-- [ ] Confirm via `waitForConfirmation` / nonce poll until tx index exists
+- [ ] Confirm via `waitForConfirmation` (receipt-first; nonce fallback on minimal RPC)
 - [ ] Host WASM at network `wasmUrl` / `execUrl` from `sqc.networks.json` (one-touch already resolves these; you still must serve the files)
+- [ ] Remember: under congestion node fee floor may exceed `PROTOCOL.minFee` (`1000`)

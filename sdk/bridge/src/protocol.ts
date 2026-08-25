@@ -36,8 +36,11 @@ export const PROTOCOL = {
   abiHash: proto.abiHash,
   goldenTransferSelector: proto.goldenTransferSelector,
   defaultNetwork: file.defaultNetwork,
-  /** Confirmation is nonce-poll only; hash is correlational. */
-  confirmationCaveat: 'nonce-race',
+  /**
+   * Runtime: receipt-first (GET /tx/{hash}/receipt), then nonce fallback.
+   * `confirmation` config value names the fallback mechanism for minimal RPC mounts.
+   */
+  confirmationCaveat: 'receipt-preferred;nonce-fallback-race',
 } as const;
 
 export type ProtocolConstants = typeof PROTOCOL;

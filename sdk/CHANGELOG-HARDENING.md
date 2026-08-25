@@ -1,5 +1,11 @@
 # Changelog
 
+## Docs closeout (client raise status)
+
+- SQDP-1: receipt-first confirmation; congested minFee note; `lock` / `error` events
+- DAPP_INTEGRATION: Client ask → SDK answer table; confirmation + fee checklist updates
+- `PROTOCOL.confirmationCaveat` → `receipt-preferred;nonce-fallback-race`
+
 ## @splendor/pq-bridge 1.4.0
 
 - Emit `lock` event; idle no longer locks on every tab hide (`lockOnHidden` opt-in)
