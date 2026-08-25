@@ -167,14 +167,17 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 			stateRoot[:8], b.Header.StateRoot[:8])
 	}
 
-	// Root matches — durably commit.
-	if _, err := e.state.Commit(); err != nil {
-		return fmt.Errorf("state commit failed: %w", err)
-	}
-
-	// Store block
+	// Root matches — persist. ORDER MATTERS: store the block + advance the chain
+	// head FIRST (atomic within the chain DB), THEN commit state with its height
+	// marker. A crash between the two leaves the head ahead of the state by one
+	// block, which boot reconciliation replays from the already-stored block. The
+	// reverse order (state ahead of a head with no stored block) is unrecoverable.
 	if err := e.storeBlock(b); err != nil {
+		e.state.DiscardPending()
 		return fmt.Errorf("block store failed: %w", err)
+	}
+	if _, err := e.state.CommitWithHeight(b.Header.Height); err != nil {
+		return fmt.Errorf("state commit failed: %w", err)
 	}
 
 	// Index block transactions and store receipts
@@ -192,6 +195,102 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		e.hooks.RunPostBlock(b, stateRoot)
 	}
 
+	return nil
+}
+
+// ReconcileState catches committed state up to the chain head after a crash.
+//
+// storeBlock advances the chain head (block body + head pointer, one atomic
+// batch) BEFORE the state is committed, so an ill-timed crash can leave the head
+// ahead of the state by one or more blocks. Those blocks are already durably
+// stored, so they are replayed deterministically to rebuild the missing state.
+// The reverse (state ahead of head) is prevented by that write order and treated
+// as corruption. Must be called once at startup before the node serves or seals.
+func (e *Executor) ReconcileState() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	stateH, known := e.state.AppliedHeight()
+	if !known {
+		// No height marker: a fresh DB (chain head also absent), or legacy state
+		// written before markers existed. Either way there is nothing to
+		// reconcile against — trust the durable chain DB and return.
+		return nil
+	}
+
+	chainH, err := e.LatestHeight()
+	if err != nil {
+		return fmt.Errorf("reconcile: read chain head: %w", err)
+	}
+	if stateH > chainH {
+		return fmt.Errorf("reconcile: state height %d is ahead of chain head %d — corrupt state", stateH, chainH)
+	}
+	for h := stateH + 1; h <= chainH; h++ {
+		b, err := e.GetBlockByHeight(h)
+		if err != nil {
+			return fmt.Errorf("reconcile: load stored block %d: %w", h, err)
+		}
+		if err := e.reapplyBlock(b); err != nil {
+			return fmt.Errorf("reconcile: replay block %d: %w", h, err)
+		}
+		log.Warn().Uint64("height", h).Msg("reconcile: replayed stored block to catch state up to chain head after crash")
+	}
+	return nil
+}
+
+// reapplyBlock re-executes an already-stored block's transactions against the
+// current state and commits (advancing the state height marker). Used ONLY by
+// ReconcileState: it skips linkage (the block is already canonical) and block
+// storage (already stored), but still verifies the recomputed state root matches
+// the block header — a mismatch is corruption, not a normal reject.
+func (e *Executor) reapplyBlock(b *types.Block) error {
+	var receipts []*types.Receipt
+	totalFees := new(bigInt)
+	var blockGas uint64
+
+	for i, tx := range b.Transactions {
+		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
+		if err != nil {
+			e.state.DiscardPending()
+			return fmt.Errorf("reapply tx %d: %w", i, err)
+		}
+		receipts = append(receipts, receipt)
+		blockGas += receipt.GasUsed
+		if blockGas > MaxBlockGas {
+			e.state.DiscardPending()
+			return fmt.Errorf("reapply: block exceeds gas budget: %d > %d", blockGas, MaxBlockGas)
+		}
+		totalFees.Add(totalFees, tx.Fee)
+	}
+
+	if totalFees.Sign() > 0 {
+		va, err := e.state.GetAccount(b.Header.ValidatorAddr)
+		if err != nil {
+			e.state.DiscardPending()
+			return fmt.Errorf("reapply fee credit: %w", err)
+		}
+		va.AddBalance(totalFees)
+		e.state.SetAccount(va)
+	}
+
+	root, err := e.state.PendingStateRoot()
+	if err != nil {
+		e.state.DiscardPending()
+		return fmt.Errorf("reapply state root: %w", err)
+	}
+	if root != b.Header.StateRoot {
+		e.state.DiscardPending()
+		return fmt.Errorf("reapply state root mismatch at height %d: computed %x, header %x",
+			b.Header.Height, root[:8], b.Header.StateRoot[:8])
+	}
+	if _, err := e.state.CommitWithHeight(b.Header.Height); err != nil {
+		return fmt.Errorf("reapply commit: %w", err)
+	}
+
+	if e.txIndex != nil {
+		_ = e.txIndex.IndexBlock(b)
+		_ = e.txIndex.StoreBlockReceipts(receipts)
+	}
 	return nil
 }
 
@@ -350,8 +449,12 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		return vm.DispatchModuleCall(e.state, tx.From, tx.Nonce, tx.Data, receipt)
 	}
 
-	total := addBig(tx.Amount, tx.Fee)
-	if err := fromAcc.SubBalance(total); err != nil {
+	// The fee is charged up-front as gas (kept even if the call reverts). The
+	// call value is NOT debited here — it moves sender->contract only if the
+	// call succeeds (see below). Previously tx.Amount was debited from the
+	// sender but never credited to tx.To, so the coins were burned out of total
+	// supply on every value-bearing contract call.
+	if err := fromAcc.SubBalance(tx.Fee); err != nil {
 		return err
 	}
 	fromAcc.IncrNonce()
@@ -365,13 +468,25 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		return fmt.Errorf("call failed: %w", err)
 	}
 
+	reverted := result != nil && result.Reverted
 	if result != nil {
 		receipt.GasUsed = result.GasUsed
 		for _, l := range result.Logs {
 			receipt.AddLog(l)
 		}
-		if result.Reverted {
+		if reverted {
 			receipt.SetFailed("execution reverted")
+		}
+	}
+
+	// Credit the call value to the contract on success. On revert the value
+	// stays with the sender; on a hard error the enclosing per-tx snapshot
+	// reverts the fee debit and nonce bump too. Transfer re-checks the sender's
+	// balance (which still covers tx.Amount after the fee debit, since the
+	// pre-flight check required Amount+Fee) and handles the from==to case.
+	if !reverted && tx.Amount != nil && tx.Amount.Sign() > 0 {
+		if err := e.state.Transfer(tx.From, tx.To, tx.Amount); err != nil {
+			return fmt.Errorf("call value transfer: %w", err)
 		}
 	}
 
@@ -489,9 +604,12 @@ func (e *Executor) ProduceBlock(
 		e.state.SetAccount(va)
 	}
 
-	stateRoot, err := e.state.Commit()
+	// Compute the root the pending writes WOULD commit to (for the header), but do
+	// not persist state yet — the block body + head must be stored first so a
+	// crash leaves the head ahead of state (replayable), never the reverse.
+	stateRoot, err := e.state.PendingStateRoot()
 	if err != nil {
-		return nil, fmt.Errorf("state commit: %w", err)
+		return nil, fmt.Errorf("pending state root: %w", err)
 	}
 
 	txMerkleRoot, err := types.ComputeTxMerkleRoot(executed)
@@ -523,7 +641,11 @@ func (e *Executor) ProduceBlock(
 	}
 
 	if err := e.storeBlock(b); err != nil {
+		e.state.DiscardPending()
 		return nil, fmt.Errorf("store block: %w", err)
+	}
+	if _, err := e.state.CommitWithHeight(height); err != nil {
+		return nil, fmt.Errorf("state commit: %w", err)
 	}
 
 	if e.txIndex != nil {
@@ -556,18 +678,17 @@ func (e *Executor) storeBlock(b *types.Block) error {
 	batch := new(leveldb.Batch)
 	batch.Put([]byte(prefixBlock+hashHex), data)
 	batch.Put([]byte(heightKey), []byte(hashHex))
-	if err := e.chainDB.Write(batch, nil); err != nil {
-		return err
+	// Advance the chain head in the SAME atomic batch as the block body, and only
+	// ever forward. Folding the head write into the batch means a block body can
+	// never be persisted without its head (or vice-versa) — the two move together.
+	if curH, ok := e.latestHeightRaw(); !ok || b.Header.Height > curH {
+		latestData, _ := json.Marshal(map[string]interface{}{
+			"height": b.Header.Height,
+			"hash":   hashHex,
+		})
+		batch.Put([]byte(keyLatest), latestData)
 	}
-
-	if curH, ok := e.latestHeightRaw(); ok && b.Header.Height <= curH {
-		return nil
-	}
-	latestData, _ := json.Marshal(map[string]interface{}{
-		"height": b.Header.Height,
-		"hash":   hashHex,
-	})
-	return e.chainDB.Put([]byte(keyLatest), latestData, nil)
+	return e.chainDB.Write(batch, nil)
 }
 
 func (e *Executor) latestHeightRaw() (uint64, bool) {

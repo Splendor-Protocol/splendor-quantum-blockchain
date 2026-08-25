@@ -1,9 +1,15 @@
-// Package state — StateDB snapshot and revert support.
+// Package state — StateDB snapshot and revert support (journaled undo-log).
 //
-// A snapshot captures the set of dirty (uncommitted) accounts at a point in time.
-// If execution needs to be rolled back (e.g. a sub-call reverts), the snapshot
-// is restored. Only dirty state is tracked — committed state in LevelDB is not
-// affected until Commit() is called.
+// A snapshot records a MARK: the current length of the pending-mutation journal.
+// Reverting to a snapshot replays the journal's tail undos (newest first) back to
+// that mark, restoring the exact pre-snapshot pending state, then truncates the
+// journal. This makes Snapshot() O(1) and RevertToSnapshot() O(mutations-since),
+// versus the previous scheme that deep-copied the entire dirty account set on
+// every snapshot — which was O(N^2) across a block and throttled throughput far
+// below the signature-verification ceiling.
+//
+// Only the in-memory pending layer (dirty accounts, code cache, raw storage/nonce
+// overlay) is journaled; committed LevelDB state is untouched until Commit().
 //
 // Usage:
 //   snap := stateDB.Snapshot()
@@ -11,91 +17,56 @@
 //   if err != nil {
 //       stateDB.RevertToSnapshot(snap)  // undo all changes since snap
 //   } else {
-//       stateDB.CommitSnapshot(snap)    // keep changes, discard snap
+//       stateDB.CommitSnapshot(snap)    // keep changes, discard the checkpoint
 //   }
 package state
 
 import (
 	"math/big"
-
-	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
-
-// StateSnapshot captures the dirty (pending) state at a moment in time.
-// It stores deep copies of all dirty accounts so revert is cheap and correct.
-type StateSnapshot struct {
-	// id is a monotonically increasing snapshot counter.
-	id uint64
-
-	// dirtyAccounts is a copy of stateDB.dirty at snapshot time.
-	dirtyAccounts map[qcrypto.Address]*types.Account
-
-	// dirtyCode is a copy of stateDB.codeCache at snapshot time.
-	dirtyCode map[[32]byte][]byte
-}
 
 // snapCounter is a process-global snapshot ID counter.
 var snapCounter uint64
 
-// Snapshot creates a new snapshot of the current dirty state.
-// Returns a snapshot ID that can be used with RevertToSnapshot or CommitSnapshot.
+// Snapshot records the current journal position and returns a snapshot ID.
 func (s *StateDB) Snapshot() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	snapCounter++
 	id := snapCounter
-
-	// Deep-copy dirty accounts
-	accounts := make(map[qcrypto.Address]*types.Account, len(s.dirty))
-	for addr, acc := range s.dirty {
-		accounts[addr] = acc.Copy()
-	}
-
-	// Deep-copy code cache
-	code := make(map[[32]byte][]byte, len(s.codeCache))
-	for h, c := range s.codeCache {
-		cp := make([]byte, len(c))
-		copy(cp, c)
-		code[h] = cp
-	}
-
-	// Store snapshot in the registry
-	s.snapshots[id] = &StateSnapshot{
-		id:            id,
-		dirtyAccounts: accounts,
-		dirtyCode:     code,
-	}
-
+	s.snapshots[id] = len(s.journal)
 	return id
 }
 
-// RevertToSnapshot rolls back all dirty state changes made after snapshot `id`.
-// The snapshot is consumed — you cannot revert to the same snapshot twice.
+// RevertToSnapshot rolls back every pending mutation made after snapshot `id` by
+// replaying the journal's undo functions from the end back to the recorded mark.
+// The snapshot is consumed; snapshots taken after it are invalidated too.
 func (s *StateDB) RevertToSnapshot(id uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	snap, ok := s.snapshots[id]
+	mark, ok := s.snapshots[id]
 	if !ok {
-		return // snapshot not found, nothing to revert
+		return // unknown snapshot, nothing to revert
 	}
+	// Undo newest-first down to the mark. LIFO order is essential: a key mutated
+	// several times must be restored through each prior value in reverse.
+	for i := len(s.journal) - 1; i >= mark; i-- {
+		s.journal[i]()
+	}
+	s.journal = s.journal[:mark]
 
-	// Restore dirty state from snapshot
-	s.dirty = snap.dirtyAccounts
-	s.codeCache = snap.dirtyCode
-
-	// Clean up this snapshot and all newer ones
-	for snapID := range s.snapshots {
-		if snapID >= id {
+	// Drop this checkpoint and any newer ones (their marks are now past the tail).
+	for snapID, m := range s.snapshots {
+		if snapID >= id || m > mark {
 			delete(s.snapshots, snapID)
 		}
 	}
 }
 
-// CommitSnapshot discards a snapshot (keeps changes, removes the checkpoint).
-// Call this when the operation that took the snapshot succeeded.
+// CommitSnapshot discards a snapshot checkpoint, keeping its changes. The journal
+// is retained so an OUTER snapshot can still revert past this point.
 func (s *StateDB) CommitSnapshot(id uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

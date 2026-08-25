@@ -1,5 +1,5 @@
 // Splendor Quantum Chain — Wallet CLI
-// All keys use CRYSTALS-Dilithium Mode 3. No ECDSA anywhere.
+// All keys use ML-DSA-65 (FIPS-204). No ECDSA anywhere.
 //
 // Commands:
 //   sqc-wallet generate  --out wallet.sqwallet
@@ -36,7 +36,7 @@ func main() {
 		Use:   "sqc-wallet",
 		Short: "Splendor Quantum Chain wallet CLI",
 		Long: `sqc-wallet manages Splendor Quantum Chain wallets.
-Keys use CRYSTALS-Dilithium Mode 3 (NIST FIPS 204).
+Keys use ML-DSA-65 (NIST FIPS 204).
 Addresses are derived as SHA3-256(dilithium_public_key) — no ECDSA.`,
 	}
 
@@ -64,7 +64,7 @@ func cmdGenerate() *cobra.Command {
 		Short: "Generate a new Dilithium quantum wallet",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Generate keypair
-			fmt.Fprintln(os.Stderr, "Generating CRYSTALS-Dilithium Mode 3 keypair...")
+			fmt.Fprintln(os.Stderr, "Generating ML-DSA-65 (FIPS-204) keypair...")
 			pub, priv, err := qcrypto.GenerateKeypair()
 			if err != nil {
 				return fmt.Errorf("key generation failed: %w", err)
@@ -95,7 +95,7 @@ func cmdGenerate() *cobra.Command {
 			fmt.Printf("   Saved to: %s\n", outPath)
 			fmt.Printf("\n⚠️  IMPORTANT: Back up %s securely.\n", outPath)
 			fmt.Printf("   There is no seed phrase. The wallet file IS the key.\n")
-			fmt.Printf("   Private key size: %d bytes (Dilithium Mode 3)\n", qcrypto.PrivateKeySize)
+			fmt.Printf("   Private key size: %d bytes (ML-DSA-65)\n", qcrypto.PrivateKeySize)
 
 			return nil
 		},
@@ -134,7 +134,7 @@ func cmdPubkey() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pubkey",
 		Short: "Show the Dilithium public key in hex (for genesis.json)",
-		Long: `Prints the 1952-byte Dilithium Mode 3 public key in hexadecimal.
+		Long: `Prints the 1952-byte ML-DSA-65 public key in hexadecimal.
 This is needed for the validator_pubkey_hex field in genesis.json.
 The pubkey is 3904 hex characters (1952 bytes × 2).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -319,7 +319,7 @@ func cmdExportKey() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export-key",
 		Short: "Export raw Dilithium private key bytes (for NFC card provisioning)",
-		Long: `Exports the 4032-byte Dilithium Mode 3 private key to a binary file.
+		Long: `Exports the 4032-byte ML-DSA-65 private key to a binary file.
 This file is used to provision a physical NFC smart card secure element.
 KEEP THIS FILE SECURE. Delete it after card provisioning.`,
 		RunE: func(cmd *cobra.Command, args []string) error {

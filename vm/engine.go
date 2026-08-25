@@ -1027,6 +1027,13 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 
 			var subResult *ExecutionResult
 
+			// Snapshot state before the sub-call so a FAILED callee leaves no
+			// residue: its storage (SSTORE / module writes), account and nonce
+			// changes are rolled back, matching EVM CALL semantics. Without this a
+			// callee that wrote storage and then reverted left that storage durable
+			// if the outer tx succeeded — now state-root-visible, so it must revert.
+			subSnap := e.state.Snapshot()
+
 			// Check precompile registry first
 			if e.precompiles.IsPrecompile(toAddr) {
 				out, pcGas, pcErr := e.precompiles.Call(toAddr, calldata, callGas)
@@ -1051,15 +1058,19 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			}
 
 			if err := useGas(subResult.GasUsed); err != nil {
+				e.state.RevertToSnapshot(subSnap)
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 
 			returnData = subResult.ReturnValue
-			ctx.Logs = append(ctx.Logs, subResult.Logs...)
 
 			if subResult.Err != nil {
+				// Sub-call reverted: undo its state writes and DROP its logs.
+				e.state.RevertToSnapshot(subSnap)
 				boolPush(stk, false) // call failed
 			} else {
+				e.state.CommitSnapshot(subSnap)
+				ctx.Logs = append(ctx.Logs, subResult.Logs...)
 				boolPush(stk, true) // call succeeded
 				// Copy return data into memory
 				if len(returnData) > 0 && retSize.Int64() > 0 {

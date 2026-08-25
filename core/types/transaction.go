@@ -1,5 +1,5 @@
 // Package types defines the core data structures for Splendor Quantum Chain.
-// All hashing uses SHA-3-256. All signing uses Dilithium Mode 3.
+// All hashing uses SHA-3-256. All signing uses ML-DSA-65.
 package types
 
 import (
@@ -25,7 +25,7 @@ const (
 const ChainID = "splendor-quantum-1"
 
 // Transaction is the fundamental unit of state change on Splendor Quantum Chain.
-// All transactions are signed with Dilithium Mode 3 (round-3, not FIPS-204 ML-DSA).
+// All transactions are signed with ML-DSA-65 (NIST FIPS 204).
 // The hash is computed as SHA3-256(JSON-serialised transaction body).
 type Transaction struct {
 	// Header
@@ -60,7 +60,7 @@ type Transaction struct {
 	// Included on first transaction; subsequent transactions look it up from state.
 	PublicKey []byte `json:"public_key,omitempty"`
 
-	// Dilithium Mode 3 signature (3293 bytes) over SHA3-256(canonical_body_bytes).
+	// ML-DSA-65 signature (3309 bytes) over SHA3-256(canonical_body_bytes).
 	Signature []byte `json:"signature,omitempty"`
 }
 

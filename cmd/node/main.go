@@ -1,7 +1,7 @@
 // Splendor Quantum Chain — Full Node (v2)
 //
 // 100% quantum-native blockchain node.
-// All crypto: CRYSTALS-Dilithium Mode 3 (round-3, not FIPS-204 ML-DSA) + SHA3-256.
+// All crypto: ML-DSA-65 (FIPS-204) + SHA3-256.
 // Zero ECDSA. Zero SHA-256. Zero keccak. Zero secp256k1.
 //
 // Usage:
@@ -60,7 +60,7 @@ func main() {
 		Use:   "sqc-node",
 		Short: "Splendor Quantum Chain full node",
 		Long: `sqc-node runs a Splendor Quantum Chain full node.
-Cryptography: CRYSTALS-Dilithium Mode 3 (round-3, not FIPS-204 ML-DSA) + SHA3-256.
+Cryptography: ML-DSA-65 (FIPS-204) + SHA3-256.
 No ECDSA. No SHA-256. No conventional cryptography.`,
 		RunE: runNode,
 	}
@@ -263,6 +263,14 @@ func runNode(cmd *cobra.Command, args []string) error {
 			nodeMetrics.IncrTxsProcessed(uint64(b.Header.TxCount))
 		}
 	}()
+
+	// ── Crash recovery ─────────────────────────────────────────────────────
+	// The chain head advances (atomically) before state is committed, so a crash
+	// can leave the head ahead of the state. Replay any such blocks before we
+	// serve or seal. No-op on a fresh DB or a cleanly-shut-down node.
+	if err := executor.ReconcileState(); err != nil {
+		return fmt.Errorf("state reconciliation failed: %w", err)
+	}
 
 	// ── Genesis (if chain is empty) ────────────────────────────────────────
 	if latestBlock, _ := executor.LatestBlock(); latestBlock == nil {
