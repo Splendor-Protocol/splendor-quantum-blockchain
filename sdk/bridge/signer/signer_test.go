@@ -448,7 +448,10 @@ func TestGoldenSeedAddressMatchesTS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "SQ:c3ee306a4d69ecdaf2a43837ae475a54857578533bb919740a5e4dfe9579e44e"
+	// ML-DSA-65 (FIPS-204) address for the all-0x01 seed. Regenerated when the
+	// chain migrated off round-3 Dilithium mode3; the WASM signer must be rebuilt
+	// from this same Go signer to reproduce it.
+	want := "SQ:307f4559431e680933fc1c62503f050140e5740068248d7374461e0311a2728e"
 	if w.Address.String() != want {
 		t.Fatalf("golden address mismatch:\n got %s\nwant %s", w.Address.String(), want)
 	}

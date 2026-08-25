@@ -2,7 +2,7 @@
 //
 // Phase 1: Single validator (validator.go) — block production with Dilithium signing.
 // Phase 2: Multi-validator BFT (this file) — Byzantine Fault Tolerant consensus
-//           with 2/3 quorum voting, all messages signed with Dilithium Mode 3.
+//           with 2/3 quorum voting, all messages signed with ML-DSA-65.
 //
 // The BFT design:
 //   - Validators are elected by stake weight (registered via governance).
@@ -45,7 +45,7 @@ type ValidatorInfo struct {
 }
 
 // Vote is a validator's signed attestation that it accepts a proposed block.
-// All votes are signed with Dilithium Mode 3 — no ECDSA.
+// All votes are signed with ML-DSA-65 — no ECDSA.
 type Vote struct {
 	// Height is the block height this vote is for.
 	Height uint64 `json:"height"`
@@ -59,7 +59,7 @@ type Vote struct {
 	// ValidatorAddr is the address of the voting validator.
 	ValidatorAddr qcrypto.Address `json:"validator_addr"`
 
-	// Signature is the Dilithium Mode 3 signature over SHA3-256(vote_body).
+	// Signature is the ML-DSA-65 signature over SHA3-256(vote_body).
 	Signature []byte `json:"signature"`
 
 	// Timestamp when this vote was created.

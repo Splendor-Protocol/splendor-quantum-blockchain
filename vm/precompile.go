@@ -167,7 +167,7 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	})
 
 	// 0x05 — Dilithium verify: verify one signature
-	// Input: [32-byte msg][1952-byte pubkey][3293-byte sig]
+	// Input: [32-byte msg][1952-byte pubkey][3309-byte sig]
 	// Output: [1] if valid, [0] if invalid
 	r.Register(&PrecompileEntry{
 		Name:    "dilithium_verify",

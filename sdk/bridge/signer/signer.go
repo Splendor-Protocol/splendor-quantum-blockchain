@@ -14,7 +14,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/cloudflare/circl/sign/dilithium/mode3"
+	mldsa65 "github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"golang.org/x/crypto/sha3"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -25,8 +25,8 @@ import (
 // Keep in sync with the TypeScript SDK (sdk/bridge/src/derive.ts).
 const DerivationDomainMessage = "Splendor Quantum Chain\nKey derivation v1\nchain: splendor-quantum-1"
 
-// SeedSize is the Dilithium mode3 seed length (32 bytes).
-const SeedSize = mode3.SeedSize
+// SeedSize is the ML-DSA-65 seed length (32 bytes).
+const SeedSize = mldsa65.SeedSize
 
 // DerivedWallet holds a Dilithium keypair derived from a seed.
 type DerivedWallet struct {
@@ -64,9 +64,9 @@ func SeedFromHex(hexStr string) ([SeedSize]byte, error) {
 }
 
 // DeriveFromSeed deterministically derives a Dilithium Mode 3 keypair from a 32-byte seed
-// using the same circl mode3.NewKeyFromSeed the chain node uses.
+// using the same circl mldsa65.NewKeyFromSeed the chain node uses.
 func DeriveFromSeed(seed [SeedSize]byte) (*DerivedWallet, error) {
-	pub, priv := mode3.NewKeyFromSeed(&seed)
+	pub, priv := mldsa65.NewKeyFromSeed(&seed)
 
 	qPub, err := qcrypto.PublicKeyFromBytes(pub.Bytes())
 	if err != nil {
