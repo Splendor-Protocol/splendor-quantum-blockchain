@@ -6,7 +6,7 @@
 //   sqc-wallet address   --wallet wallet.sqwallet
 //   sqc-wallet balance   --wallet wallet.sqwallet --node http://localhost:8080
 //   sqc-wallet send      --wallet wallet.sqwallet --to SQ:... --amount 10 --node http://localhost:8080
-//   sqc-wallet export-key --wallet wallet.sqwallet --out dilithium_key.bin
+//   sqc-wallet export-key --wallet wallet.sqwallet --out mldsa_key.bin
 package main
 
 import (
@@ -352,7 +352,7 @@ KEEP THIS FILE SECURE. Delete it after card provisioning.`,
 		},
 	}
 	cmd.Flags().StringVarP(&walletPath, "wallet", "w", "wallet.sqwallet", "Wallet file path")
-	cmd.Flags().StringVarP(&outPath, "out", "o", "dilithium_key.bin", "Output binary file path")
+	cmd.Flags().StringVarP(&outPath, "out", "o", "mldsa_key.bin", "Output binary file path")
 	return cmd
 }
 
