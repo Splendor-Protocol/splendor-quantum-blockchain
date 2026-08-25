@@ -1,12 +1,12 @@
 /**
  * Splendor Quantum Wallet — Background Service Worker
  *
- * Handles: key management, Dilithium signing (via WASM), RPC calls to SQC node,
+ * Handles: key management, ML-DSA-65 signing (via WASM), RPC calls to SQC node,
  * popup ↔ content script communication, encrypted storage.
  *
  * Key architecture:
  *  - Keys stored AES-GCM encrypted in chrome.storage.local
- *  - Dilithium signing done in an offscreen document (WASM)
+ *  - ML-DSA-65 signing done in an offscreen document (WASM)
  *  - RPC node URL configurable (default: mainnet)
  */
 
@@ -24,7 +24,7 @@ const DEFAULT_RPC = 'https://rpc.splendor.network'; // change to your node
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
 // ── State (in-memory, cleared on extension reload) ─────────────────────────
-let _session = null; // { address, dilithiumPub, dilithiumPrivRaw (bytes) }
+let _session = null; // { address, mldsaPub, mldsaPrivRaw (bytes) }
 let _lockTimer = null;
 let _pendingConnects = []; // popups waiting for user approval
 
@@ -95,7 +95,7 @@ async function decrypt(vault, password) {
   return JSON.parse(new TextDecoder().decode(pt));
 }
 
-// ── WASM Dilithium interface ────────────────────────────────────────────────
+// ── WASM ML-DSA-65 interface ────────────────────────────────────────────────
 // The WASM module exports: generate(), sign(privBytes, msgBytes), verify()
 // We call it via a dedicated offscreen page to avoid MV3 CSP issues.
 
@@ -137,7 +137,7 @@ async function loadWasm() {
 
 // ── Vault operations ───────────────────────────────────────────────────────
 // Keys: vault stores a random 32-byte seed (encrypted).
-// On unlock, re-derive the Dilithium keypair from seed in WASM.
+// On unlock, re-derive the ML-DSA-65 keypair from seed in WASM.
 
 async function createWallet(password) {
   await loadWasm();
@@ -146,7 +146,7 @@ async function createWallet(password) {
   const seedBytes = crypto.getRandomValues(new Uint8Array(32));
   const seedHex = Array.from(seedBytes).map(b => b.toString(16).padStart(2, '0')).join('');
 
-  // Derive Dilithium keypair from seed in WASM
+  // Derive ML-DSA-65 keypair from seed in WASM
   const sessionId = sqCreateSession();
   sqDeriveFromSeedHex(sessionId, seedHex);
 
@@ -179,7 +179,7 @@ async function unlockWallet(password) {
 
   await loadWasm();
 
-  // Re-derive Dilithium keypair from stored seed
+  // Re-derive ML-DSA-65 keypair from stored seed
   const sessionId = sqCreateSession();
   sqDeriveFromSeedHex(sessionId, data.seedHex);
 

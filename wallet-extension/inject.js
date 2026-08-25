@@ -10,7 +10,7 @@
  *   sqc_accounts              → [SQ:address] or []
  *   sqc_getBalance            → balance string (smallest SPLD units)
  *   sqc_sendTransaction       → tx hash
- *   sqc_sign                  → Dilithium signature
+ *   sqc_sign                  → ML-DSA-65 signature
  *   sqc_moduleCall            → receipt (QRC-20 deploy/mint/transfer/etc)
  *   sqc_chainId               → "splendor-quantum-1"
  *   sqc_blockNumber           → latest block height

@@ -98,7 +98,7 @@ $('btnCreate').onclick = async () => {
   if (pw !== pw2) { $('setup-err').textContent = 'Passwords do not match'; return; }
 
   $('btnCreate').disabled = true;
-  $('btnCreate').textContent = 'Generating Dilithium keys…';
+  $('btnCreate').textContent = 'Generating ML-DSA-65 keys…';
 
   try {
     const info = await bg('create_wallet', { password: pw });
