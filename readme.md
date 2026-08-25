@@ -46,7 +46,7 @@ Splendor Quantum Chain is the answer. Not a patch on an existing chain. Not a co
 - **Smart contracts** are signed, deployed, and called using quantum-safe operations only
 - **Validator messages** are signed with ML-DSA-65
 - **Block headers** are hashed with SHA-3
-- **Node-to-node traffic** is sealed with ML-KEM-768 + AES-256-GCM, and TLS (when enabled) negotiates the hybrid `X25519MLKEM768` group
+- **Node-to-node block push and peer announce** are sealed with ML-KEM-768 + AES-256-GCM, and TLS (when enabled) negotiates the hybrid `X25519MLKEM768` group. Catch-up sync, where a node pulls historical blocks, still runs over plain HTTP and is authenticated only by the ML-DSA-65 signature on each block
 
 The result is a chain that will still be cryptographically secure the day a quantum computer tries to attack it.
 
@@ -341,7 +341,7 @@ She can:
 
 The wallet app connects to a Splendor QC node via the RPC endpoint. It queries:
 ```
-GET /balance?address=SQ:a7f3c9d2...
+GET /balance/SQ:a7f3c9d2...
 ```
 
 The node returns Alice's current SPLD balance, which the app displays.
@@ -462,9 +462,11 @@ Splendor Quantum Chain supports four types of transactions:
 | **Transfer** | Send SPLD from one account to another |
 | **Deploy** | Deploy a new smart contract |
 | **Call** | Interact with an existing smart contract |
-| **Register** | Register a new account's public key on first use |
+| **X402** | Settle a signed off-chain micropayment on-chain |
 
 All four types use the same signing mechanism: ML-DSA-65 signature over SHA-3 hash of the transaction body.
+
+A fifth code, `Register` (`0x04`), is reserved in the type enum but unused: a public key is registered automatically by the sender's first transaction, so no separate registration transaction is ever built or executed.
 
 ### Transaction lifecycle
 
@@ -894,7 +896,7 @@ This section lists every cryptographic operation in the chain and what algorithm
 | State root hashing | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
 | Private key encryption at rest | AES-256-GCM | NIST FIPS 197 | ✅ Quantum-safe (128-bit security) |
 | Key derivation (from password) | Argon2id | RFC 9106 | ✅ Memory-hard, quantum-safe |
-| Encrypted P2P communication | ML-KEM-768 + AES-256-GCM | NIST FIPS 203 | ✅ Post-quantum |
+| Encrypted P2P communication | ML-KEM-768 + AES-256-GCM | NIST FIPS 203 | ✅ Post-quantum (block push and announce; sync pull not yet sealed) |
 | RPC / WebSocket transport (TLS enabled) | X25519MLKEM768 hybrid | TLS 1.3 hybrid key exchange | ✅ Post-quantum |
 | Smart contract hash (keccak replacement) | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
 | Payment signing (X402) | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
@@ -914,13 +916,13 @@ This section lists every cryptographic operation in the chain and what algorithm
 | Feature | Ethereum | Solana | Splendor Quantum Chain |
 |---------|----------|--------|------------------------|
 | Quantum-safe signatures | ❌ | ❌ | ✅ (ML-DSA-65, from block 0) |
-| Quantum-safe hashing | ❌ | ❌ | ✅ (SHA-3 everywhere) |
+| Quantum-safe hashing | ✅ | ✅ | ✅ (SHA-3 everywhere) |
 | Quantum-safe addresses | ❌ | ❌ | ✅ (derived from ML-DSA-65 pubkey) |
-| Quantum-safe P2P layer | ❌ | ❌ | ✅ (ML-KEM-768 key exchange) |
+| Quantum-safe P2P layer | ❌ | ❌ | Partly (ML-KEM-768 seals block push and peer announce; catch-up sync still pulls over plain HTTP) |
 | Native micropayment protocol | ❌ | ❌ | ✅ (X402, built in) |
-| Smart contracts | ✅ | ✅ | ✅ (QSol) |
+| Smart contracts | ✅ | ✅ | ✅ (SQC-VM bytecode; QSol compiler not built) |
 | Block finality | ~12 min | ~400ms | < 2 seconds |
-| NIST post-quantum standard compliance | ❌ | ❌ | ✅ (FIPS 202, 203, 204) |
+| Uses NIST post-quantum algorithms | ❌ | ❌ | ✅ (FIPS 202, 203, 204; not independently validated) |
 | AI agent payment support | ❌ | ❌ | ✅ |
 | Backward compat with Ethereum | ✅ | ❌ | ❌ (intentional — clean break) |
 | Single validator Phase 1 | ❌ | ❌ | ✅ (by design) |
@@ -980,7 +982,7 @@ The blockchain industry has not acted. The first quantum-native chain that attra
 ✅ Whole-state Merkle commitment — accounts, code, storage, X402 nonces  
 ✅ Smart contract VM — SQC-VM bytecode interpreter with native Go modules  
 ✅ X402 payment protocol — settled through the mempool like any transaction  
-✅ ML-KEM-768 encrypted P2P + hybrid X25519MLKEM768 TLS  
+✅ ML-KEM-768 sealed block push and peer announce + hybrid X25519MLKEM768 TLS  
 ✅ Genesis and CLI wallet (`.sqwallet`, AES-256-GCM + Argon2id)  
 ✅ JavaScript SDK and WASM signer (`@splendor/pq-bridge`, Connect UI)  
 ✅ JSON RPC for balances, blocks, receipts, DEX, staking, governance, lending  
