@@ -216,7 +216,18 @@ func (doc *IdentityDocument) Verify(expectedNodePubKey []byte) error {
 // Callers must have called Verify first. Sealing to an unverified document
 // encrypts to whoever produced it, which an active attacker is happy to be.
 func Seal(doc *IdentityDocument, plaintext []byte) (*Envelope, error) {
-	ek, err := mlkem.NewEncapsulationKey768(doc.KEMPubKey)
+	return SealToKEM(doc.KEMPubKey, plaintext)
+}
+
+// SealToKEM encrypts plaintext to a raw ML-KEM-768 encapsulation key.
+//
+// Used for the reply leg of a sealed query, where the responder seals to the
+// one-shot key the requester supplied rather than to a published identity. The
+// requester's key is not signed, which is fine in that direction: it arrived
+// inside an envelope only the responder could open, so it cannot have been
+// substituted by anyone on the path.
+func SealToKEM(kemPub, plaintext []byte) (*Envelope, error) {
+	ek, err := mlkem.NewEncapsulationKey768(kemPub)
 	if err != nil {
 		return nil, fmt.Errorf("parse ML-KEM key: %w", err)
 	}
@@ -266,20 +277,66 @@ func (n *NodeIdentity) Open(env *Envelope) ([]byte, error) {
 		if dk == nil {
 			continue
 		}
-		sharedSecret, err := dk.Decapsulate(env.KEMCiphertext)
-		if err != nil {
-			continue
-		}
-		aead, err := channelAEAD(sharedSecret)
-		if err != nil {
-			return nil, err
-		}
-		pt, err := aead.Open(nil, env.Nonce, env.Ciphertext, envelopeAAD(env.KEMCiphertext, env.Timestamp))
-		if err == nil {
+		if pt, err := openWith(dk, env); err == nil {
 			return pt, nil
 		}
 	}
 	return nil, fmt.Errorf("envelope did not decrypt under any current node key")
+}
+
+// openWith decapsulates and authenticates an envelope under one ML-KEM key.
+func openWith(dk *mlkem.DecapsulationKey768, env *Envelope) ([]byte, error) {
+	sharedSecret, err := dk.Decapsulate(env.KEMCiphertext)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := channelAEAD(sharedSecret)
+	if err != nil {
+		return nil, err
+	}
+	return aead.Open(nil, env.Nonce, env.Ciphertext, envelopeAAD(env.KEMCiphertext, env.Timestamp))
+}
+
+// EphemeralKEM is a one-shot ML-KEM-768 keypair a requester uses to receive a
+// single sealed reply. Generating a fresh key per query means a reply can only
+// be read by the exact request that asked for it, and nothing is retained
+// afterwards that could decrypt a captured response later.
+type EphemeralKEM struct {
+	dk *mlkem.DecapsulationKey768
+}
+
+// NewEphemeralKEM generates a one-shot reply keypair.
+func NewEphemeralKEM() (*EphemeralKEM, error) {
+	dk, err := mlkem.GenerateKey768()
+	if err != nil {
+		return nil, fmt.Errorf("generate reply key: %w", err)
+	}
+	return &EphemeralKEM{dk: dk}, nil
+}
+
+// PublicKey returns the encapsulation key to send to the responder.
+func (e *EphemeralKEM) PublicKey() []byte {
+	return e.dk.EncapsulationKey().Bytes()
+}
+
+// Open decrypts a reply sealed to this one-shot key.
+func (e *EphemeralKEM) Open(env *Envelope) ([]byte, error) {
+	if env == nil {
+		return nil, fmt.Errorf("nil envelope")
+	}
+	if len(env.KEMCiphertext) != mlkem.CiphertextSize768 {
+		return nil, fmt.Errorf("bad ML-KEM ciphertext size %d, want %d",
+			len(env.KEMCiphertext), mlkem.CiphertextSize768)
+	}
+	age := time.Since(time.Unix(env.Timestamp, 0))
+	if age > maxEnvelopeAge || age < -maxEnvelopeAge {
+		return nil, fmt.Errorf("reply timestamp outside the ±%s replay window", maxEnvelopeAge)
+	}
+	pt, err := openWith(e.dk, env)
+	if err != nil {
+		return nil, fmt.Errorf("reply did not decrypt under the request's reply key: %w", err)
+	}
+	return pt, nil
 }
 
 // channelAEAD derives the AES-256-GCM key from an ML-KEM shared secret.

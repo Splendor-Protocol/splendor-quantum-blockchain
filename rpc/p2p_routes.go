@@ -28,6 +28,10 @@ type P2PConfig struct {
 	HandleBlock func(body []byte) error
 	// HandleAnnounce processes a peer announcement body (raw JSON).
 	HandleAnnounce func(body []byte) error
+	// ServeBlock returns a block's JSON by height, for sealed catch-up sync.
+	ServeBlock func(height uint64) ([]byte, error)
+	// ServeLatestBlock returns the head block's JSON, for sealed catch-up sync.
+	ServeLatestBlock func() ([]byte, error)
 }
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
@@ -80,6 +84,15 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 			return
 		}
 
+		// Read kinds return chain data that is public once published, so they
+		// are not token-gated: a syncing RPC node must be able to catch up
+		// without being handed the validator's write secret. They are still
+		// sealed, which is what gives the channel confidentiality.
+		if network.IsReadKind(req.Kind) {
+			serveSealedRead(w, r, cfg, &req)
+			return
+		}
+
 		// Authenticate AFTER decryption: the token is inside the envelope.
 		if cfg.Token == "" {
 			writeError(w, http.StatusServiceUnavailable,
@@ -120,4 +133,59 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 	}).Methods(http.MethodPost)
 
 	log.Info().Msg("p2p: encrypted transport enabled (ML-KEM-768 + ML-DSA-65 + AES-256-GCM)")
+}
+
+// serveSealedRead answers a sealed catch-up query, sealing the block back to
+// the one-shot reply key the requester supplied.
+func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req *network.SealedRequest) {
+	if len(req.ReplyKEM) == 0 {
+		writeError(w, http.StatusBadRequest, "read request carried no reply key")
+		return
+	}
+
+	var (
+		payload []byte
+		err     error
+	)
+	switch req.Kind {
+	case network.KindGetBlock:
+		if cfg.ServeBlock == nil {
+			writeError(w, http.StatusNotImplemented, "sealed block reads not available")
+			return
+		}
+		var q network.GetBlockRequest
+		if jsonErr := json.Unmarshal(req.Body, &q); jsonErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid get_block body")
+			return
+		}
+		payload, err = cfg.ServeBlock(q.Height)
+	case network.KindGetLatest:
+		if cfg.ServeLatestBlock == nil {
+			writeError(w, http.StatusNotImplemented, "sealed latest-block reads not available")
+			return
+		}
+		payload, err = cfg.ServeLatestBlock()
+	default:
+		writeError(w, http.StatusBadRequest, "unknown sealed read kind")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	replyEnv, err := network.SealToKEM(req.ReplyKEM, payload)
+	if err != nil {
+		log.Debug().Err(err).Str("remote", r.RemoteAddr).Msg("p2p: could not seal read reply")
+		writeError(w, http.StatusBadRequest, "reply key rejected")
+		return
+	}
+	wire, err := network.MarshalEnvelope(replyEnv)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not encode reply")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(wire)
 }

@@ -293,7 +293,7 @@ EOF
 | Metrics bind `127.0.0.1:9100` | Metrics expose peer counts, mempool depth, and height — useful to an attacker. | `--metrics-addr` |
 | No CORS headers | The old `Access-Control-Allow-Origin: *` let any web page script a visitor's node. | `--cors-origin https://app.example` (repeatable), or `--cors-origin '*'` |
 | Write plane disabled without a token | `POST /block` applies a block to local state; anonymous access is a chain-integrity hole. Every node in a cluster must share the token. | `--rpc-auth-token` / `SQC_RPC_AUTH_TOKEN` |
-| Encrypted P2P required | Block push is sealed with ML-KEM-768. Plaintext fallback is off so an attacker cannot force a downgrade by blocking `/p2p/identity`. | `--allow-plaintext-p2p` |
+| Encrypted P2P required | Block push, peer announce, and catch-up sync are all sealed with ML-KEM-768. Plaintext fallback is off so an attacker cannot force a downgrade by blocking `/p2p/identity`. | `--allow-plaintext-p2p` |
 | 25 req/s per IP on submission | Each `/tx/submit` costs an ML-DSA verification. | `--rpc-rate-limit`, `--rpc-rate-burst` |
 
 **Post-quantum TLS.** With `--tls-cert` and `--tls-key`, the node serves TLS 1.3

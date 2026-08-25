@@ -4,12 +4,18 @@
 // The sync protocol:
 //   1. Queries /status on all known peers to find the best chain height.
 //   2. Picks the peer with the highest height.
-//   3. Downloads blocks one by one (GET /block/{height}) from that peer.
+//   3. Downloads blocks one by one over the ML-KEM-768 sealed channel.
 //   4. Validates each block's ML-DSA-65 signature and hash chain before applying.
 //   5. Continues until the local height matches the best peer height.
 //
+// Catch-up uses the same encrypted transport as block push, so a node that
+// falls behind does not drop back onto cleartext HTTP for the bulk of its
+// traffic. Plaintext GET remains available only behind --allow-plaintext-p2p,
+// for peers that predate the sealed transport.
+//
 // All downloaded blocks are verified — no block is trusted without a valid
-// ML-DSA-65 signature from the registered genesis validator.
+// ML-DSA-65 signature from the registered genesis validator. Encryption
+// authenticates the channel; the signature is what authenticates the chain.
 package network
 
 import (
@@ -43,6 +49,15 @@ type SyncConfig struct {
 
 	// RetryDelay is how long to wait before retrying a failed download.
 	RetryDelay time.Duration
+
+	// Identities pulls blocks over the ML-KEM-768 sealed channel. When nil the
+	// fetcher can only use plaintext HTTP.
+	Identities *IdentityCache
+
+	// AllowPlaintext permits falling back to plaintext GET when a peer serves
+	// no sealed transport. Off by default so the channel cannot be downgraded
+	// by an attacker who simply refuses to answer /p2p/identity.
+	AllowPlaintext bool
 }
 
 // DefaultSyncConfig returns sensible defaults.
@@ -72,23 +87,58 @@ func NewBlockFetcher(cfg SyncConfig) *BlockFetcher {
 	}
 }
 
+// fetchBlockJSON retrieves a block document from a peer.
+//
+// The sealed ML-KEM channel is tried first. Falling back to plaintext is opt-in
+// because an attacker who can silence /p2p/identity would otherwise be able to
+// downgrade every sync to cleartext just by refusing to answer.
+func (f *BlockFetcher) fetchBlockJSON(peerAddr, kind string, body []byte, plainPath string) ([]byte, error) {
+	if f.cfg.Identities != nil {
+		raw, err := f.cfg.Identities.QuerySealed(peerAddr, kind, body, maxSyncBodyBytes)
+		if err == nil {
+			return raw, nil
+		}
+		if !f.cfg.AllowPlaintext {
+			return nil, fmt.Errorf("sealed sync from %s failed and plaintext sync is disabled "+
+				"(enable with --allow-plaintext-p2p if the peer predates the sealed transport): %w",
+				peerAddr, err)
+		}
+		log.Debug().Err(err).Str("peer", peerAddr).
+			Msg("sync: sealed fetch failed, falling back to plaintext")
+	} else if !f.cfg.AllowPlaintext {
+		return nil, fmt.Errorf("sync from %s refused: no sealed transport is configured and "+
+			"plaintext sync is disabled", peerAddr)
+	}
+
+	resp, err := f.client.Get(peerAddr + plainPath)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s from %s: %w", plainPath, peerAddr, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%s not found at %s", plainPath, peerAddr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s: peer returned %d", plainPath, resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, maxSyncBodyBytes))
+}
+
 // FetchGenesisValidatorPubKey fetches block 0 from a peer and extracts
 // the validator's ML-DSA-65 public key. This is used by RPC nodes that
 // don't have a local genesis.json — they bootstrap the pubkey from the chain.
 func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, error) {
-	url := fmt.Sprintf("%s/block/0", peerAddr)
-	resp, err := f.client.Get(url)
+	req, err := json.Marshal(GetBlockRequest{Height: 0})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := f.fetchBlockJSON(peerAddr, KindGetBlock, req, "/block/0")
 	if err != nil {
 		return nil, fmt.Errorf("fetch genesis block from %s: %w", peerAddr, err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("genesis block: peer returned %d", resp.StatusCode)
-	}
 
 	var block types.Block
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSyncBodyBytes)).Decode(&block); err != nil {
+	if err := json.Unmarshal(raw, &block); err != nil {
 		return nil, fmt.Errorf("decode genesis block: %w", err)
 	}
 
@@ -107,22 +157,17 @@ func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, err
 // (the block will still be structurally validated).
 // SECURITY: Always set ValidatorPubKey in production.
 func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block, error) {
-	url := fmt.Sprintf("%s/block/%d", peerAddr, height)
-	resp, err := f.client.Get(url)
+	req, err := json.Marshal(GetBlockRequest{Height: height})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := f.fetchBlockJSON(peerAddr, KindGetBlock, req, fmt.Sprintf("/block/%d", height))
 	if err != nil {
 		return nil, fmt.Errorf("fetch block %d from %s: %w", height, peerAddr, err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("block %d not found at %s", height, peerAddr)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch block %d: peer returned %d", height, resp.StatusCode)
-	}
 
 	var block types.Block
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSyncBodyBytes)).Decode(&block); err != nil {
+	if err := json.Unmarshal(raw, &block); err != nil {
 		return nil, fmt.Errorf("decode block %d: %w", height, err)
 	}
 
@@ -158,19 +203,13 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 
 // FetchLatestBlock fetches the latest block from a peer.
 func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
-	url := peerAddr + "/block/latest"
-	resp, err := f.client.Get(url)
+	raw, err := f.fetchBlockJSON(peerAddr, KindGetLatest, []byte(`{}`), "/block/latest")
 	if err != nil {
 		return nil, fmt.Errorf("fetch latest block from %s: %w", peerAddr, err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch latest: peer returned %d", resp.StatusCode)
-	}
 
 	var block types.Block
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSyncBodyBytes)).Decode(&block); err != nil {
+	if err := json.Unmarshal(raw, &block); err != nil {
 		return nil, fmt.Errorf("decode latest block: %w", err)
 	}
 

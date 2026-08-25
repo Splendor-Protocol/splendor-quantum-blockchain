@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -20,10 +21,23 @@ const (
 )
 
 // Sealed request kinds.
+//
+// Write kinds mutate this node and require the write-plane token. Read kinds
+// only return chain data that is public once published, so they are sealed for
+// confidentiality and peer authentication but are not token-gated: a syncing
+// RPC node must be able to catch up without holding the validator's secret.
 const (
 	KindBlock    = "block"
 	KindAnnounce = "announce"
+
+	KindGetBlock  = "get_block"
+	KindGetLatest = "get_latest"
 )
+
+// IsReadKind reports whether a sealed request only reads chain data.
+func IsReadKind(kind string) bool {
+	return kind == KindGetBlock || kind == KindGetLatest
+}
 
 // SealedRequest is the plaintext inside an Envelope.
 //
@@ -35,6 +49,15 @@ type SealedRequest struct {
 	Token string          `json:"token"`
 	Kind  string          `json:"kind"`
 	Body  json.RawMessage `json:"body"`
+
+	// ReplyKEM is a one-shot ML-KEM-768 encapsulation key. When set, the
+	// responder seals its reply to it. Absent for fire-and-forget pushes.
+	ReplyKEM []byte `json:"reply_kem,omitempty"`
+}
+
+// GetBlockRequest is the body of a KindGetBlock query.
+type GetBlockRequest struct {
+	Height uint64 `json:"height"`
 }
 
 // ── Peer identity cache (client side) ────────────────────────────────────────
@@ -156,4 +179,61 @@ func (c *IdentityCache) SendSealed(peerURL, token, kind string, body []byte) err
 		return fmt.Errorf("peer returned %d for sealed %s", resp.StatusCode, kind)
 	}
 	return nil
+}
+
+// QuerySealed performs a sealed request and returns the peer's sealed reply.
+//
+// Both legs are encrypted. The request is sealed to the peer's signed, pinned
+// identity, so only that peer can read it; the reply is sealed to a one-shot
+// key generated here, so only this request can read the answer. The reply is
+// still content-verified by the caller — encryption authenticates the channel,
+// not the chain data travelling over it.
+func (c *IdentityCache) QuerySealed(peerURL, kind string, body []byte, maxReply int64) ([]byte, error) {
+	doc, err := c.Get(peerURL)
+	if err != nil {
+		return nil, err
+	}
+
+	reply, err := NewEphemeralKEM()
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := json.Marshal(SealedRequest{
+		Kind:     kind,
+		Body:     body,
+		ReplyKEM: reply.PublicKey(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal sealed query: %w", err)
+	}
+	env, err := Seal(doc, payload)
+	if err != nil {
+		return nil, fmt.Errorf("seal: %w", err)
+	}
+	wire, err := MarshalEnvelope(env)
+	if err != nil {
+		return nil, fmt.Errorf("marshal envelope: %w", err)
+	}
+
+	resp, err := c.client.Post(peerURL+PathSealed, "application/json", bytes.NewReader(wire))
+	if err != nil {
+		c.Forget(peerURL)
+		return nil, fmt.Errorf("POST %s: %w", PathSealed, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		c.Forget(peerURL)
+		return nil, fmt.Errorf("peer returned %d for sealed %s", resp.StatusCode, kind)
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxReply))
+	if err != nil {
+		return nil, fmt.Errorf("read sealed reply: %w", err)
+	}
+	replyEnv, err := UnmarshalEnvelope(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode sealed reply: %w", err)
+	}
+	return reply.Open(replyEnv)
 }
