@@ -80,7 +80,7 @@ class SplendorQC {
 
   /**
    * Submit a signed transaction to the node's mempool.
-   * The transaction must be pre-signed with a Dilithium Mode 3 key.
+   * The transaction must be pre-signed with an ML-DSA-65 key.
    * 
    * @param {object} signedTx - A fully signed transaction object.
    * @param {number} signedTx.version - Must be 1.
@@ -93,8 +93,8 @@ class SplendorQC {
    * @param {number} signedTx.nonce - Sender's current nonce.
    * @param {number} signedTx.timestamp - Unix timestamp in seconds.
    * @param {string} [signedTx.data] - Base64-encoded calldata/bytecode.
-   * @param {string} [signedTx.public_key] - Base64-encoded Dilithium public key (first tx only).
-   * @param {string} signedTx.signature - Base64-encoded Dilithium signature.
+   * @param {string} [signedTx.public_key] - Base64-encoded ML-DSA-65 public key (first tx only).
+   * @param {string} signedTx.signature - Base64-encoded ML-DSA-65 signature.
    * @returns {Promise<{status: string, hash: string}>}
    */
   async submitTransaction(signedTx) {
@@ -215,7 +215,7 @@ class SplendorQC {
       valid_after: now - 30,
       valid_before: now + window,
       nonce: _randomHex(32),
-      // signature: — must be added by the caller using their Dilithium private key
+      // signature: — must be added by the caller using their ML-DSA-65 private key
     };
   }
 
@@ -310,7 +310,7 @@ class SplendorQC {
 
   /**
    * Build an unsigned transfer transaction object.
-   * You must sign it with your Dilithium key before submitting.
+   * You must sign it with your ML-DSA-65 key before submitting.
    * 
    * @param {object} opts
    * @param {string} opts.from - Sender SQ: address.

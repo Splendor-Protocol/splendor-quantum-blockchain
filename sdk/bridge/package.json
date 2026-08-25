@@ -1,7 +1,7 @@
 {
   "name": "@splendor/pq-bridge",
   "version": "1.4.0",
-  "description": "Non-custodial EVM→PQ (Dilithium) bridge SDK for Splendor Quantum Chain. Node.js-first; loads Go WASM signer internally.",
+  "description": "Non-custodial EVM→PQ (ML-DSA-65) bridge SDK for Splendor Quantum Chain. Node.js-first; loads Go WASM signer internally.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -76,7 +76,7 @@
   "keywords": [
     "splendor",
     "post-quantum",
-    "dilithium",
+    "ml-dsa",
     "metamask",
     "bridge",
     "wasm"

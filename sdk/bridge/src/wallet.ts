@@ -1,5 +1,5 @@
 /**
- * SplendorPQBridge — signing wallet (WASM Dilithium sessions).
+ * SplendorPQBridge — signing wallet (WASM ML-DSA-65 sessions).
  */
 import {
   assertSignatureMatchesAddress,
@@ -333,7 +333,7 @@ export class SplendorPQBridge {
   }
 
   /**
-   * Clear Dilithium key material from WASM (best-effort zeroize) and drop local info.
+   * Clear ML-DSA-65 key material from WASM (best-effort zeroize) and drop local info.
    * Session id is retained so re-connect can reuse the session slot.
    * Emits `lock` so UI kits can clear the connected chip without destroying the session.
    */
@@ -672,7 +672,7 @@ export class SplendorPQBridge {
   }
 
   /**
-   * Sign an arbitrary message with the connected quantum (Dilithium) key —
+   * Sign an arbitrary message with the connected quantum (ML-DSA-65) key —
    * the primitive Splendor Connect v2 needs to authenticate an `SQ:` identity
    * (the tx signers only sign structured payloads). Returns the SQ: address,
    * the base64 public key, and the base64 signature over the raw message bytes.
@@ -691,7 +691,7 @@ export class SplendorPQBridge {
   }
 
   /**
-   * Verify a Dilithium Mode-3 signature over a message — a PURE check (no key,
+   * Verify an ML-DSA-65 signature over a message — a PURE check (no key,
    * no session), so a Node gateway can authenticate a Connect v2 challenge
    * server-side (there is no native-JS CIRCL Mode-3 verifier). Only the WASM
    * needs to be loaded.

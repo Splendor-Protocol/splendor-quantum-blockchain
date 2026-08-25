@@ -2,7 +2,7 @@
  * Splendor Quantum Chain — TypeScript Type Definitions
  * 
  * All addresses use the "SQ:" prefix format (32-byte, SHA3-256 derived).
- * All signatures use CRYSTALS-Dilithium Mode 3 (NIST FIPS 204).
+ * All signatures use ML-DSA-65 (NIST FIPS 204).
  * NO ECDSA. NO keccak. NO Ethereum address format.
  */
 
@@ -42,8 +42,8 @@ export interface UnsignedTransaction {
 
 /** A signed transaction — add public_key (first tx) and signature. */
 export interface SignedTransaction extends UnsignedTransaction {
-  public_key?: string;  // base64-encoded Dilithium public key (1952 bytes), first tx only
-  signature:   string;  // base64-encoded Dilithium signature (3293 bytes)
+  public_key?: string;  // base64-encoded ML-DSA-65 public key (1952 bytes), first tx only
+  signature:   string;  // base64-encoded ML-DSA-65 signature (3309 bytes)
 }
 
 /** Result of submitting a transaction. */
@@ -68,7 +68,7 @@ export interface BlockHeader {
 export interface Block {
   header:              BlockHeader;
   hash:                Hash32Hex;
-  validator_signature: string;   // base64-encoded Dilithium signature
+  validator_signature: string;   // base64-encoded ML-DSA-65 signature
   transactions:        SignedTransaction[];
 }
 
@@ -183,7 +183,7 @@ export interface X402PaymentPayload {
   valid_after:  number;
   valid_before: number;
   nonce:        string;       // 64 hex chars (32 random bytes)
-  signature?:   string;       // base64 Dilithium signature — must be added by caller
+  signature?:   string;       // base64 ML-DSA-65 signature — must be added by caller
 }
 
 export interface X402VerifyResult {
