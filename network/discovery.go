@@ -5,7 +5,8 @@
 //   2. Peer Exchange (PEX): periodically request the peer list from known peers
 //      and add newly discovered peers to the pool.
 //
-// All peer communication is plain HTTP (future: upgrade to Kyber-encrypted channel).
+// Discovery itself is plain HTTP. Block and announce traffic is carried over the
+// ML-KEM-768 sealed channel in pqchannel.go; see network/p2p.go.
 // The P2P protocol is intentionally minimal — blocks are pushed via POST /block,
 // and peer lists are exchanged via GET /peers and POST /peers/announce.
 package network

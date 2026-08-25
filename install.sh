@@ -155,7 +155,7 @@ setup_validator() {
 
   # Generate wallet if not exists
   if [ ! -f /var/sqc/validator.sqwallet ]; then
-    log "Generating new Dilithium validator keypair..."
+    log "Generating new ML-DSA-65 validator keypair..."
     echo ""
     echo -e "${ORANGE}Enter a strong password for your validator wallet.${NC}"
     echo -e "${ORANGE}Save it securely — it is never stored on disk.${NC}"

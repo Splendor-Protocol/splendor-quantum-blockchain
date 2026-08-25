@@ -94,7 +94,7 @@ type Address [AddressSize]byte
 func GenerateKeypair() (*PublicKey, *PrivateKey, error) {
 	pub, priv, err := mldsa65.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dilithium keygen: %w", err)
+		return nil, nil, fmt.Errorf("ml-dsa-65 keygen: %w", err)
 	}
 	return &PublicKey{k: pub}, &PrivateKey{k: priv}, nil
 }
