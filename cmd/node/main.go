@@ -264,6 +264,14 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	// ── Crash recovery ─────────────────────────────────────────────────────
+	// The chain head advances (atomically) before state is committed, so a crash
+	// can leave the head ahead of the state. Replay any such blocks before we
+	// serve or seal. No-op on a fresh DB or a cleanly-shut-down node.
+	if err := executor.ReconcileState(); err != nil {
+		return fmt.Errorf("state reconciliation failed: %w", err)
+	}
+
 	// ── Genesis (if chain is empty) ────────────────────────────────────────
 	if latestBlock, _ := executor.LatestBlock(); latestBlock == nil {
 		// Credit genesis allocations before block 0 so every node — validator

@@ -154,6 +154,75 @@ func TestExecuteBlockAcceptsValidBlockAndAdvancesHead(t *testing.T) {
 	}
 }
 
+// Crash recovery: if a block's body + chain head were persisted but the node
+// crashed before the state commit, boot reconciliation must replay the stored
+// block so state catches up to the head — instead of wedging on a nonce mismatch.
+func TestReconcileReplaysHeadAheadOfState(t *testing.T) {
+	pub, priv, _ := qcrypto.GenerateKeypair()
+	from := qcrypto.DeriveAddress(pub)
+	to := testAddr(0x77)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	vaddr := qcrypto.DeriveAddress(vpub)
+
+	// Producer A: fund, produce a 3-block chain.
+	exA, sdbA := newTestExecutor(t)
+	defer exA.Close()
+	defer sdbA.Close()
+	fund(t, sdbA, from, 1_000_000)
+	var blocks []*types.Block
+	var prev [32]byte
+	for h := uint64(1); h <= 3; h++ {
+		tx := signedTransfer(t, from, priv, to, 100, h-1)
+		b, err := exA.ProduceBlock([]*types.Transaction{tx}, vaddr, vpub.Bytes(), vpriv, prev, h)
+		if err != nil {
+			t.Fatalf("produce %d: %v", h, err)
+		}
+		blocks = append(blocks, b)
+		prev = b.Hash
+	}
+
+	// Follower B: apply blocks 1..2 cleanly.
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+	fund(t, sdbB, from, 1_000_000)
+	for i := 0; i < 2; i++ {
+		if err := exB.ExecuteBlock(blocks[i]); err != nil {
+			t.Fatalf("apply block %d: %v", i+1, err)
+		}
+	}
+
+	// Simulate the crash window: block 3's body + head are durably stored, but
+	// the state commit never happened (head=3, state=2).
+	if err := exB.storeBlock(blocks[2]); err != nil {
+		t.Fatalf("storeBlock: %v", err)
+	}
+	if h, _ := exB.LatestHeight(); h != 3 {
+		t.Fatalf("chain head = %d, want 3", h)
+	}
+	if sh, ok := sdbB.AppliedHeight(); !ok || sh != 2 {
+		t.Fatalf("state height = %d ok=%v, want 2", sh, ok)
+	}
+
+	// Reconcile must replay block 3 and land exactly on A's height-3 state.
+	if err := exB.ReconcileState(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if sh, _ := sdbB.AppliedHeight(); sh != 3 {
+		t.Fatalf("state height after reconcile = %d, want 3", sh)
+	}
+	aRoot, _ := sdbA.StateRoot()
+	bRoot, _ := sdbB.StateRoot()
+	if aRoot != bRoot {
+		t.Fatalf("state root mismatch after reconcile: A=%x B=%x", aRoot[:8], bRoot[:8])
+	}
+	aBal, _ := sdbA.GetBalance(from)
+	bBal, _ := sdbB.GetBalance(from)
+	if aBal.Cmp(bBal) != 0 {
+		t.Fatalf("sender balance mismatch: A=%s B=%s", aBal, bBal)
+	}
+}
+
 // A value-bearing TxCall must MOVE the value sender->contract, never BURN it.
 // Before the fix execCall debited tx.Amount from the sender and never credited
 // tx.To, destroying the coins out of total supply on every value-bearing call.

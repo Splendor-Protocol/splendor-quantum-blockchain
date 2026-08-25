@@ -34,6 +34,12 @@ const (
 	prefixCode      = "code:"
 	prefixStorage   = "store:"
 	prefixX402Nonce = "x402nonce:"
+
+	// prefixMeta namespaces node-local bookkeeping (e.g. the applied-height
+	// marker) that is deliberately EXCLUDED from the state root — it is not
+	// consensus state and must not affect the root every node agrees on.
+	prefixMeta     = "meta:"
+	keyStateHeight = "meta:height"
 )
 
 // stateEmptyRoot is the state root of a state with no leaves at all.
@@ -66,6 +72,13 @@ type StateDB struct {
 	// of the committed value. It mirrors the durable state and is the sole input
 	// to the Merkle state root. Populated at open, mutated only by Commit().
 	leaves map[string][32]byte
+
+	// appliedHeight is the block height the committed state reflects (persisted
+	// under meta: alongside the state batch). heightKnown is false until the
+	// first CommitWithHeight. Used by boot reconciliation to detect and replay a
+	// block whose body was persisted before its state commit landed.
+	appliedHeight uint64
+	heightKnown   bool
 
 	// Active snapshots for rollback support (snapshot ID → snapshot data)
 	snapshots map[uint64]*StateSnapshot
@@ -100,7 +113,19 @@ func (s *StateDB) loadLeaves() error {
 	iter := s.db.NewIterator(nil, nil)
 	defer iter.Release()
 	for iter.Next() {
-		s.leaves[string(iter.Key())] = qcrypto.Hash32(iter.Value())
+		k := iter.Key()
+		// meta: keys are node-local bookkeeping, not consensus leaves.
+		if len(k) >= len(prefixMeta) && string(k[:len(prefixMeta)]) == prefixMeta {
+			if string(k) == keyStateHeight {
+				var h uint64
+				if json.Unmarshal(iter.Value(), &h) == nil {
+					s.appliedHeight = h
+					s.heightKnown = true
+				}
+			}
+			continue
+		}
+		s.leaves[string(k)] = qcrypto.Hash32(iter.Value())
 	}
 	return iter.Error()
 }
@@ -323,13 +348,37 @@ func (s *StateDB) IsX402NonceUsed(nonceKey [32]byte) (bool, error) {
 }
 
 // Commit writes all pending changes (accounts, code, storage/nonce overlay) to
-// LevelDB in a single atomic batch, folds each into the in-memory leaf index,
-// clears the pending layer, and returns the new Merkle state root.
+// LevelDB in a single atomic batch and returns the new Merkle state root. See
+// commit() for the durability contract.
 func (s *StateDB) Commit() ([32]byte, error) {
+	return s.commit(false, 0)
+}
+
+// CommitWithHeight behaves like Commit but ALSO records, in the SAME atomic
+// batch, the block height this state now reflects (under the meta: namespace,
+// which is excluded from the state root). On boot the node compares this marker
+// against the chain head and replays any block the head advanced past before the
+// state commit landed — so a crash between persisting the block and persisting
+// the state can no longer wedge the chain.
+func (s *StateDB) CommitWithHeight(height uint64) ([32]byte, error) {
+	return s.commit(true, height)
+}
+
+// commit stages every pending write into one LevelDB batch and, only AFTER the
+// durable write succeeds, advances the in-memory leaf index and clears the
+// pending layer. Mutating the index only on success means a failed write can
+// never leave the in-memory root ahead of what is on disk.
+func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	batch := new(leveldb.Batch)
+
+	type leafUpd struct {
+		key  string
+		hash [32]byte
+	}
+	updates := make([]leafUpd, 0, len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
 
 	// Dirty accounts.
 	for addr, acc := range s.dirty {
@@ -339,32 +388,57 @@ func (s *StateDB) Commit() ([32]byte, error) {
 		}
 		key := prefixAccount + addr.String()
 		batch.Put([]byte(key), data)
-		s.leaves[key] = qcrypto.Hash32(data)
+		updates = append(updates, leafUpd{key, qcrypto.Hash32(data)})
 	}
 
 	// Contract code.
 	for hash, code := range s.codeCache {
 		key := prefixCode + string(hash[:])
 		batch.Put([]byte(key), code)
-		s.leaves[key] = qcrypto.Hash32(code)
+		updates = append(updates, leafUpd{key, qcrypto.Hash32(code)})
 	}
 
 	// Raw storage + X402 nonce overlay.
 	for key, val := range s.pendingRaw {
 		batch.Put([]byte(key), val)
-		s.leaves[key] = qcrypto.Hash32(val)
+		updates = append(updates, leafUpd{key, qcrypto.Hash32(val)})
+	}
+
+	// Height marker — meta: namespace, NOT a state leaf.
+	if setHeight {
+		hb, err := json.Marshal(height)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("marshal height marker: %w", err)
+		}
+		batch.Put([]byte(keyStateHeight), hb)
 	}
 
 	if err := s.db.Write(batch, nil); err != nil {
 		return [32]byte{}, fmt.Errorf("state commit failed: %w", err)
 	}
 
-	// Clear the pending layer.
+	// Durable — now advance the in-memory index and clear the pending layer.
+	for _, u := range updates {
+		s.leaves[u.key] = u.hash
+	}
+	if setHeight {
+		s.appliedHeight = height
+		s.heightKnown = true
+	}
 	s.dirty = make(map[qcrypto.Address]*types.Account)
 	s.codeCache = make(map[[32]byte][]byte)
 	s.pendingRaw = make(map[string][]byte)
 
 	return merkleRoot(s.leaves), nil
+}
+
+// AppliedHeight returns the block height the committed state reflects, and
+// ok=false if no height marker has been written yet (e.g. a fresh DB or a node
+// whose genesis state was applied before height markers existed).
+func (s *StateDB) AppliedHeight() (uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appliedHeight, s.heightKnown
 }
 
 // leafDigest hashes one state leaf with a length-prefixed, domain-separated
