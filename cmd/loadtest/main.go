@@ -24,6 +24,7 @@ import (
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer"
 )
 
 func main() {
@@ -32,6 +33,8 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "refvector":
+		refVector()
 	case "faucet-gen":
 		faucetGen()
 	case "run":
@@ -63,6 +66,41 @@ func faucetGen() {
 	fmt.Printf("faucet address: %s\n", addr.String())
 	fmt.Printf("faucet key saved: %s (KEEP LOCAL — never commit)\n", f)
 	fmt.Printf("set SQC_GENESIS_ALLOC_ADDRESS=%s on the reset devnet to fund it\n", addr.String())
+}
+
+// refVector prints a deterministic golden vector so a TS/JS reimplementation of
+// the signer can prove byte-exact wire compatibility with the Go node: the same
+// seed + params must yield the same canonical body JSON, the same SHA3-256 body
+// hash, and a signature that verifies. Seed and params are fixed.
+func refVector() {
+	var seed [32]byte
+	for i := range seed {
+		seed[i] = 0x02
+	}
+	w, err := signer.DeriveFromSeed(seed)
+	must(err)
+	var to qcrypto.Address
+	for i := range to {
+		to[i] = 0x03
+	}
+	amount, _ := new(big.Int).SetString("12345678901234567890", 10) // > 2^53 on purpose
+	tx := types.NewTransfer(w.Address, to, amount, big.NewInt(1000), 0, 1700000000)
+	body, err := tx.Hash()
+	must(err)
+	// TransactionBody marshaled EXACTLY as tx.Hash() does (declaration order).
+	bodyJSON, _ := json.Marshal(types.TransactionBody{
+		Version: tx.Version, ChainID: tx.ChainID, Type: tx.Type,
+		From: tx.From, To: tx.To, Amount: tx.Amount, Fee: tx.Fee,
+		Nonce: tx.Nonce, Timestamp: tx.Timestamp, Data: tx.Data,
+	})
+	must(tx.Sign(w.Private, true))
+	full, _ := json.Marshal(tx)
+	fmt.Println("# ML-DSA-65 signer golden vector (seed=0x02^32, deterministic)")
+	fmt.Printf("seedHex:  %s\n", hex.EncodeToString(seed[:]))
+	fmt.Printf("fromAddr: %s\n", w.Address.String())
+	fmt.Printf("bodyJSON: %s\n", string(bodyJSON))
+	fmt.Printf("bodyHash: %s\n", hex.EncodeToString(body[:]))
+	fmt.Printf("signedTx: %s\n", string(full))
 }
 
 func loadKey(path string) (*qcrypto.PrivateKey, qcrypto.Address) {
