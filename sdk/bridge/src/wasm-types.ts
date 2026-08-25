@@ -14,6 +14,17 @@ export type WasmSignerApi = {
   sqSignCall: (sessionId: string, paramsJson: string) => string | { error: string };
   sqSignDeploy: (sessionId: string, paramsJson: string) => string | { error: string };
   sqSignX402: (sessionId: string, paramsJson: string) => string | { error: string };
+  /** Sign an arbitrary message with the session key (Connect v2 challenge). */
+  sqSignMessage: (
+    sessionId: string,
+    message: string,
+  ) => { address: string; publicKeyB64: string; signatureB64: string } | { error: string };
+  /** Verify a Dilithium Mode-3 signature over a message — pure, no session. */
+  sqVerifyMessage: (
+    publicKeyB64: string,
+    message: string,
+    signatureB64: string,
+  ) => { valid: boolean } | { error: string };
   sqLock: (sessionId: string) => { ok: boolean };
   sqIsUnlocked: (sessionId: string) => boolean;
   sqDomainMessage: () => string;
@@ -61,6 +72,8 @@ export function bindWasmApi(g: Record<string, unknown>): WasmSignerApi {
     sqSignCall: (id, j) => x.sqSignCall(id, j),
     sqSignDeploy: (id, j) => x.sqSignDeploy(id, j),
     sqSignX402: (id, j) => x.sqSignX402(id, j),
+    sqSignMessage: (id, m) => x.sqSignMessage(id, m),
+    sqVerifyMessage: (p, m, s) => x.sqVerifyMessage(p, m, s),
     sqLock: (id) => x.sqLock(id),
     sqIsUnlocked: (id) => x.sqIsUnlocked(id),
     sqDomainMessage: () => x.sqDomainMessage(),

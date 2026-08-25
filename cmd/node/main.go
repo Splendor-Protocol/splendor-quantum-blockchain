@@ -39,19 +39,20 @@ import (
 )
 
 var (
-	flagDataDir       string
-	flagRPCAddr       string
-	flagMetricsAddr   string
-	flagWalletPath    string
-	flagWalletPass    string
-	flagPeers         []string
-	flagBlockInterval int
-	flagIsValidator    bool
-	flagLogLevel       string
-	flagGenesisPath    string
-	flagValidatorPKHex string
-	flagRPCAuthToken   string
-	flagEnableX402     bool
+	flagDataDir           string
+	flagRPCAddr           string
+	flagMetricsAddr       string
+	flagWalletPath        string
+	flagWalletPass        string
+	flagPeers             []string
+	flagBlockInterval     int
+	flagIsValidator       bool
+	flagLogLevel          string
+	flagGenesisPath       string
+	flagValidatorPKHex    string
+	flagRPCAuthToken      string
+	flagEnableX402        bool
+	flagAllowPrivatePeers bool
 )
 
 func main() {
@@ -77,6 +78,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagValidatorPKHex, "validator-pubkey-hex", "", "Trusted genesis validator Dilithium public key (hex). Full nodes MUST set this to authenticate pushed blocks on POST /block.")
 	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret required on admin write routes (or SQC_RPC_AUTH_TOKEN env)")
 	root.Flags().BoolVar(&flagEnableX402, "enable-x402-settle", false, "Expose POST /x402/settle (direct, non-consensus settlement; requires --rpc-auth-token)")
+	root.Flags().BoolVar(&flagAllowPrivatePeers, "allow-private-peers", false, "Allow loopback/private-IP peers in discovery + /peers/announce (private-network or local clusters; default off = public SSRF-safe)")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -87,6 +89,9 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 func runNode(cmd *cobra.Command, args []string) error {
 	nodeStartTime := time.Now()
 	setupLogging(flagLogLevel)
+
+	// Opt into private/loopback peers for private-network or local multi-node clusters.
+	network.AllowPrivatePeers = flagAllowPrivatePeers
 
 	log.Info().
 		Str("chain_id", types.ChainID).
@@ -350,8 +355,15 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Periodic sync (full nodes) ─────────────────────────────────────────
-	// Sync every 1 second — realtime sync matching the 2s block interval.
-	// RPC node stays within 1-2 blocks of the validator at all times.
+	// Sync every 1 second so an RPC node stays within 1-2 blocks of the validator
+	// (the explorer reads from RPC nodes, so their freshness is user-visible).
+	//
+	// Each tick we first refresh peer heights by polling their /status. Without
+	// this, BestPeerHeight only updated on the 60s peer-exchange cycle, so a full
+	// node believed it was already synced between refreshes and lagged the
+	// validator by up to a minute, catching up in bursts. Polling here makes the
+	// pull path genuinely real-time on any topology, without needing push/announce
+	// or an advertised self-URL.
 	if !flagIsValidator {
 		go func() {
 			ticker := time.NewTicker(1 * time.Second)
@@ -361,6 +373,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					for _, addr := range peerPool.Addrs() {
+						if h, derr := network.DialPeer(addr); derr == nil {
+							peerPool.UpdatePeerHeight(addr, h)
+						}
+					}
 					if n, err := syncer.SyncOnce(); err != nil {
 						log.Warn().Err(err).Msg("sync failed")
 					} else if n > 0 {

@@ -6,10 +6,18 @@ import (
 	"net/url"
 )
 
+// AllowPrivatePeers, when true, disables the loopback/private/link-local rejection
+// in IsSafePeerURL. Set it ONLY for trusted private-network or local multi-node
+// deployments where peers legitimately use private/loopback IPs (e.g. nodes on one
+// VPC, or a local test cluster). Default false keeps the public SSRF protection
+// (block metadata/loopback/internal) on /peers/announce and PEX discovery.
+var AllowPrivatePeers bool
+
 // IsSafePeerURL rejects peer URLs that would let untrusted peer input (POST
 // /peers/announce, or a PEX GET /peers response) drive the node into requests to
 // internal/loopback/link-local hosts (SSRF), including the cloud instance-metadata
-// endpoint. Only http/https with a public host is allowed.
+// endpoint. Only http/https with a public host is allowed — unless AllowPrivatePeers
+// is set for a trusted private-network deployment.
 //
 // This is applied ONLY at untrusted ingress points — NOT to operator-configured
 // bootstrap peers (--peer), which may legitimately be loopback/internal.
@@ -30,6 +38,11 @@ func IsSafePeerURL(raw string) error {
 	host := u.Hostname()
 	if host == "" {
 		return fmt.Errorf("missing host")
+	}
+
+	// Private-network / local deployments opt out of the internal-IP rejection.
+	if AllowPrivatePeers {
+		return nil
 	}
 
 	var ips []net.IP

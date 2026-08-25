@@ -303,6 +303,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleX402Verify(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // bound the public verify body
 	var req struct {
 		Requirements x402.PaymentRequirements `json:"requirements"`
 		Payload      x402.PaymentPayload      `json:"payload"`

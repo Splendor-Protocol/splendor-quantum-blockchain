@@ -13,6 +13,7 @@ import (
 	"sync"
 	"syscall/js"
 
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer"
 )
 
@@ -35,6 +36,8 @@ func main() {
 	js.Global().Set("sqSignCall", js.FuncOf(sqSignCall))
 	js.Global().Set("sqSignDeploy", js.FuncOf(sqSignDeploy))
 	js.Global().Set("sqSignX402", js.FuncOf(sqSignX402))
+	js.Global().Set("sqSignMessage", js.FuncOf(sqSignMessage))
+	js.Global().Set("sqVerifyMessage", js.FuncOf(sqVerifyMessage))
 	js.Global().Set("sqLock", js.FuncOf(sqLock))
 	js.Global().Set("sqIsUnlocked", js.FuncOf(sqIsUnlocked))
 	js.Global().Set("sqDomainMessage", js.FuncOf(sqDomainMessage))
@@ -156,6 +159,66 @@ func sqGetPublicKeyB64(this js.Value, args []js.Value) interface{} {
 		return errVal("wallet locked")
 	}
 	return base64.StdEncoding.EncodeToString(w.PublicKey)
+}
+
+// sqSignMessage signs an ARBITRARY message with the session's Dilithium key —
+// the generic signer that Splendor Connect v2 needs to authenticate a quantum
+// (SQ:) identity (the on-chain signers only sign structured txs). The signature
+// is over the raw message bytes (qcrypto.Sign/Verify do not hash internally), so
+// a gateway rebuilds the exact challenge string and calls sqVerifyMessage.
+//
+// Args: [sessionId, message] or [message] for the default session.
+// Returns: { address, publicKeyB64, signatureB64 } or { error }.
+func sqSignMessage(this js.Value, args []js.Value) interface{} {
+	id, message, err := parseSessionAndString(args, "message")
+	if err != "" {
+		return errVal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	sig, e := qcrypto.Sign(w.Private, []byte(message))
+	if e != nil {
+		return errVal("sign: " + e.Error())
+	}
+	return map[string]interface{}{
+		"address":      w.Address.String(),
+		"publicKeyB64": base64.StdEncoding.EncodeToString(w.PublicKey),
+		"signatureB64": base64.StdEncoding.EncodeToString(sig),
+	}
+}
+
+// sqVerifyMessage verifies a Dilithium Mode-3 signature over a message given a
+// base64 public key — a PURE function (no session/key). This is what a Node
+// gateway calls to authenticate a Connect v2 challenge server-side, since there
+// is no native-JS CIRCL Mode-3 verifier.
+//
+// Args: [publicKeyB64, message, signatureB64].
+// Returns: { valid: bool } or { error }.
+func sqVerifyMessage(this js.Value, args []js.Value) interface{} {
+	if len(args) < 3 {
+		return errVal("verify: expected [publicKeyB64, message, signatureB64]")
+	}
+	pubB64 := args[0].String()
+	message := args[1].String()
+	sigB64 := args[2].String()
+
+	pubBytes, e := base64.StdEncoding.DecodeString(pubB64)
+	if e != nil {
+		return errVal("verify: bad publicKeyB64: " + e.Error())
+	}
+	pk, e := qcrypto.PublicKeyFromBytes(pubBytes)
+	if e != nil {
+		return errVal("verify: " + e.Error())
+	}
+	sig, e := base64.StdEncoding.DecodeString(sigB64)
+	if e != nil {
+		return errVal("verify: bad signatureB64: " + e.Error())
+	}
+	return map[string]interface{}{"valid": qcrypto.Verify(pk, []byte(message), sig)}
 }
 
 // Args: [sessionId, paramsJson] or [paramsJson] for default session.
