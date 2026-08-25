@@ -170,7 +170,7 @@ func OpName(op byte) string {
 	case OpADDRESS:          return "ADDRESS"
 	case OpGASLIMIT:         return "GASLIMIT"
 	case OpSHA3:             return "SHA3"
-	case OpVERIFY_DILITHIUM: return "VERIFY_DILITHIUM"
+	case OpVERIFY_MLDSA: return "VERIFY_MLDSA"
 	case OpSHA3_MEM:         return "SHA3_MEM"
 	case OpCALL:             return "CALL"
 	case OpSTATICCALL:       return "STATICCALL"

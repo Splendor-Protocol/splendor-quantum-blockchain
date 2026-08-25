@@ -17,7 +17,7 @@
 //   1 price unit = 1 smallest SPLD / 1 smallest token unit
 //   i.e. how many smallest-SPLD you need to buy 1 smallest-token
 //
-// All storage: SHA3-256 slots. All signatures: ML-DSA-65 Mode 3.
+// All storage: SHA3-256 slots. All signatures: ML-DSA-65.
 // No ECDSA. No keccak. No Ethereum address format.
 package vm
 
@@ -61,7 +61,7 @@ func oraclePriceSlot(asset qcrypto.Address, feeder qcrypto.Address) [32]byte {
 // FeederInfo describes an authorised price feeder.
 type FeederInfo struct {
 	Address   string `json:"address"`
-	PublicKey []byte `json:"public_key"` // ML-DSA-65 Mode 3 public key (1952 bytes)
+	PublicKey []byte `json:"public_key"` // ML-DSA-65 public key (1952 bytes)
 	Name      string `json:"name"`
 	Active    bool   `json:"active"`
 }
