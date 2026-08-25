@@ -13,10 +13,13 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -51,8 +54,16 @@ var (
 	flagGenesisPath       string
 	flagValidatorPKHex    string
 	flagRPCAuthToken      string
-	flagEnableX402        bool
 	flagAllowPrivatePeers bool
+	flagCORSOrigins       []string
+	flagRateLimit         float64
+	flagRateBurst         float64
+	flagTrustProxy        bool
+	flagTLSCert           string
+	flagTLSKey            string
+	flagPublicURL         string
+	flagAllowPlaintextP2P bool
+	flagPeerPins          []string
 )
 
 func main() {
@@ -66,8 +77,11 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	}
 
 	root.Flags().StringVar(&flagDataDir, "data-dir", "./sqc-data", "Directory for chain data")
-	root.Flags().StringVar(&flagRPCAddr, "rpc-addr", ":8080", "RPC server listen address")
-	root.Flags().StringVar(&flagMetricsAddr, "metrics-addr", ":9100", "Prometheus metrics listen address")
+	// Loopback by default: a node should not become internet-reachable merely by
+	// being started. Operators opt into exposure explicitly, ideally behind a
+	// terminating proxy.
+	root.Flags().StringVar(&flagRPCAddr, "rpc-addr", "127.0.0.1:8080", "RPC server listen address (use 0.0.0.0:8080 to expose publicly)")
+	root.Flags().StringVar(&flagMetricsAddr, "metrics-addr", "127.0.0.1:9100", "Prometheus metrics listen address (metrics leak node internals — keep private)")
 	root.Flags().StringVar(&flagWalletPath, "wallet", "", "Path to validator .sqwallet file")
 	root.Flags().StringVar(&flagWalletPass, "wallet-pass", "", "Wallet password (prefer SQC_WALLET_PASS env)")
 	root.Flags().StringArrayVar(&flagPeers, "peer", nil, "Bootstrap peer RPC addresses")
@@ -75,10 +89,18 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().BoolVar(&flagIsValidator, "validator", false, "Run as block-producing validator")
 	root.Flags().StringVar(&flagLogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	root.Flags().StringVar(&flagGenesisPath, "genesis", "", "Path to genesis.json (allocations applied once on an empty chain)")
-	root.Flags().StringVar(&flagValidatorPKHex, "validator-pubkey-hex", "", "Trusted genesis validator Dilithium public key (hex). Full nodes MUST set this to authenticate pushed blocks on POST /block.")
-	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret required on admin write routes (or SQC_RPC_AUTH_TOKEN env)")
-	root.Flags().BoolVar(&flagEnableX402, "enable-x402-settle", false, "Expose POST /x402/settle (direct, non-consensus settlement; requires --rpc-auth-token)")
+	root.Flags().StringVar(&flagValidatorPKHex, "validator-pubkey-hex", "", "Trusted genesis validator ML-DSA-65 public key (hex). Full nodes MUST set this to authenticate pushed blocks on POST /block.")
+	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret for the write plane: POST /block and POST /peers/announce. All nodes in a cluster must share it. (or SQC_RPC_AUTH_TOKEN env)")
 	root.Flags().BoolVar(&flagAllowPrivatePeers, "allow-private-peers", false, "Allow loopback/private-IP peers in discovery + /peers/announce (private-network or local clusters; default off = public SSRF-safe)")
+	root.Flags().StringArrayVar(&flagCORSOrigins, "cors-origin", nil, "Browser origin allowed to call this node (repeatable). Default: none. Use '*' to allow any origin.")
+	root.Flags().Float64Var(&flagRateLimit, "rpc-rate-limit", 25, "Sustained requests/second per client IP on tx submission and x402 routes (0 disables)")
+	root.Flags().Float64Var(&flagRateBurst, "rpc-rate-burst", 50, "Burst allowance per client IP for rate-limited routes")
+	root.Flags().BoolVar(&flagTrustProxy, "trust-proxy", false, "Read client IP from X-Forwarded-For. ONLY enable behind a proxy you control — otherwise clients can spoof it and bypass rate limits.")
+	root.Flags().StringVar(&flagTLSCert, "tls-cert", "", "PEM certificate for HTTPS. Enables TLS 1.3 with post-quantum hybrid key exchange (X25519MLKEM768).")
+	root.Flags().StringVar(&flagTLSKey, "tls-key", "", "PEM private key matching --tls-cert")
+	root.Flags().StringVar(&flagPublicURL, "public-url", "", "Externally reachable base URL advertised to peers (default: derived from --rpc-addr)")
+	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Allow unencrypted block push when a peer has no ML-KEM sealed transport. Off by default so the channel cannot be downgraded.")
+	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use.")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -92,6 +114,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// Opt into private/loopback peers for private-network or local multi-node clusters.
 	network.AllowPrivatePeers = flagAllowPrivatePeers
+
+	if (flagTLSCert == "") != (flagTLSKey == "") {
+		return fmt.Errorf("--tls-cert and --tls-key must be provided together")
+	}
+	tlsEnabled := flagTLSCert != ""
 
 	log.Info().
 		Str("chain_id", types.ChainID).
@@ -148,6 +175,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 	nodeMetrics.SetLabel("chain_id", types.ChainID)
 	nodeMetrics.SetLabel("version", "1.0.0-quantum")
 	metricsServer := rpc.NewMetricsServer(flagMetricsAddr, nodeMetrics)
+	if flagTLSCert != "" && flagTLSKey != "" {
+		if err := metricsServer.EnableTLS(flagTLSCert, flagTLSKey); err != nil {
+			return fmt.Errorf("metrics TLS: %w", err)
+		}
+	}
 	metricsServer.Start()
 	defer metricsServer.Stop()
 
@@ -178,7 +210,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// Full nodes: pin the trusted genesis validator pubkey so inbound (POST /block)
-	// and sync blocks are Dilithium-verified. Without it a full node cannot
+	// and sync blocks are ML-DSA-65-verified. Without it a full node cannot
 	// authenticate pushed blocks and fails closed on the push path (relying on
 	// pull-sync, which bootstraps the key from the genesis block).
 	if !flagIsValidator && flagValidatorPKHex != "" {
@@ -194,20 +226,54 @@ func runNode(cmd *cobra.Command, args []string) error {
 			Msg("Trusted validator pubkey pinned (full node block verification enabled)")
 	}
 
-	// Admin auth token for state-mutating routes (env fallback).
+	// Write-plane token for block ingest + peer announce (env fallback).
 	authToken := flagRPCAuthToken
 	if authToken == "" {
 		authToken = os.Getenv("SQC_RPC_AUTH_TOKEN")
 	}
+	if authToken == "" {
+		log.Warn().Msg("No --rpc-auth-token set: the write plane (POST /block, POST /peers/announce) is DISABLED. " +
+			"Push-based propagation will not work; full nodes will fall back to pull-sync.")
+	}
 
 	// ── P2P peer pool + discovery ──────────────────────────────────────────
-	// selfURL is our public-facing RPC address for peer announcements.
-	// On a real server this should be the public IP; on localhost it's fine as-is.
-	selfURL := "http://localhost" + flagRPCAddr
+	// selfURL is the address we advertise to peers. Derived from --rpc-addr for
+	// local use; on a real deployment set --public-url to the reachable name,
+	// since a loopback default would advertise an address no peer can dial.
+	selfURL := flagPublicURL
+	if selfURL == "" {
+		selfURL = defaultSelfURL(flagRPCAddr, tlsEnabled)
+	}
 
 	peerPool := network.NewPeerPool(selfURL, 50)
-	broadcaster := network.NewBroadcaster(validatorPKBytes)
+	broadcaster := network.NewBroadcaster(validatorPKBytes, authToken, flagAllowPlaintextP2P)
 	discoverer := network.NewDiscoverer(peerPool, selfURL, 60*time.Second)
+
+	// ── Node identity for the encrypted P2P transport ──────────────────────
+	// A validator reuses its wallet key; other nodes get a persistent identity
+	// so peers that pinned them on first contact keep matching across restarts.
+	nodeIdentity, err := loadNodeIdentity(flagDataDir, validatorPub, validatorPriv)
+	if err != nil {
+		return fmt.Errorf("node identity: %w", err)
+	}
+
+	// Pin peers whose node key the operator supplied, so the sealed channel is
+	// authenticated against configuration rather than trust-on-first-use.
+	for _, pin := range flagPeerPins {
+		peerURL, pkHex, found := strings.Cut(pin, "=")
+		if !found {
+			return fmt.Errorf("invalid --peer-pin %q: want URL=PUBKEY_HEX", pin)
+		}
+		pk, decErr := hex.DecodeString(strings.TrimPrefix(pkHex, "0x"))
+		if decErr != nil {
+			return fmt.Errorf("invalid --peer-pin pubkey for %s: %w", peerURL, decErr)
+		}
+		if _, perr := qcrypto.PublicKeyFromBytes(pk); perr != nil {
+			return fmt.Errorf("invalid --peer-pin pubkey for %s: %w", peerURL, perr)
+		}
+		broadcaster.Identities().Pin(peerURL, pk)
+		log.Info().Str("peer", peerURL).Msg("pinned peer node identity")
+	}
 
 	for _, peer := range flagPeers {
 		peerPool.Add(&network.PeerInfo{Addr: peer, LastSeen: time.Now().Unix()})
@@ -427,11 +493,14 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Core RPC server (handles /tx/submit, /block/*, /balance/*, /status, etc.)
 	coreRPC := rpc.New(
 		rpc.Config{
-			ListenAddr:        flagRPCAddr,
-			ValidatorPK:       validatorPKBytes,
-			PeerCount:         peerPool.Count, // wire live peer count from peerPool
-			AuthToken:         authToken,
-			X402SettleEnabled: flagEnableX402,
+			ListenAddr:       flagRPCAddr,
+			ValidatorPK:      validatorPKBytes,
+			PeerCount:        peerPool.Count, // wire live peer count from peerPool
+			AuthToken:        authToken,
+			CORSOrigins:      flagCORSOrigins,
+			SubmitRatePerSec: flagRateLimit,
+			SubmitBurst:      flagRateBurst,
+			TrustProxy:       flagTrustProxy,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
@@ -446,7 +515,33 @@ func runNode(cmd *cobra.Command, args []string) error {
 	rpc.RegisterExplorerRoutes(router, txIndex, stateDB, peerPool, func() uint64 {
 		h, _ := executor.LatestHeight()
 		return h
-	}, broadcaster.AddPeer)
+	}, coreRPC.WriteAuth(), broadcaster.AddPeer)
+
+	// Post-quantum sealed P2P transport (ML-KEM-768 + AES-256-GCM). Carries the
+	// same block-ingest and peer-announce operations as the plaintext write
+	// plane, but encrypted and with the write token inside the envelope.
+	rpc.RegisterP2PRoutes(router, rpc.P2PConfig{
+		Identity: nodeIdentity,
+		Token:    authToken,
+		HandleBlock: func(body []byte) error {
+			return network.HandleIncomingBlock(body, validatorPKBytes, executor.ExecuteBlock)
+		},
+		HandleAnnounce: func(body []byte) error {
+			var peer network.PeerInfo
+			if err := json.Unmarshal(body, &peer); err != nil {
+				return fmt.Errorf("invalid peer info: %w", err)
+			}
+			if peer.Addr == "" {
+				return fmt.Errorf("peer addr required")
+			}
+			if err := network.IsSafePeerURL(peer.Addr); err != nil {
+				return fmt.Errorf("rejected peer addr: %w", err)
+			}
+			peerPool.Add(&peer)
+			broadcaster.AddPeer(peer.Addr)
+			return nil
+		},
+	})
 
 	// Governance + staking routes
 	rpc.RegisterGovRoutes(router, stateDB)
@@ -481,12 +576,23 @@ func runNode(cmd *cobra.Command, args []string) error {
 	router.PathPrefix("/").HandlerFunc(coreRPC.ServeHTTP)
 
 	// ── Start HTTP server ──────────────────────────────────────────────────
+	// The origin policy is applied by the core RPC router; wrapping the outer
+	// router with the same policy means explorer/gov/DEX routes get identical
+	// treatment instead of silently defaulting to permissive.
 	httpServer := &http.Server{
 		Addr:         flagRPCAddr,
-		Handler:      addCORSHeaders(router),
+		Handler:      coreRPC.CORS().Middleware(router),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
+	}
+
+	if tlsEnabled {
+		tlsCfg, tlsErr := rpc.PQTLSConfig(flagTLSCert, flagTLSKey)
+		if tlsErr != nil {
+			return tlsErr
+		}
+		httpServer.TLSConfig = tlsCfg
 	}
 
 	go func() {
@@ -499,17 +605,84 @@ func runNode(cmd *cobra.Command, args []string) error {
 	log.Info().
 		Str("rpc_addr", flagRPCAddr).
 		Str("metrics_addr", flagMetricsAddr).
+		Str("self_url", selfURL).
 		Bool("validator", flagIsValidator).
+		Bool("tls", tlsEnabled).
+		Bool("write_plane", authToken != "").
+		Int("cors_origins", len(flagCORSOrigins)).
 		Msg("Node ready")
 
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	var serveErr error
+	if tlsEnabled {
+		log.Info().Msg("TLS 1.3 enabled with post-quantum hybrid key exchange (X25519MLKEM768)")
+		serveErr = httpServer.ListenAndServeTLS(flagTLSCert, flagTLSKey)
+	} else {
+		serveErr = httpServer.ListenAndServe()
+	}
+	if serveErr != nil && serveErr != http.ErrServerClosed {
 		if ctx.Err() == nil {
-			return fmt.Errorf("HTTP server: %w", err)
+			return fmt.Errorf("HTTP server: %w", serveErr)
 		}
 	}
 
 	log.Info().Msg("Node stopped")
 	return nil
+}
+
+// nodeIdentityFile is where a non-validator node persists its P2P identity key.
+const nodeIdentityFile = "node_identity.key"
+
+// loadNodeIdentity returns the ML-DSA key material backing this node's
+// encrypted P2P transport.
+//
+// A validator reuses its wallet key, so its P2P identity is the same key peers
+// already trust for block signatures. Other nodes persist a generated key: an
+// ephemeral one would change on every restart, and peers that pinned the old
+// identity would (correctly) refuse to talk to it.
+func loadNodeIdentity(dataDir string, pub *qcrypto.PublicKey, priv *qcrypto.PrivateKey) (*network.NodeIdentity, error) {
+	if pub != nil && priv != nil {
+		return network.NewNodeIdentity(pub, priv)
+	}
+
+	path := filepath.Join(dataDir, nodeIdentityFile)
+	if raw, err := os.ReadFile(path); err == nil {
+		loaded, perr := qcrypto.PrivateKeyFromBytes(raw)
+		if perr != nil {
+			return nil, fmt.Errorf("stored node identity at %s is corrupt: %w", path, perr)
+		}
+		return network.NewNodeIdentity(loaded.Public(), loaded)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read node identity: %w", err)
+	}
+
+	newPub, newPriv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		return nil, fmt.Errorf("generate node identity: %w", err)
+	}
+	// 0600: this key authenticates the node to its peers.
+	if err := os.WriteFile(path, newPriv.Bytes(), 0600); err != nil {
+		return nil, fmt.Errorf("persist node identity: %w", err)
+	}
+	log.Info().Str("path", path).Msg("Generated persistent node P2P identity")
+	return network.NewNodeIdentity(newPub, newPriv)
+}
+
+// defaultSelfURL derives the address advertised to peers from the listen
+// address. A bare or wildcard host is reported as localhost, which is only
+// correct for single-host development — real deployments must set --public-url.
+func defaultSelfURL(listenAddr string, useTLS bool) string {
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return scheme + "://localhost" + listenAddr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
 }
 
 // bootstrapGenesisFromPeer fetches genesis.json from a peer validator and applies
@@ -567,19 +740,6 @@ func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *
 		Str("state_root", fmt.Sprintf("%x", stateRoot[:8])).
 		Msg("RPC: bootstrapped genesis allocations from validator peer")
 	return nil
-}
-
-func addCORSHeaders(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Payment")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
 }
 
 func setupLogging(level string) {

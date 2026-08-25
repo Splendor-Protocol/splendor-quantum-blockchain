@@ -26,7 +26,7 @@ import (
 
 // ModuleRouterAddress is the reserved account that receives native-module calls.
 // It is SHA3-256 of a fixed domain string, so (a) it can never collide with a
-// Dilithium-derived user address, and (b) any client can reproduce it offline.
+// ML-DSA-65-derived user address, and (b) any client can reproduce it offline.
 var ModuleRouterAddress = deriveModuleRouterAddress()
 
 func deriveModuleRouterAddress() qcrypto.Address {

@@ -5,11 +5,11 @@
 //   1. Queries /status on all known peers to find the best chain height.
 //   2. Picks the peer with the highest height.
 //   3. Downloads blocks one by one (GET /block/{height}) from that peer.
-//   4. Validates each block's Dilithium signature and hash chain before applying.
+//   4. Validates each block's ML-DSA-65 signature and hash chain before applying.
 //   5. Continues until the local height matches the best peer height.
 //
 // All downloaded blocks are verified — no block is trusted without a valid
-// Dilithium signature from the registered genesis validator.
+// ML-DSA-65 signature from the registered genesis validator.
 package network
 
 import (
@@ -31,7 +31,7 @@ const maxSyncBodyBytes = 128 << 20
 
 // SyncConfig configures the block sync process.
 type SyncConfig struct {
-	// ValidatorPubKey is the genesis validator's Dilithium public key bytes.
+	// ValidatorPubKey is the genesis validator's ML-DSA-65 public key bytes.
 	// Every downloaded block must be signed by this key.
 	ValidatorPubKey []byte
 
@@ -73,7 +73,7 @@ func NewBlockFetcher(cfg SyncConfig) *BlockFetcher {
 }
 
 // FetchGenesisValidatorPubKey fetches block 0 from a peer and extracts
-// the validator's Dilithium public key. This is used by RPC nodes that
+// the validator's ML-DSA-65 public key. This is used by RPC nodes that
 // don't have a local genesis.json — they bootstrap the pubkey from the chain.
 func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, error) {
 	url := fmt.Sprintf("%s/block/0", peerAddr)
@@ -131,7 +131,7 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 		return nil, fmt.Errorf("block %d failed validation: %w", height, err)
 	}
 
-	// Verify Dilithium signature only if we have the pubkey.
+	// Verify ML-DSA-65 signature only if we have the pubkey.
 	// If not set, try to learn it from the block itself (for genesis bootstrap).
 	if len(f.cfg.ValidatorPubKey) > 0 {
 		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {

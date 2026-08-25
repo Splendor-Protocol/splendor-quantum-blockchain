@@ -37,7 +37,7 @@ func main() {
 		Short: "Splendor Quantum Chain wallet CLI",
 		Long: `sqc-wallet manages Splendor Quantum Chain wallets.
 Keys use ML-DSA-65 (NIST FIPS 204).
-Addresses are derived as SHA3-256(dilithium_public_key) — no ECDSA.`,
+Addresses are derived as SHA3-256(ml_dsa_65_public_key) — no ECDSA.`,
 	}
 
 	root.AddCommand(
@@ -61,7 +61,7 @@ func cmdGenerate() *cobra.Command {
 	var outPath string
 	cmd := &cobra.Command{
 		Use:   "generate",
-		Short: "Generate a new Dilithium quantum wallet",
+		Short: "Generate a new ML-DSA-65 quantum wallet",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Generate keypair
 			fmt.Fprintln(os.Stderr, "Generating ML-DSA-65 (FIPS-204) keypair...")
@@ -127,13 +127,13 @@ func cmdAddress() *cobra.Command {
 
 // ── pubkey ────────────────────────────────────────────────────────────────
 
-// cmdPubkey prints the hex-encoded Dilithium public key.
+// cmdPubkey prints the hex-encoded ML-DSA-65 public key.
 // This is used by install.sh to populate genesis.json's validator_pubkey_hex field.
 func cmdPubkey() *cobra.Command {
 	var walletPath string
 	cmd := &cobra.Command{
 		Use:   "pubkey",
-		Short: "Show the Dilithium public key in hex (for genesis.json)",
+		Short: "Show the ML-DSA-65 public key in hex (for genesis.json)",
 		Long: `Prints the 1952-byte ML-DSA-65 public key in hexadecimal.
 This is needed for the validator_pubkey_hex field in genesis.json.
 The pubkey is 3904 hex characters (1952 bytes × 2).`,
@@ -318,7 +318,7 @@ func cmdExportKey() *cobra.Command {
 	var walletPath, outPath string
 	cmd := &cobra.Command{
 		Use:   "export-key",
-		Short: "Export raw Dilithium private key bytes (for NFC card provisioning)",
+		Short: "Export raw ML-DSA-65 private key bytes (for NFC card provisioning)",
 		Long: `Exports the 4032-byte ML-DSA-65 private key to a binary file.
 This file is used to provision a physical NFC smart card secure element.
 KEEP THIS FILE SECURE. Delete it after card provisioning.`,
@@ -343,7 +343,7 @@ KEEP THIS FILE SECURE. Delete it after card provisioning.`,
 			}
 
 			hash := qcrypto.Hash32(privBytes)
-			fmt.Printf("✅ Dilithium private key exported\n")
+			fmt.Printf("✅ ML-DSA-65 private key exported\n")
 			fmt.Printf("   File:  %s\n", outPath)
 			fmt.Printf("   Size:  %d bytes\n", qcrypto.PrivateKeySize)
 			fmt.Printf("   SHA3:  %x\n", hash[:])

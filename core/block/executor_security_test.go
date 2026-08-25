@@ -359,11 +359,25 @@ func TestExecuteBlockLinkageRejections(t *testing.T) {
 
 	mustRejectWith("wrong-chain-id", sign(&types.Block{Header: types.BlockHeader{
 		Height: 1, Timestamp: time.Now().Unix(), ChainID: "evil-chain",
+		AlgID:        qcrypto.AlgMLDSA65,
 		TxMerkleRoot: qcrypto.Hash32([]byte{}), ValidatorAddr: vaddr,
 	}}), "wrong chain id")
 
+	mustRejectWith("unknown-alg-id", sign(&types.Block{Header: types.BlockHeader{
+		Height: 1, Timestamp: time.Now().Unix(), ChainID: types.ChainID,
+		AlgID:        "ECDSA-secp256k1",
+		TxMerkleRoot: qcrypto.Hash32([]byte{}), ValidatorAddr: vaddr,
+	}}), "unsupported block alg_id")
+
+	mustRejectWith("future-timestamp", sign(&types.Block{Header: types.BlockHeader{
+		Height: 1, Timestamp: time.Now().Add(time.Hour).Unix(), ChainID: types.ChainID,
+		AlgID:        qcrypto.AlgMLDSA65,
+		TxMerkleRoot: qcrypto.Hash32([]byte{}), ValidatorAddr: vaddr,
+	}}), "ahead of local clock")
+
 	mustRejectWith("height-not-1-on-empty", sign(&types.Block{Header: types.BlockHeader{
 		Height: 7, Timestamp: time.Now().Unix(), ChainID: types.ChainID,
+		AlgID:        qcrypto.AlgMLDSA65,
 		TxMerkleRoot: qcrypto.Hash32([]byte{}), ValidatorAddr: vaddr,
 	}}), "empty chain")
 
@@ -378,6 +392,7 @@ func TestExecuteBlockLinkageRejections(t *testing.T) {
 
 	mustRejectWith("gap-height", sign(&types.Block{Header: types.BlockHeader{
 		Height: 3, Timestamp: time.Now().Unix(), ChainID: types.ChainID,
+		AlgID:    qcrypto.AlgMLDSA65,
 		PrevHash: b1.Hash, TxMerkleRoot: qcrypto.Hash32([]byte{}), ValidatorAddr: vaddr,
 	}}), "non-contiguous")
 
@@ -385,8 +400,16 @@ func TestExecuteBlockLinkageRejections(t *testing.T) {
 	wrongPrev[0] = 0xAB
 	mustRejectWith("bad-prev-hash", sign(&types.Block{Header: types.BlockHeader{
 		Height: 2, Timestamp: time.Now().Unix(), ChainID: types.ChainID,
+		AlgID:    qcrypto.AlgMLDSA65,
 		PrevHash: wrongPrev, TxMerkleRoot: qcrypto.Hash32([]byte{}), ValidatorAddr: vaddr,
 	}}), "prev-hash mismatch")
+
+	// Block time must not run backwards relative to the parent.
+	mustRejectWith("timestamp-before-parent", sign(&types.Block{Header: types.BlockHeader{
+		Height: 2, Timestamp: b1.Header.Timestamp - 60, ChainID: types.ChainID,
+		AlgID:    qcrypto.AlgMLDSA65,
+		PrevHash: b1.Hash, TxMerkleRoot: qcrypto.Hash32([]byte{}), ValidatorAddr: vaddr,
+	}}), "non-monotonic timestamp")
 
 	if hgt, _ := ex.LatestHeight(); hgt != 1 {
 		t.Fatalf("head moved to %d after rejected blocks, want 1", hgt)

@@ -280,9 +280,37 @@ EOF
 ```bash
 ./sqc-node \
   --data-dir /var/sqc/data \
-  --rpc-addr :8080 \
+  --rpc-addr 127.0.0.1:8080 \
+  --rpc-auth-token "$SQC_RPC_AUTH_TOKEN" \
   --log-level info
 ```
+
+**Secure defaults you should know about:**
+
+| Default | Why | Override |
+|---|---|---|
+| Binds `127.0.0.1:8080` | A node should not become internet-reachable just by starting. Put a TLS-terminating proxy in front. | `--rpc-addr 0.0.0.0:8080` |
+| Metrics bind `127.0.0.1:9100` | Metrics expose peer counts, mempool depth, and height — useful to an attacker. | `--metrics-addr` |
+| No CORS headers | The old `Access-Control-Allow-Origin: *` let any web page script a visitor's node. | `--cors-origin https://app.example` (repeatable), or `--cors-origin '*'` |
+| Write plane disabled without a token | `POST /block` applies a block to local state; anonymous access is a chain-integrity hole. Every node in a cluster must share the token. | `--rpc-auth-token` / `SQC_RPC_AUTH_TOKEN` |
+| Encrypted P2P required | Block push is sealed with ML-KEM-768. Plaintext fallback is off so an attacker cannot force a downgrade by blocking `/p2p/identity`. | `--allow-plaintext-p2p` |
+| 25 req/s per IP on submission | Each `/tx/submit` costs an ML-DSA verification. | `--rpc-rate-limit`, `--rpc-rate-burst` |
+
+**Post-quantum TLS.** With `--tls-cert` and `--tls-key`, the node serves TLS 1.3
+and offers `X25519MLKEM768`, a hybrid group that stays secure unless *both*
+X25519 and ML-KEM-768 are broken. Without it, RPC traffic is recordable today
+and decryptable once a CRQC exists.
+
+```bash
+./sqc-node --data-dir /var/sqc/data --rpc-addr 0.0.0.0:8443 \
+  --tls-cert /etc/sqc/fullchain.pem --tls-key /etc/sqc/privkey.pem \
+  --public-url https://rpc.example.org \
+  --rpc-auth-token "$SQC_RPC_AUTH_TOKEN"
+```
+
+Behind a reverse proxy, add `--trust-proxy` so rate limits key off the real
+client IP — but **only** when the proxy is yours, since otherwise anyone can
+spoof `X-Forwarded-For` and mint a fresh rate-limit bucket per request.
 
 ### Verify Node is Running
 
@@ -530,9 +558,10 @@ Type=simple
 User=sqc
 Group=sqc
 WorkingDirectory=/opt/sqc
+Environment="SQC_RPC_AUTH_TOKEN=YOUR_SHARED_WRITE_PLANE_TOKEN"
 ExecStart=/opt/sqc/sqc-node \
     --data-dir /var/sqc/data \
-    --rpc-addr :8080 \
+    --rpc-addr 127.0.0.1:8080 \
     --log-level info
 Restart=always
 RestartSec=5
@@ -566,9 +595,11 @@ User=sqc
 Group=sqc
 WorkingDirectory=/opt/sqc
 Environment="SQC_WALLET_PASS=YOUR_PASSWORD_HERE"
+# Must match the token on every full node this validator pushes blocks to.
+Environment="SQC_RPC_AUTH_TOKEN=YOUR_SHARED_WRITE_PLANE_TOKEN"
 ExecStart=/opt/sqc/sqc-node \
     --data-dir /var/sqc/data \
-    --rpc-addr :8080 \
+    --rpc-addr 127.0.0.1:8080 \
     --validator \
     --wallet /var/sqc/validator.sqwallet \
     --block-interval 2 \

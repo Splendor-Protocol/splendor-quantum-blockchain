@@ -111,7 +111,7 @@ func DeployStaking(stateDB *state.StateDB) qcrypto.Address {
 
 // ── Validator management ──────────────────────────────────────────────────────
 
-// Register registers a new validator with the given Dilithium public key and stake.
+// Register registers a new validator with the given ML-DSA-65 public key and stake.
 // The staker must have already transferred the stake SPLD to the contract.
 func (s *StakingContract) Register(
 	caller qcrypto.Address,

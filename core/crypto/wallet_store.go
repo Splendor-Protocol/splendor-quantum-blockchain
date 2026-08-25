@@ -14,7 +14,7 @@ import (
 )
 
 // WalletFile is the on-disk format for an encrypted Splendor QC wallet.
-// The Dilithium private key is encrypted with AES-256-GCM.
+// The ML-DSA-65 private key is encrypted with AES-256-GCM.
 // The encryption key is derived from the user's password using Argon2id.
 type WalletFile struct {
 	Version   int    `json:"version"`

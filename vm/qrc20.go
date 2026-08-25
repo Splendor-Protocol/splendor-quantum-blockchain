@@ -5,7 +5,7 @@
 //   - Pausable: owner can pause/unpause all transfers
 //   - Capped: optional max supply enforced at mint time
 //   - Events: Transfer, Approval, Mint, Burn emitted as *types.Log
-//   - Permit (EIP-2612 equivalent): off-chain Dilithium-signed approvals
+//   - Permit (EIP-2612 equivalent): off-chain ML-DSA-65-signed approvals
 //   - IncreaseAllowance / DecreaseAllowance: safer than plain Approve
 //   - All slot keys: SHA3-256, no keccak
 package vm
@@ -469,7 +469,7 @@ func (t *QRC20Token) PermitNonce(addr qcrypto.Address) (*big.Int, error) {
 	return t.getBigInt(permitNonceSlot(addr))
 }
 
-// PermitMessage constructs the canonical message that must be Dilithium-signed for a permit.
+// PermitMessage constructs the canonical message that must be ML-DSA-65-signed for a permit.
 // Message = SHA3-256("qrc20:permit:" + contract + owner + spender + amount + nonce + deadline)
 func PermitMessage(contract, owner, spender qcrypto.Address, amount *big.Int, nonce uint64, deadline int64) [32]byte {
 	amountBytes := make([]byte, 32)
@@ -497,7 +497,7 @@ func PermitMessage(contract, owner, spender qcrypto.Address, amount *big.Int, no
 }
 
 // Permit executes an off-chain-signed approval.
-// The caller provides the Dilithium signature of PermitMessage(...).
+// The caller provides the ML-DSA-65 signature of PermitMessage(...).
 // This allows gasless approvals — the spender pays the tx fee, not the owner.
 func (t *QRC20Token) Permit(
 	owner, spender qcrypto.Address,
@@ -518,12 +518,12 @@ func (t *QRC20Token) Permit(
 
 	msg := PermitMessage(t.contract, owner, spender, amount, nonce.Uint64(), deadline)
 
-	// Verify Dilithium signature
+	// Verify ML-DSA-65 signature
 	pub, err := qcrypto.PublicKeyFromBytes(ownerPubKey)
 	if err != nil {
 		return fmt.Errorf("QRC20 permit: invalid owner public key: %w", err)
 	}
-	if !qcrypto.Verify(pub, msg[:], sig) {
+	if !qcrypto.Verify(pub, msg[:], qcrypto.CtxPermit, sig) {
 		return fmt.Errorf("QRC20 permit: invalid signature")
 	}
 

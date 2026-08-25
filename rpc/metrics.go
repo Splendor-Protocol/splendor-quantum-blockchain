@@ -200,9 +200,11 @@ func (m *NodeMetrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // This is intentionally separate from the RPC server so it can be
 // firewalled independently.
 type MetricsServer struct {
-	addr    string
-	metrics *NodeMetrics
-	server  *http.Server
+	addr     string
+	metrics  *NodeMetrics
+	server   *http.Server
+	certFile string
+	keyFile  string
 }
 
 // NewMetricsServer creates a new metrics HTTP server.
@@ -226,11 +228,35 @@ func NewMetricsServer(addr string, metrics *NodeMetrics) *MetricsServer {
 	}
 }
 
+// EnableTLS serves metrics over TLS 1.3 with post-quantum hybrid key exchange.
+//
+// Metrics are bound to loopback by default, which is the real mitigation. This
+// exists for operators who scrape across a network: height, peer count, and
+// mempool depth are useful reconnaissance for choosing when to attack, so that
+// scrape should not cross a network in the clear.
+func (s *MetricsServer) EnableTLS(certFile, keyFile string) error {
+	cfg, err := PQTLSConfig(certFile, keyFile)
+	if err != nil {
+		return err
+	}
+	s.server.TLSConfig = cfg
+	s.certFile, s.keyFile = certFile, keyFile
+	return nil
+}
+
 // Start starts the metrics HTTP server. Non-blocking.
 func (s *MetricsServer) Start() {
 	go func() {
-		log.Info().Str("addr", s.addr).Msg("metrics server starting")
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		tlsOn := s.certFile != ""
+		log.Info().Str("addr", s.addr).Bool("tls", tlsOn).Msg("metrics server starting")
+
+		var err error
+		if tlsOn {
+			err = s.server.ListenAndServeTLS(s.certFile, s.keyFile)
+		} else {
+			err = s.server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Error().Err(err).Msg("metrics server error")
 		}
 	}()

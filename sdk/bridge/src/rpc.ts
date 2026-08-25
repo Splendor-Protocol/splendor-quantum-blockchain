@@ -114,12 +114,24 @@ export class SqRpc {
     return this.post('/x402/verify', { requirements, payload }, false);
   }
 
-  async x402Settle(requirements: object, payload: object): Promise<{
+  /**
+   * Settle a verified X402 payment.
+   *
+   * settlementTx is the payer-signed TxX402 that actually moves the funds. The
+   * node admits it to the mempool rather than mutating balances directly, so
+   * the payment lands in a block and in the state root like any other
+   * transaction. It is required: without it the node returns 400.
+   */
+  async x402Settle(
+    requirements: object,
+    payload: object,
+    settlementTx: object,
+  ): Promise<{
     success?: boolean;
     tx_hash?: string;
     error?: string;
   }> {
-    return this.post('/x402/settle', { requirements, payload }, true);
+    return this.post('/x402/settle', { requirements, payload, settlement_tx: settlementTx }, true);
   }
 
   async getTx(hash: string): Promise<Record<string, unknown>> {
