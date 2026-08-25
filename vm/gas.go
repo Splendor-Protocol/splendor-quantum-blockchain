@@ -91,7 +91,7 @@ type GasTable struct {
 	// Crypto (quantum-safe)
 	SHA3             uint64
 	SHA3PerByte      uint64
-	VERIFY_DILITHIUM uint64
+	VERIFY_MLDSA uint64
 
 	// Events
 	LOG0        uint64
@@ -202,7 +202,7 @@ func DefaultGasTable() GasTable {
 		// Crypto
 		SHA3:             30,
 		SHA3PerByte:      6,
-		VERIFY_DILITHIUM: 5000,
+		VERIFY_MLDSA: 5000,
 
 		// Events
 		LOG0:        375,
@@ -241,7 +241,7 @@ func TestnetGasTable() GasTable {
 	// Keep minimums for critical ops
 	t.SLOAD = 20
 	t.SSTORE = 4_000
-	t.VERIFY_DILITHIUM = 1_000
+	t.VERIFY_MLDSA = 1_000
 	t.CREATE = 6_400
 	t.TRANSFER = 1_800
 	return t
@@ -322,7 +322,7 @@ func (g *GasTable) GasOf(op byte) uint64 {
 	case 0x78: return g.ADDRESS
 	case 0x79: return g.GASLIMIT
 	case 0x80: return g.SHA3
-	case 0x81: return 1  // VERIFY_DILITHIUM base=1; engine adds (VERIFY_DILITHIUM-1) extra
+	case 0x81: return 1  // VERIFY_MLDSA base=1; engine adds (VERIFY_MLDSA-1) extra
 	case 0x82: return g.SHA3
 	case 0x90: return g.CALL
 	case 0x91: return g.STATICCALL
@@ -363,7 +363,7 @@ func divideAll(t *GasTable, divisor uint64) {
 		&t.CODECOPY, &t.RETURNDATASIZE, &t.RETURNDATACOPY,
 		&t.CALLER, &t.ORIGIN, &t.CALLVALUE, &t.CODESIZE,
 		&t.BLOCKHEIGHT, &t.TIMESTAMP, &t.ADDRESS, &t.GASLIMIT,
-		&t.SHA3, &t.SHA3PerByte, &t.VERIFY_DILITHIUM,
+		&t.SHA3, &t.SHA3PerByte, &t.VERIFY_MLDSA,
 		&t.LOG0, &t.LOGPerTopic, &t.LOGPerByte,
 		&t.TRANSFER, &t.BALANCE,
 		&t.CREATE, &t.SELFDESTRUCT, &t.CALL, &t.STATICCALL, &t.DELEGATECALL, &t.CREATE2,

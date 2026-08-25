@@ -3,7 +3,7 @@
 // # SQC-VM v3 — Production Upgrade
 //
 // This is NOT an EVM. It is a quantum-native VM using only NIST post-quantum
-// algorithms: ML-DSA-65 Mode 3 (FIPS 204) for signatures, SHA3-256 (FIPS 202)
+// algorithms: ML-DSA-65 (FIPS 204) for signatures, SHA3-256 (FIPS 202)
 // for all hashing. No ECDSA. No keccak. No secp256k1.
 //
 // # What's new in v3
@@ -41,7 +41,7 @@
 //   0x64 CALLDATALOAD  0x65 CALLDATASIZE  0x66 CALLDATACOPY
 //   0x67 CODECOPY  0x68 RETURNDATASIZE  0x69 RETURNDATACOPY
 //   0x70–0x76 context opcodes (CALLER, ORIGIN, CALLVALUE, etc.)
-//   0x80 SHA3  0x81 VERIFY_DILITHIUM  0x82 SHA3_MEM (hash memory range)
+//   0x80 SHA3  0x81 VERIFY_MLDSA  0x82 SHA3_MEM (hash memory range)
 //   0x90–0x94 contract opcodes
 //   0xA0–0xA4 LOG0–LOG4
 //   0xB0–0xB2 token opcodes
@@ -174,7 +174,7 @@ const (
 
 	// ── Crypto (quantum-safe only) ────────────────────────────────────────
 	OpSHA3             byte = 0x80
-	OpVERIFY_DILITHIUM byte = 0x81
+	OpVERIFY_MLDSA byte = 0x81
 	OpSHA3_MEM         byte = 0x82 // NEW v3: SHA3-256 of memory range → push hash
 
 	// ── Contract interaction ──────────────────────────────────────────────
@@ -911,8 +911,8 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			h := qcrypto.Hash32(data)
 			stk.push(new(big.Int).SetBytes(h[:]))
 
-		case op == OpVERIFY_DILITHIUM:
-			if err := useGas(e.gasTable.VERIFY_DILITHIUM - baseCost); err != nil {
+		case op == OpVERIFY_MLDSA:
+			if err := useGas(e.gasTable.VERIFY_MLDSA - baseCost); err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 			sigSlot, _ := stk.pop()

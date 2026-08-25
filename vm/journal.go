@@ -144,7 +144,7 @@ func (e *AccountCreation) Revert(state journalStateAccessor) {
 	state.SetAccount(types.NewAccount(e.Addr))
 }
 
-// PublicKeyRegistration records registering a ML-DSA-65 public key.
+// PublicKeyRegistration records registering an ML-DSA-65 public key.
 type PublicKeyRegistration struct {
 	Addr      qcrypto.Address
 	OldPubKey []byte

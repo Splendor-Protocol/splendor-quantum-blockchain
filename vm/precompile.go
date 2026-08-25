@@ -148,18 +148,18 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	// Input: 1952-byte ML-DSA-65 public key
 	// Output: 32-byte SQ address
 	r.Register(&PrecompileEntry{
-		Name:    "dilithium_derive_address",
+		Name:    "mldsa_derive_address",
 		Address: precompileAddr(0x04),
 		BaseGas: 500,
 		GasPerByte: 0,
 		Func: func(input []byte) ([]byte, uint64, error) {
 			if len(input) != qcrypto.PublicKeySize {
-				return nil, 0, fmt.Errorf("dilithium_derive_address: need %d bytes, got %d",
+				return nil, 0, fmt.Errorf("mldsa_derive_address: need %d bytes, got %d",
 					qcrypto.PublicKeySize, len(input))
 			}
 			pub, err := qcrypto.PublicKeyFromBytes(input)
 			if err != nil {
-				return nil, 0, fmt.Errorf("dilithium_derive_address: invalid public key: %w", err)
+				return nil, 0, fmt.Errorf("mldsa_derive_address: invalid public key: %w", err)
 			}
 			addr := qcrypto.DeriveAddress(pub)
 			return addr[:], 0, nil
@@ -170,7 +170,7 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	// Input: [32-byte msg][1952-byte pubkey][3309-byte sig]
 	// Output: [1] if valid, [0] if invalid
 	r.Register(&PrecompileEntry{
-		Name:    "dilithium_verify",
+		Name:    "mldsa_verify",
 		Address: precompileAddr(0x05),
 		BaseGas: 3000,
 		GasPerByte: 0,

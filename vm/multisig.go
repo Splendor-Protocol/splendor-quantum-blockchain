@@ -3,7 +3,7 @@
 // A quantum-safe N-of-M multisig wallet where:
 //   - N = required confirmations (threshold)
 //   - M = total number of owners
-//   - All confirmations use ML-DSA-65 Mode 3 signatures (no ECDSA)
+//   - All confirmations use ML-DSA-65 signatures (no ECDSA)
 //
 // Workflow:
 //   1. Any owner submits a transaction proposal (to, value, data, txType)
@@ -13,7 +13,7 @@
 //   5. Any owner can revoke their own confirmation before execution
 //
 // Security properties:
-//   - Each confirmation is a ML-DSA-65 signature over the proposal hash
+//   - Each confirmation is an ML-DSA-65 signature over the proposal hash
 //   - No confirmation can be forged without the owner's private key
 //   - Proposals are identified by sequential nonces (prevents replay)
 //   - Executed proposals are marked permanently, preventing re-execution
@@ -82,7 +82,7 @@ const (
 // MSigOwner stores info about a registered wallet owner.
 type MSigOwner struct {
 	Address   string `json:"address"`
-	PublicKey []byte `json:"public_key"` // ML-DSA-65 Mode 3 public key
+	PublicKey []byte `json:"public_key"` // ML-DSA-65 public key
 	Name      string `json:"name,omitempty"`
 	Active    bool   `json:"active"`
 }
@@ -101,7 +101,7 @@ type MSigProposal struct {
 	Cancelled   bool       `json:"cancelled"`
 }
 
-// MSigConfirmation is a ML-DSA-65-signed confirmation from one owner.
+// MSigConfirmation is an ML-DSA-65-signed confirmation from one owner.
 type MSigConfirmation struct {
 	Owner     string `json:"owner"`
 	PublicKey []byte `json:"public_key"`
@@ -254,7 +254,7 @@ func (w *MultiSigWallet) Submit(
 	return nonce, nil
 }
 
-// Confirm adds a ML-DSA-65-signed confirmation from an owner.
+// Confirm adds an ML-DSA-65-signed confirmation from an owner.
 // The owner signs ProposalHash(contract, nonce, to, value, data).
 func (w *MultiSigWallet) Confirm(
 	owner qcrypto.Address,
