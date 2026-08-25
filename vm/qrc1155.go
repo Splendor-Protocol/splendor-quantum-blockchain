@@ -209,6 +209,13 @@ func (t *QRC1155Token) SafeTransferFrom(caller, from, to qcrypto.Address, tokenI
 		return fmt.Errorf("QRC1155 transfer: insufficient balance (have %s, want %s)", fromBal, amount)
 	}
 
+	// from == to addresses the SAME balance slot: both reads see B, and the
+	// credit write (B+amount) lands after the debit write (B-amount), minting
+	// `amount` units. Leave the balance untouched instead.
+	if from == to {
+		return nil
+	}
+
 	toBal, err := t.BalanceOf(to, tokenId)
 	if err != nil {
 		return err

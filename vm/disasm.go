@@ -94,23 +94,17 @@ func DisassembleString(bytecode []byte) string {
 // immediateSize returns the number of immediate bytes following an opcode.
 // Only PUSH opcodes have immediate bytes.
 func immediateSize(op byte) int {
-	switch {
-	case op == OpPUSH32:           // 0x30
-		return 32
-	case op >= OpPUSH1 && op <= OpPUSH31: // 0x52..0x70
+	if op >= OpPUSH1 && op <= OpPUSH32 { // 0x60..0x7F
 		return int(op-OpPUSH1) + 1
-	default:
-		return 0
 	}
+	return 0
 }
 
 // OpName returns the human-readable name for an opcode byte.
 func OpName(op byte) string {
 	switch {
-	case op >= OpPUSH1 && op <= OpPUSH31:
+	case op >= OpPUSH1 && op <= OpPUSH32:
 		return fmt.Sprintf("PUSH%d", int(op-OpPUSH1)+1)
-	case op == OpPUSH32:
-		return "PUSH32"
 	case op >= OpDUP1 && op <= OpDUP16:
 		return fmt.Sprintf("DUP%d", int(op-OpDUP1)+1)
 	case op >= OpSWAP1 && op <= OpSWAP16:

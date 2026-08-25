@@ -106,6 +106,16 @@ func DeployPool(
 	var poolAddr qcrypto.Address
 	copy(poolAddr[:], hash[:])
 
+	// The address depends only on the token pair, so anyone can recompute it and
+	// call DeployPool again on a live pool. Re-running the initialisation below
+	// would zero reserve0, reserve1 and lp_total: the reserves would stop
+	// matching the tokens the pool actually holds, every existing LP position
+	// would be orphaned, and the next depositor would be treated as the first
+	// and could claim the whole pool. Initialise once only.
+	if existing, err := stateDB.GetStorageValue(poolAddr, slotDexToken0); err == nil && len(existing) > 0 {
+		return qcrypto.Address{}, fmt.Errorf("dex deploy_pool: pool %s already exists for this token pair", poolAddr)
+	}
+
 	p := NewLiquidityPool(stateDB, poolAddr)
 	if err := stateDB.SetStorageValue(poolAddr, slotDexToken0, token0[:]); err != nil {
 		return qcrypto.Address{}, err

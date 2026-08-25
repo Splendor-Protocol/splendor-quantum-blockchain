@@ -1,5 +1,5 @@
 # Splendor Quantum Chain — Build System
-# Requires: Go 1.23+ or Docker
+# Requires: Go 1.25+ or Docker
 # All crypto: CRYSTALS-Dilithium Mode 3 (NIST FIPS 204) + SHA-3-256 (NIST FIPS 202)
 
 BINARY_NODE   = sqc-node
@@ -107,10 +107,11 @@ lint:
 vet:
 	$(GO) vet ./...
 
-# ── Install Go 1.23 (if not present) ─────────────────────────────────────
+# ── Install Go 1.25 (if not present) ─────────────────────────────────────
+# Must match the `go` directive in go.mod: circl v1.6.5 (ML-DSA-65) needs 1.25.
 install-go:
-	@echo "Installing Go 1.23.0..."
-	wget -q https://go.dev/dl/go1.23.0.linux-amd64.tar.gz -O /tmp/go.tar.gz
+	@echo "Installing Go 1.25.0..."
+	wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz -O /tmp/go.tar.gz
 	sudo rm -rf /usr/local/go
 	sudo tar -C /usr/local -xzf /tmp/go.tar.gz
 	rm /tmp/go.tar.gz

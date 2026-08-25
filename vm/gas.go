@@ -253,98 +253,100 @@ func FreeGasTable() GasTable {
 }
 
 // GasOf returns the base cost of an opcode.
-// For PUSH1-31, DUP1-16, SWAP1-16 the base PUSH/DUP/SWAP cost is returned.
+// For PUSH1-32, DUP1-16, SWAP1-16 the base PUSH/DUP/SWAP cost is returned.
 // Returns 1 for any unknown opcode (never free).
+//
+// The range tests below are disjoint from every single-byte case. In the v3
+// table the PUSH range (0x52–0x70) was tested first and overlapped SLOAD,
+// SSTORE, JUMP, CALLDATALOAD and ten others, so those cases were unreachable
+// and SSTORE was billed 3 gas instead of 20000 — unmetered persistent storage.
 func (g *GasTable) GasOf(op byte) uint64 {
 	switch {
-	// PUSH1–PUSH31
-	case op >= 0x52 && op <= 0x70:
+	// PUSH1–PUSH32 (0x60–0x7F)
+	case op >= OpPUSH1 && op <= OpPUSH32:
 		return g.PUSH
-	// PUSH32
-	case op == 0x30:
-		return g.PUSH
-	// DUP1–DUP16
-	case op >= 0x32 && op <= 0x41:
+	// DUP1–DUP16 (0x80–0x8F)
+	case op >= OpDUP1 && op <= OpDUP16:
 		return g.DUP
-	// SWAP1–SWAP16
-	case op >= 0x42 && op <= 0x51:
+	// SWAP1–SWAP16 (0x90–0x9F)
+	case op >= OpSWAP1 && op <= OpSWAP16:
 		return g.SWAP
 	}
 
 	switch op {
-	case 0x00: return g.STOP
-	case 0x01: return g.ADD
-	case 0x02: return g.SUB
-	case 0x03: return g.MUL
-	case 0x04: return g.DIV
-	case 0x05: return g.MOD
-	case 0x06: return g.EXP
-	case 0x07: return g.ADDMOD
-	case 0x08: return g.MULMOD
-	case 0x09: return g.ISZERO
-	case 0x0A: return g.BYTE
-	case 0x0B: return g.SIGNEXTEND
-	case 0x10: return g.EQ
-	case 0x11: return g.NEQ
-	case 0x12: return g.LT
-	case 0x13: return g.GT
-	case 0x14: return g.LTE
-	case 0x15: return g.GTE
-	case 0x20: return g.AND
-	case 0x21: return g.OR
-	case 0x22: return g.XOR
-	case 0x23: return g.NOT
-	case 0x24: return g.SHL
-	case 0x25: return g.SHR
-	case 0x31: return g.POP
-	case 0x53: return g.MLOAD
-	case 0x54: return g.MSTORE
-	case 0x55: return 1  // SLOAD base=1; engine adds (SLOAD-1) extra
-	case 0x56: return 1  // SSTORE base=1; engine adds (SSTORE-1) extra
-	case 0x60: return g.JUMP
-	case 0x61: return g.JUMPI
-	case 0x62: return g.PC
-	case 0x63: return g.JUMPDEST
-	case 0x64: return g.CALLDATALOAD
-	case 0x65: return g.CALLDATASIZE
-	case 0x66: return g.CALLDATACOPY
-	case 0x67: return g.CODECOPY
-	case 0x68: return g.RETURNDATASIZE
-	case 0x69: return g.RETURNDATACOPY
-	case 0x70: return g.CALLER
-	case 0x71: return g.MSTORE8
-	case 0x72: return g.MSIZE
-	case 0x73: return g.ORIGIN
-	case 0x74: return g.CALLVALUE
-	case 0x75: return g.CODESIZE
-	case 0x76: return g.BLOCKHEIGHT
-	case 0x77: return g.TIMESTAMP
-	case 0x78: return g.ADDRESS
-	case 0x79: return g.GASLIMIT
-	case 0x80: return g.SHA3
-	case 0x81: return 1  // VERIFY_MLDSA base=1; engine adds (VERIFY_MLDSA-1) extra
-	case 0x82: return g.SHA3
-	case 0x90: return g.CALL
-	case 0x91: return g.STATICCALL
-	case 0x92: return g.DELEGATECALL
-	case 0x93: return g.CREATE
-	case 0x94: return g.SELFDESTRUCT
-	case 0x95: return g.CREATE2
-	case 0xA0: return g.LOG0
-	case 0xA1: return g.LOG0 + g.LOGPerTopic
-	case 0xA2: return g.LOG0 + g.LOGPerTopic*2
-	case 0xA3: return g.LOG0 + g.LOGPerTopic*3
-	case 0xA4: return g.LOG0 + g.LOGPerTopic*4
-	case 0xB0: return 1  // TRANSFER base=1; engine adds (TRANSFER-1) extra
-	case 0xB1: return 1  // BALANCE base=1; engine adds (BALANCE-1) extra
-	case 0xB2: return g.TOTALGAS
-	case 0xC0: return g.ABI_ENCODE
-	case 0xC1: return g.ABI_DECODE
-	case 0xC2: return g.SELECTOR
-	case 0xF0: return g.RETURN
-	case 0xF1: return g.REVERT
-	case 0xF2: return g.REQUIRE
-	default:   return 1
+	case OpSTOP: return g.STOP
+	case OpADD: return g.ADD
+	case OpSUB: return g.SUB
+	case OpMUL: return g.MUL
+	case OpDIV: return g.DIV
+	case OpMOD: return g.MOD
+	case OpEXP: return g.EXP
+	case OpADDMOD: return g.ADDMOD
+	case OpMULMOD: return g.MULMOD
+	case OpISZERO: return g.ISZERO
+	case OpBYTE: return g.BYTE
+	case OpSIGNEXTEND: return g.SIGNEXTEND
+	case OpEQ: return g.EQ
+	case OpNEQ: return g.NEQ
+	case OpLT: return g.LT
+	case OpGT: return g.GT
+	case OpLTE: return g.LTE
+	case OpGTE: return g.GTE
+	case OpAND: return g.AND
+	case OpOR: return g.OR
+	case OpXOR: return g.XOR
+	case OpNOT: return g.NOT
+	case OpSHL: return g.SHL
+	case OpSHR: return g.SHR
+	case OpSHA3: return g.SHA3
+	case OpSHA3_MEM: return g.SHA3
+	case OpVERIFY_MLDSA: return 1 // base=1; engine adds (VERIFY_MLDSA-1) extra
+	case OpADDRESS: return g.ADDRESS
+	case OpBALANCE: return 1 // base=1; engine adds (BALANCE-1) extra
+	case OpORIGIN: return g.ORIGIN
+	case OpCALLER: return g.CALLER
+	case OpCALLVALUE: return g.CALLVALUE
+	case OpCALLDATALOAD: return g.CALLDATALOAD
+	case OpCALLDATASIZE: return g.CALLDATASIZE
+	case OpCALLDATACOPY: return g.CALLDATACOPY
+	case OpCODESIZE: return g.CODESIZE
+	case OpCODECOPY: return g.CODECOPY
+	case OpRETURNDATASIZE: return g.RETURNDATASIZE
+	case OpRETURNDATACOPY: return g.RETURNDATACOPY
+	case OpTRANSFER: return 1 // base=1; engine adds (TRANSFER-1) extra
+	case OpBLOCKHEIGHT: return g.BLOCKHEIGHT
+	case OpTIMESTAMP: return g.TIMESTAMP
+	case OpGASLIMIT: return g.GASLIMIT
+	case OpABI_ENCODE: return g.ABI_ENCODE
+	case OpABI_DECODE: return g.ABI_DECODE
+	case OpSELECTOR: return g.SELECTOR
+	case OpPOP: return g.POP
+	case OpMLOAD: return g.MLOAD
+	case OpMSTORE: return g.MSTORE
+	case OpMSTORE8: return g.MSTORE8
+	case OpSLOAD: return 1 // base=1; engine adds (SLOAD-1) extra
+	case OpSSTORE: return 1 // base=1; engine adds (SSTORE-1) extra
+	case OpJUMP: return g.JUMP
+	case OpJUMPI: return g.JUMPI
+	case OpPC: return g.PC
+	case OpMSIZE: return g.MSIZE
+	case OpTOTALGAS: return g.TOTALGAS
+	case OpJUMPDEST: return g.JUMPDEST
+	case OpLOG0: return g.LOG0
+	case OpLOG1: return g.LOG0 + g.LOGPerTopic
+	case OpLOG2: return g.LOG0 + g.LOGPerTopic*2
+	case OpLOG3: return g.LOG0 + g.LOGPerTopic*3
+	case OpLOG4: return g.LOG0 + g.LOGPerTopic*4
+	case OpCREATE: return g.CREATE
+	case OpCALL: return g.CALL
+	case OpRETURN: return g.RETURN
+	case OpDELEGATECALL: return g.DELEGATECALL
+	case OpCREATE2: return g.CREATE2
+	case OpSTATICCALL: return g.STATICCALL
+	case OpREVERT: return g.REVERT
+	case OpREQUIRE: return g.REQUIRE
+	case OpSELFDESTRUCT: return g.SELFDESTRUCT
+	default: return 1
 	}
 }
 
@@ -389,11 +391,8 @@ func GasEstimate(bytecode []byte, table GasTable) uint64 {
 		op := bytecode[i]
 		total += table.GasOf(op)
 		// Skip immediate bytes for PUSH opcodes
-		if op == 0x30 { // PUSH32
-			i += 33
-		} else if op >= 0x52 && op <= 0x70 { // PUSH1..PUSH31
-			n := int(op-0x52) + 1
-			i += 1 + n
+		if op >= OpPUSH1 && op <= OpPUSH32 {
+			i += 1 + int(op-OpPUSH1) + 1
 		} else {
 			i++
 		}

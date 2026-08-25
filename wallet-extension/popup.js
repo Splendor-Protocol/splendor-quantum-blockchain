@@ -268,12 +268,61 @@ $('btnReset').onclick = () => {
 
 // ── Approval page ─────────────────────────────────────────────────────────
 
+// Every value rendered below — origin, recipient, module, action, params —
+// comes from the requesting dapp. These builders assign through textContent
+// only, so dapp input can never become markup in the signing dialog.
+function detail(text, extraStyle) {
+  const el = document.createElement('div');
+  el.className = 'approval-detail';
+  el.textContent = text;
+  if (extraStyle) el.style.cssText = extraStyle;
+  return el;
+}
+
+function value(text, extraStyle) {
+  const el = document.createElement('div');
+  el.className = 'approval-value';
+  el.textContent = text;
+  if (extraStyle) el.style.cssText = extraStyle;
+  return el;
+}
+
+function preBlock(text) {
+  const el = document.createElement('pre');
+  el.style.cssText =
+    'background:#0d1710;padding:8px;border-radius:6px;font-size:11px;' +
+    'overflow:auto;max-height:160px;word-break:break-all;white-space:pre-wrap';
+  el.textContent = text;
+  return el;
+}
+
+// safeJSON stringifies untrusted input without throwing on cycles or BigInt.
+function safeJSON(v) {
+  try {
+    return JSON.stringify(v, null, 2) ?? String(v);
+  } catch {
+    return String(v);
+  }
+}
+
+// setApproveEnabled gates the Approve button. Anything the popup cannot render
+// and explain must not be signable from this screen.
+function setApproveEnabled(ok) {
+  const btn = $('btnApprove');
+  if (!btn) return;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? '' : '0.4';
+  btn.style.cursor = ok ? '' : 'not-allowed';
+}
+
 function renderApproval(id, entry) {
   showPage('page-approval');
   _approvalId = id;
 
   if (!entry) {
-    // Get from background
+    // Nothing to describe yet — hold the button closed until the background
+    // hands us the real request.
+    setApproveEnabled(false);
     bg('get_state').then(s => {
       if (s.pendingApproval) {
         const [aid, aentry] = s.pendingApproval;
@@ -287,40 +336,73 @@ function renderApproval(id, entry) {
 }
 
 function renderApprovalEntry(entry) {
-  const type = entry?.[1]?.type || 'connect';
-  const payload = entry?.[1]?.payload || {};
+  // The background stores queue values as { type, payload } and get_state sends
+  // them as [id, value]. Reading entry[1] treated that VALUE as the pair, so
+  // type was always undefined and fell through to 'connect' — every send and
+  // every module call was shown to the user as a harmless connection request
+  // while the Approve button signed the real transaction.
+  const req = Array.isArray(entry) ? entry[1] : entry;
+  const type = req?.type;
+  const payload = req?.payload || {};
+
+  const title = $('approval-title');
+  const body = $('approval-body');
+  setApproveEnabled(true);
 
   switch (type) {
     case 'connect':
-      $('approval-title').textContent = '🔗 Connection Request';
-      $('approval-body').innerHTML = `
-        <div class="approval-detail">Site wants to connect your wallet</div>
-        <div class="approval-value">${payload.origin || 'unknown site'}</div>
-        <div class="approval-detail" style="margin-top:8px">Your address will be shared:</div>
-        <div class="approval-value">${shortAddr(_state.address)}</div>
-      `;
+      title.textContent = '🔗 Connection Request';
+      body.replaceChildren(
+        detail('Site wants to connect your wallet'),
+        value(payload.origin || 'unknown site'),
+        detail('Your address will be shared:', 'margin-top:8px'),
+        value(_state.address || '', 'word-break:break-all'),
+      );
       break;
+
     case 'send':
-      $('approval-title').textContent = '💸 Send SPLD';
-      $('approval-body').innerHTML = `
-        <div class="approval-detail">To</div>
-        <div class="approval-value">${shortAddr(payload.to)}</div>
-        <div class="approval-detail" style="margin-top:8px">Amount</div>
-        <div class="approval-value" style="font-size:20px;color:var(--accent)">${spld(payload.amount)} SPLD</div>
-        <div class="approval-detail" style="margin-top:4px">Fee: ${payload.fee || '1000'} units</div>
-      `;
+      title.textContent = '💸 Send SPLD';
+      // Show the recipient in FULL: a truncated address hides the middle, which
+      // is exactly where a look-alike address differs.
+      body.replaceChildren(
+        detail('To'),
+        value(payload.to || '(missing)', 'word-break:break-all'),
+        detail('Amount', 'margin-top:8px'),
+        value(`${spld(payload.amount)} SPLD`, 'font-size:20px;color:var(--accent)'),
+        detail(`Raw amount: ${payload.amount || '0'} units`, 'margin-top:4px'),
+        detail(`Fee: ${payload.fee || '1000'} units`),
+      );
       break;
+
     case 'moduleCall':
-      $('approval-title').textContent = '⚙ Module Call';
-      $('approval-body').innerHTML = `
-        <div class="approval-detail">Module: ${payload.module} / ${payload.action}</div>
-        <pre style="background:#0d1710;padding:8px;border-radius:6px;font-size:11px;overflow:auto;max-height:120px">${JSON.stringify(payload.params, null, 2)}</pre>
-      `;
+      title.textContent = '⚙ Module Call';
+      body.replaceChildren(
+        detail('Module'),
+        value(`${payload.module || '(none)'} / ${payload.action || '(none)'}`),
+        detail('Parameters', 'margin-top:8px'),
+        preBlock(safeJSON(payload.params)),
+      );
+      break;
+
+    default:
+      // An unrecognised request type must never be signable: the popup cannot
+      // tell the user what they would be authorising.
+      title.textContent = '⚠ Unsupported Request';
+      body.replaceChildren(
+        detail('This wallet cannot display a request of type:'),
+        value(type ? String(type) : '(none)'),
+        detail('Approving is disabled because the contents cannot be verified. Reject this request.', 'margin-top:8px'),
+        preBlock(safeJSON(payload)),
+      );
+      setApproveEnabled(false);
       break;
   }
 }
 
 $('btnApprove').onclick = async () => {
+  // Belt and braces: the button is disabled for unrenderable requests, but a
+  // stray click handler must not sign one either.
+  if ($('btnApprove').disabled) return;
   await bg('approve', { approvalId: _approvalId, data: true });
   window.close();
 };

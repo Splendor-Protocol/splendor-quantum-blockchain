@@ -52,6 +52,7 @@ func RegisterExplorerRoutes(
 	pool *network.PeerPool,
 	localHeight func() uint64,
 	writeAuth *WriteAuth,
+	guard *ExecGuard,
 	onPeerAnnounce ...func(addr string),
 ) {
 	var announceCallback func(addr string)
@@ -65,8 +66,11 @@ func RegisterExplorerRoutes(
 		r.HandleFunc("/tx/{hash}", makeTxHandler(txIndex)).Methods(http.MethodGet)
 		// eth_getLogs analog. The Postgres indexer serves the scalable, unbounded
 		// version at /idx/v1/logs; this native method is for SDK/RPC-standard
-		// parity + bounded ranges (see maxLogBlockRange).
-		r.HandleFunc("/logs", makeLogsHandler(txIndex, localHeight)).Methods(http.MethodPost, http.MethodGet)
+		// parity + bounded ranges (see maxLogBlockRange). Metered with the
+		// simulation plane: the range cap bounds one request, not the number of
+		// concurrent full-range scans a caller can start.
+		r.Handle("/logs", guard.Wrap(makeLogsHandler(txIndex, localHeight))).
+			Methods(http.MethodPost, http.MethodGet)
 	}
 
 	// Peer management

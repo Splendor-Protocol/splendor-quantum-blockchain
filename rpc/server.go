@@ -57,6 +57,9 @@ type Server struct {
 	cors *CORSPolicy
 	// submitLimiter bounds public transaction submission per client IP.
 	submitLimiter *RateLimiter
+	// simGuard meters the anonymous VM-execution routes (/call, /estimate) and
+	// the receipt scan behind /logs.
+	simGuard *ExecGuard
 }
 
 // Config holds server configuration.
@@ -76,7 +79,26 @@ type Config struct {
 	// reverse proxy you control — otherwise the header is attacker-controlled and
 	// rate limits can be bypassed by spoofing it.
 	TrustProxy bool
+
+	// SimRatePerSec / SimBurst / SimMaxInFlight / SimTimeout bound the routes
+	// that execute the VM or scan the receipt index for an anonymous caller
+	// (/call, /estimate, /logs). Zero values fall back to the defaults below.
+	SimRatePerSec  float64
+	SimBurst       float64
+	SimMaxInFlight int
+	SimTimeout     time.Duration
 }
+
+// Defaults for the simulation plane. A view call is cheap in the common case
+// and pathological in the worst case, so the sustained rate is generous while
+// the concurrency cap is deliberately small: it is the concurrency, not the
+// request rate, that decides how many cores a caller can occupy.
+const (
+	defaultSimRatePerSec  = 20
+	defaultSimBurst       = 40
+	defaultSimMaxInFlight = 8
+	defaultSimTimeout     = 5 * time.Second
+)
 
 // New creates a new RPC server.
 // broadcaster may be nil — P2P broadcasting is optional.
@@ -101,6 +123,7 @@ func New(
 		writeAuth:     NewWriteAuth(cfg.AuthToken),
 		cors:          NewCORSPolicy(cfg.CORSOrigins),
 		submitLimiter: NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
+		simGuard:      newSimGuard(cfg),
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -166,6 +189,32 @@ func (s *Server) buildRouter() *mux.Router {
 func (s *Server) limited(h http.HandlerFunc) http.Handler {
 	return s.submitLimiter.Middleware(h)
 }
+
+// newSimGuard builds the simulation-plane guard, substituting defaults for
+// unset config values so a caller cannot leave these routes unmetered by
+// omission.
+func newSimGuard(cfg Config) *ExecGuard {
+	rate, burst := cfg.SimRatePerSec, cfg.SimBurst
+	if rate <= 0 {
+		rate, burst = defaultSimRatePerSec, defaultSimBurst
+	}
+	if burst <= 0 {
+		burst = rate * 2
+	}
+	inFlight := cfg.SimMaxInFlight
+	if inFlight <= 0 {
+		inFlight = defaultSimMaxInFlight
+	}
+	timeout := cfg.SimTimeout
+	if timeout <= 0 {
+		timeout = defaultSimTimeout
+	}
+	return NewExecGuard(rate, burst, inFlight, timeout, cfg.TrustProxy)
+}
+
+// SimGuard exposes the simulation-plane guard so /call, /estimate and /logs —
+// registered on the outer router — enforce the same limits.
+func (s *Server) SimGuard() *ExecGuard { return s.simGuard }
 
 // WriteAuth exposes the write-plane guard so routes registered outside this
 // file (explorer peer announce) can enforce the same policy.

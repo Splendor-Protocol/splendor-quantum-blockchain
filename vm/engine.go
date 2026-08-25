@@ -1,52 +1,50 @@
 // Package vm implements the Splendor Quantum Chain smart contract execution engine.
 //
-// # SQC-VM v3 — Production Upgrade
+// # SQC-VM v4
 //
 // This is NOT an EVM. It is a quantum-native VM using only NIST post-quantum
 // algorithms: ML-DSA-65 (FIPS 204) for signatures, SHA3-256 (FIPS 202)
 // for all hashing. No ECDSA. No keccak. No secp256k1.
 //
-// # What's new in v3
+// # Why v4 replaces the v3 encoding
 //
-//   - GasTable integration: all gas costs driven by configurable gas.go table
-//   - PrecompileRegistry integration: CALL/STATICCALL check precompile addresses first
-//   - PUSH1–PUSH31: variable-length push (matches EVM ergonomics for small values)
-//   - ISZERO: check if top of stack is zero (very common in QSol)
-//   - BYTE: extract a single byte from a 256-bit value
-//   - SIGNEXTEND: sign-extend a value (needed for signed integer types)
-//   - DUP1–DUP16: full 16-depth duplication (previously only DUP, DUP2)
-//   - SWAP1–SWAP16: full 16-depth swap (previously only SWAP, SWAP2)
-//   - MSTORE8: store a single byte to memory
-//   - RETURNDATASIZE / RETURNDATACOPY: access return data from sub-calls
-//   - CALLDATALOAD / CALLDATASIZE / CALLDATACOPY: proper calldata access opcodes
-//   - CODECOPY: copy contract code into memory
-//   - JUMPDEST: no-op marker for valid jump destinations (prevents arbitrary jumps)
-//   - Proper sub-call execution (CALL/STATICCALL/DELEGATECALL route through Engine)
+// v3 assigned PUSH1..PUSH31 to 0x52..0x70, a range that also held MLOAD, MSTORE,
+// MSTORE8, SLOAD, SSTORE, JUMP, JUMPI, PC, JUMPDEST, CALLDATALOAD/SIZE/COPY,
+// CODECOPY, RETURNDATASIZE/COPY and CALLER. The interpreter matched the PUSH
+// range first, so all sixteen of those instructions were unreachable — SSTORE
+// (0x56) decoded as PUSH5 and silently consumed the following five bytes as
+// immediate data instead of writing storage. The same shadowing in GasOf priced
+// SSTORE at 3 gas instead of 20000. Contract storage, branching and calldata
+// were therefore inaccessible from bytecode, and no gas metering applied to
+// them.
 //
-// # Full Instruction Set (v3)
+// v4 gives PUSH, DUP and SWAP the contiguous, non-overlapping blocks they need
+// (0x60-0x7F, 0x80-0x8F, 0x90-0x9F) and relocates everything they used to
+// shadow. Ranges are disjoint by construction, and TestOpcodeTableHasNoCollisions
+// asserts that no byte is claimed twice. Where a name exists in the EVM the
+// numbering matches it, so the table reads the way an auditor expects.
 //
-//   0x00 STOP          0x01 ADD       0x02 SUB      0x03 MUL      0x04 DIV
-//   0x05 MOD           0x06 EXP       0x07 ADDMOD   0x08 MULMOD   0x09 ISZERO
-//   0x0A BYTE          0x0B SIGNEXTEND
-//   0x10 EQ  0x11 NEQ  0x12 LT  0x13 GT  0x14 LTE  0x15 GTE
-//   0x20 AND 0x21 OR   0x22 XOR 0x23 NOT 0x24 SHL   0x25 SHR
-//   0x30 PUSH32        0x31 POP    0x32–0x41 DUP1–DUP16
-//   0x42 SWAP1–0x51 SWAP16
-//   0x52 PUSH1         0x53–0x72 PUSH2–PUSH31
-//   0x73 MSTORE8       0x74 JUMPDEST
-//   0x40 MLOAD  0x41 MSTORE  0x42 MSIZE
-//   (memory opcodes kept at original positions; DUP/SWAP moved to 0x32+)
-//   0x50 SLOAD  0x51 SSTORE
-//   0x60 JUMP  0x61 JUMPI  0x62 PC  0x63 STOP(alias)
-//   0x64 CALLDATALOAD  0x65 CALLDATASIZE  0x66 CALLDATACOPY
-//   0x67 CODECOPY  0x68 RETURNDATASIZE  0x69 RETURNDATACOPY
-//   0x70–0x76 context opcodes (CALLER, ORIGIN, CALLVALUE, etc.)
-//   0x80 SHA3  0x81 VERIFY_MLDSA  0x82 SHA3_MEM (hash memory range)
-//   0x90–0x94 contract opcodes
-//   0xA0–0xA4 LOG0–LOG4
-//   0xB0–0xB2 token opcodes
-//   0xC0–0xC2 ABI opcodes
-//   0xF0–0xF2 RETURN/REVERT/REQUIRE
+// The encoding is not compatible with v3, so a chain carrying v3 bytecode
+// contracts must be re-genesised rather than upgraded in place.
+//
+// # Instruction set (v4)
+//
+//	0x00       STOP
+//	0x01-0x0B  ADD SUB MUL DIV MOD EXP ADDMOD MULMOD ISZERO BYTE SIGNEXTEND
+//	0x10-0x15  EQ NEQ LT GT LTE GTE
+//	0x20-0x25  AND OR XOR NOT SHL SHR
+//	0x30-0x32  SHA3 SHA3_MEM VERIFY_MLDSA
+//	0x33-0x3F  ADDRESS BALANCE ORIGIN CALLER CALLVALUE CALLDATALOAD CALLDATASIZE
+//	           CALLDATACOPY CODESIZE CODECOPY RETURNDATASIZE RETURNDATACOPY TRANSFER
+//	0x40-0x45  BLOCKHEIGHT TIMESTAMP GASLIMIT ABI_ENCODE ABI_DECODE SELECTOR
+//	0x50-0x5B  POP MLOAD MSTORE MSTORE8 SLOAD SSTORE JUMP JUMPI PC MSIZE TOTALGAS JUMPDEST
+//	0x60-0x7F  PUSH1-PUSH32
+//	0x80-0x8F  DUP1-DUP16
+//	0x90-0x9F  SWAP1-SWAP16
+//	0xA0-0xA4  LOG0-LOG4
+//	0xF0-0xF5  CREATE CALL — RETURN DELEGATECALL CREATE2
+//	0xFA       STATICCALL
+//	0xFD-0xFF  REVERT REQUIRE SELFDESTRUCT
 package vm
 
 import (
@@ -59,10 +57,14 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
-// ── Opcode constants (v3) ─────────────────────────────────────────────────────
+// ── Opcode constants (v4) ─────────────────────────────────────────────────────
+//
+// Every range below is disjoint. PUSH/DUP/SWAP occupy whole aligned blocks so a
+// range test can never shadow a single-byte instruction, which is exactly how
+// the v3 table lost storage, branching and calldata.
 
 const (
-	// ── Arithmetic ───────────────────────────────────────────────────────
+	// ── Arithmetic (0x00–0x0B) ───────────────────────────────────────────
 	OpSTOP       byte = 0x00
 	OpADD        byte = 0x01
 	OpSUB        byte = 0x02
@@ -72,11 +74,11 @@ const (
 	OpEXP        byte = 0x06
 	OpADDMOD     byte = 0x07
 	OpMULMOD     byte = 0x08
-	OpISZERO     byte = 0x09 // NEW v3: push 1 if top==0 else 0
-	OpBYTE       byte = 0x0A // NEW v3: extract byte i from value
-	OpSIGNEXTEND byte = 0x0B // NEW v3: sign extend b-bit integer
+	OpISZERO     byte = 0x09
+	OpBYTE       byte = 0x0A
+	OpSIGNEXTEND byte = 0x0B
 
-	// ── Comparison ───────────────────────────────────────────────────────
+	// ── Comparison (0x10–0x15) ───────────────────────────────────────────
 	OpEQ  byte = 0x10
 	OpNEQ byte = 0x11
 	OpLT  byte = 0x12
@@ -84,7 +86,7 @@ const (
 	OpLTE byte = 0x14
 	OpGTE byte = 0x15
 
-	// ── Bitwise ──────────────────────────────────────────────────────────
+	// ── Bitwise (0x20–0x25) ──────────────────────────────────────────────
 	OpAND byte = 0x20
 	OpOR  byte = 0x21
 	OpXOR byte = 0x22
@@ -92,120 +94,77 @@ const (
 	OpSHL byte = 0x24
 	OpSHR byte = 0x25
 
-	// ── Stack: PUSH ──────────────────────────────────────────────────────
-	OpPUSH32 byte = 0x30 // push 32 bytes
-	// PUSH1–PUSH31 use 0x52–0x70 (see getPushSize helper)
-	OpPUSH1  byte = 0x52
-	OpPUSH2  byte = 0x53
-	OpPUSH31 byte = 0x70
+	// ── Crypto, quantum-safe only (0x30–0x32) ────────────────────────────
+	OpSHA3         byte = 0x30
+	OpSHA3_MEM     byte = 0x31 // SHA3-256 over a memory range
+	OpVERIFY_MLDSA byte = 0x32
 
-	// ── Stack: POP ───────────────────────────────────────────────────────
-	OpPOP byte = 0x31
+	// ── Environment & calldata (0x33–0x3F) ───────────────────────────────
+	OpADDRESS        byte = 0x33
+	OpBALANCE        byte = 0x34
+	OpORIGIN         byte = 0x35
+	OpCALLER         byte = 0x36
+	OpCALLVALUE      byte = 0x37
+	OpCALLDATALOAD   byte = 0x38
+	OpCALLDATASIZE   byte = 0x39
+	OpCALLDATACOPY   byte = 0x3A
+	OpCODESIZE       byte = 0x3B
+	OpCODECOPY       byte = 0x3C
+	OpRETURNDATASIZE byte = 0x3D
+	OpRETURNDATACOPY byte = 0x3E
+	OpTRANSFER       byte = 0x3F
 
-	// ── Stack: DUP1–DUP16 (0x32–0x41) ───────────────────────────────────
-	OpDUP1  byte = 0x32
-	OpDUP2  byte = 0x33
-	OpDUP3  byte = 0x34
-	OpDUP4  byte = 0x35
-	OpDUP5  byte = 0x36
-	OpDUP6  byte = 0x37
-	OpDUP7  byte = 0x38
-	OpDUP8  byte = 0x39
-	OpDUP9  byte = 0x3A
-	OpDUP10 byte = 0x3B
-	OpDUP11 byte = 0x3C
-	OpDUP12 byte = 0x3D
-	OpDUP13 byte = 0x3E
-	OpDUP14 byte = 0x3F
-	OpDUP15 byte = 0x40
-	OpDUP16 byte = 0x41
+	// ── Block context & ABI helpers (0x40–0x45) ──────────────────────────
+	OpBLOCKHEIGHT byte = 0x40
+	OpTIMESTAMP   byte = 0x41
+	OpGASLIMIT    byte = 0x42
+	OpABI_ENCODE  byte = 0x43
+	OpABI_DECODE  byte = 0x44
+	OpSELECTOR    byte = 0x45
 
-	// ── Stack: SWAP1–SWAP16 (0x42–0x51) ─────────────────────────────────
-	OpSWAP1  byte = 0x42
-	OpSWAP2  byte = 0x43
-	OpSWAP3  byte = 0x44
-	OpSWAP4  byte = 0x45
-	OpSWAP5  byte = 0x46
-	OpSWAP6  byte = 0x47
-	OpSWAP7  byte = 0x48
-	OpSWAP8  byte = 0x49
-	OpSWAP9  byte = 0x4A
-	OpSWAP10 byte = 0x4B
-	OpSWAP11 byte = 0x4C
-	OpSWAP12 byte = 0x4D
-	OpSWAP13 byte = 0x4E
-	OpSWAP14 byte = 0x4F
-	OpSWAP15 byte = 0x50 // note: was OpSLOAD in v2 — SLOAD moved to 0x55
-	OpSWAP16 byte = 0x51 // note: was OpSSTORE in v2 — SSTORE moved to 0x56
+	// ── Memory, storage, control flow (0x50–0x5B) ────────────────────────
+	OpPOP      byte = 0x50
+	OpMLOAD    byte = 0x51
+	OpMSTORE   byte = 0x52
+	OpMSTORE8  byte = 0x53
+	OpSLOAD    byte = 0x54
+	OpSSTORE   byte = 0x55
+	OpJUMP     byte = 0x56
+	OpJUMPI    byte = 0x57
+	OpPC       byte = 0x58
+	OpMSIZE    byte = 0x59
+	OpTOTALGAS byte = 0x5A
+	OpJUMPDEST byte = 0x5B
 
-	// ── Memory ───────────────────────────────────────────────────────────
-	OpMLOAD   byte = 0x53 // (moved from 0x40)
-	OpMSTORE  byte = 0x54 // (moved from 0x41)
-	OpMSTORE8 byte = 0x71 // NEW v3: store 1 byte
-	OpMSIZE   byte = 0x72 // (moved from 0x42)
+	// ── PUSH1–PUSH32 (0x60–0x7F) ─────────────────────────────────────────
+	OpPUSH1  byte = 0x60
+	OpPUSH32 byte = 0x7F
 
-	// ── Storage ──────────────────────────────────────────────────────────
-	OpSLOAD  byte = 0x55 // (moved from 0x50)
-	OpSSTORE byte = 0x56 // (moved from 0x51)
+	// ── DUP1–DUP16 (0x80–0x8F) ───────────────────────────────────────────
+	OpDUP1  byte = 0x80
+	OpDUP16 byte = 0x8F
 
-	// ── Control flow ─────────────────────────────────────────────────────
-	OpJUMP    byte = 0x60
-	OpJUMPI   byte = 0x61
-	OpPC      byte = 0x62
-	OpJUMPDEST byte = 0x63 // NEW v3: valid jump destination marker (no-op)
+	// ── SWAP1–SWAP16 (0x90–0x9F) ─────────────────────────────────────────
+	OpSWAP1  byte = 0x90
+	OpSWAP16 byte = 0x9F
 
-	// ── Calldata & code access (NEW v3) ───────────────────────────────────
-	OpCALLDATALOAD  byte = 0x64
-	OpCALLDATASIZE  byte = 0x65
-	OpCALLDATACOPY  byte = 0x66
-	OpCODECOPY      byte = 0x67
-	OpRETURNDATASIZE byte = 0x68
-	OpRETURNDATACOPY byte = 0x69
-
-	// ── Context ──────────────────────────────────────────────────────────
-	OpCALLER      byte = 0x70
-	OpORIGIN      byte = 0x73
-	OpCALLVALUE   byte = 0x74
-	OpCODESIZE    byte = 0x75
-	OpBLOCKHEIGHT byte = 0x76
-	OpTIMESTAMP   byte = 0x77
-	OpADDRESS     byte = 0x78
-	OpGASLIMIT    byte = 0x79
-
-	// ── Crypto (quantum-safe only) ────────────────────────────────────────
-	OpSHA3             byte = 0x80
-	OpVERIFY_MLDSA byte = 0x81
-	OpSHA3_MEM         byte = 0x82 // NEW v3: SHA3-256 of memory range → push hash
-
-	// ── Contract interaction ──────────────────────────────────────────────
-	OpCALL         byte = 0x90
-	OpSTATICCALL   byte = 0x91
-	OpDELEGATECALL byte = 0x92
-	OpCREATE       byte = 0x93
-	OpSELFDESTRUCT byte = 0x94
-	OpCREATE2      byte = 0x95 // NEW v3: CREATE with salt (deterministic address)
-
-	// ── Events ───────────────────────────────────────────────────────────
+	// ── Events (0xA0–0xA4) ───────────────────────────────────────────────
 	OpLOG0 byte = 0xA0
 	OpLOG1 byte = 0xA1
 	OpLOG2 byte = 0xA2
 	OpLOG3 byte = 0xA3
 	OpLOG4 byte = 0xA4
 
-	// ── Token operations ─────────────────────────────────────────────────
-	OpTRANSFER byte = 0xB0
-	OpBALANCE  byte = 0xB1
-	OpTOTALGAS byte = 0xB2
-
-	// ── ABI helpers ──────────────────────────────────────────────────────
-	OpABI_ENCODE byte = 0xC0
-	OpABI_DECODE byte = 0xC1
-	OpSELECTOR   byte = 0xC2
-
-	// ── Return / Revert ──────────────────────────────────────────────────
-	OpRETURN  byte = 0xF0
-	OpREVERT  byte = 0xF1
-	OpREQUIRE byte = 0xF2
+	// ── Contract interaction & halting (0xF0–0xFF) ───────────────────────
+	OpCREATE       byte = 0xF0
+	OpCALL         byte = 0xF1
+	OpRETURN       byte = 0xF3
+	OpDELEGATECALL byte = 0xF4
+	OpCREATE2      byte = 0xF5
+	OpSTATICCALL   byte = 0xFA
+	OpREVERT       byte = 0xFD
+	OpREQUIRE      byte = 0xFE
+	OpSELFDESTRUCT byte = 0xFF
 )
 
 // ── VM limits ─────────────────────────────────────────────────────────────────
@@ -215,10 +174,26 @@ const (
 	MaxGasPerCall  = 10_000_000
 	MaxMemoryBytes = 32 * 1024 * 1024
 	MaxCallDepth   = 64
+
+	// WordBits is the machine width. Every stack value is reduced modulo
+	// 2^WordBits, so no operand or result can grow without bound.
+	WordBits = 256
 )
 
-// max256 is 2^256 - 1, used for bitwise NOT
-var max256 = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+// two256 is 2^256: the modulus every stack value is reduced by.
+var two256 = new(big.Int).Lsh(big.NewInt(1), WordBits)
+
+// max256 is 2^256 - 1, used for bitwise NOT.
+var max256 = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), WordBits), big.NewInt(1))
+
+// wrap256 reduces v into [0, 2^256). Go's Mod is Euclidean, so a negative
+// intermediate (from SUB) comes back as its two's-complement representation.
+func wrap256(v *big.Int) *big.Int {
+	if v.Sign() >= 0 && v.BitLen() <= WordBits {
+		return v
+	}
+	return v.Mod(v, two256)
+}
 
 // ── Execution context ─────────────────────────────────────────────────────────
 
@@ -253,11 +228,16 @@ type stack struct{ items []*big.Int }
 
 func newStack() *stack { return &stack{items: make([]*big.Int, 0, 64)} }
 
+// push stores v reduced to a 256-bit word. Wrapping HERE is what bounds VM
+// arithmetic: ADD/SUB/MUL/SHL operands are therefore always < 2^256, so no
+// sequence of instructions can grow a big.Int without limit. Before this, 24
+// bytes of `DUP1 MUL` — about 120 gas — squared a 256-bit value repeatedly and
+// never terminated.
 func (s *stack) push(v *big.Int) error {
 	if len(s.items) >= MaxStackDepth {
 		return fmt.Errorf("stack overflow")
 	}
-	s.items = append(s.items, new(big.Int).Set(v))
+	s.items = append(s.items, wrap256(new(big.Int).Set(v)))
 	return nil
 }
 
@@ -292,7 +272,14 @@ type memory struct{ data []byte }
 
 func newMemory() *memory { return &memory{} }
 
+// store writes data at offset, growing memory as needed. offset and size are
+// derived from 256-bit stack words, so both are validated before any allocation:
+// a truncated negative offset would panic the slice copy and a huge one would
+// allocate gigabytes.
 func (m *memory) store(offset, size int, data []byte) error {
+	if offset < 0 || size < 0 || offset > MaxMemoryBytes || size > MaxMemoryBytes {
+		return fmt.Errorf("memory store out of range: offset=%d size=%d", offset, size)
+	}
 	end := offset + size
 	if end > MaxMemoryBytes {
 		return fmt.Errorf("memory limit exceeded")
@@ -300,19 +287,95 @@ func (m *memory) store(offset, size int, data []byte) error {
 	if end > len(m.data) {
 		m.data = append(m.data, make([]byte, end-len(m.data))...)
 	}
-	copy(m.data[offset:], data)
+	copy(m.data[offset:end], data)
 	return nil
 }
 
 func (m *memory) storeByte(offset int, b byte) error {
-	if offset+1 > MaxMemoryBytes {
-		return fmt.Errorf("memory limit exceeded")
+	if offset < 0 || offset >= MaxMemoryBytes {
+		return fmt.Errorf("memory store out of range: offset=%d", offset)
 	}
 	if offset+1 > len(m.data) {
 		m.data = append(m.data, make([]byte, offset+1-len(m.data))...)
 	}
 	m.data[offset] = b
 	return nil
+}
+
+// wordsFor returns the number of 32-byte words spanned by n bytes, for
+// memory-expansion gas.
+func wordsFor(n int) uint64 {
+	if n <= 0 {
+		return 0
+	}
+	return uint64((n + 31) / 32)
+}
+
+// memOperand converts a 256-bit stack word into an in-range memory offset or
+// length. Values wider than the memory ceiling are rejected rather than
+// silently truncated by Int64().
+func memOperand(v *big.Int) (int, error) {
+	if v.Sign() < 0 || v.BitLen() > 63 || v.Int64() > MaxMemoryBytes {
+		return 0, fmt.Errorf("memory operand out of range: %s", v)
+	}
+	return int(v.Int64()), nil
+}
+
+// popMemRange pops the (offset, size) pair used by LOG*, RETURN, REVERT and
+// SHA3_MEM, validating both against the memory ceiling. Stack order is size
+// then offset.
+func popMemRange(stk *stack) (offset, size int, err error) {
+	sizeV, _ := stk.pop()
+	offsetV, err := stk.pop()
+	if err != nil {
+		return 0, 0, err
+	}
+	if size, err = memOperand(sizeV); err != nil {
+		return 0, 0, err
+	}
+	if offset, err = memOperand(offsetV); err != nil {
+		return 0, 0, err
+	}
+	return offset, size, nil
+}
+
+// popMemRangeReversed pops an (offset, size) pair pushed in offset-then-size
+// order, as CREATE does.
+func popMemRangeReversed(stk *stack) (offset, size int, err error) {
+	offsetV, _ := stk.pop()
+	sizeV, err := stk.pop()
+	if err != nil {
+		return 0, 0, err
+	}
+	if offset, err = memOperand(offsetV); err != nil {
+		return 0, 0, err
+	}
+	if size, err = memOperand(sizeV); err != nil {
+		return 0, 0, err
+	}
+	return offset, size, nil
+}
+
+// copyOperands pops the (dstOffset, srcOffset, size) triple shared by
+// CALLDATACOPY, CODECOPY and RETURNDATACOPY, validating each against the memory
+// ceiling. Stack order is size, src, dst.
+func copyOperands(stk *stack) (dst, src, size int, err error) {
+	sizeV, _ := stk.pop()
+	srcV, _ := stk.pop()
+	dstV, err := stk.pop()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if size, err = memOperand(sizeV); err != nil {
+		return 0, 0, 0, err
+	}
+	if src, err = memOperand(srcV); err != nil {
+		return 0, 0, 0, err
+	}
+	if dst, err = memOperand(dstV); err != nil {
+		return 0, 0, 0, err
+	}
+	return dst, src, size, nil
 }
 
 func (m *memory) load(offset, size int) ([]byte, error) {
@@ -383,6 +446,21 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 		return nil
 	}
 
+	// chargeMemory bills expansion BEFORE the allocation happens. MemPerWord was
+	// present in the gas table but never charged by any opcode, so bytecode
+	// could grow memory to the 32 MiB ceiling — and force the same allocation on
+	// every validating node — for the base cost of an MSTORE.
+	chargeMemory := func(offset, size int) error {
+		if size <= 0 {
+			return nil
+		}
+		end := offset + size
+		if end <= mem.size() {
+			return nil
+		}
+		return useGas(wordsFor(end-mem.size()) * e.gasTable.MemPerWord)
+	}
+
 	for pc < len(code) {
 		op := code[pc]
 		pc++
@@ -395,25 +473,14 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 
 		switch {
 
-		// ── PUSH1–PUSH31 (variable length) ───────────────────────────────
-		case op >= OpPUSH1 && op <= OpPUSH31:
-			n := int(op-OpPUSH1) + 1 // 1..31 bytes
+		// ── PUSH1–PUSH32 (0x60–0x7F, one contiguous block) ───────────────
+		case op >= OpPUSH1 && op <= OpPUSH32:
+			n := int(op-OpPUSH1) + 1 // 1..32 bytes
 			if pc+n > len(code) {
-				return &ExecutionResult{Err: fmt.Errorf("PUSH%d: insufficient bytes", n)}
+				return &ExecutionResult{Err: fmt.Errorf("PUSH%d: insufficient bytes", n), GasUsed: gasUsed}
 			}
 			v := new(big.Int).SetBytes(code[pc : pc+n])
 			pc += n
-			if err := stk.push(v); err != nil {
-				return &ExecutionResult{Err: err, GasUsed: gasUsed}
-			}
-
-		// ── PUSH32 ───────────────────────────────────────────────────────
-		case op == OpPUSH32:
-			if pc+32 > len(code) {
-				return &ExecutionResult{Err: fmt.Errorf("PUSH32: insufficient bytes")}
-			}
-			v := new(big.Int).SetBytes(code[pc : pc+32])
-			pc += 32
 			if err := stk.push(v); err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
@@ -498,7 +565,13 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err := useGas(uint64(expV.BitLen()) * e.gasTable.ExpPerBit); err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			stk.push(new(big.Int).Exp(base, expV, nil))
+			// Exponentiate MODULO 2^256. Without the modulus, big.Int.Exp
+			// computes the full result first: base 3 with a 2^24 exponent cost
+			// 91 gas and allocated megabytes, and a larger exponent stalls or
+			// OOMs every node executing the block. With it, the intermediate
+			// never exceeds one word and the cost is bounded by the exponent's
+			// bit length, which is what ExpPerBit already charges for.
+			stk.push(new(big.Int).Exp(base, expV, two256))
 
 		case op == OpADDMOD:
 			mod, _ := stk.pop()
@@ -701,7 +774,17 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			data, _ := mem.load(int(offsetInt.Int64()), 32)
+			offset, err := memOperand(offsetInt)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			if err := chargeMemory(offset, 32); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			data, err := mem.load(offset, 32)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			stk.push(new(big.Int).SetBytes(data))
 
 		case op == OpMSTORE:
@@ -710,10 +793,17 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
+			offset, err := memOperand(offsetInt)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			if err := chargeMemory(offset, 32); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			padded := make([]byte, 32)
 			vb := val.Bytes()
 			copy(padded[32-len(vb):], vb)
-			if err := mem.store(int(offsetInt.Int64()), 32, padded); err != nil {
+			if err := mem.store(offset, 32, padded); err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 
@@ -723,8 +813,15 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
+			offset, err := memOperand(offsetInt)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			if err := chargeMemory(offset, 1); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			b := byte(val.Uint64() & 0xFF)
-			if err := mem.storeByte(int(offsetInt.Int64()), b); err != nil {
+			if err := mem.storeByte(offset, b); err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 
@@ -812,57 +909,66 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			stk.push(big.NewInt(int64(len(ctx.Input))))
 
 		case op == OpCALLDATACOPY:
-			size, _ := stk.pop()
-			srcOff, _ := stk.pop()
-			dstOff, err := stk.pop()
+			dst, src, sz, err := copyOperands(stk)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			sz := int(size.Int64())
-			src := int(srcOff.Int64())
-			dst := int(dstOff.Int64())
+			// Charge for the copy AND the memory growth before allocating: `sz`
+			// comes straight off the stack, so billing afterwards let a contract
+			// force an arbitrary allocation it could not pay for.
+			if err := useGas(wordsFor(sz) * e.gasTable.MemPerWord); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			if err := chargeMemory(dst, sz); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			data := make([]byte, sz)
 			if src < len(ctx.Input) {
 				copy(data, ctx.Input[src:])
 			}
-			if err := useGas(uint64((sz+31)/32) * 3); err != nil {
+			if err := mem.store(dst, sz, data); err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			mem.store(dst, sz, data)
 
 		case op == OpCODECOPY:
-			size, _ := stk.pop()
-			srcOff, _ := stk.pop()
-			dstOff, err := stk.pop()
+			dst, src, sz, err := copyOperands(stk)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			sz := int(size.Int64())
-			src := int(srcOff.Int64())
-			dst := int(dstOff.Int64())
+			if err := useGas(wordsFor(sz) * e.gasTable.MemPerWord); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			if err := chargeMemory(dst, sz); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			data := make([]byte, sz)
 			if src < len(code) {
 				copy(data, code[src:])
 			}
-			mem.store(dst, sz, data)
+			if err := mem.store(dst, sz, data); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 
 		case op == OpRETURNDATASIZE:
 			stk.push(big.NewInt(int64(len(returnData))))
 
 		case op == OpRETURNDATACOPY:
-			size, _ := stk.pop()
-			srcOff, _ := stk.pop()
-			dstOff, err := stk.pop()
+			dst, src, sz, err := copyOperands(stk)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			sz := int(size.Int64())
-			src := int(srcOff.Int64())
-			dst := int(dstOff.Int64())
 			if src+sz > len(returnData) {
 				return &ExecutionResult{Err: fmt.Errorf("RETURNDATACOPY: out of bounds"), GasUsed: gasUsed}
 			}
-			mem.store(dst, sz, returnData[src:src+sz])
+			if err := useGas(wordsFor(sz) * e.gasTable.MemPerWord); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			if err := chargeMemory(dst, sz); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			if err := mem.store(dst, sz, returnData[src:src+sz]); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 
 		// ── Context ──────────────────────────────────────────────────────
 		case op == OpCALLER:
@@ -904,8 +1010,20 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			data, _ := mem.load(int(offsetInt.Int64()), int(size.Int64()))
-			if err := useGas(e.gasTable.SHA3PerByte * uint64(len(data))); err != nil {
+			offset, err := memOperand(offsetInt)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			sz, err := memOperand(size)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			// Bill per byte before hashing, not after.
+			if err := useGas(e.gasTable.SHA3PerByte * uint64(sz)); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			data, err := mem.load(offset, sz)
+			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 			h := qcrypto.Hash32(data)
@@ -933,13 +1051,16 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 				return &ExecutionResult{Err: fmt.Errorf("LOG: static context"), GasUsed: gasUsed}
 			}
 			numTopics := int(op - OpLOG0)
-			dataSize, _ := stk.pop()
-			dataOffset, err := stk.pop()
+			dataOffset, dataSize, err := popMemRange(stk)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			data, _ := mem.load(int(dataOffset.Int64()), int(dataSize.Int64()))
-			if err := useGas(e.gasTable.LOGPerByte*uint64(len(data)) + e.gasTable.LOGPerTopic*uint64(numTopics)); err != nil {
+			// Bill the payload before materialising it.
+			if err := useGas(e.gasTable.LOGPerByte*uint64(dataSize) + e.gasTable.LOGPerTopic*uint64(numTopics)); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			data, err := mem.load(dataOffset, dataSize)
+			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 			topics := make([][32]byte, numTopics)
@@ -1022,7 +1143,18 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 				callGas = gas - gasUsed
 			}
 
-			calldata, _ := mem.load(int(argsOffset.Int64()), int(argsSize.Int64()))
+			argsOff, err := memOperand(argsOffset)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			argsSz, err := memOperand(argsSize)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
+			calldata, err := mem.load(argsOff, argsSz)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			toAddr := bigToAddr(addrInt)
 
 			var subResult *ExecutionResult
@@ -1045,15 +1177,39 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			} else {
 				caller := ctx.Contract
 				origin := ctx.Origin
-				if op == OpDELEGATECALL {
-					// DELEGATECALL: execute target code in current contract's context
+				// codeSource is the account whose CODE runs; toAddr is the
+				// account whose STORAGE and identity the code sees. They differ
+				// only for DELEGATECALL.
+				codeSource := toAddr
+				var valueErr error
+
+				switch op {
+				case OpDELEGATECALL:
+					// DELEGATECALL runs the TARGET's code against the CALLER's
+					// storage and identity. Overwriting toAddr with ctx.Contract
+					// discarded the requested library and re-entered this same
+					// contract, so a proxy recursed into itself up to the depth
+					// limit instead of running the delegate's code.
 					caller = ctx.Caller
 					toAddr = ctx.Contract
+				case OpCALL:
+					// Move the value BEFORE handing over control. The callee saw
+					// it as CALLVALUE, but the SPLD never left the caller — so a
+					// contract gating on CALLVALUE could be driven by a caller
+					// that paid nothing.
+					if value.Sign() > 0 {
+						valueErr = e.state.Transfer(ctx.Contract, toAddr, value)
+					}
 				}
-				var callErr error
-				subResult, callErr = e.callAtDepth(caller, origin, toAddr, calldata, value, ctx.BlockHeight, ctx.Timestamp, isStatic, ctx.Depth+1)
-				if callErr != nil && subResult == nil {
-					subResult = &ExecutionResult{Err: callErr}
+
+				if valueErr != nil {
+					subResult = &ExecutionResult{Err: fmt.Errorf("CALL: value transfer failed: %w", valueErr)}
+				} else {
+					var callErr error
+					subResult, callErr = e.callAtDepthWithCode(caller, origin, toAddr, codeSource, calldata, value, ctx.BlockHeight, ctx.Timestamp, isStatic, ctx.Depth+1)
+					if callErr != nil && subResult == nil {
+						subResult = &ExecutionResult{Err: callErr}
+					}
 				}
 			}
 
@@ -1073,12 +1229,21 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 				ctx.Logs = append(ctx.Logs, subResult.Logs...)
 				boolPush(stk, true) // call succeeded
 				// Copy return data into memory
-				if len(returnData) > 0 && retSize.Int64() > 0 {
-					sz := int(retSize.Int64())
-					if sz > len(returnData) {
-						sz = len(returnData)
+				retOff, offErr := memOperand(retOffset)
+				retSz, szErr := memOperand(retSize)
+				if offErr != nil || szErr != nil {
+					return &ExecutionResult{Err: fmt.Errorf("CALL: return data range out of bounds"), GasUsed: gasUsed}
+				}
+				if len(returnData) > 0 && retSz > 0 {
+					if retSz > len(returnData) {
+						retSz = len(returnData)
 					}
-					mem.store(int(retOffset.Int64()), sz, returnData[:sz])
+					if err := chargeMemory(retOff, retSz); err != nil {
+						return &ExecutionResult{Err: err, GasUsed: gasUsed}
+					}
+					if err := mem.store(retOff, retSz, returnData[:retSz]); err != nil {
+						return &ExecutionResult{Err: err, GasUsed: gasUsed}
+					}
 				}
 			}
 
@@ -1090,19 +1255,28 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 			value, _ := stk.pop()
-			codeOffset, _ := stk.pop()
-			codeSize, err := stk.pop()
+			codeOff, codeSz, err := popMemRangeReversed(stk)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			bytecode, _ := mem.load(int(codeOffset.Int64()), int(codeSize.Int64()))
-			_ = value
+			bytecode, err := mem.load(codeOff, codeSz)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			contractAddr, deployErr := e.Deploy(ctx.Contract, bytecode, uint64(pc))
 			if deployErr != nil {
 				stk.push(big.NewInt(0))
-			} else {
-				stk.push(addrToBig(contractAddr))
+				break
 			}
+			// Endow the new contract. The value was popped and discarded before,
+			// so a constructor could never be funded.
+			if value.Sign() > 0 {
+				if terr := e.state.Transfer(ctx.Contract, contractAddr, value); terr != nil {
+					stk.push(big.NewInt(0))
+					break
+				}
+			}
+			stk.push(addrToBig(contractAddr))
 
 		case op == OpCREATE2:
 			if ctx.IsStatic {
@@ -1118,8 +1292,15 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			_ = value
-			bytecode, _ := mem.load(int(codeOffset.Int64()), int(codeSize.Int64()))
+			codeOff, offErr := memOperand(codeOffset)
+			codeSz, szErr := memOperand(codeSize)
+			if offErr != nil || szErr != nil {
+				return &ExecutionResult{Err: fmt.Errorf("CREATE2: code range out of bounds"), GasUsed: gasUsed}
+			}
+			bytecode, err := mem.load(codeOff, codeSz)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			// CREATE2: address = SHA3-256(deployer || salt || SHA3-256(bytecode))
 			codeHash := qcrypto.Hash32(bytecode)
 			saltBytes := make([]byte, 32)
@@ -1130,12 +1311,30 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			addrHash := qcrypto.Hash32(input)
 			var contractAddr qcrypto.Address
 			copy(contractAddr[:], addrHash[:])
-			// Store code
+
+			// Refuse to deploy over an account that already exists. The previous
+			// code wrote a fresh types.NewAccount at the derived address, which
+			// reset the balance to zero — a chosen salt could therefore destroy
+			// the SPLD held by any pre-funded address and overwrite live code.
+			if existing, gerr := e.state.GetAccount(contractAddr); gerr == nil {
+				if existing.IsContract || existing.Nonce > 0 ||
+					(existing.Balance != nil && existing.Balance.Sign() > 0) {
+					stk.push(big.NewInt(0))
+					break
+				}
+			}
+
 			e.state.SetCode(codeHash, bytecode)
 			acc := types.NewAccount(contractAddr)
 			acc.IsContract = true
 			acc.CodeHash = codeHash
 			e.state.SetAccount(acc)
+			if value.Sign() > 0 {
+				if terr := e.state.Transfer(ctx.Contract, contractAddr, value); terr != nil {
+					stk.push(big.NewInt(0))
+					break
+				}
+			}
 			stk.push(addrToBig(contractAddr))
 
 		case op == OpSELFDESTRUCT:
@@ -1154,21 +1353,25 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 
 		// ── Return / Revert ──────────────────────────────────────────────
 		case op == OpRETURN:
-			size, _ := stk.pop()
-			offsetInt, err := stk.pop()
+			offset, size, err := popMemRange(stk)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
-			data, _ := mem.load(int(offsetInt.Int64()), int(size.Int64()))
+			data, err := mem.load(offset, size)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			return &ExecutionResult{ReturnValue: data, GasUsed: gasUsed, Logs: ctx.Logs}
 
 		case op == OpREVERT:
-			size, _ := stk.pop()
-			offsetInt, err := stk.pop()
+			offset, size, err := popMemRange(stk)
 			if err != nil {
 				return &ExecutionResult{Err: fmt.Errorf("REVERT"), Reverted: true, GasUsed: gasUsed}
 			}
-			data, _ := mem.load(int(offsetInt.Int64()), int(size.Int64()))
+			data, err := mem.load(offset, size)
+			if err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			return &ExecutionResult{ReturnValue: data, Err: fmt.Errorf("execution reverted"), Reverted: true, GasUsed: gasUsed}
 
 		case op == OpREQUIRE:
@@ -1232,23 +1435,30 @@ func (e *Engine) CallWithContext(caller, origin, contract qcrypto.Address, calld
 // Previously every subcall built a fresh Depth=0 context, so MaxCallDepth never
 // triggered and a self-recursive contract exhausted the node's stack/heap.
 func (e *Engine) callAtDepth(caller, origin, contract qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int) (*ExecutionResult, error) {
+	return e.callAtDepthWithCode(caller, origin, contract, contract, calldata, value, blockHeight, timestamp, isStatic, depth)
+}
+
+// callAtDepthWithCode runs codeSource's bytecode in contract's storage and
+// identity context. The two addresses are equal for CALL and STATICCALL; they
+// differ only for DELEGATECALL, which is the whole point of that instruction.
+func (e *Engine) callAtDepthWithCode(caller, origin, contract, codeSource qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int) (*ExecutionResult, error) {
 	if depth > MaxCallDepth {
 		return &ExecutionResult{Err: fmt.Errorf("max call depth exceeded")}, fmt.Errorf("max call depth exceeded")
 	}
 	// Check precompile
-	if e.precompiles.IsPrecompile(contract) {
-		out, gas, err := e.precompiles.Call(contract, calldata, MaxGasPerCall)
+	if e.precompiles.IsPrecompile(codeSource) {
+		out, gas, err := e.precompiles.Call(codeSource, calldata, MaxGasPerCall)
 		return &ExecutionResult{ReturnValue: out, GasUsed: gas, Err: err}, err
 	}
 
-	acc, err := e.state.GetAccount(contract)
+	codeAcc, err := e.state.GetAccount(codeSource)
 	if err != nil {
 		return nil, err
 	}
-	if !acc.IsContract {
+	if !codeAcc.IsContract {
 		return nil, types.ErrContractNotFound
 	}
-	code, err := e.state.GetCode(acc.CodeHash)
+	code, err := e.state.GetCode(codeAcc.CodeHash)
 	if err != nil {
 		return nil, fmt.Errorf("load code: %w", err)
 	}

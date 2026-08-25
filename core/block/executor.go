@@ -152,7 +152,14 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 	for i, tx := range b.Transactions {
 		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
 		if err != nil {
-			return fmt.Errorf("tx %d failed: %w", i, err)
+			// The tx could not be applied at all: bad signature, wrong nonce,
+			// unaffordable, unknown type. ProduceBlock drops such txs, so a block
+			// that still carries one was not built honestly. It must be rejected
+			// outright — the previous behaviour reverted the tx (leaving the
+			// sender undebited) yet still credited its fee to the validator,
+			// which minted the fee out of nothing on every invalid tx packed.
+			e.state.DiscardPending()
+			return fmt.Errorf("block contains an unappliable tx at index %d: %w", i, err)
 		}
 		receipts = append(receipts, receipt)
 
@@ -164,9 +171,11 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 			return fmt.Errorf("block exceeds gas budget: %d > %d", blockGas, MaxBlockGas)
 		}
 
-		// Accumulate fees for validator credit (mirrors ProduceBlock).
-		// Blocks from the validator only contain txs that executed successfully,
-		// so all fees in a synced block should be credited to the validator.
+		// Accumulate fees for validator credit (mirrors ProduceBlock). Only txs
+		// that actually applied reach here, and every exec path debits tx.Fee
+		// from the sender before doing its work — including the reverted-call
+		// case, where the fee is kept as gas. So the credit always has a
+		// matching debit and total supply is conserved.
 		totalFees.Add(totalFees, tx.Fee)
 
 		// Run post-tx hooks (non-fatal)
@@ -327,7 +336,16 @@ func (e *Executor) reapplyBlock(b *types.Block) error {
 	return nil
 }
 
-// executeTxWithReceipt processes a single transaction and returns a receipt.
+// executeTxWithReceipt applies a single transaction from a block being ADOPTED
+// (inbound sync or crash replay) and returns its receipt.
+//
+// A non-nil error means the tx could not be applied at all and the enclosing
+// block must be rejected. That is different from a tx that applied but whose
+// contract call reverted: a revert still charges the fee and consumes the nonce,
+// so it is a legitimate block member and comes back with a failed receipt and a
+// nil error. Only the unappliable cases — bad signature, wrong nonce, unfunded,
+// unknown type, rejected by a pre-tx hook — produce an error, because
+// ProduceBlock drops exactly those and never puts them in a block.
 func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockTime int64, blockHash [32]byte) (*types.Receipt, error) {
 	receipt, err := types.NewReceipt(tx, txIndex, blockHeight, blockHash)
 	if err != nil {
@@ -336,8 +354,7 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 
 	if e.hooks != nil {
 		if err := e.hooks.RunPreTx(tx, blockHeight); err != nil {
-			receipt.SetFailed(fmt.Sprintf("pre-tx hook: %v", err))
-			return receipt, nil
+			return nil, fmt.Errorf("pre-tx hook rejected tx: %w", err)
 		}
 	}
 
@@ -349,12 +366,11 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 	snap := e.state.Snapshot()
 	if err := e.executeTx(tx, blockHeight, blockTime, receipt); err != nil {
 		e.state.RevertToSnapshot(snap)
-		receipt.SetFailed(err.Error())
 		log.Warn().Err(err).
 			Str("from", tx.From.String()).
 			Uint64("nonce", tx.Nonce).
-			Msg("transaction failed")
-		return receipt, nil
+			Msg("transaction in received block could not be applied")
+		return nil, err
 	}
 	e.state.CommitSnapshot(snap)
 

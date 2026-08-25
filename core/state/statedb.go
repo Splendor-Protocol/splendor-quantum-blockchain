@@ -17,6 +17,7 @@ package state
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"sort"
@@ -90,7 +91,61 @@ type StateDB struct {
 
 	// snapshots maps a snapshot ID to its journal-length mark.
 	snapshots map[uint64]int
+
+	// sandbox marks a throwaway overlay produced by Simulate(). Its pending
+	// layer is private, so speculative execution cannot be committed and cannot
+	// disturb the consensus state db it was derived from.
+	sandbox bool
 }
+
+// ErrSandboxCommit is returned when a caller tries to persist a simulation.
+var ErrSandboxCommit = errors.New("state: cannot commit a simulation sandbox")
+
+// Simulate returns a throwaway StateDB for speculative execution — RPC view
+// calls and gas estimation.
+//
+// It reads through to the same committed LevelDB state and starts from a copy
+// of the current pending layer, but owns that layer outright: its own dirty
+// map, code cache, raw overlay, journal and snapshot marks. Handing the live
+// StateDB to the VM instead (which /call and /estimate did) shares one journal
+// between an unauthenticated public endpoint and block execution. The engine
+// snapshots and reverts freely during a call, and RevertToSnapshot replays
+// undos past any earlier mark and drops the snapshot IDs above it — so a remote
+// caller could roll back the block being assembled.
+//
+// The copy is shallow, which is safe because pending entries are only ever
+// replaced, never mutated in place: SetAccount stores a copy and GetAccount
+// hands one back, and SetStorageValue does the same for raw slots. Writes made
+// during the simulation therefore land only in the sandbox's maps.
+//
+// The sandbox refuses to Commit. Callers simply drop it when the call returns.
+func (s *StateDB) Simulate() *StateDB {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	sim := &StateDB{
+		db:         s.db,
+		dirty:      make(map[qcrypto.Address]*types.Account, len(s.dirty)),
+		codeCache:  make(map[[32]byte][]byte, len(s.codeCache)),
+		pendingRaw: make(map[string][]byte, len(s.pendingRaw)),
+		leaves:     nil, // state roots are meaningless for a simulation
+		snapshots:  make(map[uint64]int),
+		sandbox:    true,
+	}
+	for k, v := range s.dirty {
+		sim.dirty[k] = v
+	}
+	for k, v := range s.codeCache {
+		sim.codeCache[k] = v
+	}
+	for k, v := range s.pendingRaw {
+		sim.pendingRaw[k] = v
+	}
+	return sim
+}
+
+// IsSandbox reports whether this StateDB is a Simulate() overlay.
+func (s *StateDB) IsSandbox() bool { return s.sandbox }
 
 // NewStateDB opens (or creates) the state database at the given path.
 func NewStateDB(path string) (*StateDB, error) {
@@ -230,8 +285,15 @@ func (s *StateDB) GetPublicKey(addr qcrypto.Address) ([]byte, error) {
 // Transfer moves SPLD from one account to another.
 // Both accounts must exist (or be auto-created). Returns error if insufficient funds.
 // Changes are staged to dirty cache; call Commit() to persist.
+//
+// from == to is handled explicitly. GetAccount returns an independent COPY, so
+// loading sender and recipient separately for the same address yields two
+// objects that both start at balance B; applying -amount to one and +amount to
+// the other and writing both back leaves whichever was written last, i.e. B+amount.
+// That minted native SPLD on every self-transfer. The VM reaches this through
+// the TRANSFER and SELFDESTRUCT opcodes, so it is attacker-controlled.
 func (s *StateDB) Transfer(from, to qcrypto.Address, amount *big.Int) error {
-	if amount.Sign() < 0 {
+	if amount == nil || amount.Sign() < 0 {
 		return fmt.Errorf("negative transfer amount")
 	}
 	if amount.Sign() == 0 {
@@ -242,6 +304,17 @@ func (s *StateDB) Transfer(from, to qcrypto.Address, amount *big.Int) error {
 	if err != nil {
 		return err
 	}
+
+	// Self-transfer: the balance cannot change, but the funds must still exist —
+	// otherwise a self-transfer would be a free way to skip the solvency check
+	// that callers rely on before treating the transfer as settled.
+	if from == to {
+		if fromAcc.Balance == nil || fromAcc.Balance.Cmp(amount) < 0 {
+			return types.ErrInsufficientBalance
+		}
+		return nil
+	}
+
 	toAcc, err := s.GetAccount(to)
 	if err != nil {
 		return err
@@ -411,6 +484,10 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.sandbox {
+		return [32]byte{}, ErrSandboxCommit
+	}
+
 	batch := new(leveldb.Batch)
 
 	type leafUpd struct {
@@ -541,6 +618,9 @@ func merkleRoot(leaves map[string][32]byte) [32]byte {
 func (s *StateDB) StateRoot() ([32]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.sandbox {
+		return [32]byte{}, ErrSandboxCommit
+	}
 	return merkleRoot(s.leaves), nil
 }
 
@@ -555,6 +635,10 @@ func (s *StateDB) StateRoot() ([32]byte, error) {
 func (s *StateDB) PendingStateRoot() ([32]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if s.sandbox {
+		return [32]byte{}, ErrSandboxCommit
+	}
 
 	eff := make(map[string][32]byte, len(s.leaves)+len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
 	for k, v := range s.leaves {

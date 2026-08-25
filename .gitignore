@@ -1,0 +1,12 @@
+# Compiled binaries from `go build` at the repo root.
+/auditprobe
+/loadtest
+
+# Wallet key material. These are encrypted, but a key file in git is a key
+# that leaks with the repo — including the disposable probe identity, which
+# would otherwise let anyone drain whatever it is funded with.
+*.sqwallet
+
+# Local state/data directories produced by running a node.
+/data/
+/chaindata/

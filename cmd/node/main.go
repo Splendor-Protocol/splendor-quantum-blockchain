@@ -54,6 +54,7 @@ var (
 	flagLogLevel          string
 	flagGenesisPath       string
 	flagValidatorPKHex    string
+	flagGenesisHashHex    string
 	flagRPCAuthToken      string
 	flagAllowPrivatePeers bool
 	flagCORSOrigins       []string
@@ -92,6 +93,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagLogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	root.Flags().StringVar(&flagGenesisPath, "genesis", "", "Path to genesis.json (allocations applied once on an empty chain)")
 	root.Flags().StringVar(&flagValidatorPKHex, "validator-pubkey-hex", "", "Trusted genesis validator ML-DSA-65 public key (hex). Full nodes MUST set this to authenticate pushed blocks on POST /block.")
+	root.Flags().StringVar(&flagGenesisHashHex, "genesis-hash", "", "Pinned hash of block 0 (hex). Required to bootstrap the validator pubkey from peers when --validator-pubkey-hex is not supplied; without one, a node would trust whatever key its first peer serves.")
 	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret for the write plane: POST /block and POST /peers/announce. All nodes in a cluster must share it. (or SQC_RPC_AUTH_TOKEN env)")
 	root.Flags().BoolVar(&flagAllowPrivatePeers, "allow-private-peers", false, "Allow loopback/private-IP peers in discovery + /peers/announce (private-network or local clusters; default off = public SSRF-safe)")
 	root.Flags().StringArrayVar(&flagCORSOrigins, "cors-origin", nil, "Browser origin allowed to call this node (repeatable). Default: none. Use '*' to allow any origin.")
@@ -229,6 +231,24 @@ func runNode(cmd *cobra.Command, args []string) error {
 			Msg("Trusted validator pubkey pinned (full node block verification enabled)")
 	}
 
+	// Optional genesis pin. This is what lets a node with no pinned validator
+	// key learn one safely: block 0 is authenticated by hash before the key it
+	// carries is trusted for every subsequent block.
+	var genesisHashPin *[32]byte
+	if flagGenesisHashHex != "" {
+		raw, decErr := hex.DecodeString(strings.TrimPrefix(flagGenesisHashHex, "0x"))
+		if decErr != nil {
+			return fmt.Errorf("invalid --genesis-hash: %w", decErr)
+		}
+		if len(raw) != 32 {
+			return fmt.Errorf("invalid --genesis-hash: want 32 bytes (64 hex chars), got %d", len(raw))
+		}
+		var pin [32]byte
+		copy(pin[:], raw)
+		genesisHashPin = &pin
+		log.Info().Str("genesis_hash", fmt.Sprintf("%x", pin[:8])).Msg("Genesis hash pinned")
+	}
+
 	// Write-plane token for block ingest + peer announce (env fallback).
 	authToken := flagRPCAuthToken
 	if authToken == "" {
@@ -306,6 +326,13 @@ func runNode(cmd *cobra.Command, args []string) error {
 	syncCfg := network.DefaultSyncConfig(validatorPKBytes)
 	syncCfg.Identities = broadcaster.Identities()
 	syncCfg.AllowPlaintext = flagAllowPlaintextP2P
+	if genesisHashPin != nil {
+		syncCfg.GenesisHash = *genesisHashPin
+	}
+	if len(validatorPKBytes) == 0 && genesisHashPin == nil {
+		log.Warn().Msg("Neither --validator-pubkey-hex nor --genesis-hash is set: this node cannot " +
+			"authenticate blocks from peers and will not sync. Pin one of them.")
+	}
 
 	syncer := network.NewSyncer(
 		syncCfg,
@@ -525,7 +552,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	rpc.RegisterExplorerRoutes(router, txIndex, stateDB, peerPool, func() uint64 {
 		h, _ := executor.LatestHeight()
 		return h
-	}, coreRPC.WriteAuth(), broadcaster.AddPeer)
+	}, coreRPC.WriteAuth(), coreRPC.SimGuard(), broadcaster.AddPeer)
 
 	// Post-quantum sealed P2P transport (ML-KEM-768 + AES-256-GCM). Carries the
 	// same block-ingest and peer-announce operations as the plaintext write
@@ -576,7 +603,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	rpc.RegisterDEXRoutes(router, stateDB)
 
 	// Contract-interaction routes (/call view calls, /estimate gas+fee) — issue #4
-	rpc.RegisterCallRoutes(router, stateDB, executor, pool)
+	rpc.RegisterCallRoutes(router, stateDB, executor, pool, coreRPC.SimGuard())
 
 	// Lending routes
 	rpc.RegisterLendingRoutes(router, stateDB)

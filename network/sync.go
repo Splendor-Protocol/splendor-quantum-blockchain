@@ -41,6 +41,17 @@ type SyncConfig struct {
 	// Every downloaded block must be signed by this key.
 	ValidatorPubKey []byte
 
+	// GenesisHash pins the expected hash of block 0. It is the only way a node
+	// with no ValidatorPubKey may safely learn one from the network: block 0 is
+	// fetched, its hash is checked against this pin, and only then is its
+	// embedded validator key trusted for every later block.
+	//
+	// Without a pin, a node that adopts whatever key the first peer offers is
+	// trusting that peer completely — the peer can serve a chain it signed
+	// itself, and every signature will verify against its own key. Leave this
+	// zero only when ValidatorPubKey is supplied directly.
+	GenesisHash [32]byte
+
 	// MaxBlocksPerBatch is how many blocks to download per peer before switching.
 	MaxBlocksPerBatch int
 
@@ -124,10 +135,27 @@ func (f *BlockFetcher) fetchBlockJSON(peerAddr, kind string, body []byte, plainP
 	return io.ReadAll(io.LimitReader(resp.Body, maxSyncBodyBytes))
 }
 
-// FetchGenesisValidatorPubKey fetches block 0 from a peer and extracts
-// the validator's ML-DSA-65 public key. This is used by RPC nodes that
-// don't have a local genesis.json — they bootstrap the pubkey from the chain.
+// hasGenesisPin reports whether a genesis hash was configured.
+func (c SyncConfig) hasGenesisPin() bool {
+	return c.GenesisHash != [32]byte{}
+}
+
+// FetchGenesisValidatorPubKey fetches block 0 from a peer and extracts the
+// validator's ML-DSA-65 public key, so an RPC node without a local genesis.json
+// can bootstrap from the chain.
+//
+// This REQUIRES a configured GenesisHash. The key is only accepted if the
+// fetched block hashes to the pin and its own signature verifies under the key
+// it carries. A block signature proves nothing about identity on its own — a
+// hostile peer can mint a genesis block, sign it with a key it controls and
+// serve a whole fabricated chain that verifies end to end. The pinned hash is
+// what ties the key to the real network.
 func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, error) {
+	if !f.cfg.hasGenesisPin() {
+		return nil, fmt.Errorf("refusing to bootstrap a validator pubkey without a pinned genesis hash " +
+			"(set --genesis-hash, or supply the key directly with --validator-pubkey-hex)")
+	}
+
 	req, err := json.Marshal(GetBlockRequest{Height: 0})
 	if err != nil {
 		return nil, err
@@ -141,13 +169,25 @@ func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, err
 	if err := json.Unmarshal(raw, &block); err != nil {
 		return nil, fmt.Errorf("decode genesis block: %w", err)
 	}
+	if block.Header.Height != 0 {
+		return nil, fmt.Errorf("peer %s served height %d in place of genesis", peerAddr, block.Header.Height)
+	}
 
-	// The genesis block's ValidatorSignature contains the pubkey implicitly,
-	// but it's cleaner to get it from the state — the validator registered
-	// their pubkey in the genesis allocation. Extract from block's ValidatorAddr.
-	// Since we don't have state here, return the pubkey embedded in the block.
+	// Recompute rather than trusting the served Hash field.
+	computed, err := block.ComputeHash()
+	if err != nil {
+		return nil, fmt.Errorf("hash genesis block from %s: %w", peerAddr, err)
+	}
+	if computed != f.cfg.GenesisHash {
+		return nil, fmt.Errorf("peer %s served a genesis block with hash %x, expected pinned %x — wrong chain or hostile peer",
+			peerAddr, computed[:8], f.cfg.GenesisHash[:8])
+	}
+
 	if len(block.ValidatorPubKey) == 0 {
 		return nil, fmt.Errorf("genesis block has no validator pubkey — validator must be running with a funded genesis")
+	}
+	if err := block.VerifySignature(block.ValidatorPubKey); err != nil {
+		return nil, fmt.Errorf("pinned genesis block failed self-verification: %w", err)
 	}
 	return block.ValidatorPubKey, nil
 }
@@ -176,26 +216,30 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 		return nil, fmt.Errorf("block %d failed validation: %w", height, err)
 	}
 
-	// Verify ML-DSA-65 signature only if we have the pubkey.
-	// If not set, try to learn it from the block itself (for genesis bootstrap).
-	if len(f.cfg.ValidatorPubKey) > 0 {
-		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-			return nil, fmt.Errorf("block %d: invalid validator signature: %w", height, err)
+	// Fail closed: never APPLY a block we cannot authenticate against a key we
+	// already trust. The pubkey a block carries is NOT evidence of anything —
+	// verifying a block against its own embedded key always succeeds, so the
+	// former "learn it from the first block" path accepted any chain the first
+	// peer chose to fabricate. The only sanctioned way to acquire the key is
+	// FetchGenesisValidatorPubKey, which checks block 0 against a pinned hash.
+	if len(f.cfg.ValidatorPubKey) == 0 {
+		return nil, fmt.Errorf("block %d: no trusted validator pubkey — refusing to apply an unverified block "+
+			"(set --validator-pubkey-hex, or --genesis-hash to bootstrap it)", height)
+	}
+	if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
+		return nil, fmt.Errorf("block %d: invalid validator signature: %w", height, err)
+	}
+
+	// Height 0 must additionally match the pin when one is configured, so a peer
+	// cannot serve a different chain's genesis under a key we happen to trust.
+	if height == 0 && f.cfg.hasGenesisPin() {
+		computed, herr := block.ComputeHash()
+		if herr != nil {
+			return nil, fmt.Errorf("hash genesis block: %w", herr)
 		}
-	} else if len(block.ValidatorPubKey) > 0 {
-		// First block with an embedded pubkey — learn and store for future use
-		f.cfg.ValidatorPubKey = block.ValidatorPubKey
-		log.Info().
-			Str("pubkey_prefix", fmt.Sprintf("%x", block.ValidatorPubKey[:8])).
-			Msg("sync: learned validator pubkey from first block")
-		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-			return nil, fmt.Errorf("block %d: self-signed block failed verification: %w", height, err)
+		if computed != f.cfg.GenesisHash {
+			return nil, fmt.Errorf("genesis hash %x does not match pinned %x", computed[:8], f.cfg.GenesisHash[:8])
 		}
-	} else {
-		// Fail closed (matching the push path): never APPLY a block we can't
-		// authenticate. A non-genesis block carries no embedded pubkey, so without
-		// a pinned key we'd otherwise accept an attacker-fabricated chain (TOFU).
-		return nil, fmt.Errorf("block %d: no trusted validator pubkey — refusing to apply an unverified block (set --validator-pubkey-hex)", height)
 	}
 
 	return &block, nil
@@ -246,23 +290,30 @@ func NewSyncer(
 		applyBlock:  applyBlock,
 	}
 
-	// If no validator pubkey configured, try to learn it from peers at startup
-	if len(cfg.ValidatorPubKey) == 0 && len(pool.Addrs()) > 0 {
+	// A node with no pinned key may bootstrap one ONLY when a genesis hash is
+	// pinned; that hash is what authenticates the key. Without either, sync
+	// stays fail-closed rather than adopting whatever the first peer offers.
+	switch {
+	case len(cfg.ValidatorPubKey) > 0:
+		// Already pinned.
+	case cfg.hasGenesisPin() && len(pool.Addrs()) > 0:
 		go s.bootstrapValidatorPubKey()
+	default:
+		log.Error().Msg("sync: no --validator-pubkey-hex and no --genesis-hash — " +
+			"this node cannot authenticate any block and will not sync")
 	}
 
 	return s
 }
 
-// bootstrapValidatorPubKey fetches the validator's pubkey from the first
-// available peer's genesis block. This lets RPC nodes start without any
-// manual pubkey configuration.
+// bootstrapValidatorPubKey learns the validator's pubkey from a peer's genesis
+// block, accepting it only if that block matches the pinned genesis hash.
 func (s *Syncer) bootstrapValidatorPubKey() {
 	peers := s.pool.Addrs()
 	for _, peer := range peers {
 		pubkey, err := s.fetcher.FetchGenesisValidatorPubKey(peer)
 		if err != nil {
-			log.Debug().Err(err).Str("peer", peer).Msg("sync: could not fetch pubkey from peer")
+			log.Warn().Err(err).Str("peer", peer).Msg("sync: rejected genesis bootstrap from peer")
 			continue
 		}
 		if len(pubkey) > 0 {
@@ -270,11 +321,11 @@ func (s *Syncer) bootstrapValidatorPubKey() {
 			log.Info().
 				Str("peer", peer).
 				Str("pubkey_prefix", fmt.Sprintf("%x", pubkey[:8])).
-				Msg("sync: bootstrapped validator pubkey from peer's genesis block")
+				Msg("sync: bootstrapped validator pubkey from pinned genesis block")
 			return
 		}
 	}
-	log.Warn().Msg("sync: could not bootstrap validator pubkey — signature verification will be skipped until genesis block is downloaded")
+	log.Error().Msg("sync: no peer served a genesis block matching the pinned hash — refusing to sync")
 }
 
 // SyncOnce performs one sync pass: check peers, download missing blocks.
