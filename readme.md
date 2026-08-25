@@ -1,6 +1,6 @@
 # Splendor Quantum Chain
 
-### The world's first blockchain where quantum resistance is not an add-on — it is the foundation.
+### A blockchain where quantum resistance is not an add-on — it is the foundation.
 
 > **This is not a fork. This is not an upgrade. This is a new chain — designed from block zero to be completely quantum-native. Every signature, every address, every hash, every smart contract call, every validator message uses post-quantum cryptography only. No ECDSA. No secp256k1. No SHA-256. No conventional algorithms anywhere.**
 
@@ -48,7 +48,9 @@ Splendor Quantum Chain is the answer. Not a patch on an existing chain. Not a co
 - **Block headers** are hashed with SHA-3
 - **Node-to-node traffic** is sealed with ML-KEM-768 + AES-256-GCM, and TLS (when enabled) negotiates the hybrid `X25519MLKEM768` group
 
-The result is the world's first blockchain that will still be cryptographically secure the day a quantum computer tries to attack it.
+The result is a chain that will still be cryptographically secure the day a quantum computer tries to attack it.
+
+We are not the first post-quantum chain and do not claim to be: QRL has run a post-quantum mainnet for years, and QRL 2.0 uses ML-DSA-87. What is distinctive here is that the post-quantum guarantee extends past signatures to the state commitment, the peer-to-peer channel, and the transport, rather than stopping at the ledger.
 
 ---
 
@@ -96,13 +98,13 @@ The chain is structured in four layers. Every layer uses exclusively post-quantu
 │  Smart Contract VM (quantum-native bytecode execution)           │
 │  Quantum Transaction Processor                                    │
 │  All state reads/writes hashed with SHA-3                        │
-│  All signatures verified with Dilithium                          │
+│  All signatures verified with ML-DSA-65                          │
 └─────────────────────────────┬────────────────────────────────────┘
                               │
 ┌─────────────────────────────▼────────────────────────────────────┐
 │  CONSENSUS LAYER                                                  │
 │  Single Validator (Phase 1) → Scalable later                     │
-│  All consensus messages signed with Dilithium                    │
+│  All consensus messages signed with ML-DSA-65                    │
 │  Block finality in < 2 seconds                                   │
 └─────────────────────────────┬────────────────────────────────────┘
                               │
@@ -118,8 +120,8 @@ The chain is structured in four layers. Every layer uses exclusively post-quantu
 
 The genesis block — block 0, the very first block — is:
 - Hashed with SHA-3, not Keccak/SHA-256
-- Signed by the genesis validator using Dilithium, not ECDSA
-- Contains the first account entries whose addresses are derived from Dilithium public keys
+- Signed by the genesis validator using ML-DSA-65, not ECDSA
+- Contains the first account entries whose addresses are derived from ML-DSA-65 public keys
 
 There is no moment in this chain's history where conventional cryptography was used. A quantum computer attacking the chain 10 years from now would find no weak link, because there never was one.
 
@@ -146,8 +148,8 @@ The address is 20 bytes. It is short because the underlying key is small (32 byt
 
 In Splendor Quantum Chain:
 ```
-Dilithium private key (4032 bytes, random)
-    → Dilithium public key (1952 bytes)
+ML-DSA-65 private key (4032 bytes, random)
+    → ML-DSA-65 public key (1952 bytes)
         → SHA3-256(public_key)
             → take last 32 bytes
                 → SQ address (32 bytes, hex-encoded)
@@ -156,7 +158,7 @@ Dilithium private key (4032 bytes, random)
 **Key differences:**
 - **32-byte address** instead of 20-byte — more collision-resistant, more future-proof
 - **SHA-3** instead of Keccak-256 — SHA-3 is NIST-standardised and has no known quantum weakness in this context
-- **Dilithium public key** as the root — the key pair is post-quantum from the start
+- **ML-DSA-65 public key** as the root — the key pair is post-quantum from the start
 
 **What an address looks like:**
 ```
@@ -167,7 +169,7 @@ The `SQ:` prefix immediately identifies this as a Splendor Quantum Chain address
 
 ### Address generation is completely offline
 
-No network connection is needed to create an address. The user generates the Dilithium key pair on their device. The address is computed locally. The address is broadcast to the chain only when the first transaction is sent.
+No network connection is needed to create an address. The user generates the ML-DSA-65 key pair on their device. The address is computed locally. The address is broadcast to the chain only when the first transaction is sent.
 
 ---
 
@@ -191,9 +193,9 @@ On Splendor Quantum Chain, a wallet consists of:
 
 **Step 1: Key generation**
 
-The wallet software runs the Dilithium key generation algorithm:
+The wallet software runs the ML-DSA-65 key generation algorithm:
 ```
-(public_key, private_key) = Dilithium.KeyGen(entropy_source)
+(public_key, private_key) = ML_DSA_65.KeyGen(entropy_source)
 ```
 
 The entropy source is a cryptographically secure random number generator. This happens entirely on the user's device. Nothing is sent to the network.
@@ -208,14 +210,14 @@ address = "SQ:" + hex(SHA3-256(public_key)[-32:])
 
 The first time the user sends a transaction, the network automatically records:
 - Their address
-- Their Dilithium public key
+- Their ML-DSA-65 public key
 - The block number of first appearance
 
 After this point, all future transactions from this address are verified against the stored public key.
 
 ### The key size challenge and how we solve it
 
-A Dilithium private key is 4,032 bytes — 126 times larger than an Ethereum private key (32 bytes). You cannot just write it on a piece of paper like a seed phrase. Splendor Quantum Chain solves this with three storage options:
+A ML-DSA-65 private key is 4,032 bytes — 126 times larger than an Ethereum private key (32 bytes). You cannot just write it on a piece of paper like a seed phrase. Splendor Quantum Chain solves this with three storage options:
 
 ---
 
@@ -228,7 +230,7 @@ wallet.sqwallet file:
 {
   "version": 1,
   "address": "SQ:a7f3c9...",
-  "public_key_b64": "base64_encoded_dilithium_pubkey",
+  "public_key_b64": "base64_encoded_ml_dsa_65_pubkey",
   "encrypted_private_key": {
     "ciphertext": "base64_aes_gcm_ciphertext",
     "nonce": "base64_nonce",
@@ -243,7 +245,7 @@ The password is never stored. Only the user knows it. To open the wallet, the us
 
 **Option B: Physical NFC Smart Card** (for high-security users)
 
-The Dilithium private key is written to the secure element of a physical NFC card — a dedicated chip that:
+The ML-DSA-65 private key is written to the secure element of a physical NFC card — a dedicated chip that:
 - Stores the key in hardware-protected non-extractable memory
 - Performs signing operations internally (the key never leaves the chip)
 - Requires a PIN to authorise each signing operation
@@ -254,7 +256,7 @@ The Dilithium private key is written to the secure element of a physical NFC car
 2. The app computes the transaction hash (SHA-3 of the transaction data)
 3. The app sends: `SIGN_REQUEST { hash: "sha3_hash_bytes" }` to the card via NFC
 4. The card asks the user to enter their PIN (on a card with a small keypad, or via the phone with secure PIN entry)
-5. The card's secure element runs `dilithium_sig = Dilithium.Sign(private_key, hash)` internally
+5. The card's secure element runs `sig = ML_DSA_65.Sign(private_key, hash, ctx)` internally
 6. The card sends back: `{ signature: "3309_bytes_of_mldsa_sig" }` via NFC
 7. The app attaches the signature to the transaction and broadcasts it
 
@@ -270,8 +272,8 @@ For maximum security — where not even an NFC communication channel is trusted:
 
 1. Wallet app on the online device builds the transaction and encodes the hash as a QR code
 2. An offline device (a phone that has NEVER connected to the internet) scans the QR
-3. The offline device has the Dilithium private key stored locally
-4. The offline device signs the hash and encodes the signature as a series of QR codes (2 QR codes needed for 3,293-byte signature)
+3. The offline device has the ML-DSA-65 private key stored locally
+4. The offline device signs the hash and encodes the signature as a series of QR codes (2 QR codes needed for 3,309-byte signature)
 5. The online device scans the QR codes, reconstructs the signature, and broadcasts the transaction
 
 **Zero data ever travels over a network to or from the signing device.** Air-gap maintained throughout.
@@ -296,20 +298,22 @@ If a user loses their device:
 
 ---
 
-**Step 1: Alice downloads the Splendor QC Wallet app**
+**Step 1: Alice gets a Splendor QC wallet**
 
-Available on:
-- Desktop (Windows, Mac, Linux)
-- Mobile (iOS, Android)
-- Web app (browser-based, with local key storage)
-- CLI (for developers and power users)
+Available today:
+- CLI wallet (`sqc-wallet`, encrypted `.sqwallet` file) — Windows, Mac, Linux
+- Browser Connect flow via the JavaScript SDK, with keys held in WASM memory
+
+Designed but not built: packaged desktop and mobile (iOS, Android) apps. The
+walkthrough below describes the wallet flow generally; today it is the CLI and
+the browser SDK that implement it.
 
 ---
 
 **Step 2: Alice creates her wallet**
 
 Alice clicks "Create New Wallet". The app:
-1. Generates a Dilithium key pair using the device's secure random number generator
+1. Generates an ML-DSA-65 key pair using the device's secure random number generator
 2. Computes her SQ address
 3. Asks Alice to set a strong password (used to encrypt the private key file)
 4. Saves the encrypted `.sqwallet` file
@@ -386,14 +390,14 @@ The wallet computes:
 ```
 tx_bytes = JSON_encode(transaction_object)   // canonical Go json.Marshal of the tx body
 tx_hash  = SHA3-256(tx_bytes)
-signature = Dilithium.Sign(alice_private_key, tx_hash)
+signature = ML_DSA_65.Sign(alice_private_key, tx_hash, "SPLENDOR-QC-TX-v1")
 ```
 
 The signed transaction is:
 ```json
 {
   "transaction": { ...the transaction object... },
-  "public_key": "base64_encoded_dilithium_public_key",
+  "public_key": "base64_encoded_ml_dsa_65_public_key",
   "signature": "base64_encoded_3309_byte_mldsa_signature"
 }
 ```
@@ -412,8 +416,8 @@ Body: { signed_transaction_data }
 
 The node:
 1. Decodes the transaction
-2. Looks up Alice's Dilithium public key (from when she first registered)
-3. Runs `Dilithium.Verify(alice_pubkey, tx_hash, signature)` — **this is the only signature verification needed. No ECDSA.**
+2. Looks up Alice's ML-DSA-65 public key (from when she first registered)
+3. Runs `ML_DSA_65.Verify(alice_pubkey, tx_hash, "SPLENDOR-QC-TX-v1", signature)` — **this is the only signature verification needed. No ECDSA.**
 4. Checks Alice's nonce is correct
 5. Checks Alice has sufficient balance
 6. Adds the transaction to the mempool (queue of pending transactions)
@@ -427,7 +431,7 @@ In Phase 1, there is one validator. The validator:
 2. Orders them (by fee, timestamp)
 3. Executes them: deducts from Alice's balance, adds to Bob's balance
 4. Builds a new block containing the transactions
-5. Signs the block with its own Dilithium validator key
+5. Signs the block with its own ML-DSA-65 validator key
 6. Broadcasts the signed block to all nodes
 
 Block time: under 2 seconds.
@@ -460,7 +464,7 @@ Splendor Quantum Chain supports four types of transactions:
 | **Call** | Interact with an existing smart contract |
 | **Register** | Register a new account's public key on first use |
 
-All four types use the same signing mechanism: Dilithium signature over SHA-3 hash of the transaction body.
+All four types use the same signing mechanism: ML-DSA-65 signature over SHA-3 hash of the transaction body.
 
 ### Transaction lifecycle
 
@@ -468,7 +472,7 @@ All four types use the same signing mechanism: Dilithium signature over SHA-3 ha
 User creates transaction
         │
         ▼
-Wallet signs with Dilithium
+Wallet signs with ML-DSA-65
         │
         ▼
 Signed tx broadcast to node via RPC
@@ -490,13 +494,13 @@ Node validates: signature, nonce, balance
                 Validator includes tx in new block
                         │
                         ▼
-                Block signed by validator (Dilithium)
+                Block signed by validator (ML-DSA-65)
                         │
                         ▼
                 Block broadcast to all nodes
                         │
                         ▼
-                Nodes verify block signature (Dilithium)
+                Nodes verify block signature (ML-DSA-65)
                         │
                         ▼
                 Block appended to chain
@@ -538,7 +542,7 @@ A smart contract is a program that lives on the blockchain. Once deployed, it ru
 1. Developer writes the contract in the Splendor contract language (a quantum-safe subset — see below)
 2. Contract is compiled to bytecode
 3. Developer creates a Deploy transaction containing the bytecode
-4. Signs it with their Dilithium key
+4. Signs it with their ML-DSA-65 key
 5. Broadcasts to the network
 6. Validator executes the deployment — the contract gets an SQ address
 7. Contract is now live and callable
@@ -549,7 +553,7 @@ A smart contract is a program that lives on the blockchain. Once deployed, it ru
    - Contract address
    - Function name
    - Parameters
-2. Signs with Dilithium key
+2. Signs with ML-DSA-65 key
 3. Broadcasts to network
 4. Validator executes the contract function, which may:
    - Read/write state
@@ -563,7 +567,7 @@ A smart contract is a program that lives on the blockchain. Once deployed, it ru
 Splendor QC uses a smart contract language called **Quantum Solidity (QSol)** — a superset of Solidity with three additions and two removals:
 
 **Additions:**
-1. Built-in `verify_dilithium(pubkey, message, sig)` function for on-chain PQ signature verification
+1. Built-in `verify_mldsa(pubkey, message, sig)` function for on-chain PQ signature verification
 2. Built-in `sha3(data)` for quantum-safe hashing (instead of keccak256)
 3. Built-in `sqaddress` type for quantum addresses (32 bytes instead of 20)
 
@@ -600,7 +604,11 @@ The contract looks and feels like Solidity. A Solidity developer can learn QSol 
 
 ### Contract state is quantum-safe
 
-Account state is committed with a flat SHA-3-256 hash over the sorted set of account records, and that root is included in every block header. A full Sparse Merkle Tree (with per-account inclusion proofs) is planned but not yet implemented. IMPORTANT: today's commitment covers **accounts only** — contract code and contract storage slots are not yet included in the state root.
+State is committed with a binary Merkle root over the **entire** state — account records, contract code, contract storage slots, and X402 nonces — and that root is included in every block header. Leaves are length-prefixed and domain-separated before hashing, so no two different states can collide by concatenation ambiguity.
+
+Committing storage and code (not just balances) is what stops a silent fork: if the root covered accounts only, two nodes with byte-different token balances or DEX reserves could hash to the same root and "agree" while diverging.
+
+A full Sparse Merkle Tree, adding per-account inclusion proofs so a light client can verify one account without the whole state, is planned but not yet implemented.
 
 There is no SHA-256. No Keccak. SHA-3 everywhere.
 
@@ -623,10 +631,10 @@ In Phase 1, the network runs with a single validator. This is intentional.
 1. Receives transactions from the mempool
 2. Orders and executes them
 3. Builds blocks (every 1–2 seconds, or when the block is full)
-4. Signs the block with its Dilithium key
+4. Signs the block with its ML-DSA-65 key
 5. Broadcasts to all full nodes
 
-**Who operates it?** Splendor Protocol operates the genesis validator. The validator's Dilithium public key is hardcoded in the genesis block, so every node in the network knows exactly whose signatures to accept.
+**Who operates it?** Splendor Protocol operates the genesis validator. The validator's ML-DSA-65 public key is hardcoded in the genesis block, so every node in the network knows exactly whose signatures to accept.
 
 ### How blocks are signed
 
@@ -641,23 +649,23 @@ block_header = {
 }
 
 block_hash   = SHA3-256(JSON_encode(block_header))   // Go json.Marshal of the header
-block_sig    = Dilithium.Sign(validator_private_key, block_hash)
+block_sig    = ML_DSA_65.Sign(validator_private_key, block_hash, "SPLENDOR-QC-BLOCK-v1")
 ```
 
 Every full node verifies:
 ```
-Dilithium.Verify(validator_public_key, block_hash, block_sig) == true
+ML_DSA_65.Verify(validator_public_key, block_hash, "SPLENDOR-QC-BLOCK-v1", block_sig) == true
 ```
 
-If any node receives a block with an invalid Dilithium signature, it rejects it. This makes it impossible for anyone — quantum computer or not — to forge a block.
+If any node receives a block with an invalid ML-DSA-65 signature, it rejects it. This makes it impossible for anyone — quantum computer or not — to forge a block.
 
 ### Phase 2 and Beyond: Expanding Validators
 
 When the ecosystem is ready, additional validators join:
 
-- New validators register by staking SPLD and registering their Dilithium public key
-- Consensus upgrades to a BFT protocol (all signatures still Dilithium)
-- Governance is handled by token holders (voting via Dilithium-signed transactions)
+- New validators register by staking SPLD and registering their ML-DSA-65 public key
+- Consensus upgrades to a BFT protocol (all signatures still ML-DSA-65)
+- Governance is handled by token holders (voting via ML-DSA-65-signed transactions)
 
 The transition requires no chain restart, no hard fork in the data format sense — just a governance vote to activate multi-validator consensus.
 
@@ -682,7 +690,7 @@ Block {
         validator_addr:   SQ address (32 bytes)
     }
     block_hash:    SHA3-256(encoded_header)   // 32 bytes
-    validator_sig: Dilithium_signature         // 3309 bytes
+    validator_sig: ML-DSA-65_signature         // 3309 bytes
     transactions:  [signed_transaction, ...]
 }
 ```
@@ -692,19 +700,21 @@ Block {
 SHA-256 is generally considered quantum-safe for hashing (Grover's algorithm provides only a square-root speedup, leaving SHA-256 with ~128-bit security against quantum). However, Keccak-256 (used by Ethereum) is not NIST-standardised. SHA-3 (also based on Keccak but differently parameterised) IS the NIST standard (FIPS 202).
 
 Splendor QC uses SHA-3 because:
-- It is NIST FIPS 202 standardised — the same authority that standardised Dilithium
+- It is NIST FIPS 202 standardised — the same authority that standardised ML-DSA-65
 - It provides 256-bit output → 128-bit quantum security (Grover's algorithm)
 - It is consistent with NIST's overall post-quantum migration framework
 - Using the same standards body across all primitives simplifies compliance and auditing
 
-**State storage — flat SHA-3-256 account commitment (SMT planned):**
+**State storage — binary SHA-3-256 Merkle commitment over the whole state:**
 
-Account balances are committed with a flat SHA-3-256 hash over the sorted set of account records; that root is in every block header. A full Sparse Merkle Tree (with inclusion proofs) is planned but not yet implemented, and contract code/storage are not yet part of the commitment. This means:
+Accounts, contract code, contract storage slots, and X402 nonces are all hashed into a binary Merkle tree whose root is in every block header. Leaves are length-prefixed and domain-separated (leaf tag `0x00`, internal tag `0x01`) so distinct states cannot collide. This means:
 
-- Any node can prove any account's balance to any other node by providing a short Merkle proof
-- The proof chain: account data → SHA-3 leaf hash → SHA-3 parent hashes → state root in block header → block signed by validator
+- Two nodes that disagree on any balance, storage slot, or contract byte produce different roots, so divergence is detected instead of silently tolerated
+- The commitment chain: state leaf → SHA-3 leaf hash → SHA-3 parent hashes → state root in block header → block signed with ML-DSA-65
 - Every step is quantum-safe
 - Historical state can be queried by specifying any block height
+
+Not yet built: a **proof API**. The tree would support per-account inclusion proofs, but no endpoint serves them, so a light client cannot today verify one account without trusting a full node. That is what the planned Sparse Merkle Tree work is for.
 
 **Transaction Merkle tree:**
 
@@ -736,7 +746,7 @@ That's it. Every request to `/api/data` now requires a quantum-signed payment.
 ```
 1. Client sends:    GET /api/data
 2. Server responds: HTTP 402 { "pay_to": "SQ:...", "amount": "0.001" }
-3. Client signs payment with their Dilithium key
+3. Client signs payment with their ML-DSA-65 key
 4. Client sends:    GET /api/data
                     X-Payment: { signed_payment_payload }
 5. Server verifies payment with Splendor QC node
@@ -746,7 +756,7 @@ That's it. Every request to `/api/data` now requires a quantum-signed payment.
 **Payment on chain:**
 
 When the server calls `x402_settle`, the node:
-1. Verifies the Dilithium signature on the payment
+1. Verifies the ML-DSA-65 signature on the payment
 2. Deducts from client's balance
 3. Credits the API operator's balance
 4. Records in next block
@@ -778,7 +788,7 @@ The Splendor Quantum Chain is general-purpose infrastructure. Anything that can 
 ### DeFi (Decentralised Finance)
 
 **Decentralised Exchanges (DEX):**
-Users trade tokens directly with each other through smart contracts. No central exchange. No withdrawal limits. No KYC. All transactions signed with Dilithium.
+Users trade tokens directly with each other through smart contracts. No central exchange. No withdrawal limits. No KYC. All transactions signed with ML-DSA-65.
 
 **Lending and Borrowing:**
 Users deposit SPLD or other tokens as collateral, borrow other assets. Interest rates are set algorithmically. Liquidations are automatic. No bank involved.
@@ -795,7 +805,7 @@ DeFi manages billions of dollars. Today's DeFi on Ethereum will be vulnerable to
 
 NFTs on Splendor QC work the same as on Ethereum — unique digital assets representing art, music, game items, real-world assets.
 
-The key difference: **the ownership signature is Dilithium, not ECDSA**. An NFT on Ethereum proves ownership with ECDSA. A quantum computer could forge that proof. An NFT on Splendor QC proves ownership with Dilithium — which no known quantum algorithm can forge.
+The key difference: **the ownership signature is ML-DSA-65, not ECDSA**. An NFT on Ethereum proves ownership with ECDSA. A quantum computer could forge that proof. An NFT on Splendor QC proves ownership with ML-DSA-65 — which no known quantum algorithm can forge.
 
 For high-value digital art and real-world asset tokenization, this distinction matters enormously.
 
@@ -823,11 +833,11 @@ An autonomous AI agent — a software program that acts on behalf of a user, mak
 This is a fundamental bottleneck for autonomous AI. The AI can decide, reason, and act — but it can't pay.
 
 **What Splendor QC enables:**
-An AI agent has a Splendor QC wallet. Its Dilithium private key is stored securely in the agent's environment. When it needs to pay for something, it signs a payment transaction automatically. No human in the loop.
+An AI agent has a Splendor QC wallet. Its ML-DSA-65 private key is stored securely in the agent's environment. When it needs to pay for something, it signs a payment transaction automatically. No human in the loop.
 
 ```python
 # An AI agent that autonomously pays for API access
-agent = SplendorQCAgent(private_key=os.getenv('DILITHIUM_KEY'))
+agent = SplendorQCAgent(private_key=os.getenv('SQC_ML_DSA_KEY'))
 
 # Agent needs weather data — costs 0.001 SPLD per call
 weather = agent.fetch_with_payment(
@@ -849,12 +859,12 @@ This creates the foundation for a true **AI economy** — autonomous economic ag
 
 ### Identity and Credentials
 
-Since every Splendor QC account is anchored to a Dilithium key pair, accounts can be used as cryptographic identities.
+Since every Splendor QC account is anchored to an ML-DSA-65 key pair, accounts can be used as cryptographic identities.
 
 Use cases:
-- **Verifiable credentials:** A university issues a degree as a smart contract attestation, signed with the university's Dilithium key, recorded on-chain. The graduate proves their credential by showing the on-chain record — no third-party verification service needed.
+- **Verifiable credentials:** A university issues a degree as a smart contract attestation, signed with the university's ML-DSA-65 key, recorded on-chain. The graduate proves their credential by showing the on-chain record — no third-party verification service needed.
 - **KYC attestation:** A KYC provider attests that a user has been verified. The attestation is on-chain. The user's identity remains private (only the attestation is public). Any DApp can check whether the user is KYC-verified without seeing personal data.
-- **DAO voting:** Decentralised Autonomous Organisations use Dilithium-signed votes recorded on-chain. Quantum computers cannot forge votes.
+- **DAO voting:** Decentralised Autonomous Organisations use ML-DSA-65-signed votes recorded on-chain. Quantum computers cannot forge votes.
 
 ---
 
@@ -943,7 +953,7 @@ The blockchain industry has not acted. The first quantum-native chain that attra
 
 **Enterprise licensing:** Institutions that want private/permissioned deployments of the Splendor QC stack pay licensing fees.
 
-**Patent licensing:** The hybrid quantum wallet system (17 patent claims, filed) generates licensing revenue from other blockchains that want to implement similar systems.
+**Patent licensing:** The hybrid quantum wallet system is the subject of a filed patent application, intended to generate licensing revenue from other blockchains implementing similar systems. Filing numbers are not published in this repository; treat this as a stated intention rather than a granted patent.
 
 ### Why this wins
 
@@ -955,7 +965,7 @@ The blockchain industry has not acted. The first quantum-native chain that attra
 
 4. **AI agent economy.** The emergence of autonomous AI agents creates an entire new class of economic actors who need financial infrastructure. Splendor QC and X402 are that infrastructure.
 
-5. **Patent protection.** 17 filed claims covering the core innovations mean competitors cannot simply copy the approach without licensing.
+5. **Patent protection.** A filed application covers the core wallet innovations. Note that filed is not granted, and no filing numbers are published here, so this is not yet enforceable protection.
 
 ---
 
@@ -963,63 +973,60 @@ The blockchain industry has not acted. The first quantum-native chain that attra
 
 ### Built and working
 
-✅ Core chain architecture — quantum-native design finalized  
-✅ Dilithium key generation and signing — real implementation in Go  
-✅ SHA-3 hashing throughout — implemented  
-✅ Block structure with Dilithium validator signatures — implemented  
-✅ Transaction structure with quantum-safe format — implemented  
-✅ X402 payment protocol — implemented at node RPC level  
-✅ QSol language design — specification complete  
-✅ NFC card signing flow — designed and prototype-tested  
-✅ QR airgapped signing flow — designed and prototype-tested  
-✅ Patent application — 17 claims filed  
-✅ White paper and technical workings document — published  
+✅ Full node — Go implementation, runs a single-validator devnet  
+✅ ML-DSA-65 key generation and signing — FIPS 204, via CIRCL  
+✅ SHA-3-256 hashing throughout — implemented  
+✅ Blocks and transactions signed with domain-separated ML-DSA-65  
+✅ Whole-state Merkle commitment — accounts, code, storage, X402 nonces  
+✅ Smart contract VM — SQC-VM bytecode interpreter with native Go modules  
+✅ X402 payment protocol — settled through the mempool like any transaction  
+✅ ML-KEM-768 encrypted P2P + hybrid X25519MLKEM768 TLS  
+✅ Genesis and CLI wallet (`.sqwallet`, AES-256-GCM + Argon2id)  
+✅ JavaScript SDK and WASM signer (`@splendor/pq-bridge`, Connect UI)  
+✅ JSON RPC for balances, blocks, receipts, DEX, staking, governance, lending  
 
 ### In active development
 
-🔧 Full node implementation — Go codebase, building now  
-🔧 QSol compiler — bytecode generation from QSol source  
-🔧 Smart contract VM — execution engine for QSol bytecode  
-🔧 Wallet app — desktop and mobile UI  
-🔧 Block explorer — web interface to view chain data  
-🔧 SDK — JavaScript, Python, Go libraries  
-🔧 Genesis block — first validator setup and genesis configuration  
+🔧 Block explorer — JSON APIs exist; no web interface yet  
+🔧 Multi-validator consensus — `consensus/bft.go` written, not yet wired in  
+🔧 Performance — ~2,600–2,900 TPS block pipeline measured on one AWS host  
 
-### Planned (Phase 2)
+### Designed, not built
 
-📋 Multi-validator consensus — BFT protocol, all ML-DSA-65  
-📋 NFC card hardware — partnership with SE manufacturer  
-📋 AI agent SDK — Python and TypeScript libraries for autonomous agents  
-📋 Bridge protocol — connecting Splendor QC to other chains  
-📋 DeFi primitives — DEX, lending contracts in QSol  
+📋 QSol compiler — the language is specified, but no compiler exists; contracts are deployed as SQC-VM bytecode today  
+📋 Sparse Merkle Tree proof API — the state root is a Merkle tree, but no endpoint serves inclusion proofs  
+📋 Wallet apps — desktop and mobile UIs are designed only; today there is a CLI wallet and a browser Connect flow  
+📋 NFC card and QR airgapped signing — flows are designed; no hardware integration in this repo  
+📋 Python and Go SDKs — only the JavaScript/TypeScript SDK is published  
+📋 Bridge protocol and DeFi primitives in QSol  
 
 ---
 
 ## 17. AI at the Core — The Intelligent Node
 
-Splendor Quantum Chain is not just quantum-safe. It is also **AI-native at the infrastructure layer**. Every validator node and every RPC node embeds a local AI inference engine — purpose-built for blockchain operations — that makes the network faster, smarter, and more resilient without relying on any external service.
+Every node runs a small adaptive scheduler in-process, with no outbound API calls, no cloud dependency, and no data leaving the machine.
 
-### What "local AI" means here
+### What "local AI" means here — and what it does not
 
-This is not a chatbot or a cloud AI integration. It is a **lightweight, on-node AI inference engine** — the kind of implementation that best fits the specific operational needs of a blockchain node. The right form depends on the task:
+Be precise about this, because "AI" is an overloaded word. There is **no neural network, no ONNX runtime, and no trained model** in the node today. What ships in `ai/scheduler.go` is a compact statistical control loop:
 
-- For **pattern recognition and anomaly detection**: a trained neural network model running via ONNX Runtime or a similar embedded inference framework, consuming minimal CPU/memory.
-- For **scheduling and optimisation**: a reinforcement learning policy (a trained decision-making model) that continuously improves its transaction batching and ordering decisions based on real-time feedback from the node's performance metrics.
-- For **fee prediction and bid strategy**: a lightweight regression or gradient boosting model trained on historical fee data, running entirely in-process.
+- **Exponential moving average** over observed fee and mempool trends
+- **A reinforcement-learning-style greedy policy** that tunes block batch size up or down based on whether the last adjustment helped
+- **Rule-based anomaly detection** that flags a mempool spike above a fixed multiplier
 
-All of these run **on the node's own hardware**, with no outbound API calls, no cloud dependency, and no data leaving the machine.
+That is genuinely useful and genuinely local, but it is closer to adaptive control than to machine learning, and it should not be described as an inference engine.
 
-### What the local AI engine does
+### What the scheduler actually does
 
-**Transaction routing and scheduling:**
+The validator asks the scheduler for a batch size each round, and the scheduler adapts that number from the mempool depth it has observed:
 
-Instead of a static first-in-first-out queue, the node's AI scheduler continuously observes the mempool and makes intelligent batching decisions:
-- Groups transactions that access the same contract state (reducing contention and re-execution overhead)
-- Identifies fee spikes and dynamically re-prioritises the processing queue
-- Detects emerging spam or attack patterns early and adjusts throttling
-- Recommends batch sizes in real time based on current CPU, memory, and I/O load
+- Recommends how many transactions to pack into the next block, between a floor and a ceiling
+- Tracks a smoothed fee trend rather than reacting to a single block
+- Raises an anomaly flag when pending transactions spike sharply, so throttling can respond
 
-Measured result: **40–60% better throughput** compared to static scheduling on identical hardware.
+Not implemented, despite appearing in earlier drafts of this document: grouping transactions by contract state, re-prioritising the queue by fee, and reading CPU, memory, or I/O load. The only signal currently fed to the scheduler is mempool depth.
+
+**On throughput:** an earlier version of this section claimed a measured 40–60% improvement over static scheduling. That figure is not substantiated by any benchmark in this repository and has been withdrawn. What has been measured, on a single AWS host, is roughly 2,600–2,900 TPS through the block-production pipeline, with ML-DSA-65 verification well above that; see `docs/performance/`.
 
 **Anomaly detection:**
 
@@ -1065,7 +1072,7 @@ Splendor Quantum Chain is not just a "crypto project". It is infrastructure-grad
 **The regulatory timeline is not optional.**
 
 - The US government's NIST post-quantum migration mandate: 2030 deadline for federal systems
-- The NSA's Commercial National Security Algorithm Suite 2.0 (CNSA 2.0): mandates ML-DSA and ML-KEM (standardised from Dilithium and Kyber) for all classified systems by 2030
+- The NSA's Commercial National Security Algorithm Suite 2.0 (CNSA 2.0): mandates ML-DSA and ML-KEM (standardised from CRYSTALS-Dilithium and CRYSTALS-Kyber) for all classified systems by 2030
 - The Bank for International Settlements (BIS): has published quantum risk guidance for central banks
 - The European Union: has included post-quantum cryptography in its digital finance strategy
 - Financial regulators in Singapore, UK, and India: actively issuing PQC guidance
@@ -1087,7 +1094,7 @@ Smart contracts in QSol can enforce compliance rules automatically:
 - Automatic regulatory reporting via on-chain events
 
 **Interbank settlement:**
-Banks can operate validator nodes on Splendor QC. Interbank transactions settle directly on-chain, in real time, with Dilithium signatures replacing the correspondent banking system's trust model. No counterparty risk. No settlement lag. No intermediary.
+Banks can operate validator nodes on Splendor QC. Interbank transactions settle directly on-chain, in real time, with ML-DSA-65 signatures replacing the correspondent banking system's trust model. No counterparty risk. No settlement lag. No intermediary.
 
 **Trade finance:**
 Letters of credit, bills of lading, and trade finance instruments tokenized on Splendor QC:
@@ -1102,16 +1109,16 @@ A central bank operating a CBDC needs:
 - Quantum-safe cryptography ✅
 - Smart contract programmability for policy rules ✅
 - Native payment settlement protocol ✅
-- Scalability to national payment volumes ✅
+- Scalability to national payment volumes ❌ — measured throughput is roughly 2,600–2,900 TPS on a single host, which is nowhere near national retail payment volume
 
-Splendor QC's Phase 1 single-validator model maps directly to how a CBDC would be operated by a central bank: one trusted issuer, full ledger control, quantum-safe from day one.
+Splendor QC's Phase 1 single-validator model maps structurally onto how a CBDC would be operated by a central bank: one trusted issuer, full ledger control, quantum-safe from day one. To be clear about maturity, this is a Phase-1 prototype with a single validator, not a production real-time gross settlement system, and it should be evaluated as an architectural fit rather than a deployable one.
 
 ### Compliance features built in
 
 | Requirement | How Splendor QC addresses it |
 |-------------|------------------------------|
 | Post-quantum cryptography mandate | NIST FIPS 202, 203, 204 — all three standards |
-| Transaction immutability | SHA-3 Merkle proofs, Dilithium-signed blocks |
+| Transaction immutability | SHA-3 Merkle proofs, ML-DSA-65-signed blocks |
 | Auditability | Full on-chain transaction history, queryable at any block height |
 | Sanctions compliance | Wallet blocklist enforced at the smart contract layer |
 | KYC integration | On-chain attestation model — KYC provider signs attestation, DApps check it |
