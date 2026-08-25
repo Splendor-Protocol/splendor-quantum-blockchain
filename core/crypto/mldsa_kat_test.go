@@ -16,6 +16,10 @@ const katSeedText = "splendor-quantum-kat-seed-000001"
 // upgrade, a parameter change, or an accidental switch back to round-3
 // Dilithium alters the scheme, these hashes change and the build fails loudly
 // instead of silently forking every wallet and validator on the network.
+//
+// They say nothing about whether the scheme is CORRECT — a self-pinned value
+// locks in whatever we produced on the day. Conformance to the standard itself
+// is covered by the official NIST vectors in acvp_test.go.
 const (
 	katPubKeyHash  = "a1384dd6dfb705282f8f7e239d34337ae48f1c2f212db49f8ebf87d60a396325"
 	katPrivKeyHash = "ce564aeaad15f83f2ffe6c150a2347f869aa08acb0fac5b2312c474c7c429839"
