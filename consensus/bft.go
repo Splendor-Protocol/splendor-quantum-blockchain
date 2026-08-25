@@ -45,8 +45,14 @@ type ValidatorInfo struct {
 }
 
 // Vote is a validator's signed attestation that it accepts a proposed block.
-// All votes are signed with ML-DSA-65 — no ECDSA.
+// All votes are signed with ML-DSA-65 — no ECDSA, and no Ed25519 "for speed":
+// a classical signature anywhere in consensus would make the whole chain
+// forgeable by a quantum adversary regardless of how post-quantum the rest is.
 type Vote struct {
+	// AlgID names the signature scheme, exactly as blocks and transactions do,
+	// so a future second scheme cannot be silently substituted here.
+	AlgID string `json:"alg_id"`
+
 	// Height is the block height this vote is for.
 	Height uint64 `json:"height"`
 
@@ -68,6 +74,7 @@ type Vote struct {
 
 // VoteBody is the canonical signable subset of Vote (excludes Signature).
 type VoteBody struct {
+	AlgID         string          `json:"alg_id"`
 	Height        uint64          `json:"height"`
 	Round         uint32          `json:"round"`
 	BlockHash     [32]byte        `json:"block_hash"`
@@ -76,8 +83,12 @@ type VoteBody struct {
 }
 
 // Hash computes SHA3-256 of the canonical vote body.
+//
+// AlgID is inside the signed body, so an attacker cannot downgrade a vote by
+// rewriting the algorithm label on the wire.
 func (v *Vote) Hash() ([32]byte, error) {
 	body := VoteBody{
+		AlgID:         v.AlgID,
 		Height:        v.Height,
 		Round:         v.Round,
 		BlockHash:     v.BlockHash,
@@ -91,8 +102,11 @@ func (v *Vote) Hash() ([32]byte, error) {
 	return qcrypto.Hash32(b), nil
 }
 
-// Sign signs the vote with the given ML-DSA-65 private key.
+// Sign signs the vote with the given ML-DSA-65 private key, under the vote
+// domain context so a vote signature can never be replayed as a block or
+// transaction signature.
 func (v *Vote) Sign(priv *qcrypto.PrivateKey) error {
+	v.AlgID = qcrypto.AlgMLDSA65
 	hash, err := v.Hash()
 	if err != nil {
 		return fmt.Errorf("vote hash failed: %w", err)
@@ -107,9 +121,20 @@ func (v *Vote) Sign(priv *qcrypto.PrivateKey) error {
 
 // Verify verifies the vote's ML-DSA-65 signature against the given public key.
 func (v *Vote) Verify(pubKeyBytes []byte) error {
+	if v.AlgID != qcrypto.AlgMLDSA65 {
+		return fmt.Errorf("unsupported vote alg_id %q: consensus accepts only %s",
+			v.AlgID, qcrypto.AlgMLDSA65)
+	}
 	pub, err := qcrypto.PublicKeyFromBytes(pubKeyBytes)
 	if err != nil {
 		return fmt.Errorf("invalid voter pubkey: %w", err)
+	}
+	// The vote names its author, so that name must be the owner of the key
+	// checking it. Without this, a valid signature from validator A could be
+	// counted as a vote from validator B and inflate a quorum.
+	if qcrypto.DeriveAddress(pub) != v.ValidatorAddr {
+		return fmt.Errorf("vote claims to be from %s but the key belongs to %s",
+			v.ValidatorAddr, qcrypto.DeriveAddress(pub))
 	}
 	hash, err := v.Hash()
 	if err != nil {
