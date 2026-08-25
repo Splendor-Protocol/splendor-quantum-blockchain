@@ -137,7 +137,11 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 		return &VerifyResult{Reason: "payment receiver does not match requirements"}
 	}
 
-	// 3. Amount must be sufficient
+	// 3. Amount must be sufficient. Guard req.Amount too: a null requirements
+	// amount would make big.Int.Cmp(nil) panic and crash the request goroutine.
+	if req.Amount == nil {
+		return &VerifyResult{Reason: "requirements amount is missing"}
+	}
 	if payload.Amount == nil || payload.Amount.Cmp(req.Amount) < 0 {
 		return &VerifyResult{
 			Reason: fmt.Sprintf("payment amount insufficient: got %s, need %s",

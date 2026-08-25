@@ -132,8 +132,11 @@ func (v *Validator) produceBlock() error {
 		return fmt.Errorf("ProduceBlock failed at height %d: %w", height, err)
 	}
 
-	// Remove included transactions from mempool
+	// Remove included transactions from mempool, then drop any now-stale entries
+	// (skipped/failed txs below the sender's committed nonce) so they release their
+	// per-address slots instead of jamming MaxPerAddr.
 	v.pool.RemoveBlock(b)
+	v.pool.PruneStale()
 
 	// Notify subscribers (P2P, RPC)
 	for _, ch := range v.subscribers {

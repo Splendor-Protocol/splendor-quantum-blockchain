@@ -316,6 +316,12 @@ func (m *memory) storeByte(offset int, b byte) error {
 }
 
 func (m *memory) load(offset, size int) ([]byte, error) {
+	// Reject negative/oversized offsets and sizes BEFORE make(): a 256-bit length
+	// truncated by int(bigVal.Int64()) can be negative (→ make panics) or huge
+	// (→ a multi-GiB allocation). Bound both to the memory ceiling.
+	if offset < 0 || size < 0 || size > MaxMemoryBytes || offset > MaxMemoryBytes {
+		return nil, fmt.Errorf("memory load out of range: offset=%d size=%d", offset, size)
+	}
 	result := make([]byte, size)
 	if offset < len(m.data) {
 		n := copy(result, m.data[offset:])
@@ -1038,7 +1044,7 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 					toAddr = ctx.Contract
 				}
 				var callErr error
-				subResult, callErr = e.CallWithContext(caller, origin, toAddr, calldata, value, ctx.BlockHeight, ctx.Timestamp, isStatic)
+				subResult, callErr = e.callAtDepth(caller, origin, toAddr, calldata, value, ctx.BlockHeight, ctx.Timestamp, isStatic, ctx.Depth+1)
 				if callErr != nil && subResult == nil {
 					subResult = &ExecutionResult{Err: callErr}
 				}
@@ -1207,6 +1213,17 @@ func (e *Engine) Call(caller, contract qcrypto.Address, calldata []byte, value *
 }
 
 func (e *Engine) CallWithContext(caller, origin, contract qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool) (*ExecutionResult, error) {
+	return e.callAtDepth(caller, origin, contract, calldata, value, blockHeight, timestamp, isStatic, 0)
+}
+
+// callAtDepth runs a (sub)call at an explicit call depth so recursion is bounded
+// by MaxCallDepth. The CALL opcode passes ctx.Depth+1; top-level entries pass 0.
+// Previously every subcall built a fresh Depth=0 context, so MaxCallDepth never
+// triggered and a self-recursive contract exhausted the node's stack/heap.
+func (e *Engine) callAtDepth(caller, origin, contract qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int) (*ExecutionResult, error) {
+	if depth > MaxCallDepth {
+		return &ExecutionResult{Err: fmt.Errorf("max call depth exceeded")}, fmt.Errorf("max call depth exceeded")
+	}
 	// Check precompile
 	if e.precompiles.IsPrecompile(contract) {
 		out, gas, err := e.precompiles.Call(contract, calldata, MaxGasPerCall)
@@ -1228,7 +1245,7 @@ func (e *Engine) CallWithContext(caller, origin, contract qcrypto.Address, calld
 		Caller: caller, Origin: origin, Contract: contract,
 		CallValue: value, Input: calldata, Code: code,
 		BlockHeight: blockHeight, Timestamp: timestamp,
-		IsStatic: isStatic, Gas: MaxGasPerCall,
+		IsStatic: isStatic, Gas: MaxGasPerCall, Depth: depth,
 		Logs: make([]*types.Log, 0),
 	}
 	result := e.Execute(ctx)

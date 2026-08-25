@@ -21,6 +21,13 @@ const (
 	prefixBlock   = "block:"
 	prefixHeight  = "height:"
 	keyLatest     = "latest"
+
+	// MaxBlockGas caps the total VM gas a block may consume (mirrors
+	// config.MaxBlockGas). Without enforcement, 10k txs * MaxGasPerCall (10M) =
+	// 100B gas of compute per block, letting a funded attacker force blocks that
+	// take far longer than the target interval. ProduceBlock stops including txs
+	// past this budget; ExecuteBlock rejects a block that exceeds it.
+	MaxBlockGas uint64 = 500_000_000_000
 )
 
 // Executor executes blocks and manages the chain database.
@@ -107,13 +114,22 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 
 	var receipts []*types.Receipt
 	totalFees := new(bigInt)
+	var blockGas uint64
 
 	for i, tx := range b.Transactions {
-		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Hash)
+		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
 		if err != nil {
 			return fmt.Errorf("tx %d failed: %w", i, err)
 		}
 		receipts = append(receipts, receipt)
+
+		// Reject a block that exceeds the consensus gas budget (defence against a
+		// producer packing far more compute than the interval can process).
+		blockGas += receipt.GasUsed
+		if blockGas > MaxBlockGas {
+			e.state.DiscardPending()
+			return fmt.Errorf("block exceeds gas budget: %d > %d", blockGas, MaxBlockGas)
+		}
 
 		// Accumulate fees for validator credit (mirrors ProduceBlock).
 		// Blocks from the validator only contain txs that executed successfully,
@@ -180,7 +196,7 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 }
 
 // executeTxWithReceipt processes a single transaction and returns a receipt.
-func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockHash [32]byte) (*types.Receipt, error) {
+func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockTime int64, blockHash [32]byte) (*types.Receipt, error) {
 	receipt, err := types.NewReceipt(tx, txIndex, blockHeight, blockHash)
 	if err != nil {
 		return nil, fmt.Errorf("receipt init failed: %w", err)
@@ -193,7 +209,14 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 		}
 	}
 
-	if err := e.executeTx(tx, blockHeight, receipt); err != nil {
+	// Execute inside a snapshot so a FAILED tx leaves NO state residue.
+	// execCall/execDeploy/execX402 deduct the fee and bump the nonce BEFORE the
+	// operation; without this revert, a failed op keeps that dirty mutation, so
+	// the block's account state (and thus the state root) reflects a tx that the
+	// producer excluded — producer and followers then compute divergent roots.
+	snap := e.state.Snapshot()
+	if err := e.executeTx(tx, blockHeight, blockTime, receipt); err != nil {
+		e.state.RevertToSnapshot(snap)
 		receipt.SetFailed(err.Error())
 		log.Warn().Err(err).
 			Str("from", tx.From.String()).
@@ -201,12 +224,24 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 			Msg("transaction failed")
 		return receipt, nil
 	}
+	e.state.CommitSnapshot(snap)
 
 	return receipt, nil
 }
 
 // executeTx processes a single transaction, updating receipt with logs and gas.
-func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, receipt *types.Receipt) error {
+//
+// It recovers from panics in the VM / native-module execution: crafted bytecode
+// (e.g. a negative make() size from a 256-bit length, or an unbounded EXP) could
+// otherwise panic and CRASH the validator + every follower — halting the chain.
+// A recovered panic becomes an error, which the caller's snapshot reverts, so the
+// tx is recorded as failed and the block continues.
+func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTime int64, receipt *types.Receipt) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("tx execution panic: %v", r)
+		}
+	}()
 	if err := tx.Validate(); err != nil {
 		return fmt.Errorf("validation: %w", err)
 	}
@@ -253,7 +288,7 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, receipt 
 	case types.TxDeploy:
 		return e.execDeploy(tx, fromAcc, receipt)
 	case types.TxCall:
-		return e.execCall(tx, fromAcc, receipt, blockHeight)
+		return e.execCall(tx, fromAcc, receipt, blockHeight, blockTime)
 	case types.TxX402:
 		return e.execX402(tx, fromAcc, receipt, blockHeight)
 	default:
@@ -305,7 +340,7 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, rec
 	return nil
 }
 
-func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
+func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64, blockTime int64) error {
 	if tx.To == vm.ModuleRouterAddress {
 		if err := fromAcc.SubBalance(tx.Fee); err != nil {
 			return err
@@ -324,7 +359,7 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 
 	result, err := e.vmEngine.CallWithContext(
 		tx.From, tx.From, tx.To, tx.Data, tx.Amount,
-		blockHeight, time.Now().Unix(), false,
+		blockHeight, blockTime, false,
 	)
 	if err != nil {
 		return fmt.Errorf("call failed: %w", err)
@@ -349,23 +384,35 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 }
 
 func (e *Executor) execX402(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
-	if err := fromAcc.SubBalance(tx.Fee); err != nil {
+	// Replay guard: reject a reused X402 payment nonce.
+	nonceKey := qcrypto.Hash32(append(tx.From[:], tx.Data...))
+	if used, err := e.state.IsX402NonceUsed(nonceKey); err != nil {
+		return fmt.Errorf("X402 nonce check: %w", err)
+	} else if used {
+		return fmt.Errorf("X402 nonce already used")
+	}
+
+	if err := fromAcc.SubBalance(addBig(tx.Amount, tx.Fee)); err != nil {
 		return err
 	}
 	fromAcc.IncrNonce()
 
-	toAcc, err := e.state.GetAccount(tx.To)
-	if err != nil {
-		return err
+	if tx.To == tx.From {
+		// Self-payment: mutate ONE account object. Previously GetAccount(tx.To)
+		// returned a stale copy taken before the from-side writes, and writing it
+		// last silently discarded the fee/nonce updates.
+		fromAcc.AddBalance(tx.Amount)
+		e.state.SetAccount(fromAcc)
+	} else {
+		e.state.SetAccount(fromAcc)
+		toAcc, err := e.state.GetAccount(tx.To)
+		if err != nil {
+			return err
+		}
+		toAcc.AddBalance(tx.Amount)
+		e.state.SetAccount(toAcc)
 	}
-	if err := fromAcc.SubBalance(tx.Amount); err != nil {
-		return err
-	}
-	toAcc.AddBalance(tx.Amount)
-	e.state.SetAccount(fromAcc)
-	e.state.SetAccount(toAcc)
 
-	nonceKey := qcrypto.Hash32(append(tx.From[:], tx.Data...))
 	if err := e.state.MarkX402NonceUsed(nonceKey, blockHeight); err != nil {
 		return fmt.Errorf("X402 nonce: %w", err)
 	}
@@ -394,18 +441,39 @@ func (e *Executor) ProduceBlock(
 		txs = txs[:MaxTxPerBlock]
 	}
 
+	// Stamp the block time ONCE and use it for BOTH execution and the header, so a
+	// contract reading OpTIMESTAMP sees the same value the producer committed to.
+	// (Previously execution used time.Now() at each executeTx, so a follower
+	// re-executing at a different wall-clock computed a divergent state root.)
+	blockTime := time.Now().Unix()
+
 	var (
 		totalFees = new(bigInt)
 		executed  []*types.Transaction
 		receipts  []*types.Receipt
+		blockGas  uint64
 	)
 
 	for i, tx := range txs {
+		// Snapshot so a skipped (failed) tx leaves NO residue: executeTx deducts
+		// fee + bumps nonce before the op, so without reverting, a failed tx that
+		// is excluded from `executed` would still dirty the state → the block's
+		// root reflects a tx not in Transactions and followers reject it.
+		snap := e.state.Snapshot()
 		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{})
-		if err := e.executeTx(tx, height, receipt); err != nil {
+		if err := e.executeTx(tx, height, blockTime, receipt); err != nil {
+			e.state.RevertToSnapshot(snap)
 			log.Warn().Err(err).Msg("skipping invalid tx")
 			continue
 		}
+		// Stop packing once the block gas budget is reached (txs are fee-sorted,
+		// so we keep the most valuable ones). Revert this tx's state before break.
+		if blockGas+receipt.GasUsed > MaxBlockGas {
+			e.state.RevertToSnapshot(snap)
+			break
+		}
+		e.state.CommitSnapshot(snap)
+		blockGas += receipt.GasUsed
 		totalFees.Add(totalFees, tx.Fee)
 		executed = append(executed, tx)
 		receipts = append(receipts, receipt)
@@ -433,7 +501,7 @@ func (e *Executor) ProduceBlock(
 
 	header := types.BlockHeader{
 		Height:        height,
-		Timestamp:     time.Now().Unix(),
+		Timestamp:     blockTime,
 		ChainID:       types.ChainID,
 		PrevHash:      prevHash,
 		TxMerkleRoot:  txMerkleRoot,

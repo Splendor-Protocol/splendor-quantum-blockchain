@@ -9,7 +9,53 @@ import (
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
+
+// A tx that FAILS after mutating state (fee deducted + nonce bumped, then the op
+// errors) must leave NO residue: the producer excludes it, and a follower seeded
+// identically must still ACCEPT the produced block (roots match). Pre-fix, the
+// skipped tx's fee/nonce mutation stayed in the producer's state → the root
+// reflected a tx absent from Transactions → every follower rejected the block.
+func TestExecuteBlockFailedTxLeavesNoResidue(t *testing.T) {
+	pub, priv, _ := qcrypto.GenerateKeypair()
+	from := qcrypto.DeriveAddress(pub)
+	to := testAddr(0x55)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	vaddr := qcrypto.DeriveAddress(vpub)
+
+	// Producer: a GOOD transfer (nonce 0) + a BAD module-router call (nonce 1)
+	// that errors inside DispatchModuleCall after fee/nonce were mutated.
+	exA, sdbA := newTestExecutor(t)
+	defer exA.Close()
+	defer sdbA.Close()
+	fund(t, sdbA, from, 1_000_000)
+	good := signedTransfer(t, from, priv, to, 100, 0)
+	bad := types.NewCall(from, vm.ModuleRouterAddress, []byte("not-a-valid-module-envelope"),
+		big.NewInt(0), big.NewInt(testFee), 1, time.Now().Unix())
+	if err := bad.Sign(priv, true); err != nil {
+		t.Fatalf("sign bad call: %v", err)
+	}
+	b1, err := exA.ProduceBlock([]*types.Transaction{good, bad}, vaddr, vpub.Bytes(), vpriv, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+	if len(b1.Transactions) != 1 {
+		t.Fatalf("block has %d txs, want 1 (the failing call must be excluded)", len(b1.Transactions))
+	}
+
+	// Follower seeded identically must ACCEPT the block (no residue → roots match).
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+	fund(t, sdbB, from, 1_000_000)
+	if err := exB.ExecuteBlock(b1); err != nil {
+		t.Fatalf("follower rejected block from a failed-tx producer (residue leaked): %v", err)
+	}
+	if n, _ := sdbB.GetNonce(from); n != 1 {
+		t.Fatalf("sender nonce = %d, want 1 (a failed tx must not consume a nonce)", n)
+	}
+}
 
 func newTestExecutor(t *testing.T) (*Executor, *state.StateDB) {
 	t.Helper()
@@ -42,12 +88,16 @@ func fund(t *testing.T, sdb *state.StateDB, addr qcrypto.Address, amt int64) {
 	}
 }
 
-// signedTransfer builds a fee=0 transfer so ProduceBlock (which credits fees to
-// the validator) and ExecuteBlock (which does not) produce the identical state —
-// keeping the happy-path test focused on the commit/verify ordering.
+const testFee = int64(1000)
+
+// signedTransfer builds a signed transfer with a NONZERO fee. With the fee-credit
+// fix in ExecuteBlock, ProduceBlock (producer) and ExecuteBlock (follower) now
+// reach the IDENTICAL post-state for a fee-bearing block — both credit the fee to
+// the validator — so a produced block applies cleanly on a fresh node instead of
+// diverging on state root.
 func signedTransfer(t *testing.T, from qcrypto.Address, priv *qcrypto.PrivateKey, to qcrypto.Address, amount int64, nonce uint64) *types.Transaction {
 	t.Helper()
-	tx := types.NewTransfer(from, to, big.NewInt(amount), big.NewInt(0), nonce, time.Now().Unix())
+	tx := types.NewTransfer(from, to, big.NewInt(amount), big.NewInt(testFee), nonce, time.Now().Unix())
 	if err := tx.Sign(priv, true); err != nil {
 		t.Fatalf("sign tx: %v", err)
 	}
@@ -82,18 +132,25 @@ func TestExecuteBlockAcceptsValidBlockAndAdvancesHead(t *testing.T) {
 	fund(t, sdbB, from, 1_000_000)
 
 	if err := exB.ExecuteBlock(b1); err != nil {
-		t.Fatalf("valid block was rejected by ExecuteBlock: %v", err)
+		t.Fatalf("valid fee-bearing block was rejected by ExecuteBlock: %v (fee-credit fix regressed?)", err)
 	}
 	if h, _ := exB.LatestHeight(); h != 1 {
 		t.Fatalf("head did not advance: got %d, want 1", h)
 	}
 	fromBal, _ := sdbB.GetBalance(from)
-	if fromBal.Cmp(big.NewInt(1_000_000-100)) != 0 {
-		t.Fatalf("sender balance = %s, want 999900 (state not committed correctly)", fromBal)
+	if fromBal.Cmp(big.NewInt(1_000_000-100-testFee)) != 0 {
+		t.Fatalf("sender balance = %s, want %d", fromBal, 1_000_000-100-testFee)
 	}
 	toBal, _ := sdbB.GetBalance(to)
 	if toBal.Cmp(big.NewInt(100)) != 0 {
 		t.Fatalf("recipient balance = %s, want 100", toBal)
+	}
+	// The follower must have credited the fee to the validator, exactly like the
+	// producer did — this is the fee-credit fix (item 2). Without it, the block's
+	// state root would not have matched and ExecuteBlock above would have failed.
+	vBal, _ := sdbB.GetBalance(vaddr)
+	if vBal.Cmp(big.NewInt(testFee)) != 0 {
+		t.Fatalf("validator fee credit = %s, want %d (fee not credited on apply path)", vBal, testFee)
 	}
 }
 

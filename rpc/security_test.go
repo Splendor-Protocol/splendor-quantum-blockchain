@@ -48,6 +48,33 @@ func TestValidatePeerURLSSRF(t *testing.T) {
 	}
 }
 
+// AllowPrivatePeers opt-in must let loopback/private peers through (for private-
+// network / local multi-node clusters) while still rejecting bad schemes/hosts —
+// and must stay OFF by default so the public SSRF protection is the baseline.
+func TestAllowPrivatePeersToggle(t *testing.T) {
+	// Default: loopback/private rejected.
+	if err := network.IsSafePeerURL("http://127.0.0.1:8080"); err == nil {
+		t.Fatal("default should reject loopback")
+	}
+
+	network.AllowPrivatePeers = true
+	defer func() { network.AllowPrivatePeers = false }()
+
+	if err := network.IsSafePeerURL("http://127.0.0.1:8080"); err != nil {
+		t.Fatalf("loopback should be allowed with AllowPrivatePeers: %v", err)
+	}
+	if err := network.IsSafePeerURL("http://10.0.0.5:8080"); err != nil {
+		t.Fatalf("private IP should be allowed with AllowPrivatePeers: %v", err)
+	}
+	// Scheme/host are still validated even in private mode.
+	if err := network.IsSafePeerURL("ftp://example.com"); err == nil {
+		t.Fatal("non-http scheme must still be rejected in private mode")
+	}
+	if err := network.IsSafePeerURL("http://"); err == nil {
+		t.Fatal("missing host must still be rejected in private mode")
+	}
+}
+
 func newTestServer(t *testing.T, authToken string, x402 bool) *Server {
 	t.Helper()
 	sdb, err := state.NewStateDB(t.TempDir())
