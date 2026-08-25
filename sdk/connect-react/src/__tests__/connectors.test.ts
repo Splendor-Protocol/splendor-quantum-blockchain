@@ -30,6 +30,27 @@ describe('assertSeedHex', () => {
   });
 });
 
+describe('post-quantum labelling', () => {
+  // A connector that silently claims to be quantum-safe is worse than one that
+  // is honest about being derived from ECDSA, so these flags are asserted
+  // rather than left to review.
+  it('marks every EVM-derived connector as not post-quantum', () => {
+    for (const c of [
+      metamaskConnector(),
+      injectedConnector({ ethereumProvider: {} as EthereumProvider }),
+    ]) {
+      expect(c.keyOrigin).toBe('evm-derived');
+      expect(c.postQuantumSecure).toBe(false);
+    }
+  });
+
+  it('marks the native seed connector as post-quantum', () => {
+    const c = seedConnector();
+    expect(c.keyOrigin).toBe('native');
+    expect(c.postQuantumSecure).toBe(true);
+  });
+});
+
 describe('metamaskConnector', () => {
   afterEach(() => {
     delete (globalThis as { ethereum?: unknown }).ethereum;

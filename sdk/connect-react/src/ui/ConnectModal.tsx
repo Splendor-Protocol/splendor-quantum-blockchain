@@ -115,6 +115,14 @@ export function ConnectModal() {
                 <span className="sqc-connector-item__icon">{renderIcon(c)}</span>
                 <span className="sqc-connector-item__meta">
                   {c.name}
+                  {c.postQuantumSecure === false ? (
+                    <span
+                      className="sqc-connector-item__badge"
+                      title="This account's key is derived from an Ethereum signature, so it is only as strong as secp256k1. Transactions are signed with ML-DSA-65, but a quantum adversary who breaks ECDSA could reproduce this key. Use a native seed for funds you intend to hold."
+                    >
+                      Not quantum-safe
+                    </span>
+                  ) : null}
                   <span className="sqc-connector-item__hint">
                     {busyId === c.id
                       ? connectingStep === 'init'
@@ -124,7 +132,9 @@ export function ConnectModal() {
                         ? 'Checking…'
                         : unavailable
                           ? 'Wallet not detected'
-                          : 'Sign once to unlock PQ wallet'}
+                          : c.postQuantumSecure === false
+                            ? 'Key derived from ECDSA — convenient, not post-quantum'
+                            : 'Sign once to unlock PQ wallet'}
                   </span>
                 </span>
               </button>
