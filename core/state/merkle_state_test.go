@@ -206,3 +206,62 @@ func TestMerkleRootConstruction(t *testing.T) {
 		t.Fatal("distinct leaf sets produced the same root")
 	}
 }
+
+// The journaled snapshot must restore the PRE-snapshot value even when a key is
+// mutated multiple times inside the snapshot (LIFO undo), and must handle nested
+// snapshots — the cases where a naive undo-log breaks.
+func TestJournalSnapshotSemantics(t *testing.T) {
+	sdb, err := NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+
+	addr := mkAddr(0x42)
+	set := func(bal int64) {
+		a := types.NewAccount(addr)
+		a.AddBalance(big.NewInt(bal))
+		sdb.SetAccount(a)
+	}
+	bal := func() int64 {
+		b, _ := sdb.GetBalance(addr)
+		return b.Int64()
+	}
+
+	set(100)
+	snap := sdb.Snapshot()
+	// Multiple mutations to the same account inside the snapshot.
+	set(200)
+	set(300)
+	set(400)
+	if bal() != 400 {
+		t.Fatalf("pre-revert balance = %d, want 400", bal())
+	}
+	sdb.RevertToSnapshot(snap)
+	if bal() != 100 {
+		t.Fatalf("balance after revert = %d, want 100 (LIFO undo broken)", bal())
+	}
+
+	// Nested snapshots: revert inner keeps outer's changes; revert outer undoes all.
+	set(500)
+	outer := sdb.Snapshot()
+	set(600)
+	inner := sdb.Snapshot()
+	set(700)
+	sdb.RevertToSnapshot(inner)
+	if bal() != 600 {
+		t.Fatalf("after inner revert = %d, want 600", bal())
+	}
+	sdb.RevertToSnapshot(outer)
+	if bal() != 500 {
+		t.Fatalf("after outer revert = %d, want 500", bal())
+	}
+
+	// CommitSnapshot keeps changes.
+	keep := sdb.Snapshot()
+	set(999)
+	sdb.CommitSnapshot(keep)
+	if bal() != 999 {
+		t.Fatalf("after CommitSnapshot = %d, want 999", bal())
+	}
+}

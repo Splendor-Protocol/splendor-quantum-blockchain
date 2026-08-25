@@ -80,8 +80,16 @@ type StateDB struct {
 	appliedHeight uint64
 	heightKnown   bool
 
-	// Active snapshots for rollback support (snapshot ID → snapshot data)
-	snapshots map[uint64]*StateSnapshot
+	// journal is an undo-log of every pending mutation since the block started.
+	// Snapshot() records the journal length (O(1)); RevertToSnapshot() replays
+	// the tail undos back to that mark (O(changes-since-mark)). This replaces the
+	// old copy-the-whole-dirty-set-per-snapshot scheme, which was O(N^2) across a
+	// block (a per-tx snapshot deep-copied every account dirtied so far, each with
+	// its ~2 KiB pubkey) and capped block throughput far below the verify bound.
+	journal []func()
+
+	// snapshots maps a snapshot ID to its journal-length mark.
+	snapshots map[uint64]int
 }
 
 // NewStateDB opens (or creates) the state database at the given path.
@@ -96,7 +104,7 @@ func NewStateDB(path string) (*StateDB, error) {
 		codeCache:  make(map[[32]byte][]byte),
 		pendingRaw: make(map[string][]byte),
 		leaves:     make(map[string][32]byte),
-		snapshots:  make(map[uint64]*StateSnapshot),
+		snapshots:  make(map[uint64]int),
 	}
 	if err := s.loadLeaves(); err != nil {
 		db.Close()
@@ -171,7 +179,16 @@ func (s *StateDB) GetAccount(addr qcrypto.Address) (*types.Account, error) {
 func (s *StateDB) SetAccount(acc *types.Account) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.dirty[acc.Address] = acc.Copy()
+	addr := acc.Address
+	prev, had := s.dirty[addr]
+	s.journal = append(s.journal, func() {
+		if had {
+			s.dirty[addr] = prev
+		} else {
+			delete(s.dirty, addr)
+		}
+	})
+	s.dirty[addr] = acc.Copy()
 }
 
 // GetBalance returns the SPLD balance of an account (in smallest unit).
@@ -244,6 +261,14 @@ func (s *StateDB) Transfer(from, to qcrypto.Address, amount *big.Int) error {
 func (s *StateDB) SetCode(codeHash [32]byte, code []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	prev, had := s.codeCache[codeHash]
+	s.journal = append(s.journal, func() {
+		if had {
+			s.codeCache[codeHash] = prev
+		} else {
+			delete(s.codeCache, codeHash)
+		}
+	})
 	s.codeCache[codeHash] = code
 }
 
@@ -287,8 +312,21 @@ func (s *StateDB) SetStorageValue(contract qcrypto.Address, slot [32]byte, value
 	copy(cp, value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.journalRaw(k)
 	s.pendingRaw[k] = cp
 	return nil
+}
+
+// journalRaw records an undo for a pendingRaw key. Caller holds s.mu.
+func (s *StateDB) journalRaw(k string) {
+	prev, had := s.pendingRaw[k]
+	s.journal = append(s.journal, func() {
+		if had {
+			s.pendingRaw[k] = prev
+		} else {
+			delete(s.pendingRaw, k)
+		}
+	})
 }
 
 // GetStorageValue retrieves a contract storage slot value (pending overlay first).
@@ -321,6 +359,7 @@ func (s *StateDB) MarkX402NonceUsed(nonceKey [32]byte, blockHeight uint64) error
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.journalRaw(k)
 	s.pendingRaw[k] = val
 	return nil
 }
@@ -428,6 +467,8 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	s.dirty = make(map[qcrypto.Address]*types.Account)
 	s.codeCache = make(map[[32]byte][]byte)
 	s.pendingRaw = make(map[string][]byte)
+	s.journal = nil
+	s.snapshots = make(map[uint64]int)
 
 	return merkleRoot(s.leaves), nil
 }
@@ -545,4 +586,6 @@ func (s *StateDB) DiscardPending() {
 	s.dirty = make(map[qcrypto.Address]*types.Account)
 	s.codeCache = make(map[[32]byte][]byte)
 	s.pendingRaw = make(map[string][]byte)
+	s.journal = nil
+	s.snapshots = make(map[uint64]int)
 }
