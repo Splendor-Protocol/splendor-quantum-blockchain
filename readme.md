@@ -266,7 +266,7 @@ After this point, all future transactions from this address are verified against
 
 ### The key size challenge and how we solve it
 
-A ML-DSA-65 private key is 4,032 bytes — 126 times larger than an Ethereum private key (32 bytes). You cannot just write it on a piece of paper like a seed phrase. Splendor Quantum Chain solves this with three storage options:
+A ML-DSA-65 private key is 4,032 bytes — 126 times larger than an Ethereum private key (32 bytes). You cannot just write it on a piece of paper like a seed phrase. One storage option ships today; the two hardware options below it are designs:
 
 ---
 
@@ -275,26 +275,39 @@ A ML-DSA-65 private key is 4,032 bytes — 126 times larger than an Ethereum pri
 The private key is stored in an encrypted file on the user's device. The file is encrypted using a password that the user sets. The encryption algorithm used is AES-256-GCM — a symmetric cipher that is quantum-resistant for key storage purposes (Grover's algorithm halves AES-256's effective key length, but 128-bit security is still considered safe).
 
 ```
-wallet.sqwallet file:
+wallet.sqwallet — fields exactly as core/crypto/wallet_store.go writes them:
 {
-  "version": 1,
+  "version": 2,
+  "alg": "ML-DSA-65",
   "address": "SQ:a7f3c9...",
-  "public_key_b64": "base64_encoded_ml_dsa_65_pubkey",
+  "public_key": "base64_encoded_ml_dsa_65_pubkey",
   "encrypted_private_key": {
     "ciphertext": "base64_aes_gcm_ciphertext",
     "nonce": "base64_nonce",
-    "salt": "base64_argon2_salt"
+    "salt": "base64_argon2_salt",
+    "time": 3,
+    "memory": 65536,
+    "threads": 4
   }
 }
 ```
 
-The password is never stored. Only the user knows it. To open the wallet, the user enters their password, which decrypts the private key in memory. When the app closes, the key is wiped from memory.
+Version 2 is the only version this build loads. A version 1 file holds a
+pre-standard CRYSTALS-Dilithium mode3 key, whose sizes are identical to
+ML-DSA-65, so it would decrypt cleanly and then fail as a signature nobody can
+verify — `LoadWallet` refuses it by name instead. The Argon2id parameters are
+stored per file so they can be raised later, and floored on load (time ≥ 1,
+memory ≥ 32 MB, salt ≥ 16 bytes) so nobody can weaken a file into an easy
+offline guess.
+
+The password is never stored. Only the user knows it. To open the wallet, the user enters their password, which decrypts the private key in memory.
 
 ---
 
-**Option B: Physical NFC Smart Card** (for high-security users)
+**Option B: Physical NFC Smart Card** — designed, not built. No hardware
+integration exists in this repository; what follows is the intended flow.
 
-The ML-DSA-65 private key is written to the secure element of a physical NFC card — a dedicated chip that:
+The ML-DSA-65 private key would be written to the secure element of a physical NFC card — a dedicated chip that:
 - Stores the key in hardware-protected non-extractable memory
 - Performs signing operations internally (the key never leaves the chip)
 - Requires a PIN to authorise each signing operation
@@ -311,11 +324,12 @@ The ML-DSA-65 private key is written to the secure element of a physical NFC car
 
 **The private key never touches the internet. Ever.**
 
-Transfer time for the signature over NFC: approximately 62 milliseconds. The user just holds their card to the phone for a fraction of a second.
+A 3,309-byte signature is small enough to cross NFC in a fraction of a second, which is what makes the flow plausible. No timing is quoted here, because no card exists yet to measure.
 
 ---
 
-**Option C: QR Airgapped Signing** (for institutional users / cold storage)
+**Option C: QR Airgapped Signing** — designed, not built. No signer in this
+repository implements it.
 
 For maximum security — where not even an NFC communication channel is trusted:
 
@@ -370,7 +384,7 @@ Alice clicks "Create New Wallet". The app:
 
 The app also shows:
 - A reminder to back up the `.sqwallet` file
-- Option to write the private key to an NFC card for extra security
+- (Designed, not built) an option to write the private key to an NFC card
 - Her current balance: 0 SPLD
 
 This takes about 5 seconds total. No signup. No KYC. No email. No connection to any server needed.
@@ -382,7 +396,7 @@ This takes about 5 seconds total. No signup. No KYC. No email. No connection to 
 She can:
 - Buy SPLD from a supported exchange and withdraw to her SQ address
 - Receive SPLD from someone who already has it
-- Earn SPLD by running a validator node
+- Not today: earn SPLD by running a validator node. Phase 1 has one validator, whose key is pinned in genesis, and no path exists for a second one to join
 
 ---
 
@@ -527,12 +541,12 @@ Bob checks his wallet app and sees the 50 SPLD. Done.
 
 Splendor Quantum Chain supports four types of transactions:
 
-| Type | What it does |
-|------|-------------|
-| **Transfer** | Send SPLD from one account to another |
-| **Deploy** | Deploy a new smart contract |
-| **Call** | Interact with an existing smart contract |
-| **X402** | Settle a signed off-chain micropayment on-chain |
+| Type | `type` code | What it does |
+|------|------|-------------|
+| **Transfer** | `0x01` | Send SPLD from one account to another |
+| **Deploy** | `0x02` | Deploy a new smart contract |
+| **Call** | `0x03` | Interact with an existing smart contract |
+| **X402** | `0x05` | Settle a signed off-chain micropayment on-chain |
 
 All four types use the same signing mechanism: ML-DSA-65 signature over SHA-3 hash of the transaction body.
 
@@ -583,11 +597,11 @@ Node validates: signature, nonce, balance
 
 ### Transaction fees
 
-Fees are paid in SPLD. The fee is set by the sender. Higher fee = validator prioritises your transaction. The minimum fee is set by the network (governable parameter).
+Fees are paid in SPLD. The fee is set by the sender, and the validator drains the mempool highest-fee-first (`core/mempool/mempool.go`). The minimum fee is **not** a governable parameter: 1,000 units is a compile-time constant, checked twice — by the mempool on admission and by the `min_fee` pre-transaction hook — so raising it means editing and rebuilding. The pool does lift its own floor above that as it fills, which is what makes flooding expensive.
 
 Fee distribution:
-- 100% to the validator (Phase 1, single validator)
-- As more validators join: split by governance rules
+- 100% to the validator, credited in the same block that carries the transaction
+- Splitting fees across a validator set is a Phase-2 intention. No code implements it
 
 ### Anti-replay protection
 
@@ -612,7 +626,7 @@ A smart contract is a program that lives on the blockchain. Once deployed, it ru
 **Deploying a contract:**
 
 1. Developer produces SQC-VM bytecode (by hand or with their own tooling — there is no compiler here; see below)
-2. Bytecode is checked with `POST /vm/validate` and read back with `POST /vm/disasm`
+2. Bytecode is checked with `POST /vm/validate`, read back with `POST /vm/disasm`, and costed with `POST /vm/estimate-gas`
 3. Developer creates a Deploy transaction containing the bytecode
 4. Signs it with their ML-DSA-65 key
 5. Broadcasts to the network
@@ -642,17 +656,24 @@ a roadmap, not the code. What exists is two layers below that:
 
 **1. SQC-VM bytecode (`vm/`).** A stack VM with SHA-3-256 storage slots, `SQ:`
 addresses, gas metering, and a disassembler. A Deploy transaction carries raw
-SQC-VM bytecode in its `data` field. `POST /vm/disasm`, `/vm/validate`, and
-`/vm/opcodes` let you inspect and check that bytecode; nothing generates it from
-source.
+SQC-VM bytecode in its `data` field. `POST /vm/disasm`, `POST /vm/validate`,
+`POST /vm/estimate-gas` and `GET /vm/opcodes` let you inspect and check that
+bytecode; nothing generates it from source.
 
-**2. Native Go modules (`vm/qrc20.go`, `vm/dex.go`, `vm/lending.go`,
-`vm/staking.go`, `vm/qrc721.go`, `vm/qrc1155.go`, `vm/multisig.go`,
-`vm/oracle.go`, `vm/qrc4626.go`).** The token standards, the DEX, lending, and
-staking are implemented in Go inside the node and reached through a module-call
-convention, not compiled from user source. This is how tokens and DeFi actually
-ship on this chain today, and it is why the absence of a compiler has not
-blocked anything so far.
+**2. Native Go modules (`vm/`).** Token standards, a DEX, lending, staking,
+multisig and an oracle are implemented in Go inside the node rather than
+compiled from user source. This is how tokens and DeFi ship on this chain
+today, and it is why the absence of a compiler has not blocked anything so far.
+
+Be precise about which of them a transaction can actually drive:
+`DispatchModuleCall` (`vm/module_router.go`) routes exactly two modules,
+`qrc20` and `dex` — deploy, mint, transfer, approve, burn, and pool
+deploy/add-liquidity/swap. `vm/lending.go`, `vm/staking.go`, `vm/governance.go`,
+`vm/oracle.go`, `vm/multisig.go`, `vm/qrc721.go`, `vm/qrc1155.go` and
+`vm/qrc4626.go` are written and tested, and their `/lending/*`, `/staking/*`
+and `/gov/*` RPC routes read their state, but no transaction reaches them:
+until the router learns those module names, they are library code, not a live
+surface.
 
 **Roadmap, not shipped: Quantum Solidity (QSol).** The intended language is a
 Solidity dialect — `sqaddress` for 32-byte addresses, `sha3()` in place of
@@ -683,14 +704,14 @@ In Phase 1, the network runs with a single validator. This is intentional.
 **Why start with one validator?**
 
 - **Security.** A single trusted validator eliminates the attack surface of multi-party consensus before the ecosystem is mature. There's no "51% attack" if there's one validator you control.
-- **Speed.** No time spent on voting, leader election, or Byzantine fault tolerance overhead. Blocks are produced as fast as transactions arrive.
+- **Speed.** No time spent on voting, leader election, or Byzantine fault tolerance overhead. A block costs one signature, not a round of messages.
 - **Simplicity.** Every component can be tested, audited, and hardened before adding complexity.
 - **Precedent.** Ethereum ran with a very small validator set for years before decentralising. Bitcoin had one miner initially.
 
 **What the single validator does:**
 1. Receives transactions from the mempool
 2. Orders and executes them
-3. Builds blocks (every 1–2 seconds, or when the block is full)
+3. Builds a block on a fixed timer — `--block-interval`, 2 seconds by default. A full mempool does not trigger an early block; it only makes the next one larger
 4. Signs the block with its ML-DSA-65 key
 5. Broadcasts to all full nodes
 
@@ -704,7 +725,7 @@ block_header = {
   timestamp: 1753147200,
   previous_hash: SHA3-256(previous_block_header),
   tx_merkle_root: SHA3-256_merkle_root(transactions),
-  state_root: SHA3-256_sparse_merkle_root(state),
+  state_root: SHA3-256_merkle_root(state),        // binary tree — see section 10
   validator: "SQ:validator_address..."
 }
 
@@ -727,7 +748,7 @@ When the ecosystem is ready, additional validators join:
 - Consensus upgrades to a BFT protocol (all signatures still ML-DSA-65)
 - Governance is handled by token holders (voting via ML-DSA-65-signed transactions)
 
-The transition requires no chain restart, no hard fork in the data format sense — just a governance vote to activate multi-validator consensus.
+None of that exists yet. There is no BFT protocol, no path for a second validator to join, and no way for a passed proposal to change consensus: `Execute` in `vm/governance.go` marks a proposal Executed and applies nothing else. The block format would not have to change, which is why this is an upgrade rather than a new chain — but it is unwritten code, not a vote away.
 
 ---
 
@@ -735,7 +756,7 @@ The transition requires no chain restart, no hard fork in the data format sense 
 
 ### How the blockchain stores data
 
-Every piece of data on Splendor QC is stored with quantum-safe integrity guarantees.
+Blocks, transactions and the whole of state are committed with SHA-3-256 and signed with ML-DSA-65. Underneath, LevelDB stores bytes the way LevelDB always has: there is no per-record MAC on the database files. The integrity guarantee is the commitment chain described below, not the storage engine.
 
 **The block structure:**
 
@@ -772,19 +793,19 @@ Accounts, contract code, contract storage slots, and X402 nonces are all hashed 
 - Two nodes that disagree on any balance, storage slot, or contract byte produce different roots, so divergence is detected instead of silently tolerated
 - The commitment chain: state leaf → SHA-3 leaf hash → SHA-3 parent hashes → state root in block header → block signed with ML-DSA-65
 - Every step is quantum-safe
-- Historical state can be queried by specifying any block height
+- Blocks and receipts are queryable at any height; **state is not**. `/balance`, `/nonce` and the contract routes read current state only, and no endpoint accepts a height, so “the balance at block N” cannot be asked of a node today
 
 Not yet built: a **proof API**. The tree would support per-account inclusion proofs, but no endpoint serves them, so a light client cannot today verify one account without trusting a full node. That is what the planned Sparse Merkle Tree work is for.
 
 **Transaction Merkle tree:**
 
-All transactions in a block are hashed into a Merkle tree (SHA-3). The root is in the block header. This allows light clients to verify that a specific transaction was included in a block without downloading the full block.
+All transactions in a block are hashed into a Merkle tree (SHA-3) whose root sits in the block header. That is the structure a light client would use to check inclusion without the full block — but as with state proofs, no endpoint serves a branch, so a client fetches the block and recomputes the root itself.
 
 ---
 
 ## 11. X402 — Native Payment Protocol
 
-X402 is built into the Splendor QC node at the RPC layer. It allows any HTTP server to charge for API calls and receive payment instantly, with no payment processor, no subscription, and zero friction.
+X402 is built into the Splendor QC node at the RPC layer. It lets any HTTP server charge per API call, with no payment processor and no subscription. Access is granted the moment the signed payment verifies; the money moves when the settlement transaction lands in the next block.
 
 ### How it works end-to-end
 
@@ -863,7 +884,7 @@ Settlement lands in the next block. No payment processor takes a cut.
 
 ### What gets built on this chain
 
-The Splendor Quantum Chain is general-purpose infrastructure. Anything that can be built on Ethereum can be built here — with quantum resistance baked in.
+The Splendor Quantum Chain is general-purpose infrastructure. Anything that can be built on Ethereum can be built here — with quantum resistance baked in. This section describes what the chain is *for*, not what is deployed on it: of the modules below, only tokens and the DEX can be driven by a transaction today (section 8).
 
 ---
 
@@ -917,17 +938,20 @@ This is a fundamental bottleneck for autonomous AI. The AI can decide, reason, a
 **What Splendor QC enables:**
 An AI agent has a Splendor QC wallet. Its ML-DSA-65 private key is stored securely in the agent's environment. When it needs to pay for something, it signs a payment transaction automatically. No human in the loop.
 
-```python
-# An AI agent that autonomously pays for API access
-agent = SplendorQCAgent(private_key=os.getenv('SQC_ML_DSA_KEY'))
+The flow an agent runs is the X402 flow from section 11, with no human at any
+step:
 
-# Agent needs weather data — costs 0.001 SPLD per call
-weather = agent.fetch_with_payment(
-    url='https://weather-api.example.com/forecast',
-    max_payment_spld=0.001
-)
-# Agent automatically signed and sent payment. No human needed.
 ```
+1. Agent calls the paid endpoint, gets 402 + signed requirements
+2. Agent signs an X402 payload with its ML-DSA-65 key
+3. Agent signs the settlement TxX402 for the same pinned nonce
+4. Agent retries with X-Payment; the server verifies and serves
+5. The settlement transaction lands in the next block
+```
+
+`payX402` in `@splendor/pq-bridge` (`sdk/bridge/src/wallet.ts`) does steps 2–4
+in one call. There is no Python SDK — only the JavaScript/TypeScript one is
+published — so an agent in another language speaks the HTTP protocol directly.
 
 AI agents can also:
 - Pay other AI agents for sub-tasks
@@ -943,10 +967,14 @@ This creates the foundation for a true **AI economy** — autonomous economic ag
 
 Since every Splendor QC account is anchored to an ML-DSA-65 key pair, accounts can be used as cryptographic identities.
 
-These are use cases the primitives would support. **None of them is implemented
-in this repository** — there is no attestation registry, no credential contract,
-and no DAO voting contract. Read them as what the key material makes possible,
-not as a feature list:
+These are use cases the primitives would support. The first two are **not
+implemented in this repository**: there is no attestation registry and no
+credential contract. The third partly is — `vm/governance.go` holds proposals,
+votes, quorum and timelock, and `/gov/*` serves them read-only. What it lacks
+is a way in and a way out: the module router dispatches `qrc20` and `dex` only,
+so no transaction can submit or vote today, and `Execute` marks a proposal
+Executed without changing any chain parameter. Read the rest as what the key
+material makes possible, not as a feature list:
 
 - **Verifiable credentials:** A university issues a degree as a smart contract attestation, signed with the university's ML-DSA-65 key, recorded on-chain. The graduate proves their credential by showing the on-chain record — no third-party verification service needed.
 - **KYC attestation:** A KYC provider attests that a user has been verified. The attestation is on-chain. The user's identity remains private (only the attestation is public). Any DApp could check whether the user is KYC-verified without seeing personal data.
@@ -1096,7 +1124,7 @@ Every node runs a small adaptive scheduler in-process, with no outbound API call
 
 Be precise about this, because "AI" is an overloaded word. There is **no neural network, no ONNX runtime, and no trained model** in the node today. What ships in `ai/scheduler.go` is a compact statistical control loop:
 
-- **Exponential moving average** over observed fee and mempool trends
+- **Exponential moving average** over observed mempool depth
 - **A reinforcement-learning-style greedy policy** that tunes block batch size up or down based on whether the last adjustment helped
 - **Rule-based anomaly detection** that flags a mempool spike above a fixed multiplier
 
@@ -1107,8 +1135,8 @@ That is genuinely useful and genuinely local, but it is closer to adaptive contr
 The validator asks the scheduler for a batch size each round, and the scheduler adapts that number from the mempool depth it has observed:
 
 - Recommends how many transactions to pack into the next block, between a floor and a ceiling
-- Tracks a smoothed fee trend rather than reacting to a single block
-- Raises an anomaly flag when pending transactions spike sharply, so throttling can respond
+- Smooths that depth over time rather than reacting to a single observation
+- Raises an anomaly flag when pending transactions spike sharply. Nothing in the node consumes the flag — see below
 
 Not implemented, despite appearing in earlier drafts of this document: grouping transactions by contract state, re-prioritising the queue by fee, and reading CPU, memory, or I/O load. The only signal currently fed to the scheduler is mempool depth.
 
@@ -1116,10 +1144,13 @@ Not implemented, despite appearing in earlier drafts of this document: grouping 
 
 **The anomaly flag, precisely.** `ai/scheduler.go` raises one boolean when the
 mempool grows by 5× or more between observation windows *and* holds more than
-100 pending transactions. That flag is surfaced on `GET /ai/stats` and nowhere
-else: nothing in the node reads it, so it does not throttle, quarantine, rate-
-limit, or alert. Rate limiting and the simulation-plane caps are separate,
-ordinary middleware — they are not driven by this flag.
+100 pending transactions. It is reported in three places and acted on in none:
+`GET /ai/stats`, the `sqc_ai_anomaly_active` Prometheus gauge, and one
+`log.Warn` line the first time it flips. No code path in the node reads it
+back, so it throttles nothing, quarantines nothing, and rate-limits nothing —
+an operator can alert on the gauge, but the node will not act on it. Rate
+limiting and the simulation-plane caps are separate, ordinary middleware, not
+driven by this flag.
 
 Not implemented, and previously claimed here: detecting coordinated spam from
 address clusters, spotting suspicious contract-deployment patterns, identifying
