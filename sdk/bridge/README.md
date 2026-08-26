@@ -1,6 +1,8 @@
 # Splendor PQ Bridge SDK (`@splendor/pq-bridge`)
 
-Node.js-first bridge that maps an **EVM wallet** (MetaMask or secp256k1 key) to a **Splendor Quantum Chain ML-DSA-65 (PQ) wallet**, then signs and submits transactions.
+Node.js-first bridge that holds a **Splendor Quantum Chain ML-DSA-65 (PQ) wallet**, signs with it, and submits transactions.
+
+The primary path is a **native ML-DSA-65 seed** (`connect: 'seed'` / `connectFromSeed`) — 32 bytes of post-quantum entropy, no secp256k1 anywhere. The bridge can also map an **EVM wallet** (MetaMask or secp256k1 key) onto a PQ wallet; that path is kept for onboarding convenience and is **not quantum-safe** ([why](#the-evm-path-is-not-quantum-safe)).
 
 No changes to the core blockchain. The ML-DSA-65 signer is the **same Go code the node uses**, compiled to **WASM** and loaded inside Node (or the browser).
 
@@ -25,15 +27,23 @@ Set RPC URLs, gateway port, WASM paths, min fee, default network — SDK, gatewa
 ```js
 import { connectSplendor, createSplendorClient } from '@splendor/pq-bridge';
 
-// Reads only — no MetaMask yet
+// Reads only — no signer unlocked yet
 const { provider, wallet, network } = createSplendorClient({ network: 'local' });
 
-// Or unlock in one call (headless)
+// Or unlock in one call (headless) — native ML-DSA-65, no EVM key involved
 const session = await connectSplendor({
   network: 'local',       // local | testnet | mainnet
-  connect: 'metamask',    // none | metamask | seed | evmKey | evmSignature
+  connect: 'seed',        // seed (native, recommended) | none | evmKey | evmSignature | metamask
+  seed: process.env.SQC_SEED,   // 32-byte hex, post-quantum entropy
 });
-console.log(session.info.address, session.network.rpcUrls);
+console.log(session.info.address, session.info.postQuantumSecure); // → true
+```
+
+Legacy fallback for a user whose funds already sit on an EVM-derived address —
+`postQuantumSecure: false`, and the `onWarning` callback fires:
+
+```js
+const session = await connectSplendor({ network: 'local', connect: 'metamask' });
 ```
 
 ## Why WASM inside Node?
@@ -47,7 +57,19 @@ Your app (Node / browser)
                   └─ POST /tx/submit → SQC node
 ```
 
-## EVM → PQ mapping
+## Native ML-DSA-65 (recommended)
+
+1. Generate 32 bytes from a CSPRNG — that seed **is** the account.
+2. `ML-DSA-65 keypair = mldsa65.NewKeyFromSeed(seed)`
+3. `SQ address = "SQ:" + hex(SHA3-256(pubkey))`
+
+No Ethereum key stands behind the address, so its security rests on ML-DSA-65
+alone: `connectFromSeed` returns `postQuantumSecure: true` and
+`keyOrigin: 'native'`. Browsers get the same thing through
+[`@splendor/connect-react`](../connect-react) (create or import, first item in
+the modal); the CLI `sqc-wallet` keeps its own encrypted `.sqwallet` key file.
+
+## EVM → PQ mapping (legacy)
 
 1. User signs a fixed domain message with MetaMask / EVM key:
 
@@ -63,7 +85,7 @@ chain: splendor-quantum-1
 
 Same EVM account → same PQ wallet, every time. Non-custodial: the private ML-DSA key stays in WASM memory and is **zeroized** on `lock()` / `disconnect()`.
 
-> ### This path is not quantum-safe
+> ### The EVM path is not quantum-safe
 >
 > Transactions are signed with ML-DSA-65, but the key is derived from an ECDSA
 > signature, so the account is only as strong as secp256k1. A quantum adversary
@@ -140,11 +162,11 @@ const provider = new SqcProvider({
 
 const bridge = SplendorPQBridge.fromProvider(provider);
 
-// From EVM private key (backends / agents)
-await bridge.connectFromEvmPrivateKey(process.env.EVM_KEY);
+// From a 32-byte ML-DSA-65 seed hex (native — backends / agents)
+await bridge.connectFromSeed(process.env.SQC_SEED);
 
-// Or from a 32-byte ML-DSA-65 seed hex
-// await bridge.connectFromSeed('01'.repeat(32));
+// Legacy: derive from an EVM private key (not post-quantum)
+// await bridge.connectFromEvmPrivateKey(process.env.EVM_KEY);
 
 console.log(bridge.getAddress());
 console.log(await bridge.getBalance());
@@ -164,7 +186,7 @@ Example script:
 EVM_KEY=0x... SQC_RPC=http://localhost:8080 npm run example:node
 ```
 
-## Browser (MetaMask)
+## Browser
 
 ```js
 const bridge = new SplendorPQBridge({
@@ -172,11 +194,17 @@ const bridge = new SplendorPQBridge({
   wasmUrl: '/sqc_signer.wasm',
   execUrl: '/wasm_exec.js',
 });
-await bridge.connectFromMetaMask();
+
+// Native ML-DSA-65 seed the user created or imported
+await bridge.connectFromSeed(seedHex);
 await bridge.sendTransfer({ to: 'SQ:...', amountSPLD: '1' });
+
+// Legacy fallback (labelled "not post-quantum" in the UI kit)
+// await bridge.connectFromMetaMask();
 ```
 
-See `examples/demo.html`.
+Prefer [`@splendor/connect-react`](../connect-react) for the browser — it ships
+the create/import UI and the legacy labelling. See `examples/demo.html`.
 
 ## Deployable gateway
 
@@ -238,7 +266,7 @@ sdk/bridge/
 ## dApp helpers (v1.3.1)
 
 - **`sqc.networks.json`** — single source for RPC / gateway / fees / WASM paths / `networkId` / optional `wasmSha256`
-- **`connectSplendor` / `createSplendorClient`** — one-touch dApp entry (EIP-1193 `ethereumProvider`, optional EIP-712 derivation)
+- **`connectSplendor` / `createSplendorClient`** — one-touch dApp entry (`connect: 'seed'` for native ML-DSA; EIP-1193 `ethereumProvider` and optional EIP-712 derivation for the legacy path)
 - **`@splendor/pq-bridge/react`** — published `useSplendorPQ` hook
 - **`preflight()`** — balance / nonce / fee dry-run before send
 - **SQDP-1** — normative protocol + `PROTOCOL` / `SQDP_VERSION` exports

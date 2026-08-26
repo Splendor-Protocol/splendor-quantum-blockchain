@@ -310,6 +310,106 @@
   font-size: 0.8125rem;
 }
 
+/* Ethereum-derived wallets sit under a labelled rule, below the native
+   ML-DSA path, so the quantum-safe option is the one a user reaches first. */
+.sqc-legacy {
+  margin-top: 1rem;
+  border-top: 1px solid var(--sqc-border);
+  padding-top: 0.75rem;
+}
+
+.sqc-legacy__label {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--sqc-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sqc-legacy__note {
+  margin: 0.3rem 0 0.65rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--sqc-text-muted);
+}
+
+/* Native ML-DSA create / import step. */
+.sqc-native {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.sqc-native__back {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--sqc-text-muted);
+  font-family: var(--sqc-font-body);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sqc-native__back:hover {
+  color: var(--sqc-text);
+}
+
+.sqc-native__back:focus-visible {
+  outline: none;
+  box-shadow: var(--sqc-focus);
+  border-radius: 6px;
+}
+
+.sqc-native__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sqc-native__section .sqc-account-row {
+  margin-bottom: 0;
+}
+
+.sqc-native__cta {
+  justify-content: center;
+  width: 100%;
+}
+
+.sqc-native__or {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  font-size: 0.75rem;
+  color: var(--sqc-text-muted);
+}
+
+.sqc-native__or::before,
+.sqc-native__or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--sqc-border);
+}
+
+/* A generated seed is unrecoverable, so its warning gets the danger surface. */
+.sqc-native__warning {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--sqc-radius-sm);
+  background: var(--sqc-danger-soft);
+  color: var(--sqc-danger);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.sqc-native code {
+  font-family: var(--sqc-font-mono);
+  font-size: 0.95em;
+}
+
 .sqc-advanced {
   margin-top: 1rem;
   border-top: 1px solid var(--sqc-border);

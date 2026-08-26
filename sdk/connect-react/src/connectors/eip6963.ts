@@ -57,13 +57,22 @@ export function discoverInjectedConnectors(opts?: {
   });
 }
 
-/** MetaMask + EIP-6963 discovers + optional seed. */
+/**
+ * Native ML-DSA first, then the EVM-derived wallets (MetaMask + EIP-6963).
+ *
+ * Order is the recommendation: an injected wallet can only derive a key from an
+ * ECDSA signature, so leading with one would sell a post-quantum chain with a
+ * secp256k1 account. They stay in the list because existing users have funds on
+ * those addresses.
+ */
 export async function defaultBrowserConnectors(opts?: {
+  /** Drop the native connector (headless/agent hosts that inject their own). */
   includeSeed?: boolean;
 }): Promise<Connector[]> {
-  const list: Connector[] = [metamaskConnector()];
+  const list: Connector[] = [];
+  if (opts?.includeSeed !== false) list.push(seedConnector());
+  list.push(metamaskConnector());
   const discovered = await discoverInjectedConnectors();
   list.push(...discovered);
-  if (opts?.includeSeed !== false) list.push(seedConnector());
   return list;
 }

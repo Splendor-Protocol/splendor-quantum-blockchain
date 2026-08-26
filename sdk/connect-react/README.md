@@ -2,6 +2,8 @@
 
 AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors unlock [`@splendor/pq-bridge`](../bridge) WASM ML-DSA-65 wallets — PQ crypto stays internal.
 
+The first action in the modal is a **native ML-DSA-65 wallet** — create one from browser CSPRNG entropy, or import a 32-byte seed. MetaMask and other injected wallets are still there, last, under a **Legacy** heading: they derive the ML-DSA key from an ECDSA signature, so those accounts are only as strong as secp256k1.
+
 ## Production readiness (~9/10 after hardening)
 
 | Capability | Status |
@@ -9,7 +11,8 @@ AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors u
 | Vite / Next WASM helpers | Yes |
 | Provider-hosted modals | Yes (`hostModals`, default) |
 | SSR-safe hooks | Yes — stub until client |
-| Auto connectors (EIP-6963) | Yes — `connectors="auto"` |
+| Native ML-DSA wallet (create / import) | Yes — first item in the modal |
+| Auto connectors (EIP-6963) | Yes — `connectors="auto"`, listed after native |
 | Soft network switch + reconnect | Yes |
 | Idle lock syncs UI | Yes — bridge `lock` event → `status: 'locked'` |
 | Inline / custom networks | Yes — sync `customNetworks` / `networkConfig` |
@@ -33,10 +36,14 @@ plugins: [react(), sqcWasmPlugin()],
 import '@splendor/connect-react/style.css';
 import { SplendorConnectProvider, ConnectKit } from '@splendor/connect-react';
 
-<SplendorConnectProvider network="local" autoReconnect allowUnpinnedWasm>
+// connectors="auto" (default): native ML-DSA first, MetaMask/EIP-6963 after it.
+<SplendorConnectProvider network="local" allowUnpinnedWasm>
   <ConnectKit />
 </SplendorConnectProvider>
 ```
+
+`autoReconnect` only ever resumes an injected wallet — a native seed is typed in
+by the user, so it is never persisted and never silently reconnected.
 
 Testnet with real RPCs (gateway optional for SqRpc):
 
@@ -70,6 +77,48 @@ Or inline:
   }}
 />
 ```
+
+## Connect order
+
+```tsx
+import {
+  SplendorConnectProvider,
+  seedConnector,
+  metamaskConnector,
+} from '@splendor/connect-react';
+
+<SplendorConnectProvider
+  network="testnet"
+  connectors={[
+    seedConnector(),      // native ML-DSA-65 — the happy path
+    metamaskConnector(),  // fallback, rendered under "Legacy / not post-quantum"
+  ]}
+/>
+```
+
+The modal groups by `keyOrigin`, not by array position: `native` connectors lead,
+everything else falls to the legacy group. A connector that declares nothing is
+grouped as legacy — an account is never shown as quantum-safe by omission.
+
+**Native only** (no ECDSA path at all):
+
+```tsx
+<SplendorConnectProvider network="testnet" connectors={[seedConnector()]} />
+```
+
+Headless seed generation uses the same helper the modal does:
+
+```ts
+import { generateSeedHex } from '@splendor/connect-react/connectors';
+
+const seed = generateSeedHex();   // 32 bytes of CSPRNG entropy, hex
+await controller.connect('seed', { seed });
+```
+
+The seed **is** the account: it is held in component state only, never written
+to storage, logged, or broadcast. A CLI `.sqwallet` file holds an encrypted
+ML-DSA-65 private key rather than a seed, so it is not importable in the browser
+— keep signing those with `sqc-wallet`.
 
 ## Subpath exports
 

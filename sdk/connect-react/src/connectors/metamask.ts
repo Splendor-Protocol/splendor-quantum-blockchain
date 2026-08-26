@@ -31,9 +31,6 @@ export async function hasAuthorizedAccounts(
 }
 
 /**
- * Primary connector: MetaMask (or compatible inject) derives PQ keys via personal_sign.
- */
-/**
  * MetaMask connector.
  *
  * NOT post-quantum. The ML-DSA key is derived from an ECDSA `personal_sign`

@@ -1,4 +1,4 @@
-import type { DeriveInfo } from '@splendor/pq-bridge';
+import { bytesToHex, type DeriveInfo } from '@splendor/pq-bridge';
 import type { Connector, ConnectorContext } from './types.js';
 
 export type SeedConnectorOpts = {
@@ -20,22 +20,45 @@ export function assertSeedHex(raw: string): string {
 }
 
 /**
- * Advanced connector: unlock from a 32-byte hex seed (dev / agent use).
- * UI should gate this behind an Advanced accordion and never log the seed.
+ * Fresh 32-byte ML-DSA-65 seed from the platform CSPRNG.
+ *
+ * The whole point of this path is that no secp256k1 key stands behind the
+ * account, so the entropy has to be unguessable on its own — a seed anyone can
+ * predict is worth no more than one derived from an ECDSA signature. Throws
+ * rather than falling back to Math.random when no CSPRNG is available.
+ */
+export function generateSeedHex(): string {
+  const csprng = globalThis.crypto;
+  if (!csprng?.getRandomValues) {
+    throw new Error('No CSPRNG available — cannot generate a post-quantum seed here');
+  }
+  const bytes = new Uint8Array(32);
+  csprng.getRandomValues(bytes);
+  return bytesToHex(bytes);
+}
+
+/**
+ * Native ML-DSA-65 connector — the primary way to hold a Splendor account.
+ *
+ * The seed is post-quantum entropy the user creates or imports, so the
+ * account's security rests on ML-DSA-65 alone: no Ethereum key exists that an
+ * adversary could break to reproduce it. Not marked `advanced` — this is the
+ * first action in the connect modal, not a developer escape hatch. Its
+ * `connectFields` presence is what keeps the controller from persisting or
+ * silently resuming it, since the secret is typed in each session.
  */
 export function seedConnector(opts: SeedConnectorOpts = {}): Connector {
   return {
     id: 'seed',
-    name: opts.name ?? 'Seed (Advanced)',
+    name: opts.name ?? 'Splendor Quantum Wallet',
     icon: opts.icon,
-    advanced: true,
     keyOrigin: 'native',
     postQuantumSecure: true,
     connectFields: [
       {
         name: 'seed',
         type: 'password',
-        label: 'Seed hex',
+        label: 'ML-DSA-65 seed',
         placeholder: '32-byte seed hex (64 chars)',
       },
     ],
