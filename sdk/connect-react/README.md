@@ -37,7 +37,8 @@ import '@splendor/connect-react/style.css';
 import { SplendorConnectProvider, ConnectKit } from '@splendor/connect-react';
 
 // connectors="auto" (default): native ML-DSA first, MetaMask/EIP-6963 after it.
-<SplendorConnectProvider network="local" allowUnpinnedWasm>
+// wasmSha256 pins the signer bundle — see "Pin the signer" below.
+<SplendorConnectProvider network="testnet" wasmSha256="<digest>">
   <ConnectKit />
 </SplendorConnectProvider>
 ```
@@ -45,14 +46,31 @@ import { SplendorConnectProvider, ConnectKit } from '@splendor/connect-react';
 `autoReconnect` only ever resumes an injected wallet — a native seed is typed in
 by the user, so it is never persisted and never silently reconnected.
 
-Testnet with real RPCs (gateway optional for SqRpc):
+### Pin the signer
+
+`wasmSha256` is the SHA-256 of the `@splendor/pq-bridge` signer bundle. The
+provider hashes what it loaded and refuses to run if the two differ.
+
+Pin it in anything you ship. The bundle is the code that touches private keys,
+and it is fetched at runtime — without a pin, whoever can answer for that asset
+(a CDN, a compromised build step, a proxy on a hostile network) can substitute a
+signer that exfiltrates seeds, and nothing in the page would look wrong.
+
+Read the digest straight from the file you are serving:
+
+```bash
+shasum -a 256 node_modules/@splendor/pq-bridge/wasm/sqc_signer.wasm
+```
+
+`allowUnpinnedWasm` skips the check. It is for local development against a
+`file:`/dev-server build whose digest changes on every rebuild — nowhere else.
+It has no legitimate use in a deployed app:
 
 ```tsx
-<SplendorConnectProvider
-  network="testnet"
-  rpcUrls={['https://rpc.your-testnet.example']}
-  wasmSha256="…"
-/>
+// Local development ONLY — never in anything you deploy.
+<SplendorConnectProvider network="local" allowUnpinnedWasm>
+  <ConnectKit />
+</SplendorConnectProvider>
 ```
 
 Or inline:

@@ -73,6 +73,10 @@ export function App() {
       connectors="auto"
       theme="splendor"
       autoReconnect
+      // Local dev only: this example builds the signer from source, so its
+      // digest changes on every rebuild and there is nothing stable to pin.
+      // A deployed app must pass wasmSha256 instead — the signer bundle is the
+      // code that handles private keys, and it is fetched at runtime.
       allowUnpinnedWasm
     >
       <div className="app-shell">
