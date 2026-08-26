@@ -100,7 +100,7 @@ func TestBootstrapRefusesUnpinnedPeerGenesis(t *testing.T) {
 	sdb, ex := newBootstrapNode(t)
 	peer, hits := hostilePeer(t)
 
-	err := bootstrapGenesisFromPeer(peer, sdb, ex, "", genesisPolicy{})
+	err := bootstrapGenesisFromPeer(peer, sdb, ex, genesisPolicy{})
 	if !errors.Is(err, errGenesisUnpinned) {
 		t.Fatalf("want errGenesisUnpinned, got %v", err)
 	}
@@ -124,7 +124,7 @@ func TestBootstrapAppliesPinnedPeerGenesis(t *testing.T) {
 	peer, _ := genesisPeer(t, honest)
 	pin := honest.Hash()
 
-	if err := bootstrapGenesisFromPeer(peer, sdb, ex, "", genesisPolicy{docHash: &pin}); err != nil {
+	if err := bootstrapGenesisFromPeer(peer, sdb, ex, genesisPolicy{docHash: &pin}); err != nil {
 		t.Fatalf("pinned bootstrap failed: %v", err)
 	}
 	assertFunded(t, sdb, honest.Allocations[0].Address)
@@ -141,7 +141,7 @@ func TestBootstrapRejectsHostilePeerGenesisUnderPin(t *testing.T) {
 		genesiscfg.Allocation{Address: attackerAddr, Balance: oneBillionSPLD})
 	peer, _ := genesisPeer(t, &hostile)
 
-	if err := bootstrapGenesisFromPeer(peer, sdb, ex, "", genesisPolicy{docHash: &pin}); err == nil {
+	if err := bootstrapGenesisFromPeer(peer, sdb, ex, genesisPolicy{docHash: &pin}); err == nil {
 		t.Fatal("hostile peer genesis was applied under a pin")
 	}
 	assertUnfunded(t, sdb, attackerAddr)
@@ -153,7 +153,7 @@ func TestBootstrapTrustPeerGenesisOptIn(t *testing.T) {
 	honest := honestGenesis(t)
 	peer, hits := genesisPeer(t, honest)
 
-	if err := bootstrapGenesisFromPeer(peer, sdb, ex, "", genesisPolicy{trustPeer: true}); err != nil {
+	if err := bootstrapGenesisFromPeer(peer, sdb, ex, genesisPolicy{trustPeer: true}); err != nil {
 		t.Fatalf("opt-in bootstrap failed: %v", err)
 	}
 	if hits.Load() == 0 {
@@ -162,44 +162,123 @@ func TestBootstrapTrustPeerGenesisOptIn(t *testing.T) {
 	assertFunded(t, sdb, honest.Allocations[0].Address)
 }
 
-// A node holding the genesis on local disk uses it and never asks a peer —
+// A node holding the genesis on local disk credits that, and never asks a peer —
 // which is the branch every live tier is on.
-func TestBootstrapPrefersLocalGenesisOverPeer(t *testing.T) {
-	sdb, ex := newBootstrapNode(t)
+func TestLocalGenesisIsAppliedWithoutAskingAnyPeer(t *testing.T) {
+	sdb, _ := newBootstrapNode(t)
 	honest := honestGenesis(t)
-	path := filepath.Join(t.TempDir(), "genesis.json")
-	if err := honest.Save(path); err != nil {
-		t.Fatalf("save genesis: %v", err)
-	}
-	peer, hits := hostilePeer(t)
+	path := saveGenesis(t, honest)
 
-	if err := bootstrapGenesisFromPeer(peer, sdb, ex, path, genesisPolicy{}); err != nil {
-		t.Fatalf("local genesis bootstrap failed: %v", err)
+	if bootstrapsGenesisFromPeers(false, []string{"http://peer:8080"}, path) {
+		t.Fatal("a node with a local genesis still takes the peer-genesis path")
 	}
-	if n := hits.Load(); n != 0 {
-		t.Fatalf("a node with a local genesis contacted the peer %d times", n)
+	if err := applyLocalGenesis(path, sdb, genesisPolicy{}); err != nil {
+		t.Fatalf("local genesis apply failed: %v", err)
 	}
 	assertFunded(t, sdb, honest.Allocations[0].Address)
 	assertUnfunded(t, sdb, attackerAddr)
 }
 
+// The local document is the one path that reaches ApplyToState on every live
+// tier, so it has to be gated too — a genesis for another chain is a
+// misconfiguration that must stop the node, not a supply it mints in silence.
+func TestLocalGenesisForAnotherChainIsRefusedBeforeItIsCredited(t *testing.T) {
+	sdb, _ := newBootstrapNode(t)
+	g := honestGenesis(t)
+	g.ChainID = "splendor-quantum-2"
+	g.Allocations = append(g.Allocations, genesiscfg.Allocation{Address: attackerAddr, Balance: oneBillionSPLD})
+
+	err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{})
+	if err == nil {
+		t.Fatal("a genesis for another chain was credited from local disk")
+	}
+	if !strings.Contains(err.Error(), types.ChainID) {
+		t.Fatalf("refusal does not name the chain this node runs: %v", err)
+	}
+	assertUnfunded(t, sdb, attackerAddr)
+	assertUnfunded(t, sdb, g.Allocations[0].Address)
+}
+
+// A pin an operator sets governs the local file too. Otherwise the wrong
+// genesis.json on disk — a stale copy, another tier's — is credited before
+// anything notices, and ApplyToState never removes an account it wrote.
+func TestLocalGenesisMustMatchThePin(t *testing.T) {
+	sdb, _ := newBootstrapNode(t)
+	honest := honestGenesis(t)
+	pin := honest.Hash()
+
+	stale := *honest
+	stale.Allocations = append(append([]genesiscfg.Allocation{}, honest.Allocations...),
+		genesiscfg.Allocation{Address: attackerAddr, Balance: oneBillionSPLD})
+
+	if err := applyLocalGenesis(saveGenesis(t, &stale), sdb, genesisPolicy{docHash: &pin}); err == nil {
+		t.Fatal("a local genesis that fails the pin was credited")
+	}
+	assertUnfunded(t, sdb, attackerAddr)
+
+	// ...and the document the pin names still applies.
+	if err := applyLocalGenesis(saveGenesis(t, honest), sdb, genesisPolicy{docHash: &pin}); err != nil {
+		t.Fatalf("the pinned local genesis was rejected: %v", err)
+	}
+	assertFunded(t, sdb, honest.Allocations[0].Address)
+}
+
+// A peer that answers 404 has nothing to give. It must not count as success:
+// that would stop the caller trying the peers behind it.
+func TestPeerWithoutGenesisEndpointCreditsNothingAndYieldsToTheNextPeer(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	honest := honestGenesis(t)
+	pin := honest.Hash()
+
+	err := bootstrapGenesisFromPeer(srv.URL, sdb, ex, genesisPolicy{docHash: &pin})
+	if err == nil {
+		t.Fatal("a peer with no /genesis reported success")
+	}
+	if errors.Is(err, errGenesisUnpinned) {
+		t.Fatalf("a missing endpoint was reported as a policy fault: %v", err)
+	}
+	assertUnfunded(t, sdb, honest.Allocations[0].Address)
+}
+
+// The chain-id gate is only worth anything if it compares against the id
+// compiled into this binary. A document that also supplies the id it should be
+// checked against proves nothing.
+func TestChainIDIsCheckedAgainstTheCompiledInConstant(t *testing.T) {
+	g := honestGenesis(t)
+	g.ChainID = "splendor-quantum-1-evil"
+	err := verifyGenesisDocument(g, nil, "peer")
+	if err == nil {
+		t.Fatal("a self-declared chain id was accepted")
+	}
+	if !strings.Contains(err.Error(), types.ChainID) {
+		t.Fatalf("the error does not quote the compiled-in chain id %q: %v", types.ChainID, err)
+	}
+}
+
 // The live tiers are validators started with --genesis and no --peer. Neither
 // shape reaches the peer-genesis path at all, whatever the pinning policy says.
 func TestValidatorsNeverBootstrapGenesisFromPeers(t *testing.T) {
+	const localGenesis = "/var/sqc/genesis.json"
 	cases := []struct {
 		name        string
 		isValidator bool
 		peers       []string
+		genesisPath string
 		want        bool
 	}{
-		{"live tier: validator, no peers", true, nil, false},
-		{"validator that was given peers", true, []string{"http://peer:8080"}, false},
-		{"rpc node with no peers", false, nil, false},
-		{"rpc node with peers", false, []string{"http://peer:8080"}, true},
+		{"live tier: validator, --genesis, no peers", true, nil, localGenesis, false},
+		{"validator that was given peers", true, []string{"http://peer:8080"}, localGenesis, false},
+		{"rpc node with no peers", false, nil, "", false},
+		{"documented full node: --genesis and --peer", false, []string{"http://peer:8080"}, localGenesis, false},
+		{"rpc node with peers and no local genesis", false, []string{"http://peer:8080"}, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := bootstrapsGenesisFromPeers(tc.isValidator, tc.peers); got != tc.want {
+			if got := bootstrapsGenesisFromPeers(tc.isValidator, tc.peers, tc.genesisPath); got != tc.want {
 				t.Fatalf("bootstrapsGenesisFromPeers = %v, want %v", got, tc.want)
 			}
 		})
@@ -227,6 +306,15 @@ func TestParsePinnedHash(t *testing.T) {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+func saveGenesis(t *testing.T, g *genesiscfg.Genesis) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "genesis.json")
+	if err := g.Save(path); err != nil {
+		t.Fatalf("save genesis: %v", err)
+	}
+	return path
+}
 
 func newBootstrapNode(t *testing.T) (*state.StateDB, *block.Executor) {
 	t.Helper()

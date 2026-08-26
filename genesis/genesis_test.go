@@ -204,3 +204,58 @@ func upper(s string) string {
 	}
 	return string(out)
 }
+
+// A pin is handed between humans and pasted into a systemd unit, while the
+// genesis.json it names is copied, reformatted and re-serialised by whatever
+// tool touches it last. So the identity has to survive the file being rewritten
+// with the keys in a different order and the whitespace shuffled — anything less
+// is a checksum of one byte layout, and operators would find it moving under
+// them and stop trusting it. These are raw documents, not Go structs marshalled
+// twice, because encoding/json always emits fields in struct order and so cannot
+// exercise this at all.
+func TestHashIgnoresJSONKeyOrderAndWhitespace(t *testing.T) {
+	const canonical = `{
+  "chain_id": "splendor-quantum-1",
+  "network_name": "Splendor Quantum",
+  "timestamp": 1786618272,
+  "validator_pubkey_hex": "aabbccdd",
+  "allocations": [
+    { "address": "SQ:` + allocAddrBody + `", "balance": "1000", "comment": "treasury" }
+  ],
+  "total_supply": "1000"
+}`
+
+	// Same document: keys reversed, comment reworded, hex upper-cased, all
+	// whitespace collapsed.
+	const shuffled = `{"total_supply":"1000","allocations":[{"comment":"Treasury (reworded)",` +
+		`"balance":"1000","address":"SQ:` + allocAddrBodyUpper + `"}],` +
+		`"validator_pubkey_hex":"AABBCCDD","timestamp":1786618272,` +
+		`"network_name":"Splendor Quantum","chain_id":"splendor-quantum-1"}`
+
+	// And one that differs only where it counts.
+	const doctored = `{"chain_id":"splendor-quantum-1","network_name":"Splendor Quantum",` +
+		`"timestamp":1786618272,"validator_pubkey_hex":"aabbccdd","allocations":[` +
+		`{"address":"SQ:` + allocAddrBody + `","balance":"1001"}],"total_supply":"1000"}`
+
+	want := parseGenesis(t, canonical).Hash()
+	if got := parseGenesis(t, shuffled).Hash(); got != want {
+		t.Fatalf("key order/whitespace moved the hash: %x != %x", got[:8], want[:8])
+	}
+	if got := parseGenesis(t, doctored).Hash(); got == want {
+		t.Fatalf("one unit of extra balance did not move the hash: %x", got[:8])
+	}
+}
+
+const (
+	allocAddrBody      = "0000000000000000000000000000000000000000000000000000000000ffabcd"
+	allocAddrBodyUpper = "0000000000000000000000000000000000000000000000000000000000FFABCD"
+)
+
+func parseGenesis(t *testing.T, doc string) *Genesis {
+	t.Helper()
+	var g Genesis
+	if err := json.Unmarshal([]byte(doc), &g); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return &g
+}
