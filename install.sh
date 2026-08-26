@@ -364,6 +364,18 @@ setup_rpc() {
   fi
   log "peer identity pinned: ${PEER_PIN:0:16}..."
 
+  # Auto-fetch genesis.json from the validator if not already present.
+  if [ ! -f /var/sqc/genesis.json ]; then
+    log "Fetching genesis.json from validator peer..."
+    curl -fsSL --max-time 15 "$VALIDATOR_URL/genesis" -o /var/sqc/genesis.json 2>/dev/null || true
+    if [ ! -s /var/sqc/genesis.json ]; then
+      err "could not fetch genesis.json from $VALIDATOR_URL/genesis and no local copy exists"
+      echo "  Try: curl -s $VALIDATOR_URL/genesis > /var/sqc/genesis.json" >&2
+      exit 1
+    fi
+    log "genesis.json downloaded from validator"
+  fi
+
   GENESIS_DOC_HASH="$($SQC_DIR/sqc-node genesis-hash /var/sqc/genesis.json 2>/dev/null || true)"
   if [ -z "$GENESIS_DOC_HASH" ]; then
     err "could not compute the genesis document hash from /var/sqc/genesis.json"
