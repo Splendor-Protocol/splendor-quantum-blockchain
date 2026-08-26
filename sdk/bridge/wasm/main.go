@@ -14,6 +14,7 @@ import (
 	"syscall/js"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer"
 )
 
@@ -42,6 +43,7 @@ func main() {
 	js.Global().Set("sqLock", js.FuncOf(sqLock))
 	js.Global().Set("sqIsUnlocked", js.FuncOf(sqIsUnlocked))
 	js.Global().Set("sqDomainMessage", js.FuncOf(sqDomainMessage))
+	js.Global().Set("sqSetChainID", js.FuncOf(sqSetChainID))
 
 	select {}
 }
@@ -393,8 +395,9 @@ func sqIsUnlocked(this js.Value, args []js.Value) interface{} {
 }
 
 // parseSessionAndString supports:
-//   [value]              → default session + value
-//   [sessionId, value]   → named session + value
+//
+//	[value]              → default session + value
+//	[sessionId, value]   → named session + value
 func parseSessionAndString(args []js.Value, valueName string) (id, value, errMsg string) {
 	if len(args) < 1 {
 		return "", "", valueName + " required"
@@ -424,4 +427,25 @@ func strip0x(s string) string {
 		return s[2:]
 	}
 	return s
+}
+
+// sqSetChainID points this signer at a network.
+//
+// Every signing path stamps types.ChainID into the transaction body, and the
+// chain rejects a body carrying another network's id. Until the tiers were
+// given separate ids that did not matter — one value was correct everywhere.
+// Now a signer left on the default silently produces transactions that testnet
+// and devnet refuse, so a caller that targets anything other than mainnet must
+// set this first.
+//
+// Takes the chain id as a string, e.g. "splendor-quantum-testnet-1". Returns
+// {"ok":true} or {"error":...}.
+func sqSetChainID(this js.Value, args []js.Value) interface{} {
+	if len(args) < 1 || args[0].Type() != js.TypeString {
+		return errVal("sqSetChainID(chainID string)")
+	}
+	if err := types.SetClientChainID(args[0].String()); err != nil {
+		return errVal(err.Error())
+	}
+	return map[string]interface{}{"ok": true}
 }

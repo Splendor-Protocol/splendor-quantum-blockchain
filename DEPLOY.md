@@ -903,9 +903,16 @@ echo $SQC_WALLET_PASS
 ```bash
 # This means your local state diverged. Reset chain data:
 sudo systemctl stop sqc-node        # or Ctrl-C / kill the process
-rm -rf /var/sqc/data/chain /var/sqc/data/state
+rm -rf /var/sqc/data/chain /var/sqc/data/state /var/sqc/data/txindex
 # Restart — node will resync from peers
 ```
+
+> Wipe `txindex` too, not just `chain` and `state`. It is a separate store
+> (`<data-dir>/txindex`) holding transaction receipts and logs. Leaving it while
+> the chain is rebuilt keeps the OLD chain's receipts queryable at heights the
+> NEW chain has reused, so `/logs` and transaction lookups answer confidently
+> with results from a chain that no longer exists. Nothing detects this: the
+> index has no notion of which chain it indexed.
 
 **No peers connecting**
 ```bash

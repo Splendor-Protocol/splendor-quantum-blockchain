@@ -67,6 +67,26 @@ func SetChainID(id string) error {
 	return nil
 }
 
+// SetClientChainID points a SIGNING CLIENT at a chain, and unlike SetChainID it
+// allows switching.
+//
+// The difference is what the caller is. A node has one identity for its whole
+// life: switching would let blocks from one chain be admitted under another's
+// name, so SetChainID refuses it. A signing client — the browser WASM signer, a
+// wallet, an SDK — has no chain state to corrupt and legitimately signs for
+// whichever network the user picked a moment ago. Refusing there would simply
+// make network switching impossible.
+//
+// Use this only in a process that signs and never validates or stores blocks.
+func SetClientChainID(id string) error {
+	if err := ValidateChainID(id); err != nil {
+		return err
+	}
+	ChainID = id
+	chainIDAdopted = true
+	return nil
+}
+
 // ValidateChainID rejects ids that could not have come from a genuine genesis.
 //
 // The id is signed into every transaction and stamped into every header, so it
