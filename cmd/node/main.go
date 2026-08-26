@@ -36,6 +36,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/consensus"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -321,6 +322,18 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 	if genesisDocPin != nil {
 		log.Info().Str("genesis_doc_hash", fmt.Sprintf("%x", genesisDocPin[:8])).Msg("Genesis document hash pinned")
+	}
+
+	// The rule-change schedule is read on every start, not only on the run that
+	// applies genesis: a node restarting onto an existing chain still has to know
+	// which rules that chain switches to and when.
+	forkSchedule, err := loadForkSchedule(flagGenesisPath)
+	if err != nil {
+		return err
+	}
+	for _, name := range forkSchedule.Names() {
+		at, _ := forkSchedule.At(name)
+		log.Info().Str("upgrade", name).Uint64("at_height", at).Msg("Scheduled consensus rule change")
 	}
 
 	// Chain id assertion (env fallback), so a container can be told which network
@@ -661,6 +674,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			SimBurst:         flagSimBurst,
 			SimMaxInFlight:   flagSimMaxInFlight,
 			SimTimeout:       flagSimTimeout,
+			Forks:            forkSchedule,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
@@ -1038,6 +1052,36 @@ func bootstrapsGenesisFromPeers(isValidator bool, peers []string, localGenesisPa
 // later removes an account it wrote. So it goes through the same gate — a
 // document for another chain, or one the operator pinned and that no longer
 // matches, stops the node instead of minting a supply nobody meant.
+// loadForkSchedule reads the rule-change schedule out of the local genesis
+// document.
+//
+// A node with no local --genesis returns an empty schedule rather than an
+// error. That node takes its genesis from a peer, gated by --genesis-doc-hash,
+// and the schedule arrives with it — but that path runs later in startup, so
+// there is nothing to read here yet. An empty schedule means "no rule changes",
+// which is the correct reading of a chain that has not scheduled any.
+//
+// A malformed or unknown-upgrade schedule is fatal. Starting anyway would mean
+// running a node that silently ignores a rule change the rest of the network
+// applies, and the symptom of that is a fork at the activation height rather
+// than an error now.
+func loadForkSchedule(genesisPath string) (forks.Schedule, error) {
+	if genesisPath == "" {
+		return nil, nil
+	}
+	g, err := genesiscfg.LoadFile(genesisPath)
+	if err != nil {
+		// Not fatal here: the genesis path is validated properly by the code that
+		// applies it, which reports a far better error than this would.
+		log.Debug().Err(err).Str("path", genesisPath).Msg("no fork schedule read from genesis")
+		return nil, nil
+	}
+	if err := g.Forks.Validate(); err != nil {
+		return nil, fmt.Errorf("genesis %q: %w", genesisPath, err)
+	}
+	return g.Forks, nil
+}
+
 func applyLocalGenesis(path string, stateDB *state.StateDB, policy genesisPolicy) error {
 	g, err := genesiscfg.LoadFile(path)
 	if err != nil {

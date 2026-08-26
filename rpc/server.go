@@ -29,6 +29,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
@@ -45,6 +46,7 @@ type Server struct {
 	x402proc    *x402.Processor
 	scheduler   *ai.Scheduler
 	validatorPK []byte
+	forks       forks.Schedule
 	router      *mux.Router
 	httpServer  *http.Server
 	// peerCount returns the number of connected peers (from peer pool)
@@ -68,6 +70,14 @@ type Config struct {
 	ValidatorPK []byte     // ML-DSA public key of the genesis validator
 	PeerCount   func() int // optional: returns live peer count
 	AuthToken   string     // shared secret required on write-plane routes
+
+	// Forks is the chain's rule-change schedule, reported on /status.
+	//
+	// It is exposed so an operator can confirm every node agrees on it BEFORE a
+	// fork height arrives. Nodes disagreeing about an activation height do not
+	// fail at startup — they fail at the height, by splitting, which is the
+	// worst possible moment to discover a mismatched config.
+	Forks forks.Schedule
 
 	// CORSOrigins is the browser-origin allowlist. Empty = emit no CORS headers.
 	CORSOrigins []string
@@ -125,6 +135,7 @@ func New(
 		x402proc:      x402.NewProcessor(stateDB),
 		scheduler:     scheduler,
 		validatorPK:   cfg.ValidatorPK,
+		forks:         cfg.Forks,
 		peerCount:     cfg.PeerCount,
 		writeAuth:     NewWriteAuth(cfg.AuthToken),
 		cors:          NewCORSPolicy(cfg.CORSOrigins),
@@ -383,14 +394,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	} else if s.broadcaster != nil {
 		peerCount = s.broadcaster.PeerCount()
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	status := map[string]any{
 		"chain_id":     types.ChainID,
 		"height":       height,
 		"mempool_size": s.pool.Size(),
 		"peer_count":   peerCount,
 		"node_version": "1.0.0-quantum",
 		"timestamp":    time.Now().Unix(),
-	})
+	}
+	// Only present on a chain that schedules one, so the response shape is
+	// unchanged for chains that do not.
+	if len(s.forks) > 0 {
+		status["forks"] = s.forks
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleX402Verify(w http.ResponseWriter, r *http.Request) {
