@@ -417,7 +417,20 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTim
 		return err
 	}
 
+	// An account's public key is the only thing that can ever authorise spending
+	// from it, so it is recorded only once it has actually verified a signature
+	// — never merely because a transaction presented it.
+	//
+	// This is also what makes the algorithm of a stored key a fact rather than a
+	// claim. Validate() above has already rejected any tx whose alg_id is not
+	// ML-DSA-65, and VerifySignature below checks the signature as ML-DSA-65, so
+	// a key reaches account state only after producing a valid FIPS-204
+	// signature over this transaction. An account key that is not ML-DSA-65
+	// cannot be written, which is a stronger guarantee than a stored label: the
+	// label would be a self-reported string, and it would still have to be
+	// believed.
 	var pubKeyBytes []byte
+	registerKey := false
 	if fromAcc.HasPublicKey() {
 		pubKeyBytes = fromAcc.PublicKey
 	} else if len(tx.PublicKey) == qcrypto.PublicKeySize {
@@ -429,14 +442,18 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTim
 			return fmt.Errorf("public key does not match from address")
 		}
 		pubKeyBytes = tx.PublicKey
-		fromAcc.PublicKey = tx.PublicKey
-		e.state.SetAccount(fromAcc)
+		registerKey = true
 	} else {
 		return types.ErrNoPublicKey
 	}
 
 	if err := tx.VerifySignature(pubKeyBytes); err != nil {
 		return types.ErrInvalidSignature
+	}
+
+	if registerKey {
+		fromAcc.PublicKey = tx.PublicKey
+		e.state.SetAccount(fromAcc)
 	}
 
 	if tx.Nonce != fromAcc.Nonce {
