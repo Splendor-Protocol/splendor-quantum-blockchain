@@ -470,6 +470,7 @@ the install rather than writing an unpinned unit if the identity cannot be read.
 | `--trust-proxy` | `false` | Read the client IP from `X-Forwarded-For`. Only behind a proxy you control, or callers spoof it and bypass rate limits |
 | `--tls-cert` / `--tls-key` | — | Serve TLS 1.3 directly, offering the `X25519MLKEM768` hybrid group |
 | `--public-url` | derived | Base URL advertised to peers |
+| `--node-key-pass-file` / `SQC_NODE_KEY_PASS` | — | Encrypt `node_identity.key` at rest (Argon2id + AES-256-GCM). Without it the key is plaintext at mode 0600, and anyone who can read the file can impersonate this node to its peers. Setting it on a node that already has a plaintext key re-encrypts that key in place, so the node's peer identity — and any pins on it — stay valid. There is no command-line form: an argument is visible to every local user through `ps` |
 
 ### Rate limits
 
@@ -964,6 +965,18 @@ curl http://localhost:8080/peers/announce \
 
 If the peer is on a private IP or loopback (a local cluster), both nodes also
 need `--allow-private-peers`; otherwise the SSRF guard drops the announcement.
+That guard now runs twice — once when the address is accepted, and again when
+the node actually dials it, so a hostname cannot resolve to a public address at
+announce time and an internal one at connect time. Only hostnames are re-checked;
+an IP literal has nothing to re-resolve.
+
+Announcements nodes send each other are signed with the sender's ML-DSA-65 node
+identity — the same key the sealed transport pins — and carry a timestamp and
+nonce, so an announcement names one node and cannot be replayed. The hand-rolled
+form above is unsigned; it is still accepted, because announce has to keep
+working across a version upgrade, and the shared token still gates the route
+either way. Once every node in a deployment is on a build that signs, that
+fallback can be dropped.
 
 **RPC returns "no blocks yet"**
 ```bash
