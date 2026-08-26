@@ -37,6 +37,25 @@ type BlockHeader struct {
 
 	// Number of transactions in this block.
 	TxCount uint32 `json:"tx_count"`
+
+	// QCRoot commits to the quorum certificate that justified this block, once
+	// the chain runs a validator set rather than a single producer. It is nil
+	// under single-validator consensus and MUST stay nil until the
+	// multi_validator upgrade activates — see Validate.
+	//
+	// It is reserved here, ahead of the code that will populate it, because a
+	// header field cannot be added later without cost. The block hash is taken
+	// over this struct, so any field appearing in the JSON changes every block
+	// hash on the chain; the only way to introduce one after launch is to start
+	// the chain again. Declaring it now is free instead: it is a slice with
+	// omitempty, so while it is nil encoding/json omits it entirely and the
+	// header serialises byte-for-byte as it did without the field. A [32]byte
+	// array would NOT have worked — arrays are never "empty" to encoding/json,
+	// so one would serialise from block 0 and change every hash today.
+	//
+	// Committing the certificate in the header, rather than only alongside the
+	// block, is what lets a client verify finality from headers alone.
+	QCRoot []byte `json:"qc_root,omitempty"`
 }
 
 // Block is a complete signed block on the Splendor Quantum Chain.
@@ -146,6 +165,23 @@ func (b *Block) Validate() error {
 	}
 	if computed != b.Hash {
 		return fmt.Errorf("block hash mismatch at height %d", b.Header.Height)
+	}
+
+	// A quorum certificate this build cannot check is refused, not ignored.
+	//
+	// The field is reserved but unimplemented, so a node accepting a block that
+	// carries one would be waving through the very evidence it is supposed to
+	// verify — and doing it while reporting the block as fully validated. It is
+	// signed by the producer, so only the producer can set it, but "only the
+	// validator can lie to you" is the assumption a validator set exists to
+	// remove. Refusing now also means the day multi_validator activates, an
+	// un-upgraded node stops rather than silently follows a chain whose rules it
+	// no longer implements.
+	if len(b.Header.QCRoot) != 0 {
+		return fmt.Errorf(
+			"block %d carries a quorum certificate (qc_root), which this build cannot verify: "+
+				"the multi_validator upgrade is not implemented yet. Upgrade the node",
+			b.Header.Height)
 	}
 
 	// Verify tx merkle root

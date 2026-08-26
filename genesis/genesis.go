@@ -16,6 +16,7 @@ import (
 	"time"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
@@ -53,6 +54,15 @@ type Genesis struct {
 
 	// TotalSupply is informational (sum of all allocations).
 	TotalSupply string `json:"total_supply"`
+
+	// Forks is the rule-change schedule: upgrade name to the height at which it
+	// takes effect. Absent or 0 means the rule never activates on this chain.
+	//
+	// It belongs in genesis because a fork schedule only works if every node has
+	// the same one, and genesis is the only document all of them already agree
+	// on and pin. Setting it here also means a chain can commit to a future rule
+	// change before the code implementing that rule exists.
+	Forks forks.Schedule `json:"forks,omitempty"`
 }
 
 // DefaultGenesis returns a genesis configuration for local development / testnet.
@@ -214,6 +224,9 @@ func (g *Genesis) Validate() error {
 	if len(g.Allocations) == 0 {
 		return fmt.Errorf("genesis: at least one allocation is required")
 	}
+	if err := g.Forks.Validate(); err != nil {
+		return fmt.Errorf("genesis: %w", err)
+	}
 	// Verify all addresses are parseable
 	for i, alloc := range g.Allocations {
 		if _, err := qcrypto.AddressFromString(alloc.Address); err != nil {
@@ -342,6 +355,26 @@ func (g *Genesis) Hash() [32]byte {
 		field([]byte(alloc.Balance))
 	}
 	field([]byte(g.TotalSupply))
+
+	// The fork schedule decides which rules a chain runs under, so it is part of
+	// the chain's identity: two documents differing only in an activation height
+	// describe networks that will disagree, and must not share a pin.
+	//
+	// It is appended only when non-empty, and nothing is written at all when it
+	// is absent. A chain that predates the schedule therefore hashes to exactly
+	// what it hashed to before, so the pins operators have already deployed keep
+	// verifying. Sorted by name, because a map has no order and an identity that
+	// depended on Go's map iteration would differ between two runs on the same
+	// file.
+	if len(g.Forks) > 0 {
+		names := g.Forks.Names()
+		field([]byte("forks"))
+		number(uint64(len(names)))
+		for _, name := range names {
+			field([]byte(name))
+			number(g.Forks[name])
+		}
+	}
 
 	return qcrypto.Hash32(buf.Bytes())
 }
