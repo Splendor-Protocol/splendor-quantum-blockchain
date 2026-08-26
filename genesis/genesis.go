@@ -223,7 +223,45 @@ func (g *Genesis) Validate() error {
 			return fmt.Errorf("genesis allocation[%d]: invalid balance %q", i, alloc.Balance)
 		}
 	}
+	// total_supply has always been documented as the sum of the allocations, but
+	// nothing ever checked it, and so it drifted: every live tier declares less
+	// than it actually minted, mainnet by a whole billion SPLD. Since the value
+	// is hashed into the genesis identity, a wrong one is not cosmetic — it is a
+	// figure every reader of the document is entitled to trust.
+	//
+	// An empty value means "compute it", which is how the deploy entrypoint now
+	// writes the document: the node holds the arithmetic, so a shell script
+	// cannot get it wrong, and the alpine image has neither python nor bc nor
+	// integers wide enough to add these numbers anyway.
+	sum := g.SumAllocations()
+	if g.TotalSupply == "" {
+		g.TotalSupply = sum.String()
+		return nil
+	}
+	declared, ok := new(big.Int).SetString(g.TotalSupply, 10)
+	if !ok || declared.Sign() < 0 {
+		return fmt.Errorf("genesis: invalid total_supply %q", g.TotalSupply)
+	}
+	if declared.Cmp(sum) != 0 {
+		return fmt.Errorf("genesis: total_supply is %s but the allocations sum to %s — "+
+			"the document would mint %s more than it declares",
+			declared, sum, new(big.Int).Sub(sum, declared))
+	}
 	return nil
+}
+
+// SumAllocations totals every allocation in the document.
+//
+// This is what total_supply means: the amount this chain begins with. Nothing
+// else mints at genesis, so the sum is the whole of it.
+func (g *Genesis) SumAllocations() *big.Int {
+	sum := new(big.Int)
+	for _, alloc := range g.Allocations {
+		if b, ok := new(big.Int).SetString(alloc.Balance, 10); ok && b.Sign() >= 0 {
+			sum.Add(sum, b)
+		}
+	}
+	return sum
 }
 
 // genesisHashDomain separates a genesis-document hash from every other SHA3-256
