@@ -23,6 +23,19 @@ const SESSION_KEY = 'sqc_session';
 const DEFAULT_RPC = 'https://rpc.splendor.network'; // change to your node
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
+// ── Signer artifact pins ───────────────────────────────────────────────────
+// The signer WASM *is* the wallet: a stale copy derives a different key from
+// the same seed, so it shows the user the wrong address and produces
+// signatures the chain rejects — which is exactly what shipped here once, when
+// this copy was left on the pre-standard Dilithium mode3 build after the node
+// moved to ML-DSA-65. Pin the digests so a mismatched copy fails loudly at
+// load instead of silently signing garbage.
+// Regenerate with sdk/bridge/wasm/build.sh (its GOTOOLCHAIN pin is what makes
+// these digests reproducible), then `npm run copy:wasm` and update both
+// constants together with wasmSha256/execSha256 in sqc.networks.json.
+const WASM_SHA256 = 'aa0813ff8b74e2ec5e9391aeff10105209410ec04234f6006ae0138b131c99da';
+const EXEC_SHA256 = '0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14';
+
 // ── State (in-memory, cleared on extension reload) ─────────────────────────
 let _session = null; // { address, mldsaPub, mldsaPrivRaw (bytes) }
 let _lockTimer = null;
@@ -114,14 +127,41 @@ let _wasmModule = null;
 //   sqDestroySession(id)        → {ok:true}
 //   sqIsUnlocked(id)            → bool
 
+async function sha256Hex(buf) {
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 async function loadWasm() {
   if (_wasmReady) return;
 
   // Go class is already available — importScripts('wasm/wasm_exec.js') ran at top level
   const url = chrome.runtime.getURL('wasm/sqc_signer.wasm');
 
-  const go = new Go();
   const bytes = await fetch(url).then(r => r.arrayBuffer());
+  const wasmHash = await sha256Hex(bytes);
+  if (wasmHash !== WASM_SHA256) {
+    throw new Error(
+      `Signer WASM integrity check failed — refusing to load. ` +
+      `Expected ${WASM_SHA256}, got ${wasmHash}. Rebuild and re-copy wasm/sqc_signer.wasm.`
+    );
+  }
+
+  // The shim already ran (importScripts is top-level and synchronous), so this
+  // cannot stop its execution — it stops a mismatched shim from being used to
+  // sign anything, which is the failure that actually costs the user money.
+  const execBytes = await fetch(chrome.runtime.getURL('wasm/wasm_exec.js')).then(r => r.arrayBuffer());
+  const execHash = await sha256Hex(execBytes);
+  if (execHash !== EXEC_SHA256) {
+    throw new Error(
+      `wasm_exec.js integrity check failed — refusing to sign. ` +
+      `Expected ${EXEC_SHA256}, got ${execHash}.`
+    );
+  }
+
+  const go = new Go();
   const result = await WebAssembly.instantiate(bytes, go.importObject);
   go.run(result.instance);
 

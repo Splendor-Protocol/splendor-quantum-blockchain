@@ -82,7 +82,7 @@ Same EVM account → same PQ wallet, every time. Non-custodial: the private ML-D
 ### Prerequisites
 
 - Node.js ≥ 18
-- Go ≥ 1.23 (only to build the WASM signer once)
+- Go ≥ 1.21 (only to build the WASM signer once; the build script pins the exact release it compiles with)
 
 ```powershell
 cd sdk/bridge
@@ -100,6 +100,33 @@ Artifacts:
 - `wasm/dist/sqc_signer.wasm`
 - `wasm/dist/wasm_exec.js`
 - `dist/*.js` (TypeScript SDK)
+
+### Reproducing the signer digest
+
+`sqc_signer.wasm` is content-pinned: browsers and Node both verify `wasmSha256`
+before instantiating, so the bytes must be reproducible by anyone, not just by
+whoever last built them. The digest is Go-release-sensitive — the same source
+under go1.25.0 and go1.26.2 differs by ~166 KB — so `wasm/build.sh` and
+`wasm/build.ps1` set `GOTOOLCHAIN=go1.25.0` (the floor `go.mod` declares, and the
+family the node `Dockerfile` builds with) and pass `-trimpath`. Any Go 1.21+
+will fetch and use that release automatically. Override only to deliberately
+move the pin:
+
+```bash
+SQC_GO_TOOLCHAIN=go1.26.2 bash ./wasm/build.sh
+```
+
+After any rebuild, refresh every consumer of those bytes or they will fail
+closed:
+
+```bash
+npm run sync:config                              # rewrites wasmSha256/execSha256
+npm --prefix ../../wallet-extension run copy:wasm
+# then update WASM_SHA256/EXEC_SHA256 in wallet-extension/background.js
+```
+
+`npm run prepublishOnly` refuses to publish when `wasm/dist` and the pins in
+`sqc.networks.json` disagree.
 
 ## Node usage
 

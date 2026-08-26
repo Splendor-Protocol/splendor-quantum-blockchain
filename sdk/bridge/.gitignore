@@ -4,3 +4,13 @@ dist/
 .DS_Store
 .env
 gateway/node_modules/
+
+# ...except the signer WASM. It is what npm actually ships (package.json
+# "files") and what the wallet-extension copy is cut from, so leaving it
+# untracked means the published signer is whatever the publisher happened to
+# have built locally — which is how a pre-ML-DSA-65 binary reached users. The
+# TypeScript dist/ stays ignored.
+!wasm/dist/
+wasm/dist/*
+!wasm/dist/sqc_signer.wasm
+!wasm/dist/wasm_exec.js
