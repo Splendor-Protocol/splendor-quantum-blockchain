@@ -292,10 +292,18 @@ wallet.sqwallet — fields exactly as core/crypto/wallet_store.go writes them:
 }
 ```
 
-Version 2 is the only version this build loads. A version 1 file holds a
-pre-standard CRYSTALS-Dilithium mode3 key, whose sizes are identical to
-ML-DSA-65, so it would decrypt cleanly and then fail as a signature nobody can
-verify — `LoadWallet` refuses it by name instead. The Argon2id parameters are
+This build reads version 1 and version 2 files, and decides what a file holds by
+testing the key rather than by reading a label. Neither label is trustworthy: the
+ML-DSA-65 migration never bumped the format version, so a v1 file may hold either
+scheme, and `alg` is unauthenticated and absent from older files. So `LoadWallet`
+signs and verifies with the loaded key and refuses it if that round trip fails,
+which also catches a mismatched keypair that no version number could.
+
+(An earlier revision of this section claimed the two schemes' key sizes were
+identical. They are not — mode3 secret keys are 4000 bytes against ML-DSA-65's
+4032 — so `PrivateKeyFromBytes` already rejects a genuine pre-standard file on
+length alone. The self-test is what covers the case a length check cannot: a file
+that is the right shape but the wrong key.) The Argon2id parameters are
 stored per file so they can be raised later, and floored on load (time ≥ 1,
 memory ≥ 32 MB, salt ≥ 16 bytes) so nobody can weaken a file into an easy
 offline guess.
