@@ -61,9 +61,14 @@ func NewCORSPolicy(origins []string) *CORSPolicy {
 func (p *CORSPolicy) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+		// Vary goes on every response, allowed or not. These nodes answer through
+		// a tunnel and a CDN, and a denied response that carries no Vary is
+		// cacheable under a key that ignores Origin — the cache then replays it,
+		// stripped of its allow-origin header, to a browser that is on the
+		// allowlist.
+		w.Header().Add("Vary", "Origin")
 		if allow := p.resolve(origin); allow != "" {
 			w.Header().Set("Access-Control-Allow-Origin", allow)
-			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Payment, X-Node-Auth")
 		}
