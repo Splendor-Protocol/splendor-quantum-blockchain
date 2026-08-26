@@ -1,17 +1,19 @@
 // Package rpc — VM-specific RPC endpoints for Splendor Quantum Chain.
 //
 // New endpoints:
-//   POST /vm/disasm          — disassemble SQC bytecode → human-readable listing
-//   POST /vm/validate        — validate bytecode structure, report warnings/errors
-//   POST /vm/estimate-gas    — estimate gas for a bytecode sequence
-//   GET  /healthz            — node health check (liveness probe)
-//   GET  /readyz             — node readiness check (has committed at least 1 block)
+//
+//	POST /vm/disasm          — disassemble SQC bytecode → human-readable listing
+//	POST /vm/validate        — validate bytecode structure, report warnings/errors
+//	POST /vm/estimate-gas    — estimate gas for a bytecode sequence
+//	GET  /healthz            — node health check (liveness probe)
+//	GET  /readyz             — node readiness check (has committed at least 1 block)
 package rpc
 
 import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"io"
 	"net/http"
 	"strings"
@@ -201,7 +203,7 @@ func makeHealthzHandler(startTime time.Time) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":         "ok",
 			"uptime_seconds": int64(time.Since(startTime).Seconds()),
-			"chain_id":       "splendor-quantum-1",
+			"chain_id":       types.ChainID,
 			"node_version":   "1.0.0-quantum",
 			"timestamp":      time.Now().Unix(),
 		})
