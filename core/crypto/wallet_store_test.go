@@ -213,62 +213,103 @@ func TestSaveWalletRecordsVersionAndAlgorithm(t *testing.T) {
 	}
 }
 
-// A version 1 wallet holds a round-3 CRYSTALS-Dilithium mode3 key. Because
-// mode3 and ML-DSA-65 key sizes coincide, nothing downstream would catch it —
-// so the refusal happens here, and it has to explain that this is a scheme
-// change rather than a corrupt file. Someone reading this at 3am must be able
-// to tell "regenerate the wallet" from "restore the backup".
-func TestLoadWalletRefusesDilithium3Version1File(t *testing.T) {
-	path, pass, _ := writeTestWallet(t)
+// The format version says nothing about the signature scheme: the ML-DSA-65
+// migration never bumped it, so the wallets in production are v1 files holding
+// FIPS-204 keys. This is the exact shape of every live validator wallet — a
+// v1 file with no algorithm field — and refusing it would take the whole fleet
+// offline on the next redeploy to fix a labelling problem.
+func TestLoadWalletAcceptsLegacyVersion1File(t *testing.T) {
+	path, pass, addr := writeTestWallet(t)
 	rewriteWallet(t, path, func(wf *WalletFile) {
 		wf.Version = 1
 		wf.Alg = "" // v1 files predate the algorithm field entirely
 	})
 
-	_, _, err := LoadWallet(path, pass)
-	requireErrContains(t, err,
-		"version 1",
-		"Dilithium",
-		"mode3",
-		"ML-DSA-65",
-		"not a corrupted file",
-		"generate",
-	)
+	pub, priv, err := LoadWallet(path, pass)
+	if err != nil {
+		t.Fatalf("legacy v1 wallet holding an ML-DSA-65 key was refused: %v", err)
+	}
+	if DeriveAddress(pub) != addr {
+		t.Fatal("loaded wallet has a different address")
+	}
+	if priv == nil {
+		t.Fatal("loaded wallet has no private key")
+	}
 }
 
-// The v1 refusal must not be silently "upgraded": no code path may rewrite the
-// file to v2 and carry the wrong-scheme key forward.
-func TestLoadWalletDoesNotUpgradeVersion1InPlace(t *testing.T) {
+// Reading a wallet must never write one. An in-place "upgrade" would rewrite
+// the chain's root of trust as a side effect of starting a node, and would do
+// it to a file the operator has backed up under a hash.
+func TestLoadWalletNeverRewritesTheFile(t *testing.T) {
 	path, pass, _ := writeTestWallet(t)
-	rewriteWallet(t, path, func(wf *WalletFile) { wf.Version = 1 })
+	rewriteWallet(t, path, func(wf *WalletFile) {
+		wf.Version = 1
+		wf.Alg = ""
+	})
 
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if _, _, err := LoadWallet(path, pass); err == nil {
-		t.Fatal("version 1 wallet was accepted")
+	if _, _, err := LoadWallet(path, pass); err != nil {
+		t.Fatalf("load: %v", err)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if !bytes.Equal(before, after) {
-		t.Fatal("LoadWallet rewrote the v1 file; it must be left untouched")
+		t.Fatal("LoadWallet rewrote the wallet file; it must be left untouched")
 	}
 }
 
-// Any other version is a plain format mismatch and should say so — it must not
-// borrow the Dilithium wording, which would send an operator chasing the wrong
-// problem.
+// Any version this build does not know is a plain format mismatch and must say
+// so, naming both versions it does read.
 func TestLoadWalletRefusesUnknownVersion(t *testing.T) {
 	path, pass, _ := writeTestWallet(t)
 	rewriteWallet(t, path, func(wf *WalletFile) { wf.Version = 99 })
 
 	_, _, err := LoadWallet(path, pass)
-	requireErrContains(t, err, "unsupported version 99", "version 2")
-	if strings.Contains(err.Error(), "Dilithium") {
-		t.Errorf("unknown-version error wrongly blames the scheme change: %v", err)
+	requireErrContains(t, err, "unsupported version 99", "versions 1 and 2")
+}
+
+// The gate that actually decides whether a key is usable is a sign/verify round
+// trip, not a label. Swapping in an unrelated public key leaves every length
+// check satisfied and the metadata untouched, so nothing else in the loader
+// would catch it — the node would come up advertising an address whose
+// signatures no validator accepts.
+func TestLoadWalletRefusesMismatchedKeypair(t *testing.T) {
+	path, pass, _ := writeTestWallet(t)
+
+	other, _, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	rewriteWallet(t, path, func(wf *WalletFile) { wf.PublicKey = other.Bytes() })
+
+	_, _, err = LoadWallet(path, pass)
+	requireErrContains(t, err, "does not match", AlgMLDSA65, "generate a new wallet")
+}
+
+// The self-test must not be fooled by a file that simply claims to be current:
+// relabelling a mismatched key as v2 with the right alg string changes nothing
+// about the key material, and unauthenticated metadata must not be able to
+// promote it.
+func TestLoadWalletSelfTestOutranksTheMetadata(t *testing.T) {
+	path, pass, _ := writeTestWallet(t)
+
+	other, _, err := GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	rewriteWallet(t, path, func(wf *WalletFile) {
+		wf.Version = walletVersion
+		wf.Alg = AlgMLDSA65
+		wf.PublicKey = other.Bytes()
+	})
+
+	if _, _, err := LoadWallet(path, pass); err == nil {
+		t.Fatal("a mismatched keypair was accepted because the file said it was current")
 	}
 }
 
