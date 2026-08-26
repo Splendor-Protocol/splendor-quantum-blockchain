@@ -160,7 +160,10 @@ const res = await wallet.sendTransfer({
 // Prefer GET /tx/{hash}/receipt when indexed; else nonce advancement (can race)
 ```
 
-## 5. QSol contract calls
+## 5. Contract calls
+
+(The `sqaddress` type name is a QSol convention, but no QSol compiler exists —
+you are calling SQC-VM bytecode or a native module, not compiled QSol.)
 
 ```ts
 import { encodeFunctionData, decodeArgUint256 } from '@splendor/pq-bridge';

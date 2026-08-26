@@ -67,7 +67,11 @@ Exported: `DERIVATION_DOMAIN_MESSAGE`, `CHAIN_ID`.
 
 ---
 
-## 5. QSol ABI
+## 5. Contract call ABI
+
+Named "QSol ABI" in earlier drafts. There is no QSol compiler and no QSol
+source anywhere — this is the calling convention for SQC-VM bytecode and the
+node's native modules, and it is the only contract interface that exists.
 
 1. Function selector MUST be the first **4 bytes** of `SHA3-256(UTF-8 signature)` — **not** Keccak-256.
 2. Arguments MUST be packed as 32-byte big-endian words after the selector.
