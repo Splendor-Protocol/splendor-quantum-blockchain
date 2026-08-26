@@ -493,9 +493,11 @@ cmd_uninstall() {
   KEEP_REPO=true
 
   for arg in "$@"; do
-    [ "$arg" = "--data" ]   && KEEP_DATA=false
-    [ "$arg" = "--wallet" ] && KEEP_WALLET=false
-    [ "$arg" = "--all" ]    && KEEP_DATA=false && KEEP_WALLET=false && KEEP_REPO=false
+    case "$arg" in
+      --data)   KEEP_DATA=false ;;
+      --wallet) KEEP_WALLET=false ;;
+      --all)    KEEP_DATA=false; KEEP_WALLET=false; KEEP_REPO=false ;;
+    esac
   done
 
   if [ "$KEEP_DATA" = false ]; then
