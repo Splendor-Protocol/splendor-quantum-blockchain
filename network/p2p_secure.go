@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,6 +106,50 @@ type IdentityCache struct {
 // plaintext fallback.
 var ErrPeerNotPinned = errors.New("peer node identity is not pinned")
 
+// maxWarnedPeers bounds the log-once set below. Peer URLs arrive from places
+// this node does not control — a /peers/announce body, another peer's /peers
+// list — so a map keyed by them and never emptied is a leak whose rate an
+// attacker picks.
+const maxWarnedPeers = 1024
+
+// canonicalPeerURL reduces a peer's base URL to a single spelling.
+//
+// A pin is the operator's statement about a HOST, but the map enforcing it is
+// keyed by a STRING, and peer URLs reach this node from untrusted places. Left
+// literal, "HTTP://host" and "http://host/" are separate keys for the same box:
+// the pinned key is never consulted and trust-on-first-use quietly pins whoever
+// answers, so a pin the operator did supply is bypassed by respelling it.
+//
+// The dial uses the canonical form for the same reason it must: a base URL kept
+// with its trailing slash builds "host//p2p/identity", which a peer's mux answers
+// with a redirect the P2P client refuses to follow (see noRedirect) — the sealed
+// channel then fails for a reason that looks like the peer being down.
+func canonicalPeerURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		// Nothing to reason about — keep the caller's spelling rather than
+		// invent one. It simply will not match a pin, which is the safe way to
+		// be wrong.
+		return raw
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	// A default port is the same endpoint as no port at all.
+	if port := u.Port(); (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+		host := u.Hostname()
+		if strings.Contains(host, ":") {
+			host = "[" + host + "]" // IPv6 literals lose their brackets to Hostname()
+		}
+		u.Host = host
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawPath = ""
+	// A peer base URL carries neither of these, and both would land in the
+	// middle of the concatenated path.
+	u.RawQuery, u.Fragment, u.ForceQuery = "", "", false
+	return u.String()
+}
+
 // NewIdentityCache creates an identity cache.
 func NewIdentityCache() *IdentityCache {
 	return &IdentityCache{
@@ -116,10 +162,20 @@ func NewIdentityCache() *IdentityCache {
 
 // Pin records an expected node public key for a peer, so its identity is
 // checked against operator-supplied truth instead of trust-on-first-use.
-func (c *IdentityCache) Pin(peerURL string, nodePubKey []byte) {
+//
+// An empty key is refused rather than stored. Stored, it would be the worst of
+// both states: Verify treats a zero-length expectation as "no expectation" and
+// accepts any identity, while the peer looks pinned and so is never pinned on
+// first contact either — the peer would stay permanently unauthenticated under
+// a name that says otherwise.
+func (c *IdentityCache) Pin(peerURL string, nodePubKey []byte) error {
+	if len(nodePubKey) == 0 {
+		return fmt.Errorf("refusing to pin %s to an empty node public key", peerURL)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pinned[peerURL] = nodePubKey
+	c.pinned[canonicalPeerURL(peerURL)] = nodePubKey
+	return nil
 }
 
 // RequirePins makes an operator-supplied pin mandatory for every peer.
@@ -129,6 +185,11 @@ func (c *IdentityCache) Pin(peerURL string, nodePubKey []byte) {
 // pinned as the peer and keeps that position for the life of the process — the
 // pin then works against the operator, holding the node to the impostor. With
 // this set, an unpinned peer is simply not a peer.
+//
+// This governs who this node TALKS TO. Inbound traffic is a different boundary
+// and is not pinned: a sealed envelope carries no sender identity — anyone may
+// seal to a published KEM key — so ingest stays authenticated by the write-plane
+// token and by the mandatory validator signature on the block itself.
 func (c *IdentityCache) RequirePins(required bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -144,6 +205,8 @@ func (c *IdentityCache) PinsRequired() bool {
 
 // Get returns a verified identity document for a peer, fetching it if needed.
 func (c *IdentityCache) Get(peerURL string) (*IdentityDocument, error) {
+	peerURL = canonicalPeerURL(peerURL)
+
 	c.mu.RLock()
 	entry, ok := c.docs[peerURL]
 	pin := c.pinned[peerURL]
@@ -154,7 +217,7 @@ func (c *IdentityCache) Get(peerURL string) (*IdentityDocument, error) {
 	// point where a peer identity becomes trusted — every sealed path (block
 	// push, announce, catch-up query) reaches the network through here — so
 	// enforcing anywhere else would leave a way in.
-	if requirePins && pin == nil {
+	if requirePins && len(pin) == 0 {
 		c.warnUnpinned(peerURL)
 		return nil, fmt.Errorf("%w: %s — supply --peer-pin %s=<node ML-DSA-65 pubkey hex> "+
 			"(the peer prints it at startup and serves it at %s), or drop --require-peer-pins "+
@@ -183,9 +246,10 @@ func (c *IdentityCache) Get(peerURL string) (*IdentityDocument, error) {
 	}
 
 	c.mu.Lock()
-	if _, alreadyPinned := c.pinned[peerURL]; !alreadyPinned {
+	if len(c.pinned[peerURL]) == 0 {
 		// Trust on first use, then hold the peer to it. Unreachable while pins
-		// are required — that check above returns before any fetch.
+		// are required — that check above returns before any fetch. Keyed on
+		// length, not presence, so an empty entry can never stand in for a pin.
 		c.pinned[peerURL] = doc.NodePubKey
 		log.Debug().Str("peer", peerURL).Msg("p2p: pinned peer node identity on first contact")
 	}
@@ -204,7 +268,14 @@ func (c *IdentityCache) warnUnpinned(peerURL string) {
 	c.mu.Lock()
 	_, seen := c.warned[peerURL]
 	if !seen {
-		c.warned[peerURL] = struct{}{}
+		if len(c.warned) >= maxWarnedPeers {
+			// Past the cap, stay quiet rather than grow: the caller still gets
+			// the refusal as an error, and a node refusing this many distinct
+			// peers has already been told what it needs to know.
+			seen = true
+		} else {
+			c.warned[peerURL] = struct{}{}
+		}
 	}
 	c.mu.Unlock()
 	if seen {
@@ -220,11 +291,13 @@ func (c *IdentityCache) warnUnpinned(peerURL string) {
 func (c *IdentityCache) Forget(peerURL string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.docs, peerURL)
+	delete(c.docs, canonicalPeerURL(peerURL))
 }
 
 // SendSealed encrypts a write-plane request to a peer and posts it.
 func (c *IdentityCache) SendSealed(peerURL, token, kind string, body []byte) error {
+	// The same spelling that was pin-checked is the one dialled below.
+	peerURL = canonicalPeerURL(peerURL)
 	doc, err := c.Get(peerURL)
 	if err != nil {
 		return err
@@ -265,6 +338,7 @@ func (c *IdentityCache) SendSealed(peerURL, token, kind string, body []byte) err
 // still content-verified by the caller — encryption authenticates the channel,
 // not the chain data travelling over it.
 func (c *IdentityCache) QuerySealed(peerURL, kind string, body []byte, maxReply int64) ([]byte, error) {
+	peerURL = canonicalPeerURL(peerURL)
 	doc, err := c.Get(peerURL)
 	if err != nil {
 		return nil, err

@@ -20,6 +20,7 @@ package network
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -108,6 +109,12 @@ func (f *BlockFetcher) fetchBlockJSON(peerAddr, kind string, body []byte, plainP
 		raw, err := f.cfg.Identities.QuerySealed(peerAddr, kind, body, maxSyncBodyBytes)
 		if err == nil {
 			return raw, nil
+		}
+		// Pulling in cleartext from a peer we refused to authenticate would
+		// undo the refusal: the pin says this is not the peer we meant, and the
+		// fallback cannot tell us otherwise.
+		if errors.Is(err, ErrPeerNotPinned) {
+			return nil, err
 		}
 		if !f.cfg.AllowPlaintext {
 			return nil, fmt.Errorf("sealed sync from %s failed and plaintext sync is disabled "+

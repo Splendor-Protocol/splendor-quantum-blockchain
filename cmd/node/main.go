@@ -352,7 +352,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 		if _, perr := qcrypto.PublicKeyFromBytes(pk); perr != nil {
 			return fmt.Errorf("invalid --peer-pin pubkey for %s: %w", peerURL, perr)
 		}
-		broadcaster.Identities().Pin(peerURL, pk)
+		if perr := broadcaster.Identities().Pin(peerURL, pk); perr != nil {
+			return fmt.Errorf("invalid --peer-pin for %s: %w", peerURL, perr)
+		}
 		log.Info().Str("peer", peerURL).Msg("pinned peer node identity")
 	}
 

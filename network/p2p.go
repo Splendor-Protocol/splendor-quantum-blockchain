@@ -20,6 +20,7 @@ package network
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -108,6 +109,10 @@ func (b *Broadcaster) AddPeer(url string) {
 	if url == "" {
 		return
 	}
+	// One spelling per peer. This set is fed by /peers/announce, so without it
+	// an announcer can occupy every slot below with respellings of one address
+	// — and each spelling would be pin-checked as if it were a separate peer.
+	url = canonicalPeerURL(url)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, exists := b.peers[url]; !exists && len(b.peers) >= maxBroadcastPeers {
@@ -123,7 +128,7 @@ func (b *Broadcaster) AddPeer(url string) {
 func (b *Broadcaster) RemovePeer(url string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.peers, url)
+	delete(b.peers, canonicalPeerURL(url))
 }
 
 // PeerCount returns the number of broadcast targets.
@@ -179,6 +184,13 @@ func (b *Broadcaster) sendBlock(peerURL string, blockData []byte) error {
 	if sealErr == nil {
 		return nil
 	}
+	// A refused pin is a decision, not a transport hiccup. The fallback below
+	// carries no peer identity and puts the write-plane token in a header, so
+	// retrying there would hand the block and the credential to precisely the
+	// peer the operator declined to trust.
+	if errors.Is(sealErr, ErrPeerNotPinned) {
+		return sealErr
+	}
 	if !b.allowPlaintext {
 		return fmt.Errorf("encrypted block push failed and plaintext fallback is disabled "+
 			"(enable with --allow-plaintext-p2p if the peer predates the sealed transport): %w", sealErr)
@@ -232,6 +244,11 @@ func (b *Broadcaster) AnnounceSelf(selfURL string, selfHeight uint64) {
 		go func(peerURL string) {
 			if err := b.identities.SendSealed(peerURL, b.authToken, KindAnnounce, data); err == nil {
 				log.Debug().Str("peer", peerURL).Str("self", selfURL).Msg("announce: sent (sealed)")
+				return
+			} else if errors.Is(err, ErrPeerNotPinned) {
+				// Announcing in cleartext would leak the token to a peer this
+				// node just refused to authenticate.
+				log.Debug().Err(err).Str("peer", peerURL).Msg("announce: peer is not pinned")
 				return
 			} else if !b.allowPlaintext {
 				log.Debug().Err(err).Str("peer", peerURL).Msg("announce: sealed send failed")
