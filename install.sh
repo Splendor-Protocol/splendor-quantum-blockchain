@@ -294,7 +294,9 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+# read-only (not 'true') because the binary lives under /root; 'true' would
+# make /root inaccessible and produce a 203/EXEC failure at startup.
+ProtectHome=read-only
 ReadWritePaths=/var/sqc
 ProtectKernelTunables=true
 ProtectControlGroups=true
@@ -413,7 +415,9 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+# read-only (not 'true') because the binary lives under /root; 'true' would
+# make /root inaccessible and produce a 203/EXEC failure at startup.
+ProtectHome=read-only
 ReadWritePaths=/var/sqc
 ProtectKernelTunables=true
 ProtectControlGroups=true
