@@ -428,12 +428,38 @@ two ever disagree.
 | `--peer` | — | Bootstrap peer RPC address, repeatable |
 | `--validator-pubkey-hex` | — | Trusted genesis validator key. A full node MUST set this (or `--genesis-hash`) to authenticate pushed blocks |
 | `--genesis-hash` | — | Pinned hash of block 0. Without one of these two, a node adopts whatever key its first peer serves |
-| `--peer-pin` | — | `URL=PUBKEY_HEX`, repeatable. Without a pin, peer identities are trust-on-first-use |
+| `--peer-pin` | — | `URL=PUBKEY_HEX`, repeatable. Without a pin, peer identities are trust-on-first-use. See **Obtaining a peer pin** below — the endpoint serves base64, not hex |
 | `--require-peer-pins` | `false` | Refuse any unpinned peer instead of trusting it on first contact. Worth turning on once the cluster's peers are known |
 | `--genesis-doc-hash` | — | Pin for a peer-served `genesis.json`, printed by `sqc-node genesis-hash <path>`. A node with no local `--genesis` credits a peer's genesis only if it hashes to this |
 | `--trust-peer-genesis` | `false` | Credit a peer-served genesis with no pin. The peer can then mint any balance it likes into this node's state. Lab networks only |
 | `--allow-private-peers` | `false` | Permit loopback/private-IP peers. Needed for a local multi-node cluster; off in public deployments so `/peers/announce` cannot be used for SSRF |
 | `--allow-plaintext-p2p` | `false` | Fall back to cleartext when a peer serves no sealed transport. Leave off: the default is what stops a downgrade attack. Cannot be combined with `--require-peer-pins` — the node refuses to start, because a plaintext channel carries no identity to pin |
+
+#### Obtaining a peer pin
+
+`--peer-pin` takes hex, and `/p2p/identity` serves base64. Copying the field
+straight out of the response produces a pin that can never match, so decode it:
+
+```bash
+PEER=https://validator.example:8080
+curl -fsS "$PEER/p2p/identity" | python3 -c \
+  "import base64,json,sys;print(base64.b64decode(json.load(sys.stdin)['node_pubkey']).hex())"
+```
+
+Pass the result as `--peer-pin $PEER=<hex>`, and add `--require-peer-pins` so an
+unpinned peer is refused rather than trusted. Two things worth knowing before
+you rely on it:
+
+- **A validator's node identity is its wallet key.** A non-validator generates a
+  separate identity at `<data-dir>/node_identity.key`, so wiping a follower's
+  data directory changes its identity and invalidates anyone's pin of it.
+- **Take the pin over a channel you trust.** Reading it from the peer you are
+  about to pin is trust-on-first-use with extra steps; it is only better than
+  TOFU if the value is confirmed out of band, or if you fetch it over TLS from a
+  host you already authenticate.
+
+`install.sh` does this automatically when provisioning an RPC node, and fails
+the install rather than writing an unpinned unit if the identity cannot be read.
 
 ### Write plane and exposure
 
@@ -844,6 +870,11 @@ like a root CA key.
 The node enforces two of these rules rather than trusting the operator:
 
 - A wallet readable by group or other is **refused** at startup. Fix with `chmod 600`.
+  **On Windows this check does not run.** `CheckKeyFilePermissions` returns
+  success unconditionally there, because POSIX mode bits do not describe a
+  Windows ACL. A Windows operator therefore gets none of this protection and
+  must restrict the file themselves — the sentence above is true of Linux and
+  macOS only.
 - A wallet whose Argon2id parameters have been weakened below the floor
   (time ≥ 1, memory ≥ 32 MB, salt ≥ 16 bytes) is **refused**, so rewriting the
   file cannot make an offline guess at the passphrase cheap.
