@@ -1,5 +1,12 @@
 # Build context: sdk/bridge (run: npm run build && cd gateway && npm ci)
-FROM node:22-bookworm-slim AS build
+#
+# Node 24 for OpenSSL 3.5, which is where X25519MLKEM768 comes from. Node 22
+# only picked it up in 22.20 (backport); the floating node:22 tag spent most of
+# its life on OpenSSL 3.0, where the gateway offered the hybrid group, OpenSSL
+# silently dropped it as unrecognised, and every connection was classical. The
+# gateway now refuses to start rather than serve that, so this base image is
+# what makes TLS work at all.
+FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -15,7 +22,7 @@ COPY gateway/package.json gateway/package-lock.json ./
 COPY gateway/server.ts ./
 RUN npm ci
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 RUN useradd -r -u 10001 sqc && mkdir -p /app && chown -R sqc:sqc /app
 WORKDIR /app
 
