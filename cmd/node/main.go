@@ -70,6 +70,7 @@ var (
 	flagPublicURL         string
 	flagAllowPlaintextP2P bool
 	flagPeerPins          []string
+	flagRequirePeerPins   bool
 )
 
 func main() {
@@ -112,7 +113,8 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagTLSKey, "tls-key", "", "PEM private key matching --tls-cert")
 	root.Flags().StringVar(&flagPublicURL, "public-url", "", "Externally reachable base URL advertised to peers (default: derived from --rpc-addr)")
 	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Allow unencrypted block push and catch-up sync when a peer has no ML-KEM sealed transport. Off by default so the channel cannot be downgraded.")
-	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use.")
+	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use — set --require-peer-pins to refuse unpinned peers instead.")
+	root.Flags().BoolVar(&flagRequirePeerPins, "require-peer-pins", false, "Refuse any peer that has no --peer-pin instead of trusting its identity on first contact. Recommended once a cluster's peers are known: trust-on-first-use hands the relationship to whoever answers first at bootstrap.")
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -131,6 +133,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--tls-cert and --tls-key must be provided together")
 	}
 	tlsEnabled := flagTLSCert != ""
+
+	// --require-peer-pins demands a verified ML-DSA-65 identity for every peer;
+	// --allow-plaintext-p2p permits a channel that carries no identity at all,
+	// which no pin can ever match. Taken together the fallback would readmit
+	// exactly the peers the pin requirement just refused, so refuse the pair
+	// here instead of shipping a guarantee that quietly does not hold.
+	if flagRequirePeerPins && flagAllowPlaintextP2P {
+		return fmt.Errorf("--require-peer-pins cannot be combined with --allow-plaintext-p2p: " +
+			"the plaintext fallback carries no peer identity, so it would readmit the unpinned " +
+			"peers that the pin requirement exists to refuse")
+	}
 
 	log.Info().
 		Str("chain_id", types.ChainID).
@@ -304,6 +317,20 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}
 		broadcaster.Identities().Pin(peerURL, pk)
 		log.Info().Str("peer", peerURL).Msg("pinned peer node identity")
+	}
+
+	// Enforcement itself lives in the identity cache, which every sealed path
+	// (block push, announce, catch-up pull) funnels through — the flag only
+	// switches the policy on. Default off, so a node with no peers, or one still
+	// bootstrapping a cluster, behaves exactly as before.
+	if flagRequirePeerPins {
+		broadcaster.Identities().RequirePins(true)
+		log.Info().Int("pinned_peers", len(flagPeerPins)).
+			Msg("Peer identity pins REQUIRED: peers without a --peer-pin will be refused, not trusted on first use")
+		if len(flagPeerPins) == 0 && len(flagPeers) > 0 {
+			log.Warn().Msg("--require-peer-pins is set but no --peer-pin was supplied: " +
+				"every configured --peer will be refused")
+		}
 	}
 
 	for _, peer := range flagPeers {
