@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/mux"
 )
 
 // /ws streams live blocks and pending transactions, so it must obey the same
@@ -107,6 +109,96 @@ func TestWebSocketStreamsToAllowedOrigin(t *testing.T) {
 	})
 	if got := nextEvent(t, events); !strings.Contains(got, string(WSEventNewBlock)) {
 		t.Fatalf("second event %q, want a %s event", got, WSEventNewBlock)
+	}
+}
+
+// Preflight is the one path the handler never sees: /ws is registered GET-only,
+// so an OPTIONS request does not match the route and mux would answer 405 with
+// no CORS headers at all. It works because cmd/node wraps the whole router in
+// the policy rather than registering it as mux middleware — pin that wiring
+// here, because moving the policy onto the router would silently break
+// preflight for every allowlisted dapp.
+func TestWebSocketPreflightFollowsTheAllowlist(t *testing.T) {
+	const allowed = "https://quantum-explorer.splendor.org"
+
+	for _, tc := range []struct {
+		name   string
+		policy *CORSPolicy
+		origin string
+		want   string
+	}{
+		{"empty allowlist", NewCORSPolicy(nil), "https://evil.example", ""},
+		{"allowlisted", NewCORSPolicy([]string{allowed}), allowed, allowed},
+		{"not allowlisted", NewCORSPolicy([]string{allowed}), "https://evil.example", ""},
+	} {
+		router := mux.NewRouter()
+		router.HandleFunc("/ws", NewHub().HandleWebSocket).Methods(http.MethodGet)
+
+		req := httptest.NewRequest(http.MethodOptions, "/ws", nil)
+		req.Header.Set("Origin", tc.origin)
+		req.Header.Set("Access-Control-Request-Method", "GET")
+
+		rec := httptest.NewRecorder()
+		tc.policy.Middleware(router).ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("%s: preflight status %d, want %d", tc.name, rec.Code, http.StatusNoContent)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != tc.want {
+			t.Errorf("%s: preflight allow-origin %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Near misses of an allowlisted origin must not open the stream. A subdomain, a
+// suffix, a different scheme or port and a sandboxed iframe's "null" are all
+// distinct origins to a browser, so they have to be distinct to the node too.
+func TestWebSocketRejectsNearMissOrigins(t *testing.T) {
+	const allowed = "https://explorer.splendor.org"
+	policy := NewCORSPolicy([]string{allowed})
+
+	for _, origin := range []string{
+		"https://evil.explorer.splendor.org", // subdomain of the allowlisted host
+		"https://explorer.splendor.org.evil", // allowlisted origin as a prefix
+		"https://explorer.splendor.orgevil",  // no separator at all
+		"http://explorer.splendor.org",       // scheme downgrade
+		"https://explorer.splendor.org:8443", // explicit non-default port
+		"https://explorer.splendor.org/path", // more than an origin
+		" https://explorer.splendor.org",     // padded past the exact match
+		"null",                               // sandboxed iframe, data: or file:
+		"*",                                  // asking for the old default
+	} {
+		rec := serveWS(t, policy, origin)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("origin %q got allow-origin %q, want no header", origin, got)
+		}
+	}
+}
+
+// An operator who writes the origin with a trailing slash still gets a working
+// allowlist entry: the config is normalised, not taken literally.
+func TestWebSocketAllowlistToleratesConfigSlash(t *testing.T) {
+	const origin = "https://explorer.splendor.org"
+
+	rec := serveWS(t, NewCORSPolicy([]string{origin + "/"}), origin)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("origin allowlisted with a trailing slash got %q, want %q", got, origin)
+	}
+}
+
+// Vary must be on the response whether or not the origin was allowed. A denied
+// response with no Vary is cacheable under a key that ignores Origin, and the
+// CDN in front of these nodes would then replay it — stripped of its
+// allow-origin header — to a browser that is on the allowlist.
+func TestWebSocketAlwaysVariesOnOrigin(t *testing.T) {
+	const allowed = "https://explorer.splendor.org"
+	policy := NewCORSPolicy([]string{allowed})
+
+	for _, origin := range []string{allowed, "https://evil.example", ""} {
+		rec := serveWS(t, policy, origin)
+		if got := rec.Header().Get("Vary"); got != "Origin" {
+			t.Errorf("origin %q got Vary %q, want %q", origin, got, "Origin")
+		}
 	}
 }
 
