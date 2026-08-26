@@ -456,14 +456,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 		// total_supply declared in genesis.json is never minted, the chain has
 		// zero balance, and no transaction can meet the minimum fee.
 		if flagGenesisPath != "" {
-			g, err := genesiscfg.LoadFile(flagGenesisPath)
-			if err != nil {
-				return fmt.Errorf("load genesis %q: %w", flagGenesisPath, err)
+			if err := applyLocalGenesis(flagGenesisPath, stateDB, genesisPolicy{docHash: genesisDocPin}); err != nil {
+				return err
 			}
-			if _, err := g.ApplyToState(stateDB); err != nil {
-				return fmt.Errorf("apply genesis allocations: %w", err)
-			}
-			log.Info().Int("allocations", len(g.Allocations)).Str("total_supply", g.TotalSupply).Msg("Applied genesis allocations")
 		}
 
 		// The validator builds and signs block 0 over the resulting state root.
@@ -526,12 +521,12 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// allocations before creating block 0, so its state root ≠ empty state root.
 	// Before syncing blocks, the RPC must fetch and apply the same genesis
 	// allocations so its state root matches the validator's.
-	if bootstrapsGenesisFromPeers(flagIsValidator, flagPeers) {
+	if bootstrapsGenesisFromPeers(flagIsValidator, flagPeers, flagGenesisPath) {
 		policy := genesisPolicy{docHash: genesisDocPin, trustPeer: flagTrustPeerGenesis}
 		go func() {
 			time.Sleep(2 * time.Second) // wait for HTTP server to start
 			for _, peer := range flagPeers {
-				err := bootstrapGenesisFromPeer(peer, stateDB, executor, flagGenesisPath, policy)
+				err := bootstrapGenesisFromPeer(peer, stateDB, executor, policy)
 				if errors.Is(err, errGenesisUnpinned) {
 					// Configuration, not a peer fault: no other peer is any more
 					// trustworthy, so say it once and stop.
@@ -882,8 +877,38 @@ type genesisPolicy struct {
 //
 // A validator never does: it mints genesis from its own --genesis file before
 // sealing block 0, which is why none of the pinning below can affect one.
-func bootstrapsGenesisFromPeers(isValidator bool, peers []string) bool {
-	return !isValidator && len(peers) > 0
+//
+// Nor does any node holding a local --genesis, validator or not: runNode already
+// applied that document on the empty chain before sync started. Asking again
+// later would re-apply it on top of whatever blocks have since landed, and
+// ApplyToState overwrites an account rather than adding to it — so a full node
+// on the documented --genesis --peer shape could reset a synced balance and
+// nonce back to their genesis values and then diverge on state root.
+func bootstrapsGenesisFromPeers(isValidator bool, peers []string, localGenesisPath string) bool {
+	return !isValidator && len(peers) > 0 && localGenesisPath == ""
+}
+
+// applyLocalGenesis credits the allocations of a genesis.json held on this host.
+//
+// A local document is not a peer's, but it is still money: ApplyToState commits
+// balances to LevelDB before any block exists to contradict them, and nothing
+// later removes an account it wrote. So it goes through the same gate — a
+// document for another chain, or one the operator pinned and that no longer
+// matches, stops the node instead of minting a supply nobody meant.
+func applyLocalGenesis(path string, stateDB *state.StateDB, policy genesisPolicy) error {
+	g, err := genesiscfg.LoadFile(path)
+	if err != nil {
+		return fmt.Errorf("load genesis %q: %w", path, err)
+	}
+	if err := verifyGenesisDocument(g, policy.docHash, path); err != nil {
+		return err
+	}
+	if _, err := g.ApplyToState(stateDB); err != nil {
+		return fmt.Errorf("apply genesis allocations: %w", err)
+	}
+	log.Info().Int("allocations", len(g.Allocations)).Str("total_supply", g.TotalSupply).
+		Str("genesis_doc_hash", g.HashHex()).Msg("Applied genesis allocations")
+	return nil
 }
 
 // verifyGenesisDocument gates a genesis document before ApplyToState writes it.
@@ -909,35 +934,17 @@ func verifyGenesisDocument(g *genesiscfg.Genesis, pin *[32]byte, source string) 
 }
 
 // bootstrapGenesisFromPeer applies the genesis allocations an RPC node needs
-// before block sync starts, so its state root matches the validator's.
+// before block sync starts, so its state root matches the validator's. It is
+// reached only by a node with no local --genesis to credit instead.
 //
-// The document may come from local disk or from a peer, and those are not the
-// same kind of thing. A local file was put there by the operator, alongside the
-// node's own keys. A peer's /genesis is an unauthenticated response over plain
-// HTTP from whatever currently answers at --peer — and its allocations land in
-// state directly, so serving a doctored one is how an impersonated bootstrap
-// peer mints itself a balance this node will then swear to.
-func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *block.Executor, localGenesisPath string, policy genesisPolicy) error {
+// A peer's /genesis is an unauthenticated response over plain HTTP from whatever
+// currently answers at --peer — and its allocations land in state directly, so
+// serving a doctored one is how an impersonated bootstrap peer mints itself a
+// balance this node will then swear to.
+func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *block.Executor, policy genesisPolicy) error {
 	// If chain already has blocks, no need to bootstrap
 	latest, _ := executor.LatestBlock()
 	if latest != nil {
-		return nil
-	}
-
-	// If local genesis.json is specified, use it directly
-	if localGenesisPath != "" {
-		g, err := genesiscfg.LoadFile(localGenesisPath)
-		if err != nil {
-			return fmt.Errorf("load local genesis: %w", err)
-		}
-		if err := verifyGenesisDocument(g, policy.docHash, localGenesisPath); err != nil {
-			return err
-		}
-		if _, err := g.ApplyToState(stateDB); err != nil {
-			return fmt.Errorf("apply local genesis: %w", err)
-		}
-		log.Info().Str("path", localGenesisPath).Str("genesis_doc_hash", g.HashHex()).
-			Msg("RPC: applied local genesis.json allocations")
 		return nil
 	}
 
@@ -960,9 +967,11 @@ func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *
 	}
 	defer resp.Body.Close()
 
+	// Returning nil here would count as success and stop the caller trying the
+	// remaining peers, leaving the node unfunded on the word of the one peer that
+	// happened to answer first without the endpoint.
 	if resp.StatusCode == http.StatusNotFound {
-		log.Warn().Str("peer", peerURL).Msg("RPC: peer has no /genesis endpoint — state root mismatch may occur")
-		return nil
+		return fmt.Errorf("peer %s serves no /genesis (it was started without --genesis)", peerURL)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("peer /genesis returned %d", resp.StatusCode)
