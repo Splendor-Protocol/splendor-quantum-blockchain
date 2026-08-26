@@ -62,6 +62,7 @@ func NewPeerPool(self string, maxSize int) *PeerPool {
 		client: &http.Client{
 			Timeout:       5 * time.Second,
 			CheckRedirect: noRedirect,
+			Transport:     SafeTransport(5 * time.Second),
 		},
 	}
 }
@@ -150,10 +151,14 @@ func (p *PeerPool) evictOldestLocked() {
 
 // Discoverer handles bootstrap + periodic peer exchange.
 type Discoverer struct {
-	pool      *PeerPool
-	selfAddr  string
-	interval  time.Duration
-	stopCh    chan struct{}
+	pool     *PeerPool
+	selfAddr string
+	interval time.Duration
+	stopCh   chan struct{}
+
+	// identity signs outbound announcements so peers can attribute them to this
+	// node rather than to whoever holds the shared write-plane token.
+	identity *NodeIdentity
 }
 
 // NewDiscoverer creates a new peer discoverer.
@@ -168,6 +173,9 @@ func NewDiscoverer(pool *PeerPool, selfAddr string, interval time.Duration) *Dis
 		stopCh:   make(chan struct{}),
 	}
 }
+
+// SetIdentity supplies the node key used to sign announcements.
+func (d *Discoverer) SetIdentity(id *NodeIdentity) { d.identity = id }
 
 // Bootstrap connects to the initial set of bootstrap peer addresses.
 // For each bootstrap peer, it fetches the peer's peer list and adds them.
@@ -258,11 +266,24 @@ func (d *Discoverer) fetchPeersFrom(addr string) {
 // Announce announces this node's existence to all known peers.
 // Called after startup so peers know about us.
 func (d *Discoverer) Announce(selfInfo *PeerInfo) {
+	// Sign once, not per peer: a fresh nonce for each recipient would be
+	// pointless work, and every receiver keeps its own nonce cache, so one
+	// announcement reaching all of them is not a replay to any of them.
+	payload := any(selfInfo)
+	if d.identity != nil {
+		signed, err := SignAnnounce(d.identity, *selfInfo)
+		if err != nil {
+			log.Warn().Err(err).Msg("discovery: could not sign announcement, sending unsigned")
+		} else {
+			payload = signed
+		}
+	}
+
 	peers := d.pool.Addrs()
 	for _, addr := range peers {
 		go func(peerAddr string) {
 			url := peerAddr + "/peers/announce"
-			data, err := json.Marshal(selfInfo)
+			data, err := json.Marshal(payload)
 			if err != nil {
 				return
 			}
@@ -360,7 +381,11 @@ func (p *PeerPool) GetSyncStatus(localHeight uint64) SyncStatus {
 // dialClient is a shared client for peer /status probes. The full-node sync loop
 // polls this once per second per peer; a fresh http.Client (and TCP connection)
 // per call forfeits keep-alive and wastes sockets, so reuse one transport.
-var dialClient = &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirect}
+var dialClient = &http.Client{
+	Timeout:       5 * time.Second,
+	CheckRedirect: noRedirect,
+	Transport:     SafeTransport(5 * time.Second),
+}
 
 // DialPeer checks if a peer is reachable by calling GET {addr}/status.
 // Returns the peer's reported height, or an error if unreachable.
