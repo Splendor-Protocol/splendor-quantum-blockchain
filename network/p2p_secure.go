@@ -156,7 +156,11 @@ func NewIdentityCache() *IdentityCache {
 		docs:   make(map[string]cachedIdentity),
 		pinned: make(map[string][]byte),
 		warned: make(map[string]struct{}),
-		client: &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirect},
+		client: &http.Client{
+			Timeout:       5 * time.Second,
+			CheckRedirect: noRedirect,
+			Transport:     SafeTransport(5 * time.Second),
+		},
 	}
 }
 

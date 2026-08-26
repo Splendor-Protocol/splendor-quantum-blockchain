@@ -78,6 +78,7 @@ func NewBroadcaster(validatorPK []byte, authToken string, allowPlaintext bool) *
 		client: &http.Client{
 			Timeout:       5 * time.Second,
 			CheckRedirect: noRedirect,
+			Transport:     SafeTransport(5 * time.Second),
 		},
 	}
 }

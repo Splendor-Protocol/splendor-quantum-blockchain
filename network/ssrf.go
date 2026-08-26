@@ -1,9 +1,12 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
+	"time"
 )
 
 // AllowPrivatePeers, when true, disables the loopback/private/link-local rejection
@@ -22,11 +25,10 @@ var AllowPrivatePeers bool
 // This is applied ONLY at untrusted ingress points — NOT to operator-configured
 // bootstrap peers (--peer), which may legitimately be loopback/internal.
 //
-// NOTE: the check resolves at ingest time; a hostname could later re-resolve to an
-// internal IP (DNS rebinding). Peers are IP literals or known hosts in practice,
-// and the P2P HTTP clients also refuse to follow redirects (see noRedirect), which
-// closes the redirect-to-internal variant. A dial-time re-check would be the
-// complete fix — tracked as a follow-up.
+// The ingest-time check is not sufficient on its own: a hostname that resolves
+// to a public address here can resolve to an internal one by the time the node
+// dials it (DNS rebinding). SafeTransport closes that window at connect time;
+// the P2P clients all use it.
 func IsSafePeerURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -61,6 +63,74 @@ func IsSafePeerURL(raw string) error {
 		}
 	}
 	return nil
+}
+
+// SafeTransport returns an HTTP transport that re-validates where a connection
+// is actually going, at the moment it is made.
+//
+// IsSafePeerURL runs when a peer address is accepted, which leaves a gap: a
+// hostname that resolved to a public address then can resolve to 169.254.169.254
+// now, and the ingest check has already passed. That is DNS rebinding, and it
+// turns an approved peer entry into a way to make this node issue requests
+// against cloud metadata and other internal services.
+//
+// The guard applies to hostnames only. An IP-literal peer has nothing to
+// re-resolve — IsSafePeerURL already checked that exact address and it cannot
+// change underneath us — so literals dial straight through. That keeps operator
+// clusters on internal IP literals and loopback test servers working unchanged,
+// while covering the case that can actually move.
+//
+// Resolution happens once here and the connection is made to the address that
+// was checked, rather than handing the hostname back to the dialer to resolve a
+// second time. Checking one lookup and connecting on the result of another is
+// the same race in a smaller window.
+func SafeTransport(timeout time.Duration) *http.Transport {
+	base := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("unparseable dial address %q", addr)
+			}
+			if net.ParseIP(host) != nil || AllowPrivatePeers {
+				return base.DialContext(ctx, network, addr)
+			}
+
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("resolve %s: %w", host, err)
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("host %s does not resolve", host)
+			}
+			// Every answer must be acceptable. Dialing only the good ones would
+			// let a host that returns one public and one internal address get
+			// its internal address reached on a later attempt or a retry.
+			for _, ip := range ips {
+				if isDisallowedIP(ip.IP) {
+					return nil, fmt.Errorf(
+						"refusing to dial %s: it resolves to internal address %s "+
+							"(possible DNS rebinding; pass --allow-private-peers if this is a trusted private network)",
+						host, ip.IP)
+				}
+			}
+
+			var lastErr error
+			for _, ip := range ips {
+				conn, derr := base.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+				if derr == nil {
+					return conn, nil
+				}
+				lastErr = derr
+			}
+			return nil, lastErr
+		},
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 }
 
 // isDisallowedIP reports whether an IP is in a range a peer must never point at:

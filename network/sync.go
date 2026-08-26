@@ -95,6 +95,7 @@ func NewBlockFetcher(cfg SyncConfig) *BlockFetcher {
 		client: &http.Client{
 			Timeout:       cfg.RequestTimeout,
 			CheckRedirect: noRedirect,
+			Transport:     SafeTransport(cfg.RequestTimeout),
 		},
 	}
 }
