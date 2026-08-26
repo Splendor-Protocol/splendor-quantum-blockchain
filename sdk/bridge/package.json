@@ -53,7 +53,7 @@
     "gateway:smoke": "node examples/gateway-smoke.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.20"
   },
   "peerDependencies": {
     "react": ">=18"

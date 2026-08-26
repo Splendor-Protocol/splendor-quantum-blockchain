@@ -9,8 +9,15 @@
  * Network defaults from sqc.networks.json (override with SQC_NETWORK / SQC_RPC / PORT).
  * Errors follow SQDP-1: { code, message }.
  */
-import { createSecureContext, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import {
+  connect,
+  createServer,
+  type ConnectionOptions as TlsConnectOptions,
+  type Server,
+  type TlsOptions as TlsServerOptions,
+} from 'node:tls';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -76,10 +83,104 @@ export type GatewayConfig = {
  * decrypt it later under a classical-only handshake, exposing pre-broadcast
  * transactions and API keys.
  *
- * Requires an OpenSSL 3.5+ Node build; we fall back to classical groups rather
- * than refuse to start.
+ * Requires an OpenSSL 3.5+ Node build. Without one the gateway refuses to
+ * start; see ALLOW_CLASSICAL_TLS.
  */
 const PQ_TLS_GROUPS = 'X25519MLKEM768:X25519:P-256';
+
+/**
+ * Opt out of the hybrid requirement and serve classical TLS anyway.
+ *
+ * This exists for development and for operators who knowingly terminate PQ TLS
+ * somewhere else. It is deliberately an explicit opt-in rather than a silent
+ * fallback: a warning in a log nobody reads is not a decision, and the
+ * difference it hides — whether recorded traffic is decryptable by a future
+ * quantum adversary — is the entire property this gateway claims to provide.
+ */
+function classicalTlsAllowed(): boolean {
+  const v = (process.env.ALLOW_CLASSICAL_TLS ?? '').toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+/** ML-KEM hybrid key exchange landed in OpenSSL 3.5. */
+function opensslHasMlkem(): boolean {
+  const [major, minor] = (process.versions.openssl ?? '0.0')
+    .split('.')
+    .map((n) => Number.parseInt(n, 10) || 0);
+  return major > 3 || (major === 3 && minor >= 5);
+}
+
+/**
+ * Report the key exchange group a real handshake actually settles on when the
+ * hybrid group is the only one offered.
+ *
+ * There is no API that answers "does this build support X25519MLKEM768", and
+ * the obvious substitutes do not work. `createSecureContext({ groups })` accepts
+ * any string at all, including nonsense, so it cannot reject an unsupported
+ * group — and OpenSSL silently drops group names it does not recognise instead
+ * of failing, so even a successful handshake proves nothing on its own. The
+ * only honest signal is what came out the other side.
+ */
+function negotiatedGroup(cert: Buffer, key: Buffer): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v: string | null) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
+
+    let server: Server;
+    try {
+      server = createServer(
+        { cert, key, minVersion: 'TLSv1.3', groups: HYBRID_GROUP } as TlsServerOptions,
+        (s) => s.end(),
+      );
+    } catch {
+      return done(null);
+    }
+    server.on('error', () => {
+      done(null);
+      server.close();
+    });
+    // Never let a probe hold up startup.
+    const timer = setTimeout(() => {
+      done(null);
+      server.close();
+    }, 2000);
+    timer.unref?.();
+
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const socket = connect(
+        {
+          port,
+          host: '127.0.0.1',
+          rejectUnauthorized: false,
+          minVersion: 'TLSv1.3',
+          groups: HYBRID_GROUP,
+        } as TlsConnectOptions,
+        () => {
+          const info = socket.getEphemeralKeyInfo() as { name?: string } | null;
+          done(info?.name ?? null);
+          clearTimeout(timer);
+          socket.end();
+          server.close();
+        },
+      );
+      socket.on('error', () => {
+        done(null);
+        clearTimeout(timer);
+        server.close();
+      });
+    });
+  });
+}
+
+/** The hybrid group on its own, for the capability probe. */
+const HYBRID_GROUP = 'X25519MLKEM768';
 
 /**
  * Build Fastify's https options with post-quantum hybrid key exchange, or
@@ -87,13 +188,14 @@ const PQ_TLS_GROUPS = 'X25519MLKEM768:X25519:P-256';
  *
  * Both cert and key must be present; configuring one without the other is a
  * misconfiguration that would otherwise silently downgrade to HTTP, so it
- * throws instead.
+ * throws instead. A runtime that cannot do hybrid key exchange is refused on
+ * the same grounds unless ALLOW_CLASSICAL_TLS says otherwise.
  */
-function buildHttpsOptions(
+async function buildHttpsOptions(
   certFile: string,
   keyFile: string,
   logger: boolean,
-): { cert: Buffer; key: Buffer; minVersion: 'TLSv1.3'; groups?: string } | null {
+): Promise<{ cert: Buffer; key: Buffer; minVersion: 'TLSv1.3'; groups?: string } | null> {
   if (!certFile && !keyFile) return null;
   if (!certFile || !keyFile) {
     throw new Error(
@@ -107,23 +209,40 @@ function buildHttpsOptions(
     minVersion: 'TLSv1.3' as const,
   };
 
-  // Older Node builds reject an unknown group name at handshake setup. Probe
-  // once so an unsupported runtime loses the PQ property instead of the
-  // ability to serve TLS at all.
-  try {
-    createSecureContext({ ...base, groups: PQ_TLS_GROUPS });
+  const group = await negotiatedGroup(base.cert, base.key);
+  // Accept either signal. The handshake is the direct evidence, but it is read
+  // through a group name whose exact spelling is Node's to choose, so a build
+  // with the capability is not refused over a label; and the version gate alone
+  // cannot see a 3.5 build compiled without the group.
+  const hybrid = /mlkem|kyber/i.test(group ?? '') || opensslHasMlkem();
+
+  if (hybrid) {
     if (logger) {
-      console.log(`[gateway] TLS 1.3 enabled, key exchange: ${PQ_TLS_GROUPS}`);
+      console.log(
+        `[gateway] TLS 1.3 enabled, key exchange: ${PQ_TLS_GROUPS} (probe negotiated ${group ?? 'unknown'})`,
+      );
     }
     return { ...base, groups: PQ_TLS_GROUPS };
-  } catch {
-    console.warn(
-      '[gateway] WARNING: this Node build does not support X25519MLKEM768 (needs OpenSSL 3.5+). ' +
-        'Serving TLS with classical key exchange only — recorded traffic is decryptable by a future ' +
-        'quantum adversary. Upgrade Node to restore post-quantum confidentiality.',
-    );
-    return base;
   }
+
+  const detail =
+    `OpenSSL ${process.versions.openssl}; a hybrid-only handshake negotiated ` +
+    `${group ?? 'nothing'} instead of X25519MLKEM768`;
+  if (!classicalTlsAllowed()) {
+    throw new Error(
+      `TLS refused: this Node build does not support X25519MLKEM768 (needs OpenSSL 3.5+). ${detail}. ` +
+        'Unknown group names are dropped rather than rejected, so serving anyway would advertise ' +
+        'post-quantum key exchange while every connection stayed classical, leaving recorded ' +
+        'traffic decryptable by a future quantum adversary. Upgrade Node to restore post-quantum ' +
+        'confidentiality, or set ALLOW_CLASSICAL_TLS=1 to accept classical key exchange deliberately.',
+    );
+  }
+  console.warn(
+    `[gateway] WARNING: ALLOW_CLASSICAL_TLS is set and this build cannot do X25519MLKEM768 (${detail}). ` +
+      'Serving TLS with classical key exchange only — recorded traffic is decryptable by a future ' +
+      'quantum adversary.',
+  );
+  return base;
 }
 
 const signedTxSchema = {
@@ -524,7 +643,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
 
   const TLS_CERT = overrides.tlsCertFile ?? process.env.TLS_CERT_FILE ?? '';
   const TLS_KEY = overrides.tlsKeyFile ?? process.env.TLS_KEY_FILE ?? '';
-  const https = buildHttpsOptions(TLS_CERT, TLS_KEY, logger);
+  const https = await buildHttpsOptions(TLS_CERT, TLS_KEY, logger);
 
   const app = Fastify({
     logger,

@@ -233,6 +233,8 @@ Env:
 | `SERVICE_SEED` | — | 32-byte hex ML-DSA-65 seed (service-wallet) |
 | `SERVICE_EVM_KEY` | — | EVM key to derive service PQ wallet |
 | `PORT` | `3090` | HTTP port |
+| `TLS_CERT_FILE` / `TLS_KEY_FILE` | — | Serve TLS 1.3 directly. Both or neither; one without the other is refused rather than silently downgraded to HTTP |
+| `ALLOW_CLASSICAL_TLS` | unset | Serve TLS even where the Node build cannot do `X25519MLKEM768` (needs OpenSSL 3.5+). Without it the gateway refuses to start, because a classical-only handshake means recorded traffic is decryptable once a CRQC exists — and that is the property this gateway exists to provide. Set `1` only if you terminate PQ TLS elsewhere |
 
 ### Modes
 
