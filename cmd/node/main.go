@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -50,6 +51,7 @@ var (
 	flagWalletPath        string
 	flagWalletPass        string
 	flagWalletPassFile    string
+	flagNodeKeyPassFile   string
 	flagPeers             []string
 	flagBlockInterval     int
 	flagIsValidator       bool
@@ -102,6 +104,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagWalletPath, "wallet", "", "Path to validator .sqwallet file")
 	root.Flags().StringVar(&flagWalletPass, "wallet-pass", "", "Wallet password. Visible to any local user via 'ps' — prefer --wallet-pass-file or SQC_WALLET_PASS.")
 	root.Flags().StringVar(&flagWalletPassFile, "wallet-pass-file", "", "Read the wallet password from a file (must not be readable by other users)")
+	root.Flags().StringVar(&flagNodeKeyPassFile, "node-key-pass-file", "", "Encrypt the persisted P2P node identity key with the passphrase in this file (also SQC_NODE_KEY_PASS). Without it the key is stored unencrypted at mode 0600.")
 	root.Flags().StringArrayVar(&flagPeers, "peer", nil, "Bootstrap peer RPC addresses")
 	root.Flags().IntVar(&flagBlockInterval, "block-interval", 2, "Block interval in seconds (validator only)")
 	root.Flags().BoolVar(&flagIsValidator, "validator", false, "Run as block-producing validator")
@@ -161,6 +164,15 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// Opt into private/loopback peers for private-network or local multi-node clusters.
 	network.AllowPrivatePeers = flagAllowPrivatePeers
+
+	// The key-file permission check is a no-op where POSIX mode bits do not
+	// describe access, so say so rather than let its silence read as a pass.
+	if !qcrypto.KeyFilePermissionsEnforced() {
+		log.Warn().Str("os", runtime.GOOS).Msg(
+			"Key file permission checks do not run on this platform: POSIX mode bits do not " +
+				"describe its ACLs. Restrict the wallet and node identity files to this user " +
+				"account yourself — the node cannot verify it.")
+	}
 
 	if (flagTLSCert == "") != (flagTLSKey == "") {
 		return fmt.Errorf("--tls-cert and --tls-key must be provided together")
@@ -352,6 +364,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("node identity: %w", err)
 	}
+	// Announcements are signed with the same key peers pin for the sealed
+	// transport, so a peer entry is attributable to one node instead of to
+	// anyone holding the shared write-plane token.
+	discoverer.SetIdentity(nodeIdentity)
 
 	// Pin peers whose node key the operator supplied, so the sealed channel is
 	// authenticated against configuration rather than trust-on-first-use.
@@ -816,26 +832,116 @@ func loadNodeIdentity(dataDir string, pub *qcrypto.PublicKey, priv *qcrypto.Priv
 	}
 
 	path := filepath.Join(dataDir, nodeIdentityFile)
-	if raw, err := os.ReadFile(path); err == nil {
-		loaded, perr := qcrypto.PrivateKeyFromBytes(raw)
-		if perr != nil {
-			return nil, fmt.Errorf("stored node identity at %s is corrupt: %w", path, perr)
-		}
-		return network.NewNodeIdentity(loaded.Public(), loaded)
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read node identity: %w", err)
+	pass, err := nodeKeyPassphrase()
+	if err != nil {
+		return nil, err
+	}
+
+	raw, readErr := os.ReadFile(path)
+	switch {
+	case readErr == nil:
+		return openNodeIdentity(path, raw, pass)
+	case !os.IsNotExist(readErr):
+		return nil, fmt.Errorf("read node identity: %w", readErr)
 	}
 
 	newPub, newPriv, err := qcrypto.GenerateKeypair()
 	if err != nil {
 		return nil, fmt.Errorf("generate node identity: %w", err)
 	}
-	// 0600: this key authenticates the node to its peers.
-	if err := os.WriteFile(path, newPriv.Bytes(), 0600); err != nil {
-		return nil, fmt.Errorf("persist node identity: %w", err)
+	if err := writeNodeIdentity(path, newPub, newPriv, pass); err != nil {
+		return nil, err
 	}
-	log.Info().Str("path", path).Msg("Generated persistent node P2P identity")
+	log.Info().Str("path", path).Bool("encrypted", pass != "").
+		Msg("Generated persistent node P2P identity")
 	return network.NewNodeIdentity(newPub, newPriv)
+}
+
+// openNodeIdentity reads an existing identity in whichever of the two on-disk
+// forms it happens to be in, and upgrades a plaintext one if a passphrase has
+// since been configured.
+//
+// The encrypted form is the wallet file format, which is JSON; the plaintext
+// form is raw key bytes. Sniffing the leading brace tells them apart without a
+// version field, which matters because the plaintext form never had one and
+// nodes in the field are already running with it.
+func openNodeIdentity(path string, raw []byte, pass string) (*network.NodeIdentity, error) {
+	if len(raw) > 0 && raw[0] == '{' {
+		if pass == "" {
+			return nil, fmt.Errorf(
+				"node identity at %s is encrypted but no passphrase was given: "+
+					"set --node-key-pass-file or SQC_NODE_KEY_PASS", path)
+		}
+		loadedPub, loadedPriv, err := qcrypto.LoadWallet(path, []byte(pass))
+		if err != nil {
+			return nil, fmt.Errorf("decrypt node identity at %s: %w", path, err)
+		}
+		return network.NewNodeIdentity(loadedPub, loadedPriv)
+	}
+
+	loaded, err := qcrypto.PrivateKeyFromBytes(raw)
+	if err != nil {
+		return nil, fmt.Errorf("stored node identity at %s is corrupt: %w", path, err)
+	}
+
+	if pass != "" {
+		// Turning on encryption should take effect on the key that already
+		// exists. Rewriting it in place keeps the node's peer identity stable,
+		// which pinning peers depend on.
+		if err := writeNodeIdentity(path, loaded.Public(), loaded, pass); err != nil {
+			return nil, fmt.Errorf("encrypt existing node identity: %w", err)
+		}
+		log.Info().Str("path", path).Msg("Encrypted the existing node P2P identity key at rest")
+	} else {
+		log.Warn().Str("path", path).Msg(
+			"Node P2P identity key is stored unencrypted (mode 0600). Anyone who can read " +
+				"this file can impersonate this node to its peers. Set --node-key-pass-file " +
+				"or SQC_NODE_KEY_PASS to encrypt it.")
+	}
+	return network.NewNodeIdentity(loaded.Public(), loaded)
+}
+
+// writeNodeIdentity persists the identity, encrypted when a passphrase is
+// available and mode-0600 plaintext when one is not.
+func writeNodeIdentity(path string, pub *qcrypto.PublicKey, priv *qcrypto.PrivateKey, pass string) error {
+	if pass != "" {
+		if err := qcrypto.SaveWallet(path, pub, priv, []byte(pass)); err != nil {
+			return fmt.Errorf("persist encrypted node identity: %w", err)
+		}
+		return nil
+	}
+	// 0600: this key authenticates the node to its peers.
+	if err := os.WriteFile(path, priv.Bytes(), 0600); err != nil {
+		return fmt.Errorf("persist node identity: %w", err)
+	}
+	return nil
+}
+
+// nodeKeyPassphrase resolves the node identity passphrase from a file or the
+// environment. Unlike the validator passphrase there is no command-line form:
+// nothing needs one, and an argument is readable by every local user through
+// 'ps', which would undo the encryption it is meant to enable.
+//
+// An empty result is not an error. A node identity is a transport credential,
+// not a funds key — losing it means peer impersonation, not theft — so
+// requiring a secret to start a plain RPC node would be a poor trade. The
+// caller warns instead.
+func nodeKeyPassphrase() (string, error) {
+	if flagNodeKeyPassFile != "" {
+		if err := qcrypto.CheckKeyFilePermissions(flagNodeKeyPassFile); err != nil {
+			return "", err
+		}
+		b, err := os.ReadFile(flagNodeKeyPassFile)
+		if err != nil {
+			return "", fmt.Errorf("read --node-key-pass-file: %w", err)
+		}
+		pass := strings.TrimRight(string(b), "\r\n")
+		if pass == "" {
+			return "", fmt.Errorf("--node-key-pass-file %s is empty", flagNodeKeyPassFile)
+		}
+		return pass, nil
+	}
+	return os.Getenv("SQC_NODE_KEY_PASS"), nil
 }
 
 // validatorPassphrase resolves the wallet passphrase from, in order, a file,

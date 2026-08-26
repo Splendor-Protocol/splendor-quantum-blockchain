@@ -75,6 +75,15 @@ const (
 	minSaltSize     = 16
 )
 
+// KeyFilePermissionsEnforced reports whether CheckKeyFilePermissions can
+// actually decide anything on this platform.
+//
+// It exists so the gap is visible at runtime rather than only in DEPLOY.md. A
+// check that quietly returns success where it cannot run reads, from the
+// caller's side, exactly like a check that passed — which is how an operator
+// ends up believing a key is protected when nothing looked at it.
+func KeyFilePermissionsEnforced() bool { return runtime.GOOS != "windows" }
+
 // CheckKeyFilePermissions refuses a secret file that other local users can
 // read. A validator key is the equivalent of a root CA key: a mode-644 wallet
 // hands the chain to anyone with a shell on the box, and it is a mistake that
@@ -87,7 +96,7 @@ func CheckKeyFilePermissions(path string) error {
 	if err != nil {
 		return fmt.Errorf("failed to stat key file: %w", err)
 	}
-	if runtime.GOOS == "windows" {
+	if !KeyFilePermissionsEnforced() {
 		return nil
 	}
 	if mode := info.Mode().Perm(); mode&0o077 != 0 {
