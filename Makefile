@@ -1,6 +1,9 @@
 # Splendor Quantum Chain — Build System
 # Requires: Go 1.25+ or Docker
-# All crypto: CRYSTALS-Dilithium Mode 3 (NIST FIPS 204) + SHA-3-256 (NIST FIPS 202)
+# All crypto: ML-DSA-65 (NIST FIPS 204) + SHA-3-256 (NIST FIPS 202)
+# ML-DSA-65 is the standardised form of what CRYSTALS-Dilithium called Mode 3.
+# The two are NOT interchangeable — signatures do not cross-verify — so the old
+# name is gone from here to stop anyone reaching for a Mode-3 library.
 
 BINARY_NODE   = sqc-node
 BINARY_WALLET = sqc-wallet
@@ -15,7 +18,7 @@ else
   GO := $(shell which go 2>/dev/null || echo go)
 endif
 
-.PHONY: all build node wallet docker docker-run test clean deps tidy fmt lint run-node run-validator help
+.PHONY: all build node wallet docker docker-run docker-validator test test-crypto test-race clean deps tidy fmt lint vet install-go setup-validator setup-rpc run-node run-validator gen-validator-wallet help
 
 # ── Default ───────────────────────────────────────────────────────────────
 all: deps build
@@ -58,9 +61,11 @@ docker-validator:
 		-v $(PWD)/sqc-data:/sqc/data \
 		-v $(PWD)/validator.sqwallet:/sqc/validator.sqwallet:ro \
 		-e SQC_WALLET_PASS \
+		-v $(PWD)/genesis.json:/sqc/genesis.json:ro \
 		$(DOCKER_IMAGE):latest \
 		--data-dir /sqc/data \
-		--rpc-addr :8080 \
+		--rpc-addr 0.0.0.0:8080 \
+		--genesis /sqc/genesis.json \
 		--validator \
 		--wallet /sqc/validator.sqwallet \
 		--log-level info
@@ -69,14 +74,17 @@ docker-validator:
 run-node: build
 	./$(BINARY_NODE) \
 		--data-dir ./sqc-data \
-		--rpc-addr :8080 \
+		--rpc-addr 127.0.0.1:8080 \
 		--log-level debug
 
+# --genesis is required on a fresh chain: without it the allocations are never
+# applied, every balance is zero, and no tx can meet the minimum fee.
 run-validator: build
 	@echo "Running as validator. Set SQC_WALLET_PASS env var first."
 	./$(BINARY_NODE) \
 		--data-dir ./sqc-data \
-		--rpc-addr :8080 \
+		--rpc-addr 127.0.0.1:8080 \
+		--genesis ./genesis.json \
 		--validator \
 		--wallet ./validator.sqwallet \
 		--block-interval 2 \
@@ -130,24 +138,17 @@ clean:
 	rm -f $(BINARY_NODE) $(BINARY_WALLET)
 	rm -rf sqc-data/
 
-# ── Help ──────────────────────────────────────────────────────────────────
 # ── Genesis ───────────────────────────────────────────────────────────────────
-gen-genesis: build
-	@echo "Generating genesis.json (requires validator wallet)..."
-	./$(BINARY_NODE) genesis init --wallet ./validator.sqwallet --out genesis.json
-	@echo "Genesis file created: genesis.json"
+# There is no genesis generator: the old `sqc-node genesis init` target invoked a
+# subcommand that does not exist, so it never worked. Write genesis.json by hand
+# — the recipe (validator pubkey hex, allocations, total_supply) is in DEPLOY.md
+# section 6. `sqc-node genesis-hash <genesis.json>` prints the document pin.
 
 # ── Config ────────────────────────────────────────────────────────────────────
-gen-config:
-	@echo "Generating default config.json..."
-	./$(BINARY_NODE) config init --out config.json
-	@echo "Config file created: config.json"
+# There is no config file either: cmd/node never calls config.LoadFile, so a
+# generated config.json would be read by nothing. Everything is flags.
 
-# ── SDK ───────────────────────────────────────────────────────────────────────
-sdk-example:
-	@echo "Running SDK example..."
-	node sdk/example.js
-
+# ── Help ──────────────────────────────────────────────────────────────────────
 help:
 	@echo "Splendor Quantum Chain — Build Targets"
 	@echo ""
@@ -160,20 +161,23 @@ help:
 	@echo "  make run-node          Run full node locally"
 	@echo "  make run-validator     Run validator locally (needs SQC_WALLET_PASS)"
 	@echo "  make gen-validator-wallet  Generate validator.sqwallet"
-	@echo "  make gen-genesis       Generate genesis.json from validator wallet"
-	@echo "  make gen-config        Generate default config.json"
 	@echo "  make test              Run all tests"
+	@echo "  make test-race         Run all tests under the race detector"
+	@echo "  make lint / vet / fmt  Code quality"
 	@echo "  make clean             Remove binaries and data"
 	@echo ""
 	@echo "Quick start (validator):"
 	@echo "  make gen-validator-wallet"
-	@echo "  make gen-genesis"
+	@echo "  # write genesis.json by hand — see DEPLOY.md section 6"
 	@echo "  export SQC_WALLET_PASS=yourpassword"
 	@echo "  make run-validator"
 	@echo ""
-	@echo "New in v1.1:"
-	@echo "  Receipts + Event Logs · Node Config (JSON) · Genesis Builder"
-	@echo "  TX Index Store · SSE WebSocket Subscriptions"
-	@echo "  BFT Multi-Validator Consensus (Phase 2)"
-	@echo "  QRC-20 Token Standard · Peer Discovery (PEX)"
-	@echo "  Prometheus Metrics (:9100/metrics) · JavaScript SDK"
+	@echo "Shipped and wired into the node:"
+	@echo "  Receipts + Event Logs · TX Index Store · SSE subscriptions on /ws"
+	@echo "  QRC-20/721/1155 · DEX · lending · staking (native Go modules)"
+	@echo "  Peer discovery (PEX) · ML-KEM-768 sealed P2P · Prometheus :9100"
+	@echo "  JavaScript SDK (sdk/sqc-sdk.js) + @splendor/pq-bridge WASM signer"
+	@echo ""
+	@echo "Present in the tree but NOT wired into the binary:"
+	@echo "  consensus/bft.go  — nothing constructs it; Phase 1 is one validator"
+	@echo "  config/config.go  — cmd/node never calls config.LoadFile"

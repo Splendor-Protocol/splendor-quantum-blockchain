@@ -74,11 +74,11 @@
    └───────────────────────────────────────────────────────────────────┘
           │
    ┌──────▼───────────────────────────────────────────────────────────┐
-   │                    P2P NETWORK  (:9090)                          │
-   │  - Broadcasts new blocks to all known peers                      │
-   │  - Peer Exchange (PEX): discovers new peers every 60s           │
-   │  - Block Sync: downloads missing blocks on startup              │
-   │  - All blocks ML-DSA-65-verified before applying                │
+   │            P2P  (same RPC port — there is no separate listener)  │
+   │  - Broadcasts new blocks to peers over the ML-KEM-768 channel     │
+   │  - Peer Exchange (PEX): discovers new peers                       │
+   │  - Block Sync: pulls missing blocks over the same sealed channel  │
+   │  - All blocks ML-DSA-65-verified before applying                  │
    └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -142,11 +142,14 @@ Step 8: Confirmation
 | Block signing (validator) | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | same |
 | Address derivation | SHA3-256(pubkey) | NIST FIPS 202 | 32 byte output |
 | Block hash | SHA3-256(header) | NIST FIPS 202 | 32 byte output |
-| State root | SHA3-256(accounts) | NIST FIPS 202 | 32 byte output |
+| State root | SHA3-256 binary Merkle tree over accounts, contract code, storage slots, X402 nonces | NIST FIPS 202 | 32 byte output |
 | Wallet encryption | AES-256-GCM | NIST FIPS 197 | 256 bit key |
 | Key derivation | Argon2id | RFC 9106 | — |
+| P2P channel (push, announce, sync) | ML-KEM-768 + AES-256-GCM | NIST FIPS 203 | 1,184 byte public key |
+| Node-terminated TLS 1.3 | X25519MLKEM768 hybrid group | TLS 1.3 | — |
 
-**Zero ECDSA. Zero SHA-256. Zero keccak256. Zero secp256k1.**
+**On-chain: zero ECDSA, zero SHA-256, zero keccak256, zero secp256k1.** A
+TLS-terminating proxy in front of the node is a separate matter — see section 9.
 
 ---
 
@@ -166,11 +169,13 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install -y curl wget git build-essential jq ufw
 ```
 
-### Install Go 1.23
+### Install Go 1.25
+
+`go.mod` declares `go 1.25.0`. An older toolchain will not build this repository.
 
 ```bash
 # Download Go
-wget -q https://go.dev/dl/go1.23.0.linux-amd64.tar.gz -O /tmp/go.tar.gz
+wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz -O /tmp/go.tar.gz
 
 # Install
 sudo rm -rf /usr/local/go
@@ -184,7 +189,7 @@ source ~/.bashrc
 
 # Verify
 go version
-# Expected: go version go1.23.0 linux/amd64
+# Expected: go version go1.25.0 linux/amd64
 ```
 
 ### Install Docker (optional — for containerised deployment)
@@ -228,52 +233,16 @@ sudo mkdir -p /var/sqc/data
 sudo chown $USER:$USER /var/sqc/data
 ```
 
-### Create config file
+### There is no config file
 
-```bash
-# Generate default config
-cat > /var/sqc/config.json << 'EOF'
-{
-  "node": {
-    "mode": "full",
-    "name": "sqc-node-1",
-    "log_level": "info",
-    "log_format": "console"
-  },
-  "chain": {
-    "chain_id": "splendor-quantum-1",
-    "network_name": "Splendor Quantum Chain Mainnet",
-    "max_tx_per_block": 10000,
-    "min_fee": "1000"
-  },
-  "rpc": {
-    "listen_addr": ":8080",
-    "enable_cors": true,
-    "enable_websocket": true
-  },
-  "p2p": {
-    "listen_addr": ":9090",
-    "bootstrap_peers": [],
-    "max_peers": 50,
-    "peer_exchange_interval": "60s",
-    "validator_pubkey_hex": ""
-  },
-  "storage": {
-    "data_dir": "/var/sqc/data"
-  },
-  "ai": {
-    "enabled": true,
-    "min_batch_size": 100,
-    "max_batch_size": 10000,
-    "observation_interval_ms": 500
-  },
-  "metrics": {
-    "enabled": true,
-    "listen_addr": ":9100"
-  }
-}
-EOF
-```
+`cmd/node` is flag-driven only. It registers no `config` subcommand and never
+calls `config.LoadFile`, so a `config.json` on disk is read by nothing. The
+`config/` package exists and parses such a file, but nothing in the shipped
+binary is wired to it. Earlier revisions of this guide printed a `config.json`
+to create; that step has been removed because following it did nothing.
+
+Everything below is set with flags or environment variables. `./sqc-node --help`
+is the authoritative list.
 
 ### Run Full Node
 
@@ -393,21 +362,31 @@ Replace:
 # Set password as environment variable (more secure than --wallet-pass flag)
 export SQC_WALLET_PASS="your-secure-password-here"
 
-# Run validator
+# The write-plane token: needed to push blocks to the full nodes in the cluster.
+# Every node that accepts this validator's blocks must carry the same value.
+export SQC_RPC_AUTH_TOKEN="$(openssl rand -hex 32)"
+
+# Run validator. 127.0.0.1 is the node's own default: a validator has no reason
+# to answer the internet directly — put a proxy in front, or scope a firewall
+# rule to the peers that need it (section 9).
 ./sqc-node \
   --data-dir /var/sqc/data \
-  --rpc-addr :8080 \
+  --rpc-addr 127.0.0.1:8080 \
+  --genesis /var/sqc/genesis.json \
   --validator \
   --wallet /var/sqc/validator.sqwallet \
   --block-interval 2 \
   --log-level info
 ```
 
+`--genesis` is what mints the allocations, and only on an empty chain. Section 6
+explains what goes wrong without it.
+
 ### Verify Validator is Producing Blocks
 
 ```bash
 # Watch logs for block production
-./sqc-node --validator --wallet ... 2>&1 | grep "block produced"
+journalctl -u sqc-validator -f | grep "block produced"
 
 # Check latest block height (should increment every 2 seconds)
 watch -n 2 "curl -s http://localhost:8080/block/latest | python3 -m json.tool | grep height"
@@ -417,61 +396,72 @@ watch -n 2 "curl -s http://localhost:8080/block/latest | python3 -m json.tool | 
 
 ## 5. Configuration Reference
 
-### All Configuration Options
+`sqc-node` takes flags, not a config file (see section 3). This table is
+generated from `cmd/node/main.go`; `./sqc-node --help` is the authority if the
+two ever disagree.
 
-```json
-{
-  "node": {
-    "mode": "full",          // "full" (sync only) or "validator" (produce blocks)
-    "name": "my-node",       // node identifier shown in peer lists
-    "log_level": "info",     // debug | info | warn | error
-    "log_format": "console"  // console (human) | json (machine)
-  },
-  "chain": {
-    "chain_id": "splendor-quantum-1",
-    "network_name": "Splendor Quantum Chain Mainnet",
-    "max_tx_per_block": 10000,
-    "min_fee": "1000"         // minimum tx fee in smallest SPLD units
-  },
-  "validator": {
-    "wallet_path": "/var/sqc/validator.sqwallet",
-    "wallet_pass_env": "SQC_WALLET_PASS",  // env var holding password
-    "block_interval": "2s",                // block production frequency
-    "max_block_gas": 500000000000          // 500B gas limit
-  },
-  "rpc": {
-    "listen_addr": ":8080",
-    "enable_cors": true,
-    "max_request_body_bytes": 67108864,    // 64MB
-    "read_timeout": "10s",
-    "write_timeout": "30s",
-    "enable_websocket": true
-  },
-  "p2p": {
-    "listen_addr": ":9090",
-    "bootstrap_peers": [
-      "http://seed1.splendor.example:8080",
-      "http://seed2.splendor.example:8080"
-    ],
-    "max_peers": 50,
-    "peer_exchange_interval": "60s",
-    "validator_pubkey_hex": "abc123..."    // genesis validator's ML-DSA-65 pubkey
-  },
-  "storage": {
-    "data_dir": "/var/sqc/data"
-  },
-  "ai": {
-    "enabled": true,
-    "min_batch_size": 100,
-    "max_batch_size": 10000,
-    "observation_interval_ms": 500
-  },
-  "metrics": {
-    "enabled": true,
-    "listen_addr": ":9100"              // Prometheus scrape endpoint
-  }
-}
-```
+### Core
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--data-dir` | `./sqc-data` | Chain, state, and tx-index LevelDBs live here |
+| `--rpc-addr` | `127.0.0.1:8080` | Loopback on purpose. P2P routes share this port |
+| `--metrics-addr` | `127.0.0.1:9100` | Prometheus. Leaks height, mempool depth, peer count — keep it private |
+| `--log-level` | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `--validator` | `false` | Produce blocks |
+| `--block-interval` | `2` | Seconds between blocks (validator only) |
+| `--genesis` | — | Path to `genesis.json`. Allocations are applied once, on an empty chain |
+
+### Validator key
+
+| Flag | Notes |
+|---|---|
+| `--wallet` | Path to the validator `.sqwallet`. Must be mode `600` or startup fails |
+| `--wallet-pass-file` | Read the passphrase from an owner-only file |
+| `SQC_WALLET_PASS` | Environment variable alternative |
+| `--wallet-pass` | **Avoid.** Visible to every local user through `ps`. The node warns |
+
+### Peering and trust
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--peer` | — | Bootstrap peer RPC address, repeatable |
+| `--validator-pubkey-hex` | — | Trusted genesis validator key. A full node MUST set this (or `--genesis-hash`) to authenticate pushed blocks |
+| `--genesis-hash` | — | Pinned hash of block 0. Without one of these two, a node adopts whatever key its first peer serves |
+| `--peer-pin` | — | `URL=PUBKEY_HEX`, repeatable. Without a pin, peer identities are trust-on-first-use |
+| `--require-peer-pins` | `false` | Refuse any unpinned peer instead of trusting it on first contact. Worth turning on once the cluster's peers are known |
+| `--genesis-doc-hash` | — | Pin for a peer-served `genesis.json`, printed by `sqc-node genesis-hash <path>`. A node with no local `--genesis` credits a peer's genesis only if it hashes to this |
+| `--trust-peer-genesis` | `false` | Credit a peer-served genesis with no pin. The peer can then mint any balance it likes into this node's state. Lab networks only |
+| `--allow-private-peers` | `false` | Permit loopback/private-IP peers. Needed for a local multi-node cluster; off in public deployments so `/peers/announce` cannot be used for SSRF |
+| `--allow-plaintext-p2p` | `false` | Fall back to cleartext when a peer serves no sealed transport. Leave off: the default is what stops a downgrade attack. Cannot be combined with `--require-peer-pins` — the node refuses to start, because a plaintext channel carries no identity to pin |
+
+### Write plane and exposure
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--rpc-auth-token` / `SQC_RPC_AUTH_TOKEN` | — | Shared secret for `POST /block` and `POST /peers/announce`, sent as the `X-Node-Auth` header. Without it those routes return `503`, not open access |
+| `--cors-origin` | none | Repeatable. `'*'` allows any origin — that means any web page a user visits can drive their node |
+| `--trust-proxy` | `false` | Read the client IP from `X-Forwarded-For`. Only behind a proxy you control, or callers spoof it and bypass rate limits |
+| `--tls-cert` / `--tls-key` | — | Serve TLS 1.3 directly, offering the `X25519MLKEM768` hybrid group |
+| `--public-url` | derived | Base URL advertised to peers |
+
+### Rate limits
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--rpc-rate-limit` | `25` | Requests/second per IP on tx submission and x402 routes; `0` disables |
+| `--rpc-rate-burst` | `50` | Burst allowance for the above |
+| `--sim-rate-limit`, `--sim-rate-burst` | built-in | VM-executing routes: `/call`, `/estimate`, `/logs` |
+| `--sim-max-inflight` | built-in | Concurrent VM simulations across all callers; excess gets `503`. This, not the rate limit, is what bounds anonymous CPU use |
+| `--sim-timeout` | built-in | Wall-clock ceiling on one simulation |
+
+### Fixed at compile time
+
+Some values in this document read like settings but are constants: `chain_id`
+is `splendor-quantum-1` (`core/types/transaction.go`), the mempool cap is 50,000
+transactions (`core/mempool/mempool.go`), the minimum fee hook is 1,000 units,
+and the AI scheduler's batch bounds live in `ai/scheduler.go`. Changing any of
+them means editing and rebuilding.
 
 ---
 
@@ -526,17 +516,29 @@ EOF
 echo "Genesis file created: /var/sqc/genesis.json"
 cat /var/sqc/genesis.json
 
-# Step 5: Start validator — genesis block auto-created on first run
+# Step 5: Start validator. --genesis is NOT optional here.
 export SQC_WALLET_PASS="your-password"
 ./sqc-node \
   --data-dir /var/sqc/data \
+  --genesis /var/sqc/genesis.json \
   --validator \
   --wallet /var/sqc/validator.sqwallet
 
-# Step 6: Verify genesis block
+# Step 6: Verify genesis block AND that the allocation actually landed
 sleep 3
 curl http://localhost:8080/block/0
+curl "http://localhost:8080/balance/$VALIDATOR_ADDR"    # must not be 0
 ```
+
+⚠️ **Omitting `--genesis` produces a chain with no money in it.** Allocations are
+applied by `Genesis.ApplyToState`, which the node calls only when `--genesis` is
+set *and* the chain is empty. Start the validator without it and block 0 is
+signed over an empty state: `total_supply` is never minted, every balance is
+zero, and no transaction can meet the 1,000-unit minimum fee. The node logs
+`Applied genesis allocations` when it works — if that line is absent from the
+first startup, stop, delete `/var/sqc/data`, and start again with the flag.
+There is no way to apply allocations to a chain that has already produced
+block 0.
 
 ---
 
@@ -562,6 +564,9 @@ Environment="SQC_RPC_AUTH_TOKEN=YOUR_SHARED_WRITE_PLANE_TOKEN"
 ExecStart=/opt/sqc/sqc-node \
     --data-dir /var/sqc/data \
     --rpc-addr 127.0.0.1:8080 \
+    --genesis /var/sqc/genesis.json \
+    --validator-pubkey-hex GENESIS_VALIDATOR_PUBKEY_HEX \
+    --peer http://VALIDATOR_HOST:8080 \
     --log-level info
 Restart=always
 RestartSec=5
@@ -600,6 +605,7 @@ Environment="SQC_RPC_AUTH_TOKEN=YOUR_SHARED_WRITE_PLANE_TOKEN"
 ExecStart=/opt/sqc/sqc-node \
     --data-dir /var/sqc/data \
     --rpc-addr 127.0.0.1:8080 \
+    --genesis /var/sqc/genesis.json \
     --validator \
     --wallet /var/sqc/validator.sqwallet \
     --block-interval 2 \
@@ -619,6 +625,10 @@ ReadWritePaths=/var/sqc/data /var/sqc
 WantedBy=multi-user.target
 EOF
 ```
+
+A full node started with neither `--validator-pubkey-hex` nor `--genesis-hash`
+cannot authenticate blocks from peers and **will not sync** — the node logs a
+warning and then sits at height 0. Pin one of them.
 
 ### Create system user and install
 
@@ -726,6 +736,10 @@ echo "Prometheus: http://localhost:9090"
 
 ### UFW Firewall Rules
 
+The node binds `127.0.0.1:8080` by default and serves its P2P routes on that
+same port — there is no separate P2P listener, so there is no second port to
+open. The default posture is therefore: expose the proxy, not the node.
+
 ```bash
 # Enable UFW
 sudo ufw enable
@@ -733,18 +747,28 @@ sudo ufw enable
 # Allow SSH (always do this first!)
 sudo ufw allow 22/tcp comment 'SSH'
 
-# Allow SQC RPC (public-facing)
-sudo ufw allow 8080/tcp comment 'SQC RPC'
+# Public entry point: the TLS terminator, not the node
+sudo ufw allow 443/tcp comment 'HTTPS'
+sudo ufw allow 80/tcp comment 'HTTP (ACME challenge only)'
 
-# Allow SQC P2P
-sudo ufw allow 9090/tcp comment 'SQC P2P'
-
-# Metrics — restrict to monitoring server only
+# Metrics — restrict to the monitoring server only
 sudo ufw allow from YOUR_MONITORING_SERVER_IP to any port 9100 comment 'Prometheus'
 
 # Check rules
 sudo ufw status verbose
 ```
+
+Open 8080 only if peers must reach this node directly — a validator pushing
+blocks to it, or a node it syncs from — and then scope the rule to those peers
+rather than the internet:
+
+```bash
+sudo ufw allow from PEER_IP to any port 8080 proto tcp comment 'SQC peer'
+```
+
+A node reachable on 8080 must also be started with `--rpc-addr 0.0.0.0:8080` and
+a `--rpc-auth-token`; without the token, `POST /block` and `POST /peers/announce`
+return `503` and the node cannot take part in a cluster at all.
 
 ### Nginx Reverse Proxy (recommended for production)
 
@@ -781,6 +805,32 @@ sudo nginx -t && sudo systemctl reload nginx
 # Add TLS with Let's Encrypt
 sudo certbot --nginx -d YOUR_DOMAIN_HERE
 ```
+
+**This TLS is not post-quantum, and saying otherwise would be false.** Once
+nginx terminates the connection, the client negotiates with nginx, and a stock
+nginx/OpenSSL build offers classical ECDHE (X25519 or P-256). The certificate
+Let's Encrypt issues is ECDSA or RSA and is signed by a classical CA chain.
+`--tls-cert` on the node changes nothing about that hop; it only applies where
+the node itself answers the TLS handshake.
+
+So pick one, deliberately:
+
+- **Proxy in front (this recipe).** Operationally easy, and what most
+  deployments run. The public hop is classically encrypted, which means it is
+  recordable today and decryptable by a future CRQC — "harvest now, decrypt
+  later" applies to pre-broadcast transactions, addresses, and any operator
+  token that crosses it. Signatures and consensus are unaffected; the chain's
+  integrity does not depend on this hop's confidentiality.
+- **Node terminates TLS.** Point `--tls-cert`/`--tls-key` at the certificate and
+  expose the node directly. Clients that support `X25519MLKEM768` get a hybrid
+  key exchange all the way to the node. Clients that do not fall back to
+  classical, so this raises the ceiling without guaranteeing every client.
+
+A proxy can carry the hybrid group only if its own TLS stack supports the group
+(OpenSSL 3.5+ and a build configured to offer it). That is not what
+`apt install nginx` gives you today, so do not assume it — check with
+`openssl s_client -groups X25519MLKEM768 -connect YOUR_DOMAIN:443` before
+claiming post-quantum transport for a proxied endpoint.
 
 ### Wallet Security
 
@@ -849,25 +899,30 @@ echo $SQC_WALLET_PASS
 **"state root mismatch" on block execution**
 ```bash
 # This means your local state diverged. Reset chain data:
-./sqc-node --stop   # or systemctl stop sqc-node
+sudo systemctl stop sqc-node        # or Ctrl-C / kill the process
 rm -rf /var/sqc/data/chain /var/sqc/data/state
 # Restart — node will resync from peers
 ```
 
 **No peers connecting**
 ```bash
-# Check if P2P port is open
-nc -zv localhost 9090
+# P2P shares the RPC port — there is no separate P2P listener
+nc -zv localhost 8080
 
-# Verify bootstrap peers in config
+# Which peers does this node know about?
 curl http://localhost:8080/peers
 
-# Add bootstrap peers manually
+# Add one manually. /peers/announce is write-plane: it needs the shared token
+# in X-Node-Auth, and returns 503 if the node was started without one.
 curl http://localhost:8080/peers/announce \
   -X POST \
   -H "Content-Type: application/json" \
+  -H "X-Node-Auth: $SQC_RPC_AUTH_TOKEN" \
   -d '{"addr":"http://PEER_IP:8080","height":0}'
 ```
+
+If the peer is on a private IP or loopback (a local cluster), both nodes also
+need `--allow-private-peers`; otherwise the SSRF guard drops the announcement.
 
 **RPC returns "no blocks yet"**
 ```bash
@@ -885,7 +940,8 @@ curl http://localhost:8080/block/0
 curl http://localhost:9100/metrics | grep go_memstats
 
 # LevelDB state cache is typically the largest consumer.
-# Reduce max_tx_per_block to lower per-block state footprint.
+# Per-block transaction count is a compile-time constant (block.MaxTxPerBlock),
+# not a setting — lowering it means editing and rebuilding.
 ```
 
 ### Log Levels for Debugging
