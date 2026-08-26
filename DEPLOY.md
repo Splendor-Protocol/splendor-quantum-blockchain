@@ -29,7 +29,7 @@
                     │              EXTERNAL WORLD                  │
                     │  Wallets · DApps · Block Explorer · Bots    │
                     └──────────────────┬──────────────────────────┘
-                                       │ HTTPS / REST / SSE
+                                       │ HTTPS / REST / WebSocket
                     ┌──────────────────▼──────────────────────────┐
                     │           RPC LAYER  (:8080)                 │
                     │                                              │
@@ -693,6 +693,9 @@ curl http://localhost:8080/sync
 | `sqc_txs_processed_total` | counter | Transactions executed |
 | `sqc_txs_failed_total` | counter | Transactions that failed |
 | `sqc_ai_batch_size` | gauge | Current AI batch size recommendation |
+| `sqc_ai_anomaly_active` | gauge | 1 while the scheduler's mempool-spike flag is up. Nothing in the node acts on it — alert on it here or not at all |
+| `sqc_ws_client_count` | gauge | Connected WebSocket clients |
+| `sqc_rpc_requests_total` | counter | RPC requests served |
 | `sqc_uptime_seconds` | gauge | Node uptime |
 
 ### Grafana Dashboard (quick setup)
@@ -792,7 +795,7 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 3600s;
 
-        # SSE support (for /ws?subscribe=...)
+        # Don't buffer the upgraded /ws connection, or events arrive in batches
         proxy_buffering off;
         proxy_cache off;
     }
@@ -1027,7 +1030,7 @@ Save as `diagnostics.sh`, `chmod +x diagnostics.sh`, run with `./diagnostics.sh`
 | `/staking/tiers` | GET | Staking tier info |
 | `/dex/pool/{t0}/{t1}` | GET | Pool info |
 | `/dex/pool/{t0}/{t1}/quote` | GET | Swap quote |
-| `/ws?subscribe=new_block,new_tx` | GET | SSE stream |
+| `/ws?subscribe=new_block,new_tx` | GET | WebSocket stream (`rpc/websocket.go`) |
 | `/metrics` | GET | Prometheus metrics (:9100) |
 | `/ai/stats` | GET | AI scheduler stats |
 
