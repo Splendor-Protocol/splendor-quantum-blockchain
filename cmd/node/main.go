@@ -59,6 +59,7 @@ var (
 	flagGenesisHashHex    string
 	flagGenesisDocHashHex string
 	flagTrustPeerGenesis  bool
+	flagChainID           string
 	flagRPCAuthToken      string
 	flagAllowPrivatePeers bool
 	flagCORSOrigins       []string
@@ -108,6 +109,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagValidatorPKHex, "validator-pubkey-hex", "", "Trusted genesis validator ML-DSA-65 public key (hex). Full nodes MUST set this to authenticate pushed blocks on POST /block.")
 	root.Flags().StringVar(&flagGenesisHashHex, "genesis-hash", "", "Pinned hash of block 0 (hex). Required to bootstrap the validator pubkey from peers when --validator-pubkey-hex is not supplied; without one, a node would trust whatever key its first peer serves.")
 	root.Flags().StringVar(&flagGenesisDocHashHex, "genesis-doc-hash", "", "Pinned hash of the genesis DOCUMENT (hex) — print it with 'sqc-node genesis-hash <genesis.json>'. A node that has no local --genesis credits a peer-served genesis.json only when it hashes to this. Distinct from --genesis-hash, which pins block 0's header.")
+	root.Flags().StringVar(&flagChainID, "chain-id", "", "Chain id this node is expected to be on (e.g. splendor-quantum-devnet-1). When set, a genesis document naming a different chain is refused instead of adopted. Leave empty to take whatever the verified genesis says. (or SQC_CHAIN_ID env)")
 	root.Flags().BoolVar(&flagTrustPeerGenesis, "trust-peer-genesis", false, "Credit a peer-served genesis.json with no --genesis-doc-hash pin. The peer can then mint any balance it likes into this node's state. Lab networks only.")
 	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret for the write plane: POST /block and POST /peers/announce. All nodes in a cluster must share it. (or SQC_RPC_AUTH_TOKEN env)")
 	root.Flags().BoolVar(&flagAllowPrivatePeers, "allow-private-peers", false, "Allow loopback/private-IP peers in discovery + /peers/announce (private-network or local clusters; default off = public SSRF-safe)")
@@ -307,6 +309,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 		log.Info().Str("genesis_doc_hash", fmt.Sprintf("%x", genesisDocPin[:8])).Msg("Genesis document hash pinned")
 	}
 
+	// Chain id assertion (env fallback), so a container can be told which network
+	// it is on without editing its command line.
+	if flagChainID == "" {
+		flagChainID = os.Getenv("SQC_CHAIN_ID")
+	}
+	if flagChainID != "" {
+		if err := types.ValidateChainID(flagChainID); err != nil {
+			return fmt.Errorf("--chain-id: %w", err)
+		}
+	}
+
 	// Write-plane token for block ingest + peer announce (env fallback).
 	authToken := flagRPCAuthToken
 	if authToken == "" {
@@ -447,6 +460,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// serve or seal. No-op on a fresh DB or a cleanly-shut-down node.
 	if err := executor.ReconcileState(); err != nil {
 		return fmt.Errorf("state reconciliation failed: %w", err)
+	}
+
+	// ── Chain identity ─────────────────────────────────────────────────────
+	// Settle which network this is BEFORE anything reads types.ChainID. On an
+	// empty chain the genesis document decides (applyLocalGenesis, below); on a
+	// chain that already has blocks the blocks themselves decide, because they
+	// were sealed under an id and the executor checks every header against it.
+	// Without this a restarted node would silently fall back to the compiled
+	// default and then reject its own history as "wrong chain id".
+	if err := establishChainIDFromChain(executor); err != nil {
+		return err
 	}
 
 	// ── Genesis (if chain is empty) ────────────────────────────────────────
@@ -911,6 +935,41 @@ func applyLocalGenesis(path string, stateDB *state.StateDB, policy genesisPolicy
 	return nil
 }
 
+// establishChainIDFromChain adopts the chain id recorded in this node's own
+// blocks.
+//
+// For a chain that already has history the blocks are the authority, not the
+// genesis file sitting next to them: they were sealed under an id, every header
+// carries it, and core/block.Executor rejects any header whose id differs from
+// types.ChainID. A node that restarted without adopting it would come up on the
+// compiled-in default and refuse to replay its own chain.
+//
+// An empty chain has nothing to adopt from and is left alone — the genesis
+// document names the network in that case.
+func establishChainIDFromChain(executor *block.Executor) error {
+	head, err := executor.LatestBlock()
+	if err != nil || head == nil {
+		return nil
+	}
+	id := head.Header.ChainID
+	if id == "" {
+		// Blocks predating per-tier ids carry no id of their own; they belong to
+		// the single shared chain that existed when they were sealed.
+		id = types.DefaultChainID
+	}
+	if flagChainID != "" && id != flagChainID {
+		return fmt.Errorf("this node's chain is %q (from block %d) but --chain-id says %q — "+
+			"pointing a node at a different network's data directory would fork it",
+			id, head.Header.Height, flagChainID)
+	}
+	if err := types.SetChainID(id); err != nil {
+		return fmt.Errorf("adopt chain id from stored chain: %w", err)
+	}
+	log.Info().Str("chain_id", id).Uint64("from_height", head.Header.Height).
+		Msg("Chain identity adopted from existing blocks")
+	return nil
+}
+
 // verifyGenesisDocument gates a genesis document before ApplyToState writes it.
 //
 // Past this point the allocations are money: they are committed to LevelDB
@@ -921,14 +980,34 @@ func verifyGenesisDocument(g *genesiscfg.Genesis, pin *[32]byte, source string) 
 	if err := g.Validate(); err != nil {
 		return fmt.Errorf("genesis from %s is invalid: %w", source, err)
 	}
-	if g.ChainID != types.ChainID {
-		return fmt.Errorf("genesis from %s is for chain %q, this node runs %q", source, g.ChainID, types.ChainID)
-	}
+	// Pin first. Everything below decides what network this node joins based on
+	// what the document says, so the document has to be the right one before its
+	// claims are worth reading.
 	if pin != nil {
 		if got := g.Hash(); got != *pin {
 			return fmt.Errorf("genesis from %s hashes to %x, pinned --genesis-doc-hash is %x — wrong network or hostile peer",
 				source, got[:8], pin[:8])
 		}
+	}
+	// The chain id comes FROM the genesis document rather than from a constant
+	// compiled into this binary, so one image can serve devnet, testnet and
+	// mainnet as separate networks. That is the whole point: while every tier
+	// shared "splendor-quantum-1", a transaction signed on devnet was byte-for-
+	// byte valid on mainnet the moment the sender's nonce matched there.
+	//
+	// Adopting an id from a document is only safe because of what has already
+	// happened above it: a peer-served genesis reaches this function only when
+	// the operator pinned it with --genesis-doc-hash or explicitly accepted the
+	// risk with --trust-peer-genesis, and a local --genesis file is the
+	// operator's own. --chain-id is the belt-and-braces form: when the operator
+	// says which network this is meant to be, a document that disagrees is
+	// refused rather than adopted.
+	if flagChainID != "" && g.ChainID != flagChainID {
+		return fmt.Errorf("genesis from %s is for chain %q but --chain-id says this node is %q",
+			source, g.ChainID, flagChainID)
+	}
+	if err := types.SetChainID(g.ChainID); err != nil {
+		return fmt.Errorf("genesis from %s: %w", source, err)
 	}
 	return nil
 }
