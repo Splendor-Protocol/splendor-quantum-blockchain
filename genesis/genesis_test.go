@@ -317,3 +317,24 @@ func TestDerivedSupplyHashesLikeADeclaredOne(t *testing.T) {
 			"so a --genesis-doc-hash pin would not match across the two")
 	}
 }
+
+// The entrypoint always allocates the validator its treasury, and a balance
+// snapshot taken off a live tier contains that same validator address. Those two
+// meet in one document the first time a tier is snapshotted and reset.
+func TestDuplicateAllocationIsRefused(t *testing.T) {
+	g := liveTierGenesis(t)
+	g.Allocations = append(g.Allocations, Allocation{
+		Address: g.Allocations[0].Address, // the validator, allocated a second time
+		Balance: "5000000000000000000",
+		Comment: "same address from a balance snapshot",
+	})
+	g.TotalSupply = ""
+
+	err := g.Validate()
+	if err == nil {
+		t.Fatal("a genesis allocating one address twice must be refused")
+	}
+	if !strings.Contains(err.Error(), "already allocated") {
+		t.Fatalf("error should name the duplication, got: %v", err)
+	}
+}
