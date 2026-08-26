@@ -17,8 +17,16 @@ import (
 // WalletFile is the on-disk format for an encrypted Splendor QC wallet.
 // The ML-DSA-65 private key is encrypted with AES-256-GCM.
 // The encryption key is derived from the user's password using Argon2id.
+//
+// Alg names the signature scheme the stored key belongs to. It exists because
+// the version number alone cannot tell the two schemes this chain has used
+// apart: round-3 CRYSTALS-Dilithium mode3 and ML-DSA-65 have byte-identical
+// key sizes, so a wrong-scheme key deserialises without complaint and only
+// shows up later as signatures nobody can verify. Recording the algorithm
+// makes the file self-describing for the next migration, whatever it is.
 type WalletFile struct {
 	Version   int    `json:"version"`
+	Alg       string `json:"alg"`
 	Address   string `json:"address"`
 	PublicKey []byte `json:"public_key"`
 	Encrypted struct {
@@ -33,7 +41,21 @@ type WalletFile struct {
 }
 
 const (
-	walletVersion = 1
+	// walletVersion is the format version SaveWallet writes and LoadWallet
+	// accepts. Version 2 is the first version that holds NIST FIPS-204
+	// ML-DSA-65 key material; see walletVersionDilithium3 below for why the
+	// bump was necessary rather than cosmetic.
+	walletVersion = 2
+
+	// walletVersionDilithium3 is the pre-standardisation format: its keys are
+	// round-3 CRYSTALS-Dilithium mode3, which this chain no longer speaks.
+	// Crucially, mode3 and ML-DSA-65 share the same key sizes (public 1952,
+	// secret 4032), so a v1 file passes every length check and decrypts fine —
+	// it fails much later, as a signature no validator will accept, or worse
+	// gets treated as a live key. LoadWallet therefore names this case
+	// explicitly instead of reporting a generic version mismatch.
+	walletVersionDilithium3 = 1
+
 	argon2Time    = 3
 	argon2Memory  = 64 * 1024 // 64 MB
 	argon2Threads = 4
@@ -103,6 +125,7 @@ func SaveWallet(path string, pub *PublicKey, priv *PrivateKey, password []byte) 
 
 	wf := WalletFile{
 		Version:   walletVersion,
+		Alg:       AlgMLDSA65,
 		Address:   addr.String(),
 		PublicKey: pub.Bytes(),
 	}
@@ -124,8 +147,9 @@ func SaveWallet(path string, pub *PublicKey, priv *PrivateKey, password []byte) 
 // and returns the public key and private key.
 //
 // On a validator this file is the chain's root of trust: whoever holds it can
-// sign blocks. It is therefore refused if other local users can read it, and
-// if its KDF parameters have been weakened below the floors above.
+// sign blocks. It is therefore refused if other local users can read it, if it
+// does not hold ML-DSA-65 key material, and if its KDF parameters have been
+// weakened below the floors above.
 func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
 	if err := CheckKeyFilePermissions(path); err != nil {
 		return nil, nil, err
@@ -140,8 +164,33 @@ func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
 	if err := json.Unmarshal(data, &wf); err != nil {
 		return nil, nil, fmt.Errorf("failed to parse wallet file: %w", err)
 	}
+	if wf.Version == walletVersionDilithium3 {
+		return nil, nil, fmt.Errorf(
+			"wallet %s is a version %d file: it holds a pre-standard CRYSTALS-Dilithium "+
+				"mode3 key, not an ML-DSA-65 (NIST FIPS-204) key. This is a signature-scheme "+
+				"change, not a corrupted file — the two schemes have identical key sizes "+
+				"(public %d, secret %d), so the file parses and decrypts cleanly while the key "+
+				"inside it can no longer sign for this chain. There is no conversion: generate "+
+				"a new wallet with 'sqc-wallet generate' and register the new address (a "+
+				"validator key must also be re-baked into that network's genesis.json)",
+			path, wf.Version, PublicKeySize, PrivateKeySize)
+	}
 	if wf.Version != walletVersion {
-		return nil, nil, fmt.Errorf("unsupported wallet version: %d", wf.Version)
+		return nil, nil, fmt.Errorf(
+			"wallet %s has unsupported version %d; this build reads version %d",
+			path, wf.Version, walletVersion)
+	}
+	// The algorithm field is a cross-check, not the sole gate: version 2 is
+	// defined as ML-DSA-65-only, so a v2 file that predates the field (or that
+	// omits it) is still ML-DSA-65. A field that is present and says otherwise
+	// is a scheme mismatch and must never be loaded as a live key.
+	if wf.Alg != "" && wf.Alg != AlgMLDSA65 {
+		return nil, nil, fmt.Errorf(
+			"wallet %s declares signature algorithm %q, but this build only signs with %s "+
+				"(NIST FIPS-204). Key sizes coincide across these schemes, so the file would "+
+				"load without error — it is refused deliberately. Generate a new %s wallet "+
+				"with 'sqc-wallet generate'",
+			path, wf.Alg, AlgMLDSA65, AlgMLDSA65)
 	}
 	if wf.Encrypted.Time < minArgon2Time || wf.Encrypted.Memory < minArgon2Memory {
 		return nil, nil, fmt.Errorf(
