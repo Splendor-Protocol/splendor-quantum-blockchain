@@ -477,6 +477,110 @@ else:
 " 2>/dev/null
 }
 
+cmd_uninstall() {
+  echo -e "${BOLD}${RED}═══ SQC Node Uninstall ═══${NC}"
+  echo ""
+  echo -e "${RED}⚠  This will remove:${NC}"
+  echo "  • sqc-validator / sqc-rpc systemd service"
+  echo "  • /usr/local/bin/sqc (this tool)"
+  echo "  • $SQC_DIR/sqc-node and sqc-wallet binaries"
+  echo ""
+
+  KEEP_DATA=true
+  KEEP_WALLET=true
+  KEEP_REPO=true
+
+  for arg in "$@"; do
+    [ "$arg" = "--data" ]   && KEEP_DATA=false
+    [ "$arg" = "--wallet" ] && KEEP_WALLET=false
+    [ "$arg" = "--all" ]    && KEEP_DATA=false && KEEP_WALLET=false && KEEP_REPO=false
+  done
+
+  if [ "$KEEP_DATA" = false ]; then
+    echo -e "${RED}  • /var/sqc/data (chain data — PERMANENT DATA LOSS)${NC}"
+  fi
+  if [ "$KEEP_WALLET" = false ]; then
+    echo -e "${RED}  • /var/sqc/validator.sqwallet and genesis.json${NC}"
+    echo -e "${RED}    WARNING: losing the wallet file = losing access to funds!${NC}"
+  fi
+  if [ "$KEEP_REPO" = false ]; then
+    echo -e "${RED}  • $SQC_DIR (entire repository)${NC}"
+  fi
+
+  echo ""
+  echo -n "Type 'yes' to confirm uninstall: "
+  read -r confirm
+  [ "$confirm" != "yes" ] && { echo "Aborted."; exit 0; }
+  echo ""
+
+  # Stop and disable services
+  for SVC in sqc-validator sqc-rpc; do
+    if systemctl list-unit-files --quiet "$SVC.service" 2>/dev/null | grep -q "$SVC"; then
+      inf "Stopping and disabling $SVC..."
+      systemctl stop "$SVC" 2>/dev/null || true
+      systemctl disable "$SVC" 2>/dev/null || true
+      rm -f "/etc/systemd/system/$SVC.service"
+      ok "Removed $SVC service"
+    fi
+  done
+  systemctl daemon-reload 2>/dev/null || true
+
+  # Remove binaries
+  inf "Removing binaries..."
+  rm -f "$SQC_DIR/sqc-node" "$SQC_DIR/sqc-wallet" "$SQC_DIR/node" "$SQC_DIR/wallet"
+  ok "Binaries removed"
+
+  # Remove sqc tool from global path
+  rm -f /usr/local/bin/sqc
+  ok "Removed /usr/local/bin/sqc"
+
+  # Remove Go path entry (optional, non-destructive)
+  # Leave Go installed — user may use it for other things
+
+  # Remove chain data
+  if [ "$KEEP_DATA" = false ]; then
+    inf "Removing chain data..."
+    rm -rf /var/sqc/data
+    ok "Chain data removed"
+  else
+    warn "Chain data preserved at /var/sqc/data (use --data to remove)"
+  fi
+
+  # Remove wallet and genesis
+  if [ "$KEEP_WALLET" = false ]; then
+    inf "Removing wallet and genesis files..."
+    rm -f /var/sqc/validator.sqwallet /var/sqc/genesis.json
+    rmdir /var/sqc 2>/dev/null || true
+    ok "Wallet and genesis files removed"
+  else
+    warn "Wallet preserved at /var/sqc/ (use --wallet to remove)"
+  fi
+
+  # Remove repository
+  if [ "$KEEP_REPO" = false ]; then
+    inf "Removing repository..."
+    rm -rf "$SQC_DIR"
+    ok "Repository removed from $SQC_DIR"
+  else
+    warn "Repository preserved at $SQC_DIR (use --all to remove)"
+  fi
+
+  # Remove UFW rules
+  if command -v ufw &>/dev/null; then
+    ufw delete allow 8080/tcp 2>/dev/null || true
+    ufw delete allow 9090/tcp 2>/dev/null || true
+    ok "Firewall rules removed"
+  fi
+
+  echo ""
+  echo -e "${GREEN}✅ SQC uninstalled.${NC}"
+  echo ""
+  if [ "$KEEP_WALLET" = true ]; then
+    echo -e "${ORANGE}⚠  Your wallet is still at /var/sqc/validator.sqwallet${NC}"
+    echo -e "${ORANGE}   Back it up before deleting! It controls your SPLD funds.${NC}"
+  fi
+}
+
 cmd_version() {
   echo -e "${BOLD}Splendor Quantum Chain${NC}"
   if [ -f "$SQC_DIR/sqc-node" ]; then
@@ -505,11 +609,15 @@ usage() {
   echo "  logs                  Live coloured log stream"
   echo "  console               Interactive node console (like geth console)"
   echo ""
-  echo -e "${BOLD}Updates & install:${NC}"
+  echo -e "${BOLD}Updates, install & uninstall:${NC}"
   echo "  update                Dirty update — preserves chain data"
   echo "  update --clean        Clean update — wipes data, full resync"
   echo "  install --validator   First-time validator setup"
   echo "  install --rpc         First-time RPC node setup"
+  echo "  uninstall             Remove service + binaries (keeps data+wallet)"
+  echo "  uninstall --data      Also remove chain data"
+  echo "  uninstall --wallet    Also remove wallet + genesis.json"
+  echo "  uninstall --all       Remove everything (service+data+wallet+repo)"
   echo ""
   echo -e "${BOLD}Chain queries:${NC}"
   echo "  peers                 List connected peers"
@@ -541,6 +649,7 @@ case "${1:-}" in
   mempool)     cmd_mempool ;;
   block)       shift; cmd_block "$@" ;;
   balance)     shift; cmd_balance "$@" ;;
+  uninstall)   shift; cmd_uninstall "$@" ;;
   version)     cmd_version ;;
   help|--help|-h|"") usage ;;
   *)
