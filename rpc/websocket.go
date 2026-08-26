@@ -162,6 +162,9 @@ func (h *Hub) ClientCount() int {
 // is not available, making it dependency-free.
 // Clients connect via GET /ws?subscribe=new_block,new_tx
 // and receive newline-delimited JSON events (NDJSON / Server-Sent Events).
+//
+// Mount it behind the node's CORSPolicy like every other RPC route: the stream
+// is a live view of the node, so browser access belongs on the same allowlist.
 func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Parse requested event types
 	subscribeParam := r.URL.Query().Get("subscribe")
@@ -174,11 +177,16 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set SSE headers
+	// Set SSE headers. Access-Control-Allow-Origin is deliberately absent here:
+	// the CORSPolicy middleware wrapping this route has already decided whether
+	// this origin may read the response, and it runs before the handler, so an
+	// allowed origin still gets the header on the streaming response. Forcing
+	// "*" at this point overrode that decision and made /ws the one route that
+	// handed any page on the internet a live feed of blocks and pending
+	// transactions, whatever the operator's allowlist said.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
 	sub := h.subscribe(filters)
