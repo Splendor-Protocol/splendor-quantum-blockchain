@@ -1,0 +1,106 @@
+name: CI
+
+# There was no CI in this repository at all. The committed signer WASM drifted
+# from its source twice — once across the CRYSTALS-Dilithium to ML-DSA-65
+# migration, and again when a chain-id export was added — and neither was caught,
+# because the only existing check (scripts/check-wasm-dist.mjs) compares the
+# binary to its recorded digest rather than to the source it was built from. Both
+# agree during a drift, so it passes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^vendor/' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would rewrite these files:"; echo "$unformatted"; exit 1
+          fi
+      - name: go test
+        run: go test -count=1 ./...
+
+  wasm-drift:
+    name: signer WASM matches its source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The digest is Go-release-sensitive, so this has to build under the same
+      # toolchain build.sh pins or it would report drift that does not exist.
+      - name: Rebuild the signer from source
+        run: |
+          cp sdk/bridge/wasm/dist/sqc_signer.wasm /tmp/committed.wasm
+          bash sdk/bridge/wasm/build.sh
+
+      - name: Compare the rebuild against every committed copy and pin
+        run: |
+          set -euo pipefail
+          built="$(sha256sum sdk/bridge/wasm/dist/sqc_signer.wasm | cut -d' ' -f1)"
+          committed="$(sha256sum /tmp/committed.wasm | cut -d' ' -f1)"
+          echo "rebuilt from source : $built"
+          echo "committed in repo   : $committed"
+
+          fail=0
+          if [ "$built" != "$committed" ]; then
+            echo "::error::sdk/bridge/wasm/dist/sqc_signer.wasm does not match its source."
+            echo "The signer was changed without rebuilding. Anyone building from this tree"
+            echo "gets a binary that does not do what main.go says it does."
+            echo "Fix: bash sdk/bridge/wasm/build.sh && (cd sdk/bridge && npm run sync:config)"
+            echo "     && npm --prefix wallet-extension run copy:wasm, then re-pin WASM_SHA256"
+            echo "     in wallet-extension/background.js."
+            fail=1
+          fi
+
+          ext="$(sha256sum wallet-extension/wasm/sqc_signer.wasm | cut -d' ' -f1)"
+          if [ "$ext" != "$built" ]; then
+            echo "::error::wallet-extension/wasm/sqc_signer.wasm ($ext) is not the built artifact."
+            fail=1
+          fi
+
+          # Every recorded pin must name the same bytes. A pin that agrees with a
+          # stale binary is exactly how this went unnoticed before.
+          for f in sdk/bridge/config/sqc.networks.json sdk/bridge/src/config/sqc.networks.json; do
+            if grep -q '"wasmSha256"' "$f" && ! grep -q "$built" "$f"; then
+              echo "::error::$f pins a digest that is not the built artifact."
+              fail=1
+            fi
+          done
+          if ! grep -q "$built" wallet-extension/background.js; then
+            echo "::error::wallet-extension/background.js WASM_SHA256 is not the built artifact."
+            fail=1
+          fi
+
+          exit "$fail"
+
+      - name: Golden vector still derives the published address
+        run: go test -count=1 ./sdk/bridge/signer/ -run 'Golden|Domain'
