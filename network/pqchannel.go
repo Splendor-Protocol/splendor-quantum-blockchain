@@ -134,6 +134,14 @@ func (n *NodeIdentity) rotate() error {
 
 // Document returns the current signed identity document, rotating the KEM key
 // first if it has expired.
+// SigningKeys exposes the long-term ML-DSA identity keypair, for signing
+// messages other than the identity document itself (see SignAnnounce).
+func (n *NodeIdentity) SigningKeys() (*qcrypto.PublicKey, *qcrypto.PrivateKey) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.sigPub, n.sigPriv
+}
+
 func (n *NodeIdentity) Document() (*IdentityDocument, error) {
 	n.mu.RLock()
 	expired := time.Now().After(n.notAfter)

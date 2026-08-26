@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
@@ -152,21 +153,26 @@ func makePeersHandler(pool *network.PeerPool, localHeight func() uint64) http.Ha
 	}
 }
 
+// announceNonces backs replay rejection for signed announcements. One cache per
+// process is right: the nonce is global to this node, not per-connection.
+var announceNonces = network.NewAnnounceNonceCache()
+
+// maxAnnounceBytes bounds the announce body. A signed announcement carries an
+// ML-DSA-65 public key (1952 B) and signature (3309 B) on top of the peer
+// record, so the old 4 KiB ceiling would reject every valid one.
+const maxAnnounceBytes = 16 << 10
+
 func makeAnnounceHandler(pool *network.PeerPool, onAnnounce func(addr string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxAnnounceBytes))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "failed to read body")
 			return
 		}
 
-		var peer network.PeerInfo
-		if err := json.Unmarshal(body, &peer); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid peer info JSON")
-			return
-		}
-		if peer.Addr == "" {
-			writeError(w, http.StatusBadRequest, "peer addr required")
+		peer, err := decodeAnnounce(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
@@ -182,7 +188,7 @@ func makeAnnounceHandler(pool *network.PeerPool, onAnnounce func(addr string)) h
 		}
 
 		// Add to peer pool for discovery
-		pool.Add(&peer)
+		pool.Add(peer)
 
 		// Notify broadcaster (if validator) to start pushing blocks to this peer
 		if onAnnounce != nil {
@@ -191,6 +197,38 @@ func makeAnnounceHandler(pool *network.PeerPool, onAnnounce func(addr string)) h
 
 		writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
 	}
+}
+
+// decodeAnnounce accepts either a signed announcement or a bare PeerInfo.
+//
+// A signed announcement is preferred and is what this node sends: it is
+// attributable to one ML-DSA node key and cannot be replayed, where the bare
+// form rests entirely on the shared write-plane token, which every peer holds
+// and any one of them can use to announce as anybody.
+//
+// The bare form is still accepted because announce is a cross-version path: a
+// node running this build has to keep talking to peers that predate signing,
+// and rejecting them would partition the network on upgrade rather than secure
+// it. The token still gates the route either way, so this is not an opening —
+// it is the pre-existing level of assurance, retained for peers that cannot yet
+// do better. Once a deployment is fully upgraded, the fallback can go.
+func decodeAnnounce(body []byte) (*network.PeerInfo, error) {
+	var signed network.SignedAnnounce
+	if err := json.Unmarshal(body, &signed); err == nil && len(signed.Signature) > 0 {
+		if verr := signed.Verify(announceNonces, time.Now()); verr != nil {
+			return nil, fmt.Errorf("rejected announcement: %w", verr)
+		}
+		return &signed.Peer, nil
+	}
+
+	var peer network.PeerInfo
+	if err := json.Unmarshal(body, &peer); err != nil {
+		return nil, fmt.Errorf("invalid peer info JSON")
+	}
+	if peer.Addr == "" {
+		return nil, fmt.Errorf("peer addr required")
+	}
+	return &peer, nil
 }
 
 // ── Sync status handler ───────────────────────────────────────────────────────
