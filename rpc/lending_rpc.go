@@ -26,8 +26,13 @@ import (
 
 // RegisterLendingRoutes adds lending protocol endpoints to the router.
 func RegisterLendingRoutes(r *mux.Router, stateDB *state.StateDB) {
-	// Use a well-known lending contract address
-	lendingAddr := vm.DeployLending(stateDB, qcrypto.Address{}, 1)
+	// Derive the well-known lending address. This must NOT deploy: registering
+	// HTTP routes is not block execution, and DeployLending writes a consensus
+	// state leaf. Doing that here put a write into the next sealed block that no
+	// transaction accounted for, so block 1's state root could not be reproduced
+	// by a peer replaying history — which is why followers failed to sync with
+	// "state root mismatch" at block 1.
+	lendingAddr := vm.LendingAddress(qcrypto.Address{}, 1)
 	lending := vm.NewLendingProtocol(stateDB, lendingAddr)
 
 	r.HandleFunc("/lending/pool/{asset}", makeLendingPoolHandler(lending)).Methods(http.MethodGet)
