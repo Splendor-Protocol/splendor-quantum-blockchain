@@ -17,12 +17,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -153,10 +155,135 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 		},
 	})
 
+	root.AddCommand(newExportAllocationsCmd())
+
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// newExportAllocationsCmd turns the account balances of an existing chain into
+// a genesis allocation list, for re-minting a chain whose history cannot be
+// replayed.
+//
+// Only balances cross over, and that is the point rather than a shortcoming. A
+// genesis document can express nothing else, so the export cannot smuggle
+// contract storage into the new chain — which matters here, because the leaf
+// that made the earlier chains unfollowable was contract storage written outside
+// a block. Copying state wholesale would carry that artifact into the very chain
+// created to be rid of it.
+//
+// The same limit is a real loss elsewhere: deployed contracts, their storage,
+// and every account nonce are dropped. Dropped nonces are safe only because the
+// chain id is signed into every transaction, so an old signed transaction cannot
+// be replayed onto a chain minted under a different id — give the new chain a
+// new id, or that protection is not there.
+func newExportAllocationsCmd() *cobra.Command {
+	var minBalance string
+	var includeZero bool
+
+	cmd := &cobra.Command{
+		Use:   "export-allocations <data-dir>",
+		Short: "Export account balances from a stopped chain as a genesis allocation list",
+		Long: "Reads committed account state and prints a genesis \"allocations\" array on stdout.\n\n" +
+			"Run this against a STOPPED node. Reading a running one gives a torn view spanning\n" +
+			"whatever block was in flight. Contract code, contract storage and account nonces are\n" +
+			"NOT exported — a genesis document cannot express them.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			floor := new(big.Int)
+			if minBalance != "" {
+				if _, ok := floor.SetString(minBalance, 10); !ok {
+					return fmt.Errorf("--min-balance %q is not a base-10 integer", minBalance)
+				}
+			}
+
+			// Same value the node is given, so an operator does not have to know
+			// that state lives in a subdirectory.
+			statePath := filepath.Join(args[0], "state")
+
+			// NewStateDB creates a database when the path is empty, so a mistyped
+			// data directory would otherwise produce a clean, confident, entirely
+			// empty allocation list. This tool's output becomes a chain's money
+			// supply; the one failure it must never have is looking successful.
+			if fi, err := os.Stat(statePath); err != nil || !fi.IsDir() {
+				return fmt.Errorf(
+					"no chain state at %s — pass the same --data-dir the node was given, "+
+						"not the state directory itself", statePath)
+			}
+
+			stateDB, err := state.NewStateDB(statePath)
+			if err != nil {
+				return fmt.Errorf("open state at %q: %w", statePath, err)
+			}
+			defer stateDB.Close()
+
+			type alloc struct {
+				Address string `json:"address"`
+				Balance string `json:"balance"`
+			}
+			var out []alloc
+			total := new(big.Int)
+			var skipped int
+
+			err = stateDB.ForEachAccount(func(acc *types.Account) error {
+				bal := acc.Balance
+				if bal == nil {
+					bal = new(big.Int)
+				}
+				// A zero-balance account is a genesis entry that funds nothing. It
+				// still costs a line in the document operators have to review, and
+				// review is the only thing standing between a bad allocation list
+				// and a wrong money supply.
+				if !includeZero && bal.Sign() == 0 {
+					skipped++
+					return nil
+				}
+				if bal.Cmp(floor) < 0 {
+					skipped++
+					return nil
+				}
+				out = append(out, alloc{Address: acc.Address.String(), Balance: bal.String()})
+				total.Add(total, bal)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			if len(out) == 0 {
+				return fmt.Errorf(
+					"%s holds no funded accounts — refusing to emit an empty allocation list, "+
+						"which would mint a chain with no supply", statePath)
+			}
+
+			// Allocation ORDER is part of the genesis identity, because ApplyToState
+			// overwrites an account it has already written rather than adding to it.
+			// Sorting makes the document — and therefore the hash operators pin —
+			// reproducible from the same chain rather than dependent on scan order.
+			sort.Slice(out, func(i, j int) bool { return out[i].Address < out[j].Address })
+
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(out); err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stderr, "exported %d allocations, total %s (skipped %d)\n",
+				len(out), total.String(), skipped)
+			fmt.Fprintf(os.Stderr,
+				"NOT exported: contract code, contract storage, account nonces. "+
+					"Give the new chain a distinct chain id — dropped nonces are only safe "+
+					"because the chain id is signed into every transaction.\n")
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&minBalance, "min-balance", "",
+		"Skip accounts below this balance in smallest SPLD units (dust left by test traffic)")
+	cmd.Flags().BoolVar(&includeZero, "include-zero", false,
+		"Include zero-balance accounts, which fund nothing but must still be reviewed")
+	return cmd
 }
 
 func runNode(cmd *cobra.Command, args []string) error {

@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/util"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -196,6 +197,32 @@ func (s *StateDB) loadLeaves() error {
 // Close closes the underlying LevelDB.
 func (s *StateDB) Close() error {
 	return s.db.Close()
+}
+
+// ForEachAccount calls fn for every account in COMMITTED state, in key order.
+//
+// It deliberately ignores the pending layer, so it reports what is durably on
+// disk rather than what a running node happens to be holding. Callers that
+// export state for a genesis snapshot want exactly that, and should run against
+// a stopped node — reading a live one gives a torn view spanning whatever block
+// was mid-flight.
+//
+// Only accounts are visited. Contract code and storage are separate leaves and
+// are not reachable through this, which is a limitation for any caller that
+// wants to reproduce a chain in full.
+func (s *StateDB) ForEachAccount(fn func(*types.Account) error) error {
+	iter := s.db.NewIterator(util.BytesPrefix([]byte(prefixAccount)), nil)
+	defer iter.Release()
+	for iter.Next() {
+		var acc types.Account
+		if err := json.Unmarshal(iter.Value(), &acc); err != nil {
+			return fmt.Errorf("decode account at key %q: %w", iter.Key(), err)
+		}
+		if err := fn(&acc); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
 }
 
 // GetAccount retrieves an account by address.
