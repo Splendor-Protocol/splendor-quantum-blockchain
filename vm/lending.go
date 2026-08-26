@@ -118,14 +118,32 @@ func NewLendingProtocol(stateDB *state.StateDB, contract qcrypto.Address) *Lendi
 	return &LendingProtocol{stateDB: stateDB, contract: contract}
 }
 
-// DeployLending deploys the lending protocol at a deterministic address.
-func DeployLending(stateDB *state.StateDB, deployer qcrypto.Address, nonce uint64) qcrypto.Address {
+// LendingAddress derives the deterministic lending-protocol address for a
+// (deployer, nonce) pair. It is PURE: it touches no state.
+//
+// Read-only callers — the RPC handlers in particular — must use this rather than
+// DeployLending. Deriving an address is not deploying a contract, and conflating
+// the two wrote a consensus state leaf every time the HTTP routes were built.
+func LendingAddress(deployer qcrypto.Address, nonce uint64) qcrypto.Address {
 	input := append(deployer[:], []byte(fmt.Sprintf("%d:lending", nonce))...)
 	hash := qcrypto.Hash32(input)
 	var addr qcrypto.Address
 	copy(addr[:], hash[:])
+	return addr
+}
 
-	// Set owner
+// DeployLending deploys the lending protocol at a deterministic address, writing
+// the owner slot.
+//
+// This MUTATES consensus state, so it may only be called from inside block
+// execution — a transaction or genesis. Calling it from anywhere else (an HTTP
+// handler, a constructor, a route registration) writes a state leaf outside any
+// block: the leaf lands in whatever block the node seals next, that block's state
+// root then reflects a write no transaction accounts for, and a peer replaying
+// history recomputes a different root and can never sync. Use LendingAddress if
+// you only need the address.
+func DeployLending(stateDB *state.StateDB, deployer qcrypto.Address, nonce uint64) qcrypto.Address {
+	addr := LendingAddress(deployer, nonce)
 	stateDB.SetStorageValue(addr, slotLendingOwner, deployer[:])
 	return addr
 }
