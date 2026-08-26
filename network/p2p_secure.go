@@ -3,6 +3,7 @@ package network
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,18 +75,41 @@ type cachedIdentity struct {
 // whoever signed it. On first contact we record that identity, and every later
 // document from the same peer must match — so an attacker who takes over the
 // network path later cannot silently substitute their own identity.
+//
+// First contact is the weak moment: an attacker already on the path when the
+// node boots gets pinned as the peer. RequirePins closes it by demanding the
+// operator name each peer's key up front. A pin that is present is always
+// enforced, required or not — a mismatch is a rejection either way.
 type IdentityCache struct {
 	mu     sync.RWMutex
 	docs   map[string]cachedIdentity // peer URL → document
 	pinned map[string][]byte         // peer URL → pinned node pubkey
 	client *http.Client
+
+	// requirePins turns trust-on-first-use off entirely: a peer with no
+	// operator-supplied pin is refused instead of being pinned to whatever it
+	// serves. See RequirePins.
+	requirePins bool
+
+	// warned remembers which peers have already been reported as unpinned, so
+	// the refusal is shouted once per peer rather than once per produced block.
+	warned map[string]struct{}
 }
+
+// ErrPeerNotPinned is returned when pins are required and a peer has none.
+//
+// It is a sentinel because callers must be able to tell a policy refusal apart
+// from a transport failure: a peer we refused for being unauthenticated must
+// never be retried over a channel that authenticates it even less, such as the
+// plaintext fallback.
+var ErrPeerNotPinned = errors.New("peer node identity is not pinned")
 
 // NewIdentityCache creates an identity cache.
 func NewIdentityCache() *IdentityCache {
 	return &IdentityCache{
 		docs:   make(map[string]cachedIdentity),
 		pinned: make(map[string][]byte),
+		warned: make(map[string]struct{}),
 		client: &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirect},
 	}
 }
@@ -98,12 +122,45 @@ func (c *IdentityCache) Pin(peerURL string, nodePubKey []byte) {
 	c.pinned[peerURL] = nodePubKey
 }
 
+// RequirePins makes an operator-supplied pin mandatory for every peer.
+//
+// Trust-on-first-use is only safe if the first contact is honest, and nothing
+// tells you whether it was. An attacker sitting on the path at bootstrap gets
+// pinned as the peer and keeps that position for the life of the process — the
+// pin then works against the operator, holding the node to the impostor. With
+// this set, an unpinned peer is simply not a peer.
+func (c *IdentityCache) RequirePins(required bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requirePins = required
+}
+
+// PinsRequired reports whether unpinned peers are refused.
+func (c *IdentityCache) PinsRequired() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.requirePins
+}
+
 // Get returns a verified identity document for a peer, fetching it if needed.
 func (c *IdentityCache) Get(peerURL string) (*IdentityDocument, error) {
 	c.mu.RLock()
 	entry, ok := c.docs[peerURL]
 	pin := c.pinned[peerURL]
+	requirePins := c.requirePins
 	c.mu.RUnlock()
+
+	// Refuse before the peer is even asked for a document. This is the single
+	// point where a peer identity becomes trusted — every sealed path (block
+	// push, announce, catch-up query) reaches the network through here — so
+	// enforcing anywhere else would leave a way in.
+	if requirePins && pin == nil {
+		c.warnUnpinned(peerURL)
+		return nil, fmt.Errorf("%w: %s — supply --peer-pin %s=<node ML-DSA-65 pubkey hex> "+
+			"(the peer prints it at startup and serves it at %s), or drop --require-peer-pins "+
+			"to fall back to trust-on-first-use", ErrPeerNotPinned, peerURL, peerURL, peerURL+PathIdentity)
+	}
+
 	if ok && time.Now().Before(entry.notAfter) {
 		return entry.doc, nil
 	}
@@ -127,7 +184,8 @@ func (c *IdentityCache) Get(peerURL string) (*IdentityDocument, error) {
 
 	c.mu.Lock()
 	if _, alreadyPinned := c.pinned[peerURL]; !alreadyPinned {
-		// Trust on first use, then hold the peer to it.
+		// Trust on first use, then hold the peer to it. Unreachable while pins
+		// are required — that check above returns before any fetch.
 		c.pinned[peerURL] = doc.NodePubKey
 		log.Debug().Str("peer", peerURL).Msg("p2p: pinned peer node identity on first contact")
 	}
@@ -137,6 +195,24 @@ func (c *IdentityCache) Get(peerURL string) (*IdentityDocument, error) {
 	c.mu.Unlock()
 
 	return &doc, nil
+}
+
+// warnUnpinned logs a refused peer once. A validator broadcasts every block, so
+// warning on each refusal would bury the message in its own repetition; once per
+// peer keeps the operator's missing --peer-pin visible in the log.
+func (c *IdentityCache) warnUnpinned(peerURL string) {
+	c.mu.Lock()
+	_, seen := c.warned[peerURL]
+	if !seen {
+		c.warned[peerURL] = struct{}{}
+	}
+	c.mu.Unlock()
+	if seen {
+		return
+	}
+	log.Warn().Str("peer", peerURL).Str("identity_url", peerURL+PathIdentity).
+		Msg("p2p: REFUSED unpinned peer — --require-peer-pins is set and this peer has no " +
+			"--peer-pin, so no blocks will be pushed to it and no blocks will be pulled from it")
 }
 
 // Forget drops a peer's cached document, forcing a re-fetch. Called when a
