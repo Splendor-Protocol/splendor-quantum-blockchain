@@ -30,6 +30,16 @@ export type CreateConnectControllerOptions = CreateClientOptions & {
 
 type Listener = () => void;
 
+/**
+ * True when connecting requires a secret the user types in (native seed, or any
+ * advanced connector). Such a session cannot be resumed without asking again,
+ * so its id is never persisted and autoReconnect skips it — otherwise a reload
+ * would fire a connect with an empty seed and land the UI in `error`.
+ */
+function needsUserSecret(connector: Connector): boolean {
+  return connector.advanced === true || (connector.connectFields?.length ?? 0) > 0;
+}
+
 function toAccount(info: DeriveInfo): ConnectAccount {
   return {
     address: info.address,
@@ -74,7 +84,8 @@ export type ConnectController = {
   /** Tear down wallet without clearing lastConnectorId (network switch). */
   softDisconnect(): Promise<void>;
   /**
-   * Try last connector (MetaMask/injected only — never seed/advanced).
+   * Try last connector (MetaMask/injected only — never a connector whose secret
+   * the user types in).
    * Pass `{ force: true }` after a soft network switch (ignores autoReconnect flag).
    */
   tryAutoReconnect(opts?: { force?: boolean }): Promise<boolean>;
@@ -250,11 +261,12 @@ export function createConnectController(
           );
           account = toAccount(info);
           activeConnectorId = connectorId;
-          setLastConnectorId(connector.advanced ? null : connectorId);
+          const resumable = !needsUserSecret(connector);
+          setLastConnectorId(resumable ? connectorId : null);
           status = 'connected';
           connectingStep = null;
           modal = 'closed';
-          if (!connector.advanced) {
+          if (resumable) {
             broadcastConnectEvent({
               type: 'connected',
               connectorId,
@@ -320,7 +332,7 @@ export function createConnectController(
       const last = getLastConnectorId();
       if (!last) return false;
       const connector = connectors.find((c) => c.id === last);
-      if (!connector || connector.advanced) return false;
+      if (!connector || needsUserSecret(connector)) return false;
       try {
         const ready = await connector.ready();
         if (!ready) return false;

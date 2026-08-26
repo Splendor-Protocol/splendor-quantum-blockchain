@@ -21,6 +21,12 @@ export function AccountModal() {
 
   const open = modal === 'account';
 
+  // Only an EVM-derived account has an EVM address to warn about; saying it to
+  // someone holding a native ML-DSA key would just be wrong.
+  const subtitle = evmAddress
+    ? 'Funds live on your SQ: address — not the EVM address.'
+    : 'Post-quantum ML-DSA-65 account. Funds live on your SQ: address.';
+
   const onCopy = async (kind: 'sq' | 'evm', value: string) => {
     const ok = await copyText(value);
     if (!ok) return;
@@ -36,7 +42,7 @@ export function AccountModal() {
     <ModalShell
       open={open}
       title="Account"
-      subtitle="Funds live on your SQ: address — not the EVM address."
+      subtitle={subtitle}
       onClose={closeModal}
     >
       <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -65,7 +71,15 @@ export function AccountModal() {
 
       {evmAddress ? (
         <div className="sqc-account-row">
-          <span className="sqc-account-row__label">Linked EVM (derivation only)</span>
+          <span className="sqc-account-row__label">
+            Linked EVM (derivation only)
+            <span
+              className="sqc-connector-item__badge"
+              title="This account's ML-DSA key was derived from an Ethereum signature, so it is only as strong as secp256k1. Create a native wallet for funds you intend to hold."
+            >
+              Not quantum-safe
+            </span>
+          </span>
           <div className="sqc-account-row__value">
             <span>{evmAddress}</span>
             <button

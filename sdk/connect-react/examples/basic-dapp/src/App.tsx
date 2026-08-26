@@ -85,8 +85,9 @@ export function App() {
         <section className="hero">
           <h1>Connect once. PQ signing stays local.</h1>
           <p>
-            MetaMask signs a fixed domain message to derive your ML-DSA-65 wallet. Your dApp never
-            sees the private key — only the SQ: address and signed transactions.
+            Create a post-quantum ML-DSA-65 wallet in the browser, or import a seed you already
+            hold. Your dApp never sees the private key — only the SQ: address and signed
+            transactions.
           </p>
         </section>
         <TransferPanel />

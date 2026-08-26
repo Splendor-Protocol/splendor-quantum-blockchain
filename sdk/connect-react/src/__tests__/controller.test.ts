@@ -145,6 +145,59 @@ describe('createConnectController', () => {
     ctrl.destroy();
   });
 
+  it('does not persist a connector whose secret the user types in', async () => {
+    // The native seed connector is no longer "advanced", but a reload still
+    // cannot resume it — persisting its id would auto-fire a connect with an
+    // empty seed and strand the UI in `error`.
+    const connector: Connector = {
+      id: 'seed',
+      name: 'Splendor Quantum Wallet',
+      keyOrigin: 'native',
+      postQuantumSecure: true,
+      connectFields: [{ name: 'seed', type: 'password', label: 'ML-DSA-65 seed' }],
+      ready: () => true,
+      connect: async (ctx, opts) => ctx.wallet.connectFromSeed(String(opts?.seed ?? '')),
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+      autoReconnect: true,
+    });
+    await ctrl.connect('seed', { seed: 'bb'.repeat(32) });
+    expect(ctrl.getState().status).toBe('connected');
+    expect(memoryStore.get('splendor.connect.lastConnectorId')).toBeUndefined();
+    ctrl.destroy();
+  });
+
+  it('autoReconnect skips a connector that needs a typed secret', async () => {
+    memoryStore.set('splendor.connect.lastConnectorId', 'seed');
+    const connect = vi.fn(async (ctx: never, opts?: Record<string, unknown>) =>
+      (ctx as unknown as { wallet: { connectFromSeed: (s: string) => Promise<DeriveInfo> } }).wallet.connectFromSeed(
+        String(opts?.seed ?? ''),
+      ),
+    );
+    const connector: Connector = {
+      id: 'seed',
+      name: 'Splendor Quantum Wallet',
+      keyOrigin: 'native',
+      postQuantumSecure: true,
+      connectFields: [{ name: 'seed', type: 'password', label: 'ML-DSA-65 seed' }],
+      ready: () => true,
+      connect: connect as unknown as Connector['connect'],
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+      autoReconnect: true,
+    });
+    expect(await ctrl.tryAutoReconnect()).toBe(false);
+    expect(connect).not.toHaveBeenCalled();
+    expect(ctrl.getState().status).toBe('disconnected');
+    ctrl.destroy();
+  });
+
   it('maps NO_PROVIDER when connector not ready', async () => {
     const connector: Connector = {
       id: 'metamask',

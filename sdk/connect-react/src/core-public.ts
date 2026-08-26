@@ -30,6 +30,7 @@ export {
   seedConnector,
   hasAuthorizedAccounts,
   assertSeedHex,
+  generateSeedHex,
   discoverInjectedConnectors,
   defaultBrowserConnectors,
 } from './connectors/index.js';

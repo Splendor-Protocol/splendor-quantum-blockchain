@@ -33,7 +33,7 @@ export type { ConnectBrandLabels };
 
 export type SplendorConnectProviderProps = Omit<CreateClientOptions, 'network'> & {
   network?: NetworkId;
-  /** Explicit connectors, or `'auto'` for MetaMask + EIP-6963 + seed. */
+  /** Explicit connectors, or `'auto'` for native ML-DSA first, then MetaMask + EIP-6963. */
   connectors?: Connector[] | 'auto';
   autoReconnect?: boolean;
   theme?: ThemeProp;

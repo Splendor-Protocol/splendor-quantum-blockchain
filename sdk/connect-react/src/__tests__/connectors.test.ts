@@ -4,6 +4,8 @@ import {
   injectedConnector,
   seedConnector,
   assertSeedHex,
+  generateSeedHex,
+  defaultBrowserConnectors,
   hasAuthorizedAccounts,
 } from '../connectors/index.js';
 import type { DeriveInfo, EthereumProvider } from '@splendor/pq-bridge';
@@ -27,6 +29,40 @@ describe('assertSeedHex', () => {
     expect(() => assertSeedHex('')).toThrow(/required/i);
     expect(() => assertSeedHex('abcd')).toThrow(/32 bytes/i);
     expect(() => assertSeedHex('zz'.repeat(32))).toThrow(/32 bytes/i);
+  });
+});
+
+describe('generateSeedHex', () => {
+  it('produces a seed the connector accepts', () => {
+    const seed = generateSeedHex();
+    expect(seed).toMatch(/^[0-9a-f]{64}$/);
+    expect(assertSeedHex(seed)).toBe(seed);
+  });
+
+  it('does not repeat itself', () => {
+    const seeds = new Set(Array.from({ length: 16 }, () => generateSeedHex()));
+    expect(seeds.size).toBe(16);
+  });
+});
+
+describe('connector ordering', () => {
+  afterEach(() => {
+    delete (globalThis as { ethereum?: unknown }).ethereum;
+  });
+
+  // Leading with an EVM-derived wallet on a post-quantum chain is the exact
+  // claim this package must not make, so the order is a test, not a habit.
+  it('offers the native ML-DSA connector first and EVM-derived last', async () => {
+    const list = await defaultBrowserConnectors();
+    expect(list[0].keyOrigin).toBe('native');
+    expect(list[0].postQuantumSecure).toBe(true);
+    expect(list[list.length - 1].keyOrigin).toBe('evm-derived');
+    expect(list.some((c) => c.id === 'metamask')).toBe(true);
+  });
+
+  it('keeps the native connector out of the Advanced accordion', async () => {
+    const [first] = await defaultBrowserConnectors();
+    expect(first.advanced).toBeUndefined();
   });
 });
 
