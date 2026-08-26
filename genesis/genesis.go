@@ -223,6 +223,22 @@ func (g *Genesis) Validate() error {
 			return fmt.Errorf("genesis allocation[%d]: invalid balance %q", i, alloc.Balance)
 		}
 	}
+	// A duplicate address makes the document ambiguous about how much the chain
+	// starts with: ApplyToState overwrites, so state ends up holding one of the
+	// two balances, while the supply arithmetic below would count both. This is
+	// not hypothetical -- the deploy entrypoint always allocates the validator
+	// its treasury, and a balance snapshot taken off a live tier naturally
+	// contains that same validator address, so the two meet in one document the
+	// first time anyone snapshots a tier and resets it.
+	seen := make(map[string]int, len(g.Allocations))
+	for i, alloc := range g.Allocations {
+		key := strings.ToLower(alloc.Address)
+		if first, dup := seen[key]; dup {
+			return fmt.Errorf("genesis allocation[%d]: address %s is already allocated at [%d]: "+
+				"a duplicate makes the starting supply ambiguous", i, alloc.Address, first)
+		}
+		seen[key] = i
+	}
 	// total_supply has always been documented as the sum of the allocations, but
 	// nothing ever checked it, and so it drifted: every live tier declares less
 	// than it actually minted, mainnet by a whole billion SPLD. Since the value
