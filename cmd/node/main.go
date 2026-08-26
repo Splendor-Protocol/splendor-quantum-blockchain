@@ -14,7 +14,9 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -55,6 +57,8 @@ var (
 	flagGenesisPath       string
 	flagValidatorPKHex    string
 	flagGenesisHashHex    string
+	flagGenesisDocHashHex string
+	flagTrustPeerGenesis  bool
 	flagRPCAuthToken      string
 	flagAllowPrivatePeers bool
 	flagCORSOrigins       []string
@@ -81,6 +85,10 @@ func main() {
 Cryptography: ML-DSA-65 (FIPS-204) + SHA3-256.
 No ECDSA. No SHA-256. No conventional cryptography.`,
 		RunE: runNode,
+		// Explicit, because adding the genesis-hash subcommand below would
+		// otherwise flip cobra's default and turn a stray positional argument
+		// from "ignored" into "unknown command" for every running deployment.
+		Args: cobra.ArbitraryArgs,
 	}
 
 	root.Flags().StringVar(&flagDataDir, "data-dir", "./sqc-data", "Directory for chain data")
@@ -99,6 +107,8 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagGenesisPath, "genesis", "", "Path to genesis.json (allocations applied once on an empty chain)")
 	root.Flags().StringVar(&flagValidatorPKHex, "validator-pubkey-hex", "", "Trusted genesis validator ML-DSA-65 public key (hex). Full nodes MUST set this to authenticate pushed blocks on POST /block.")
 	root.Flags().StringVar(&flagGenesisHashHex, "genesis-hash", "", "Pinned hash of block 0 (hex). Required to bootstrap the validator pubkey from peers when --validator-pubkey-hex is not supplied; without one, a node would trust whatever key its first peer serves.")
+	root.Flags().StringVar(&flagGenesisDocHashHex, "genesis-doc-hash", "", "Pinned hash of the genesis DOCUMENT (hex) — print it with 'sqc-node genesis-hash <genesis.json>'. A node that has no local --genesis credits a peer-served genesis.json only when it hashes to this. Distinct from --genesis-hash, which pins block 0's header.")
+	root.Flags().BoolVar(&flagTrustPeerGenesis, "trust-peer-genesis", false, "Credit a peer-served genesis.json with no --genesis-doc-hash pin. The peer can then mint any balance it likes into this node's state. Lab networks only.")
 	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret for the write plane: POST /block and POST /peers/announce. All nodes in a cluster must share it. (or SQC_RPC_AUTH_TOKEN env)")
 	root.Flags().BoolVar(&flagAllowPrivatePeers, "allow-private-peers", false, "Allow loopback/private-IP peers in discovery + /peers/announce (private-network or local clusters; default off = public SSRF-safe)")
 	root.Flags().StringArrayVar(&flagCORSOrigins, "cors-origin", nil, "Browser origin allowed to call this node (repeatable). Default: none. Use '*' to allow any origin.")
@@ -114,7 +124,26 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagPublicURL, "public-url", "", "Externally reachable base URL advertised to peers (default: derived from --rpc-addr)")
 	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Allow unencrypted block push and catch-up sync when a peer has no ML-KEM sealed transport. Off by default so the channel cannot be downgraded.")
 	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use — set --require-peer-pins to refuse unpinned peers instead.")
-	root.Flags().BoolVar(&flagRequirePeerPins, "require-peer-pins", false, "Refuse any peer that has no --peer-pin instead of trusting its identity on first contact. Recommended once a cluster's peers are known: trust-on-first-use hands the relationship to whoever answers first at bootstrap.")
+	root.Flags().BoolVar(&flagRequirePeerPins, "require-peer-pins", false, "Refuse to talk to any peer that has no --peer-pin, instead of trusting its identity on first contact. Governs who this node dials — block push, announce and catch-up pull; inbound blocks stay authenticated by the validator signature and the write-plane token. Recommended once a cluster's peers are known: trust-on-first-use hands the relationship to whoever answers first at bootstrap.")
+
+	// Operators need a way to produce the value they pin, and to check that a
+	// genesis.json they were handed is the one they expect, without starting a node.
+	root.AddCommand(&cobra.Command{
+		Use:   "genesis-hash <genesis.json>",
+		Short: "Print the canonical hash of a genesis.json (the --genesis-doc-hash pin)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			g, err := genesiscfg.LoadFile(args[0])
+			if err != nil {
+				return err
+			}
+			if err := g.Validate(); err != nil {
+				return err
+			}
+			fmt.Println(g.HashHex())
+			return nil
+		},
+	})
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -255,19 +284,27 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Optional genesis pin. This is what lets a node with no pinned validator
 	// key learn one safely: block 0 is authenticated by hash before the key it
 	// carries is trusted for every subsequent block.
-	var genesisHashPin *[32]byte
-	if flagGenesisHashHex != "" {
-		raw, decErr := hex.DecodeString(strings.TrimPrefix(flagGenesisHashHex, "0x"))
-		if decErr != nil {
-			return fmt.Errorf("invalid --genesis-hash: %w", decErr)
-		}
-		if len(raw) != 32 {
-			return fmt.Errorf("invalid --genesis-hash: want 32 bytes (64 hex chars), got %d", len(raw))
-		}
-		var pin [32]byte
-		copy(pin[:], raw)
-		genesisHashPin = &pin
-		log.Info().Str("genesis_hash", fmt.Sprintf("%x", pin[:8])).Msg("Genesis hash pinned")
+	genesisHashPin, err := parsePinnedHash("--genesis-hash", flagGenesisHashHex)
+	if err != nil {
+		return err
+	}
+	if genesisHashPin != nil {
+		// The same pin anchors the bottom of the chain locally: block 1 applied
+		// to an empty chain has no stored parent, so without this it could be
+		// built on any genesis at all.
+		executor.WithGenesisHash(*genesisHashPin)
+		log.Info().Str("genesis_hash", fmt.Sprintf("%x", genesisHashPin[:8])).Msg("Genesis hash pinned")
+	}
+
+	// The genesis DOCUMENT pin is a different object from the one above:
+	// --genesis-hash covers block 0's header, this covers the genesis.json whose
+	// allocations become spendable balances the instant they are applied.
+	genesisDocPin, err := parsePinnedHash("--genesis-doc-hash", flagGenesisDocHashHex)
+	if err != nil {
+		return err
+	}
+	if genesisDocPin != nil {
+		log.Info().Str("genesis_doc_hash", fmt.Sprintf("%x", genesisDocPin[:8])).Msg("Genesis document hash pinned")
 	}
 
 	// Write-plane token for block ingest + peer announce (env fallback).
@@ -487,11 +524,19 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// allocations before creating block 0, so its state root ≠ empty state root.
 	// Before syncing blocks, the RPC must fetch and apply the same genesis
 	// allocations so its state root matches the validator's.
-	if !flagIsValidator && len(flagPeers) > 0 {
+	if bootstrapsGenesisFromPeers(flagIsValidator, flagPeers) {
+		policy := genesisPolicy{docHash: genesisDocPin, trustPeer: flagTrustPeerGenesis}
 		go func() {
 			time.Sleep(2 * time.Second) // wait for HTTP server to start
 			for _, peer := range flagPeers {
-				if err := bootstrapGenesisFromPeer(peer, stateDB, executor, flagGenesisPath); err != nil {
+				err := bootstrapGenesisFromPeer(peer, stateDB, executor, flagGenesisPath, policy)
+				if errors.Is(err, errGenesisUnpinned) {
+					// Configuration, not a peer fault: no other peer is any more
+					// trustworthy, so say it once and stop.
+					log.Error().Err(err).Msg("genesis bootstrap refused")
+					return
+				}
+				if err != nil {
 					log.Warn().Err(err).Str("peer", peer).Msg("genesis bootstrap from peer failed")
 					continue
 				}
@@ -810,10 +855,67 @@ func defaultSelfURL(listenAddr string, useTLS bool) string {
 	return scheme + "://" + net.JoinHostPort(host, port)
 }
 
-// bootstrapGenesisFromPeer fetches genesis.json from a peer validator and applies
-// allocations to the local state. This is called on RPC nodes with an empty chain
-// so their state root matches the validator's before block sync starts.
-func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *block.Executor, localGenesisPath string) error {
+// maxGenesisDocBytes bounds a genesis.json read from a peer. The response is
+// unauthenticated at the point it is read, so an unbounded JSON decode of it is
+// a one-request OOM. 8 MiB holds tens of thousands of allocations.
+const maxGenesisDocBytes = 8 << 20
+
+// errGenesisUnpinned is returned when a node is asked to take its genesis from a
+// peer with nothing to check that document against. It is a configuration fault,
+// so callers report it once instead of retrying it against every peer.
+var errGenesisUnpinned = errors.New("peer genesis is unpinned")
+
+// genesisPolicy is the operator's decision about which genesis documents this
+// node may credit. The zero value fails closed.
+type genesisPolicy struct {
+	// docHash pins the expected Genesis.Hash(). nil = unpinned.
+	docHash *[32]byte
+
+	// trustPeer applies an unpinned peer-served document anyway.
+	trustPeer bool
+}
+
+// bootstrapsGenesisFromPeers reports whether a node's configuration takes the
+// peer-genesis path at all.
+//
+// A validator never does: it mints genesis from its own --genesis file before
+// sealing block 0, which is why none of the pinning below can affect one.
+func bootstrapsGenesisFromPeers(isValidator bool, peers []string) bool {
+	return !isValidator && len(peers) > 0
+}
+
+// verifyGenesisDocument gates a genesis document before ApplyToState writes it.
+//
+// Past this point the allocations are money: they are committed to LevelDB
+// before any block exists to contradict them, and /balance reports them to every
+// caller as real. So a document must be well-formed, be for THIS chain, and —
+// when the operator said what it should be — be exactly that document.
+func verifyGenesisDocument(g *genesiscfg.Genesis, pin *[32]byte, source string) error {
+	if err := g.Validate(); err != nil {
+		return fmt.Errorf("genesis from %s is invalid: %w", source, err)
+	}
+	if g.ChainID != types.ChainID {
+		return fmt.Errorf("genesis from %s is for chain %q, this node runs %q", source, g.ChainID, types.ChainID)
+	}
+	if pin != nil {
+		if got := g.Hash(); got != *pin {
+			return fmt.Errorf("genesis from %s hashes to %x, pinned --genesis-doc-hash is %x — wrong network or hostile peer",
+				source, got[:8], pin[:8])
+		}
+	}
+	return nil
+}
+
+// bootstrapGenesisFromPeer applies the genesis allocations an RPC node needs
+// before block sync starts, so its state root matches the validator's.
+//
+// The document may come from local disk or from a peer, and those are not the
+// same kind of thing. A local file was put there by the operator, alongside the
+// node's own keys. A peer's /genesis is an unauthenticated response over plain
+// HTTP from whatever currently answers at --peer — and its allocations land in
+// state directly, so serving a doctored one is how an impersonated bootstrap
+// peer mints itself a balance this node will then swear to.
+func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *block.Executor, localGenesisPath string, policy genesisPolicy) error {
 	// If chain already has blocks, no need to bootstrap
 	latest, _ := executor.LatestBlock()
 	if latest != nil {
@@ -826,11 +928,26 @@ func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *
 		if err != nil {
 			return fmt.Errorf("load local genesis: %w", err)
 		}
+		if err := verifyGenesisDocument(g, policy.docHash, localGenesisPath); err != nil {
+			return err
+		}
 		if _, err := g.ApplyToState(stateDB); err != nil {
 			return fmt.Errorf("apply local genesis: %w", err)
 		}
-		log.Info().Str("path", localGenesisPath).Msg("RPC: applied local genesis.json allocations")
+		log.Info().Str("path", localGenesisPath).Str("genesis_doc_hash", g.HashHex()).
+			Msg("RPC: applied local genesis.json allocations")
 		return nil
+	}
+
+	// Fail closed before the request is even made. Nothing downstream can
+	// establish that an arbitrary peer's genesis is this network's genesis, so
+	// an operator who has not said what to expect gets told how to say it.
+	if policy.docHash == nil && !policy.trustPeer {
+		return fmt.Errorf("%w: refusing to credit balances from %s because nothing says what that document should be. "+
+			"Either copy the network's genesis.json to this host and pass --genesis <path>, "+
+			"or pin it with --genesis-doc-hash <hex> (print the pin with 'sqc-node genesis-hash <path>'), "+
+			"or pass --trust-peer-genesis if you control that peer and accept it can mint balances here",
+			errGenesisUnpinned, peerURL)
 	}
 
 	// Fetch genesis.json from the validator peer
@@ -849,9 +966,17 @@ func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *
 		return fmt.Errorf("peer /genesis returned %d", resp.StatusCode)
 	}
 
-	g, err := genesiscfg.LoadFromReader(resp.Body)
+	g, err := genesiscfg.LoadFromReader(io.LimitReader(resp.Body, maxGenesisDocBytes))
 	if err != nil {
 		return fmt.Errorf("parse peer genesis.json: %w", err)
+	}
+
+	if err := verifyGenesisDocument(g, policy.docHash, "peer "+peerURL); err != nil {
+		return err
+	}
+	if policy.docHash == nil {
+		log.Warn().Str("peer", peerURL).Str("genesis_doc_hash", g.HashHex()).
+			Msg("--trust-peer-genesis: crediting an unverified peer genesis. Pin this hash with --genesis-doc-hash.")
 	}
 
 	if _, err := g.ApplyToState(stateDB); err != nil {
@@ -862,9 +987,28 @@ func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *
 	log.Info().
 		Str("peer", peerURL).
 		Int("allocations", len(g.Allocations)).
+		Str("genesis_doc_hash", g.HashHex()).
 		Str("state_root", fmt.Sprintf("%x", stateRoot[:8])).
 		Msg("RPC: bootstrapped genesis allocations from validator peer")
 	return nil
+}
+
+// parsePinnedHash decodes a 32-byte hex pin from a flag, with or without 0x.
+// A nil result means the flag was not set.
+func parsePinnedHash(flagName, value string) (*[32]byte, error) {
+	if value == "" {
+		return nil, nil
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(value, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", flagName, err)
+	}
+	if len(raw) != 32 {
+		return nil, fmt.Errorf("invalid %s: want 32 bytes (64 hex chars), got %d", flagName, len(raw))
+	}
+	var pin [32]byte
+	copy(pin[:], raw)
+	return &pin, nil
 }
 
 func setupLogging(level string) {

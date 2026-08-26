@@ -4,12 +4,15 @@
 package genesis
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -221,4 +224,76 @@ func (g *Genesis) Validate() error {
 		}
 	}
 	return nil
+}
+
+// genesisHashDomain separates a genesis-document hash from every other SHA3-256
+// preimage on this chain, so no value hashed for another purpose can ever be
+// replayed as a genesis pin.
+const genesisHashDomain = "SPLENDOR-QC-GENESIS-v1"
+
+// Hash returns the canonical SHA3-256 identity of the genesis document — the
+// value an operator pins with --genesis-doc-hash so a node can tell the real
+// network's genesis from one a bootstrap peer invented.
+//
+// The preimage is NOT the JSON file. Whitespace, key order and indentation must
+// not change a chain's identity, so the hash is taken over a length-prefixed
+// encoding of exactly the fields that decide what the chain starts as, in this
+// fixed order:
+//
+//	domain tag, chain_id, network_name, timestamp (8-byte big-endian),
+//	validator_pubkey_hex, allocation count (8-byte big-endian), then each
+//	allocation's address and balance in document order, then total_supply.
+//
+// Every field carries its own 8-byte big-endian length, so no two different
+// documents can collide by shifting bytes across a field boundary ("ab"+"c"
+// and "a"+"bc" hash differently).
+//
+// Hex-bearing fields are lowercased first: hex decoding is case-insensitive, so
+// two documents differing only in case produce byte-identical state and must
+// not get different identities. Balances are hashed exactly as written — a
+// decimal string is its own canonical form here, and re-encoding it through
+// big.Int would give Hash an error path on precisely the documents it exists to
+// fingerprint BEFORE they are validated.
+//
+// Allocation ORDER is part of the identity because it is part of the state:
+// ApplyToState replaces an account it has already written rather than adding to
+// it, so two orderings of the same allocations can fund different balances.
+//
+// Comments are excluded. They are operator labels with no consensus weight, and
+// a pin that broke when someone fixed a typo in one is a pin operators would
+// learn to switch off.
+func (g *Genesis) Hash() [32]byte {
+	var buf bytes.Buffer
+
+	field := func(b []byte) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+		buf.Write(n[:])
+		buf.Write(b)
+	}
+	number := func(v uint64) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], v)
+		field(n[:])
+	}
+
+	field([]byte(genesisHashDomain))
+	field([]byte(g.ChainID))
+	field([]byte(g.NetworkName))
+	number(uint64(g.Timestamp))
+	field([]byte(strings.ToLower(g.ValidatorPubKeyHex)))
+	number(uint64(len(g.Allocations)))
+	for _, alloc := range g.Allocations {
+		field([]byte(strings.ToLower(alloc.Address)))
+		field([]byte(alloc.Balance))
+	}
+	field([]byte(g.TotalSupply))
+
+	return qcrypto.Hash32(buf.Bytes())
+}
+
+// HashHex returns Hash in the lowercase hex form --genesis-doc-hash takes.
+func (g *Genesis) HashHex() string {
+	h := g.Hash()
+	return hex.EncodeToString(h[:])
 }
