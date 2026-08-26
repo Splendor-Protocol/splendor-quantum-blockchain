@@ -219,9 +219,14 @@ func (c *IdentityCache) Get(peerURL string) (*IdentityDocument, error) {
 	// enforcing anywhere else would leave a way in.
 	if requirePins && len(pin) == 0 {
 		c.warnUnpinned(peerURL)
-		return nil, fmt.Errorf("%w: %s — supply --peer-pin %s=<node ML-DSA-65 pubkey hex> "+
-			"(the peer prints it at startup and serves it at %s), or drop --require-peer-pins "+
-			"to fall back to trust-on-first-use", ErrPeerNotPinned, peerURL, peerURL, peerURL+PathIdentity)
+		// Say exactly how to obtain the value. %s serves node_pubkey as BASE64,
+		// not hex, so an operator told only to "supply the pubkey hex" copies the
+		// wrong encoding and gets a pin that never matches.
+		return nil, fmt.Errorf("%w: %s — supply --peer-pin %s=<hex>, where <hex> is the peer's "+
+			"node_pubkey from %s decoded from base64 to hex:\n"+
+			"    curl -fsS %s | python3 -c \"import base64,json,sys;print(base64.b64decode(json.load(sys.stdin)['node_pubkey']).hex())\"\n"+
+			"or drop --require-peer-pins to fall back to trust-on-first-use",
+			ErrPeerNotPinned, peerURL, peerURL, peerURL+PathIdentity, peerURL+PathIdentity)
 	}
 
 	if ok && time.Now().Before(entry.notAfter) {
