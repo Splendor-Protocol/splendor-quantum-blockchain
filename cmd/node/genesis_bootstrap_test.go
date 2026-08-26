@@ -182,21 +182,55 @@ func TestLocalGenesisIsAppliedWithoutAskingAnyPeer(t *testing.T) {
 // The local document is the one path that reaches ApplyToState on every live
 // tier, so it has to be gated too — a genesis for another chain is a
 // misconfiguration that must stop the node, not a supply it mints in silence.
-func TestLocalGenesisForAnotherChainIsRefusedBeforeItIsCredited(t *testing.T) {
+func TestLocalGenesisForAnotherChainIsRefusedWhenChainIDIsAsserted(t *testing.T) {
 	sdb, _ := newBootstrapNode(t)
 	g := honestGenesis(t)
 	g.ChainID = "splendor-quantum-2"
 	g.Allocations = append(g.Allocations, genesiscfg.Allocation{Address: attackerAddr, Balance: oneBillionSPLD})
+	g.TotalSupply = "" // derived from the allocations; the chain id is what is on trial here
+
+	// --chain-id is what the deploy entrypoint always passes. It is the operator
+	// stating which network this node is, so a document naming another one is a
+	// misconfiguration to stop on, not a network to join.
+	prev := flagChainID
+	flagChainID = types.DefaultChainID
+	t.Cleanup(func() { flagChainID = prev })
 
 	err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{})
 	if err == nil {
-		t.Fatal("a genesis for another chain was credited from local disk")
+		t.Fatal("a genesis for another chain was credited despite --chain-id naming this one")
 	}
-	if !strings.Contains(err.Error(), types.ChainID) {
-		t.Fatalf("refusal does not name the chain this node runs: %v", err)
+	if !strings.Contains(err.Error(), types.DefaultChainID) {
+		t.Fatalf("refusal does not name the chain this node was told it is on: %v", err)
 	}
 	assertUnfunded(t, sdb, attackerAddr)
 	assertUnfunded(t, sdb, g.Allocations[0].Address)
+}
+
+// The other half of the same rule. Per-tier chain ids exist precisely so a
+// tier's own genesis can name a chain this binary has never heard of, so on an
+// empty chain with nothing asserting otherwise the document is the authority.
+// Refusing here would make it impossible to start devnet or testnet at all.
+func TestLocalGenesisNamesTheChainWhenNothingContradictsIt(t *testing.T) {
+	sdb, _ := newBootstrapNode(t)
+	g := honestGenesis(t)
+	g.ChainID = "splendor-quantum-devnet-1"
+	g.TotalSupply = ""
+
+	prevFlag, prevID, prevAdopted := flagChainID, types.ChainID, types.ChainIDAdoptedForTest()
+	flagChainID = ""
+	t.Cleanup(func() {
+		flagChainID = prevFlag
+		types.RestoreChainIDForTest(prevID, prevAdopted)
+	})
+	types.RestoreChainIDForTest(types.DefaultChainID, false)
+
+	if err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{}); err != nil {
+		t.Fatalf("a tier's own genesis must be creditable: %v", err)
+	}
+	if types.ChainID != "splendor-quantum-devnet-1" {
+		t.Fatalf("node did not adopt the chain named by its genesis: ChainID = %q", types.ChainID)
+	}
 }
 
 // A pin an operator sets governs the local file too. Otherwise the wrong

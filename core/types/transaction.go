@@ -299,3 +299,13 @@ func NewCall(from, contract qcrypto.Address, calldata []byte, value, fee *big.In
 		Data:      calldata,
 	}
 }
+
+// ChainIDAdoptedForTest and RestoreChainIDForTest exist so tests in other
+// packages can save and restore this package's chain identity. Production code
+// must go through SetChainID, which refuses to switch networks.
+func ChainIDAdoptedForTest() bool { return chainIDAdopted }
+
+// RestoreChainIDForTest puts the identity back to a previously captured value.
+func RestoreChainIDForTest(id string, adopted bool) {
+	ChainID, chainIDAdopted = id, adopted
+}

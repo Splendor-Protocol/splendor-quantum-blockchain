@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -36,7 +37,10 @@ func liveTierGenesis(t *testing.T) *Genesis {
 				Comment: "Configured genesis allocation",
 			},
 		},
-		TotalSupply: "1000000000000000000000000000",
+		// The sum of the two allocations above. The deployed documents declare
+		// only the validator's half, which is the defect TestLiveTierGenesis-
+		// SupplyMustMatchAllocations pins down.
+		TotalSupply: "2000000000000000000000000000",
 	}
 }
 
@@ -258,4 +262,58 @@ func parseGenesis(t *testing.T, doc string) *Genesis {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	return &g
+}
+
+// The shape every live tier actually deployed: total_supply naming only the
+// validator treasury while a second allocation mints just as much again. It was
+// accepted for as long as nothing checked, and mainnet has been running at
+// 27e27 against a declared 26e27 ever since.
+func TestLiveTierGenesisSupplyMustMatchAllocations(t *testing.T) {
+	g := liveTierGenesis(t)
+	g.TotalSupply = "1000000000000000000000000000" // as deployed: half the truth
+
+	err := g.Validate()
+	if err == nil {
+		t.Fatal("a genesis that mints more than it declares must be refused")
+	}
+	if !strings.Contains(err.Error(), "more than it declares") {
+		t.Fatalf("error should say what is wrong, got: %v", err)
+	}
+}
+
+// The deploy entrypoint writes an empty total_supply on purpose: the node owns
+// the arithmetic, because the alpine image has no python, no bc, and no integer
+// wide enough to add 1e27 twice.
+func TestEmptyTotalSupplyIsDerivedFromAllocations(t *testing.T) {
+	g := liveTierGenesis(t)
+	g.TotalSupply = ""
+
+	if err := g.Validate(); err != nil {
+		t.Fatalf("an omitted total_supply should be computed, not rejected: %v", err)
+	}
+	if g.TotalSupply != "2000000000000000000000000000" {
+		t.Fatalf("total_supply = %q, want the sum of the allocations", g.TotalSupply)
+	}
+}
+
+// The derived value is hashed into the genesis identity, so two nodes filling it
+// in must land on the same document. Deriving then hashing must equal declaring
+// the correct value up front.
+func TestDerivedSupplyHashesLikeADeclaredOne(t *testing.T) {
+	derived := liveTierGenesis(t)
+	declared := liveTierGenesis(t)
+	declared.ValidatorPubKeyHex = derived.ValidatorPubKeyHex
+	declared.Allocations = derived.Allocations
+	derived.TotalSupply = ""
+
+	if err := derived.Validate(); err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	if err := declared.Validate(); err != nil {
+		t.Fatalf("declare: %v", err)
+	}
+	if derived.Hash() != declared.Hash() {
+		t.Fatal("an omitted total_supply hashes differently from the same value written out, " +
+			"so a --genesis-doc-hash pin would not match across the two")
+	}
 }
