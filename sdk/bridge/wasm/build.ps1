@@ -15,8 +15,12 @@ $env:GOOS = "js"
 $env:GOARCH = "wasm"
 
 Write-Host "Building sqc_signer.wasm..."
-# -trimpath keeps the build byte-reproducible across machines, matching build.sh.
-go build -trimpath -o (Join-Path $Out "sqc_signer.wasm") (Join-Path $Root "main.go")
+# -trimpath drops the filesystem path; -ldflags=-buildid= drops Go's build ID,
+# whose action-ID half hashes the build environment rather than the source and
+# so differs between two machines compiling identical source with the identical
+# pinned toolchain. Without it the sha256 pin is not reproducible. Keep both
+# flags in step with wasm/build.sh.
+go build -trimpath -ldflags=-buildid= -o (Join-Path $Out "sqc_signer.wasm") (Join-Path $Root "main.go")
 if ($LASTEXITCODE -ne 0) { throw "go build failed" }
 
 $goroot = (go env GOROOT).Trim()

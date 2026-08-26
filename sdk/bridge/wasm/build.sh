@@ -6,8 +6,8 @@ mkdir -p "$OUT"
 
 # ── Pin the toolchain ──────────────────────────────────────────────────────
 # The artifact digest is Go-release-sensitive: identical source built under a
-# different Go produces different bytes (go1.25.0 → 4,101,062 B, go1.26.2 →
-# 4,266,783 B). Whoever rebuilds with whatever they happen to have installed
+# different Go produces different bytes (go1.25.0 → 4,100,732 B, go1.26.2 →
+# 4,266,441 B). Whoever rebuilds with whatever they happen to have installed
 # therefore invalidates the wasmSha256 pin in sqc.networks.json for everyone
 # else — and a pin nobody can reproduce is a pin that gets dropped. GOTOOLCHAIN
 # makes any Go >= 1.21 fetch and use exactly this release instead.
@@ -35,10 +35,19 @@ export GOARCH=wasm
 export GO111MODULE=on
 
 echo "Building sqc_signer.wasm..."
-# Use the resolved $GO binary (robust when go is not on PATH) with -trimpath so
-# the build is byte-reproducible (the wasmSha256 pin in sqc.networks.json depends
-# on this). -trimpath strips the filesystem path, so no cd workaround is needed.
-$GO build -trimpath -o "$OUT/sqc_signer.wasm" "$ROOT/main.go"
+# Use the resolved $GO binary (robust when go is not on PATH).
+#
+# -trimpath strips the filesystem path, so no cd workaround is needed.
+#
+# -ldflags=-buildid= is what actually makes the digest reproducible. Go stamps a
+# build ID whose leading action ID hashes the build environment, not just the
+# source, so two machines compiling identical source with the identical pinned
+# toolchain still emit different bytes in that one 62-byte header field — the
+# code after it is identical. That is enough to break a sha256 pin, and a pin
+# nobody else can reproduce is a pin that gets deleted the first time it fires.
+# Emptying the build ID removes the only environment-dependent field, so the
+# artifact is a pure function of source + toolchain.
+$GO build -trimpath -ldflags=-buildid= -o "$OUT/sqc_signer.wasm" "$ROOT/main.go"
 
 GOROOT="$($GO env GOROOT)"
 cp "$GOROOT/misc/wasm/wasm_exec.js" "$OUT/wasm_exec.js" 2>/dev/null \
