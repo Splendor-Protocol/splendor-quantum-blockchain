@@ -20,19 +20,39 @@ import (
 //
 // TLS 1.3 is required, since the hybrid group only exists there.
 func PQTLSConfig(certFile, keyFile string) (*tls.Config, error) {
+	return PQTLSConfigWithPolicy(certFile, keyFile, false)
+}
+
+// PQTLSConfigWithPolicy builds the same configuration, but requireHybrid decides
+// what happens when a client cannot do ML-KEM.
+//
+// Offering a group is not the same as using one, and that gap is the whole
+// problem: a deployment can advertise post-quantum transport, negotiate
+// classical X25519 with every real client, and look identical in its logs. With
+// requireHybrid the classical fallback is removed, so such a client fails to
+// connect instead of quietly downgrading -- which is the only configuration in
+// which "the transport is post-quantum" is a statement about what happened
+// rather than about what was offered.
+func PQTLSConfigWithPolicy(certFile, keyFile string, requireHybrid bool) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load TLS keypair: %w", err)
 	}
+	curves := []tls.CurveID{tls.X25519MLKEM768, tls.X25519}
+	if requireHybrid {
+		curves = []tls.CurveID{tls.X25519MLKEM768}
+	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
-		// Offer the hybrid group first. X25519 stays as a fallback so a client
-		// without ML-KEM support can still connect (it simply loses the PQ
-		// property); drop it to make the hybrid group mandatory.
-		CurvePreferences: []tls.CurveID{
-			tls.X25519MLKEM768,
-			tls.X25519,
+		// Hybrid first. X25519 stays as a fallback so a client without ML-KEM can
+		// still connect, losing the PQ property; --tls-require-hybrid drops it.
+		CurvePreferences: curves,
+		// Every completed handshake is reported, so an operator can see what was
+		// actually negotiated rather than what was configured.
+		VerifyConnection: func(state tls.ConnectionState) error {
+			LogTLSHandshake(state)
+			return nil
 		},
 	}, nil
 }
@@ -42,11 +62,22 @@ func PQTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 // it, so this is the only way to know the connection is PQ-protected in
 // practice rather than in configuration.
 func LogTLSHandshake(state tls.ConnectionState) {
-	pq := state.CurveID == tls.X25519MLKEM768
-	log.Debug().
+	if state.CurveID == tls.X25519MLKEM768 {
+		log.Debug().
+			Str("curve", curveName(state.CurveID)).
+			Bool("post_quantum", true).
+			Msg("TLS handshake complete")
+		return
+	}
+	// A classical handshake is the case worth seeing. At Debug it was invisible
+	// in every real deployment, which meant a node could serve nothing but
+	// classical TLS while its startup banner claimed post-quantum key exchange.
+	// Warn is the level at which that contradiction becomes findable.
+	log.Warn().
 		Str("curve", curveName(state.CurveID)).
-		Bool("post_quantum", pq).
-		Msg("TLS handshake complete")
+		Bool("post_quantum", false).
+		Msg("TLS handshake completed WITHOUT the post-quantum hybrid group — " +
+			"this connection is classical; use --tls-require-hybrid to refuse instead")
 }
 
 func curveName(id tls.CurveID) string {

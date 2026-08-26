@@ -60,6 +60,7 @@ var (
 	flagGenesisDocHashHex string
 	flagTrustPeerGenesis  bool
 	flagChainID           string
+	flagTLSRequireHybrid  bool
 	flagRPCAuthToken      string
 	flagAllowPrivatePeers bool
 	flagCORSOrigins       []string
@@ -121,7 +122,8 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().Float64Var(&flagSimBurst, "sim-rate-burst", 0, "Burst allowance for VM-executing routes. 0 uses the built-in default.")
 	root.Flags().IntVar(&flagSimMaxInFlight, "sim-max-inflight", 0, "Maximum concurrent VM simulations across all callers; excess requests get 503. This, not the rate limit, bounds how much CPU anonymous callers can occupy. 0 uses the built-in default.")
 	root.Flags().DurationVar(&flagSimTimeout, "sim-timeout", 0, "Maximum wall time a single simulation may hold a slot. 0 uses the built-in default.")
-	root.Flags().StringVar(&flagTLSCert, "tls-cert", "", "PEM certificate for HTTPS. Enables TLS 1.3 with post-quantum hybrid key exchange (X25519MLKEM768).")
+	root.Flags().StringVar(&flagTLSCert, "tls-cert", "", "PEM certificate for HTTPS. Enables TLS 1.3 and OFFERS post-quantum hybrid key exchange (X25519MLKEM768), falling back to classical X25519 for clients that cannot do it — see --tls-require-hybrid.")
+	root.Flags().BoolVar(&flagTLSRequireHybrid, "tls-require-hybrid", false, "Refuse TLS connections that cannot negotiate X25519MLKEM768, instead of falling back to classical X25519. Set this before describing the transport as post-quantum: without it a deployment can offer the hybrid group and still serve nothing but classical.")
 	root.Flags().StringVar(&flagTLSKey, "tls-key", "", "PEM private key matching --tls-cert")
 	root.Flags().StringVar(&flagPublicURL, "public-url", "", "Externally reachable base URL advertised to peers (default: derived from --rpc-addr)")
 	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Allow unencrypted block push and catch-up sync when a peer has no ML-KEM sealed transport. Off by default so the channel cannot be downgraded.")
@@ -746,7 +748,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	if tlsEnabled {
-		tlsCfg, tlsErr := rpc.PQTLSConfig(flagTLSCert, flagTLSKey)
+		tlsCfg, tlsErr := rpc.PQTLSConfigWithPolicy(flagTLSCert, flagTLSKey, flagTLSRequireHybrid)
 		if tlsErr != nil {
 			return tlsErr
 		}
@@ -772,7 +774,18 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	var serveErr error
 	if tlsEnabled {
-		log.Info().Msg("TLS 1.3 enabled with post-quantum hybrid key exchange (X25519MLKEM768)")
+		// Say what is actually configured. The unconditional "post-quantum key
+		// exchange" line here was true of what the node OFFERED and silently
+		// false about what it negotiated, so an operator reading it had no way
+		// to discover the connection was classical.
+		if flagTLSRequireHybrid {
+			log.Info().Msg("TLS 1.3 enabled, post-quantum hybrid key exchange REQUIRED (X25519MLKEM768); " +
+				"clients without ML-KEM will be refused")
+		} else {
+			log.Info().Msg("TLS 1.3 enabled, post-quantum hybrid key exchange OFFERED (X25519MLKEM768) " +
+				"with classical X25519 fallback — each handshake logs which was used; " +
+				"pass --tls-require-hybrid to refuse the fallback")
+		}
 		serveErr = httpServer.ListenAndServeTLS(flagTLSCert, flagTLSKey)
 	} else {
 		serveErr = httpServer.ListenAndServe()

@@ -33,7 +33,7 @@ const LOCK_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 // Regenerate with sdk/bridge/wasm/build.sh (its GOTOOLCHAIN pin is what makes
 // these digests reproducible), then `npm run copy:wasm` and update both
 // constants together with wasmSha256/execSha256 in sqc.networks.json.
-const WASM_SHA256 = '8ec97ae9a935cad965c2e58b2ffdf1fa2dbd48c6b34d91a299b2d036baa25f22';
+const WASM_SHA256 = '77278ad14c6bd83986e936c7aae83c4c24eb405dfb5f585e3f92aef5a2bcb768';
 const EXEC_SHA256 = '0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14';
 
 // ── State (in-memory, cleared on extension reload) ─────────────────────────

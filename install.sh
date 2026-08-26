@@ -67,6 +67,35 @@ apt-get install -y -qq \
   tmux jq ufw ca-certificates \
   build-essential 2>/dev/null | tail -3
 
+# generate_token emits a 256-bit hex secret for the write plane. openssl is the
+# common case; /dev/urandom is the fallback so this never silently produces a
+# weak or empty token on a minimal image.
+generate_token() {
+  if command -v openssl &>/dev/null; then
+    openssl rand -hex 32
+  else
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+  fi
+}
+
+# peer_node_pubkey_hex fetches a peer's ML-DSA-65 node identity, which is the
+# value --peer-pin takes. Pinning is what turns trust-on-first-use into trust in
+# a key you actually checked: without it the first host to answer at that URL
+# becomes the peer this node believes for the life of the chain.
+peer_node_pubkey_hex() {
+  curl -fsS --max-time 15 "$1/p2p/identity" 2>/dev/null | python3 -c "
+import base64, json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+pk = d.get('node_pubkey')
+if not pk:
+    sys.exit(1)
+sys.stdout.write(base64.b64decode(pk).hex())
+" 2>/dev/null
+}
+
 # ── Step 2: Install Go ─────────────────────────────────────────────────────────
 install_go() {
   # Accept any toolchain at or above the minimum. Matching an exact version
@@ -222,6 +251,22 @@ print(f'  validator_address: {g[\"allocations\"][0][\"address\"]}')
     warn "genesis.json already exists at /var/sqc/genesis.json"
   fi
 
+  # A node's RPC surface carries a write plane (POST /block, /peers/announce) and
+  # reveals everything the node knows. Binding it to every interface with no token
+  # is how a lab node becomes a public one by accident, so the default is loopback
+  # and a generated token. Put a TLS reverse proxy in front to expose it, or set
+  # SQC_BIND_ADDR deliberately.
+  SQC_BIND_ADDR="${SQC_BIND_ADDR:-127.0.0.1:8080}"
+  SQC_RPC_TOKEN="$(generate_token)"
+  printf '%s\n' "$SQC_RPC_TOKEN" > /var/sqc/rpc-auth-token
+  chmod 600 /var/sqc/rpc-auth-token
+  GENESIS_DOC_HASH="$($SQC_DIR/sqc-node genesis-hash /var/sqc/genesis.json 2>/dev/null || true)"
+  if [ -z "$GENESIS_DOC_HASH" ]; then
+    err "could not compute the genesis document hash from /var/sqc/genesis.json"
+    exit 1
+  fi
+  log "genesis document pinned: $GENESIS_DOC_HASH"
+
   # Create systemd service
   cat > /etc/systemd/system/sqc-validator.service << EOF
 [Unit]
@@ -234,16 +279,27 @@ Type=simple
 User=root
 WorkingDirectory=$SQC_DIR
 Environment="SQC_WALLET_PASS=REPLACE_WITH_YOUR_PASSWORD"
+Environment="SQC_RPC_AUTH_TOKEN=$SQC_RPC_TOKEN"
 ExecStart=$SQC_DIR/sqc-node \\
     --data-dir /var/sqc/data \\
-    --rpc-addr :8080 \\
+    --rpc-addr $SQC_BIND_ADDR \\
     --validator \\
     --wallet /var/sqc/validator.sqwallet \\
     --genesis /var/sqc/genesis.json \\
+    --genesis-doc-hash $GENESIS_DOC_HASH \\
     --block-interval 2 \\
     --log-level info
 Restart=always
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/sqc
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
 StandardOutput=journal
 StandardError=journal
 
@@ -290,6 +346,48 @@ setup_rpc() {
     log "genesis.json saved to /var/sqc/genesis.json"
   fi
 
+  # An RPC node has to authenticate two things it cannot see: which chain this is,
+  # and which peer it is talking to. Fetch the peer's identity now and pin it --
+  # trust-on-first-use means whoever answers first at that URL owns this node's
+  # view of the chain for good.
+  SQC_BIND_ADDR="${SQC_BIND_ADDR:-127.0.0.1:8080}"
+  PEER_PIN="$(peer_node_pubkey_hex "$VALIDATOR_URL" || true)"
+  if [ -z "$PEER_PIN" ]; then
+    err "could not read the node identity of $VALIDATOR_URL"
+    echo "  Tried: GET $VALIDATOR_URL/p2p/identity" >&2
+    echo "  An RPC node installed without a peer pin trusts whatever answers at that" >&2
+    echo "  URL, so this install stops rather than writing an unpinned unit. Check the" >&2
+    echo "  validator is reachable, then re-run." >&2
+    exit 1
+  fi
+  log "peer identity pinned: ${PEER_PIN:0:16}..."
+
+  GENESIS_DOC_HASH="$($SQC_DIR/sqc-node genesis-hash /var/sqc/genesis.json 2>/dev/null || true)"
+  if [ -z "$GENESIS_DOC_HASH" ]; then
+    err "could not compute the genesis document hash from /var/sqc/genesis.json"
+    exit 1
+  fi
+  log "genesis document pinned: $GENESIS_DOC_HASH"
+
+  # A full node authenticates every block against the validator's ML-DSA-65 key.
+  # It does NOT learn that key from --genesis: the flag credits allocations only.
+  # Without --validator-pubkey-hex (or --genesis-hash to bootstrap it from block 0)
+  # the node starts, stays up, and never syncs -- "this node cannot authenticate
+  # any block". The key is already in the genesis document, so read it from there.
+  VALIDATOR_PK="$(python3 -c "
+import json, sys
+try:
+    print(json.load(open('/var/sqc/genesis.json')).get('validator_pubkey_hex', ''))
+except Exception:
+    pass
+" 2>/dev/null)"
+  if [ -z "$VALIDATOR_PK" ]; then
+    err "no validator_pubkey_hex in /var/sqc/genesis.json"
+    echo "  Without it this node cannot authenticate blocks and would never sync." >&2
+    exit 1
+  fi
+  log "validator key pinned: ${VALIDATOR_PK:0:16}..."
+
   cat > /etc/systemd/system/sqc-rpc.service << EOF
 [Unit]
 Description=Splendor Quantum Chain RPC Node
@@ -302,11 +400,25 @@ User=root
 WorkingDirectory=$SQC_DIR
 ExecStart=$SQC_DIR/sqc-node \\
     --data-dir /var/sqc/data \\
-    --rpc-addr :8080 \\
+    --rpc-addr $SQC_BIND_ADDR \\
     --peer $VALIDATOR_URL \\
+    --peer-pin $VALIDATOR_URL=$PEER_PIN \\
+    --require-peer-pins \\
+    --validator-pubkey-hex $VALIDATOR_PK \\
+    --genesis /var/sqc/genesis.json \\
+    --genesis-doc-hash $GENESIS_DOC_HASH \\
     --log-level info
 Restart=always
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/sqc
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
 StandardOutput=journal
 StandardError=journal
 
@@ -337,8 +449,12 @@ setup_firewall() {
   log "Configuring UFW firewall..."
   ufw --force enable 2>/dev/null || true
   ufw allow 22/tcp   comment 'SSH' 2>/dev/null || true
-  ufw allow 8080/tcp comment 'SQC RPC' 2>/dev/null || true
-  ufw allow 9090/tcp comment 'SQC P2P' 2>/dev/null || true
+  # 8080 is NOT opened. The node binds loopback by default and P2P shares that
+  # same port -- there is no separate P2P listener -- so opening either published
+  # the write plane to the internet while looking like ordinary firewall setup.
+  # To serve RPC publicly, terminate TLS in a reverse proxy on 443 and forward to
+  # 127.0.0.1:8080; the node's own token still gates the write plane.
+  ufw allow 443/tcp  comment 'HTTPS reverse proxy to SQC RPC' 2>/dev/null || true
   # Restrict metrics to localhost only
   ufw allow from 127.0.0.1 to any port 9100 comment 'SQC Metrics' 2>/dev/null || true
   log "Firewall configured"
