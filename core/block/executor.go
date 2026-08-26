@@ -77,6 +77,10 @@ type Executor struct {
 	vmEngine *vm.Engine
 	hooks   *HookRegistry // optional; nil = no hooks
 	txIndex receiptStorer // optional; nil = don't store receipts
+
+	// genesisHash pins the hash of block 0 when the operator supplied one.
+	// nil = unpinned, which is the pre-existing behaviour.
+	genesisHash *[32]byte
 }
 
 // receiptStorer is satisfied by *state.TxIndexStore.
@@ -109,6 +113,20 @@ func (e *Executor) WithHooks(h *HookRegistry) *Executor {
 // WithTxIndex attaches a receipt/tx index store.
 func (e *Executor) WithTxIndex(idx receiptStorer) *Executor {
 	e.txIndex = idx
+	return e
+}
+
+// WithGenesisHash pins the hash of block 0.
+//
+// It supplies the anchor missing at the bottom of the chain: linkage checks
+// every block against its stored parent, but block 1 arrives on an empty chain
+// with no parent to check, so an unpinned node bootstrapping from scratch will
+// build on whatever genesis its first peer claims. With a pin, block 1 must
+// name that genesis as its parent, and a self-built block 0 must be the pinned
+// one — so a node cannot be walked onto a fabricated chain, nor silently start
+// a divergent one after its data dir is wiped.
+func (e *Executor) WithGenesisHash(h [32]byte) *Executor {
+	e.genesisHash = &h
 	return e
 }
 
@@ -791,12 +809,28 @@ func (e *Executor) verifyBlockLinkage(b *types.Block) error {
 		if latest != nil {
 			return fmt.Errorf("genesis rejected: chain already has a head at height %d", latest.Header.Height)
 		}
+		if e.genesisHash != nil {
+			computed, herr := b.ComputeHash()
+			if herr != nil {
+				return fmt.Errorf("hash genesis block: %w", herr)
+			}
+			if computed != *e.genesisHash {
+				return fmt.Errorf("genesis rejected: block 0 hashes to %x, pinned --genesis-hash is %x "+
+					"(a reset chain mints a NEW genesis — update or drop the pin)", computed[:8], e.genesisHash[:8])
+			}
+		}
 		return nil
 	}
 
 	if latest == nil {
 		if b.Header.Height != 1 {
 			return fmt.Errorf("cannot apply block %d to an empty chain (expected block 1)", b.Header.Height)
+		}
+		// Block 1 has no stored parent to link against, so on an empty chain the
+		// pin is the only thing tying it to the intended genesis.
+		if e.genesisHash != nil && b.Header.PrevHash != *e.genesisHash {
+			return fmt.Errorf("block 1 names parent %x, pinned --genesis-hash is %x — wrong chain or hostile peer",
+				b.Header.PrevHash[:8], e.genesisHash[:8])
 		}
 		return nil
 	}
