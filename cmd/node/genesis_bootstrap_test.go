@@ -68,12 +68,17 @@ func TestVerifyGenesisDocumentRejectsHostileAllocations(t *testing.T) {
 }
 
 func TestVerifyGenesisDocumentRejectsWrongChainID(t *testing.T) {
+	withCleanChainID(t)
 	g := honestGenesis(t)
 	g.ChainID = "splendor-quantum-2"
-	// Unpinned, so chain id is the only thing standing between this document and
-	// the state database.
+
+	// Since per-tier ids, the document names the chain and --chain-id is what
+	// contradicts it. The deploy entrypoint always passes it, so this is the
+	// production shape.
+	flagChainID = types.DefaultChainID
+
 	if err := verifyGenesisDocument(g, nil, "peer"); err == nil {
-		t.Fatal("a genesis for another chain was accepted")
+		t.Fatal("a genesis for another chain was accepted despite --chain-id naming this one")
 	}
 }
 
@@ -278,19 +283,58 @@ func TestPeerWithoutGenesisEndpointCreditsNothingAndYieldsToTheNextPeer(t *testi
 	assertUnfunded(t, sdb, honest.Allocations[0].Address)
 }
 
-// The chain-id gate is only worth anything if it compares against the id
-// compiled into this binary. A document that also supplies the id it should be
-// checked against proves nothing.
-func TestChainIDIsCheckedAgainstTheCompiledInConstant(t *testing.T) {
+// The chain-id gate is only worth anything if it compares against something the
+// DOCUMENT did not supply. That anchor used to be a compiled-in constant; since
+// per-tier ids it is the operator's --chain-id, because the constant would make
+// devnet and testnet unstartable. A document that supplies the id it is checked
+// against still proves nothing, and that is what this pins.
+func TestChainIDIsCheckedAgainstTheOperatorsAssertion(t *testing.T) {
+	withCleanChainID(t)
 	g := honestGenesis(t)
 	g.ChainID = "splendor-quantum-1-evil"
+	flagChainID = types.DefaultChainID
+
 	err := verifyGenesisDocument(g, nil, "peer")
 	if err == nil {
 		t.Fatal("a self-declared chain id was accepted")
 	}
-	if !strings.Contains(err.Error(), types.ChainID) {
-		t.Fatalf("the error does not quote the compiled-in chain id %q: %v", types.ChainID, err)
+	if !strings.Contains(err.Error(), types.DefaultChainID) {
+		t.Fatalf("the error does not quote the id this node was told it is on %q: %v", types.DefaultChainID, err)
 	}
+}
+
+// And the converse, which is the whole reason the constant had to go: with no
+// operator assertion, a tier's own genesis names a chain this binary has never
+// heard of and must be accepted.
+func TestUnassertedChainIDIsAdoptedFromTheDocument(t *testing.T) {
+	withCleanChainID(t)
+	g := honestGenesis(t)
+	g.ChainID = "splendor-quantum-devnet-1"
+	flagChainID = ""
+
+	if err := verifyGenesisDocument(g, nil, "local file"); err != nil {
+		t.Fatalf("a tier's own genesis must be creditable: %v", err)
+	}
+	if types.ChainID != "splendor-quantum-devnet-1" {
+		t.Fatalf("the document's chain was not adopted: ChainID = %q", types.ChainID)
+	}
+}
+
+// withCleanChainID isolates a test from the package-level chain identity.
+//
+// Without it these tests pass or fail depending on which other test ran first:
+// the identity is process-wide and set-once, so one test adopting an id silently
+// decides the outcome of the next. Two of these tests were doing exactly that --
+// green in a package run, failing when run alone.
+func withCleanChainID(t *testing.T) {
+	t.Helper()
+	prevFlag, prevID, prevAdopted := flagChainID, types.ChainID, types.ChainIDAdoptedForTest()
+	t.Cleanup(func() {
+		flagChainID = prevFlag
+		types.RestoreChainIDForTest(prevID, prevAdopted)
+	})
+	flagChainID = ""
+	types.RestoreChainIDForTest(types.DefaultChainID, false)
 }
 
 // The live tiers are validators started with --genesis and no --peer. Neither
