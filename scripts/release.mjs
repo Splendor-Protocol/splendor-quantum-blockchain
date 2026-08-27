@@ -29,6 +29,7 @@ import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 
 const INFRA = 'Splendor-Protocol/splendor-infra';
+const CHAIN = 'Splendor-Protocol/splendor-quantum-blockchain';
 const IMAGE = 'ghcr.io/splendor-protocol/sqc-node';
 
 /**
@@ -141,14 +142,28 @@ async function main() {
   if (!promoting) {
     cutTag(version, commit);
     await build(version, commit);
+    publishRelease(version, commit);
   } else {
     assertImageExists(version);
   }
 
   const before = await head(tier.rpc);
   setTierImage(tier.env, version, deployedNow);
-  await rollout(tier.env);
-  await verifyLive(tier, version, commit, before);
+
+  // A GitHub Deployment on the CHAIN repo, so "which version is on which tier"
+  // is answerable where the version lives. infra records deployments too, but it
+  // marks them successful when the workflow finishes — which only means the
+  // container was replaced. This one is marked successful after the node itself
+  // reports the released commit, so a green deployment here means verified.
+  const deployment = openDeployment(tier, version, commit);
+  try {
+    await rollout(tier.env);
+    await verifyLive(tier, version, commit, before);
+    closeDeployment(deployment, 'success', tier, `${version} verified live`);
+  } catch (e) {
+    closeDeployment(deployment, 'failure', tier, 'rollout or verification failed');
+    throw e;
+  }
 
   console.log(`
 ✓ ${tierArg} is running ${version} (${commit.slice(0, 12)})
@@ -432,6 +447,75 @@ async function rollout(env) {
     reset_chain: 'false', // never true from this tool — see the header
   });
   await watchRun(id, `rolling out to ${env}`);
+}
+
+
+// ── github release + deployment records ─────────────────────────────────────
+/**
+ * A git tag is not a GitHub Release. The repo showed "4 tags" and zero releases
+ * because nothing had ever created the Release object, so there was no page
+ * saying what a version contains.
+ */
+function publishRelease(version, commit) {
+  const prev = previousVersionTag(version);
+  const notes = [
+    `**Image** \`${IMAGE}:${version}\``,
+    `**Commit** \`${commit}\``,
+    '',
+    prev ? `### Changes since ${prev}` : '### Changes',
+    prev
+      ? shOk('git', ['log', '--no-merges', '--format=- %s', `${prev}..${commit}`]).out || '- (no commits)'
+      : '- (first tracked release)',
+  ].join('\n');
+
+  const r = shOk('gh', ['release', 'create', version, '--repo', CHAIN,
+    '--title', version, '--notes', notes, '--verify-tag']);
+  if (!r.ok) {
+    // Never fail a release because its changelog did not publish.
+    console.log(`  ! could not create the GitHub Release for ${version}: ${r.out.split('\n')[0]}`);
+    return;
+  }
+  console.log(`  ✓ published release ${version}`);
+}
+
+function previousVersionTag(version) {
+  const all = git('tag', '--list', 'v*').split('\n')
+    .map((t) => /^v(\d+)\.(\d+)\.(\d+)$/.exec(t.trim()))
+    .filter(Boolean)
+    .map((m) => ({ tag: m[0], rank: Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3]) }))
+    .sort((a, b) => b.rank - a.rank);
+  const mine = /^v(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!mine) return null;
+  const rank = Number(mine[1]) * 1e6 + Number(mine[2]) * 1e3 + Number(mine[3]);
+  return all.find((t) => t.rank < rank)?.tag ?? null;
+}
+
+/** Opens a Deployment on the chain repo. Returns its id, or null if unavailable. */
+function openDeployment(t, version, commit) {
+  const body = JSON.stringify({
+    ref: version,
+    environment: t.env,
+    description: `sqc-node ${version} (${commit.slice(0, 7)})`,
+    auto_merge: false,
+    required_contexts: [],
+    transient_environment: false,
+    production_environment: t.env === 'prod',
+  });
+  // gh api --input - needs the JSON on stdin, so pipe it.
+  const r2 = shOk('bash', ['-c',
+    `printf '%s' ${JSON.stringify(body)} | gh api repos/${CHAIN}/deployments --method POST --input - -q .id`]);
+  if (!r2.ok || !r2.out) {
+    console.log('  ! could not open a Deployment record (continuing anyway)');
+    return null;
+  }
+  return r2.out.trim();
+}
+
+function closeDeployment(id, state, t, description) {
+  if (!id) return;
+  const body = JSON.stringify({ state, environment_url: t.rpc, description });
+  shOk('bash', ['-c',
+    `printf '%s' ${JSON.stringify(body)} | gh api repos/${CHAIN}/deployments/${id}/statuses --method POST --input - >/dev/null`]);
 }
 
 // ── verification ────────────────────────────────────────────────────────────
