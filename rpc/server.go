@@ -64,6 +64,8 @@ type Server struct {
 	// simGuard meters the anonymous VM-execution routes (/call, /estimate) and
 	// the receipt scan behind /logs.
 	simGuard *ExecGuard
+	// allowPlaintextP2P registers the cleartext peer routes. Off = sealed only.
+	allowPlaintextP2P bool
 }
 
 // Config holds server configuration.
@@ -72,6 +74,13 @@ type Config struct {
 	ValidatorPK []byte     // ML-DSA public key of the genesis validator
 	PeerCount   func() int // optional: returns live peer count
 	AuthToken   string     // shared secret required on write-plane routes
+
+	// AllowPlaintextP2P registers the CLEARTEXT peer routes (POST /block,
+	// POST /peers/announce). The flag of the same name used to gate only the
+	// outbound direction, so a node that refused to SEND cleartext still ACCEPTED
+	// it — which is not what "the channel cannot be downgraded" means to anyone
+	// reading it. Off means the sealed transport is the only way in.
+	AllowPlaintextP2P bool
 
 	// Forks is the chain's rule-change schedule, reported on /status.
 	//
@@ -129,20 +138,21 @@ func New(
 	scheduler *ai.Scheduler,
 ) *Server {
 	s := &Server{
-		addr:          cfg.ListenAddr,
-		stateDB:       stateDB,
-		executor:      executor,
-		pool:          pool,
-		broadcaster:   broadcaster,
-		x402proc:      x402.NewProcessor(stateDB),
-		scheduler:     scheduler,
-		validatorPK:   cfg.ValidatorPK,
-		forks:         cfg.Forks,
-		peerCount:     cfg.PeerCount,
-		writeAuth:     NewWriteAuth(cfg.AuthToken),
-		cors:          NewCORSPolicy(cfg.CORSOrigins),
-		submitLimiter: NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
-		simGuard:      newSimGuard(cfg),
+		allowPlaintextP2P: cfg.AllowPlaintextP2P,
+		addr:              cfg.ListenAddr,
+		stateDB:           stateDB,
+		executor:          executor,
+		pool:              pool,
+		broadcaster:       broadcaster,
+		x402proc:          x402.NewProcessor(stateDB),
+		scheduler:         scheduler,
+		validatorPK:       cfg.ValidatorPK,
+		forks:             cfg.Forks,
+		peerCount:         cfg.PeerCount,
+		writeAuth:         NewWriteAuth(cfg.AuthToken),
+		cors:              NewCORSPolicy(cfg.CORSOrigins),
+		submitLimiter:     NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
+		simGuard:          newSimGuard(cfg),
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -198,8 +208,18 @@ func (s *Server) buildRouter() *mux.Router {
 
 	// ── Write plane: authenticated. POST /block applies a block to local
 	// state, so it must never be reachable by an anonymous caller. ───────
-	r.Handle("/block", s.writeAuth.Middleware(http.HandlerFunc(s.handleIncomingBlock))).
-		Methods(http.MethodPost)
+	// Registered as an explicit refusal rather than omitted, so a legacy peer is
+	// told why instead of getting a 404 that reads like a broken route.
+	if !s.allowPlaintextP2P {
+		r.HandleFunc("/block", func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusGone,
+				"this node accepts blocks only over the sealed ML-KEM transport; "+
+					"start it with --allow-plaintext-p2p to accept cleartext pushes")
+		}).Methods(http.MethodPost)
+	} else {
+		r.Handle("/block", s.writeAuth.Middleware(http.HandlerFunc(s.handleIncomingBlock))).
+			Methods(http.MethodPost)
+	}
 
 	return r
 }
