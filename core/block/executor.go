@@ -75,8 +75,8 @@ type Executor struct {
 	state    *state.StateDB
 	chainDB  *leveldb.DB
 	vmEngine *vm.Engine
-	hooks   *HookRegistry // optional; nil = no hooks
-	txIndex receiptStorer // optional; nil = don't store receipts
+	hooks    *HookRegistry // optional; nil = no hooks
+	txIndex  receiptStorer // optional; nil = don't store receipts
 
 	// genesisHash pins the hash of block 0 when the operator supplied one.
 	// nil = unpinned, which is the pre-existing behaviour.
@@ -665,6 +665,18 @@ func (e *Executor) ProduceBlock(
 		txSize := txWireSizeEstimate(tx)
 		if blockSize+txSize > MaxBlockWireBytes {
 			break
+		}
+
+		// Run the SAME pre-tx hooks a follower will run when it replays this
+		// block. Producing without them means the producer can pack a transaction
+		// every follower then rejects — the block is unappliable everywhere but
+		// here, which is a fork, not a dropped transaction. Skipping it during
+		// production is the only safe direction.
+		if e.hooks != nil {
+			if err := e.hooks.RunPreTx(tx, height); err != nil {
+				log.Warn().Err(err).Msg("skipping tx a follower would reject")
+				continue
+			}
 		}
 
 		snap := e.state.Snapshot()
