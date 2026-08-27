@@ -13,9 +13,23 @@ COPY . .
 # Generate go.sum by fetching all dependencies, then build
 RUN go get ./... && go mod tidy
 
+# Build identity, stamped into the binary so a running node can say what it is.
+# Without these the node reports commit "unknown" — deliberately, because a
+# guessed commit is worse than an absent one.
+ARG SQC_COMMIT=unknown
+ARG SQC_IMAGE_TAG=unknown
+
 RUN mkdir -p /out
-RUN CGO_ENABLED=1 GOOS=linux go build -mod=mod -ldflags="-s -w" -o /out/sqc-node ./cmd/node
-RUN CGO_ENABLED=1 GOOS=linux go build -mod=mod -ldflags="-s -w" -o /out/sqc-wallet ./cmd/wallet
+RUN CGO_ENABLED=1 GOOS=linux go build -mod=mod \
+      -ldflags="-s -w \
+        -X github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo.Commit=${SQC_COMMIT} \
+        -X github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo.ImageTag=${SQC_IMAGE_TAG}" \
+      -o /out/sqc-node ./cmd/node
+RUN CGO_ENABLED=1 GOOS=linux go build -mod=mod \
+      -ldflags="-s -w \
+        -X github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo.Commit=${SQC_COMMIT} \
+        -X github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo.ImageTag=${SQC_IMAGE_TAG}" \
+      -o /out/sqc-wallet ./cmd/wallet
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────
 FROM alpine:3.19

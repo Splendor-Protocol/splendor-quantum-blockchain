@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"io"
 	"net/http"
@@ -204,7 +205,9 @@ func makeHealthzHandler(startTime time.Time) http.HandlerFunc {
 			"status":         "ok",
 			"uptime_seconds": int64(time.Since(startTime).Seconds()),
 			"chain_id":       types.ChainID,
-			"node_version":   "1.0.0-quantum",
+			"node_version":   buildinfo.Version,
+			"commit":         buildinfo.Commit,
+			"image_tag":      buildinfo.ImageTag,
 			"timestamp":      time.Now().Unix(),
 		})
 	}

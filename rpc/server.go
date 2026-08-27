@@ -1,23 +1,25 @@
 // Package rpc implements the HTTP JSON-RPC server for Splendor Quantum Chain.
 //
 // Endpoints:
-//   POST /tx/submit         — submit a signed transaction
-//   GET  /tx/{hash}         — get transaction by hash
-//   GET  /balance/{address} — get account balance
-//   GET  /nonce/{address}   — get account nonce
-//   GET  /block/{height}    — get block by height
-//   GET  /block/latest      — get latest block
-//   GET  /block/hash/{hash} — get block by hash
-//   GET  /status            — node status (height, mempool size, peers)
-//   POST /block             — receive block from peer (P2P inbound)
-//   POST /x402/verify       — verify X402 payment (read-only)
-//   POST /x402/settle       — settle X402 payment
-//   GET  /ai/stats          — AI scheduler statistics
+//
+//	POST /tx/submit         — submit a signed transaction
+//	GET  /tx/{hash}         — get transaction by hash
+//	GET  /balance/{address} — get account balance
+//	GET  /nonce/{address}   — get account nonce
+//	GET  /block/{height}    — get block by height
+//	GET  /block/latest      — get latest block
+//	GET  /block/hash/{hash} — get block by hash
+//	GET  /status            — node status (height, mempool size, peers)
+//	POST /block             — receive block from peer (P2P inbound)
+//	POST /x402/verify       — verify X402 payment (read-only)
+//	POST /x402/settle       — settle X402 payment
+//	GET  /ai/stats          — AI scheduler statistics
 package rpc
 
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo"
 	"io"
 	"net/http"
 	"time"
@@ -28,8 +30,8 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/ai"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
@@ -127,11 +129,11 @@ func New(
 	scheduler *ai.Scheduler,
 ) *Server {
 	s := &Server{
-		addr:        cfg.ListenAddr,
-		stateDB:     stateDB,
-		executor:    executor,
-		pool:        pool,
-		broadcaster: broadcaster,
+		addr:          cfg.ListenAddr,
+		stateDB:       stateDB,
+		executor:      executor,
+		pool:          pool,
+		broadcaster:   broadcaster,
 		x402proc:      x402.NewProcessor(stateDB),
 		scheduler:     scheduler,
 		validatorPK:   cfg.ValidatorPK,
@@ -399,7 +401,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"height":       height,
 		"mempool_size": s.pool.Size(),
 		"peer_count":   peerCount,
-		"node_version": "1.0.0-quantum",
+		"node_version": buildinfo.Version,
+		"commit":       buildinfo.Commit,
+		"image_tag":    buildinfo.ImageTag,
 		"timestamp":    time.Now().Unix(),
 	}
 	// Only present on a chain that schedules one, so the response shape is
@@ -521,4 +525,3 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
