@@ -40,6 +40,17 @@ const IMAGE = 'ghcr.io/splendor-protocol/sqc-node';
  * `dev`/simnet is deliberately absent: it is a simulated explorer with no chain
  * behind it, so there is nothing for this tool to roll.
  */
+/**
+ * What people actually type. The GitHub environment is "test" but the host is
+ * quantum-rpc-TESTNET, and "mainnet" is what everyone calls prod — so both were
+ * rejected with a usage dump, which is a footgun the naming mismatch guarantees.
+ */
+const ALIASES = {
+  testnet: 'test', tn: 'test',
+  mainnet: 'prod', main: 'prod', production: 'prod',
+  dn: 'devnet',
+};
+
 const TIERS = {
   devnet: { env: 'devnet', rpc: 'https://quantum-rpc-devnet.splendor.org' },
   test:   { env: 'test',   rpc: 'https://quantum-rpc-testnet.splendor.org' },
@@ -87,7 +98,11 @@ const allowNoOp = flags.has('--allow-no-op');
 if (positional[0] === 'status') { await printStatus(); process.exit(0); }
 
 const bumpOrVersion = positional[0];
-const tierArg = envFromFlag ?? positional.find((a) => a in TIERS);
+const rawTier = envFromFlag ?? positional.find((a) => a in TIERS || a in ALIASES);
+const tierArg = rawTier && (ALIASES[rawTier] ?? rawTier);
+if (rawTier && ALIASES[rawTier]) {
+  console.log(`  (tier "${rawTier}" -> "${tierArg}" — the GitHub environment name)`);
+}
 
 if (!bumpOrVersion || !tierArg) {
   console.error(`usage: npm run deploy <patch|minor|major|vX.Y.Z> <devnet|test|prod> [--dry-run] [--yes] [--allow-no-op]
@@ -103,7 +118,10 @@ if (!bumpOrVersion || !tierArg) {
   process.exit(64);
 }
 if (!(tierArg in TIERS)) {
-  die(`unknown tier "${tierArg}"`, `known tiers: ${Object.keys(TIERS).join(', ')}`,
+  const near = Object.keys({ ...TIERS, ...ALIASES }).filter((k) => k.startsWith(String(tierArg)[0] ?? ''));
+  die(`unknown tier "${tierArg}"`,
+      `tiers: ${Object.keys(TIERS).join(', ')}   (aliases: ${Object.keys(ALIASES).join(', ')})`,
+      near.length ? `did you mean: ${near.join(', ')}?` : '',
       'dev/simnet is a simulated explorer with no chain behind it and cannot be rolled.');
 }
 const tier = TIERS[tierArg];
@@ -232,11 +250,29 @@ function commitOfExistingTag(version) {
       'Promotion reuses an existing release; cut one first with `npm run deploy patch <tier>`.');
 }
 
+/**
+ * Confirm the image being promoted actually exists.
+ *
+ * This used to infer it from what the tiers happened to be running, which said
+ * "assuming the image exists" for a version that had definitely been built —
+ * because the tier that built it had since been rolled back. A published release
+ * is the real record that a version was built and pushed.
+ */
 function assertImageExists(version) {
-  const any = Object.values(TIERS).map((t) => tierImage(t.env)).filter(Boolean);
-  if (!any.some((img) => img.endsWith(`:${version}`))) {
-    console.log(`  note: no tier currently runs ${version}; assuming the image exists in GHCR.`);
+  const rel = shOk('gh', ['release', 'view', version, '--repo', CHAIN, '--json', 'publishedAt', '-q', '.publishedAt']);
+  if (rel.ok && rel.out) {
+    console.log(`  image      ${IMAGE}:${version}  (released ${rel.out.slice(0, 10)})`);
+    return;
   }
+  const onTier = Object.values(TIERS).map((t) => tierImage(t.env)).filter(Boolean)
+    .some((img) => img.endsWith(`:${version}`));
+  if (onTier) {
+    console.log(`  image      ${IMAGE}:${version}  (in use by another tier)`);
+    return;
+  }
+  die(`${version} has no release and no tier is running it`,
+      'Refusing to point a tier at an image that may not exist.',
+      `Cut it first: npm run deploy <patch|minor|major> <tier>`);
 }
 
 // ── is this release worth making ────────────────────────────────────────────
@@ -403,12 +439,58 @@ function runIds(workflow) {
   return r.ok && r.out ? r.out.split('\n').map(Number) : [];
 }
 
+/**
+ * Watch a run and say what it is doing.
+ *
+ * `gh run watch` prints nothing useful when its output is piped, so a rollout sat
+ * silent for minutes and looked hung — and the run URL it printed is no help to
+ * anyone without access to the repository. This polls the jobs API and reports
+ * the step that is currently running, the fraction complete, and elapsed time.
+ */
 async function watchRun(id, what) {
-  console.log(`  … ${what} (run ${id})`);
-  const r = shOk('gh', ['run', 'watch', String(id), '--repo', INFRA, '--exit-status']);
-  const concl = shOk('gh', ['run', 'view', String(id), '--repo', INFRA, '--json', 'conclusion', '-q', '.conclusion']);
-  if (!r.ok || concl.out !== 'success') {
-    die(`${what} failed (${concl.out || 'unknown'})`, `https://github.com/${INFRA}/actions/runs/${id}`);
+  const url = `https://github.com/${INFRA}/actions/runs/${id}`;
+  const started = Date.now();
+  const tty = process.stdout.isTTY;
+  let lastPrinted = '';
+
+  console.log(`  … ${what}`);
+  if (!tty) console.log(`    ${url}`);
+
+  for (;;) {
+    const raw = shOk('gh', ['api', `repos/${INFRA}/actions/runs/${id}/jobs`]);
+    let jobs = [];
+    if (raw.ok) { try { jobs = JSON.parse(raw.out).jobs ?? []; } catch { /* transient */ } }
+
+    const steps = jobs.flatMap((j) => j.steps ?? []);
+    const done = steps.filter((st) => st.status === 'completed').length;
+    const running = steps.find((st) => st.status === 'in_progress');
+    const pct = steps.length ? Math.round((done / steps.length) * 100) : 0;
+
+    const elapsed = Math.round((Date.now() - started) / 1000);
+    const clock = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
+    const now = running?.name ?? (jobs.some((j) => j.status === 'queued') ? 'waiting for a runner' : 'finishing');
+    const line = `    [${clock}] ${String(pct).padStart(3)}%  ${now}`.slice(0, 110);
+
+    if (tty) {
+      process.stdout.write('\r' + line.padEnd(Math.max(lastPrinted.length, line.length)));
+    } else if (line.replace(/\[\d\d:\d\d\]/, '') !== lastPrinted.replace(/\[\d\d:\d\d\]/, '')) {
+      console.log(line); // no TTY: one line per step change, not per poll
+    }
+    lastPrinted = line;
+
+    const allDone = jobs.length > 0 && jobs.every((j) => j.status === 'completed');
+    if (allDone) {
+      if (tty) process.stdout.write('\r' + ' '.repeat(lastPrinted.length) + '\r');
+      const bad = jobs.find((j) => j.conclusion !== 'success' && j.conclusion !== 'skipped');
+      if (bad) {
+        const failed = (bad.steps ?? []).find((st) => st.conclusion === 'failure');
+        die(`${what} failed at "${failed?.name ?? bad.name}" (${bad.conclusion})`, url);
+      }
+      console.log(`    done in ${clock}`);
+      return;
+    }
+    if (elapsed > 45 * 60) die(`${what} has run for 45 minutes; giving up watching`, url);
+    await sleep(4000);
   }
 }
 
