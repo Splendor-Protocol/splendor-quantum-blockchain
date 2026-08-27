@@ -130,6 +130,7 @@ async function main() {
   currently  ${deployedNow ?? '(no SQC_NODE_IMAGE set)'}
 `);
 
+  if (promoting) checkRollback(deployedNow, version, commit);
   if (!promoting) checkWorthBuilding(deployedNow, commit);
   warnDownstream(deployedNow, commit);
   checkIndexer(tier.env);
@@ -278,6 +279,58 @@ function checkIndexer(env) {
         'The rollout would start the stack without an indexer image.');
   }
   console.log(`  indexer    ${idx}  (applied by this rollout too)\n`);
+}
+
+
+/**
+ * Going backwards is a legitimate operation and a dangerous one, so it is
+ * allowed but never silent.
+ *
+ * A rollback is a DOWNGRADE, and downgrades are subject to the same question as
+ * upgrades: can the older binary still read the bytes the newer one wrote? The
+ * project's own rule is in splendor-infra/docs/chain-redeploy-runbook.md — a
+ * change is only reset-free when the new binary can read, and would not misread,
+ * what is already on disk. Rolling back inverts that: the OLD binary now has to
+ * cope with data written by the NEW one.
+ *
+ * When the two versions differ in no Go source, a rollback is pure and safe.
+ * When they do differ, this says exactly which files changed, because that is
+ * the input to deciding whether the older node can still open the chain.
+ */
+function checkRollback(deployedImage, version, commit) {
+  if (!deployedImage) return;
+  const current = deployedImage.split(':').pop();
+  if (current === version) {
+    die(`this tier already runs ${version}`, 'Nothing to do.');
+  }
+  const rank = (v) => {
+    const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(v);
+    return m ? Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3]) : null;
+  };
+  const a = rank(version), b = rank(current);
+  if (a == null || b == null || a >= b) return; // promotion forward, or unparseable
+
+  console.log(`  ! ROLLBACK: ${current} -> ${version} is going BACKWARDS.\n`);
+
+  const prev = shOk('git', ['rev-list', '-n', '1', current]);
+  if (!prev.ok || !prev.out) {
+    console.log(`    ${current} has no tag here, so the code difference cannot be shown.`);
+    console.log('    Check the older node can still read this chain before continuing.\n');
+    return;
+  }
+  const changed = shOk('git', ['diff', '--name-only', `${commit}..${prev.out}`, '--', '*.go']);
+  if (changed.ok && changed.out === '') {
+    console.log('    No Go source differs between them, so the binary is equivalent.');
+    console.log('    This rollback is safe.\n');
+    return;
+  }
+  console.log('    Go source DOES differ. The older binary must still be able to read');
+  console.log('    a chain the newer one has been writing. Files changed:\n');
+  for (const f of (changed.out || '').split('\n').filter(Boolean).slice(0, 12)) {
+    console.log(`      ${f}`);
+  }
+  console.log('\n    Storage format, state transition or header changes make a rollback');
+  console.log('    unsafe without a reset. See docs/chain-redeploy-runbook.md.\n');
 }
 
 // ── github plumbing ─────────────────────────────────────────────────────────
