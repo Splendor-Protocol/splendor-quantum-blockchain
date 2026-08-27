@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo"
 	"io"
 	"math/big"
 	"net"
@@ -320,6 +321,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	log.Info().
 		Str("chain_id", types.ChainID).
+		Str("commit", buildinfo.ShortCommit()).
+		Str("image_tag", buildinfo.ImageTag).
 		Str("data_dir", flagDataDir).
 		Str("rpc_addr", flagRPCAddr).
 		Bool("validator", flagIsValidator).
