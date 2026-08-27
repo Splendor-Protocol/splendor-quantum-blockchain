@@ -177,7 +177,7 @@ func TestLocalGenesisIsAppliedWithoutAskingAnyPeer(t *testing.T) {
 	if bootstrapsGenesisFromPeers(false, []string{"http://peer:8080"}, path) {
 		t.Fatal("a node with a local genesis still takes the peer-genesis path")
 	}
-	if err := applyLocalGenesis(path, sdb, genesisPolicy{}); err != nil {
+	if _, err := applyLocalGenesis(path, sdb, genesisPolicy{}); err != nil {
 		t.Fatalf("local genesis apply failed: %v", err)
 	}
 	assertFunded(t, sdb, honest.Allocations[0].Address)
@@ -201,7 +201,7 @@ func TestLocalGenesisForAnotherChainIsRefusedWhenChainIDIsAsserted(t *testing.T)
 	flagChainID = types.DefaultChainID
 	t.Cleanup(func() { flagChainID = prev })
 
-	err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{})
+	_, err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{})
 	if err == nil {
 		t.Fatal("a genesis for another chain was credited despite --chain-id naming this one")
 	}
@@ -230,7 +230,7 @@ func TestLocalGenesisNamesTheChainWhenNothingContradictsIt(t *testing.T) {
 	})
 	types.RestoreChainIDForTest(types.DefaultChainID, false)
 
-	if err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{}); err != nil {
+	if _, err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{}); err != nil {
 		t.Fatalf("a tier's own genesis must be creditable: %v", err)
 	}
 	if types.ChainID != "splendor-quantum-devnet-1" {
@@ -250,13 +250,13 @@ func TestLocalGenesisMustMatchThePin(t *testing.T) {
 	stale.Allocations = append(append([]genesiscfg.Allocation{}, honest.Allocations...),
 		genesiscfg.Allocation{Address: attackerAddr, Balance: oneBillionSPLD})
 
-	if err := applyLocalGenesis(saveGenesis(t, &stale), sdb, genesisPolicy{docHash: &pin}); err == nil {
+	if _, err := applyLocalGenesis(saveGenesis(t, &stale), sdb, genesisPolicy{docHash: &pin}); err == nil {
 		t.Fatal("a local genesis that fails the pin was credited")
 	}
 	assertUnfunded(t, sdb, attackerAddr)
 
 	// ...and the document the pin names still applies.
-	if err := applyLocalGenesis(saveGenesis(t, honest), sdb, genesisPolicy{docHash: &pin}); err != nil {
+	if _, err := applyLocalGenesis(saveGenesis(t, honest), sdb, genesisPolicy{docHash: &pin}); err != nil {
 		t.Fatalf("the pinned local genesis was rejected: %v", err)
 	}
 	assertFunded(t, sdb, honest.Allocations[0].Address)

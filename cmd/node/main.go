@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -133,7 +134,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().BoolVar(&flagTLSRequireHybrid, "tls-require-hybrid", false, "Refuse TLS connections that cannot negotiate X25519MLKEM768, instead of falling back to classical X25519. Set this before describing the transport as post-quantum: without it a deployment can offer the hybrid group and still serve nothing but classical.")
 	root.Flags().StringVar(&flagTLSKey, "tls-key", "", "PEM private key matching --tls-cert")
 	root.Flags().StringVar(&flagPublicURL, "public-url", "", "Externally reachable base URL advertised to peers (default: derived from --rpc-addr)")
-	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Allow unencrypted block push and catch-up sync when a peer has no ML-KEM sealed transport. Off by default so the channel cannot be downgraded.")
+	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Accept AND send cleartext peer traffic: registers the plaintext POST /block and /peers/announce routes and permits outbound fallback when a peer serves no sealed transport. Off by default, so the sealed ML-KEM channel is the only way in or out.")
 	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use — set --require-peer-pins to refuse unpinned peers instead.")
 	root.Flags().BoolVar(&flagRequirePeerPins, "require-peer-pins", false, "Refuse to talk to any peer that has no --peer-pin, instead of trusting its identity on first contact. Governs who this node dials — block push, announce and catch-up pull; inbound blocks stay authenticated by the validator signature and the write-plane token. Recommended once a cluster's peers are known: trust-on-first-use hands the relationship to whoever answers first at bootstrap.")
 
@@ -615,6 +616,24 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	// ── Chain identity ─────────────────────────────────────────────────────
+	// Settle which network this is BEFORE anything reads types.ChainID. On an
+	// empty chain the genesis document decides (applyLocalGenesis, below); on a
+	// chain that already has blocks the blocks themselves decide, because they
+	// were sealed under an id and the executor checks every header against it.
+	// Without this a restarted node would silently fall back to the compiled
+	// default and then reject its own history as "wrong chain id".
+	//
+	// It runs BEFORE crash recovery deliberately. ReconcileState replays the
+	// blocks a crash left behind, and replay checks each header's chain id
+	// against types.ChainID — so recovering first made a node on a non-default
+	// chain validate its own stored blocks against the compiled default and
+	// reject them. Safe in this order: adoption reads only the chain DB, and on
+	// an empty chain (where the document decides instead) recovery is a no-op.
+	if err := establishChainIDFromChain(executor); err != nil {
+		return err
+	}
+
 	// ── Crash recovery ─────────────────────────────────────────────────────
 	// The chain head advances (atomically) before state is committed, so a crash
 	// can leave the head ahead of the state. Replay any such blocks before we
@@ -623,34 +642,53 @@ func runNode(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("state reconciliation failed: %w", err)
 	}
 
-	// ── Chain identity ─────────────────────────────────────────────────────
-	// Settle which network this is BEFORE anything reads types.ChainID. On an
-	// empty chain the genesis document decides (applyLocalGenesis, below); on a
-	// chain that already has blocks the blocks themselves decide, because they
-	// were sealed under an id and the executor checks every header against it.
-	// Without this a restarted node would silently fall back to the compiled
-	// default and then reject its own history as "wrong chain id".
-	if err := establishChainIDFromChain(executor); err != nil {
-		return err
-	}
-
 	// ── Genesis (if chain is empty) ────────────────────────────────────────
 	if latestBlock, _ := executor.LatestBlock(); latestBlock == nil {
 		// Credit genesis allocations before block 0 so every node — validator
 		// and sync — starts from the same funded state root. Without this the
 		// total_supply declared in genesis.json is never minted, the chain has
 		// zero balance, and no transaction can meet the minimum fee.
+		var genesisDoc *genesiscfg.Genesis
 		if flagGenesisPath != "" {
-			if err := applyLocalGenesis(flagGenesisPath, stateDB, genesisPolicy{docHash: genesisDocPin}); err != nil {
-				return err
+			var genErr error
+			genesisDoc, genErr = applyLocalGenesis(flagGenesisPath, stateDB, genesisPolicy{docHash: genesisDocPin})
+			if genErr != nil {
+				return genErr
 			}
 		}
 
 		// The validator builds and signs block 0 over the resulting state root.
 		if flagIsValidator && validatorPriv != nil {
+			// Refuse to mint block 0 under a key the genesis document does not name.
+			// Block 0 was built from whatever wallet this process loaded, so an
+			// operator pointing a validator at someone else's genesis silently
+			// started a chain whose block 0 disagrees with the document every other
+			// node is pinning — a network nobody else can join, discovered later.
+			if genesisDoc != nil {
+				docPub, docErr := genesisDoc.ValidatorPublicKey()
+				if docErr != nil {
+					return fmt.Errorf("genesis %s has an unusable validator_pubkey_hex: %w", flagGenesisPath, docErr)
+				}
+				if !bytes.Equal(docPub.Bytes(), validatorPKBytes) {
+					return fmt.Errorf("this node's wallet is %s but genesis %s declares validator %s — "+
+						"refusing to mint block 0 under a key the document does not name",
+						validatorAddr, flagGenesisPath, qcrypto.DeriveAddress(docPub))
+				}
+			}
+
 			log.Info().Msg("Chain is empty — creating genesis block")
 			stateRoot, _ := stateDB.StateRoot()
-			genesisBlock := types.GenesisBlock(validatorAddr, stateRoot, time.Now().Unix())
+
+			// Block 0's timestamp comes from the document, not the clock. Two nodes
+			// minting from the same genesis then produce the SAME block 0, so its
+			// hash is a property of the document rather than of when someone
+			// happened to start the process — which is what lets --genesis-hash be
+			// published once instead of re-read after every reset.
+			genesisTime := time.Now().Unix()
+			if genesisDoc != nil && genesisDoc.Timestamp != 0 {
+				genesisTime = genesisDoc.Timestamp
+			}
+			genesisBlock := types.GenesisBlock(validatorAddr, stateRoot, genesisTime)
 			genesisBlock.ValidatorPubKey = validatorPKBytes
 			if hash, hashErr := genesisBlock.ComputeHash(); hashErr == nil {
 				genesisBlock.Hash = hash
@@ -792,19 +830,20 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Core RPC server (handles /tx/submit, /block/*, /balance/*, /status, etc.)
 	coreRPC := rpc.New(
 		rpc.Config{
-			ListenAddr:       flagRPCAddr,
-			ValidatorPK:      validatorPKBytes,
-			PeerCount:        peerPool.Count, // wire live peer count from peerPool
-			AuthToken:        authToken,
-			CORSOrigins:      flagCORSOrigins,
-			SubmitRatePerSec: flagRateLimit,
-			SubmitBurst:      flagRateBurst,
-			TrustProxy:       flagTrustProxy,
-			SimRatePerSec:    flagSimRate,
-			SimBurst:         flagSimBurst,
-			SimMaxInFlight:   flagSimMaxInFlight,
-			SimTimeout:       flagSimTimeout,
-			Forks:            forkSchedule,
+			ListenAddr:        flagRPCAddr,
+			ValidatorPK:       validatorPKBytes,
+			PeerCount:         peerPool.Count, // wire live peer count from peerPool
+			AuthToken:         authToken,
+			AllowPlaintextP2P: flagAllowPlaintextP2P,
+			CORSOrigins:       flagCORSOrigins,
+			SubmitRatePerSec:  flagRateLimit,
+			SubmitBurst:       flagRateBurst,
+			TrustProxy:        flagTrustProxy,
+			SimRatePerSec:     flagSimRate,
+			SimBurst:          flagSimBurst,
+			SimMaxInFlight:    flagSimMaxInFlight,
+			SimTimeout:        flagSimTimeout,
+			Forks:             forkSchedule,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
@@ -1212,20 +1251,20 @@ func loadForkSchedule(genesisPath string) (forks.Schedule, error) {
 	return g.Forks, nil
 }
 
-func applyLocalGenesis(path string, stateDB *state.StateDB, policy genesisPolicy) error {
+func applyLocalGenesis(path string, stateDB *state.StateDB, policy genesisPolicy) (*genesiscfg.Genesis, error) {
 	g, err := genesiscfg.LoadFile(path)
 	if err != nil {
-		return fmt.Errorf("load genesis %q: %w", path, err)
+		return nil, fmt.Errorf("load genesis %q: %w", path, err)
 	}
 	if err := verifyGenesisDocument(g, policy.docHash, path); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := g.ApplyToState(stateDB); err != nil {
-		return fmt.Errorf("apply genesis allocations: %w", err)
+		return nil, fmt.Errorf("apply genesis allocations: %w", err)
 	}
 	log.Info().Int("allocations", len(g.Allocations)).Str("total_supply", g.TotalSupply).
 		Str("genesis_doc_hash", g.HashHex()).Msg("Applied genesis allocations")
-	return nil
+	return g, nil
 }
 
 // establishChainIDFromChain adopts the chain id recorded in this node's own
