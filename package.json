@@ -1,0 +1,17 @@
+{
+  "name": "splendor-quantum-blockchain",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Release tooling for the Splendor Quantum Chain node. The chain itself is Go; this exists so shipping it is one command.",
+  "type": "module",
+  "scripts": {
+    "deploy": "node scripts/release.mjs",
+    "deploy:devnet": "node scripts/release.mjs patch devnet",
+    "deploy:test": "node scripts/release.mjs patch test",
+    "deploy:prod": "node scripts/release.mjs patch prod",
+    "release:status": "node scripts/release.mjs status"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
