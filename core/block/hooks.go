@@ -14,6 +14,7 @@ package block
 
 import (
 	"fmt"
+	"math/big"
 	"sync"
 
 	"github.com/rs/zerolog/log"
@@ -222,8 +223,15 @@ func TimestampValidationHook(maxDriftSeconds int64) PreTxHook {
 // MinFeeHook rejects transactions that pay less than the minimum fee.
 // Register with: registry.OnPreTx("min_fee", MinFeeHook(big.NewInt(1000)))
 func MinFeeHook(minFee int64) PreTxHook {
+	// Compared as a big.Int. Fee is arbitrary precision and big.Int.Int64() is
+	// UNDEFINED above MaxInt64 — it returns the low 64 bits — so a fee of exactly
+	// 2^64 truncated to 0 and was rejected as "too low". That is ~18.4 SPLD, an
+	// ordinary amount, and the producer does not run this hook: it would pack the
+	// transaction while every follower replaying the block rejected it. A fork,
+	// reachable by anyone who can afford 19 SPLD.
+	min := big.NewInt(minFee)
 	return func(tx *types.Transaction, blockHeight uint64) error {
-		if tx.Fee == nil || tx.Fee.Int64() < minFee {
+		if tx.Fee == nil || tx.Fee.Cmp(min) < 0 {
 			return fmt.Errorf("fee too low: got %v, minimum %d", tx.Fee, minFee)
 		}
 		return nil
