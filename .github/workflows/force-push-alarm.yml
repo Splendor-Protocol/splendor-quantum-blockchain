@@ -1,0 +1,56 @@
+name: Force-push alarm
+
+# GitHub branch protection is unavailable on this plan (Free org + private repo),
+# so a force-push to main cannot be BLOCKED here. It can be made impossible to
+# miss.
+#
+# On 27 Aug main was force-pushed back onto bea1833, silently dropping 36
+# commits — including the fix that stops route registration writing consensus
+# state, without which no second node can ever sync a chain. Nothing failed,
+# nothing alerted, and the live tiers kept running code that no longer existed in
+# the repo. It was found by eye, about an hour later.
+#
+# This job fails loudly on any forced update to a protected-in-spirit branch and
+# prints the pre-push SHA, which is the whole recovery: `git branch rescue <sha>`.
+# Delete this workflow the day the org moves to a plan with real protection.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    if: github.event.forced
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A force-push rewrote main
+        run: |
+          echo "::error title=main was force-pushed::${{ github.actor }} rewrote main. \
+          Commits reachable only from the previous tip are now orphaned."
+          {
+            echo "## main was force-pushed"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| actor | \`${{ github.actor }}\` |"
+            echo "| before | \`${{ github.event.before }}\` |"
+            echo "| after | \`${{ github.event.after }}\` |"
+            echo ""
+            echo "**If this was not deliberate, recover before the objects are collected:**"
+            echo ""
+            echo '```bash'
+            echo "git fetch origin"
+            echo "git branch rescue/force-push ${{ github.event.before }}"
+            echo "git push origin rescue/force-push"
+            echo '```'
+            echo ""
+            echo "Then compare, rather than force-pushing back over whoever did this:"
+            echo ""
+            echo '```bash'
+            echo "git log --oneline ${{ github.event.after }}..${{ github.event.before }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
