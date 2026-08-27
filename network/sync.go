@@ -2,11 +2,11 @@
 //
 // When a node starts or falls behind, it needs to download blocks from peers.
 // The sync protocol:
-//   1. Queries /status on all known peers to find the best chain height.
-//   2. Picks the peer with the highest height.
-//   3. Downloads blocks one by one over the ML-KEM-768 sealed channel.
-//   4. Validates each block's ML-DSA-65 signature and hash chain before applying.
-//   5. Continues until the local height matches the best peer height.
+//  1. Queries /status on all known peers to find the best chain height.
+//  2. Picks the peer with the highest height.
+//  3. Downloads blocks one by one over the ML-KEM-768 sealed channel.
+//  4. Validates each block's ML-DSA-65 signature and hash chain before applying.
+//  5. Continues until the local height matches the best peer height.
 //
 // Catch-up uses the same encrypted transport as block push, so a node that
 // falls behind does not drop back onto cleartext HTTP for the bulk of its
@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"io"
 	"net/http"
 	"time"
@@ -194,6 +195,36 @@ func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, err
 	if len(block.ValidatorPubKey) == 0 {
 		return nil, fmt.Errorf("genesis block has no validator pubkey — validator must be running with a funded genesis")
 	}
+
+	// Bind the served Hash to the header before trusting a signature over it.
+	//
+	// VerifySignature checks the signature against b.Hash — the field the PEER
+	// sent — and ComputeHash covers only the header. ValidatorPubKey sits outside
+	// the header, so without this a peer could serve the genuine pinned header
+	// (passing the check above), replace ValidatorPubKey with its own, set Hash to
+	// any value it liked, and sign that value: both checks would pass and this
+	// node would adopt the attacker's key as the validator for the whole chain.
+	//
+	// Validate() is what closes it — it recomputes the hash and rejects a block
+	// whose Hash does not match its header. Every other block path already calls
+	// it before verifying; this one did not.
+	if err := block.Validate(); err != nil {
+		return nil, fmt.Errorf("pinned genesis block from %s is invalid: %w", peerAddr, err)
+	}
+
+	// And bind the key to the header, which the pin has already made trustworthy.
+	// ValidatorAddr is inside the header and therefore covered by the pinned hash,
+	// so a key that does not derive to it is not this chain's validator whatever
+	// it manages to sign.
+	pub, err := qcrypto.PublicKeyFromBytes(block.ValidatorPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("genesis block from %s carries an invalid validator pubkey: %w", peerAddr, err)
+	}
+	if qcrypto.DeriveAddress(pub) != block.Header.ValidatorAddr {
+		return nil, fmt.Errorf("genesis block from %s carries a validator pubkey that does not derive to the header's validator address — hostile peer",
+			peerAddr)
+	}
+
 	if err := block.VerifySignature(block.ValidatorPubKey); err != nil {
 		return nil, fmt.Errorf("pinned genesis block failed self-verification: %w", err)
 	}
@@ -280,8 +311,8 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 type Syncer struct {
 	fetcher     *BlockFetcher
 	pool        *PeerPool
-	localHeight func() uint64                // returns current local chain height
-	applyBlock  func(*types.Block) error     // applies a validated block to local chain
+	localHeight func() uint64            // returns current local chain height
+	applyBlock  func(*types.Block) error // applies a validated block to local chain
 }
 
 // NewSyncer creates a syncer.
