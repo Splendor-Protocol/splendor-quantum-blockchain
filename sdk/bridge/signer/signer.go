@@ -128,9 +128,9 @@ func (w *DerivedWallet) Zeroize() {
 
 // TransferParams are inputs for building and signing a transfer.
 type TransferParams struct {
-	To        string `json:"to"`        // SQ: address or raw 64-char hex
-	Amount    string `json:"amount"`    // decimal string in smallest units
-	Fee       string `json:"fee"`       // decimal string; default "1000"
+	To        string `json:"to"`     // SQ: address or raw 64-char hex
+	Amount    string `json:"amount"` // decimal string in smallest units
+	Fee       string `json:"fee"`    // decimal string; default "1000"
 	Nonce     uint64 `json:"nonce"`
 	Timestamp int64  `json:"timestamp"` // 0 = now
 	Memo      string `json:"memo"`      // optional
