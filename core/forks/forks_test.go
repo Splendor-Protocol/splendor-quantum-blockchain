@@ -62,3 +62,75 @@ func TestNamesAreSorted(t *testing.T) {
 		t.Fatalf("Names = %v", got)
 	}
 }
+
+// withKnown makes names this build does not yet honour count as known for one
+// test, so a rule about how names relate can be pinned before the changes that
+// implement them land. Restored on cleanup: leaking it would let every later
+// test in the package accept a schedule the real build refuses.
+func withKnown(t *testing.T, names ...string) {
+	t.Helper()
+	prev := Known
+	Known = append(append([]string{}, prev...), names...)
+	t.Cleanup(func() { Known = prev })
+}
+
+// The four settlement-plan names are declared so the dependency rule below can
+// name them, but they are not honoured yet. A document scheduling one must be
+// refused by this build, not accepted and silently ignored; each name flips to
+// accepted only in the change that implements its gate.
+func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
+	for _, name := range []string{QRC20V2, QRC1155V1, ExchangeV1, ModuleRevertV1} {
+		if isKnown(name) {
+			t.Fatalf("%s is listed as known: only the change implementing its gate may add it", name)
+		}
+		if err := (Schedule{name: 1}).Validate(); err == nil {
+			t.Fatalf("scheduling %s must be refused until its gate exists", name)
+		}
+	}
+}
+
+// exchange_v1 needs module_revert_v1 in force no later than itself, or a
+// failed match would jam the operator's account instead of producing a failed
+// receipt. A schedule that gets the order wrong describes a chain that cannot
+// run the exchange safely, and is refused whole.
+func TestExchangeRequiresModuleRevertNoLaterThanItself(t *testing.T) {
+	withKnown(t, ExchangeV1, ModuleRevertV1)
+
+	for name, tc := range map[string]struct {
+		s  Schedule
+		ok bool
+	}{
+		"both at 1":              {Schedule{ExchangeV1: 1, ModuleRevertV1: 1}, true},
+		"revert earlier":         {Schedule{ExchangeV1: 10, ModuleRevertV1: 5}, true},
+		"revert alone":           {Schedule{ModuleRevertV1: 1}, true},
+		"exchange alone":         {Schedule{ExchangeV1: 1}, false},
+		"revert never (0)":       {Schedule{ExchangeV1: 1, ModuleRevertV1: 0}, false},
+		"revert later":           {Schedule{ExchangeV1: 5, ModuleRevertV1: 6}, false},
+		"exchange never, no dep": {Schedule{ExchangeV1: 0}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := tc.s.Validate()
+			if tc.ok && err != nil {
+				t.Fatalf("want accepted, got %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("want refused, got nil")
+			}
+		})
+	}
+}
+
+// With two unknown names the error must name the same one every run, or the
+// operator chasing it sees a different message on each restart.
+func TestValidateReportsUnknownNamesDeterministically(t *testing.T) {
+	s := Schedule{"zzz": 1, "aaa": 1}
+	first := s.Validate()
+	if first == nil {
+		t.Fatal("unknown names must be refused")
+	}
+	for i := 0; i < 50; i++ {
+		if got := s.Validate(); got.Error() != first.Error() {
+			t.Fatalf("error text varies across runs: %q vs %q", got, first)
+		}
+	}
+}

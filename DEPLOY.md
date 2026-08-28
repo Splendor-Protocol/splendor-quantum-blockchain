@@ -567,6 +567,48 @@ first startup, stop, delete `/var/sqc/data`, and start again with the flag.
 There is no way to apply allocations to a chain that has already produced
 block 0.
 
+### Fork Schedule
+
+`genesis.json` may carry a `forks` object that schedules consensus rule changes
+by block height. It is part of the document's identity: `sqc-node genesis-hash`
+covers it, so two documents that differ only in a schedule get different
+`--genesis-doc-hash` pins. A document without one hashes exactly as it did
+before the field existed.
+
+```json
+"forks": {
+  "module_revert_v1": 1,
+  "qrc20_v2": 1,
+  "qrc1155_v1": 1,
+  "exchange_v1": 1
+}
+```
+
+- **A height is the first block produced under the new rules.** `0` or an absent
+  name means *never* — genesis is block 0, so `0` cannot mean "from genesis".
+  The convention for a fresh chain is to schedule every rule it starts with at
+  height **1**.
+- **Names.** `multi_validator` is reserved today. The settlement upgrades are
+  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`; each becomes
+  schedulable only in the release that implements it. `exchange_v1` requires
+  `module_revert_v1` at the same or an earlier height. Devnet and testnet
+  schedule all four at 1; **mainnet omits `exchange_v1`** (the real-money gate
+  stays closed).
+- **A name the binary does not implement is refused at boot**, not ignored: a
+  node cannot start on a document it does not understand. Deploy the binary that
+  knows a name everywhere *before* using a document that schedules it, and
+  compute the document's pin with that binary — an older one refuses the file.
+- **The schedule is persisted with the chain.** When genesis is applied (from
+  `--genesis`, or from a peer by a node started without one) the node records
+  the schedule in its state DB before it credits a single allocation. On every
+  later boot that stored copy is authoritative: a follower restarted without
+  `--genesis` keeps its schedule, and a node whose `--genesis` file is missing,
+  unreadable, or schedules something different **refuses to boot** rather than
+  run under rules the rest of the network does not.
+- **Check it before the height arrives:** `curl http://localhost:8080/status`
+  reports `forks` on every node that has one. Nodes disagreeing about an
+  activation height do not fail at startup — they split at the height.
+
 ---
 
 ## 7. Running as a System Service

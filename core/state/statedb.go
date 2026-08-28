@@ -199,6 +199,51 @@ func (s *StateDB) Close() error {
 	return s.db.Close()
 }
 
+// PutMeta records node-local bookkeeping under the meta: namespace, next to
+// the applied-height marker.
+//
+// It writes straight to LevelDB rather than through the pending layer: meta
+// keys are not consensus state (loadLeaves skips them, so they never reach the
+// state root), and the callers that use this — the node persisting the fork
+// schedule it was started under — need the value durable on its own, before
+// the allocations it governs are committed. A simulation sandbox refuses, for
+// the same reason it refuses to Commit. "height" is reserved for the marker
+// CommitWithHeight maintains.
+func (s *StateDB) PutMeta(key string, value []byte) error {
+	if s.sandbox {
+		return ErrSandboxCommit
+	}
+	if key == "" {
+		return errors.New("state: meta key must not be empty")
+	}
+	full := prefixMeta + key
+	if full == keyStateHeight {
+		return errors.New("state: meta key \"height\" is reserved for the applied-height marker")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.db.Put([]byte(full), value, nil); err != nil {
+		return fmt.Errorf("state: write meta %q: %w", key, err)
+	}
+	return nil
+}
+
+// GetMeta reads a value stored by PutMeta. ok is false when nothing is stored
+// under the key, which is not an error: a chain older than the key simply has
+// no record.
+func (s *StateDB) GetMeta(key string) (value []byte, ok bool, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, err := s.db.Get([]byte(prefixMeta+key), nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("state: read meta %q: %w", key, err)
+	}
+	return v, true, nil
+}
+
 // ForEachAccount calls fn for every account in COMMITTED state, in key order.
 //
 // It deliberately ignores the pending layer, so it reports what is durably on

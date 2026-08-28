@@ -16,7 +16,8 @@ func baseGenesis() *Genesis {
 		Allocations: []Allocation{
 			{Address: "SQ:1111111111111111111111111111111111111111111111111111111111111111", Balance: "100"},
 		},
-		TotalSupply: "100",
+		// Derived by Validate; a present value is refused unless it matches.
+		TotalSupply: "",
 	}
 }
 
@@ -90,5 +91,62 @@ func TestKnownForkNameAccepted(t *testing.T) {
 	g.Forks = forks.Schedule{forks.MultiValidator: 100}
 	if err := g.Validate(); err != nil {
 		t.Fatalf("a known fork name should validate: %v", err)
+	}
+}
+
+// One row per upgrade name a tier document may schedule, and whether THIS
+// build honours it. A document must never schedule a name the deployed binary
+// does not implement — forks.Known is a promise, not a stub — so each row flips
+// to accepted only in the change that lands the gate, and a document scheduling
+// it before then is refused at load.
+func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		known bool
+	}{
+		{forks.MultiValidator, true},
+		{forks.ModuleRevertV1, false}, // PR-3
+		{forks.QRC20V2, false},        // PR-4
+		{forks.QRC1155V1, false},      // PR-5
+		{forks.ExchangeV1, false},     // PR-6
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := baseGenesis()
+			g.Forks = forks.Schedule{tc.name: 1}
+			if tc.name == forks.ExchangeV1 {
+				// Its own dependency rule; what is on trial here is the name.
+				g.Forks[forks.ModuleRevertV1] = 1
+			}
+			err := g.Validate()
+			switch {
+			case tc.known && err != nil:
+				t.Fatalf("%s is implemented by this build but was refused: %v", tc.name, err)
+			case !tc.known && err == nil:
+				t.Fatalf("%s is not implemented by this build but a document scheduling it was accepted", tc.name)
+			case !tc.known && !strings.Contains(err.Error(), "unknown upgrade"):
+				t.Fatalf("want an unknown-upgrade refusal for %s, got %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// The document hash a tier pins is computed over the schedule, so the tier
+// documents this plan describes — all four names at height 1, mainnet without
+// the exchange — get distinct pins once the names are honoured. Until then the
+// hash is still computable (Hash does not validate) and stable.
+func TestTierScheduleShapesHashDistinctly(t *testing.T) {
+	devnet := baseGenesis()
+	devnet.Forks = forks.Schedule{
+		forks.ModuleRevertV1: 1, forks.QRC20V2: 1, forks.QRC1155V1: 1, forks.ExchangeV1: 1,
+	}
+	mainnet := baseGenesis()
+	mainnet.Forks = forks.Schedule{
+		forks.ModuleRevertV1: 1, forks.QRC20V2: 1, forks.QRC1155V1: 1,
+	}
+	if devnet.HashHex() == mainnet.HashHex() {
+		t.Fatal("omitting exchange_v1 must change the document pin")
+	}
+	if devnet.HashHex() == baseGenesis().HashHex() {
+		t.Fatal("a scheduled document must not hash like an unscheduled one")
 	}
 }

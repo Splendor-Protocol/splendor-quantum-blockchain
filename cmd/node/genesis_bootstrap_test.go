@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
@@ -170,14 +172,14 @@ func TestBootstrapTrustPeerGenesisOptIn(t *testing.T) {
 // A node holding the genesis on local disk credits that, and never asks a peer —
 // which is the branch every live tier is on.
 func TestLocalGenesisIsAppliedWithoutAskingAnyPeer(t *testing.T) {
-	sdb, _ := newBootstrapNode(t)
+	sdb, ex := newBootstrapNode(t)
 	honest := honestGenesis(t)
 	path := saveGenesis(t, honest)
 
 	if bootstrapsGenesisFromPeers(false, []string{"http://peer:8080"}, path) {
 		t.Fatal("a node with a local genesis still takes the peer-genesis path")
 	}
-	if _, err := applyLocalGenesis(path, sdb, genesisPolicy{}); err != nil {
+	if _, err := applyLocalGenesis(path, sdb, ex, genesisPolicy{}); err != nil {
 		t.Fatalf("local genesis apply failed: %v", err)
 	}
 	assertFunded(t, sdb, honest.Allocations[0].Address)
@@ -188,7 +190,7 @@ func TestLocalGenesisIsAppliedWithoutAskingAnyPeer(t *testing.T) {
 // tier, so it has to be gated too — a genesis for another chain is a
 // misconfiguration that must stop the node, not a supply it mints in silence.
 func TestLocalGenesisForAnotherChainIsRefusedWhenChainIDIsAsserted(t *testing.T) {
-	sdb, _ := newBootstrapNode(t)
+	sdb, ex := newBootstrapNode(t)
 	g := honestGenesis(t)
 	g.ChainID = "splendor-quantum-2"
 	g.Allocations = append(g.Allocations, genesiscfg.Allocation{Address: attackerAddr, Balance: oneBillionSPLD})
@@ -201,7 +203,7 @@ func TestLocalGenesisForAnotherChainIsRefusedWhenChainIDIsAsserted(t *testing.T)
 	flagChainID = types.DefaultChainID
 	t.Cleanup(func() { flagChainID = prev })
 
-	_, err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{})
+	_, err := applyLocalGenesis(saveGenesis(t, g), sdb, ex, genesisPolicy{})
 	if err == nil {
 		t.Fatal("a genesis for another chain was credited despite --chain-id naming this one")
 	}
@@ -217,7 +219,7 @@ func TestLocalGenesisForAnotherChainIsRefusedWhenChainIDIsAsserted(t *testing.T)
 // empty chain with nothing asserting otherwise the document is the authority.
 // Refusing here would make it impossible to start devnet or testnet at all.
 func TestLocalGenesisNamesTheChainWhenNothingContradictsIt(t *testing.T) {
-	sdb, _ := newBootstrapNode(t)
+	sdb, ex := newBootstrapNode(t)
 	g := honestGenesis(t)
 	g.ChainID = "splendor-quantum-devnet-1"
 	g.TotalSupply = ""
@@ -230,7 +232,7 @@ func TestLocalGenesisNamesTheChainWhenNothingContradictsIt(t *testing.T) {
 	})
 	types.RestoreChainIDForTest(types.DefaultChainID, false)
 
-	if _, err := applyLocalGenesis(saveGenesis(t, g), sdb, genesisPolicy{}); err != nil {
+	if _, err := applyLocalGenesis(saveGenesis(t, g), sdb, ex, genesisPolicy{}); err != nil {
 		t.Fatalf("a tier's own genesis must be creditable: %v", err)
 	}
 	if types.ChainID != "splendor-quantum-devnet-1" {
@@ -242,7 +244,7 @@ func TestLocalGenesisNamesTheChainWhenNothingContradictsIt(t *testing.T) {
 // genesis.json on disk — a stale copy, another tier's — is credited before
 // anything notices, and ApplyToState never removes an account it wrote.
 func TestLocalGenesisMustMatchThePin(t *testing.T) {
-	sdb, _ := newBootstrapNode(t)
+	sdb, ex := newBootstrapNode(t)
 	honest := honestGenesis(t)
 	pin := honest.Hash()
 
@@ -250,13 +252,13 @@ func TestLocalGenesisMustMatchThePin(t *testing.T) {
 	stale.Allocations = append(append([]genesiscfg.Allocation{}, honest.Allocations...),
 		genesiscfg.Allocation{Address: attackerAddr, Balance: oneBillionSPLD})
 
-	if _, err := applyLocalGenesis(saveGenesis(t, &stale), sdb, genesisPolicy{docHash: &pin}); err == nil {
+	if _, err := applyLocalGenesis(saveGenesis(t, &stale), sdb, ex, genesisPolicy{docHash: &pin}); err == nil {
 		t.Fatal("a local genesis that fails the pin was credited")
 	}
 	assertUnfunded(t, sdb, attackerAddr)
 
 	// ...and the document the pin names still applies.
-	if _, err := applyLocalGenesis(saveGenesis(t, honest), sdb, genesisPolicy{docHash: &pin}); err != nil {
+	if _, err := applyLocalGenesis(saveGenesis(t, honest), sdb, ex, genesisPolicy{docHash: &pin}); err != nil {
 		t.Fatalf("the pinned local genesis was rejected: %v", err)
 	}
 	assertFunded(t, sdb, honest.Allocations[0].Address)
@@ -380,6 +382,213 @@ func TestParsePinnedHash(t *testing.T) {
 	}
 	if _, err := parsePinnedHash("--genesis-doc-hash", "zz"+full[2:]); err == nil {
 		t.Fatal("a non-hex pin was accepted")
+	}
+}
+
+// ── fork schedule persistence ─────────────────────────────────────────────────
+
+// scheduledGenesis is the honest document with a rule change scheduled.
+func scheduledGenesis(t *testing.T, at uint64) *genesiscfg.Genesis {
+	t.Helper()
+	g := honestGenesis(t)
+	g.Forks = forks.Schedule{forks.MultiValidator: at}
+	return g
+}
+
+func assertSchedule(t *testing.T, got forks.Schedule, wantAt uint64) {
+	t.Helper()
+	if at, ok := got.At(forks.MultiValidator); !ok || at != wantAt {
+		t.Fatalf("schedule = %v, want %s at %d", got, forks.MultiValidator, wantAt)
+	}
+}
+
+// The production path: a validator (or documented full node) applies its own
+// --genesis. The schedule must land in the state DB and on the live executor.
+func TestLocalGenesisApplyPersistsTheForkSchedule(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	g := scheduledGenesis(t, 7)
+
+	if _, err := applyLocalGenesis(saveGenesis(t, g), sdb, ex, genesisPolicy{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	assertSchedule(t, ex.Forks(), 7)
+
+	stored, ok, err := readStoredForkSchedule(sdb)
+	if err != nil || !ok {
+		t.Fatalf("stored schedule = (%v, %v, %v), want recorded", stored, ok, err)
+	}
+	assertSchedule(t, stored, 7)
+}
+
+// The other apply site: a follower with no local file takes the document from
+// a peer. Its schedule has to be persisted and installed exactly the same way —
+// this node has nothing else to read it from on its next boot.
+func TestPeerBootstrapPersistsTheForkSchedule(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	g := scheduledGenesis(t, 7)
+	peer, _ := genesisPeer(t, g)
+	pin := g.Hash()
+
+	if err := bootstrapGenesisFromPeer(peer, sdb, ex, genesisPolicy{docHash: &pin}); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	assertSchedule(t, ex.Forks(), 7)
+
+	stored, ok, err := readStoredForkSchedule(sdb)
+	if err != nil || !ok {
+		t.Fatalf("stored schedule = (%v, %v, %v), want recorded", stored, ok, err)
+	}
+	assertSchedule(t, stored, 7)
+}
+
+// A peer-bootstrapped follower restarts with no --genesis at all. Before the
+// schedule was persisted it came back with nil — and would have applied the
+// next block under no rules while the validator applied it under the fork.
+func TestFollowerRestartWithoutAFileKeepsTheSchedule(t *testing.T) {
+	stateDir := t.TempDir()
+	sdb, err := state.NewStateDB(stateDir)
+	if err != nil {
+		t.Fatalf("statedb: %v", err)
+	}
+	ex, err := block.NewExecutor(sdb, t.TempDir())
+	if err != nil {
+		t.Fatalf("executor: %v", err)
+	}
+	g := scheduledGenesis(t, 7)
+	peer, _ := genesisPeer(t, g)
+	pin := g.Hash()
+	if err := bootstrapGenesisFromPeer(peer, sdb, ex, genesisPolicy{docHash: &pin}); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	// Restart: close everything and reopen the same state directory.
+	if err := ex.Close(); err != nil {
+		t.Fatalf("close executor: %v", err)
+	}
+	if err := sdb.Close(); err != nil {
+		t.Fatalf("close statedb: %v", err)
+	}
+	reopened, err := state.NewStateDB(stateDir)
+	if err != nil {
+		t.Fatalf("reopen statedb: %v", err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+
+	got, err := loadForkSchedule("", reopened, true)
+	if err != nil {
+		t.Fatalf("restart without --genesis: %v", err)
+	}
+	assertSchedule(t, got, 7)
+}
+
+// Once a chain has recorded its schedule, the --genesis file on disk is checked
+// against it rather than trusted. A file that cannot be read used to yield a
+// silent nil schedule; on a chain that IS scheduled that is a node about to
+// run different rules from its peers.
+func TestValidatorRestartWithCorruptGenesisFileIsRefused(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	path := saveGenesis(t, scheduledGenesis(t, 7))
+	if _, err := applyLocalGenesis(path, sdb, ex, genesisPolicy{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("corrupt file: %v", err)
+	}
+	for _, chainEmpty := range []bool{false, true} {
+		if _, err := loadForkSchedule(path, sdb, chainEmpty); err == nil {
+			t.Fatalf("chainEmpty=%v: a corrupt --genesis on a scheduled chain booted", chainEmpty)
+		}
+	}
+
+	// A missing file is the same fault.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+	if _, err := loadForkSchedule(path, sdb, false); err == nil {
+		t.Fatal("a missing --genesis on a scheduled chain booted")
+	}
+}
+
+// A file whose schedule differs from the one the chain was started under is
+// refused; the same document (and one with no schedule against a chain that
+// recorded none) is accepted and the stored copy is what the node runs.
+func TestGenesisFileMustMatchTheStoredSchedule(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	same := scheduledGenesis(t, 7)
+	if _, err := applyLocalGenesis(saveGenesis(t, same), sdb, ex, genesisPolicy{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	got, err := loadForkSchedule(saveGenesis(t, same), sdb, false)
+	if err != nil {
+		t.Fatalf("the document the chain was started from was refused: %v", err)
+	}
+	assertSchedule(t, got, 7)
+
+	differing := scheduledGenesis(t, 8)
+	_, err = loadForkSchedule(saveGenesis(t, differing), sdb, false)
+	if err == nil {
+		t.Fatal("a --genesis scheduling a different height booted on a chain started under another")
+	}
+	if !strings.Contains(err.Error(), "started under") {
+		t.Fatalf("refusal does not say what the chain was started under: %v", err)
+	}
+
+	unscheduled := honestGenesis(t)
+	if _, err := loadForkSchedule(saveGenesis(t, unscheduled), sdb, false); err == nil {
+		t.Fatal("a --genesis with no schedule booted on a chain started with one")
+	}
+
+	// And the mirror image: a chain started with no schedule accepts a file
+	// with none (nil and {} are the same schedule) and refuses one with any.
+	sdb2, ex2 := newBootstrapNode(t)
+	if _, err := applyLocalGenesis(saveGenesis(t, unscheduled), sdb2, ex2, genesisPolicy{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got, err := loadForkSchedule(saveGenesis(t, honestGenesis(t)), sdb2, false); err != nil || len(got) != 0 {
+		t.Fatalf("unscheduled chain with unscheduled file: (%v, %v), want empty schedule", got, err)
+	}
+	if _, err := loadForkSchedule(saveGenesis(t, same), sdb2, false); err == nil {
+		t.Fatal("a --genesis with a schedule booted on a chain started without one")
+	}
+}
+
+// With nothing stored, the file decides — and only an empty chain may proceed
+// past a file it cannot read, because the apply path is about to report the
+// real error. A chain with blocks and no stored schedule predates persistence;
+// booting it blind would be the old silent-nil behaviour.
+func TestLoadForkScheduleWithoutAStoredMap(t *testing.T) {
+	sdb, _ := newBootstrapNode(t)
+
+	if got, err := loadForkSchedule("", sdb, true); err != nil || got != nil {
+		t.Fatalf("no file, empty chain: (%v, %v), want (nil, nil)", got, err)
+	}
+	if got, err := loadForkSchedule("", sdb, false); err != nil || got != nil {
+		t.Fatalf("no file, legacy chain: (%v, %v), want (nil, nil)", got, err)
+	}
+
+	unreadable := filepath.Join(t.TempDir(), "missing.json")
+	if got, err := loadForkSchedule(unreadable, sdb, true); err != nil || got != nil {
+		t.Fatalf("unreadable file, empty chain: (%v, %v), want (nil, nil) — the apply path reports it", got, err)
+	}
+	if _, err := loadForkSchedule(unreadable, sdb, false); err == nil {
+		t.Fatal("unreadable --genesis on a non-empty chain with no stored schedule booted")
+	}
+
+	got, err := loadForkSchedule(saveGenesis(t, scheduledGenesis(t, 7)), sdb, false)
+	if err != nil {
+		t.Fatalf("readable file, nothing stored: %v", err)
+	}
+	assertSchedule(t, got, 7)
+	if _, ok, _ := readStoredForkSchedule(sdb); ok {
+		t.Fatal("reading a schedule must not persist it; only applying genesis does")
+	}
+
+	unknown := honestGenesis(t)
+	unknown.Forks = forks.Schedule{"not_a_real_upgrade": 1}
+	if _, err := loadForkSchedule(saveGenesis(t, unknown), sdb, true); err == nil {
+		t.Fatal("a file scheduling an unknown upgrade booted")
 	}
 }
 

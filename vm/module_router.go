@@ -20,6 +20,7 @@ import (
 	"math/big"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
@@ -54,11 +55,16 @@ type ModuleCall struct {
 //	Height — the height of the block the tx is part of
 //	Time   — that block's header timestamp (unix seconds); deadlines are
 //	         judged against it, never against time.Now()
+//	Forks  — the chain's rule-change schedule; a gate asks
+//	         ctx.Forks.Active(name, ctx.Height), which is nil-safe and reads
+//	         "never" for an unscheduled name, so a chain without a schedule
+//	         runs the legacy rules unchanged
 type ModuleContext struct {
 	Caller qcrypto.Address
 	Nonce  uint64
 	Height uint64
 	Time   int64
+	Forks  forks.Schedule
 }
 
 // DispatchModuleCall decodes and executes a native-module call against stateDB.
