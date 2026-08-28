@@ -12,13 +12,14 @@
 // overlay) is journaled; committed LevelDB state is untouched until Commit().
 //
 // Usage:
-//   snap := stateDB.Snapshot()
-//   // ... make changes ...
-//   if err != nil {
-//       stateDB.RevertToSnapshot(snap)  // undo all changes since snap
-//   } else {
-//       stateDB.CommitSnapshot(snap)    // keep changes, discard the checkpoint
-//   }
+//
+//	snap := stateDB.Snapshot()
+//	// ... make changes ...
+//	if err != nil {
+//	    stateDB.RevertToSnapshot(snap)  // undo all changes since snap
+//	} else {
+//	    stateDB.CommitSnapshot(snap)    // keep changes, discard the checkpoint
+//	}
 package state
 
 import (
