@@ -52,7 +52,7 @@ var congestionTiers = []struct {
 // Mempool holds pending transactions ordered by fee (highest first).
 type Mempool struct {
 	mu      sync.RWMutex
-	txs     map[[32]byte]*txEntry // txHash → entry
+	txs     map[[32]byte]*txEntry          // txHash → entry
 	byAddr  map[qcrypto.Address][]*txEntry // addr → sorted by nonce
 	maxSize int
 	state   *state.StateDB
@@ -369,7 +369,7 @@ func (m *Mempool) GetStats() Stats {
 	}
 
 	maxFee := new(big.Int)
-	minFee := new(big.Int).SetInt64(1<<62)
+	minFee := new(big.Int).SetInt64(1 << 62)
 	sum := new(big.Int)
 
 	for _, e := range m.txs {
