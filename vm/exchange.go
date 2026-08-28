@@ -1378,6 +1378,27 @@ func (x *Exchange) Match(ctx ModuleContext, p exchangeMatchParams, receipt *type
 		makerFilled[i] = filled
 	}
 
+	// The taker's bound holds on the AGGREGATE too. settlePair allows each
+	// pair one unit of rounding, so an operator choosing fill_shares could
+	// otherwise split a fill into n one-unit pairs and charge (or short) the
+	// taker n units against a signed bound of one: BUY 1000 @0.01 against
+	// sixteen SELL-1 makers paid 16 for shares bounded at 1. Over the whole
+	// match the taker pays at most ceil(p_t·total/1e6) or receives at least
+	// floor(p_t·total/1e6) — the documented tolerance, once per match, not
+	// once per pair. No per-pair minimum fill: an equal-price cross and a
+	// sum-==-1e6 mint/merge still fill at any size.
+	takerTotal := new(big.Int)
+	for _, plan := range plans {
+		takerTotal.Add(takerTotal, plan.settle.takerCost)
+	}
+	if taker.Side == types.OrderSideBuy {
+		if bound := mulDivCeil(taker.Price, total); takerTotal.Cmp(bound) > 0 {
+			return fmt.Errorf(what+"taker bound exceeded (paid %s for %s shares at %s)", takerTotal, total, taker.Price)
+		}
+	} else if bound := mulDivFloor(taker.Price, total); takerTotal.Cmp(bound) < 0 {
+		return fmt.Errorf(what+"taker bound exceeded (received %s for %s shares at %s)", takerTotal, total, taker.Price)
+	}
+
 	// Signatures last: an order the chain already filled part of was
 	// verified then, and its hash commits to every field.
 	if takerFilled.Sign() == 0 {
@@ -1736,6 +1757,8 @@ func FeeRecipientUpdatedEvent(contract, recipient qcrypto.Address) *types.Log {
 // appended to receipt — when fn errors. Nested inside the executor's own
 // module_revert_v1 snapshot it is redundant; without one (a legacy chain, a
 // direct in-package call) it is what keeps a failed action residue-free.
+// A snapshot-layer error is HARD: it is a broken invariant in the state
+// layer, not the action's own complaint, and must not become a receipt.
 func (x *Exchange) atomic(receipt *types.Receipt, fn func() error) error {
 	snap := x.stateDB.Snapshot()
 	logs := 0
@@ -1743,13 +1766,17 @@ func (x *Exchange) atomic(receipt *types.Receipt, fn func() error) error {
 		logs = len(receipt.Logs)
 	}
 	if err := fn(); err != nil {
-		x.stateDB.RevertToSnapshot(snap)
+		if rerr := x.stateDB.RevertToSnapshot(snap); rerr != nil {
+			return hard(fmt.Errorf("exchange: %w", rerr))
+		}
 		if receipt != nil {
 			receipt.Logs = receipt.Logs[:logs]
 		}
 		return err
 	}
-	x.stateDB.CommitSnapshot(snap)
+	if err := x.stateDB.CommitSnapshot(snap); err != nil {
+		return hard(fmt.Errorf("exchange: %w", err))
+	}
 	return nil
 }
 
@@ -1794,9 +1821,17 @@ func (x *Exchange) setBig(slot [32]byte, v *big.Int) error {
 	return x.stateDB.SetStorageValue(x.addr, slot, v.Bytes())
 }
 
+// The readers below return a StateDB read ERROR as an error. Folding it into
+// the empty-slot zero (as they once did) turned an I/O fault on one node into
+// a different, successful result — cancelled=false, filled=0, Locked=0 — and
+// therefore a per-node divergence instead of a rejected block. An empty slot
+// is still the zero value.
 func (x *Exchange) getBig(slot [32]byte) (*big.Int, error) {
 	b, err := x.stateDB.GetStorageValue(x.addr, slot)
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return big.NewInt(0), err
+	}
+	if len(b) == 0 {
 		return big.NewInt(0), nil
 	}
 	return new(big.Int).SetBytes(b), nil
@@ -1823,7 +1858,10 @@ func (x *Exchange) setAddr(slot [32]byte, a qcrypto.Address) error {
 
 func (x *Exchange) getAddr(slot [32]byte) (qcrypto.Address, error) {
 	b, err := x.stateDB.GetStorageValue(x.addr, slot)
-	if err != nil || len(b) < qcrypto.AddressSize {
+	if err != nil {
+		return qcrypto.Address{}, err
+	}
+	if len(b) < qcrypto.AddressSize {
 		return qcrypto.Address{}, nil
 	}
 	var a qcrypto.Address
@@ -1840,7 +1878,10 @@ func (x *Exchange) setFlag(slot [32]byte, v bool) error {
 
 func (x *Exchange) getFlag(slot [32]byte) (bool, error) {
 	b, err := x.stateDB.GetStorageValue(x.addr, slot)
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return false, err
+	}
+	if len(b) == 0 {
 		return false, nil
 	}
 	return b[0] == 1, nil

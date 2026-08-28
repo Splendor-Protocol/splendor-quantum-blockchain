@@ -1,6 +1,9 @@
 package forks
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Genesis is height 0, so treating an unset height as 0 would switch every
 // unscheduled rule on from the very first block — the opposite of the default
@@ -80,22 +83,25 @@ func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
 			t.Fatalf("scheduling %s must be refused until its gate exists", name)
 		}
 	}
-	for _, name := range []string{ModuleRevertV1, QRC20V2, QRC1155V1} {
+	if !isKnown(ModuleRevertV1) {
+		t.Fatalf("%s has a gate in this build but is not listed as known", ModuleRevertV1)
+	}
+	if err := (Schedule{ModuleRevertV1: 1}).Validate(); err != nil {
+		t.Fatalf("scheduling %s must be accepted by this build: %v", ModuleRevertV1, err)
+	}
+	// The routed modules are known too; their dependency rule refuses each
+	// alone (a SOFT failure would drop the tx and pin the nonce), so each is
+	// tried with module_revert_v1 — what is on trial here is the name.
+	for _, name := range []string{QRC20V2, QRC1155V1, ExchangeV1} {
 		if !isKnown(name) {
 			t.Fatalf("%s has a gate in this build but is not listed as known", name)
 		}
-		if err := (Schedule{name: 1}).Validate(); err != nil {
+		if err := (Schedule{name: 1}).Validate(); err == nil || !strings.Contains(err.Error(), ModuleRevertV1) {
+			t.Fatalf("scheduling %s without %s must be refused, got %v", name, ModuleRevertV1, err)
+		}
+		if err := (Schedule{name: 1, ModuleRevertV1: 1}).Validate(); err != nil {
 			t.Fatalf("scheduling %s must be accepted by this build: %v", name, err)
 		}
-	}
-	// exchange_v1 is known too; its own dependency rule refuses it alone
-	// (TestExchangeRequiresModuleRevertNoLaterThanItself), so it is tried with
-	// its dependency — what is on trial here is the name.
-	if !isKnown(ExchangeV1) {
-		t.Fatalf("%s has a gate in this build but is not listed as known", ExchangeV1)
-	}
-	if err := (Schedule{ExchangeV1: 1, ModuleRevertV1: 1}).Validate(); err != nil {
-		t.Fatalf("scheduling %s must be accepted by this build: %v", ExchangeV1, err)
 	}
 }
 

@@ -428,16 +428,26 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 	// operation; without this revert, a failed op keeps that dirty mutation, so
 	// the block's account state (and thus the state root) reflects a tx that the
 	// producer excluded — producer and followers then compute divergent roots.
+	//
+	// A failed revert or commit of that per-tx checkpoint is fatal for the
+	// block, not just the tx: the pending layer then holds residue nobody can
+	// account for, and the state root computed over it is one no other node
+	// would reproduce. The error propagates and the caller discards the
+	// pending layer with the block.
 	snap := e.state.Snapshot()
 	if err := e.executeTx(tx, blockHeight, blockTime, receipt); err != nil {
-		e.state.RevertToSnapshot(snap)
+		if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
+			return nil, fmt.Errorf("revert of unappliable tx: %w (tx error: %v)", rerr, err)
+		}
 		log.Warn().Err(err).
 			Str("from", tx.From.String()).
 			Uint64("nonce", tx.Nonce).
 			Msg("transaction in received block could not be applied")
 		return nil, err
 	}
-	e.state.CommitSnapshot(snap)
+	if err := e.state.CommitSnapshot(snap); err != nil {
+		return nil, fmt.Errorf("commit of tx snapshot: %w", err)
+	}
 
 	return receipt, nil
 }
@@ -621,13 +631,16 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		// module_revert_v1: the module runs inside its own snapshot, nested in
 		// the per-tx one, so its writes can be undone while the fee debit and
 		// nonce bump above are kept.
+		// A snapshot-layer error here makes the tx unappliable; the per-tx
+		// checkpoint around this call then decides whether the block survives.
 		inner := e.state.Snapshot()
 		err := runModuleCall(e.state, mctx, tx.Data, receipt)
 		if err == nil {
-			e.state.CommitSnapshot(inner)
-			return nil
+			return e.state.CommitSnapshot(inner)
 		}
-		e.state.RevertToSnapshot(inner)
+		if rerr := e.state.RevertToSnapshot(inner); rerr != nil {
+			return fmt.Errorf("revert of failed module call: %w (module error: %v)", rerr, err)
+		}
 		if vm.IsHardModuleError(err) {
 			// Unparseable envelope, unknown module or action, fork not active:
 			// statically detectable at admission, so an honest producer never
@@ -790,20 +803,32 @@ func (e *Executor) ProduceBlock(
 			}
 		}
 
+		// A failed revert or commit of the per-tx checkpoint abandons the block:
+		// the pending layer would carry residue the header's state root could
+		// not honestly cover, so it is discarded rather than produced from.
 		snap := e.state.Snapshot()
 		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{})
 		if err := e.executeTx(tx, height, blockTime, receipt); err != nil {
-			e.state.RevertToSnapshot(snap)
+			if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
+				e.state.DiscardPending()
+				return nil, fmt.Errorf("revert of skipped tx: %w (tx error: %v)", rerr, err)
+			}
 			log.Warn().Err(err).Msg("skipping invalid tx")
 			continue
 		}
 		// Stop packing once the block gas budget is reached (txs are fee-sorted,
 		// so we keep the most valuable ones). Revert this tx's state before break.
 		if blockGas+receipt.GasUsed > MaxBlockGas {
-			e.state.RevertToSnapshot(snap)
+			if err := e.state.RevertToSnapshot(snap); err != nil {
+				e.state.DiscardPending()
+				return nil, fmt.Errorf("revert of over-budget tx: %w", err)
+			}
 			break
 		}
-		e.state.CommitSnapshot(snap)
+		if err := e.state.CommitSnapshot(snap); err != nil {
+			e.state.DiscardPending()
+			return nil, fmt.Errorf("commit of tx snapshot: %w", err)
+		}
 		blockGas += receipt.GasUsed
 		blockSize += txSize
 		totalFees.Add(totalFees, tx.Fee)

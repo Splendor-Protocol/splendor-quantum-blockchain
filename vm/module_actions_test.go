@@ -198,10 +198,12 @@ func TestRequireForkGate(t *testing.T) {
 	}
 }
 
-// PreflightModuleCall mirrors the fork gate for admission: with a schedule
-// and a height it says "not active" for a gated action, and with nil/0 it
-// does not gate. No shipped action is gated yet, so the probe is a temporary
-// module entry.
+// PreflightModuleCall mirrors the fork gate for admission, nil schedule
+// included: consensus reads nil as "never" (requireFork), so a schedule-less
+// executor would drop the tx every block and admitting it would pin the
+// sender's nonce. Only height 0 — the executor-less /estimate path — skips the
+// gate. The probe is a temporary module entry so the test does not depend on
+// which shipped actions are gated.
 func TestPreflightModuleCallForkGate(t *testing.T) {
 	KnownModuleActions["probe"] = ModuleActions{
 		Writes: map[string]string{"gated": "probe_fork", "open": ""},
@@ -213,11 +215,14 @@ func TestPreflightModuleCallForkGate(t *testing.T) {
 	open := moduleData(t, "probe", "open", struct{}{})
 	sched := forks.Schedule{"probe_fork": 10}
 
-	if _, err := PreflightModuleCall(gated, nil, 0); err != nil {
-		t.Fatalf("nil schedule must not gate: %v", err)
+	if _, err := PreflightModuleCall(gated, nil, 1); err == nil || !errors.Is(err, ErrForkInactive) {
+		t.Fatalf("nil schedule reads never, like consensus: want ErrForkInactive, got %v", err)
 	}
 	if _, err := PreflightModuleCall(gated, sched, 0); err != nil {
-		t.Fatalf("height 0 must not gate: %v", err)
+		t.Fatalf("height 0 (no executor) must not gate: %v", err)
+	}
+	if _, err := PreflightModuleCall(gated, nil, 0); err != nil {
+		t.Fatalf("height 0 with a nil schedule must not gate: %v", err)
 	}
 	if _, err := PreflightModuleCall(gated, sched, 9); err == nil || !errors.Is(err, ErrForkInactive) {
 		t.Fatalf("one block early: want ErrForkInactive, got %v", err)

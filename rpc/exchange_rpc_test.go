@@ -188,6 +188,10 @@ func TestExchangeRoutesDeepEqualCall(t *testing.T) {
 // admitted. Local: the executor's operator gate still runs in consensus.
 func TestSubmitRefusesNonOperatorMatch(t *testing.T) {
 	s := newTestServer(t, "")
+	// The preflight gates exchange writes on the executor's schedule, nil
+	// meaning never; without one every envelope below would be refused as
+	// "not active" before the operator check runs.
+	s.executor.SetForks(forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 1})
 	es := newExchangeState(t, s.stateDB)
 
 	opPub, opPriv, _ := qcrypto.GenerateKeypair()
@@ -235,5 +239,50 @@ func TestSubmitRefusesNonOperatorMatch(t *testing.T) {
 	}
 	if s.pool.Size() != 2 {
 		t.Fatalf("mempool size %d, want 2", s.pool.Size())
+	}
+}
+
+// A schedule-less executor (a chain upgraded in place, a peer-bootstrapped
+// follower before its genesis arrives) reads every fork as "never" in
+// consensus, so ProduceBlock drops a gated write every block. /tx/submit
+// must refuse it for the same reason, not admit it into a pool where it pins
+// the sender's nonce (PruneStale only removes nonce < committed, and a
+// same-nonce replacement is refused).
+func TestSubmitRefusesGatedWriteWithoutSchedule(t *testing.T) {
+	s := newTestServer(t, "")
+	if s.executor.Forks() != nil {
+		t.Fatal("test server must start without a schedule")
+	}
+
+	pub, priv, _ := qcrypto.GenerateKeypair()
+	sender := qcrypto.DeriveAddress(pub)
+	acc := types.NewAccount(sender)
+	acc.AddBalance(big.NewInt(1_000_000))
+	s.stateDB.SetAccount(acc)
+	if _, err := s.stateDB.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	deploy := moduleEnvelope(t, "exchange", "deploy", map[string]interface{}{"name": "Positions"})
+	now := time.Now().Unix()
+	tx := func() *types.Transaction {
+		return types.NewCall(sender, vm.ModuleRouterAddress, deploy, big.NewInt(0), big.NewInt(mempool.MinFee), 0, now)
+	}
+
+	rec := postSubmit(t, s, tx(), priv)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "not active") {
+		t.Fatalf("schedule-less deploy: status %d body %s, want 400 not-active", rec.Code, rec.Body.String())
+	}
+	if s.pool.Size() != 0 {
+		t.Fatalf("a tx the producer can never pack entered the mempool (size %d)", s.pool.Size())
+	}
+
+	s.executor.SetForks(forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 1})
+	rec = postSubmit(t, s, tx(), priv)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("scheduled deploy: status %d body %s, want 202", rec.Code, rec.Body.String())
+	}
+	if s.pool.Size() != 1 {
+		t.Fatalf("mempool size %d, want 1", s.pool.Size())
 	}
 }

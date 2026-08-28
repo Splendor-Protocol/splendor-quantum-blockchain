@@ -226,14 +226,19 @@ values; mixed kinds in one match are allowed:
 maker's signed price**, rounded in favour of the maker's bound (maker SELL →
 `ceil(price·fill/1e6)`, maker BUY → `floor`); the taker pays or receives the
 complement. The taker's bound is checked with a **≤ 1-unit rounding
-tolerance**: a taker BUY pays at most `ceil(p_t·fill/1e6)`, a taker SELL
-receives at least `floor(p_t·fill/1e6)`; the pair is refused otherwise. Every
-collateral leg must be non-zero: a `cost == 0` fill is refused (module calls
-are unmetered, so a free dust fill has no gas deterrent). Consequences:
-equal-price crosses and sum-==-1e6 mints/merges fill at any size; the
-operator's rounding power is bounded to < 1 smallest collateral unit per
-fill; MINT/MERGE produce **no surplus** (`makerCost + takerCost == fill`
-exactly) — there is nothing to sweep.
+tolerance**: per pair, a taker BUY pays at most `ceil(p_t·fill/1e6)`, a taker
+SELL receives at least `floor(p_t·fill/1e6)`; the pair is refused otherwise.
+The same bound is then enforced **once more on the aggregate** of the match:
+a taker BUY pays at most `ceil(p_t·Σfill/1e6)` over every pair, a taker SELL
+receives at least `floor(p_t·Σfill/1e6)`, and the whole match is refused as
+`taker bound exceeded` otherwise — so an operator cannot split one fill into
+n one-unit pairs and collect n units of rounding. Every collateral leg must be
+non-zero: a `cost == 0` fill is refused (module calls are unmetered, so a
+free dust fill has no gas deterrent). Consequences: equal-price crosses and
+sum-==-1e6 mints/merges fill at any size; the operator's rounding power is
+bounded to **< 1 smallest collateral unit per match (aggregate), never more
+than the signed bound plus one unit**; MINT/MERGE produce **no surplus**
+(`makerCost + takerCost == fill` exactly) — there is nothing to sweep.
 
 **Operator powers** (consensus-bounded): reorder, delay, censor, choose which
 crossing pairs fill and who is labelled taker (always inside both bounds),

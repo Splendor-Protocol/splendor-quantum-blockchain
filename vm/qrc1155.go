@@ -195,7 +195,10 @@ func (t *QRC1155Token) TotalSupply(tokenId *big.Int) (*big.Int, error) {
 // Owner returns the collection owner (zero for a collection nobody deployed).
 func (t *QRC1155Token) Owner() (qcrypto.Address, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, slotMTOwner)
-	if err != nil || len(b) < qcrypto.AddressSize {
+	if err != nil {
+		return qcrypto.Address{}, err
+	}
+	if len(b) < qcrypto.AddressSize {
 		return qcrypto.Address{}, nil
 	}
 	var owner qcrypto.Address
@@ -326,7 +329,10 @@ func (t *QRC1155Token) SetApprovalForAllWithEvents(owner, operator qcrypto.Addre
 // IsApprovedForAll checks if operator is approved to manage all of owner's tokens.
 func (t *QRC1155Token) IsApprovedForAll(owner, operator qcrypto.Address) (bool, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, mtApprovalSlot(owner, operator))
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return false, err
+	}
+	if len(b) == 0 {
 		return false, nil
 	}
 	return b[0] == 1, nil
@@ -677,9 +683,16 @@ func (t *QRC1155Token) setBigInt(slot [32]byte, v *big.Int) error {
 	return t.stateDB.SetStorageValue(t.contract, slot, v.Bytes())
 }
 
+// The readers below return a StateDB read ERROR as an error rather than the
+// empty-slot zero: an I/O fault on one node must fail the call, not yield a
+// different successful result than every other node computes. An empty slot
+// is still the zero value.
 func (t *QRC1155Token) getBigInt(slot [32]byte) (*big.Int, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, slot)
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return big.NewInt(0), err
+	}
+	if len(b) == 0 {
 		return big.NewInt(0), nil
 	}
 	return new(big.Int).SetBytes(b), nil
@@ -695,7 +708,10 @@ func (t *QRC1155Token) setString(slot [32]byte, s string) error {
 
 func (t *QRC1155Token) getString(slot [32]byte) (string, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, slot)
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return "", err
+	}
+	if len(b) == 0 {
 		return "", nil
 	}
 	var s string

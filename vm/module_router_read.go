@@ -490,12 +490,19 @@ func resolvePoolAddress(p dexReadParams) (qcrypto.Address, error) {
 // PreflightModuleCall validates a ModuleCall envelope destined for a signed
 // TxCall WITHOUT executing it. It is the admission-time mirror of the HARD
 // classes in DispatchModuleCall: an unparseable envelope, an unknown module,
-// an action outside the module's WRITE set, and — when a schedule and height
-// are given — an action whose fork is not active at that height. /tx/submit
-// runs it against executor.Forks() and head+1 so a tx that could only ever be
-// dropped is refused before it enters the mempool; /estimate runs it to say
-// "not active" without mutating state. Pass a nil schedule (or height 0) to
-// skip fork gating.
+// an action outside the module's WRITE set, and — given a height — an action
+// whose fork is not active at that height. /tx/submit runs it against
+// executor.Forks() and head+1 so a tx that could only ever be dropped is
+// refused before it enters the mempool; /estimate runs it to say "not active"
+// without mutating state.
+//
+// The fork gate mirrors requireFork exactly, nil schedule included: consensus
+// reads a nil schedule as "never", so a schedule-less executor (a chain
+// upgraded in place, a peer-bootstrapped follower before its genesis arrives)
+// drops every gated write, and admitting one here would pin the sender's
+// nonce in the pool. Height 0 is the one escape and it is not a consensus
+// height: it means "no executor", the executor-less /estimate path, where
+// there is no head to judge against and nothing to admit.
 //
 // A read action is refused here even though it parses: the write dispatch
 // treats it as an unknown action, which is HARD, and a sender whose tx can
@@ -516,7 +523,7 @@ func PreflightModuleCall(data []byte, schedule forks.Schedule, height uint64) (M
 	if !isWrite {
 		return mc, fmt.Errorf("%s: unknown action %q", mc.Module, mc.Action)
 	}
-	if gate != "" && schedule != nil && height != 0 && !schedule.Active(gate, height) {
+	if gate != "" && height != 0 && !schedule.Active(gate, height) {
 		return mc, fmt.Errorf("%s: %q: %w: %s is not scheduled at height %d", mc.Module, mc.Action, ErrForkInactive, gate, height)
 	}
 	return mc, nil
@@ -761,7 +768,9 @@ func dispatchExchangeRead(stateDB *state.StateDB, rctx ReadContext, action strin
 		rc := &types.Receipt{}
 		snap := stateDB.Snapshot()
 		merr := x.Match(ModuleContext{Caller: caller, Height: rctx.Height, Time: rctx.Time}, sp.exchangeMatchParams, rc)
-		stateDB.RevertToSnapshot(snap)
+		if err := stateDB.RevertToSnapshot(snap); err != nil {
+			return nil, fmt.Errorf("exchange simulate_match: %w", err)
+		}
 		out["caller"] = caller.String()
 		out["head_height"] = rctx.Height
 		out["head_time"] = rctx.Time

@@ -149,7 +149,10 @@ func (t *QRC20Token) MaxSupply() (*big.Int, error)   { return t.getBigInt(slotMa
 // Owner returns the contract owner address.
 func (t *QRC20Token) Owner() (qcrypto.Address, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, slotOwner)
-	if err != nil || len(b) < qcrypto.AddressSize {
+	if err != nil {
+		return qcrypto.Address{}, err
+	}
+	if len(b) < qcrypto.AddressSize {
 		return qcrypto.Address{}, nil
 	}
 	var addr qcrypto.Address
@@ -160,7 +163,10 @@ func (t *QRC20Token) Owner() (qcrypto.Address, error) {
 // IsPaused returns true if the contract is paused.
 func (t *QRC20Token) IsPaused() (bool, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, slotPaused)
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return false, err
+	}
+	if len(b) == 0 {
 		return false, nil
 	}
 	return b[0] == 1, nil
@@ -644,9 +650,16 @@ func (t *QRC20Token) setBigInt(slot [32]byte, v *big.Int) error {
 	return t.stateDB.SetStorageValue(t.contract, slot, v.Bytes())
 }
 
+// The readers below return a StateDB read ERROR as an error rather than the
+// empty-slot zero: an I/O fault on one node must fail the call, not yield a
+// different successful result than every other node computes. An empty slot
+// is still the zero value.
 func (t *QRC20Token) getBigInt(slot [32]byte) (*big.Int, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, slot)
-	if err != nil || len(b) == 0 || (len(b) == 1 && b[0] == 0) {
+	if err != nil {
+		return big.NewInt(0), err
+	}
+	if len(b) == 0 || (len(b) == 1 && b[0] == 0) {
 		return big.NewInt(0), nil
 	}
 	return new(big.Int).SetBytes(b), nil
@@ -662,7 +675,10 @@ func (t *QRC20Token) setString(slot [32]byte, s string) error {
 
 func (t *QRC20Token) getString(slot [32]byte) (string, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, slot)
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return "", err
+	}
+	if len(b) == 0 {
 		return "", nil
 	}
 	var s string
@@ -678,7 +694,10 @@ func (t *QRC20Token) setUint8(slot [32]byte, v uint8) error {
 
 func (t *QRC20Token) getUint8(slot [32]byte) (uint8, error) {
 	b, err := t.stateDB.GetStorageValue(t.contract, slot)
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return 0, err
+	}
+	if len(b) == 0 {
 		return 0, nil
 	}
 	return b[0], nil

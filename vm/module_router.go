@@ -99,6 +99,25 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 	}
 }
 
+// Caps on the free-form strings a deploy or mint persists. A module call pays
+// the flat MinFee whatever it writes, so an unbounded name or uri was
+// ~128 KiB of state per transaction at the minimum price. SOFT, checked in
+// the router before the module runs. The qrc20 caps apply only once qrc20_v2
+// is active so a pre-fork replay is unchanged; qrc1155_v1 and exchange_v1
+// actions are new under their own forks and carry the cap from the start.
+const (
+	MaxModuleNameBytes = 64   // qrc20 name and symbol, qrc1155 and exchange name
+	MaxModuleURIBytes  = 2048 // qrc1155 uri and uri_prefix, exchange uri_prefix
+)
+
+// capString refuses v when it is longer than max bytes.
+func capString(what, field, v string, max int) error {
+	if len(v) > max {
+		return fmt.Errorf("%s: %s is %d bytes, above the cap of %d", what, field, len(v), max)
+	}
+	return nil
+}
+
 // ── QRC-20 ──────────────────────────────────────────────────────────────────
 
 type qrc20DeployParams struct {
@@ -170,6 +189,14 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		var p qrc20DeployParams
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return fmt.Errorf("qrc20 deploy: bad params: %w", err)
+		}
+		if ctx.Forks.Active(forks.QRC20V2, ctx.Height) {
+			if err := capString("qrc20 deploy", "name", p.Name, MaxModuleNameBytes); err != nil {
+				return err
+			}
+			if err := capString("qrc20 deploy", "symbol", p.Symbol, MaxModuleNameBytes); err != nil {
+				return err
+			}
 		}
 		supply, err := parseBig(p.TotalSupply)
 		if err != nil {
@@ -562,6 +589,12 @@ func dispatchQRC1155(stateDB *state.StateDB, ctx ModuleContext, action string, r
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return fmt.Errorf("qrc1155 deploy: bad params: %w", err)
 		}
+		if err := capString("qrc1155 deploy", "name", p.Name, MaxModuleNameBytes); err != nil {
+			return err
+		}
+		if err := capString("qrc1155 deploy", "uri_prefix", p.URIPrefix, MaxModuleURIBytes); err != nil {
+			return err
+		}
 		addr, err := DeployQRC1155(stateDB, caller, p.Name, p.URIPrefix, nonce)
 		if err != nil {
 			return err
@@ -587,6 +620,9 @@ func dispatchQRC1155(stateDB *state.StateDB, ctx ModuleContext, action string, r
 		if err != nil {
 			return fmt.Errorf("qrc1155 mint: amount: %w", err)
 		}
+		if err := capString("qrc1155 mint", "uri", p.URI, MaxModuleURIBytes); err != nil {
+			return err
+		}
 		return tok.MintWithEvents(caller, to, id, amt, p.URI, receipt)
 
 	case "mint_batch":
@@ -605,6 +641,11 @@ func dispatchQRC1155(stateDB *state.StateDB, ctx ModuleContext, action string, r
 		amts, err := parseUint256List("qrc1155 mint_batch: amounts", p.Amounts)
 		if err != nil {
 			return err
+		}
+		for i, u := range p.URIs {
+			if err := capString("qrc1155 mint_batch", fmt.Sprintf("uris[%d]", i), u, MaxModuleURIBytes); err != nil {
+				return err
+			}
 		}
 		return tok.MintBatchWithEvents(caller, to, ids, amts, p.URIs, receipt)
 
@@ -865,6 +906,12 @@ func dispatchExchange(stateDB *state.StateDB, ctx ModuleContext, action string, 
 	case "deploy":
 		var p exchangeDeployParams
 		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		if err := capString("exchange deploy", "name", p.Name, MaxModuleNameBytes); err != nil {
+			return err
+		}
+		if err := capString("exchange deploy", "uri_prefix", p.URIPrefix, MaxModuleURIBytes); err != nil {
 			return err
 		}
 		addr, err := DeployExchange(stateDB, ctx, p)

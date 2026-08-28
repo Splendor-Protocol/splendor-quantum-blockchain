@@ -596,8 +596,10 @@ before the field existed.
   height **1**.
 - **Names.** `multi_validator` is reserved today. The settlement upgrades are
   `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`; each becomes
-  schedulable only in the release that implements it. `exchange_v1` requires
-  `module_revert_v1` at the same or an earlier height. Devnet and testnet
+  schedulable only in the release that implements it. `qrc20_v2`, `qrc1155_v1`
+  and `exchange_v1` each require `module_revert_v1` at the same or an earlier
+  height (a failed module call must be a failed receipt, not a dropped
+  transaction that pins the sender's nonce). Devnet and testnet
   schedule all four at 1; **mainnet omits `exchange_v1`** (the real-money gate
   stays closed).
 - **A name the binary does not implement is refused at boot**, not ignored: a
