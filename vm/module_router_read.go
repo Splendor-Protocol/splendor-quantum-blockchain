@@ -38,11 +38,25 @@ type dexReadParams struct {
 	Token1 string `json:"token1,omitempty"`
 }
 
+// ReadContext is the advisory view of the chain head a read action may use to
+// label its answer ("trading is open", "this permit has expired"). It is the
+// read-side counterpart of ModuleContext but carries no authority: a read
+// never gates anything on it, and it is zero whenever the caller has no
+// executor to ask (a bare StateDB in a test, a node whose chain is empty).
+// Every read must therefore be correct with Height == 0 and Time == 0.
+type ReadContext struct {
+	Height uint64
+	Time   int64
+}
+
 // DispatchModuleReadCall decodes a ModuleCall envelope and executes a read-only
 // (value-returning) module action against committed state. It never mutates
 // state: only the read allowlist is served; any write action is rejected with an
 // error. The returned value is a JSON-serialisable map.
-func DispatchModuleReadCall(stateDB *state.StateDB, data []byte) (interface{}, error) {
+//
+// rctx describes the chain head the read runs against; it is advisory (see
+// ReadContext) and no action served today consumes it.
+func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byte) (interface{}, error) {
 	var mc ModuleCall
 	if err := json.Unmarshal(data, &mc); err != nil {
 		return nil, fmt.Errorf("module call: invalid JSON envelope: %w", err)

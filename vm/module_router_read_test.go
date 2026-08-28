@@ -12,7 +12,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	alice := addr(0x22)
 
 	dep := &types.Receipt{}
-	if err := DispatchModuleCall(sdb, owner, 7, moduleData(t, "qrc20", "deploy", qrc20DeployParams{
+	if err := DispatchModuleCall(sdb, ModuleContext{Caller: owner, Nonce: 7}, moduleData(t, "qrc20", "deploy", qrc20DeployParams{
 		Name: "Read Test", Symbol: "RTEST", Decimals: 18,
 		TotalSupply: "1000000000000000000000000",
 	}), dep); err != nil {
@@ -24,7 +24,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	token := *dep.ContractAddress
 
 	// balance_of(owner) == total supply
-	res, err := DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "balance_of", map[string]string{
+	res, err := DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "balance_of", map[string]string{
 		"token": token.String(), "owner": owner.String(),
 	}))
 	if err != nil {
@@ -39,7 +39,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	}
 
 	// balance_of(alice) == 0 (no holdings, no error)
-	res, err = DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "balance_of", map[string]string{
+	res, err = DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "balance_of", map[string]string{
 		"token": token.String(), "owner": alice.String(),
 	}))
 	if err != nil {
@@ -50,7 +50,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	}
 
 	// total_supply carries metadata
-	res, err = DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "total_supply", map[string]string{
+	res, err = DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "total_supply", map[string]string{
 		"token": token.String(),
 	}))
 	if err != nil {
@@ -62,7 +62,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	}
 
 	// allowance defaults to 0
-	res, err = DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "allowance", map[string]string{
+	res, err = DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "allowance", map[string]string{
 		"token": token.String(), "owner": owner.String(), "spender": alice.String(),
 	}))
 	if err != nil {
@@ -74,7 +74,7 @@ func TestModuleReadQRC20(t *testing.T) {
 
 	// WRITE actions must be rejected on the read path (never mutate state).
 	for _, act := range []string{"mint", "transfer", "approve", "burn", "deploy"} {
-		if _, err := DispatchModuleReadCall(sdb, moduleData(t, "qrc20", act, map[string]string{
+		if _, err := DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", act, map[string]string{
 			"token": token.String(),
 		})); err == nil {
 			t.Errorf("expected write action %q to be rejected on the read path", act)
@@ -82,10 +82,10 @@ func TestModuleReadQRC20(t *testing.T) {
 	}
 
 	// unknown module / action
-	if _, err := DispatchModuleReadCall(sdb, moduleData(t, "nope", "x", map[string]string{})); err == nil {
+	if _, err := DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "nope", "x", map[string]string{})); err == nil {
 		t.Error("expected unknown module to be rejected")
 	}
-	if _, err := DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "explode", map[string]string{
+	if _, err := DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "explode", map[string]string{
 		"token": token.String(),
 	})); err == nil {
 		t.Error("expected unknown read action to be rejected")

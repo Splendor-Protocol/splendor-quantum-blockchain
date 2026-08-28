@@ -43,25 +43,42 @@ type ModuleCall struct {
 	Params json.RawMessage `json:"params"`
 }
 
+// ModuleContext is everything a native module may know about the transaction
+// and block it runs in. It is filled by the executor from the transaction and
+// from the block header being applied — the producer stamps the header once,
+// followers read it back — so a module never consults the wall clock and every
+// node sees the same values.
+//
+//	Caller — the tx sender (authorises owner-only actions like mint)
+//	Nonce  — the sender's tx nonce (deterministic deploy-address derivation)
+//	Height — the height of the block the tx is part of
+//	Time   — that block's header timestamp (unix seconds); deadlines are
+//	         judged against it, never against time.Now()
+type ModuleContext struct {
+	Caller qcrypto.Address
+	Nonce  uint64
+	Height uint64
+	Time   int64
+}
+
 // DispatchModuleCall decodes and executes a native-module call against stateDB.
 //
-//	caller  — the tx sender (authorises owner-only actions like mint)
-//	nonce   — the sender's tx nonce (deterministic deploy-address derivation)
+//	ctx     — the caller and the block the call executes in (see ModuleContext)
 //	data    — the raw ModuleCall JSON from tx.Data
 //	receipt — module events are appended here; deploy sets receipt.ContractAddress
 //
 // A returned error is recorded as a failed receipt by the executor (the fee is
 // still charged and the nonce still advances, exactly like a reverted call).
-func DispatchModuleCall(stateDB *state.StateDB, caller qcrypto.Address, nonce uint64, data []byte, receipt *types.Receipt) error {
+func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, receipt *types.Receipt) error {
 	var mc ModuleCall
 	if err := json.Unmarshal(data, &mc); err != nil {
 		return fmt.Errorf("module call: invalid JSON envelope: %w", err)
 	}
 	switch mc.Module {
 	case "qrc20":
-		return dispatchQRC20(stateDB, caller, nonce, mc.Action, mc.Params, receipt)
+		return dispatchQRC20(stateDB, ctx, mc.Action, mc.Params, receipt)
 	case "dex":
-		return dispatchDEX(stateDB, caller, nonce, mc.Action, mc.Params, receipt)
+		return dispatchDEX(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
 		return fmt.Errorf("module call: unknown module %q", mc.Module)
 	}
@@ -84,7 +101,8 @@ type qrc20TokenAction struct {
 	Amount  string `json:"amount"`            // decimal string, smallest unit
 }
 
-func dispatchQRC20(stateDB *state.StateDB, caller qcrypto.Address, nonce uint64, action string, raw json.RawMessage, receipt *types.Receipt) error {
+func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
+	caller, nonce := ctx.Caller, ctx.Nonce
 	switch action {
 	case "deploy":
 		var p qrc20DeployParams
@@ -204,7 +222,8 @@ type dexSwapParams struct {
 	MinAmountOut string `json:"min_amount_out,omitempty"`
 }
 
-func dispatchDEX(stateDB *state.StateDB, caller qcrypto.Address, nonce uint64, action string, raw json.RawMessage, receipt *types.Receipt) error {
+func dispatchDEX(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
+	caller, nonce := ctx.Caller, ctx.Nonce
 	switch action {
 	case "deploy_pool":
 		var p dexDeployPoolParams
@@ -293,6 +312,40 @@ func parseBig(s string) (*big.Int, error) {
 	}
 	if v.Sign() < 0 {
 		return nil, fmt.Errorf("negative amount %q", s)
+	}
+	return v, nil
+}
+
+// maxUint256Plus1 is 2^256; every on-chain amount and id is strictly below it.
+var maxUint256Plus1 = new(big.Int).Lsh(big.NewInt(1), 256)
+
+// parseUint256 is the strict decoder for amounts and ids on new module wire
+// shapes: a non-empty string of ASCII digits with no sign, no whitespace and
+// no leading zero (other than "0" itself), whose value is below 2^256. Unlike
+// parseBig it never accepts a "+" sign or a value that would not fit a
+// 32-byte word, and unlike parseBigOrZero it never turns garbage into zero —
+// a malformed amount is an error, not a free no-op.
+func parseUint256(s string) (*big.Int, error) {
+	if s == "" {
+		return nil, fmt.Errorf("empty decimal amount")
+	}
+	if len(s) > 78 { // 2^256 has 78 decimal digits
+		return nil, fmt.Errorf("decimal amount %q is too long", s)
+	}
+	if len(s) > 1 && s[0] == '0' {
+		return nil, fmt.Errorf("decimal amount %q has a leading zero", s)
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return nil, fmt.Errorf("invalid decimal amount %q", s)
+		}
+	}
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid decimal amount %q", s)
+	}
+	if v.Cmp(maxUint256Plus1) >= 0 {
+		return nil, fmt.Errorf("decimal amount %q does not fit in 256 bits", s)
 	}
 	return v, nil
 }

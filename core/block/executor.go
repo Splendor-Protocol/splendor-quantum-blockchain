@@ -530,7 +530,16 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		}
 		fromAcc.IncrNonce()
 		e.state.SetAccount(fromAcc)
-		return vm.DispatchModuleCall(e.state, tx.From, tx.Nonce, tx.Data, receipt)
+		// The block height and header time travel with the call so modules
+		// judge deadlines against the block, never the wall clock: the
+		// producer stamped blockTime once and every follower reads the same
+		// value back from the header.
+		return vm.DispatchModuleCall(e.state, vm.ModuleContext{
+			Caller: tx.From,
+			Nonce:  tx.Nonce,
+			Height: blockHeight,
+			Time:   blockTime,
+		}, tx.Data, receipt)
 	}
 
 	// The fee is charged up-front as gas (kept even if the call reverts). The
