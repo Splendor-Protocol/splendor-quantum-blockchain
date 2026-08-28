@@ -139,9 +139,9 @@ func DeployQRC20Capped(
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
 
-func (t *QRC20Token) Name() (string, error)    { return t.getString(slotName) }
-func (t *QRC20Token) Symbol() (string, error)  { return t.getString(slotSymbol) }
-func (t *QRC20Token) Decimals() (uint8, error) { return t.getUint8(slotDecimals) }
+func (t *QRC20Token) Name() (string, error)          { return t.getString(slotName) }
+func (t *QRC20Token) Symbol() (string, error)        { return t.getString(slotSymbol) }
+func (t *QRC20Token) Decimals() (uint8, error)       { return t.getUint8(slotDecimals) }
 func (t *QRC20Token) TotalSupply() (*big.Int, error) { return t.getBigInt(slotTotalSupply) }
 func (t *QRC20Token) MaxSupply() (*big.Int, error)   { return t.getBigInt(slotMaxSupply) }
 
