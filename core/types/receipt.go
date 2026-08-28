@@ -68,8 +68,10 @@ type Receipt struct {
 	// Fee paid.
 	Fee *big.Int `json:"fee"`
 
-	// ContractAddress is non-zero only for TxDeploy transactions.
-	// It is the address of the newly deployed contract.
+	// ContractAddress is set when the transaction created something with an
+	// address: a TxDeploy (the new bytecode contract) or a module-router
+	// TxCall whose action deploys — qrc20.deploy, qrc1155.deploy,
+	// dex.deploy_pool and exchange.deploy (vm/module_router.go). Nil otherwise.
 	ContractAddress *qcrypto.Address `json:"contract_address,omitempty"`
 
 	// Logs are the events emitted by this transaction's execution.

@@ -685,6 +685,39 @@ and `:982` (router table with fork names), DEPLOY.md endpoint quick reference
 ``chain_id` is `splendor-quantum-1`` return no hits (the `Fixed at compile time` heading stays —
 it still covers three real constants).
 
+## Implementation notes (recorded at PR-10)
+
+Written after the fact so the plan stays honest about what shipped.
+
+- **Landed, in order (branch `feat/blockPeak-integration`):** PR-1 `4228cec`,
+  PR-2 `d5b8656`, PR-3 `d1d95f7`, PR-4 `d752960`, PR-5 `51ad0f0`, PR-6a `6779ef9`,
+  PR-7 `83bf981`, PR-6 `ee7af30` + `9a99161` (module, then wiring), PR-8 `91d23f9`
+  (source) + `db1a064` (binary + pins), PR-10 (this pass). Each is preceded, where
+  CI's `gofmt` under go1.25 demanded it, by a `style: gofmt <file> under go1.25`
+  commit so the feature diffs stay readable. The numbering above skips PR-9: PR-6
+  was split into PR-6a (primitives) and PR-6 (module) instead of a ninth PR.
+- **`wallet-extension/` is no longer in this repository.** `origin/main` `111d259`
+  moved it to `splendor-quantum-wallet-extension`, which re-pins from the digest
+  published here. PR-8 therefore has no `background.js` literal and no
+  `copy:wasm` step; CI's `wasm-drift` checks only `sdk/bridge/wasm/dist/sqc_signer.wasm`
+  against the `wasmSha256` pins in `sdk/bridge/src/config/sqc.networks.json` and its
+  generated mirror `sdk/bridge/config/sqc.networks.json` (`npm run sync:config`
+  rewrites both). The committed digest after PR-8 is
+  `3a1fa8b247b8a714b9b7a75c0bd5f12578eccd4d779afdd007fe886ddba2d896`.
+- **Any new `.go` file in `core/types` or `core/crypto` moves the WASM digest**
+  (observed while landing PR-1: both packages are linked into the signer, and a
+  rebuild after adding a file no longer reproduced the pin, even with the new
+  symbols unreachable). `PermitDigest` and `OrderDigest`/`CancelDigest`/
+  `IncrementNonceDigest` therefore live in `core/types/transaction.go` rather than
+  in the `permit.go` / `order.go` files the PR-1 and PR-6a paragraphs name; only
+  their tests are separate files. The single rebuild still happened in PR-8, as
+  planned (PR-6a's `CtxOrder` had already moved the from-source digest).
+- **Plan line numbers are as of the sweep.** The code is the authority on names
+  and lines; the PR paragraphs were followed by re-reading each file first.
+- **DEPLOY.md** carries the fork-schedule section (PR-2), the `--chain-id` row,
+  the `/call` and `/exchange/...` rows in the endpoint quick reference, and no
+  longer calls `chain_id` a compile-time constant (PR-10).
+
 ## Verification
 
 - Per PR: `go build ./... && go vet ./...` then `go test -count=1 ./vm/ ./core/... ./genesis/
