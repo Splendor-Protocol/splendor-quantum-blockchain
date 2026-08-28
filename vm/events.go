@@ -115,6 +115,30 @@ var (
 	TopicTransferBatch  = EventTopic("TransferBatch(sqaddress,sqaddress,sqaddress,uint256[],uint256[])")
 )
 
+// Exchange (exchange_v1) settlement events. Every non-indexed value is a
+// 32-byte word (uint64/uint8/bool zero-extended, bytes32 verbatim), never a
+// string. Indexed fields: ConditionCreated → condition; OrderFilled → hash,
+// maker, taker; MintMatched/MergeMatched → taker hash, maker hash;
+// OrderCancelled → hash, maker; NonceIncremented, PositionSplit,
+// PositionsMerged, Redeemed, RedeemFeeCharged, OperatorSet,
+// FeeRecipientUpdated → the address; Resolved → condition.
+var (
+	TopicConditionCreated    = EventTopic("ConditionCreated(uint64,sqaddress,sqaddress,uint64,uint8,bytes32)")
+	TopicOrderFilled         = EventTopic("OrderFilled(bytes32,sqaddress,sqaddress,uint64,uint8,uint8,uint256,uint256)")
+	TopicMintMatched         = EventTopic("MintMatched(bytes32,bytes32,uint64,uint256)")
+	TopicMergeMatched        = EventTopic("MergeMatched(bytes32,bytes32,uint64,uint256)")
+	TopicOrderCancelled      = EventTopic("OrderCancelled(bytes32,sqaddress)")
+	TopicNonceIncremented    = EventTopic("NonceIncremented(sqaddress,uint64)")
+	TopicPositionSplit       = EventTopic("PositionSplit(sqaddress,uint64,uint256)")
+	TopicPositionsMerged     = EventTopic("PositionsMerged(sqaddress,uint64,uint256)")
+	TopicResolved            = EventTopic("Resolved(uint64,uint8)")
+	TopicRedeemed            = EventTopic("Redeemed(sqaddress,uint64,uint256,uint256)")
+	TopicRedeemFeeCharged    = EventTopic("RedeemFeeCharged(sqaddress,uint256)")
+	TopicOperatorSet         = EventTopic("OperatorSet(sqaddress,bool)")
+	TopicRedeemFeeUpdated    = EventTopic("RedeemFeeUpdated(uint256)")
+	TopicFeeRecipientUpdated = EventTopic("FeeRecipientUpdated(sqaddress)")
+)
+
 // ── Event builder ─────────────────────────────────────────────────────────────
 
 // EventBuilder builds a *types.Log with the standard topic-first format.
@@ -151,6 +175,13 @@ func (e *EventBuilder) IndexBool(v bool) *EventBuilder {
 	return e
 }
 
+// IndexHash adds an indexed bytes32 parameter (an order hash, a question
+// hash) as a topic, verbatim.
+func (e *EventBuilder) IndexHash(h [32]byte) *EventBuilder {
+	e.topics = append(e.topics, h)
+	return e
+}
+
 // DataUint256 appends a non-indexed uint256 to the event data (ABI-encoded as 32 bytes).
 func (e *EventBuilder) DataUint256(v *big.Int) *EventBuilder {
 	var word [32]byte
@@ -167,6 +198,12 @@ func (e *EventBuilder) DataAddr(addr qcrypto.Address) *EventBuilder {
 	var word [32]byte
 	copy(word[32-qcrypto.AddressSize:], addr[:])
 	e.data = append(e.data, word[:]...)
+	return e
+}
+
+// DataHash appends a non-indexed bytes32 to the event data, verbatim.
+func (e *EventBuilder) DataHash(h [32]byte) *EventBuilder {
+	e.data = append(e.data, h[:]...)
 	return e
 }
 
