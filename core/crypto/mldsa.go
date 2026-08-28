@@ -61,6 +61,11 @@ var (
 	CtxPermit = []byte("SPLENDOR-QC-PERMIT-v1")
 	// CtxMultisig domain-separates multisig co-signer approvals.
 	CtxMultisig = []byte("SPLENDOR-QC-MULTISIG-v1")
+	// CtxOrder domain-separates exchange authorisations a maker signs off-chain:
+	// orders (types.OrderDigest), signed cancels (types.CancelDigest) and
+	// signed nonce bumps (types.IncrementNonceDigest). Appended after
+	// CtxMultisig: the block is append-only.
+	CtxOrder = []byte("SPLENDOR-QC-ORDER-v1")
 )
 
 // maxContextSize is the FIPS 204 limit on the signing context string.

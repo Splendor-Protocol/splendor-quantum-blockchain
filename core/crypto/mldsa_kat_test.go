@@ -125,6 +125,7 @@ func TestMLDSAContextSeparationIsEnforced(t *testing.T) {
 		"oracle":      CtxOracle,
 		"permit":      CtxPermit,
 		"multisig":    CtxMultisig,
+		"order":       CtxOrder,
 	}
 
 	for signName, signCtx := range contexts {
@@ -150,6 +151,7 @@ func TestContextStringsAreDistinctAndValid(t *testing.T) {
 	all := [][]byte{
 		CtxTransaction, CtxBlock, CtxX402, CtxVote,
 		CtxMessage, CtxPeerHandshake, CtxOracle, CtxPermit, CtxMultisig,
+		CtxOrder,
 	}
 	seen := make(map[string]bool, len(all))
 	for _, c := range all {
