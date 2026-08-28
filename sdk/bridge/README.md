@@ -143,9 +143,11 @@ closed:
 
 ```bash
 npm run sync:config                              # rewrites wasmSha256/execSha256
-npm --prefix ../../wallet-extension run copy:wasm
-# then update WASM_SHA256/EXEC_SHA256 in wallet-extension/background.js
 ```
+
+The browser wallet extension lives in its own repository
+(`splendor-quantum-wallet-extension`) and re-pins from the digest published
+here; it is no longer rebuilt from this tree.
 
 `npm run prepublishOnly` refuses to publish when `wasm/dist` and the pins in
 `sqc.networks.json` disagree.

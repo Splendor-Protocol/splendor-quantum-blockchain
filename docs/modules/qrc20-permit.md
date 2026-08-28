@@ -1,6 +1,6 @@
 # QRC-20 v2: permit and the allowance surface (`qrc20_v2`)
 
-The `qrc20` native module routes twelve write actions and seven reads through
+The `qrc20` native module routes thirteen write actions and seven reads through
 the module router (`TxCall` to `vm.ModuleRouterAddress`, JSON envelope
 `{"module":"qrc20","action":…,"params":{…}}`). The five original writes
 (`deploy`, `mint`, `transfer`, `approve`, `burn`) are ungated. The eight added

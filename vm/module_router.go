@@ -39,7 +39,7 @@ func deriveModuleRouterAddress() qcrypto.Address {
 
 // ModuleCall is the JSON envelope in a module TxCall's Data field.
 type ModuleCall struct {
-	Module string          `json:"module"` // "qrc20" | "dex"
+	Module string          `json:"module"` // "qrc20" | "qrc1155" | "dex" | "exchange"
 	Action string          `json:"action"` // e.g. "deploy", "mint", "transfer"
 	Params json.RawMessage `json:"params"`
 }

@@ -411,6 +411,7 @@ two ever disagree.
 | `--validator` | `false` | Produce blocks |
 | `--block-interval` | `2` | Seconds between blocks (validator only) |
 | `--genesis` | — | Path to `genesis.json`. Allocations are applied once, on an empty chain |
+| `--chain-id` / `SQC_CHAIN_ID` | — | Chain id this node expects (e.g. `splendor-quantum-devnet-1`). Set, a genesis document naming another chain is refused; empty, the node adopts whatever the verified genesis says |
 
 ### Validator key
 
@@ -484,11 +485,16 @@ the install rather than writing an unpinned unit if the identity cannot be read.
 
 ### Fixed at compile time
 
-Some values in this document read like settings but are constants: `chain_id`
-is `splendor-quantum-1` (`core/types/transaction.go`), the mempool cap is 50,000
-transactions (`core/mempool/mempool.go`), the minimum fee hook is 1,000 units,
-and the AI scheduler's batch bounds live in `ai/scheduler.go`. Changing any of
-them means editing and rebuilding.
+Some values in this document read like settings but are constants: the
+mempool cap is 50,000 transactions (`core/mempool/mempool.go`), the minimum fee
+hook is 1,000 units, and the AI scheduler's batch bounds live in
+`ai/scheduler.go`. Changing any of them means editing and rebuilding.
+
+`chain_id` is **not** one of them. The node takes it from the verified genesis
+document (`core/types.DefaultChainID`, `splendor-quantum-1`, is only what a
+binary assumes before it has seen one) and binds it into every transaction,
+permit and order signature; `--chain-id` / `SQC_CHAIN_ID` pins the expected
+value so a node refuses a genesis for another tier instead of adopting it.
 
 ---
 
@@ -1123,6 +1129,12 @@ Save as `diagnostics.sh`, `chmod +x diagnostics.sh`, run with `./diagnostics.sh`
 | `/staking/tiers` | GET | Staking tier info |
 | `/dex/pool/{t0}/{t1}` | GET | Pool info |
 | `/dex/pool/{t0}/{t1}/quote` | GET | Swap quote |
+| `/call` | POST | Module read (`{"module","action","params"}`) or bytecode view call, at the head block |
+| `/exchange/{SQ:addr}` | GET | Exchange instance info (`exchange_info`) |
+| `/exchange/{SQ:addr}/condition/{id}` | GET | Condition state (`condition_info`) |
+| `/exchange/{SQ:addr}/order/{hash}` | GET | Order fill/cancel status (`order_status`) |
+| `/exchange/{SQ:addr}/nonce/{SQ:maker}` | GET | Maker's order nonce (`nonce`) |
+| `/exchange/{SQ:addr}/position/{condition}/{SQ:holder}` | GET | Holder's YES/NO balances (`position`) |
 | `/ws?subscribe=new_block,new_tx` | GET | WebSocket stream (`rpc/websocket.go`) |
 | `/metrics` | GET | Prometheus metrics (:9100) |
 | `/ai/stats` | GET | AI scheduler stats |
