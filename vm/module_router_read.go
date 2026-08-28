@@ -52,9 +52,15 @@ var KnownModuleActions = map[string]ModuleActions{
 	"qrc20": {
 		Writes: map[string]string{
 			"deploy": "", "mint": "", "transfer": "", "approve": "", "burn": "",
+			// qrc20_v2: the permit/allowance surface and the owner controls.
+			"permit": forks.QRC20V2, "transfer_from": forks.QRC20V2,
+			"increase_allowance": forks.QRC20V2, "decrease_allowance": forks.QRC20V2,
+			"burn_from": forks.QRC20V2, "transfer_ownership": forks.QRC20V2,
+			"pause": forks.QRC20V2, "unpause": forks.QRC20V2,
 		},
 		Reads: map[string]bool{
 			"balance_of": true, "total_supply": true, "allowance": true, "token_info": true,
+			"permit_nonce": true, "paused": true, "owner": true,
 		},
 	},
 	"dex": {
@@ -202,6 +208,42 @@ func dispatchQRC20Read(stateDB *state.StateDB, action string, raw json.RawMessag
 			"token": token.String(), "name": name, "symbol": symbol, "decimals": decimals,
 			"total_supply": supply.String(), "max_supply": maxSupply.String(),
 			"owner": owner.String(), "exists": exists,
+		}, nil
+
+	case "permit_nonce":
+		// The nonce a signer must put in its next permit digest for this token.
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, fmt.Errorf("qrc20 permit_nonce: owner: %w", err)
+		}
+		nonce, err := tok.PermitNonce(owner)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"module": "qrc20", "action": "permit_nonce",
+			"token": token.String(), "owner": owner.String(),
+			"permit_nonce": nonce.String(), "exists": exists,
+		}, nil
+
+	case "paused":
+		paused, err := tok.IsPaused()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"module": "qrc20", "action": "paused",
+			"token": token.String(), "paused": paused, "exists": exists,
+		}, nil
+
+	case "owner":
+		owner, err := tok.Owner()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"module": "qrc20", "action": "owner",
+			"token": token.String(), "owner": owner.String(), "exists": exists,
 		}, nil
 
 	default:

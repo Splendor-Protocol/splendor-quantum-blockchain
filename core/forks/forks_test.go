@@ -79,9 +79,10 @@ func withKnown(t *testing.T, names ...string) {
 // scheduling one this build does not implement must be refused, not accepted
 // and silently ignored; each name flips to accepted only in the change that
 // implements its gate (module_revert_v1 flipped with the executor's
-// module-revert branch; the rest are still pending).
+// module-revert branch, qrc20_v2 with the routed QRC-20 v2 surface; the rest
+// are still pending).
 func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
-	for _, name := range []string{QRC20V2, QRC1155V1, ExchangeV1} {
+	for _, name := range []string{QRC1155V1, ExchangeV1} {
 		if isKnown(name) {
 			t.Fatalf("%s is listed as known: only the change implementing its gate may add it", name)
 		}
@@ -89,11 +90,13 @@ func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
 			t.Fatalf("scheduling %s must be refused until its gate exists", name)
 		}
 	}
-	if !isKnown(ModuleRevertV1) {
-		t.Fatalf("%s has a gate in the executor but is not listed as known", ModuleRevertV1)
-	}
-	if err := (Schedule{ModuleRevertV1: 1}).Validate(); err != nil {
-		t.Fatalf("scheduling %s must be accepted by this build: %v", ModuleRevertV1, err)
+	for _, name := range []string{ModuleRevertV1, QRC20V2} {
+		if !isKnown(name) {
+			t.Fatalf("%s has a gate in this build but is not listed as known", name)
+		}
+		if err := (Schedule{name: 1}).Validate(); err != nil {
+			t.Fatalf("scheduling %s must be accepted by this build: %v", name, err)
+		}
 	}
 }
 

@@ -99,6 +99,13 @@ var (
 	TopicVoteCast            = EventTopic("VoteCast(uint256,sqaddress,uint8,uint256)")
 )
 
+// QRC-20 v2 (qrc20_v2) lifecycle events: pause state and ownership.
+var (
+	TopicPaused               = EventTopic("Paused(sqaddress)")
+	TopicUnpaused             = EventTopic("Unpaused(sqaddress)")
+	TopicOwnershipTransferred = EventTopic("OwnershipTransferred(sqaddress,sqaddress)")
+)
+
 // ── Event builder ─────────────────────────────────────────────────────────────
 
 // EventBuilder builds a *types.Log with the standard topic-first format.
@@ -196,6 +203,29 @@ func ApprovalForAllEvent(contract, owner, operator qcrypto.Address, approved boo
 		IndexAddr(owner).
 		IndexAddr(operator).
 		IndexBool(approved).
+		Build()
+}
+
+// PausedEvent builds a Paused event; account is the owner that paused.
+func PausedEvent(contract, account qcrypto.Address) *types.Log {
+	return NewEvent(contract, "Paused(sqaddress)").
+		IndexAddr(account).
+		Build()
+}
+
+// UnpausedEvent builds an Unpaused event; account is the owner that unpaused.
+func UnpausedEvent(contract, account qcrypto.Address) *types.Log {
+	return NewEvent(contract, "Unpaused(sqaddress)").
+		IndexAddr(account).
+		Build()
+}
+
+// OwnershipTransferredEvent builds an OwnershipTransferred event
+// (previousOwner and newOwner both indexed).
+func OwnershipTransferredEvent(contract, previousOwner, newOwner qcrypto.Address) *types.Log {
+	return NewEvent(contract, "OwnershipTransferred(sqaddress,sqaddress)").
+		IndexAddr(previousOwner).
+		IndexAddr(newOwner).
 		Build()
 }
 
