@@ -88,6 +88,8 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 	switch mc.Module {
 	case "qrc20":
 		return dispatchQRC20(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "qrc1155":
+		return dispatchQRC1155(stateDB, ctx, mc.Action, mc.Params, receipt)
 	case "dex":
 		return dispatchDEX(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
@@ -444,6 +446,271 @@ func parseTokenAction(raw json.RawMessage) (qrc20TokenAction, qcrypto.Address, e
 		return p, qcrypto.Address{}, fmt.Errorf("qrc20: token: %w", err)
 	}
 	return p, token, nil
+}
+
+// ── QRC-1155 ────────────────────────────────────────────────────────────────
+//
+// Every qrc1155 write is fork-gated under qrc1155_v1 (HARD before the
+// height). Amounts and ids are decimal strings through the strict
+// parseUint256 decoder: canonical decimal, no sign, no leading zero, below
+// 2^256. Batch lists are capped at MaxQRC1155Batch before anything is parsed.
+
+type qrc1155DeployParams struct {
+	Name      string `json:"name"`
+	URIPrefix string `json:"uri_prefix,omitempty"` // e.g. "ipfs://QmBase/"; per-token uri takes precedence
+}
+
+// qrc1155Action is the wire shape shared by every non-deploy qrc1155 write.
+// `from` defaults to the caller on transfer/batch_transfer/burn/burn_batch;
+// naming another holder needs that holder's set_approval_for_all.
+type qrc1155Action struct {
+	Collection string   `json:"collection"`          // contract SQ: address
+	To         string   `json:"to,omitempty"`        // recipient (mint/mint_batch/transfer/batch_transfer)
+	From       string   `json:"from,omitempty"`      // holder (transfer/batch_transfer/burn/burn_batch); "" = caller
+	Operator   string   `json:"operator,omitempty"`  // set_approval_for_all
+	Approved   bool     `json:"approved,omitempty"`  // set_approval_for_all
+	NewOwner   string   `json:"new_owner,omitempty"` // transfer_ownership
+	ID         string   `json:"id,omitempty"`        // decimal string (mint/transfer/burn)
+	Amount     string   `json:"amount,omitempty"`    // decimal string (mint/transfer/burn)
+	URI        string   `json:"uri,omitempty"`       // per-token uri (mint)
+	IDs        []string `json:"ids,omitempty"`       // decimal strings (batch paths, ≤ MaxQRC1155Batch)
+	Amounts    []string `json:"amounts,omitempty"`   // decimal strings (batch paths)
+	URIs       []string `json:"uris,omitempty"`      // per-token uris (mint_batch), may be shorter than ids
+}
+
+// requireCollection is the IsContract guard for a non-deploy QRC-1155 action:
+// the address must have been deployed through the module (markContract), so
+// a mistyped address is refused instead of being a fresh, empty, ownerless
+// collection. SOFT: it is the action's own complaint.
+func requireCollection(stateDB *state.StateDB, collection qcrypto.Address) error {
+	acc, err := stateDB.GetAccount(collection)
+	if err != nil {
+		return fmt.Errorf("qrc1155: collection %s: %w", collection, err)
+	}
+	if !acc.IsContract {
+		return fmt.Errorf("qrc1155: collection %s is not a deployed contract", collection)
+	}
+	return nil
+}
+
+// parseQRC1155Action is the first step of every non-deploy qrc1155 write:
+// the fork gate (HARD before the height), then the shared params, then the
+// collection (IsContract-guarded). `from` falls back to the caller.
+func parseQRC1155Action(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage) (qrc1155Action, *QRC1155Token, qcrypto.Address, error) {
+	var p qrc1155Action
+	if err := requireFork(ctx, forks.QRC1155V1); err != nil {
+		return p, nil, qcrypto.Address{}, err
+	}
+	caller := ctx.Caller
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return p, nil, qcrypto.Address{}, fmt.Errorf("qrc1155: bad params: %w", err)
+	}
+	collection, err := qcrypto.AddressFromString(p.Collection)
+	if err != nil {
+		return p, nil, qcrypto.Address{}, fmt.Errorf("qrc1155: collection: %w", err)
+	}
+	if err := requireCollection(stateDB, collection); err != nil {
+		return p, nil, qcrypto.Address{}, err
+	}
+	from := caller
+	if p.From != "" {
+		if from, err = qcrypto.AddressFromString(p.From); err != nil {
+			return p, nil, qcrypto.Address{}, fmt.Errorf("qrc1155: from: %w", err)
+		}
+	}
+	return p, NewQRC1155Token(stateDB, collection), from, nil
+}
+
+// parseUint256List decodes a batch of decimal strings, refusing a list over
+// the cap before parsing any element.
+func parseUint256List(what string, ss []string) ([]*big.Int, error) {
+	if len(ss) > MaxQRC1155Batch {
+		return nil, fmt.Errorf("%s: %d entries exceeds the batch cap of %d", what, len(ss), MaxQRC1155Batch)
+	}
+	out := make([]*big.Int, len(ss))
+	for i, s := range ss {
+		v, err := parseUint256(s)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", what, i, err)
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+// userCollection is the guard on the router's burn/transfer paths: a
+// module-managed collection (owner == its own address) is mutated only by
+// the owning module, so a holder can never destroy or move one leg of a
+// position set the module accounts for.
+func userCollection(action string, tok *QRC1155Token) error {
+	if err := tok.requireUserManaged(); err != nil {
+		return fmt.Errorf("qrc1155 %s: %w", action, err)
+	}
+	return nil
+}
+
+func dispatchQRC1155(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
+	caller, nonce := ctx.Caller, ctx.Nonce
+	switch action {
+	case "deploy":
+		if err := requireFork(ctx, forks.QRC1155V1); err != nil {
+			return err
+		}
+		var p qrc1155DeployParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return fmt.Errorf("qrc1155 deploy: bad params: %w", err)
+		}
+		addr, err := DeployQRC1155(stateDB, caller, p.Name, p.URIPrefix, nonce)
+		if err != nil {
+			return err
+		}
+		markContract(stateDB, addr)
+		receipt.ContractAddress = &addr
+		return nil
+
+	case "mint":
+		p, tok, _, err := parseQRC1155Action(stateDB, ctx, raw)
+		if err != nil {
+			return err
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc1155 mint: to: %w", err)
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return fmt.Errorf("qrc1155 mint: id: %w", err)
+		}
+		amt, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("qrc1155 mint: amount: %w", err)
+		}
+		return tok.MintWithEvents(caller, to, id, amt, p.URI, receipt)
+
+	case "mint_batch":
+		p, tok, _, err := parseQRC1155Action(stateDB, ctx, raw)
+		if err != nil {
+			return err
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc1155 mint_batch: to: %w", err)
+		}
+		ids, err := parseUint256List("qrc1155 mint_batch: ids", p.IDs)
+		if err != nil {
+			return err
+		}
+		amts, err := parseUint256List("qrc1155 mint_batch: amounts", p.Amounts)
+		if err != nil {
+			return err
+		}
+		return tok.MintBatchWithEvents(caller, to, ids, amts, p.URIs, receipt)
+
+	case "transfer":
+		p, tok, from, err := parseQRC1155Action(stateDB, ctx, raw)
+		if err != nil {
+			return err
+		}
+		if err := userCollection(action, tok); err != nil {
+			return err
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc1155 transfer: to: %w", err)
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return fmt.Errorf("qrc1155 transfer: id: %w", err)
+		}
+		amt, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("qrc1155 transfer: amount: %w", err)
+		}
+		return tok.SafeTransferFromWithEvents(caller, from, to, id, amt, receipt)
+
+	case "batch_transfer":
+		p, tok, from, err := parseQRC1155Action(stateDB, ctx, raw)
+		if err != nil {
+			return err
+		}
+		if err := userCollection(action, tok); err != nil {
+			return err
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc1155 batch_transfer: to: %w", err)
+		}
+		ids, err := parseUint256List("qrc1155 batch_transfer: ids", p.IDs)
+		if err != nil {
+			return err
+		}
+		amts, err := parseUint256List("qrc1155 batch_transfer: amounts", p.Amounts)
+		if err != nil {
+			return err
+		}
+		return tok.SafeBatchTransferFromWithEvents(caller, from, to, ids, amts, receipt)
+
+	case "set_approval_for_all":
+		p, tok, _, err := parseQRC1155Action(stateDB, ctx, raw)
+		if err != nil {
+			return err
+		}
+		operator, err := qcrypto.AddressFromString(p.Operator)
+		if err != nil {
+			return fmt.Errorf("qrc1155 set_approval_for_all: operator: %w", err)
+		}
+		return tok.SetApprovalForAllWithEvents(caller, operator, p.Approved, receipt)
+
+	case "burn":
+		p, tok, from, err := parseQRC1155Action(stateDB, ctx, raw)
+		if err != nil {
+			return err
+		}
+		if err := userCollection(action, tok); err != nil {
+			return err
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return fmt.Errorf("qrc1155 burn: id: %w", err)
+		}
+		amt, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("qrc1155 burn: amount: %w", err)
+		}
+		return tok.BurnWithEvents(caller, from, id, amt, receipt)
+
+	case "burn_batch":
+		p, tok, from, err := parseQRC1155Action(stateDB, ctx, raw)
+		if err != nil {
+			return err
+		}
+		if err := userCollection(action, tok); err != nil {
+			return err
+		}
+		ids, err := parseUint256List("qrc1155 burn_batch: ids", p.IDs)
+		if err != nil {
+			return err
+		}
+		amts, err := parseUint256List("qrc1155 burn_batch: amounts", p.Amounts)
+		if err != nil {
+			return err
+		}
+		return tok.BurnBatchWithEvents(caller, from, ids, amts, receipt)
+
+	case "transfer_ownership":
+		p, tok, _, err := parseQRC1155Action(stateDB, ctx, raw)
+		if err != nil {
+			return err
+		}
+		newOwner, err := qcrypto.AddressFromString(p.NewOwner)
+		if err != nil {
+			return fmt.Errorf("qrc1155 transfer_ownership: new_owner: %w", err)
+		}
+		return tok.TransferOwnershipWithEvents(caller, newOwner, receipt)
+
+	default:
+		return hard(fmt.Errorf("qrc1155: unknown action %q", action))
+	}
 }
 
 // ── DEX ─────────────────────────────────────────────────────────────────────

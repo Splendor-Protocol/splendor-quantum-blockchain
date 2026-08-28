@@ -72,6 +72,7 @@ func topics(rc *types.Receipt) []string {
 	names := map[[32]byte]string{
 		TopicTransfer: "Transfer", TopicApproval: "Approval", TopicMint: "Mint", TopicBurn: "Burn",
 		TopicPaused: "Paused", TopicUnpaused: "Unpaused", TopicOwnershipTransferred: "OwnershipTransferred",
+		TopicTransferSingle: "TransferSingle", TopicTransferBatch: "TransferBatch", TopicApprovalForAll: "ApprovalForAll",
 	}
 	out := make([]string, 0, len(rc.Logs))
 	for _, l := range rc.Logs {
