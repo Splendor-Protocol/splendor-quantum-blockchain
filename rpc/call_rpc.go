@@ -25,6 +25,7 @@ import (
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -89,9 +90,9 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 		sim := stateDB.Simulate()
 
 		// Native-module read (token / DEX view calls). Routed explicitly: the
-		// module-router address is not a bytecode contract, and its WRITE
-		// dispatch bypasses snapshots — so /call must serve reads via the
-		// read-only dispatch, never via CallWithContext.
+		// module-router address is not a bytecode contract, and a write action
+		// has no signature here to authorise it — so /call serves only the
+		// module read set via the read-only dispatch, never CallWithContext.
 		if to == vm.ModuleRouterAddress {
 			decoded, derr := vm.DispatchModuleReadCall(sim, headReadContext(executor), calldata)
 			if derr != nil {
@@ -231,8 +232,19 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 			}
 			if to == vm.ModuleRouterAddress {
 				// Native-module call: no VM gas meter; only the flat fee applies.
-				// Validate the envelope so a malformed call is flagged (no execution).
-				if _, verr := vm.PreflightModuleCall(calldata); verr != nil {
+				// Validate the envelope so a malformed call is flagged (no
+				// execution), against the live schedule at head+1 so a
+				// fork-gated action reads "not active" before it is signed.
+				var (
+					schedule forks.Schedule
+					next     uint64
+				)
+				if executor != nil {
+					schedule = executor.Forks()
+					head, _ := executor.LatestHeight()
+					next = head + 1
+				}
+				if _, verr := vm.PreflightModuleCall(calldata, schedule, next); verr != nil {
 					resp.Reverted = true
 					if resp.RevertReason == "" {
 						resp.RevertReason = verr.Error()

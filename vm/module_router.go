@@ -73,12 +73,17 @@ type ModuleContext struct {
 //	data    — the raw ModuleCall JSON from tx.Data
 //	receipt — module events are appended here; deploy sets receipt.ContractAddress
 //
-// A returned error is recorded as a failed receipt by the executor (the fee is
-// still charged and the nonce still advances, exactly like a reverted call).
+// A returned error is classified by the executor (see errors.go). A HARD
+// error — unparseable envelope, unknown module or action, fork not active —
+// makes the tx unappliable: the producer drops it and a follower rejects a
+// block carrying it. Any other error is SOFT: under module_revert_v1 the
+// module's writes are reverted and the tx is included with a failed receipt,
+// the fee kept and the nonce consumed, exactly like a reverted bytecode call;
+// before that fork every error drops the tx.
 func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, receipt *types.Receipt) error {
 	var mc ModuleCall
 	if err := json.Unmarshal(data, &mc); err != nil {
-		return fmt.Errorf("module call: invalid JSON envelope: %w", err)
+		return hard(fmt.Errorf("module call: invalid JSON envelope: %w", err))
 	}
 	switch mc.Module {
 	case "qrc20":
@@ -86,7 +91,7 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 	case "dex":
 		return dispatchDEX(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
-		return fmt.Errorf("module call: unknown module %q", mc.Module)
+		return hard(fmt.Errorf("module call: unknown module %q", mc.Module))
 	}
 }
 
@@ -190,7 +195,7 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		return NewQRC20Token(stateDB, token).BurnWithEvents(caller, amt, receipt)
 
 	default:
-		return fmt.Errorf("qrc20: unknown action %q", action)
+		return hard(fmt.Errorf("qrc20: unknown action %q", action))
 	}
 }
 
@@ -292,7 +297,7 @@ func dispatchDEX(stateDB *state.StateDB, ctx ModuleContext, action string, raw j
 		return err
 
 	default:
-		return fmt.Errorf("dex: unknown action %q", action)
+		return hard(fmt.Errorf("dex: unknown action %q", action))
 	}
 }
 

@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -93,22 +94,32 @@ func TestModuleReadQRC20(t *testing.T) {
 }
 
 func TestPreflightModuleCall(t *testing.T) {
-	// valid envelopes (read + write actions both parse in preflight)
+	// Write actions pass: they are what a signed TxCall may carry.
 	for _, tc := range []struct{ module, action string }{
-		{"qrc20", "balance_of"}, {"qrc20", "transfer"}, {"dex", "reserves"}, {"dex", "swap"},
+		{"qrc20", "transfer"}, {"qrc20", "deploy"}, {"dex", "swap"}, {"dex", "deploy_pool"},
 	} {
-		if _, err := PreflightModuleCall(moduleData(t, tc.module, tc.action, map[string]string{})); err != nil {
+		if _, err := PreflightModuleCall(moduleData(t, tc.module, tc.action, map[string]string{}), nil, 0); err != nil {
 			t.Errorf("preflight %s:%s rejected: %v", tc.module, tc.action, err)
 		}
 	}
+	// A read action parses but is refused: the write dispatch would treat it
+	// as an unknown action (HARD) and the sender would be jammed at that nonce.
+	for _, tc := range []struct{ module, action string }{
+		{"qrc20", "balance_of"}, {"qrc20", "token_info"}, {"dex", "reserves"},
+	} {
+		_, err := PreflightModuleCall(moduleData(t, tc.module, tc.action, map[string]string{}), nil, 0)
+		if err == nil || !strings.Contains(err.Error(), "is a read action") {
+			t.Errorf("preflight %s:%s: want a read-action refusal, got %v", tc.module, tc.action, err)
+		}
+	}
 	// invalid: unknown action, unknown module, bad JSON
-	if _, err := PreflightModuleCall(moduleData(t, "qrc20", "explode", map[string]string{})); err == nil {
+	if _, err := PreflightModuleCall(moduleData(t, "qrc20", "explode", map[string]string{}), nil, 0); err == nil {
 		t.Error("expected unknown action rejection")
 	}
-	if _, err := PreflightModuleCall(moduleData(t, "nope", "x", map[string]string{})); err == nil {
+	if _, err := PreflightModuleCall(moduleData(t, "nope", "x", map[string]string{}), nil, 0); err == nil {
 		t.Error("expected unknown module rejection")
 	}
-	if _, err := PreflightModuleCall([]byte("nonsense")); err == nil {
+	if _, err := PreflightModuleCall([]byte("nonsense"), nil, 0); err == nil {
 		t.Error("expected bad-JSON rejection")
 	}
 }
