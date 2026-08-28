@@ -10,18 +10,19 @@
 // No ECDSA. No keccak. No Ethereum address format.
 //
 // Interface:
-//   balanceOf(account sqaddress, tokenId uint256) → uint256
-//   balanceOfBatch(accounts []sqaddress, tokenIds []uint256) → []uint256
-//   setApprovalForAll(operator sqaddress, approved bool)
-//   isApprovedForAll(account sqaddress, operator sqaddress) → bool
-//   safeTransferFrom(from, to sqaddress, tokenId, amount uint256, data []byte)
-//   safeBatchTransferFrom(from, to sqaddress, tokenIds, amounts []uint256, data []byte)
-//   mint(to sqaddress, tokenId, amount uint256, uri string)
-//   mintBatch(to sqaddress, tokenIds, amounts []uint256, uris []string)
-//   burn(from sqaddress, tokenId, amount uint256)
-//   burnBatch(from sqaddress, tokenIds, amounts []uint256)
-//   uri(tokenId uint256) → string
-//   totalSupply(tokenId uint256) → uint256
+//
+//	balanceOf(account sqaddress, tokenId uint256) → uint256
+//	balanceOfBatch(accounts []sqaddress, tokenIds []uint256) → []uint256
+//	setApprovalForAll(operator sqaddress, approved bool)
+//	isApprovedForAll(account sqaddress, operator sqaddress) → bool
+//	safeTransferFrom(from, to sqaddress, tokenId, amount uint256, data []byte)
+//	safeBatchTransferFrom(from, to sqaddress, tokenIds, amounts []uint256, data []byte)
+//	mint(to sqaddress, tokenId, amount uint256, uri string)
+//	mintBatch(to sqaddress, tokenIds, amounts []uint256, uris []string)
+//	burn(from sqaddress, tokenId, amount uint256)
+//	burnBatch(from sqaddress, tokenIds, amounts []uint256)
+//	uri(tokenId uint256) → string
+//	totalSupply(tokenId uint256) → uint256
 package vm
 
 import (
