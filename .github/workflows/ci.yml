@@ -95,16 +95,16 @@ jobs:
             echo "The signer was changed without rebuilding. Anyone building from this tree"
             echo "gets a binary that does not do what main.go says it does."
             echo "Fix: bash sdk/bridge/wasm/build.sh && (cd sdk/bridge && npm run sync:config)"
-            echo "     && npm --prefix wallet-extension run copy:wasm, then re-pin WASM_SHA256"
-            echo "     in wallet-extension/background.js."
+            echo "Then re-pin the same digest in splendor-quantum-wallet-extension, which"
+            echo "ships its own copy of this artifact."
             fail=1
           fi
 
-          ext="$(sha256sum wallet-extension/wasm/sqc_signer.wasm | cut -d' ' -f1)"
-          if [ "$ext" != "$built" ]; then
-            echo "::error::wallet-extension/wasm/sqc_signer.wasm ($ext) is not the built artifact."
-            fail=1
-          fi
+          # The extension's copy of this binary moved to
+          # splendor-quantum-wallet-extension in c61ab08. It still pins this digest,
+          # so it can still drift from this artifact — but it must be checked THERE,
+          # by that repo's own CI, against the digest published here. Asserting a
+          # path this repo no longer owns just fails every build.
 
           # Every recorded pin must name the same bytes. A pin that agrees with a
           # stale binary is exactly how this went unnoticed before.
@@ -114,10 +114,6 @@ jobs:
               fail=1
             fi
           done
-          if ! grep -q "$built" wallet-extension/background.js; then
-            echo "::error::wallet-extension/background.js WASM_SHA256 is not the built artifact."
-            fail=1
-          fi
 
           exit "$fail"
 
