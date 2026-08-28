@@ -254,6 +254,11 @@ func (s *Server) CORS() *CORSPolicy { return s.cors }
 
 // ── Handlers ───────────────────────────────────────────────────────────────
 
+// preflightModuleCall is vm.PreflightModuleCall behind a variable so a test
+// can count how often /tx/submit reaches it (it must never run on an envelope
+// the pool would refuse on size or structure).
+var preflightModuleCall = vm.PreflightModuleCall
+
 func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 512*1024)) // 512KB max
 	if err != nil {
@@ -267,6 +272,15 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The pool's cheap structural checks and Data cap come FIRST: the module
+	// preflight below parses tx.Data (twice for an exchange match), so an
+	// unauthenticated 512 KiB body must be refused on size before any of that
+	// work is done on it. Same check, same wording as pool.Add.
+	if err := mempool.ValidateEnvelope(&tx); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
+		return
+	}
+
 	// Admission preflight for native-module calls: the HARD failure classes
 	// (bad envelope, unknown module, non-write action, fork not active) can
 	// never apply, and a tx that can never apply is dropped by the producer
@@ -275,7 +289,7 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	// head+1. Local and non-consensus: the executor re-judges every call.
 	if tx.Type == types.TxCall && tx.To == vm.ModuleRouterAddress {
 		head, _ := s.executor.LatestHeight()
-		mc, err := vm.PreflightModuleCall(tx.Data, s.executor.Forks(), head+1)
+		mc, err := preflightModuleCall(tx.Data, s.executor.Forks(), head+1)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 			return

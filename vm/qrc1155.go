@@ -258,6 +258,13 @@ func (t *QRC1155Token) TransferOwnershipWithEvents(caller, newOwner qcrypto.Addr
 	if newOwner.IsZero() {
 		return fmt.Errorf("QRC1155: new owner is zero address")
 	}
+	// Owner == collection is the module-managed marker (IsModuleManaged), so
+	// handing a user collection to itself would irreversibly freeze every
+	// holder; the router and any deployed contract can never act as owner
+	// either, so such a transfer is only ever a lock-out.
+	if err := requireOwnableTarget(t.stateDB, "QRC1155", t.contract, newOwner); err != nil {
+		return err
+	}
 	if err := t.stateDB.SetStorageValue(t.contract, slotMTOwner, newOwner[:]); err != nil {
 		return err
 	}

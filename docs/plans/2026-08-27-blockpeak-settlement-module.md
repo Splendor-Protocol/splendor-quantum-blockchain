@@ -766,6 +766,14 @@ Follow-ons raised by the audit: resolver liveness / early-resolve policy;
 synthetic `GasUsed` for module calls; refuse activation heights ≤ head on
 in-place upgrades; a timelock on `set_redeem_fee_bps`.
 
+Hardening commit (`harden(audit)`), the low-severity items, one line each:
+
+- **L11** — `Executor.Forks()` is lock-free: the schedule sits behind an `atomic.Pointer` (a private copy per install), so `/status`, the `/tx/submit` preflight and `/estimate` no longer stall behind `ProduceBlock`/`ExecuteBlock`/`ReconcileState`; `SetForks` still serializes on the block lock, so every tx in a block is judged under the one schedule the block started with.
+- **L13** — `DataUint256`/`Uint256Topic` truncate a value ≥ 2^256 to its low word instead of panicking; the legacy qrc20 `deploy`/`mint`/`transfer`/`approve`/`burn` amounts decode with `parseUint256` once `qrc20_v2` is active (pre-fork they keep `parseBig`, documented legacy behaviour).
+- **L14** — `transfer_ownership` on qrc1155, qrc20 and the exchange refuses the contract itself (for a collection, the module-managed marker that would freeze every holder), the module router, and any `IsContract` target.
+- **L15** — `set_operator` appends to the bounded list only on a grant; a revoke of a never-listed address is a no-op (no write, no event), so revokes cannot exhaust `MaxExchangeOperators`. Ownership transfer stays single-step.
+- **L17** — `/tx/submit` runs `mempool.ValidateEnvelope` (structural `Validate` + `MaxTxDataBytes`) before the module preflight parses `tx.Data`; the pool calls the same helper, so the refusal text is identical.
+
 ## Verification
 
 - Per PR: `go build ./... && go vet ./...` then `go test -count=1 ./vm/ ./core/... ./genesis/

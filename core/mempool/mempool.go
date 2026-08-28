@@ -78,26 +78,37 @@ func New(maxSize int, stateDB *state.StateDB) *Mempool {
 	}
 }
 
+// ValidateEnvelope is the cheap, stateless part of admission: the structural
+// checks and the Data size cap. Add runs it first; an ingress that does any
+// work on tx.Data before Add (the RPC module-call preflight parses it) must
+// run it first too, so an oversized or malformed envelope is refused before
+// its payload is ever looked at.
+func ValidateEnvelope(tx *types.Transaction) error {
+	if err := tx.Validate(); err != nil {
+		return fmt.Errorf("invalid tx: %w", err)
+	}
+	// Bound the tx payload so the pool can't be filled with multi-hundred-KiB txs.
+	if len(tx.Data) > MaxTxDataBytes {
+		return fmt.Errorf("tx data too large: %d bytes (max %d)", len(tx.Data), MaxTxDataBytes)
+	}
+	return nil
+}
+
 // Add validates and adds a transaction to the mempool.
 // Returns an error if the transaction is invalid, duplicate, or the pool is full.
 func (m *Mempool) Add(tx *types.Transaction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Structural validation
-	if err := tx.Validate(); err != nil {
-		return fmt.Errorf("invalid tx: %w", err)
+	// Structural validation and the payload cap.
+	if err := ValidateEnvelope(tx); err != nil {
+		return err
 	}
 
 	// Minimum fee check, scaled by how full the pool currently is.
 	minFee := m.minFeeLocked()
 	if tx.Fee.Cmp(big.NewInt(minFee)) < 0 {
 		return fmt.Errorf("fee too low: minimum %d at current pool load, got %s", minFee, tx.Fee.String())
-	}
-
-	// Bound the tx payload so the pool can't be filled with multi-hundred-KiB txs.
-	if len(tx.Data) > MaxTxDataBytes {
-		return fmt.Errorf("tx data too large: %d bytes (max %d)", len(tx.Data), MaxTxDataBytes)
 	}
 
 	// A native-module call carries no value: the executor's module branch
