@@ -8,11 +8,12 @@
 //
 // Why a separate entry point rather than a new case in DispatchModuleCall:
 //   - A view call must return a value; DispatchModuleCall returns only an error.
-//   - Module writes go straight to LevelDB (StateDB.SetStorageValue → db.Put),
-//     bypassing StateDB snapshots. Routing a *write* action through a read
-//     endpoint would therefore mutate canonical state with no way to revert.
-//     The read dispatch hard-rejects any action not on the read allowlist, so
-//     /call can never write.
+//   - A write action carries no signature on /call, so serving one there would
+//     run an owner-only action for an anonymous caller. Module writes stage on
+//     the StateDB pending layer (journaled, snapshot-revertable) and /call runs
+//     on a Simulate() sandbox, so nothing would reach disk — but the action
+//     would still report success. The read dispatch therefore serves only the
+//     read set of KnownModuleActions and rejects every write action outright.
 package vm
 
 import (
@@ -20,8 +21,51 @@ import (
 	"fmt"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 )
+
+// ModuleActions is one module's action surface, split by what a call is
+// allowed to do. Writes are the actions DispatchModuleCall executes inside a
+// signed TxCall; Reads are the actions DispatchModuleReadCall serves on /call.
+// The two never overlap: an action is either a state transition or a view.
+type ModuleActions struct {
+	// Writes maps a write action to the fork that gates it. "" means the
+	// action has been routed since the module shipped and is never gated.
+	Writes map[string]string
+	// Reads is the set of value-returning view actions.
+	Reads map[string]bool
+}
+
+// KnownModuleActions is the single list of every module action this build
+// dispatches, keyed by module name. It is the authority for admission: the
+// /tx/submit and /estimate preflight accepts only a write action, and the read
+// dispatch serves only a read action. Keeping the two sets apart matters
+// because the write dispatch treats an unknown action as HARD (see errors.go):
+// a read action inside a signed TxCall would pass a mixed allowlist, hit that
+// default, and jam the sender's account at that nonce forever.
+//
+// A coverage test pins every `case` in the dispatch switches to this table,
+// so adding an action to a module without listing it here fails the build's
+// tests rather than silently escaping admission.
+var KnownModuleActions = map[string]ModuleActions{
+	"qrc20": {
+		Writes: map[string]string{
+			"deploy": "", "mint": "", "transfer": "", "approve": "", "burn": "",
+		},
+		Reads: map[string]bool{
+			"balance_of": true, "total_supply": true, "allowance": true, "token_info": true,
+		},
+	},
+	"dex": {
+		Writes: map[string]string{
+			"deploy_pool": "", "add_liquidity": "", "swap": "",
+		},
+		Reads: map[string]bool{
+			"reserves": true, "pool_info": true,
+		},
+	},
+}
 
 // qrc20ReadParams / dexReadParams are the parameter shapes for read actions.
 // Reads need an explicit owner because a view call has no authenticated caller
@@ -51,8 +95,9 @@ type ReadContext struct {
 
 // DispatchModuleReadCall decodes a ModuleCall envelope and executes a read-only
 // (value-returning) module action against committed state. It never mutates
-// state: only the read allowlist is served; any write action is rejected with an
-// error. The returned value is a JSON-serialisable map.
+// state: only the read set of KnownModuleActions is served; a write action is
+// rejected with an error before any module code runs. The returned value is a
+// JSON-serialisable map.
 //
 // rctx describes the chain head the read runs against; it is advisory (see
 // ReadContext) and no action served today consumes it.
@@ -60,6 +105,16 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 	var mc ModuleCall
 	if err := json.Unmarshal(data, &mc); err != nil {
 		return nil, fmt.Errorf("module call: invalid JSON envelope: %w", err)
+	}
+	acts, ok := KnownModuleActions[mc.Module]
+	if !ok {
+		return nil, fmt.Errorf("module call: unknown module %q", mc.Module)
+	}
+	if _, isWrite := acts.Writes[mc.Action]; isWrite {
+		return nil, fmt.Errorf("%s: %q is a state-changing action — submit it as a signed TxCall to /tx/submit, not /call", mc.Module, mc.Action)
+	}
+	if !acts.Reads[mc.Action] {
+		return nil, fmt.Errorf("%s: unknown read action %q", mc.Module, mc.Action)
 	}
 	switch mc.Module {
 	case "qrc20":
@@ -149,9 +204,8 @@ func dispatchQRC20Read(stateDB *state.StateDB, action string, raw json.RawMessag
 			"owner": owner.String(), "exists": exists,
 		}, nil
 
-	case "deploy", "mint", "transfer", "approve", "burn":
-		return nil, fmt.Errorf("qrc20: %q is a state-changing action — submit it as a signed TxCall to /tx/submit, not /call", action)
 	default:
+		// Unreachable: DispatchModuleReadCall admits only the read set.
 		return nil, fmt.Errorf("qrc20: unknown read action %q", action)
 	}
 }
@@ -180,9 +234,8 @@ func dispatchDEXRead(stateDB *state.StateDB, action string, raw json.RawMessage)
 			"pool_info": info, "exists": exists,
 		}, nil
 
-	case "deploy_pool", "add_liquidity", "swap":
-		return nil, fmt.Errorf("dex: %q is a state-changing action — submit it as a signed TxCall to /tx/submit, not /call", action)
 	default:
+		// Unreachable: DispatchModuleReadCall admits only the read set.
 		return nil, fmt.Errorf("dex: unknown read action %q", action)
 	}
 }
@@ -211,30 +264,37 @@ func resolvePoolAddress(p dexReadParams) (qcrypto.Address, error) {
 	return qcrypto.Address{}, fmt.Errorf("dex read: provide either \"pool\" or (\"token0\",\"token1\")")
 }
 
-// PreflightModuleCall validates a ModuleCall envelope (module + action are known)
-// WITHOUT executing it — used by /estimate to flag a malformed module call
-// without mutating state.
-func PreflightModuleCall(data []byte) (ModuleCall, error) {
+// PreflightModuleCall validates a ModuleCall envelope destined for a signed
+// TxCall WITHOUT executing it. It is the admission-time mirror of the HARD
+// classes in DispatchModuleCall: an unparseable envelope, an unknown module,
+// an action outside the module's WRITE set, and — when a schedule and height
+// are given — an action whose fork is not active at that height. /tx/submit
+// runs it against executor.Forks() and head+1 so a tx that could only ever be
+// dropped is refused before it enters the mempool; /estimate runs it to say
+// "not active" without mutating state. Pass a nil schedule (or height 0) to
+// skip fork gating.
+//
+// A read action is refused here even though it parses: the write dispatch
+// treats it as an unknown action, which is HARD, and a sender whose tx can
+// never apply is jammed at that nonce.
+func PreflightModuleCall(data []byte, schedule forks.Schedule, height uint64) (ModuleCall, error) {
 	var mc ModuleCall
 	if err := json.Unmarshal(data, &mc); err != nil {
 		return mc, fmt.Errorf("module call: invalid JSON envelope: %w", err)
 	}
-	known := map[string]map[string]bool{
-		"qrc20": {
-			"deploy": true, "mint": true, "transfer": true, "approve": true, "burn": true,
-			"balance_of": true, "total_supply": true, "allowance": true, "token_info": true,
-		},
-		"dex": {
-			"deploy_pool": true, "add_liquidity": true, "swap": true,
-			"reserves": true, "pool_info": true,
-		},
-	}
-	actions, ok := known[mc.Module]
+	acts, ok := KnownModuleActions[mc.Module]
 	if !ok {
 		return mc, fmt.Errorf("module call: unknown module %q", mc.Module)
 	}
-	if !actions[mc.Action] {
+	if acts.Reads[mc.Action] {
+		return mc, fmt.Errorf("%s: %q is a read action — use /call", mc.Module, mc.Action)
+	}
+	gate, isWrite := acts.Writes[mc.Action]
+	if !isWrite {
 		return mc, fmt.Errorf("%s: unknown action %q", mc.Module, mc.Action)
+	}
+	if gate != "" && schedule != nil && height != 0 && !schedule.Active(gate, height) {
+		return mc, fmt.Errorf("%s: %q: %w: %s is not scheduled at height %d", mc.Module, mc.Action, ErrForkInactive, gate, height)
 	}
 	return mc, nil
 }

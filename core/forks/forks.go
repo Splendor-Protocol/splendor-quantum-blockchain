@@ -57,7 +57,7 @@ const (
 // fork name is otherwise invisible: the node reports a healthy schedule, the
 // rule never activates, and nobody finds out until the height passes without
 // anything happening.
-var Known = []string{MultiValidator}
+var Known = []string{MultiValidator, ModuleRevertV1}
 
 // Schedule maps an upgrade name to the height at which it takes effect.
 type Schedule map[string]uint64

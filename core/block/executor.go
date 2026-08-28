@@ -3,6 +3,7 @@ package block
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -569,6 +570,27 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, rec
 	return nil
 }
 
+// dispatchModuleCall is the module entry point execCall uses. A variable so a
+// test can stand in a module that panics or writes-then-fails and prove the
+// executor's handling of it, independent of any real module's failure modes.
+var dispatchModuleCall = vm.DispatchModuleCall
+
+// errModulePanic is the SOFT error a recovered module panic becomes under
+// module_revert_v1. The panic value is deliberately not in the text: it can
+// carry addresses or allocation sizes that differ between nodes.
+var errModulePanic = errors.New("module panic")
+
+// runModuleCall dispatches under a recover so a panicking module becomes
+// errModulePanic rather than a dropped tx (legacy) or a halted validator.
+func runModuleCall(stateDB *state.StateDB, ctx vm.ModuleContext, data []byte, receipt *types.Receipt) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errModulePanic
+		}
+	}()
+	return dispatchModuleCall(stateDB, ctx, data, receipt)
+}
+
 func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64, blockTime int64) error {
 	if tx.To == vm.ModuleRouterAddress {
 		if err := fromAcc.SubBalance(tx.Fee); err != nil {
@@ -580,13 +602,46 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		// judge deadlines against the block, never the wall clock: the
 		// producer stamped blockTime once and every follower reads the same
 		// value back from the header.
-		return vm.DispatchModuleCall(e.state, vm.ModuleContext{
+		mctx := vm.ModuleContext{
 			Caller: tx.From,
 			Nonce:  tx.Nonce,
 			Height: blockHeight,
 			Time:   blockTime,
 			Forks:  e.forks,
-		}, tx.Data, receipt)
+		}
+
+		// Legacy rules: any module error makes the tx unappliable — the
+		// producer drops it and the enclosing per-tx snapshot reverts the fee
+		// debit and nonce bump. A sender whose call fails for good is stuck at
+		// that nonce, which is what module_revert_v1 fixes.
+		if !e.forks.Active(forks.ModuleRevertV1, blockHeight) {
+			return dispatchModuleCall(e.state, mctx, tx.Data, receipt)
+		}
+
+		// module_revert_v1: the module runs inside its own snapshot, nested in
+		// the per-tx one, so its writes can be undone while the fee debit and
+		// nonce bump above are kept.
+		inner := e.state.Snapshot()
+		err := runModuleCall(e.state, mctx, tx.Data, receipt)
+		if err == nil {
+			e.state.CommitSnapshot(inner)
+			return nil
+		}
+		e.state.RevertToSnapshot(inner)
+		if vm.IsHardModuleError(err) {
+			// Unparseable envelope, unknown module or action, fork not active:
+			// statically detectable at admission, so an honest producer never
+			// packs one. Still unappliable — a follower lacking the fork
+			// rejects the block outright instead of diverging on state root.
+			return err
+		}
+		// SOFT: included with a failed receipt, fee kept, nonce consumed —
+		// mirroring the reverted-bytecode branch below. Logs and a deploy
+		// address the module may have set before failing go with its writes.
+		receipt.Logs = []*types.Log{}
+		receipt.ContractAddress = nil
+		receipt.SetFailed(err.Error())
+		return nil
 	}
 
 	// The fee is charged up-front as gas (kept even if the call reverts). The

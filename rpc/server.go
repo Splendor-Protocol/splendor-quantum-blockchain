@@ -34,6 +34,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/x402"
 )
 
@@ -264,6 +265,20 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &tx); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction JSON: %v", err))
 		return
+	}
+
+	// Admission preflight for native-module calls: the HARD failure classes
+	// (bad envelope, unknown module, non-write action, fork not active) can
+	// never apply, and a tx that can never apply is dropped by the producer
+	// while pinning the sender's nonce in the pool. Checked against the
+	// executor's live schedule at the height the tx would earliest land in,
+	// head+1. Local and non-consensus: the executor re-judges every call.
+	if tx.Type == types.TxCall && tx.To == vm.ModuleRouterAddress {
+		head, _ := s.executor.LatestHeight()
+		if _, err := vm.PreflightModuleCall(tx.Data, s.executor.Forks(), head+1); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
+			return
+		}
 	}
 
 	if err := s.pool.Add(&tx); err != nil {
