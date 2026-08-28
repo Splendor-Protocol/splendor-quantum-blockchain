@@ -1,13 +1,20 @@
 package signer
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
+	"os"
 	"strings"
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/x402"
 )
 
 func TestDeriveFromSeedStable(t *testing.T) {
@@ -454,5 +461,766 @@ func TestGoldenSeedAddressMatchesTS(t *testing.T) {
 	want := "SQ:307f4559431e680933fc1c62503f050140e5740068248d7374461e0311a2728e"
 	if w.Address.String() != want {
 		t.Fatalf("golden address mismatch:\n got %s\nwant %s", w.Address.String(), want)
+	}
+}
+
+// ── Off-chain authorisations: permit, order, cancel, increment_nonce ────────
+
+const (
+	authTestBlockTime = int64(1_000_000)
+	authTestDeadline  = int64(1_800_000_000)
+)
+
+// goldenWallet is the seed 01×32 wallet every cross-language vector uses.
+func goldenWallet(t *testing.T) *DerivedWallet {
+	t.Helper()
+	seed, err := SeedFromHex(strings.Repeat("01", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// bytesAddr is an address of one repeated byte, matching the digest goldens
+// in core/types (permitTestAddr).
+func bytesAddr(b byte) qcrypto.Address {
+	var a qcrypto.Address
+	for i := range a {
+		a[i] = b
+	}
+	return a
+}
+
+// pinChainID saves the package-level chain identity and restores it after
+// the test, so a test that points the signer at another tier leaves no trace.
+func pinChainID(t *testing.T) {
+	t.Helper()
+	id, adopted := types.ChainID, types.ChainIDAdoptedForTest()
+	t.Cleanup(func() { types.RestoreChainIDForTest(id, adopted) })
+}
+
+func newAuthState(t *testing.T) *state.StateDB {
+	t.Helper()
+	sdb, err := state.NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatalf("statedb: %v", err)
+	}
+	t.Cleanup(func() { _ = sdb.Close() })
+	return sdb
+}
+
+// envelope wraps already-marshalled params in the module-call envelope, so a
+// signer result is fed to the router byte-for-byte as returned.
+func envelope(t *testing.T, module, action string, params []byte) []byte {
+	t.Helper()
+	data, err := json.Marshal(vm.ModuleCall{Module: module, Action: action, Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func allForks() forks.Schedule {
+	return forks.Schedule{forks.ModuleRevertV1: 1, forks.QRC20V2: 1, forks.QRC1155V1: 1, forks.ExchangeV1: 1}
+}
+
+func authCtx(caller qcrypto.Address, nonce uint64) vm.ModuleContext {
+	return vm.ModuleContext{Caller: caller, Nonce: nonce, Height: 1, Time: authTestBlockTime, Forks: allForks()}
+}
+
+func mustUnmarshal(t *testing.T, data []byte, v any) {
+	t.Helper()
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Fatalf("unmarshal %s: %v", data, err)
+	}
+}
+
+func TestSignPermitDigestAndContext(t *testing.T) {
+	w := goldenWallet(t)
+	token, spender := bytesAddr(0xaa), bytesAddr(0xcc)
+	out, err := w.SignPermit(PermitParams{
+		Token: token.String(), Spender: spender.String(),
+		Amount: "1000000000000000000", Nonce: 7, Deadline: authTestDeadline,
+	})
+	if err != nil {
+		t.Fatalf("SignPermit: %v", err)
+	}
+	var sp SignedPermit
+	mustUnmarshal(t, out, &sp)
+
+	amount, _ := new(big.Int).SetString("1000000000000000000", 10)
+	want, err := types.PermitDigest(types.ChainID, token, w.Address, spender, amount, 7, authTestDeadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sp.DigestHex != hex.EncodeToString(want[:]) {
+		t.Fatalf("digest_hex %s != PermitDigest %x", sp.DigestHex, want)
+	}
+	if sp.Owner != w.Address.String() || sp.Token != token.String() || sp.Spender != spender.String() {
+		t.Fatalf("addresses not echoed: %+v", sp)
+	}
+	if sp.Amount != "1000000000000000000" || sp.Nonce != 7 || sp.Deadline != authTestDeadline || sp.ChainID != types.ChainID {
+		t.Fatalf("fields not echoed: %+v", sp)
+	}
+	if !bytes.Equal(sp.OwnerPubKey, w.PublicKey) {
+		t.Fatal("owner_pubkey is not the wallet's key")
+	}
+	if !qcrypto.Verify(w.Public, want[:], qcrypto.CtxPermit, sp.Signature) {
+		t.Fatal("signature does not verify under CtxPermit")
+	}
+	if qcrypto.Verify(w.Public, want[:], qcrypto.CtxMessage, sp.Signature) {
+		t.Fatal("signature must not verify under CtxMessage")
+	}
+	if qcrypto.Verify(w.Public, want[:], qcrypto.CtxOrder, sp.Signature) {
+		t.Fatal("signature must not verify under CtxOrder")
+	}
+}
+
+// The signer follows SetClientChainID: the digest, and so the signature, is
+// bound to the tier the client picked, and a permit signed for devnet never
+// matches the mainnet digest of the same fields.
+func TestSignPermitHonoursClientChainID(t *testing.T) {
+	pinChainID(t)
+	w := goldenWallet(t)
+	p := PermitParams{Token: bytesAddr(0xaa).String(), Spender: bytesAddr(0xcc).String(), Amount: "5", Nonce: 0, Deadline: authTestDeadline}
+
+	var onMain SignedPermit
+	out, err := w.SignPermit(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, out, &onMain)
+
+	if err := types.SetClientChainID("splendor-quantum-devnet-1"); err != nil {
+		t.Fatal(err)
+	}
+	var onDev SignedPermit
+	out, err = w.SignPermit(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, out, &onDev)
+
+	if onDev.ChainID != "splendor-quantum-devnet-1" || onMain.ChainID != types.DefaultChainID {
+		t.Fatalf("chain_id not honoured: main %q dev %q", onMain.ChainID, onDev.ChainID)
+	}
+	if onDev.DigestHex == onMain.DigestHex {
+		t.Fatal("digest did not move with the chain id")
+	}
+	want, err := types.PermitDigest("splendor-quantum-devnet-1", bytesAddr(0xaa), w.Address, bytesAddr(0xcc), big.NewInt(5), 0, authTestDeadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDev.DigestHex != hex.EncodeToString(want[:]) {
+		t.Fatal("devnet digest is not PermitDigest under the devnet id")
+	}
+}
+
+// The returned object is fed to qrc20.permit verbatim through the router and
+// sets the allowance; a second submission is a replay (nonce advanced).
+func TestSignPermitRoundTripsThroughRouter(t *testing.T) {
+	w := goldenWallet(t)
+	sdb := newAuthState(t)
+	dep := &types.Receipt{}
+	if err := vm.DispatchModuleCall(sdb, authCtx(w.Address, 1), envelope(t, "qrc20", "deploy",
+		[]byte(`{"name":"Permit","symbol":"PRM","decimals":18,"total_supply":"1000000"}`)), dep); err != nil {
+		t.Fatalf("qrc20.deploy: %v", err)
+	}
+	token := *dep.ContractAddress
+	spender, relayer := bytesAddr(0x33), bytesAddr(0x44)
+	tok := vm.NewQRC20Token(sdb, token)
+
+	out, err := w.SignPermit(PermitParams{Token: token.String(), Spender: spender.String(), Amount: "1234", Nonce: 0, Deadline: authTestBlockTime})
+	if err != nil {
+		t.Fatalf("SignPermit: %v", err)
+	}
+	rc := &types.Receipt{}
+	if err := vm.DispatchModuleCall(sdb, authCtx(relayer, 0), envelope(t, "qrc20", "permit", out), rc); err != nil {
+		t.Fatalf("qrc20.permit: %v", err)
+	}
+	if got, _ := tok.Allowance(w.Address, spender); got.Cmp(big.NewInt(1234)) != 0 {
+		t.Fatalf("allowance %s, want 1234", got)
+	}
+	if len(rc.Logs) != 1 {
+		t.Fatalf("want one Approval log, got %d", len(rc.Logs))
+	}
+	if err := vm.DispatchModuleCall(sdb, authCtx(relayer, 1), envelope(t, "qrc20", "permit", out), &types.Receipt{}); err == nil || !strings.Contains(err.Error(), "invalid signature") {
+		t.Fatalf("replay must fail on the advanced nonce, got %v", err)
+	}
+	// One second past the deadline the same permit is refused.
+	out2, err := w.SignPermit(PermitParams{Token: token.String(), Spender: spender.String(), Amount: "1", Nonce: 1, Deadline: authTestBlockTime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	late := authCtx(relayer, 2)
+	late.Time = authTestBlockTime + 1
+	if err := vm.DispatchModuleCall(sdb, late, envelope(t, "qrc20", "permit", out2), &types.Receipt{}); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired permit must fail, got %v", err)
+	}
+}
+
+func TestSignPermitRejectsBadInputs(t *testing.T) {
+	w := goldenWallet(t)
+	ok := PermitParams{Token: bytesAddr(0xaa).String(), Spender: bytesAddr(0xcc).String(), Amount: "1", Nonce: 0, Deadline: authTestDeadline}
+	if _, err := w.SignPermit(ok); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	twoPow256 := new(big.Int).Lsh(big.NewInt(1), 256).String()
+	cases := map[string]func(p *PermitParams){
+		"deadline 0":        func(p *PermitParams) { p.Deadline = 0 },
+		"deadline negative": func(p *PermitParams) { p.Deadline = -1 },
+		"amount empty":      func(p *PermitParams) { p.Amount = "" },
+		"amount negative":   func(p *PermitParams) { p.Amount = "-1" },
+		"amount 2^256":      func(p *PermitParams) { p.Amount = twoPow256 },
+		"amount leading 0":  func(p *PermitParams) { p.Amount = "01" },
+		"amount signed":     func(p *PermitParams) { p.Amount = "+1" },
+		"bad token":         func(p *PermitParams) { p.Token = "not-an-address" },
+		"bad spender":       func(p *PermitParams) { p.Spender = "SQ:zz" },
+	}
+	for name, mutate := range cases {
+		p := ok
+		mutate(&p)
+		if _, err := w.SignPermit(p); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func goldenOrderParams(exchange qcrypto.Address) OrderParams {
+	var salt [32]byte
+	for i := range salt {
+		salt[i] = byte(i + 1)
+	}
+	return OrderParams{
+		Exchange: exchange.String(), Salt: hex.EncodeToString(salt[:]),
+		Condition: 42, Outcome: 1, Side: types.OrderSideBuy,
+		ShareAmount: "1000000000000000000", Price: "600000",
+		Expiration: authTestDeadline, Nonce: 3, Recipient: bytesAddr(0xbb).String(),
+	}
+}
+
+func TestSignOrderDigestAndContext(t *testing.T) {
+	w := goldenWallet(t)
+	exchange := bytesAddr(0xee)
+	out, err := w.SignOrder(goldenOrderParams(exchange))
+	if err != nil {
+		t.Fatalf("SignOrder: %v", err)
+	}
+	var so SignedOrder
+	mustUnmarshal(t, out, &so)
+
+	shares, _ := new(big.Int).SetString("1000000000000000000", 10)
+	var salt [32]byte
+	for i := range salt {
+		salt[i] = byte(i + 1)
+	}
+	want, err := types.OrderDigest(types.ChainID, types.Order{
+		Salt: salt, Maker: w.Address, Exchange: exchange, Condition: 42, Outcome: 1, Side: types.OrderSideBuy,
+		ShareAmount: shares, Price: big.NewInt(600000), Expiration: authTestDeadline, Nonce: 3, Recipient: bytesAddr(0xbb),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if so.Hash != hex.EncodeToString(want[:]) {
+		t.Fatalf("hash %s != OrderDigest %x", so.Hash, want)
+	}
+	if so.Maker != w.Address.String() || so.Exchange != exchange.String() || so.Recipient != bytesAddr(0xbb).String() {
+		t.Fatalf("addresses not echoed: %+v", so.OrderWire)
+	}
+	if so.Salt != hex.EncodeToString(salt[:]) || so.Condition != 42 || so.Outcome != 1 || so.Side != types.OrderSideBuy ||
+		so.ShareAmount != "1000000000000000000" || so.Price != "600000" || so.Expiration != authTestDeadline || so.Nonce != 3 {
+		t.Fatalf("fields not echoed: %+v", so.OrderWire)
+	}
+	if so.ChainID != types.ChainID || !bytes.Equal(so.MakerPubKey, w.PublicKey) {
+		t.Fatalf("chain_id / maker_pubkey wrong: %+v", so)
+	}
+	if !qcrypto.Verify(w.Public, want[:], qcrypto.CtxOrder, so.Signature) {
+		t.Fatal("signature does not verify under CtxOrder")
+	}
+	if qcrypto.Verify(w.Public, want[:], qcrypto.CtxMessage, so.Signature) {
+		t.Fatal("signature must not verify under CtxMessage")
+	}
+	if qcrypto.Verify(w.Public, want[:], qcrypto.CtxPermit, so.Signature) {
+		t.Fatal("signature must not verify under CtxPermit")
+	}
+
+	// The wire object must carry exactly the module's field names, nothing
+	// renamed: decode it generically and check the keys the module reads.
+	var raw map[string]json.RawMessage
+	mustUnmarshal(t, out, &raw)
+	for _, k := range []string{"salt", "maker", "exchange", "condition", "outcome", "side", "share_amount", "price", "expiration", "nonce", "recipient", "signature", "maker_pubkey", "hash", "chain_id"} {
+		if _, ok := raw[k]; !ok {
+			t.Errorf("wire object lacks %q", k)
+		}
+	}
+	if len(raw) != 15 {
+		t.Errorf("wire object has %d keys, want 15: %s", len(raw), out)
+	}
+}
+
+// An empty salt is filled randomly (two orders never collide) and an empty
+// recipient is omitted from the wire — "pay the maker" — while the digest
+// still commits to thirty-two zero bytes.
+func TestSignOrderRandomSaltAndZeroRecipient(t *testing.T) {
+	w := goldenWallet(t)
+	p := goldenOrderParams(bytesAddr(0xee))
+	p.Salt, p.Recipient = "", ""
+	var a, b SignedOrder
+	outA, err := w.SignOrder(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outB, err := w.SignOrder(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, outA, &a)
+	mustUnmarshal(t, outB, &b)
+	if len(a.Salt) != 64 || a.Salt == b.Salt || a.Hash == b.Hash {
+		t.Fatalf("random salt not applied: %s / %s", a.Salt, b.Salt)
+	}
+	var raw map[string]json.RawMessage
+	mustUnmarshal(t, outA, &raw)
+	if _, ok := raw["recipient"]; ok {
+		t.Fatal("empty recipient must be omitted from the wire")
+	}
+	var salt [32]byte
+	sb, _ := hex.DecodeString(a.Salt)
+	copy(salt[:], sb)
+	shares, _ := new(big.Int).SetString(p.ShareAmount, 10)
+	want, err := types.OrderDigest(types.ChainID, types.Order{
+		Salt: salt, Maker: w.Address, Exchange: bytesAddr(0xee), Condition: 42, Outcome: 1, Side: types.OrderSideBuy,
+		ShareAmount: shares, Price: big.NewInt(600000), Expiration: authTestDeadline, Nonce: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Hash != hex.EncodeToString(want[:]) {
+		t.Fatal("hash with a zero recipient is not OrderDigest over zero bytes")
+	}
+}
+
+func TestSignOrderHonoursClientChainID(t *testing.T) {
+	pinChainID(t)
+	w := goldenWallet(t)
+	p := goldenOrderParams(bytesAddr(0xee))
+	var onMain, onDev SignedOrder
+	out, err := w.SignOrder(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, out, &onMain)
+	if err := types.SetClientChainID("splendor-quantum-devnet-1"); err != nil {
+		t.Fatal(err)
+	}
+	out, err = w.SignOrder(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, out, &onDev)
+	if onDev.ChainID != "splendor-quantum-devnet-1" || onDev.Hash == onMain.Hash {
+		t.Fatalf("order hash did not follow the chain id: %s vs %s", onMain.Hash, onDev.Hash)
+	}
+}
+
+func TestSignOrderRejectsBadInputs(t *testing.T) {
+	w := goldenWallet(t)
+	ok := goldenOrderParams(bytesAddr(0xee))
+	if _, err := w.SignOrder(ok); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	cases := map[string]func(p *OrderParams){
+		"side 2":               func(p *OrderParams) { p.Side = 2 },
+		"price 0":              func(p *OrderParams) { p.Price = "0" },
+		"price 1e6":            func(p *OrderParams) { p.Price = "1000000" },
+		"price leading zero":   func(p *OrderParams) { p.Price = "0600000" },
+		"shares 0":             func(p *OrderParams) { p.ShareAmount = "0" },
+		"shares empty":         func(p *OrderParams) { p.ShareAmount = "" },
+		"shares 2^256":         func(p *OrderParams) { p.ShareAmount = new(big.Int).Lsh(big.NewInt(1), 256).String() },
+		"expiration negative":  func(p *OrderParams) { p.Expiration = -1 },
+		"salt short":           func(p *OrderParams) { p.Salt = "abcd" },
+		"salt not hex":         func(p *OrderParams) { p.Salt = strings.Repeat("zz", 32) },
+		"exchange zero":        func(p *OrderParams) { p.Exchange = qcrypto.Address{}.String() },
+		"exchange bad":         func(p *OrderParams) { p.Exchange = "nope" },
+		"recipient bad":        func(p *OrderParams) { p.Recipient = "nope" },
+		"recipient = exchange": func(p *OrderParams) { p.Recipient = p.Exchange },
+		"recipient = router":   func(p *OrderParams) { p.Recipient = ModuleRouterAddress().String() },
+	}
+	for name, mutate := range cases {
+		p := ok
+		mutate(&p)
+		if _, err := w.SignOrder(p); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+	// A cancel must name the exact order: no random salt there.
+	p := ok
+	p.Salt = ""
+	if _, err := w.SignCancel(p); err == nil || !strings.Contains(err.Error(), "salt is required") {
+		t.Fatalf("SignCancel without a salt: %v", err)
+	}
+}
+
+// deployExchange deploys a settlement instance through the router and
+// returns its address.
+func deployExchange(t *testing.T, sdb *state.StateDB, owner qcrypto.Address) qcrypto.Address {
+	t.Helper()
+	rc := &types.Receipt{}
+	if err := vm.DispatchModuleCall(sdb, authCtx(owner, 1), envelope(t, "exchange", "deploy", []byte(`{"name":"Positions"}`)), rc); err != nil {
+		t.Fatalf("exchange.deploy: %v", err)
+	}
+	if rc.ContractAddress == nil {
+		t.Fatal("deploy returned no address")
+	}
+	return *rc.ContractAddress
+}
+
+func readExchange(t *testing.T, sdb *state.StateDB, action string, params string) map[string]interface{} {
+	t.Helper()
+	v, err := vm.DispatchModuleReadCall(sdb, vm.ReadContext{Height: 1, Time: authTestBlockTime}, envelope(t, "exchange", action, []byte(params)))
+	if err != nil {
+		t.Fatalf("read %s: %v", action, err)
+	}
+	return v.(map[string]interface{})
+}
+
+// A signed cancel is submitted by a third party (neither maker nor operator)
+// and the chain honours it; the order hash the signer reports is the one the
+// chain tracks; a cancel signed for another instance is refused there.
+func TestSignCancelRoundTripsThroughExchange(t *testing.T) {
+	w := goldenWallet(t)
+	sdb := newAuthState(t)
+	owner, stranger := bytesAddr(0x11), bytesAddr(0x99)
+	exchange := deployExchange(t, sdb, owner)
+
+	p := goldenOrderParams(exchange)
+	p.Condition, p.Nonce, p.Recipient = 0, 0, ""
+	orderOut, err := w.SignOrder(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var so SignedOrder
+	mustUnmarshal(t, orderOut, &so)
+
+	cancelOut, err := w.SignCancel(p)
+	if err != nil {
+		t.Fatalf("SignCancel: %v", err)
+	}
+	var sc SignedCancel
+	mustUnmarshal(t, cancelOut, &sc)
+	if sc.OrderHash != so.Hash {
+		t.Fatalf("cancel names order %s, signed order is %s", sc.OrderHash, so.Hash)
+	}
+	h, _ := hex.DecodeString(so.Hash)
+	var hash [32]byte
+	copy(hash[:], h)
+	wantDigest := types.CancelDigest(hash)
+	if sc.DigestHex != hex.EncodeToString(wantDigest[:]) {
+		t.Fatalf("digest_hex %s != CancelDigest %x", sc.DigestHex, wantDigest)
+	}
+	if len(sc.Order.Signature) != 0 || len(sc.Order.MakerPubKey) != 0 {
+		t.Fatal("the nested order of a cancel must carry no signature")
+	}
+	if !qcrypto.Verify(w.Public, wantDigest[:], qcrypto.CtxOrder, sc.CancelSignature) {
+		t.Fatal("cancel_signature does not verify under CtxOrder")
+	}
+	if qcrypto.Verify(w.Public, hash[:], qcrypto.CtxOrder, sc.CancelSignature) {
+		t.Fatal("cancel_signature must not be a signature over the bare order hash")
+	}
+
+	// The chain-side hash of the signed order is what the signer reported.
+	if got := readExchange(t, sdb, "order_hash", `{"exchange":"`+exchange.String()+`","order":`+string(orderOut)+`}`)["hash"]; got != so.Hash {
+		t.Fatalf("chain hashes the wire order to %v, signer said %s", got, so.Hash)
+	}
+	status := readExchange(t, sdb, "order_status", `{"exchange":"`+exchange.String()+`","hash":"`+so.Hash+`"}`)
+	if status["cancelled"] != false {
+		t.Fatalf("fresh order already cancelled: %v", status)
+	}
+
+	rc := &types.Receipt{}
+	if err := vm.DispatchModuleCall(sdb, authCtx(stranger, 0), envelope(t, "exchange", "cancel_order", cancelOut), rc); err != nil {
+		t.Fatalf("cancel_order by a stranger with the maker's signature: %v", err)
+	}
+	if len(rc.Logs) != 1 {
+		t.Fatalf("want one OrderCancelled log, got %d", len(rc.Logs))
+	}
+	status = readExchange(t, sdb, "order_status", `{"exchange":"`+exchange.String()+`","hash":"`+so.Hash+`"}`)
+	if status["cancelled"] != true {
+		t.Fatalf("order not cancelled: %v", status)
+	}
+
+	// The same signed cancel presented at a second instance is refused: the
+	// order names the first exchange.
+	other := deployExchange(t, sdb, bytesAddr(0x12))
+	var retarget map[string]json.RawMessage
+	mustUnmarshal(t, cancelOut, &retarget)
+	retarget["exchange"] = json.RawMessage(`"` + other.String() + `"`)
+	moved, _ := json.Marshal(retarget)
+	if err := vm.DispatchModuleCall(sdb, authCtx(stranger, 1), envelope(t, "exchange", "cancel_order", moved), &types.Receipt{}); err == nil || !strings.Contains(err.Error(), "order is for exchange") {
+		t.Fatalf("cancel at another instance must fail, got %v", err)
+	}
+}
+
+// A signed nonce bump is submitted by a third party; the nonce advances once
+// and the same signature cannot be replayed (expected_nonce is stale).
+func TestSignIncrementNonceRoundTripsThroughExchange(t *testing.T) {
+	w := goldenWallet(t)
+	sdb := newAuthState(t)
+	owner, stranger := bytesAddr(0x11), bytesAddr(0x99)
+	exchange := deployExchange(t, sdb, owner)
+
+	out, err := w.SignIncrementNonce(IncrementNonceParams{Exchange: exchange.String(), ExpectedNonce: 0})
+	if err != nil {
+		t.Fatalf("SignIncrementNonce: %v", err)
+	}
+	var sn SignedIncrementNonce
+	mustUnmarshal(t, out, &sn)
+	want, err := types.IncrementNonceDigest(types.ChainID, exchange, w.Address, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sn.DigestHex != hex.EncodeToString(want[:]) || sn.Maker != w.Address.String() || sn.Exchange != exchange.String() || sn.ExpectedNonce != 0 {
+		t.Fatalf("fields wrong: %+v", sn)
+	}
+	if !qcrypto.Verify(w.Public, want[:], qcrypto.CtxOrder, sn.Signature) {
+		t.Fatal("signature does not verify under CtxOrder")
+	}
+	if qcrypto.Verify(w.Public, want[:], qcrypto.CtxMessage, sn.Signature) {
+		t.Fatal("signature must not verify under CtxMessage")
+	}
+
+	nonceOf := func() uint64 {
+		return readExchange(t, sdb, "nonce", `{"exchange":"`+exchange.String()+`","maker":"`+w.Address.String()+`"}`)["nonce"].(uint64)
+	}
+	if nonceOf() != 0 {
+		t.Fatal("fresh maker nonce is not 0")
+	}
+	rc := &types.Receipt{}
+	if err := vm.DispatchModuleCall(sdb, authCtx(stranger, 0), envelope(t, "exchange", "increment_nonce", out), rc); err != nil {
+		t.Fatalf("increment_nonce by a stranger with the maker's signature: %v", err)
+	}
+	if nonceOf() != 1 {
+		t.Fatalf("nonce is %v, want 1", nonceOf())
+	}
+	if err := vm.DispatchModuleCall(sdb, authCtx(stranger, 1), envelope(t, "exchange", "increment_nonce", out), &types.Receipt{}); err == nil || !strings.Contains(err.Error(), "expected_nonce 0") {
+		t.Fatalf("replay must fail on the stale expected_nonce, got %v", err)
+	}
+	if nonceOf() != 1 {
+		t.Fatal("replay moved the nonce")
+	}
+}
+
+// SignX402 attaches the payer's key outside the signed body, so a payer that
+// has never sent a transaction verifies at the node; without the key the
+// same payload is refused, and the hash is unchanged by its presence.
+func TestSignX402AttachesPublicKeyForFreshPayer(t *testing.T) {
+	var seed [SeedSize]byte
+	copy(seed[:], []byte("x402-fresh-payer-seed-0123456789"))
+	w, err := DeriveFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sdb := newAuthState(t)
+	acc := types.NewAccount(w.Address)
+	acc.AddBalance(big.NewInt(1_000_000))
+	sdb.SetAccount(acc)
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	payee := bytesAddr(0x55)
+	nonceHex := hex.EncodeToString(bytes.Repeat([]byte{0xAA}, 32))
+	out, err := w.SignX402(X402Params{To: payee.String(), Amount: "500", ValidAfter: 1, ValidBefore: 9_999_999_999, NonceHex: nonceHex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload x402.PaymentPayload
+	mustUnmarshal(t, out, &payload)
+	if !bytes.Equal(payload.PublicKey, w.PublicKey) {
+		t.Fatal("public_key is not the payer's key")
+	}
+	reqs := &x402.PaymentRequirements{PayTo: payee, Amount: big.NewInt(500), ValidAfter: 1, ValidBefore: 9_999_999_999}
+	proc := x402.NewProcessor(sdb)
+	if res := proc.Verify(reqs, &payload); !res.Valid {
+		t.Fatalf("fresh payer with attached key must verify: %s", res.Reason)
+	}
+	withKey, err := payload.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload.PublicKey = nil
+	withoutKey, err := payload.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withKey != withoutKey {
+		t.Fatal("public_key must not be part of the signed body")
+	}
+	if res := proc.Verify(reqs, &payload); res.Valid || !strings.Contains(res.Reason, "public key not registered") {
+		t.Fatalf("without the key a fresh payer must not verify: %+v", res)
+	}
+}
+
+// goldenFile is the cross-language vector file the TypeScript SDK and the
+// WASM tests read. The permit/order digests in it are core/types' goldens;
+// the fromGoldenSeed values are what sqSignPermit / sqSignOrder / sqSignCancel /
+// sqSignIncrementNonce report from the seed 01×32 session with the same inputs.
+type goldenFile struct {
+	Address string `json:"address"`
+	ChainID string `json:"chainId"`
+	Permit  struct {
+		Context        string `json:"context"`
+		ChainID        string `json:"chainId"`
+		Contract       string `json:"contract"`
+		Owner          string `json:"owner"`
+		Spender        string `json:"spender"`
+		Amount         string `json:"amount"`
+		Nonce          uint64 `json:"nonce"`
+		Deadline       int64  `json:"deadline"`
+		Digest         string `json:"digest"`
+		FromGoldenSeed struct {
+			DigestHex string `json:"digestHex"`
+		} `json:"fromGoldenSeed"`
+	} `json:"permit"`
+	Order struct {
+		Context              string `json:"context"`
+		ChainID              string `json:"chainId"`
+		Exchange             string `json:"exchange"`
+		Salt                 string `json:"salt"`
+		Maker                string `json:"maker"`
+		Condition            uint64 `json:"condition"`
+		Outcome              uint8  `json:"outcome"`
+		Side                 uint8  `json:"side"`
+		ShareAmount          string `json:"share_amount"`
+		Price                string `json:"price"`
+		Expiration           int64  `json:"expiration"`
+		Nonce                uint64 `json:"nonce"`
+		Recipient            string `json:"recipient"`
+		Digest               string `json:"digest"`
+		CancelDigest         string `json:"cancelDigest"`
+		IncrementNonceDigest string `json:"incrementNonceDigest"`
+		FromGoldenSeed       struct {
+			Hash                    string `json:"hash"`
+			CancelDigestHex         string `json:"cancelDigestHex"`
+			IncrementNonceDigestHex string `json:"incrementNonceDigestHex"`
+		} `json:"fromGoldenSeed"`
+	} `json:"order"`
+}
+
+func loadGolden(t *testing.T) goldenFile {
+	t.Helper()
+	raw, err := os.ReadFile("../testdata/golden-vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g goldenFile
+	mustUnmarshal(t, raw, &g)
+	return g
+}
+
+func TestGoldenVectorsFilePinsDigests(t *testing.T) {
+	pinChainID(t)
+	g := loadGolden(t)
+	if err := types.SetClientChainID(g.ChainID); err != nil {
+		t.Fatal(err)
+	}
+	if g.Permit.Context != string(qcrypto.CtxPermit) || g.Order.Context != string(qcrypto.CtxOrder) {
+		t.Fatalf("context strings drifted: permit %q order %q", g.Permit.Context, g.Order.Context)
+	}
+	if g.Permit.ChainID != g.ChainID || g.Order.ChainID != g.ChainID {
+		t.Fatal("vector chain ids disagree with the file's chainId")
+	}
+
+	// Pure digests: the core/types goldens, restated for other languages.
+	addr := func(s string) qcrypto.Address {
+		a, err := qcrypto.AddressFromString(s)
+		if err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+		return a
+	}
+	amount, _ := new(big.Int).SetString(g.Permit.Amount, 10)
+	pd, err := types.PermitDigest(g.Permit.ChainID, addr(g.Permit.Contract), addr(g.Permit.Owner), addr(g.Permit.Spender), amount, g.Permit.Nonce, g.Permit.Deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(pd[:]) != g.Permit.Digest {
+		t.Fatalf("permit.digest %s != PermitDigest %x", g.Permit.Digest, pd)
+	}
+	saltBytes, _ := hex.DecodeString(g.Order.Salt)
+	var salt [32]byte
+	copy(salt[:], saltBytes)
+	shares, _ := new(big.Int).SetString(g.Order.ShareAmount, 10)
+	price, _ := new(big.Int).SetString(g.Order.Price, 10)
+	od, err := types.OrderDigest(g.Order.ChainID, types.Order{
+		Salt: salt, Maker: addr(g.Order.Maker), Exchange: addr(g.Order.Exchange), Condition: g.Order.Condition,
+		Outcome: g.Order.Outcome, Side: g.Order.Side, ShareAmount: shares, Price: price,
+		Expiration: g.Order.Expiration, Nonce: g.Order.Nonce, Recipient: addr(g.Order.Recipient),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(od[:]) != g.Order.Digest {
+		t.Fatalf("order.digest %s != OrderDigest %x", g.Order.Digest, od)
+	}
+	cd := types.CancelDigest(od)
+	if hex.EncodeToString(cd[:]) != g.Order.CancelDigest {
+		t.Fatalf("order.cancelDigest %s != CancelDigest %x", g.Order.CancelDigest, cd)
+	}
+	nd, err := types.IncrementNonceDigest(g.Order.ChainID, addr(g.Order.Exchange), addr(g.Order.Maker), g.Order.Nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(nd[:]) != g.Order.IncrementNonceDigest {
+		t.Fatalf("order.incrementNonceDigest %s != IncrementNonceDigest %x", g.Order.IncrementNonceDigest, nd)
+	}
+
+	// Signer-level: the golden seed as owner/maker with the same inputs.
+	w := goldenWallet(t)
+	if w.Address.String() != g.Address {
+		t.Fatalf("golden seed derives %s, file says %s", w.Address, g.Address)
+	}
+	var sp SignedPermit
+	out, err := w.SignPermit(PermitParams{Token: g.Permit.Contract, Spender: g.Permit.Spender, Amount: g.Permit.Amount, Nonce: g.Permit.Nonce, Deadline: g.Permit.Deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, out, &sp)
+	if sp.DigestHex != g.Permit.FromGoldenSeed.DigestHex {
+		t.Errorf("permit.fromGoldenSeed.digestHex moved:\n got %s\nwant %s", sp.DigestHex, g.Permit.FromGoldenSeed.DigestHex)
+	}
+	op := OrderParams{
+		Exchange: g.Order.Exchange, Salt: g.Order.Salt, Condition: g.Order.Condition, Outcome: g.Order.Outcome, Side: g.Order.Side,
+		ShareAmount: g.Order.ShareAmount, Price: g.Order.Price, Expiration: g.Order.Expiration, Nonce: g.Order.Nonce, Recipient: g.Order.Recipient,
+	}
+	var so SignedOrder
+	out, err = w.SignOrder(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, out, &so)
+	if so.Hash != g.Order.FromGoldenSeed.Hash {
+		t.Errorf("order.fromGoldenSeed.hash moved:\n got %s\nwant %s", so.Hash, g.Order.FromGoldenSeed.Hash)
+	}
+	var sc SignedCancel
+	out, err = w.SignCancel(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, out, &sc)
+	if sc.OrderHash != so.Hash || sc.DigestHex != g.Order.FromGoldenSeed.CancelDigestHex {
+		t.Errorf("order.fromGoldenSeed.cancelDigestHex moved:\n got %s\nwant %s", sc.DigestHex, g.Order.FromGoldenSeed.CancelDigestHex)
+	}
+	var sn SignedIncrementNonce
+	out, err = w.SignIncrementNonce(IncrementNonceParams{Exchange: g.Order.Exchange, ExpectedNonce: g.Order.Nonce})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustUnmarshal(t, out, &sn)
+	if sn.DigestHex != g.Order.FromGoldenSeed.IncrementNonceDigestHex {
+		t.Errorf("order.fromGoldenSeed.incrementNonceDigestHex moved:\n got %s\nwant %s", sn.DigestHex, g.Order.FromGoldenSeed.IncrementNonceDigestHex)
 	}
 }
