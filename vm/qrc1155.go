@@ -405,6 +405,23 @@ func (t *QRC1155Token) transferOne(from, to qcrypto.Address, tokenId, amount *bi
 	return t.setBigInt(mtBalanceSlot(to, tokenId), newTo)
 }
 
+// transferUnchecked moves a balance without an approval check and records
+// TransferSingle. For in-package use by the module that owns the collection
+// (a settlement moving shares seller → buyer); `operator` is the address
+// acting (the module itself). The destination rule still applies.
+func (t *QRC1155Token) transferUnchecked(operator, from, to qcrypto.Address, tokenId, amount *big.Int, receipt *types.Receipt) error {
+	if err := t.checkTransferTo("transfer", to); err != nil {
+		return err
+	}
+	if err := t.transferOne(from, to, tokenId, amount); err != nil {
+		return err
+	}
+	if receipt != nil {
+		receipt.AddLog(TransferSingleEvent(t.contract, operator, from, to, tokenId, amount))
+	}
+	return nil
+}
+
 // SafeTransferFrom transfers `amount` of `tokenId` from `from` to `to`.
 func (t *QRC1155Token) SafeTransferFrom(caller, from, to qcrypto.Address, tokenId, amount *big.Int) error {
 	return t.SafeTransferFromWithEvents(caller, from, to, tokenId, amount, nil)
