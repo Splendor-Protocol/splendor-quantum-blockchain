@@ -93,6 +93,11 @@ type StateDB struct {
 	// snapshots maps a snapshot ID to its journal-length mark.
 	snapshots map[uint64]int
 
+	// nextSnap is the last snapshot ID this StateDB issued. Per-StateDB on
+	// purpose: ids are looked up only in this StateDB's own map, and a
+	// Simulate() sandbox starts its own count at zero (see Snapshot).
+	nextSnap uint64
+
 	// sandbox marks a throwaway overlay produced by Simulate(). Its pending
 	// layer is private, so speculative execution cannot be committed and cannot
 	// disturb the consensus state db it was derived from.
@@ -107,7 +112,8 @@ var ErrSandboxCommit = errors.New("state: cannot commit a simulation sandbox")
 //
 // It reads through to the same committed LevelDB state and starts from a copy
 // of the current pending layer, but owns that layer outright: its own dirty
-// map, code cache, raw overlay, journal and snapshot marks. Handing the live
+// map, code cache, raw overlay, journal, snapshot marks and snapshot-id
+// counter. Handing the live
 // StateDB to the VM instead (which /call and /estimate did) shares one journal
 // between an unauthenticated public endpoint and block execution. The engine
 // snapshots and reverts freely during a call, and RevertToSnapshot replays

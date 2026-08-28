@@ -718,6 +718,54 @@ Written after the fact so the plan stays honest about what shipped.
   the `/call` and `/exchange/...` rows in the endpoint quick reference, and no
   longer calls `chain_id` a compile-time constant (PR-10).
 
+### Security audit (post-implementation)
+
+An independent audit of the landed branch, each finding reproduced before it was
+acted on. Fixed in the `fix(audit)` commit that follows PR-10:
+
+- **F1 (critical) — snapshot ids were process-global.** `core/state` issued
+  snapshot ids from a package counter that `Simulate()` sandboxes (own mutex)
+  shared with the consensus StateDB, so a concurrent `/call`, `/estimate` or
+  `simulate_match` could hand the producer an inner id ≤ its outer id; the
+  inner revert then dropped the outer checkpoint and the per-tx revert became a
+  silent no-op, leaving fee/nonce/module residue in a state root no follower
+  reproduces. Fix: a per-StateDB `nextSnap` counter (a sandbox starts its own),
+  and `RevertToSnapshot`/`CommitSnapshot` return `ErrUnknownSnapshot` instead of
+  no-op'ing; the executor treats a failed per-tx revert or commit as fatal for
+  the block (`ApplyBlock` rejects it, `ProduceBlock` discards the pending layer).
+- **F2 (medium) — admission gate ignored a nil schedule.** `PreflightModuleCall`
+  skipped the fork gate when the executor had no schedule, while consensus reads
+  nil as "never", so a schedule-less node admitted gated writes it then dropped
+  every block, pinning the sender's nonce. Fix: the preflight gates on
+  `schedule.Active` (nil-safe) whenever a height is given; height 0 remains the
+  executor-less `/estimate` escape.
+- **F5 (low-medium) — per-pair rounding compounded across pairs.** With
+  operator-chosen `fill_shares` a colluding maker could split a fill into
+  one-unit pairs and take one unit per pair from the taker regardless of the
+  signed price. Fix: `Match` enforces the taker bound once more on the aggregate
+  (`Σ takerCost ≤ ceil(p_t·Σfill/1e6)` for a BUY, `≥ floor(...)` for a SELL); no
+  per-pair minimum fill, so equal-price and sum-==-1e6 fills still fill at any
+  size. Docs updated.
+- **Hardening in the same commit:** H8 string caps (name/symbol ≤ 64 B,
+  uri/uri_prefix ≤ 2048 B; the qrc20 caps gated under `qrc20_v2`), H9 StateDB
+  read errors propagate from the module storage readers instead of reading as
+  zero, H10 `qrc20_v2` and `qrc1155_v1` now carry the same `module_revert_v1`
+  dependency rule as `exchange_v1` in `forks.Validate`.
+
+Refuted (no change):
+
+- **Fee mutability** — `set_redeem_fee_bps` is documented owner trust with the
+  parity cap; not a defect.
+- **Legacy-chain schedule split** — a chain upgraded in place with a schedule
+  that differs per node is the design-excluded path (the schedule is genesis
+  identity); a residual guard is a follow-on, not a fix.
+- **Gas metering of module calls** — calldata is wire-bounded and the work is
+  ≤ 1.5× a metered call; synthetic metering is a follow-on.
+
+Follow-ons raised by the audit: resolver liveness / early-resolve policy;
+synthetic `GasUsed` for module calls; refuse activation heights ≤ head on
+in-place upgrades; a timelock on `set_redeem_fee_bps`.
+
 ## Verification
 
 - Per PR: `go build ./... && go vet ./...` then `go test -count=1 ./vm/ ./core/... ./genesis/

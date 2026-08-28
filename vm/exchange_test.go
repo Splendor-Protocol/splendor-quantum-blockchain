@@ -903,6 +903,63 @@ func TestExchangeZeroCostFillRejected(t *testing.T) {
 	mustSoft(t, err, "different outcomes do not cross")
 }
 
+// The per-pair rounding tolerance must not compound across pairs: with
+// attacker-chosen fill_shares a colluding operator and maker could split a
+// fill into one-unit pairs and take one unit per pair from the taker
+// regardless of the signed price. The bound is enforced once per match on the
+// aggregate; a single maker for the same shares at the same price still
+// fills, since that is one unit of rounding, not sixteen.
+func TestExchangeAggregateTakerBound(t *testing.T) {
+	f := newExFixture(t)
+	f.split(t, f.bob, 100)
+
+	// BUY taker 1000 @0.01: bound for 16 shares is ceil(0.16) = 1, but sixteen
+	// SELL-1 makers @0.01 each cost ceil(0.01) = 1 → 16.
+	taker := f.order(t, f.alice, types.OrderSideBuy, 0, 1000, 10_000)
+	makers := make([]exchangeOrderWire, 16)
+	fills := make([]int64, 16)
+	for i := range makers {
+		makers[i] = f.order(t, f.bob, types.OrderSideSell, 0, 1, 10_000)
+		fills[i] = 1
+	}
+	before := f.collateral(t, f.alice.addr)
+	_, err := f.match(t, f.operator, taker, makers, fills...)
+	mustSoft(t, err, "taker bound exceeded (paid 16 for 16 shares at 10000)")
+	if f.collateral(t, f.alice.addr) != before || f.filled(t, taker) != 0 {
+		t.Fatal("a refused match left residue")
+	}
+	// One SELL-16 maker at the same price is within the bound: cost ceil(0.16) = 1.
+	if _, err := f.match(t, f.operator, taker, []exchangeOrderWire{f.order(t, f.bob, types.OrderSideSell, 0, 16, 10_000)}, 16); err != nil {
+		t.Fatalf("single maker at the same price: %v", err)
+	}
+	if f.collateral(t, f.alice.addr) != before-1 || f.position(t, f.alice.addr, 0) != 16 {
+		t.Fatalf("alice paid %d for %d shares, want 1 for 16", before-f.collateral(t, f.alice.addr), f.position(t, f.alice.addr, 0))
+	}
+
+	// SELL taker 48 @0.5: bound for 48 shares is floor(24) = 24, but sixteen
+	// BUY-3 makers @0.5 each pay floor(1.5) = 1 → 16.
+	sTaker := f.order(t, f.bob, types.OrderSideSell, 1, 48, 500_000)
+	bMakers := make([]exchangeOrderWire, 16)
+	bFills := make([]int64, 16)
+	for i := range bMakers {
+		bMakers[i] = f.order(t, f.carol, types.OrderSideBuy, 1, 3, 500_000)
+		bFills[i] = 3
+	}
+	before = f.collateral(t, f.bob.addr)
+	_, err = f.match(t, f.operator, sTaker, bMakers, bFills...)
+	mustSoft(t, err, "taker bound exceeded (received 16 for 48 shares at 500000)")
+	if f.collateral(t, f.bob.addr) != before || f.filled(t, sTaker) != 0 {
+		t.Fatal("a refused match left residue")
+	}
+	// One BUY-48 maker at the same price pays floor(24) = 24.
+	if _, err := f.match(t, f.operator, sTaker, []exchangeOrderWire{f.order(t, f.carol, types.OrderSideBuy, 1, 48, 500_000)}, 48); err != nil {
+		t.Fatalf("single maker at the same price: %v", err)
+	}
+	if f.collateral(t, f.bob.addr) != before+24 {
+		t.Fatalf("bob received %d for 48 shares, want 24", f.collateral(t, f.bob.addr)-before)
+	}
+}
+
 // The rounding rule, over 10k random pairs: the maker settles at its price
 // rounded in its favour, the taker never outside its documented bound, mint
 // and merge legs sum exactly to the fill, and every crossing pair is either

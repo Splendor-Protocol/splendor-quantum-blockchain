@@ -113,7 +113,7 @@ func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := baseGenesis()
 			g.Forks = forks.Schedule{tc.name: 1}
-			if tc.name == forks.ExchangeV1 {
+			if tc.name == forks.ExchangeV1 || tc.name == forks.QRC20V2 || tc.name == forks.QRC1155V1 {
 				// Its own dependency rule; what is on trial here is the name.
 				g.Forks[forks.ModuleRevertV1] = 1
 			}
@@ -130,21 +130,27 @@ func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
 	}
 }
 
-// exchange_v1 depends on module_revert_v1 being in force no later than
-// itself: a failed match must be a failed receipt, never a dropped tx that
-// jams the operator's nonce. Now that both names are honoured the rule is
-// reachable from a genesis document, and a document that gets it wrong is
-// refused at load like an unknown name — never honoured in part.
+// exchange_v1, qrc20_v2 and qrc1155_v1 each depend on module_revert_v1 being
+// in force no later than themselves: a failed match, permit or transfer must
+// be a failed receipt, never a dropped tx that jams the sender's nonce. Now
+// that the names are honoured the rule is reachable from a genesis document,
+// and a document that gets it wrong is refused at load like an unknown name —
+// never honoured in part.
 func TestGenesisRefusesExchangeWithoutModuleRevert(t *testing.T) {
 	for name, tc := range map[string]struct {
 		forks forks.Schedule
 		ok    bool
 	}{
-		"both at 1":             {forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 1}, true},
-		"revert earlier":        {forks.Schedule{forks.ExchangeV1: 10, forks.ModuleRevertV1: 5}, true},
-		"exchange alone":        {forks.Schedule{forks.ExchangeV1: 1}, false},
-		"revert never":          {forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 0}, false},
-		"revert one block late": {forks.Schedule{forks.ExchangeV1: 5, forks.ModuleRevertV1: 6}, false},
+		"both at 1":                {forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 1}, true},
+		"revert earlier":           {forks.Schedule{forks.ExchangeV1: 10, forks.ModuleRevertV1: 5}, true},
+		"exchange alone":           {forks.Schedule{forks.ExchangeV1: 1}, false},
+		"revert never":             {forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 0}, false},
+		"revert one block late":    {forks.Schedule{forks.ExchangeV1: 5, forks.ModuleRevertV1: 6}, false},
+		"qrc20_v2 alone":           {forks.Schedule{forks.QRC20V2: 1}, false},
+		"qrc1155_v1 before revert": {forks.Schedule{forks.QRC1155V1: 5, forks.ModuleRevertV1: 6}, false},
+		"all four at 1": {forks.Schedule{
+			forks.ExchangeV1: 1, forks.QRC20V2: 1, forks.QRC1155V1: 1, forks.ModuleRevertV1: 1,
+		}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := baseGenesis()

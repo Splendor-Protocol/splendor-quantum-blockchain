@@ -39,9 +39,11 @@ const MultiValidator = "multi_validator"
 // to prevent. Until then a document scheduling one is refused at load.
 const (
 	// QRC20V2 routes the QRC-20 permit/allowance surface and gates the
-	// IsContract guard on approve.
+	// IsContract guard on approve. Requires ModuleRevertV1 no later than
+	// itself (see Validate).
 	QRC20V2 = "qrc20_v2"
-	// QRC1155V1 routes QRC-1155 behind an owner slot.
+	// QRC1155V1 routes QRC-1155 behind an owner slot. Requires ModuleRevertV1
+	// no later than itself (see Validate).
 	QRC1155V1 = "qrc1155_v1"
 	// ExchangeV1 activates the settlement module. It requires ModuleRevertV1 to
 	// be in force no later than itself (see Validate).
@@ -102,21 +104,27 @@ func (s Schedule) Validate() error {
 				name, s[name], strings.Join(Known, ", "))
 		}
 	}
-	// The settlement module relies on a failed module call being a failed
-	// receipt rather than a dropped transaction: an operator whose match fails
-	// permanently would otherwise jam its account at that nonce. Scheduling the
-	// exchange before (or without) that rule describes a chain that cannot run
-	// it safely, so the document is refused rather than honoured in part.
-	if exAt, ok := s.At(ExchangeV1); ok {
+	// Every routed module relies on a failed module call being a failed
+	// receipt rather than a dropped transaction: an operator whose match
+	// fails permanently, or a holder whose permit or transfer fails SOFT,
+	// would otherwise jam its account at that nonce. Scheduling one of them
+	// before (or without) that rule describes a chain that cannot run it
+	// safely, so the document is refused rather than honoured in part. The
+	// dependents are checked in sorted order for a stable report.
+	for _, name := range []string{ExchangeV1, QRC1155V1, QRC20V2} {
+		at, ok := s.At(name)
+		if !ok {
+			continue
+		}
 		mrAt, ok := s.At(ModuleRevertV1)
 		if !ok {
 			return fmt.Errorf("genesis schedules %s at height %d but never schedules %s, which it depends on",
-				ExchangeV1, exAt, ModuleRevertV1)
+				name, at, ModuleRevertV1)
 		}
-		if mrAt > exAt {
+		if mrAt > at {
 			return fmt.Errorf("genesis schedules %s at height %d but %s only at height %d: "+
 				"the dependency must be in force no later than the upgrade that needs it",
-				ExchangeV1, exAt, ModuleRevertV1, mrAt)
+				name, at, ModuleRevertV1, mrAt)
 		}
 	}
 	return nil
