@@ -198,18 +198,18 @@ func wrap256(v *big.Int) *big.Int {
 // ── Execution context ─────────────────────────────────────────────────────────
 
 type ExecutionContext struct {
-	Caller    qcrypto.Address
-	Origin    qcrypto.Address
-	Contract  qcrypto.Address
-	CallValue *big.Int
-	Input     []byte // calldata
-	Code      []byte
+	Caller      qcrypto.Address
+	Origin      qcrypto.Address
+	Contract    qcrypto.Address
+	CallValue   *big.Int
+	Input       []byte // calldata
+	Code        []byte
 	BlockHeight uint64
-	Timestamp int64
-	Depth     int
-	Gas       uint64
-	Logs      []*types.Log
-	IsStatic  bool
+	Timestamp   int64
+	Depth       int
+	Gas         uint64
+	Logs        []*types.Log
+	IsStatic    bool
 	// Return data from most recent sub-call
 	returnData []byte
 }
