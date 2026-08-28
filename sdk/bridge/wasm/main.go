@@ -44,6 +44,11 @@ func main() {
 	js.Global().Set("sqIsUnlocked", js.FuncOf(sqIsUnlocked))
 	js.Global().Set("sqDomainMessage", js.FuncOf(sqDomainMessage))
 	js.Global().Set("sqSetChainID", js.FuncOf(sqSetChainID))
+	js.Global().Set("sqSignPermit", js.FuncOf(sqSignPermit))
+	js.Global().Set("sqSignOrder", js.FuncOf(sqSignOrder))
+	js.Global().Set("sqSignCancel", js.FuncOf(sqSignCancel))
+	js.Global().Set("sqSignIncrementNonce", js.FuncOf(sqSignIncrementNonce))
+	js.Global().Set("sqGetModuleRouterAddress", js.FuncOf(sqGetModuleRouterAddress))
 
 	select {}
 }
@@ -373,6 +378,117 @@ func sqSignX402Settlement(this js.Value, args []js.Value) interface{} {
 		return errVal(e.Error())
 	}
 	return okJSON(wire)
+}
+
+// ── Off-chain authorisations (no transaction, no fee) ──────────────────────
+//
+// Each takes [sessionId?, paramsJson] like sqSignX402 and returns the JSON
+// params object the matching module action accepts verbatim (or {error}).
+// The digests are bound to the chain id set by sqSetChainID.
+
+// sqSignPermit signs a QRC-20 permit (signer.PermitParams) → qrc20.permit
+// params. The session key is the owner.
+func sqSignPermit(this js.Value, args []js.Value) interface{} {
+	id, paramsJSON, err := parseSessionAndString(args, "params JSON")
+	if err != "" {
+		return errVal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	var p signer.PermitParams
+	if e := json.Unmarshal([]byte(paramsJSON), &p); e != nil {
+		return errVal("invalid params: " + e.Error())
+	}
+	wire, e := w.SignPermit(p)
+	if e != nil {
+		return errVal(e.Error())
+	}
+	return okJSON(wire)
+}
+
+// sqSignOrder signs an exchange order (signer.OrderParams) → the order object
+// exchange.match / cancel_order accept. The session key is the maker.
+func sqSignOrder(this js.Value, args []js.Value) interface{} {
+	id, paramsJSON, err := parseSessionAndString(args, "params JSON")
+	if err != "" {
+		return errVal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	var p signer.OrderParams
+	if e := json.Unmarshal([]byte(paramsJSON), &p); e != nil {
+		return errVal("invalid params: " + e.Error())
+	}
+	wire, e := w.SignOrder(p)
+	if e != nil {
+		return errVal(e.Error())
+	}
+	return okJSON(wire)
+}
+
+// sqSignCancel signs the cancellation of one of the session's orders
+// (signer.OrderParams, salt required) → exchange.cancel_order params that
+// anyone may submit.
+func sqSignCancel(this js.Value, args []js.Value) interface{} {
+	id, paramsJSON, err := parseSessionAndString(args, "params JSON")
+	if err != "" {
+		return errVal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	var p signer.OrderParams
+	if e := json.Unmarshal([]byte(paramsJSON), &p); e != nil {
+		return errVal("invalid params: " + e.Error())
+	}
+	wire, e := w.SignCancel(p)
+	if e != nil {
+		return errVal(e.Error())
+	}
+	return okJSON(wire)
+}
+
+// sqSignIncrementNonce signs a bump of the session's order nonce at an
+// exchange (signer.IncrementNonceParams) → exchange.increment_nonce params
+// that anyone may submit.
+func sqSignIncrementNonce(this js.Value, args []js.Value) interface{} {
+	id, paramsJSON, err := parseSessionAndString(args, "params JSON")
+	if err != "" {
+		return errVal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	var p signer.IncrementNonceParams
+	if e := json.Unmarshal([]byte(paramsJSON), &p); e != nil {
+		return errVal("invalid params: " + e.Error())
+	}
+	wire, e := w.SignIncrementNonce(p)
+	if e != nil {
+		return errVal(e.Error())
+	}
+	return okJSON(wire)
+}
+
+// sqGetModuleRouterAddress returns the bare "SQ:…" address every native
+// module call is sent to (the `contract` of sqSignCall carrying a module
+// envelope). No arguments, no session — like sqDomainMessage.
+func sqGetModuleRouterAddress(this js.Value, args []js.Value) interface{} {
+	return signer.ModuleRouterAddress().String()
 }
 
 func sqLock(this js.Value, args []js.Value) interface{} {
