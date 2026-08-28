@@ -63,26 +63,16 @@ func TestNamesAreSorted(t *testing.T) {
 	}
 }
 
-// withKnown makes names this build does not yet honour count as known for one
-// test, so a rule about how names relate can be pinned before the changes that
-// implement them land. Restored on cleanup: leaking it would let every later
-// test in the package accept a schedule the real build refuses.
-func withKnown(t *testing.T, names ...string) {
-	t.Helper()
-	prev := Known
-	Known = append(append([]string{}, prev...), names...)
-	t.Cleanup(func() { Known = prev })
-}
-
-// The settlement-plan names are declared so the dependency rule below can
-// name them, but a name is honoured only once its gate exists. A document
+// A settlement-plan name is honoured only once its gate exists. A document
 // scheduling one this build does not implement must be refused, not accepted
-// and silently ignored; each name flips to accepted only in the change that
-// implements its gate (module_revert_v1 flipped with the executor's
-// module-revert branch, qrc20_v2 with the routed QRC-20 v2 surface,
-// qrc1155_v1 with the owned, routed QRC-1155; exchange_v1 is still pending).
+// and silently ignored; each name flipped to accepted in the change that
+// implemented its gate (module_revert_v1 with the executor's module-revert
+// branch, qrc20_v2 with the routed QRC-20 v2 surface, qrc1155_v1 with the
+// owned, routed QRC-1155, exchange_v1 with the routed settlement module). The
+// refused list is empty now that every reserved name is implemented; a future
+// reserved name goes back into it until its gate lands.
 func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
-	for _, name := range []string{ExchangeV1} {
+	for _, name := range []string{} {
 		if isKnown(name) {
 			t.Fatalf("%s is listed as known: only the change implementing its gate may add it", name)
 		}
@@ -98,6 +88,15 @@ func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
 			t.Fatalf("scheduling %s must be accepted by this build: %v", name, err)
 		}
 	}
+	// exchange_v1 is known too; its own dependency rule refuses it alone
+	// (TestExchangeRequiresModuleRevertNoLaterThanItself), so it is tried with
+	// its dependency — what is on trial here is the name.
+	if !isKnown(ExchangeV1) {
+		t.Fatalf("%s has a gate in this build but is not listed as known", ExchangeV1)
+	}
+	if err := (Schedule{ExchangeV1: 1, ModuleRevertV1: 1}).Validate(); err != nil {
+		t.Fatalf("scheduling %s must be accepted by this build: %v", ExchangeV1, err)
+	}
 }
 
 // exchange_v1 needs module_revert_v1 in force no later than itself, or a
@@ -105,8 +104,6 @@ func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
 // receipt. A schedule that gets the order wrong describes a chain that cannot
 // run the exchange safely, and is refused whole.
 func TestExchangeRequiresModuleRevertNoLaterThanItself(t *testing.T) {
-	withKnown(t, ExchangeV1, ModuleRevertV1)
-
 	for name, tc := range map[string]struct {
 		s  Schedule
 		ok bool

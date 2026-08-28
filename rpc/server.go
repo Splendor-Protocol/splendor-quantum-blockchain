@@ -275,7 +275,15 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	// head+1. Local and non-consensus: the executor re-judges every call.
 	if tx.Type == types.TxCall && tx.To == vm.ModuleRouterAddress {
 		head, _ := s.executor.LatestHeight()
-		if _, err := vm.PreflightModuleCall(tx.Data, s.executor.Forks(), head+1); err != nil {
+		mc, err := vm.PreflightModuleCall(tx.Data, s.executor.Forks(), head+1)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
+			return
+		}
+		// An exchange.match from anyone but an operator of the instance can
+		// only ever be a failed receipt; refusing it here keeps mempool and
+		// block space for settlements that can settle. Local, like the rest.
+		if err := vm.PreflightExchangeMatch(s.stateDB, mc, tx.From); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 			return
 		}
