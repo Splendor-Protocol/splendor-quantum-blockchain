@@ -276,8 +276,8 @@ func NewPaymentRequirements(payTo qcrypto.Address, amountUnits *big.Int, descrip
 	return &PaymentRequirements{
 		PayTo:       payTo,
 		Amount:      amountUnits,
-		ValidAfter:  now - 30,          // 30 seconds grace
-		ValidBefore: now + 5*60,        // 5 minute window
+		ValidAfter:  now - 30,   // 30 seconds grace
+		ValidBefore: now + 5*60, // 5 minute window
 		Description: description,
 	}
 }
