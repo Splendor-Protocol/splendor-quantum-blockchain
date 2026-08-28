@@ -43,7 +43,7 @@ func TestCallHandlerModuleRead(t *testing.T) {
 
 	// Deploy a token directly through the (write) module router.
 	dep := &types.Receipt{}
-	if err := vm.DispatchModuleCall(sdb, owner, 3, moduleEnvelope(t, "qrc20", "deploy", map[string]interface{}{
+	if err := vm.DispatchModuleCall(sdb, vm.ModuleContext{Caller: owner, Nonce: 3}, moduleEnvelope(t, "qrc20", "deploy", map[string]interface{}{
 		"name": "HTTP Test", "symbol": "HTEST", "decimals": 18,
 		"total_supply": "5000000000000000000",
 	}), dep); err != nil {

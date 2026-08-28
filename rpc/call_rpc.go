@@ -93,7 +93,7 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 		// dispatch bypasses snapshots — so /call must serve reads via the
 		// read-only dispatch, never via CallWithContext.
 		if to == vm.ModuleRouterAddress {
-			decoded, derr := vm.DispatchModuleReadCall(sim, calldata)
+			decoded, derr := vm.DispatchModuleReadCall(sim, headReadContext(executor), calldata)
 			if derr != nil {
 				writeError(w, http.StatusBadRequest, derr.Error())
 				return
@@ -271,6 +271,21 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// headReadContext describes the chain head for a native-module read. It is
+// zero when there is no executor to ask or the chain has no block yet; module
+// reads treat it as advisory, so a zero context is a valid answer, not an
+// error (rpc/call_rpc_test.go runs the read path with a nil executor).
+func headReadContext(executor *block.Executor) vm.ReadContext {
+	if executor == nil {
+		return vm.ReadContext{}
+	}
+	head, err := executor.LatestBlock()
+	if err != nil || head == nil {
+		return vm.ReadContext{}
+	}
+	return vm.ReadContext{Height: head.Header.Height, Time: head.Header.Timestamp}
+}
 
 // decodeCallData decodes calldata from hex (default) or base64.
 func decodeCallData(data, encoding string) ([]byte, error) {

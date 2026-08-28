@@ -12,6 +12,7 @@ package vm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -474,59 +475,85 @@ func (t *QRC20Token) PermitNonce(addr qcrypto.Address) (*big.Int, error) {
 	return t.getBigInt(permitNonceSlot(addr))
 }
 
-// PermitMessage constructs the canonical message that must be ML-DSA-65-signed for a permit.
-// Message = SHA3-256("qrc20:permit:" + contract + owner + spender + amount + nonce + deadline)
-func PermitMessage(contract, owner, spender qcrypto.Address, amount *big.Int, nonce uint64, deadline int64) [32]byte {
-	amountBytes := make([]byte, 32)
-	ab := amount.Bytes()
-	copy(amountBytes[32-len(ab):], ab)
-
-	msg := append([]byte("qrc20:permit:"), contract[:]...)
-	msg = append(msg, owner[:]...)
-	msg = append(msg, spender[:]...)
-	msg = append(msg, amountBytes...)
-	nonceBuf := make([]byte, 8)
-	for i := 7; i >= 0; i-- {
-		nonceBuf[i] = byte(nonce)
-		nonce >>= 8
-	}
-	msg = append(msg, nonceBuf...)
-	deadlineBuf := make([]byte, 8)
-	dl := uint64(deadline)
-	for i := 7; i >= 0; i-- {
-		deadlineBuf[i] = byte(dl)
-		dl >>= 8
-	}
-	msg = append(msg, deadlineBuf...)
-	return qcrypto.Hash32(msg)
+// PermitMessage is the digest an owner signs under crypto.CtxPermit to grant a
+// permit on this chain: types.PermitDigest bound to types.ChainID (the id the
+// node adopted from its genesis). See PermitDigest for the layout and for why
+// the chain id is part of it.
+func PermitMessage(contract, owner, spender qcrypto.Address, amount *big.Int, nonce uint64, deadline int64) ([32]byte, error) {
+	return types.PermitDigest(types.ChainID, contract, owner, spender, amount, nonce, deadline)
 }
 
-// Permit executes an off-chain-signed approval.
-// The caller provides the ML-DSA-65 signature of PermitMessage(...).
-// This allows gasless approvals — the spender pays the tx fee, not the owner.
+// Permit executes an off-chain-signed approval: it sets spender's allowance
+// over owner's tokens to amount on the strength of owner's ML-DSA-65 signature
+// over PermitMessage(...), so the spender (or any relayer) pays the fee and
+// the owner never sends a transaction.
+//
+// blockTime is the timestamp of the block the permit executes in, handed down
+// through vm.ModuleContext — never the wall clock, so every node judges the
+// deadline identically. deadline must be strictly positive (an open-ended
+// permit is not a thing) and the permit is valid while blockTime <= deadline.
+//
+// Key resolution is registry-first: if owner has a registered public key it
+// is the only key that verifies, and ownerPubKey is ignored. Only an owner
+// with no registered key may present ownerPubKey, and then only a key whose
+// derived address is owner — otherwise anyone could hand in a key they hold
+// and "prove" an approval for an address they do not own. Permit never
+// registers the presented key; registration stays with the transaction path.
+//
+// Like Approve, Permit is not blocked by pause: it only records an allowance,
+// and the transfer_from that spends it is what the pause stops. The permit
+// nonce advances on success, so a signature can be used once. The Approval
+// event is appended to receipt when one is given.
 func (t *QRC20Token) Permit(
 	owner, spender qcrypto.Address,
 	amount *big.Int,
 	deadline int64,
 	sig []byte,
 	ownerPubKey []byte,
+	blockTime int64,
+	receipt *types.Receipt,
 ) error {
-	if deadline > 0 {
-		// In production: check deadline against current block timestamp
-		// For now, we trust the caller to validate
+	if amount == nil || amount.Sign() < 0 {
+		return fmt.Errorf("QRC20 permit: amount must be non-negative")
+	}
+	if amount.BitLen() > 256 {
+		return fmt.Errorf("QRC20 permit: amount does not fit in 256 bits")
+	}
+	if deadline <= 0 {
+		return fmt.Errorf("QRC20 permit: deadline must be positive")
+	}
+	if blockTime > deadline {
+		return fmt.Errorf("QRC20 permit: expired (deadline %d, block time %d)", deadline, blockTime)
+	}
+
+	var pub *qcrypto.PublicKey
+	registered, err := t.stateDB.GetPublicKey(owner)
+	switch {
+	case err == nil:
+		if pub, err = qcrypto.PublicKeyFromBytes(registered); err != nil {
+			return fmt.Errorf("QRC20 permit: registered owner key: %w", err)
+		}
+	case errors.Is(err, types.ErrNoPublicKey):
+		if pub, err = qcrypto.PublicKeyFromBytes(ownerPubKey); err != nil {
+			return fmt.Errorf("QRC20 permit: owner has no registered key and owner_pubkey is invalid: %w", err)
+		}
+		if qcrypto.DeriveAddress(pub) != owner {
+			return fmt.Errorf("QRC20 permit: owner_pubkey does not derive owner %s", owner)
+		}
+	default:
+		return fmt.Errorf("QRC20 permit: owner key lookup: %w", err)
 	}
 
 	nonce, err := t.PermitNonce(owner)
 	if err != nil {
 		return err
 	}
-
-	msg := PermitMessage(t.contract, owner, spender, amount, nonce.Uint64(), deadline)
-
-	// Verify ML-DSA-65 signature
-	pub, err := qcrypto.PublicKeyFromBytes(ownerPubKey)
+	if nonce.BitLen() > 64 {
+		return fmt.Errorf("QRC20 permit: nonce overflow")
+	}
+	msg, err := PermitMessage(t.contract, owner, spender, amount, nonce.Uint64(), deadline)
 	if err != nil {
-		return fmt.Errorf("QRC20 permit: invalid owner public key: %w", err)
+		return fmt.Errorf("QRC20 permit: %w", err)
 	}
 	if !qcrypto.Verify(pub, msg[:], qcrypto.CtxPermit, sig) {
 		return fmt.Errorf("QRC20 permit: invalid signature")
@@ -537,7 +564,7 @@ func (t *QRC20Token) Permit(
 		return err
 	}
 
-	return t.Approve(owner, spender, amount)
+	return t.approveWithEvents(owner, spender, amount, receipt)
 }
 
 // ── Storage helpers ────────────────────────────────────────────────────────────
