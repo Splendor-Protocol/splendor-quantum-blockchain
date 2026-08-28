@@ -108,7 +108,7 @@ func TestQRC1155SelfTransferDoesNotMint(t *testing.T) {
 	tok := NewQRC1155Token(sdb, contract)
 
 	id := big.NewInt(1)
-	if err := tok.Mint(holder, id, big.NewInt(1_000), ""); err != nil {
+	if err := tok.Mint(holder, holder, id, big.NewInt(1_000), ""); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 

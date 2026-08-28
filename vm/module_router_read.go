@@ -63,6 +63,19 @@ var KnownModuleActions = map[string]ModuleActions{
 			"permit_nonce": true, "paused": true, "owner": true,
 		},
 	},
+	"qrc1155": {
+		// qrc1155_v1: the whole module is routed at once, behind its owner slot.
+		Writes: map[string]string{
+			"deploy": forks.QRC1155V1, "mint": forks.QRC1155V1, "mint_batch": forks.QRC1155V1,
+			"transfer": forks.QRC1155V1, "batch_transfer": forks.QRC1155V1,
+			"set_approval_for_all": forks.QRC1155V1, "burn": forks.QRC1155V1,
+			"burn_batch": forks.QRC1155V1, "transfer_ownership": forks.QRC1155V1,
+		},
+		Reads: map[string]bool{
+			"balance_of": true, "balance_of_batch": true, "is_approved_for_all": true,
+			"uri": true, "total_supply": true, "token_info": true,
+		},
+	},
 	"dex": {
 		Writes: map[string]string{
 			"deploy_pool": "", "add_liquidity": "", "swap": "",
@@ -86,6 +99,18 @@ type dexReadParams struct {
 	Pool   string `json:"pool,omitempty"`   // explicit pool SQ: address, or…
 	Token0 string `json:"token0,omitempty"` // …a token pair (pool derived via PoolAddress)
 	Token1 string `json:"token1,omitempty"`
+}
+
+// qrc1155ReadParams is the parameter shape for qrc1155 reads. Ids are
+// decimal strings through parseUint256; balance_of_batch pairs owners[i]
+// with ids[i] and is capped at MaxQRC1155Batch.
+type qrc1155ReadParams struct {
+	Collection string   `json:"collection"`         // contract SQ: address (required)
+	Owner      string   `json:"owner,omitempty"`    // balance_of / is_approved_for_all
+	Operator   string   `json:"operator,omitempty"` // is_approved_for_all
+	ID         string   `json:"id,omitempty"`       // balance_of / uri / total_supply
+	Owners     []string `json:"owners,omitempty"`   // balance_of_batch
+	IDs        []string `json:"ids,omitempty"`      // balance_of_batch
 }
 
 // ReadContext is the advisory view of the chain head a read action may use to
@@ -125,10 +150,143 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 	switch mc.Module {
 	case "qrc20":
 		return dispatchQRC20Read(stateDB, mc.Action, mc.Params)
+	case "qrc1155":
+		return dispatchQRC1155Read(stateDB, mc.Action, mc.Params)
 	case "dex":
 		return dispatchDEXRead(stateDB, mc.Action, mc.Params)
 	default:
 		return nil, fmt.Errorf("module call: unknown module %q", mc.Module)
+	}
+}
+
+func dispatchQRC1155Read(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
+	var p qrc1155ReadParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("qrc1155 read: bad params: %w", err)
+	}
+	collection, err := qcrypto.AddressFromString(p.Collection)
+	if err != nil {
+		return nil, fmt.Errorf("qrc1155 read: collection: %w", err)
+	}
+	tok := NewQRC1155Token(stateDB, collection)
+	exists := false
+	if acc, aerr := stateDB.GetAccount(collection); aerr == nil {
+		exists = acc.IsContract
+	}
+
+	switch action {
+	case "balance_of":
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, fmt.Errorf("qrc1155 balance_of: owner: %w", err)
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return nil, fmt.Errorf("qrc1155 balance_of: id: %w", err)
+		}
+		bal, err := tok.BalanceOf(owner, id)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"module": "qrc1155", "action": "balance_of",
+			"collection": collection.String(), "owner": owner.String(), "id": id.String(),
+			"balance": bal.String(), "exists": exists,
+		}, nil
+
+	case "balance_of_batch":
+		if len(p.Owners) != len(p.IDs) {
+			return nil, fmt.Errorf("qrc1155 balance_of_batch: owners and ids length mismatch")
+		}
+		if len(p.Owners) > MaxQRC1155Batch {
+			return nil, fmt.Errorf("qrc1155 balance_of_batch: %d entries exceeds the batch cap of %d", len(p.Owners), MaxQRC1155Batch)
+		}
+		owners := make([]qcrypto.Address, len(p.Owners))
+		for i, s := range p.Owners {
+			if owners[i], err = qcrypto.AddressFromString(s); err != nil {
+				return nil, fmt.Errorf("qrc1155 balance_of_batch: owners[%d]: %w", i, err)
+			}
+		}
+		ids, err := parseUint256List("qrc1155 balance_of_batch: ids", p.IDs)
+		if err != nil {
+			return nil, err
+		}
+		bals, err := tok.BalanceOfBatch(owners, ids)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, len(bals))
+		for i, b := range bals {
+			out[i] = b.String()
+		}
+		return map[string]interface{}{
+			"module": "qrc1155", "action": "balance_of_batch",
+			"collection": collection.String(), "owners": p.Owners, "ids": p.IDs,
+			"balances": out, "exists": exists,
+		}, nil
+
+	case "is_approved_for_all":
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, fmt.Errorf("qrc1155 is_approved_for_all: owner: %w", err)
+		}
+		operator, err := qcrypto.AddressFromString(p.Operator)
+		if err != nil {
+			return nil, fmt.Errorf("qrc1155 is_approved_for_all: operator: %w", err)
+		}
+		approved, err := tok.IsApprovedForAll(owner, operator)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"module": "qrc1155", "action": "is_approved_for_all",
+			"collection": collection.String(), "owner": owner.String(), "operator": operator.String(),
+			"approved": approved, "exists": exists,
+		}, nil
+
+	case "uri":
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return nil, fmt.Errorf("qrc1155 uri: id: %w", err)
+		}
+		uri, err := tok.URI(id)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"module": "qrc1155", "action": "uri",
+			"collection": collection.String(), "id": id.String(), "uri": uri, "exists": exists,
+		}, nil
+
+	case "total_supply":
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return nil, fmt.Errorf("qrc1155 total_supply: id: %w", err)
+		}
+		supply, err := tok.TotalSupply(id)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"module": "qrc1155", "action": "total_supply",
+			"collection": collection.String(), "id": id.String(),
+			"total_supply": supply.String(), "exists": exists,
+		}, nil
+
+	case "token_info":
+		name, _ := tok.Name()
+		prefix, _ := tok.URIPrefix()
+		owner, _ := tok.Owner()
+		managed, _ := tok.IsModuleManaged()
+		return map[string]interface{}{
+			"module": "qrc1155", "action": "token_info",
+			"collection": collection.String(), "name": name, "uri_prefix": prefix,
+			"owner": owner.String(), "module_managed": managed, "exists": exists,
+		}, nil
+
+	default:
+		// Unreachable: DispatchModuleReadCall admits only the read set.
+		return nil, fmt.Errorf("qrc1155: unknown read action %q", action)
 	}
 }
 

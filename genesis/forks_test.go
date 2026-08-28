@@ -107,7 +107,7 @@ func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
 		{forks.MultiValidator, true},
 		{forks.ModuleRevertV1, true}, // PR-3
 		{forks.QRC20V2, true},        // PR-4
-		{forks.QRC1155V1, false},     // PR-5
+		{forks.QRC1155V1, true},      // PR-5
 		{forks.ExchangeV1, false},    // PR-6
 	} {
 		t.Run(tc.name, func(t *testing.T) {

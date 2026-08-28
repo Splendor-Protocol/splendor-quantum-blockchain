@@ -106,6 +106,15 @@ var (
 	TopicOwnershipTransferred = EventTopic("OwnershipTransferred(sqaddress,sqaddress)")
 )
 
+// QRC-1155 (qrc1155_v1) transfer events. operator, from and to are indexed;
+// a mint is a transfer from the zero address and a burn a transfer to it.
+// TransferBatch data is n ‖ ids[n] ‖ values[n], every element a 32-byte word,
+// so an indexer can decode it without a length prefix per element.
+var (
+	TopicTransferSingle = EventTopic("TransferSingle(sqaddress,sqaddress,sqaddress,uint256,uint256)")
+	TopicTransferBatch  = EventTopic("TransferBatch(sqaddress,sqaddress,sqaddress,uint256[],uint256[])")
+)
+
 // ── Event builder ─────────────────────────────────────────────────────────────
 
 // EventBuilder builds a *types.Log with the standard topic-first format.
@@ -227,6 +236,36 @@ func OwnershipTransferredEvent(contract, previousOwner, newOwner qcrypto.Address
 		IndexAddr(previousOwner).
 		IndexAddr(newOwner).
 		Build()
+}
+
+// TransferSingleEvent builds a QRC-1155 TransferSingle event: operator, from
+// and to indexed; id and value as data words.
+func TransferSingleEvent(contract, operator, from, to qcrypto.Address, id, value *big.Int) *types.Log {
+	return NewEvent(contract, "TransferSingle(sqaddress,sqaddress,sqaddress,uint256,uint256)").
+		IndexAddr(operator).
+		IndexAddr(from).
+		IndexAddr(to).
+		DataUint256(id).
+		DataUint256(value).
+		Build()
+}
+
+// TransferBatchEvent builds a QRC-1155 TransferBatch event: operator, from
+// and to indexed; data = n ‖ ids ‖ values as 32-byte words. len(ids) must
+// equal len(values) — the callers check it before any balance moves.
+func TransferBatchEvent(contract, operator, from, to qcrypto.Address, ids, values []*big.Int) *types.Log {
+	e := NewEvent(contract, "TransferBatch(sqaddress,sqaddress,sqaddress,uint256[],uint256[])").
+		IndexAddr(operator).
+		IndexAddr(from).
+		IndexAddr(to).
+		DataUint256(big.NewInt(int64(len(ids))))
+	for _, id := range ids {
+		e.DataUint256(id)
+	}
+	for _, v := range values {
+		e.DataUint256(v)
+	}
+	return e.Build()
 }
 
 // MintEvent builds a standard Mint event (tokenId optional — 0 for QRC-20).
