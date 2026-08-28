@@ -30,7 +30,6 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/ai"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -48,7 +47,6 @@ type Server struct {
 	x402proc    *x402.Processor
 	scheduler   *ai.Scheduler
 	validatorPK []byte
-	forks       forks.Schedule
 	router      *mux.Router
 	httpServer  *http.Server
 	// peerCount returns the number of connected peers (from peer pool)
@@ -81,14 +79,6 @@ type Config struct {
 	// it — which is not what "the channel cannot be downgraded" means to anyone
 	// reading it. Off means the sealed transport is the only way in.
 	AllowPlaintextP2P bool
-
-	// Forks is the chain's rule-change schedule, reported on /status.
-	//
-	// It is exposed so an operator can confirm every node agrees on it BEFORE a
-	// fork height arrives. Nodes disagreeing about an activation height do not
-	// fail at startup — they fail at the height, by splitting, which is the
-	// worst possible moment to discover a mismatched config.
-	Forks forks.Schedule
 
 	// CORSOrigins is the browser-origin allowlist. Empty = emit no CORS headers.
 	CORSOrigins []string
@@ -147,7 +137,6 @@ func New(
 		x402proc:          x402.NewProcessor(stateDB),
 		scheduler:         scheduler,
 		validatorPK:       cfg.ValidatorPK,
-		forks:             cfg.Forks,
 		peerCount:         cfg.PeerCount,
 		writeAuth:         NewWriteAuth(cfg.AuthToken),
 		cors:              NewCORSPolicy(cfg.CORSOrigins),
@@ -426,10 +415,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"image_tag":    buildinfo.ImageTag,
 		"timestamp":    time.Now().Unix(),
 	}
-	// Only present on a chain that schedules one, so the response shape is
-	// unchanged for chains that do not.
-	if len(s.forks) > 0 {
-		status["forks"] = s.forks
+	// The rule-change schedule is reported so an operator can confirm every
+	// node agrees on it BEFORE a fork height arrives: nodes disagreeing about an
+	// activation height do not fail at startup — they fail at the height, by
+	// splitting. It is read from the executor at request time, never cached
+	// here, so a schedule installed after this server was built (a follower's
+	// arrives with the peer-served genesis, minutes after boot) is visible
+	// without a restart. Only present on a chain that schedules one, so the
+	// response shape is unchanged for chains that do not.
+	if schedule := s.executor.Forks(); len(schedule) > 0 {
+		status["forks"] = schedule
 	}
 	writeJSON(w, http.StatusOK, status)
 }

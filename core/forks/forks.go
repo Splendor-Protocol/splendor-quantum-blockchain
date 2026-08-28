@@ -32,6 +32,25 @@ import (
 // the name has to be reservable before the code that honours it is written.
 const MultiValidator = "multi_validator"
 
+// The names below are reserved for the upgrades the settlement plan schedules.
+// Each is added to Known only by the change that implements its gate — a name
+// this build "knows" but does not honour would let a genesis document schedule
+// a rule the binary silently fails to apply, the exact failure Validate exists
+// to prevent. Until then a document scheduling one is refused at load.
+const (
+	// QRC20V2 routes the QRC-20 permit/allowance surface and gates the
+	// IsContract guard on approve.
+	QRC20V2 = "qrc20_v2"
+	// QRC1155V1 routes QRC-1155 behind an owner slot.
+	QRC1155V1 = "qrc1155_v1"
+	// ExchangeV1 activates the settlement module. It requires ModuleRevertV1 to
+	// be in force no later than itself (see Validate).
+	ExchangeV1 = "exchange_v1"
+	// ModuleRevertV1 makes a failing module call a failed receipt instead of a
+	// dropped transaction.
+	ModuleRevertV1 = "module_revert_v1"
+)
+
 // Known lists every upgrade name this build understands.
 //
 // An unrecognised name in genesis is refused rather than ignored. A typo in a
@@ -71,13 +90,33 @@ func (s Schedule) At(name string) (uint64, bool) {
 }
 
 // Validate refuses a schedule this build cannot honour.
+//
+// Names are checked in sorted order so two runs over the same document report
+// the same offending name.
 func (s Schedule) Validate() error {
-	for name := range s {
+	for _, name := range s.Names() {
 		if !isKnown(name) {
 			return fmt.Errorf(
 				"genesis schedules unknown upgrade %q at height %d: this build understands only %s. "+
 					"Running it would mean ignoring a rule change the rest of the network applies",
 				name, s[name], strings.Join(Known, ", "))
+		}
+	}
+	// The settlement module relies on a failed module call being a failed
+	// receipt rather than a dropped transaction: an operator whose match fails
+	// permanently would otherwise jam its account at that nonce. Scheduling the
+	// exchange before (or without) that rule describes a chain that cannot run
+	// it safely, so the document is refused rather than honoured in part.
+	if exAt, ok := s.At(ExchangeV1); ok {
+		mrAt, ok := s.At(ModuleRevertV1)
+		if !ok {
+			return fmt.Errorf("genesis schedules %s at height %d but never schedules %s, which it depends on",
+				ExchangeV1, exAt, ModuleRevertV1)
+		}
+		if mrAt > exAt {
+			return fmt.Errorf("genesis schedules %s at height %d but %s only at height %d: "+
+				"the dependency must be in force no later than the upgrade that needs it",
+				ExchangeV1, exAt, ModuleRevertV1, mrAt)
 		}
 	}
 	return nil

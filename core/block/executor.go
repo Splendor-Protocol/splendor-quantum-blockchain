@@ -11,6 +11,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
@@ -81,6 +82,13 @@ type Executor struct {
 	// genesisHash pins the hash of block 0 when the operator supplied one.
 	// nil = unpinned, which is the pre-existing behaviour.
 	genesisHash *[32]byte
+
+	// forks is the chain's rule-change schedule. It travels into every module
+	// call (vm.ModuleContext.Forks) so a gate is judged against the height of
+	// the block being applied — the one code path producer and follower share.
+	// nil = no rule changes, which is what every chain scheduled before the
+	// executor learned to read one.
+	forks forks.Schedule
 }
 
 // receiptStorer is satisfied by *state.TxIndexStore.
@@ -128,6 +136,44 @@ func (e *Executor) WithTxIndex(idx receiptStorer) *Executor {
 func (e *Executor) WithGenesisHash(h [32]byte) *Executor {
 	e.genesisHash = &h
 	return e
+}
+
+// WithForks installs the rule-change schedule at construction time, before any
+// block is applied. Builder-style like the others above; use SetForks once the
+// executor is live.
+func (e *Executor) WithForks(s forks.Schedule) *Executor {
+	e.forks = s
+	return e
+}
+
+// SetForks installs (or replaces) the schedule on a running executor.
+//
+// It takes the block lock, so the change lands between two block transitions
+// and never in the middle of one: a schedule that arrives with a peer-served
+// genesis is visible to the very next block the syncer applies, and no block
+// is applied half under one schedule and half under another.
+func (e *Executor) SetForks(s forks.Schedule) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.forks = s
+}
+
+// Forks returns a copy of the installed schedule (nil when none is).
+//
+// A copy, so a caller reading it for /status or an admission check can never
+// mutate what consensus is about to apply. Taken under the block lock, for the
+// same reason SetForks holds it.
+func (e *Executor) Forks() forks.Schedule {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.forks == nil {
+		return nil
+	}
+	out := make(forks.Schedule, len(e.forks))
+	for name, at := range e.forks {
+		out[name] = at
+	}
+	return out
 }
 
 // Close closes the chain database.
@@ -539,6 +585,7 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 			Nonce:  tx.Nonce,
 			Height: blockHeight,
 			Time:   blockTime,
+			Forks:  e.forks,
 		}, tx.Data, receipt)
 	}
 
