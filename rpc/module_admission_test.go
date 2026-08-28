@@ -11,6 +11,7 @@ import (
 	"time"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
@@ -112,5 +113,66 @@ func TestSubmitRefusesReadActionThatCallServes(t *testing.T) {
 	}
 	if s.pool.Size() != 1 {
 		t.Fatalf("admitted tx missing from the mempool (size %d)", s.pool.Size())
+	}
+}
+
+// The module preflight parses attacker-supplied tx.Data, so the pool's cheap
+// size and structural checks must run before it: an oversized or malformed
+// envelope gets the pool's refusal and never reaches PreflightModuleCall.
+func TestSubmitRefusesOversizedAndMalformedBeforePreflight(t *testing.T) {
+	s := newTestServer(t, "")
+
+	calls := 0
+	orig := preflightModuleCall
+	preflightModuleCall = func(data []byte, schedule forks.Schedule, height uint64) (vm.ModuleCall, error) {
+		calls++
+		return orig(data, schedule, height)
+	}
+	defer func() { preflightModuleCall = orig }()
+
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	from := qcrypto.DeriveAddress(pub)
+	now := time.Now().Unix()
+
+	oversized := make([]byte, mempool.MaxTxDataBytes+1)
+	rec := postSubmit(t, s, types.NewCall(from, vm.ModuleRouterAddress, oversized, big.NewInt(0), big.NewInt(mempool.MinFee), 0, now), priv)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "tx data too large") {
+		t.Fatalf("oversized data: status %d body %s, want 400 'tx data too large'", rec.Code, rec.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("PreflightModuleCall ran %d time(s) on an oversized envelope", calls)
+	}
+
+	// A structurally invalid envelope is refused at the same door.
+	bad := types.NewCall(from, vm.ModuleRouterAddress, []byte(`{"module":"qrc20","action":"transfer"}`), big.NewInt(0), big.NewInt(mempool.MinFee), 0, now)
+	if err := bad.Sign(priv, true); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	bad.AlgID = "bogus"
+	body, _ := json.Marshal(bad)
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/tx/submit", bytes.NewReader(body)))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid tx") {
+		t.Fatalf("bad alg id: status %d body %s, want 400 'invalid tx'", rec.Code, rec.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("PreflightModuleCall ran %d time(s) on a malformed envelope", calls)
+	}
+	if s.pool.Size() != 0 {
+		t.Fatalf("refused tx entered the mempool (size %d)", s.pool.Size())
+	}
+
+	// Control: the same call at the cap, with a sound envelope, reaches the
+	// preflight (which then refuses the garbage payload on its own terms).
+	atCap := make([]byte, mempool.MaxTxDataBytes)
+	rec = postSubmit(t, s, types.NewCall(from, vm.ModuleRouterAddress, atCap, big.NewInt(0), big.NewInt(mempool.MinFee), 0, now), priv)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid JSON envelope") {
+		t.Fatalf("at-cap garbage: status %d body %s, want the preflight's refusal", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("PreflightModuleCall ran %d time(s) on a sound envelope, want 1", calls)
 	}
 }

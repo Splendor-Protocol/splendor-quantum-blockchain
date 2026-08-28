@@ -198,13 +198,13 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 				return err
 			}
 		}
-		supply, err := parseBig(p.TotalSupply)
+		supply, err := parseLegacyAmount(ctx, p.TotalSupply)
 		if err != nil {
 			return fmt.Errorf("qrc20 deploy: total_supply: %w", err)
 		}
 		maxSupply := big.NewInt(0)
 		if p.MaxSupply != "" {
-			if maxSupply, err = parseBig(p.MaxSupply); err != nil {
+			if maxSupply, err = parseLegacyAmount(ctx, p.MaxSupply); err != nil {
 				return fmt.Errorf("qrc20 deploy: max_supply: %w", err)
 			}
 		}
@@ -225,7 +225,7 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		if err != nil {
 			return fmt.Errorf("qrc20 mint: to: %w", err)
 		}
-		amt, err := parseBig(p.Amount)
+		amt, err := parseLegacyAmount(ctx, p.Amount)
 		if err != nil {
 			return fmt.Errorf("qrc20 mint: amount: %w", err)
 		}
@@ -244,7 +244,7 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		if err != nil {
 			return fmt.Errorf("qrc20 transfer: to: %w", err)
 		}
-		amt, err := parseBig(p.Amount)
+		amt, err := parseLegacyAmount(ctx, p.Amount)
 		if err != nil {
 			return fmt.Errorf("qrc20 transfer: amount: %w", err)
 		}
@@ -263,7 +263,7 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		if err != nil {
 			return fmt.Errorf("qrc20 approve: spender: %w", err)
 		}
-		amt, err := parseBig(p.Amount)
+		amt, err := parseLegacyAmount(ctx, p.Amount)
 		if err != nil {
 			return fmt.Errorf("qrc20 approve: amount: %w", err)
 		}
@@ -278,7 +278,7 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		if err != nil {
 			return err
 		}
-		amt, err := parseBig(p.Amount)
+		amt, err := parseLegacyAmount(ctx, p.Amount)
 		if err != nil {
 			return fmt.Errorf("qrc20 burn: amount: %w", err)
 		}
@@ -1144,6 +1144,43 @@ func parseBig(s string) (*big.Int, error) {
 		return nil, fmt.Errorf("negative amount %q", s)
 	}
 	return v, nil
+}
+
+// requireOwnableTarget refuses an ownership transfer to an address that can
+// never sign an owner action: the contract itself (for a QRC-1155 that is
+// also the module-managed marker, so the transfer would irreversibly freeze
+// every holder), the module router, or any deployed contract. Mirrors the
+// exchange's rule; SOFT, it is the action's own complaint.
+func requireOwnableTarget(stateDB *state.StateDB, what string, contract, newOwner qcrypto.Address) error {
+	if newOwner == contract {
+		return fmt.Errorf("%s: new owner cannot be the contract itself", what)
+	}
+	if newOwner == ModuleRouterAddress {
+		return fmt.Errorf("%s: new owner cannot be the module router", what)
+	}
+	acc, err := stateDB.GetAccount(newOwner)
+	if err != nil {
+		return fmt.Errorf("%s: new owner %s: %w", what, newOwner, err)
+	}
+	if acc.IsContract {
+		return fmt.Errorf("%s: new owner %s is a contract and can never act as owner", what, newOwner)
+	}
+	return nil
+}
+
+// parseLegacyAmount decodes an amount on a qrc20 action that shipped before
+// qrc20_v2 (deploy, mint, transfer, approve, burn). Those actions accepted any
+// non-negative decimal, so a supply or balance above 2^256 could reach the
+// event encoder; once qrc20_v2 is active they take the strict parseUint256
+// like every newer action. Pre-fork the loose decoder stays, so a replayed
+// block is gated exactly as it was when first applied. (Documented legacy
+// behaviour: the event helpers truncate an oversized value to its low word
+// rather than panic.)
+func parseLegacyAmount(ctx ModuleContext, s string) (*big.Int, error) {
+	if ctx.Forks.Active(forks.QRC20V2, ctx.Height) {
+		return parseUint256(s)
+	}
+	return parseBig(s)
 }
 
 // maxUint256Plus1 is 2^256; every on-chain amount and id is strictly below it.

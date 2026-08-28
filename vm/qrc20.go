@@ -212,6 +212,9 @@ func (t *QRC20Token) TransferOwnershipWithEvents(caller, newOwner qcrypto.Addres
 	if newOwner.IsZero() {
 		return fmt.Errorf("QRC20: new owner is zero address")
 	}
+	if err := requireOwnableTarget(t.stateDB, "QRC20", t.contract, newOwner); err != nil {
+		return err
+	}
 	if err := t.stateDB.SetStorageValue(t.contract, slotOwner, newOwner[:]); err != nil {
 		return err
 	}

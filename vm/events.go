@@ -45,13 +45,25 @@ func AddrTopic(addr qcrypto.Address) [32]byte {
 
 // Uint256Topic converts a *big.Int to a 32-byte big-endian topic.
 func Uint256Topic(v *big.Int) [32]byte {
-	var topic [32]byte
-	if v == nil || v.Sign() == 0 {
-		return topic
+	return uint256Word(v)
+}
+
+// uint256Word is the 32-byte big-endian encoding of v (zero word for nil or
+// non-positive). A value that does not fit — reachable through the legacy
+// qrc20 actions, which decode with parseBig — is truncated to its low 32
+// bytes rather than allowed to slice past the word and panic the executor:
+// an event helper must never be able to take a block down.
+func uint256Word(v *big.Int) [32]byte {
+	var word [32]byte
+	if v == nil || v.Sign() <= 0 {
+		return word
 	}
 	b := v.Bytes()
-	copy(topic[32-len(b):], b)
-	return topic
+	if len(b) > 32 {
+		b = b[len(b)-32:]
+	}
+	copy(word[32-len(b):], b)
+	return word
 }
 
 // BoolTopic converts a bool to a 32-byte topic (0x00...01 or 0x00...00).
@@ -184,11 +196,7 @@ func (e *EventBuilder) IndexHash(h [32]byte) *EventBuilder {
 
 // DataUint256 appends a non-indexed uint256 to the event data (ABI-encoded as 32 bytes).
 func (e *EventBuilder) DataUint256(v *big.Int) *EventBuilder {
-	var word [32]byte
-	if v != nil && v.Sign() > 0 {
-		b := v.Bytes()
-		copy(word[32-len(b):], b)
-	}
+	word := uint256Word(v)
 	e.data = append(e.data, word[:]...)
 	return e
 }

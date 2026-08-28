@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -89,7 +90,16 @@ type Executor struct {
 	// the block being applied — the one code path producer and follower share.
 	// nil = no rule changes, which is what every chain scheduled before the
 	// executor learned to read one.
-	forks forks.Schedule
+	//
+	// Held behind an atomic pointer, NOT under mu: Forks() feeds /status, the
+	// /tx/submit preflight and /estimate on public RPC goroutines, and taking
+	// the block lock there stalled every one of them for the whole of a
+	// ProduceBlock/ExecuteBlock/ReconcileState. The map behind the pointer is
+	// never mutated after install (installForks stores a private copy), so a
+	// reader only ever needs the pointer. SetForks still serializes on mu, so
+	// the pointer cannot change while a block is in flight: every in-block
+	// read (execCall) sees the schedule installed when the block began.
+	forks atomic.Pointer[forks.Schedule]
 }
 
 // receiptStorer is satisfied by *state.TxIndexStore.
@@ -143,7 +153,7 @@ func (e *Executor) WithGenesisHash(h [32]byte) *Executor {
 // block is applied. Builder-style like the others above; use SetForks once the
 // executor is live.
 func (e *Executor) WithForks(s forks.Schedule) *Executor {
-	e.forks = s
+	e.installForks(s)
 	return e
 }
 
@@ -152,29 +162,55 @@ func (e *Executor) WithForks(s forks.Schedule) *Executor {
 // It takes the block lock, so the change lands between two block transitions
 // and never in the middle of one: a schedule that arrives with a peer-served
 // genesis is visible to the very next block the syncer applies, and no block
-// is applied half under one schedule and half under another.
+// is applied half under one schedule and half under another. Readers (Forks,
+// execCall) do not take the lock — see the forks field.
 func (e *Executor) SetForks(s forks.Schedule) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.forks = s
+	e.installForks(s)
+}
+
+// installForks publishes a private copy of s, so a caller that keeps mutating
+// its own map after handing it over can never reach what consensus reads.
+// nil stays nil.
+func (e *Executor) installForks(s forks.Schedule) {
+	if s == nil {
+		e.forks.Store(nil)
+		return
+	}
+	own := cloneSchedule(s)
+	e.forks.Store(&own)
+}
+
+// schedule is the executor's own lock-free read of the installed schedule
+// (nil when none is). The map it returns is immutable; never hand it out.
+func (e *Executor) schedule() forks.Schedule {
+	if p := e.forks.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+func cloneSchedule(s forks.Schedule) forks.Schedule {
+	out := make(forks.Schedule, len(s))
+	for name, at := range s {
+		out[name] = at
+	}
+	return out
 }
 
 // Forks returns a copy of the installed schedule (nil when none is).
 //
 // A copy, so a caller reading it for /status or an admission check can never
-// mutate what consensus is about to apply. Taken under the block lock, for the
-// same reason SetForks holds it.
+// mutate what consensus is about to apply. Lock-free: it must never wait on a
+// block transition, or every RPC that consults the schedule stalls behind
+// ProduceBlock/ExecuteBlock/ReconcileState.
 func (e *Executor) Forks() forks.Schedule {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.forks == nil {
+	s := e.schedule()
+	if s == nil {
 		return nil
 	}
-	out := make(forks.Schedule, len(e.forks))
-	for name, at := range e.forks {
-		out[name] = at
-	}
-	return out
+	return cloneSchedule(s)
 }
 
 // Close closes the chain database.
@@ -612,19 +648,22 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		// judge deadlines against the block, never the wall clock: the
 		// producer stamped blockTime once and every follower reads the same
 		// value back from the header.
+		// One read per call; SetForks cannot land while this block holds
+		// e.mu, so every tx in the block is judged under the same map.
+		schedule := e.schedule()
 		mctx := vm.ModuleContext{
 			Caller: tx.From,
 			Nonce:  tx.Nonce,
 			Height: blockHeight,
 			Time:   blockTime,
-			Forks:  e.forks,
+			Forks:  schedule,
 		}
 
 		// Legacy rules: any module error makes the tx unappliable — the
 		// producer drops it and the enclosing per-tx snapshot reverts the fee
 		// debit and nonce bump. A sender whose call fails for good is stuck at
 		// that nonce, which is what module_revert_v1 fixes.
-		if !e.forks.Active(forks.ModuleRevertV1, blockHeight) {
+		if !schedule.Active(forks.ModuleRevertV1, blockHeight) {
 			return dispatchModuleCall(e.state, mctx, tx.Data, receipt)
 		}
 

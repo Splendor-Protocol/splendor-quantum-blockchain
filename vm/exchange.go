@@ -550,8 +550,11 @@ func (x *Exchange) SetFeeRecipient(caller, recipient qcrypto.Address, receipt *t
 
 // SetOperator grants or revokes the right to submit matches and create
 // conditions. An address is appended to the bounded operator list the first
-// time it is named; revoking keeps its slot so the list never reorders.
-// Owner-only.
+// time it is GRANTED; revoking keeps its slot so the list never reorders, and
+// re-granting a revoked address reuses that slot. Revoking an address that
+// was never listed is a no-op: nothing is written and no event is emitted,
+// so a stream of revokes cannot fill the list (the cap counts addresses that
+// have been granted at least once). Owner-only.
 func (x *Exchange) SetOperator(caller, operator qcrypto.Address, active bool, receipt *types.Receipt) error {
 	const what = "exchange set_operator: "
 	if err := x.requireOwner(what, caller); err != nil {
@@ -567,6 +570,9 @@ func (x *Exchange) SetOperator(caller, operator qcrypto.Address, active bool, re
 		idx, err := x.getU64(exOperatorIndexSlot(operator))
 		if err != nil {
 			return err
+		}
+		if idx == 0 && !active {
+			return nil
 		}
 		if idx == 0 {
 			n, err := x.getU64(slotEXOperatorCount)
@@ -594,7 +600,10 @@ func (x *Exchange) SetOperator(caller, operator qcrypto.Address, active bool, re
 	})
 }
 
-// TransferOwnership hands the instance to newOwner (non-zero). Owner-only.
+// TransferOwnership hands the instance to newOwner (non-zero, not the
+// instance, the router or any deployed contract — none of those can ever
+// sign an owner action, so the transfer would only orphan the instance).
+// Single-step by design. Owner-only.
 func (x *Exchange) TransferOwnership(caller, newOwner qcrypto.Address, receipt *types.Receipt) error {
 	const what = "exchange transfer_ownership: "
 	if err := x.requireOwner(what, caller); err != nil {
@@ -605,6 +614,13 @@ func (x *Exchange) TransferOwnership(caller, newOwner qcrypto.Address, receipt *
 	}
 	if newOwner == x.addr || newOwner == ModuleRouterAddress {
 		return fmt.Errorf(what+"new_owner %s cannot be a module address", newOwner)
+	}
+	acc, err := x.stateDB.GetAccount(newOwner)
+	if err != nil {
+		return fmt.Errorf(what+"new_owner %s: %w", newOwner, err)
+	}
+	if acc.IsContract {
+		return fmt.Errorf(what+"new_owner %s is a contract and can never act as owner", newOwner)
 	}
 	return x.atomic(receipt, func() error {
 		if err := x.setAddr(slotEXOwner, newOwner); err != nil {
