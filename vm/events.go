@@ -8,16 +8,17 @@
 // native Go contract implementations (QRC-20, QRC-721, Staking, Governance).
 //
 // Standard event signatures used across all SQC token contracts:
-//   Transfer(sqaddress,sqaddress,uint256)
-//   Approval(sqaddress,sqaddress,uint256)
-//   ApprovalForAll(sqaddress,sqaddress,bool)
-//   Deposit(sqaddress,sqaddress,uint256,uint256)   [QRC-4626]
-//   Withdraw(sqaddress,sqaddress,uint256,uint256)  [QRC-4626]
-//   ValidatorRegistered(sqaddress,uint256)
-//   ValidatorSlashed(sqaddress,uint256,uint256)
-//   ProposalSubmitted(uint256,sqaddress,string)
-//   VoteCast(uint256,sqaddress,uint8,uint256)
-//   ProposalExecuted(uint256)
+//
+//	Transfer(sqaddress,sqaddress,uint256)
+//	Approval(sqaddress,sqaddress,uint256)
+//	ApprovalForAll(sqaddress,sqaddress,bool)
+//	Deposit(sqaddress,sqaddress,uint256,uint256)   [QRC-4626]
+//	Withdraw(sqaddress,sqaddress,uint256,uint256)  [QRC-4626]
+//	ValidatorRegistered(sqaddress,uint256)
+//	ValidatorSlashed(sqaddress,uint256,uint256)
+//	ProposalSubmitted(uint256,sqaddress,string)
+//	VoteCast(uint256,sqaddress,uint8,uint256)
+//	ProposalExecuted(uint256)
 package vm
 
 import (
@@ -77,14 +78,14 @@ func BytesTopic(data []byte) [32]byte {
 
 // Standard topic[0] hashes (computed once at package init time).
 var (
-	TopicTransfer           = EventTopic("Transfer(sqaddress,sqaddress,uint256)")
-	TopicApproval           = EventTopic("Approval(sqaddress,sqaddress,uint256)")
-	TopicApprovalForAll     = EventTopic("ApprovalForAll(sqaddress,sqaddress,bool)")
-	TopicMint               = EventTopic("Mint(sqaddress,uint256,uint256)")
-	TopicBurn               = EventTopic("Burn(sqaddress,uint256,uint256)")
-	TopicDeposit            = EventTopic("Deposit(sqaddress,sqaddress,uint256,uint256)")
-	TopicWithdraw           = EventTopic("Withdraw(sqaddress,sqaddress,uint256,uint256)")
-	TopicYield              = EventTopic("Yield(uint256,uint256)")
+	TopicTransfer            = EventTopic("Transfer(sqaddress,sqaddress,uint256)")
+	TopicApproval            = EventTopic("Approval(sqaddress,sqaddress,uint256)")
+	TopicApprovalForAll      = EventTopic("ApprovalForAll(sqaddress,sqaddress,bool)")
+	TopicMint                = EventTopic("Mint(sqaddress,uint256,uint256)")
+	TopicBurn                = EventTopic("Burn(sqaddress,uint256,uint256)")
+	TopicDeposit             = EventTopic("Deposit(sqaddress,sqaddress,uint256,uint256)")
+	TopicWithdraw            = EventTopic("Withdraw(sqaddress,sqaddress,uint256,uint256)")
+	TopicYield               = EventTopic("Yield(uint256,uint256)")
 	TopicValidatorRegistered = EventTopic("ValidatorRegistered(sqaddress,uint256)")
 	TopicValidatorSlashed    = EventTopic("ValidatorSlashed(sqaddress,uint256,uint256)")
 	TopicValidatorJailed     = EventTopic("ValidatorJailed(sqaddress)")
