@@ -108,7 +108,7 @@ func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
 		{forks.ModuleRevertV1, true}, // PR-3
 		{forks.QRC20V2, true},        // PR-4
 		{forks.QRC1155V1, true},      // PR-5
-		{forks.ExchangeV1, false},    // PR-6
+		{forks.ExchangeV1, true},     // PR-6
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := baseGenesis()
@@ -130,10 +130,45 @@ func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
 	}
 }
 
+// exchange_v1 depends on module_revert_v1 being in force no later than
+// itself: a failed match must be a failed receipt, never a dropped tx that
+// jams the operator's nonce. Now that both names are honoured the rule is
+// reachable from a genesis document, and a document that gets it wrong is
+// refused at load like an unknown name — never honoured in part.
+func TestGenesisRefusesExchangeWithoutModuleRevert(t *testing.T) {
+	for name, tc := range map[string]struct {
+		forks forks.Schedule
+		ok    bool
+	}{
+		"both at 1":             {forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 1}, true},
+		"revert earlier":        {forks.Schedule{forks.ExchangeV1: 10, forks.ModuleRevertV1: 5}, true},
+		"exchange alone":        {forks.Schedule{forks.ExchangeV1: 1}, false},
+		"revert never":          {forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 0}, false},
+		"revert one block late": {forks.Schedule{forks.ExchangeV1: 5, forks.ModuleRevertV1: 6}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := baseGenesis()
+			g.Forks = tc.forks
+			err := g.Validate()
+			if tc.ok && err != nil {
+				t.Fatalf("want accepted, got %v", err)
+			}
+			if !tc.ok {
+				if err == nil {
+					t.Fatal("want refused, got nil")
+				}
+				if !strings.Contains(err.Error(), forks.ModuleRevertV1) {
+					t.Fatalf("the refusal must name the missing dependency, got %v", err)
+				}
+			}
+		})
+	}
+}
+
 // The document hash a tier pins is computed over the schedule, so the tier
 // documents this plan describes — all four names at height 1, mainnet without
-// the exchange — get distinct pins once the names are honoured. Until then the
-// hash is still computable (Hash does not validate) and stable.
+// the exchange — get distinct pins. The hash is computable regardless (Hash
+// does not validate) and stable.
 func TestTierScheduleShapesHashDistinctly(t *testing.T) {
 	devnet := baseGenesis()
 	devnet.Forks = forks.Schedule{

@@ -299,6 +299,13 @@ func headReadContext(executor *block.Executor) vm.ReadContext {
 	return vm.ReadContext{Height: head.Header.Height, Time: head.Header.Timestamp}
 }
 
+// HeadFunc is headReadContext as a closure, read at request time, for route
+// registrars that take a head func (RegisterExchangeRoutes). executor may be
+// nil: the closure then always reads a zero head.
+func HeadFunc(executor *block.Executor) func() vm.ReadContext {
+	return func() vm.ReadContext { return headReadContext(executor) }
+}
+
 // decodeCallData decodes calldata from hex (default) or base64.
 func decodeCallData(data, encoding string) ([]byte, error) {
 	if data == "" {

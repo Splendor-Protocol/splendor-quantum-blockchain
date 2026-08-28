@@ -92,6 +92,8 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 		return dispatchQRC1155(stateDB, ctx, mc.Action, mc.Params, receipt)
 	case "dex":
 		return dispatchDEX(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "exchange":
+		return dispatchExchange(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
 		return hard(fmt.Errorf("module call: unknown module %q", mc.Module))
 	}
@@ -800,6 +802,274 @@ func dispatchDEX(stateDB *state.StateDB, ctx ModuleContext, action string, raw j
 
 	default:
 		return hard(fmt.Errorf("dex: unknown action %q", action))
+	}
+}
+
+// ── Exchange ────────────────────────────────────────────────────────────────
+
+// exchangeActionParams is the shared wire shape of the single-purpose exchange
+// writes; each action reads only the fields named for it. The match, cancel,
+// nonce, deploy and condition actions have their own shapes in exchange.go.
+type exchangeActionParams struct {
+	Exchange     string `json:"exchange"`
+	Condition    uint64 `json:"condition,omitempty"`      // split / merge / resolve / redeem / redeem_for
+	Amount       string `json:"amount,omitempty"`         // split / merge: decimal string, smallest unit
+	Outcome      uint8  `json:"outcome,omitempty"`        // resolve
+	Holder       string `json:"holder,omitempty"`         // redeem_for
+	RedeemFeeBps uint64 `json:"redeem_fee_bps,omitempty"` // set_redeem_fee_bps
+	FeeRecipient string `json:"fee_recipient,omitempty"`  // set_fee_recipient
+	Operator     string `json:"operator,omitempty"`       // set_operator
+	Active       *bool  `json:"active,omitempty"`         // set_operator (required: true grants, false revokes)
+	NewOwner     string `json:"new_owner,omitempty"`      // transfer_ownership
+}
+
+// parseExchangeParams is the first step of every exchange write: the fork
+// gate (HARD before the height), then the params (SOFT: the action's own
+// "bad params" complaint).
+func parseExchangeParams(ctx ModuleContext, action string, raw json.RawMessage, p any) error {
+	if err := requireFork(ctx, forks.ExchangeV1); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, p); err != nil {
+		return fmt.Errorf("exchange %s: bad params: %w", action, err)
+	}
+	return nil
+}
+
+// exchangeAt resolves the instance a non-deploy action names. Whether anything
+// is deployed there is the action's own check (requireDeployed).
+func exchangeAt(stateDB *state.StateDB, action, s string) (*Exchange, error) {
+	a, err := qcrypto.AddressFromString(s)
+	if err != nil {
+		return nil, fmt.Errorf("exchange %s: exchange: %w", action, err)
+	}
+	return NewExchange(stateDB, a), nil
+}
+
+// exchangeAddressParam decodes one address field of an exchange action.
+func exchangeAddressParam(action, field, s string) (qcrypto.Address, error) {
+	a, err := qcrypto.AddressFromString(s)
+	if err != nil {
+		return qcrypto.Address{}, fmt.Errorf("exchange %s: %s: %w", action, field, err)
+	}
+	return a, nil
+}
+
+// dispatchExchange routes the settlement module's writes (exchange_v1). Every
+// action is gated first; everything after the gate is SOFT and prefixed
+// "exchange <action>: ". The module methods snapshot and revert on their own,
+// so a failed action leaves no residue whether or not the executor wraps the
+// call in a module_revert_v1 snapshot.
+func dispatchExchange(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
+	switch action {
+	case "deploy":
+		var p exchangeDeployParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		addr, err := DeployExchange(stateDB, ctx, p)
+		if err != nil {
+			return err
+		}
+		receipt.ContractAddress = &addr
+		return nil
+
+	case "create_condition":
+		var p exchangeConditionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		_, err = x.CreateCondition(ctx, p, receipt)
+		return err
+
+	case "split":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		amount, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("exchange split: amount: %w", err)
+		}
+		return x.Split(ctx, p.Condition, amount, receipt)
+
+	case "merge":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		amount, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("exchange merge: amount: %w", err)
+		}
+		return x.Merge(ctx, p.Condition, amount, receipt)
+
+	case "match":
+		var p exchangeMatchParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		return x.Match(ctx, p, receipt)
+
+	case "cancel_order":
+		var p exchangeCancelParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		return x.CancelOrder(ctx, p, receipt)
+
+	case "increment_nonce":
+		var p exchangeNonceParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		return x.IncrementNonce(ctx, p, receipt)
+
+	case "resolve":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		return x.Resolve(ctx, p.Condition, p.Outcome, receipt)
+
+	case "redeem":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		return x.Redeem(ctx, p.Condition, ctx.Caller, receipt)
+
+	case "redeem_for":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		holder, err := exchangeAddressParam(action, "holder", p.Holder)
+		if err != nil {
+			return err
+		}
+		return x.Redeem(ctx, p.Condition, holder, receipt)
+
+	case "pause":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		return x.Pause(ctx.Caller, receipt)
+
+	case "unpause":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		return x.Unpause(ctx.Caller, receipt)
+
+	case "set_redeem_fee_bps":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		return x.SetRedeemFeeBps(ctx.Caller, p.RedeemFeeBps, receipt)
+
+	case "set_fee_recipient":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		recipient, err := exchangeAddressParam(action, "fee_recipient", p.FeeRecipient)
+		if err != nil {
+			return err
+		}
+		return x.SetFeeRecipient(ctx.Caller, recipient, receipt)
+
+	case "set_operator":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		operator, err := exchangeAddressParam(action, "operator", p.Operator)
+		if err != nil {
+			return err
+		}
+		if p.Active == nil {
+			// Explicit on purpose: a missing flag must not silently revoke.
+			return fmt.Errorf("exchange set_operator: active is required (true grants, false revokes)")
+		}
+		return x.SetOperator(ctx.Caller, operator, *p.Active, receipt)
+
+	case "transfer_ownership":
+		var p exchangeActionParams
+		if err := parseExchangeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		x, err := exchangeAt(stateDB, action, p.Exchange)
+		if err != nil {
+			return err
+		}
+		newOwner, err := exchangeAddressParam(action, "new_owner", p.NewOwner)
+		if err != nil {
+			return err
+		}
+		return x.TransferOwnership(ctx.Caller, newOwner, receipt)
+
+	default:
+		return hard(fmt.Errorf("exchange: unknown action %q", action))
 	}
 }
 
