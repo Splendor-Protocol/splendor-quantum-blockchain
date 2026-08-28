@@ -194,29 +194,63 @@ func (t *QRC20Token) requireNotPaused() error {
 
 // TransferOwnership transfers contract ownership to newOwner.
 func (t *QRC20Token) TransferOwnership(caller, newOwner qcrypto.Address) error {
+	return t.TransferOwnershipWithEvents(caller, newOwner, nil)
+}
+
+// TransferOwnershipWithEvents transfers ownership and records the
+// OwnershipTransferred event.
+func (t *QRC20Token) TransferOwnershipWithEvents(caller, newOwner qcrypto.Address, receipt *types.Receipt) error {
 	if err := t.requireOwner(caller); err != nil {
 		return err
 	}
 	if newOwner.IsZero() {
 		return fmt.Errorf("QRC20: new owner is zero address")
 	}
-	return t.stateDB.SetStorageValue(t.contract, slotOwner, newOwner[:])
+	if err := t.stateDB.SetStorageValue(t.contract, slotOwner, newOwner[:]); err != nil {
+		return err
+	}
+	if receipt != nil {
+		receipt.AddLog(OwnershipTransferredEvent(t.contract, caller, newOwner))
+	}
+	return nil
 }
 
 // Pause halts all transfers. Only callable by owner.
 func (t *QRC20Token) Pause(caller qcrypto.Address) error {
+	return t.PauseWithEvents(caller, nil)
+}
+
+// PauseWithEvents pauses the contract and records the Paused event.
+func (t *QRC20Token) PauseWithEvents(caller qcrypto.Address, receipt *types.Receipt) error {
 	if err := t.requireOwner(caller); err != nil {
 		return err
 	}
-	return t.stateDB.SetStorageValue(t.contract, slotPaused, []byte{1})
+	if err := t.stateDB.SetStorageValue(t.contract, slotPaused, []byte{1}); err != nil {
+		return err
+	}
+	if receipt != nil {
+		receipt.AddLog(PausedEvent(t.contract, caller))
+	}
+	return nil
 }
 
 // Unpause resumes all transfers. Only callable by owner.
 func (t *QRC20Token) Unpause(caller qcrypto.Address) error {
+	return t.UnpauseWithEvents(caller, nil)
+}
+
+// UnpauseWithEvents unpauses the contract and records the Unpaused event.
+func (t *QRC20Token) UnpauseWithEvents(caller qcrypto.Address, receipt *types.Receipt) error {
 	if err := t.requireOwner(caller); err != nil {
 		return err
 	}
-	return t.stateDB.SetStorageValue(t.contract, slotPaused, []byte{0})
+	if err := t.stateDB.SetStorageValue(t.contract, slotPaused, []byte{0}); err != nil {
+		return err
+	}
+	if receipt != nil {
+		receipt.AddLog(UnpausedEvent(t.contract, caller))
+	}
+	return nil
 }
 
 // ── Balances & allowances ─────────────────────────────────────────────────────
@@ -318,15 +352,37 @@ func (t *QRC20Token) approveWithEvents(owner, spender qcrypto.Address, amount *b
 
 // IncreaseAllowance adds amount to spender's current allowance.
 func (t *QRC20Token) IncreaseAllowance(owner, spender qcrypto.Address, amount *big.Int) error {
+	return t.IncreaseAllowanceWithEvents(owner, spender, amount, nil)
+}
+
+// IncreaseAllowanceWithEvents raises the allowance and records the Approval
+// event carrying the new total. The total must still fit a 256-bit word.
+func (t *QRC20Token) IncreaseAllowanceWithEvents(owner, spender qcrypto.Address, amount *big.Int, receipt *types.Receipt) error {
+	if amount.Sign() < 0 {
+		return fmt.Errorf("QRC20 increaseAllowance: negative amount")
+	}
 	current, err := t.Allowance(owner, spender)
 	if err != nil {
 		return err
 	}
-	return t.Approve(owner, spender, new(big.Int).Add(current, amount))
+	next := new(big.Int).Add(current, amount)
+	if next.BitLen() > 256 {
+		return fmt.Errorf("QRC20 increaseAllowance: allowance overflow")
+	}
+	return t.approveWithEvents(owner, spender, next, receipt)
 }
 
 // DecreaseAllowance subtracts amount from spender's allowance. Reverts on underflow.
 func (t *QRC20Token) DecreaseAllowance(owner, spender qcrypto.Address, amount *big.Int) error {
+	return t.DecreaseAllowanceWithEvents(owner, spender, amount, nil)
+}
+
+// DecreaseAllowanceWithEvents lowers the allowance and records the Approval
+// event carrying the new total.
+func (t *QRC20Token) DecreaseAllowanceWithEvents(owner, spender qcrypto.Address, amount *big.Int, receipt *types.Receipt) error {
+	if amount.Sign() < 0 {
+		return fmt.Errorf("QRC20 decreaseAllowance: negative amount")
+	}
 	current, err := t.Allowance(owner, spender)
 	if err != nil {
 		return err
@@ -334,7 +390,7 @@ func (t *QRC20Token) DecreaseAllowance(owner, spender qcrypto.Address, amount *b
 	if current.Cmp(amount) < 0 {
 		return fmt.Errorf("QRC20 decreaseAllowance: allowance below zero")
 	}
-	return t.Approve(owner, spender, new(big.Int).Sub(current, amount))
+	return t.approveWithEvents(owner, spender, new(big.Int).Sub(current, amount), receipt)
 }
 
 // TransferFrom moves tokens using an allowance.
@@ -356,10 +412,12 @@ func (t *QRC20Token) TransferFromWithEvents(spender, from, to qcrypto.Address, a
 		return err
 	}
 
-	// Reduce allowance (unless it's MaxUint256 — infinite approval)
+	// Reduce allowance (unless it's MaxUint256 — infinite approval). The
+	// decrement is an Approval in its own right, so it lands in the receipt
+	// next to the Transfer.
 	maxUint256 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	if allowance.Cmp(maxUint256) != 0 {
-		if err := t.Approve(from, spender, new(big.Int).Sub(allowance, amount)); err != nil {
+		if err := t.approveWithEvents(from, spender, new(big.Int).Sub(allowance, amount), receipt); err != nil {
 			return err
 		}
 	}
@@ -451,6 +509,12 @@ func (t *QRC20Token) BurnWithEvents(holder qcrypto.Address, amount *big.Int, rec
 
 // BurnFrom burns amount from holder using caller's allowance.
 func (t *QRC20Token) BurnFrom(caller, holder qcrypto.Address, amount *big.Int) error {
+	return t.BurnFromWithEvents(caller, holder, amount, nil)
+}
+
+// BurnFromWithEvents burns via allowance and records the Burn event and the
+// Approval event for the decremented allowance.
+func (t *QRC20Token) BurnFromWithEvents(caller, holder qcrypto.Address, amount *big.Int, receipt *types.Receipt) error {
 	allowance, err := t.Allowance(holder, caller)
 	if err != nil {
 		return err
@@ -458,12 +522,12 @@ func (t *QRC20Token) BurnFrom(caller, holder qcrypto.Address, amount *big.Int) e
 	if allowance.Cmp(amount) < 0 {
 		return fmt.Errorf("QRC20 burnFrom: allowance insufficient")
 	}
-	if err := t.Burn(holder, amount); err != nil {
+	if err := t.BurnWithEvents(holder, amount, receipt); err != nil {
 		return err
 	}
 	maxUint256 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	if allowance.Cmp(maxUint256) != 0 {
-		return t.Approve(holder, caller, new(big.Int).Sub(allowance, amount))
+		return t.approveWithEvents(holder, caller, new(big.Int).Sub(allowance, amount), receipt)
 	}
 	return nil
 }

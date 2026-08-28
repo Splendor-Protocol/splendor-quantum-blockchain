@@ -106,10 +106,57 @@ type qrc20DeployParams struct {
 }
 
 type qrc20TokenAction struct {
-	Token   string `json:"token"`             // contract SQ: address
-	To      string `json:"to,omitempty"`      // recipient (mint/transfer)
-	Spender string `json:"spender,omitempty"` // approve
-	Amount  string `json:"amount"`            // decimal string, smallest unit
+	Token    string `json:"token"`               // contract SQ: address
+	To       string `json:"to,omitempty"`        // recipient (mint/transfer/transfer_from)
+	From     string `json:"from,omitempty"`      // holder whose allowance is spent (transfer_from/burn_from)
+	Spender  string `json:"spender,omitempty"`   // approve/increase_allowance/decrease_allowance
+	NewOwner string `json:"new_owner,omitempty"` // transfer_ownership
+	Amount   string `json:"amount"`              // decimal string, smallest unit
+}
+
+// qrc20PermitParams is the wire shape of the permit action (qrc20_v2). The
+// two byte fields are Go []byte, so on the wire they are standard base64 —
+// the same rule as a transaction's public_key/signature. deadline is unix
+// seconds, judged against the block time. owner_pubkey is needed only for an
+// owner with no registered key and must derive the owner address.
+type qrc20PermitParams struct {
+	Token       string `json:"token"`
+	Owner       string `json:"owner"`
+	Spender     string `json:"spender"`
+	Amount      string `json:"amount"`                 // decimal string, smallest unit
+	Deadline    int64  `json:"deadline"`               // unix seconds, > 0
+	Signature   []byte `json:"signature"`              // std base64 on the wire
+	OwnerPubKey []byte `json:"owner_pubkey,omitempty"` // std base64 on the wire
+}
+
+// requireToken is the IsContract guard for a non-deploy QRC-20 action: the
+// address must have been deployed through the module (markContract). Before
+// it, a mistyped token address was silently a fresh, empty token whose owner
+// is the zero address, so an approve or transfer against it "succeeded"
+// against nothing. SOFT: it is the action's own complaint.
+func requireToken(stateDB *state.StateDB, token qcrypto.Address) error {
+	acc, err := stateDB.GetAccount(token)
+	if err != nil {
+		return fmt.Errorf("qrc20: token %s: %w", token, err)
+	}
+	if !acc.IsContract {
+		return fmt.Errorf("qrc20: token %s is not a deployed contract", token)
+	}
+	return nil
+}
+
+// qrc20Token resolves the token a non-deploy action names. The IsContract
+// guard applies only under qrc20_v2: even a bug-fix change to a pre-existing
+// action is fork-gated, so the rule lands at a height every node agrees on.
+// The new v2 actions call requireFork first, so for them the guard is
+// always on.
+func qrc20Token(stateDB *state.StateDB, ctx ModuleContext, token qcrypto.Address) (*QRC20Token, error) {
+	if ctx.Forks.Active(forks.QRC20V2, ctx.Height) {
+		if err := requireToken(stateDB, token); err != nil {
+			return nil, err
+		}
+	}
+	return NewQRC20Token(stateDB, token), nil
 }
 
 func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
@@ -151,7 +198,11 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		if err != nil {
 			return fmt.Errorf("qrc20 mint: amount: %w", err)
 		}
-		return NewQRC20Token(stateDB, token).MintWithEvents(caller, to, amt, receipt)
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.MintWithEvents(caller, to, amt, receipt)
 
 	case "transfer":
 		p, token, err := parseTokenAction(raw)
@@ -166,7 +217,11 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		if err != nil {
 			return fmt.Errorf("qrc20 transfer: amount: %w", err)
 		}
-		return NewQRC20Token(stateDB, token).TransferWithEvents(caller, to, amt, receipt)
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.TransferWithEvents(caller, to, amt, receipt)
 
 	case "approve":
 		p, token, err := parseTokenAction(raw)
@@ -181,7 +236,11 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		if err != nil {
 			return fmt.Errorf("qrc20 approve: amount: %w", err)
 		}
-		return NewQRC20Token(stateDB, token).ApproveWithEvents(caller, spender, amt, receipt)
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.ApproveWithEvents(caller, spender, amt, receipt)
 
 	case "burn":
 		p, token, err := parseTokenAction(raw)
@@ -192,7 +251,183 @@ func dispatchQRC20(stateDB *state.StateDB, ctx ModuleContext, action string, raw
 		if err != nil {
 			return fmt.Errorf("qrc20 burn: amount: %w", err)
 		}
-		return NewQRC20Token(stateDB, token).BurnWithEvents(caller, amt, receipt)
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.BurnWithEvents(caller, amt, receipt)
+
+	// ── qrc20_v2: the permit/allowance surface and the owner controls. Each
+	// is fork-gated first (HARD before the height), then parsed with the
+	// strict decoders, then resolved through the IsContract guard.
+
+	case "permit":
+		if err := requireFork(ctx, forks.QRC20V2); err != nil {
+			return err
+		}
+		var p qrc20PermitParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return fmt.Errorf("qrc20 permit: bad params: %w", err)
+		}
+		token, err := qcrypto.AddressFromString(p.Token)
+		if err != nil {
+			return fmt.Errorf("qrc20 permit: token: %w", err)
+		}
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return fmt.Errorf("qrc20 permit: owner: %w", err)
+		}
+		spender, err := qcrypto.AddressFromString(p.Spender)
+		if err != nil {
+			return fmt.Errorf("qrc20 permit: spender: %w", err)
+		}
+		amt, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("qrc20 permit: amount: %w", err)
+		}
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.Permit(owner, spender, amt, p.Deadline, p.Signature, p.OwnerPubKey, ctx.Time, receipt)
+
+	case "transfer_from":
+		if err := requireFork(ctx, forks.QRC20V2); err != nil {
+			return err
+		}
+		p, token, err := parseTokenAction(raw)
+		if err != nil {
+			return err
+		}
+		from, err := qcrypto.AddressFromString(p.From)
+		if err != nil {
+			return fmt.Errorf("qrc20 transfer_from: from: %w", err)
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc20 transfer_from: to: %w", err)
+		}
+		amt, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("qrc20 transfer_from: amount: %w", err)
+		}
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.TransferFromWithEvents(caller, from, to, amt, receipt)
+
+	case "increase_allowance":
+		if err := requireFork(ctx, forks.QRC20V2); err != nil {
+			return err
+		}
+		p, token, err := parseTokenAction(raw)
+		if err != nil {
+			return err
+		}
+		spender, err := qcrypto.AddressFromString(p.Spender)
+		if err != nil {
+			return fmt.Errorf("qrc20 increase_allowance: spender: %w", err)
+		}
+		amt, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("qrc20 increase_allowance: amount: %w", err)
+		}
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.IncreaseAllowanceWithEvents(caller, spender, amt, receipt)
+
+	case "decrease_allowance":
+		if err := requireFork(ctx, forks.QRC20V2); err != nil {
+			return err
+		}
+		p, token, err := parseTokenAction(raw)
+		if err != nil {
+			return err
+		}
+		spender, err := qcrypto.AddressFromString(p.Spender)
+		if err != nil {
+			return fmt.Errorf("qrc20 decrease_allowance: spender: %w", err)
+		}
+		amt, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("qrc20 decrease_allowance: amount: %w", err)
+		}
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.DecreaseAllowanceWithEvents(caller, spender, amt, receipt)
+
+	case "burn_from":
+		if err := requireFork(ctx, forks.QRC20V2); err != nil {
+			return err
+		}
+		p, token, err := parseTokenAction(raw)
+		if err != nil {
+			return err
+		}
+		from, err := qcrypto.AddressFromString(p.From)
+		if err != nil {
+			return fmt.Errorf("qrc20 burn_from: from: %w", err)
+		}
+		amt, err := parseUint256(p.Amount)
+		if err != nil {
+			return fmt.Errorf("qrc20 burn_from: amount: %w", err)
+		}
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.BurnFromWithEvents(caller, from, amt, receipt)
+
+	case "transfer_ownership":
+		if err := requireFork(ctx, forks.QRC20V2); err != nil {
+			return err
+		}
+		p, token, err := parseTokenAction(raw)
+		if err != nil {
+			return err
+		}
+		newOwner, err := qcrypto.AddressFromString(p.NewOwner)
+		if err != nil {
+			return fmt.Errorf("qrc20 transfer_ownership: new_owner: %w", err)
+		}
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.TransferOwnershipWithEvents(caller, newOwner, receipt)
+
+	case "pause":
+		if err := requireFork(ctx, forks.QRC20V2); err != nil {
+			return err
+		}
+		_, token, err := parseTokenAction(raw)
+		if err != nil {
+			return err
+		}
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.PauseWithEvents(caller, receipt)
+
+	case "unpause":
+		if err := requireFork(ctx, forks.QRC20V2); err != nil {
+			return err
+		}
+		_, token, err := parseTokenAction(raw)
+		if err != nil {
+			return err
+		}
+		tok, err := qrc20Token(stateDB, ctx, token)
+		if err != nil {
+			return err
+		}
+		return tok.UnpauseWithEvents(caller, receipt)
 
 	default:
 		return hard(fmt.Errorf("qrc20: unknown action %q", action))
