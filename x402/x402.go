@@ -8,6 +8,7 @@ package x402
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
@@ -64,6 +65,13 @@ type PaymentPayload struct {
 
 	// ML-DSA-65 signature (3309 bytes) over SHA3-256(canonical_payload_bytes).
 	Signature []byte `json:"signature,omitempty"`
+
+	// Payer's ML-DSA-65 public key (1952 bytes). Optional: lets a payer whose
+	// key is not yet registered on chain (no prior signed transaction) verify a
+	// payment. It is only consulted when the state registry has no key for
+	// From, and only accepted if it derives From; a registered key always wins.
+	// Not part of the signed body, so hashes and signatures are unchanged.
+	PublicKey []byte `json:"public_key,omitempty"`
 }
 
 // payloadBody is the signable subset of PaymentPayload (excludes Signature).
@@ -180,24 +188,57 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 		return &VerifyResult{Reason: "insufficient balance"}
 	}
 
-	// 7. Verify ML-DSA-65 signature
-	pubKey, err := p.state.GetPublicKey(payload.From)
-	if err != nil {
-		return &VerifyResult{Reason: fmt.Sprintf("public key not registered for payer: %v", err)}
+	// 7. Verify ML-DSA-65 signature. Registry-first: a key registered on chain
+	// always wins. Only when the registry has no key for the payer may the
+	// payload carry one, and it is accepted iff it derives payload.From — the
+	// same guard the executor, mempool and BFT apply to a first-use key.
+	pub, res := p.resolvePayerKey(payload)
+	if res != nil {
+		return res
 	}
 	hash, err := payload.Hash()
 	if err != nil {
 		return &VerifyResult{Reason: "failed to compute payload hash"}
-	}
-	pub, err := qcrypto.PublicKeyFromBytes(pubKey)
-	if err != nil {
-		return &VerifyResult{Reason: "invalid payer public key"}
 	}
 	if !qcrypto.Verify(pub, hash[:], qcrypto.CtxX402, payload.Signature) {
 		return &VerifyResult{Reason: "invalid ML-DSA signature"}
 	}
 
 	return &VerifyResult{Valid: true}
+}
+
+// resolvePayerKey returns the ML-DSA-65 public key Verify must check the
+// payment signature against. The on-chain registry is authoritative; the
+// payload's own PublicKey is a fallback for a never-seen payer and must derive
+// payload.From, so a client can never substitute a key for a registered payer.
+func (p *Processor) resolvePayerKey(payload *PaymentPayload) (*qcrypto.PublicKey, *VerifyResult) {
+	pubKey, err := p.state.GetPublicKey(payload.From)
+	switch {
+	case err == nil:
+		pub, err := qcrypto.PublicKeyFromBytes(pubKey)
+		if err != nil {
+			return nil, &VerifyResult{Reason: "invalid payer public key"}
+		}
+		return pub, nil
+	case errors.Is(err, types.ErrNoPublicKey):
+		if len(payload.PublicKey) == 0 {
+			return nil, &VerifyResult{Reason: fmt.Sprintf("public key not registered for payer: %v", err)}
+		}
+		if len(payload.PublicKey) != qcrypto.PublicKeySize {
+			return nil, &VerifyResult{Reason: fmt.Sprintf("invalid payer public key: want %d bytes, got %d",
+				qcrypto.PublicKeySize, len(payload.PublicKey))}
+		}
+		pub, err := qcrypto.PublicKeyFromBytes(payload.PublicKey)
+		if err != nil {
+			return nil, &VerifyResult{Reason: "invalid payer public key"}
+		}
+		if qcrypto.DeriveAddress(pub) != payload.From {
+			return nil, &VerifyResult{Reason: "payer public key does not derive the payer address"}
+		}
+		return pub, nil
+	default:
+		return nil, &VerifyResult{Reason: fmt.Sprintf("public key lookup failed: %v", err)}
+	}
 }
 
 // SettleResult is returned by Settle.
