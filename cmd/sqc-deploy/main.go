@@ -47,12 +47,16 @@ func main() {
 	fee := flag.Int64("fee", 100_000, "tx fee in smallest units")
 	value := flag.String("value", "0", "call value (decimal)")
 	timeout := flag.Duration("timeout", 60*time.Second, "receipt poll timeout")
+	fleetCount := flag.Int("fleet-count", 250, "fleet: how many contracts to generate and deploy")
+	fleetSeed := flag.Int64("fleet-seed", 1, "fleet: generator seed (same seed → same contracts)")
+	fleetBatch := flag.Int("fleet-batch", 32, "fleet: submissions between chain catch-up checks (stay under the mempool's per-sender cap)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage:
   sqc-deploy -rpc URL -seed FILE deploy <source.qsol>
   sqc-deploy -rpc URL -seed FILE call   <address> <source.qsol> <fn> [arg...]
   sqc-deploy -rpc URL view   <address> <source.qsol> <fn> [arg...]
   sqc-deploy -rpc URL verify <address> <source.qsol>
+  sqc-deploy -rpc URL -seed FILE fleet [-fleet-count N] [-fleet-seed S]
 `)
 		flag.PrintDefaults()
 	}
@@ -74,6 +78,8 @@ func main() {
 		err = runView(cl, flag.Args()[1:])
 	case "verify":
 		err = runVerify(cl, flag.Args()[1:])
+	case "fleet":
+		err = runFleet(cl, *seedPath, *fleetSeed, *fleetCount, *fleetBatch, *timeout)
 	default:
 		flag.Usage()
 		os.Exit(2)
