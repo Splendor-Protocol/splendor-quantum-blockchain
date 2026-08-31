@@ -71,8 +71,15 @@ const WATCH = [
 
 const sh = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', ...opts }).trim();
+/**
+ * A probe whose failure is expected and handled. stderr is CAPTURED, not
+ * inherited: execFileSync passes a child's stderr straight to the terminal by
+ * default, so `git rev-list <tag>` on a tag that does not exist printed two
+ * `fatal: ambiguous argument` lines in the middle of a release that was
+ * proceeding correctly. A handled path must not look like a crash.
+ */
 const shOk = (cmd, args) => {
-  try { return { ok: true, out: sh(cmd, args) }; }
+  try { return { ok: true, out: sh(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] }) }; }
   catch (e) { return { ok: false, out: String(e.stderr ?? e.message).trim() }; }
 };
 const git = (...a) => sh('git', a);
@@ -149,9 +156,13 @@ async function main() {
   currently  ${deployedNow ?? '(no SQC_NODE_IMAGE set)'}
 `);
 
-  if (promoting) checkRollback(deployedNow, version, commit);
-  if (!promoting) checkWorthBuilding(deployedNow, commit);
-  warnDownstream(deployedNow, commit);
+  // Resolved once, then shared: all three checks want the same "what is this
+  // tier actually running?" answer, and it may cost an RPC round trip.
+  const prevCommit = await deployedCommit(tier, deployedNow);
+
+  if (promoting) checkRollback(deployedNow, version, commit, prevCommit);
+  if (!promoting) checkWorthBuilding(deployedNow, prevCommit, commit);
+  warnDownstream(deployedNow, prevCommit, commit);
   checkIndexer(tier.env);
 
   if (tierArg === 'prod' && !assumeYes) await confirmProd(version);
@@ -282,13 +293,48 @@ function assertImageExists(version) {
  * differ. That makes a pointless rebuild the one operation that can change a
  * consensus binary with no source change behind it.
  */
-function checkWorthBuilding(deployedImage, commit) {
-  if (!deployedImage) return;
-  const deployedTag = deployedImage.split(':').pop();
-  const prev = shOk('git', ['rev-list', '-n', '1', deployedTag]);
-  if (!prev.ok || !prev.out) return; // no tag for it — cannot compare, proceed
+/**
+ * The commit a tier is actually running, for the checks that diff it against
+ * the candidate.
+ *
+ * A tier's image tag is NOT reliably a git tag: v0.4.8/9/10 and v0.5.0 were
+ * chosen by hand before this tool existed and have no tag anywhere. Every check
+ * that resolved the tag itself therefore failed open — `git rev-list <tag>`
+ * errored, the function returned, and the release proceeded with no "did any Go
+ * source actually change?" and no downstream warning at all. Guards that
+ * silently do nothing are worse than no guards, because the output looks the
+ * same as a clean run.
+ *
+ * So ask the node: /status reports the commit it was built from, which is more
+ * authoritative than a tag that may never have been created. The tag is still
+ * tried first — it works offline, and for a tier that is down.
+ */
+async function deployedCommit(t, deployedImage) {
+  if (!deployedImage) return null;
+  const tag = deployedImage.split(':').pop();
+  const viaTag = shOk('git', ['rev-list', '-n', '1', tag]);
+  if (viaTag.ok && viaTag.out) return viaTag.out;
 
-  const changed = shOk('git', ['diff', '--name-only', `${prev.out}..${commit}`, '--', '*.go', 'go.mod', 'go.sum', 'Dockerfile']);
+  const reported = (await status(t.rpc))?.commit;
+  if (!reported) {
+    console.log(`  ! ${tag} has no git tag here and ${t.rpc} reports no commit,`);
+    console.log('    so the change checks below cannot run.\n');
+    return null;
+  }
+  if (!shOk('git', ['cat-file', '-e', `${reported}^{commit}`]).ok) {
+    console.log(`  ! the tier reports commit ${String(reported).slice(0, 12)}, which is not in this`);
+    console.log('    repository — fetch it, or the tier runs code from elsewhere. Checks skipped.\n');
+    return null;
+  }
+  console.log(`  · ${tag} has no git tag; using the commit the tier reports (${reported.slice(0, 12)})`);
+  return reported;
+}
+
+function checkWorthBuilding(deployedImage, prevCommit, commit) {
+  if (!deployedImage || !prevCommit) return;
+  const deployedTag = deployedImage.split(':').pop();
+
+  const changed = shOk('git', ['diff', '--name-only', `${prevCommit}..${commit}`, '--', '*.go', 'go.mod', 'go.sum', 'Dockerfile']);
   if (changed.ok && changed.out === '') {
     if (!allowNoOp) {
       die(`no Go source changed since ${deployedTag}`,
@@ -300,13 +346,10 @@ function checkWorthBuilding(deployedImage, commit) {
   }
 }
 
-function warnDownstream(deployedImage, commit) {
-  if (!deployedImage) return;
-  const deployedTag = deployedImage.split(':').pop();
-  const prev = shOk('git', ['rev-list', '-n', '1', deployedTag]);
-  if (!prev.ok || !prev.out) return;
+function warnDownstream(deployedImage, prevCommit, commit) {
+  if (!deployedImage || !prevCommit) return;
 
-  const changed = shOk('git', ['diff', '--name-only', `${prev.out}..${commit}`]);
+  const changed = shOk('git', ['diff', '--name-only', `${prevCommit}..${commit}`]);
   if (!changed.ok) return;
   const files = new Set(changed.out.split('\n'));
   const hits = WATCH.filter((w) => files.has(w.path));
@@ -348,7 +391,7 @@ function checkIndexer(env) {
  * When they do differ, this says exactly which files changed, because that is
  * the input to deciding whether the older node can still open the chain.
  */
-function checkRollback(deployedImage, version, commit) {
+function checkRollback(deployedImage, version, commit, prevCommit) {
   if (!deployedImage) return;
   const current = deployedImage.split(':').pop();
   if (current === version) {
@@ -363,13 +406,12 @@ function checkRollback(deployedImage, version, commit) {
 
   console.log(`  ! ROLLBACK: ${current} -> ${version} is going BACKWARDS.\n`);
 
-  const prev = shOk('git', ['rev-list', '-n', '1', current]);
-  if (!prev.ok || !prev.out) {
-    console.log(`    ${current} has no tag here, so the code difference cannot be shown.`);
-    console.log('    Check the older node can still read this chain before continuing.\n');
+  if (!prevCommit) {
+    console.log(`    ${current} cannot be resolved to a commit here, so the code difference`);
+    console.log('    cannot be shown. Check the older node can still read this chain first.\n');
     return;
   }
-  const changed = shOk('git', ['diff', '--name-only', `${commit}..${prev.out}`, '--', '*.go']);
+  const changed = shOk('git', ['diff', '--name-only', `${commit}..${prevCommit}`, '--', '*.go']);
   if (changed.ok && changed.out === '') {
     console.log('    No Go source differs between them, so the binary is equivalent.');
     console.log('    This rollback is safe.\n');
