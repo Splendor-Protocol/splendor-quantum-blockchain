@@ -1246,6 +1246,17 @@ func dispatchBridge(stateDB *state.StateDB, ctx ModuleContext, action string, ra
 		}
 		return b.TransferOwnership(ctx.Caller, newOwner, receipt)
 
+	case "set_threshold":
+		var p bridgeActionParams
+		if err := parseBridgeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		b, err := bridgeAt(stateDB, action, p.Bridge)
+		if err != nil {
+			return err
+		}
+		return b.SetThreshold(ctx.Caller, p.Threshold, receipt)
+
 	default:
 		return hard(fmt.Errorf("bridge: unknown action %q", action))
 	}

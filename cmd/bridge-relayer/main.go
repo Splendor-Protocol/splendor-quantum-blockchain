@@ -35,6 +35,7 @@ func main() {
 		bridgeAddr    = flag.String("bridge", "", "bridge instance SQ: address (required)")
 		walletPath    = flag.String("wallet", "", "operator .sqwallet path (required)")
 		statePath     = flag.String("state", "bridge-relayer-state.json", "cursor state file")
+		attestDir     = flag.String("attestation-dir", "", "shared directory for M-of-N attestations (required when the bridge threshold > 1; leave empty for single-org threshold 1)")
 		confirmations = flag.Uint64("confirmations", 120, "legacy blocks to wait before a burn is claimable")
 		batch         = flag.Uint64("batch", 2000, "max legacy blocks per eth_getLogs")
 		fee           = flag.Int64("fee", 2000, "claim tx fee in smallest SPLD units")
@@ -108,7 +109,8 @@ func main() {
 		EvmContract: contract, Bridge: bridge, Operator: operator, Priv: priv,
 		Confirmations: *confirmations, BatchBlocks: *batch, Fee: *fee,
 		MaxAttempts: *maxAttempts, ReceiptWait: *receiptWait,
-		State: state, StatePath: *statePath,
+		AttestationDir: *attestDir,
+		State:          state, StatePath: *statePath,
 		attempts: map[uint64]int{},
 		Logf:     log.Printf,
 	}
@@ -156,6 +158,10 @@ func (r *Relayer) Replay(id uint64) error {
 	if !found {
 		return fmt.Errorf("id %d is not in the skipped list", id)
 	}
+	info, err := r.Quantum.Bridge(r.Bridge.String())
+	if err != nil {
+		return fmt.Errorf("bridge info: %w", err)
+	}
 	logs, err := r.EVM.BurnedLogs(r.EvmContract, block, block)
 	if err != nil {
 		return err
@@ -165,7 +171,7 @@ func (r *Relayer) Replay(id uint64) error {
 		if err != nil || burn.ID != id {
 			continue
 		}
-		ok, err := r.settle(burn)
+		ok, err := r.settle(burn, info.Threshold)
 		if err != nil {
 			return err
 		}

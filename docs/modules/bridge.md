@@ -50,17 +50,45 @@ instead.
 
 | action | auth | params |
 |---|---|---|
-| `deploy` | anyone (deployer = owner) | `evm_chain_id` (u64 > 0), `evm_contract`, `splv_name`, `splv_symbol` (≤ 64 bytes each), `splv_max_supply` (> 0), `max_claim_amount` (> 0) |
-| `claim` | owner or operator | `bridge`, `id`, `asset` (`"spld"` \| `"splv"`), `amount`, `recipient` (SQ:), `evm_tx` |
+| `deploy` | anyone (deployer = owner) | `evm_chain_id` (u64 > 0), `evm_contract`, `splv_name`, `splv_symbol` (≤ 64 bytes each), `splv_max_supply` (> 0), `max_claim_amount` (> 0), `threshold` (≥ 1) |
+| `claim` | submitter: owner or operator | `bridge`, `id`, `asset` (`"spld"` \| `"splv"`), `amount`, `recipient` (SQ:), `evm_tx`, `attestations` |
 | `set_operator` | owner | `bridge`, `operator`, `active` (required bool) |
+| `set_threshold` | owner | `bridge`, `threshold` (≥ 1, ≤ operator cap) |
 | `pause` / `unpause` | owner | `bridge` |
 | `transfer_ownership` | owner | `bridge`, `new_owner` (not zero, a module address or any contract) |
 
 `claim` refuses: paused; `id` 0; unknown asset; non-positive or non-decimal
 amount; amount above `max_claim_amount`; a zero, module-address or contract
-recipient (no key could spend the credit); malformed `evm_tx`; and — the
-idempotency core — an `id` whose claimed slot is already set, whatever the
-asset.
+recipient (no key could spend the credit); malformed `evm_tx`; fewer than
+`threshold` distinct valid attestations; and — the idempotency core — an `id`
+whose claimed slot is already set, whatever the asset.
+
+### Attestations (M-of-N)
+
+The credit is authorised by **`threshold` distinct attestations, not by the
+submitter alone**. Each `attestations[]` entry is `{pubkey, signature}` (both
+standard base64): an operator's ML-DSA public key and its signature over
+`types.BridgeClaimDigest(chain_id, bridge, id, asset, amount, recipient,
+evm_tx)` under `CtxBridge = "SPLENDOR-QC-BRIDGE-v1"`. The module requires every
+supplied attestation to be well-formed, from an **active operator**, and carry
+a valid signature; distinct attestors are counted, so ≥ `threshold` distinct
+operators must have signed the exact burn. The submitter is only a spam gate
+(owner-or-operator, pays the fee); it has no authority of its own, and the owner
+has no bypass.
+
+This is what makes the bridge safe against a single point of trust: with
+`threshold ≥ 2` and operators who each watch the legacy chain with their **own**
+RPC, neither one compromised operator key nor one hostile/buggy legacy RPC can
+move funds — an attacker needs `threshold` keys **and** `threshold` independent
+views to agree on a forged burn. `threshold = 1` is single-operator trust,
+equivalent to the pre-attestation design; raise it once ≥ 2 independent
+attestors exist (add operators, then `set_threshold`). Lowering operators below
+the threshold fails claims closed until enough are added — the safe direction.
+
+On success `claim` transfers from the pool (`spld` — refused SOFT when the
+pool is short, and the id stays claimable after funding) or mints on the SPLV
+token (`splv` — the token's `max_supply` cap refuses over-mint), records the
+claim height, bumps `claimed_total_{spld,splv}`, and emits `BridgeClaimed`.
 
 > **`max_claim_amount` and the burn contract's `maxBurn` must be equal.** The
 > module rejecting an over-cap claim only protects against operator fraud; a
@@ -70,10 +98,7 @@ asset.
 > cannot happen. Set both at deploy; changing the cap means redeploying both.
 > The burn contract also relies on a **single global `id` counter** (one
 > `++burnCount` shared by `burnSpld`/`burnSplv`); the idempotency slot keys on
-> `id` alone, so per-asset counters would collide id 5/spld with id 5/splv. On success it transfers from the pool (`spld` — refused SOFT when the
-pool is short, and the id stays claimable after funding) or mints on the SPLV
-token (`splv` — the token's `max_supply` cap refuses over-mint), records the
-claim height, bumps `claimed_total_{spld,splv}`, and emits `BridgeClaimed`.
+> `id` alone, so per-asset counters would collide id 5/spld with id 5/splv.
 
 ## Reads
 
@@ -81,7 +106,7 @@ Via `POST /call` (read dispatch) and mirrored as plain GETs:
 
 | action | REST mirror | returns |
 |---|---|---|
-| `bridge_info` (`{bridge}`) | `GET /bridge/{addr}` | owner, operators, paused, `evm_chain_id`, `evm_contract`, `splv_token`, `max_claim_amount`, `claimed_total_spld/splv`, `pool_balance` |
+| `bridge_info` (`{bridge}`) | `GET /bridge/{addr}` | owner, operators, paused, `threshold`, `evm_chain_id`, `evm_contract`, `splv_token`, `max_claim_amount`, `claimed_total_spld/splv`, `pool_balance` |
 | `claim_status` (`{bridge, id}`) | `GET /bridge/{addr}/claim/{id}` | `claimed` (+ `height` when claimed) |
 
 ## Events
@@ -99,8 +124,19 @@ the QRC-20 `Mint` at the token address.
 2. Each pass: `safe = eth_blockNumber − confirmations` (default 120 — the
    legacy chain's PoA finality is probabilistic and a real rewind incident is
    on record); fetch `Burned` logs from the cursor in bounded batches; for
-   each burn, skip if `claim_status` is claimed, else submit one
-   `bridge.claim` and wait for its receipt.
+   each burn, skip if `claim_status` is claimed, else gather ≥ `threshold`
+   attestations (§below) and submit one `bridge.claim` with them, then wait for
+   its receipt.
+   - **Attestations.** The relayer always signs its own attestation
+     (`BridgeClaimDigest` under `CtxBridge`, with its operator key). At
+     `threshold` 1 it submits with just that. At `threshold` > 1 it needs
+     `--attestation-dir <shared path>`: each attestor writes its attestation for
+     a burn there and reads its peers'; any node holding ≥ `threshold` distinct
+     attestations submits (the on-chain claimed slot makes concurrent submitters
+     safe). Below threshold it holds and retries — waiting for co-attestors is
+     not counted as a failure. Run N attestor daemons, each with its own
+     operator key **and its own legacy RPC**, sharing the dir on storage they
+     all trust.
 3. The cursor advances only past blocks whose burns are settled; it persists
    to a state file. Restarts are safe — idempotency lives on-chain. Only a
    claim that MINES AND REVERTS counts toward `--max-attempts`; a transient

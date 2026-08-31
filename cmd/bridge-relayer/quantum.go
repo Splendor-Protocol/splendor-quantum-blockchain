@@ -71,6 +71,7 @@ type BridgeInfo struct {
 	Owner       string   `json:"owner"`
 	Operators   []string `json:"operators"`
 	Paused      bool     `json:"paused"`
+	Threshold   uint64   `json:"threshold"`
 	EvmChainID  uint64   `json:"evm_chain_id"`
 	EvmContract string   `json:"evm_contract"`
 	PoolBalance string   `json:"pool_balance"`
@@ -105,25 +106,34 @@ type moduleCall struct {
 	Params any    `json:"params"`
 }
 
-// claimParams is the wire shape of bridge.claim (mirrors vm.bridgeClaimParams).
-type claimParams struct {
-	Bridge    string `json:"bridge"`
-	ID        uint64 `json:"id"`
-	Asset     string `json:"asset"`
-	Amount    string `json:"amount"`
-	Recipient string `json:"recipient"`
-	EvmTx     string `json:"evm_tx"`
+// attestation mirrors vm.bridgeAttestation: an attestor's pubkey and its
+// signature over types.BridgeClaimDigest under CtxBridge. Go []byte, so
+// standard base64 on the wire.
+type attestation struct {
+	PubKey    []byte `json:"pubkey"`
+	Signature []byte `json:"signature"`
 }
 
-// SubmitClaim signs and submits one bridge.claim as a TxCall from the
-// operator, returning the accepted tx hash.
+// claimParams is the wire shape of bridge.claim (mirrors vm.bridgeClaimParams).
+type claimParams struct {
+	Bridge       string        `json:"bridge"`
+	ID           uint64        `json:"id"`
+	Asset        string        `json:"asset"`
+	Amount       string        `json:"amount"`
+	Recipient    string        `json:"recipient"`
+	EvmTx        string        `json:"evm_tx"`
+	Attestations []attestation `json:"attestations"`
+}
+
+// SubmitClaim signs and submits one bridge.claim as a TxCall from the operator,
+// carrying the gathered attestations, returning the accepted tx hash.
 func (c *QuantumClient) SubmitClaim(
 	priv *qcrypto.PrivateKey, from qcrypto.Address, nonce uint64, fee int64,
-	bridge qcrypto.Address, b Burn,
+	bridge qcrypto.Address, b Burn, atts []attestation,
 ) (string, error) {
 	data, err := json.Marshal(moduleCall{Module: "bridge", Action: "claim", Params: claimParams{
 		Bridge: bridge.String(), ID: b.ID, Asset: b.Asset, Amount: b.Amount.String(),
-		Recipient: b.Recipient, EvmTx: b.TxHash,
+		Recipient: b.Recipient, EvmTx: b.TxHash, Attestations: atts,
 	}})
 	if err != nil {
 		return "", err

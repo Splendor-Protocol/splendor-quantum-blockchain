@@ -63,6 +63,7 @@ var (
 	slotBRClaimedSpld   = qcrypto.Hash32([]byte("bridge:claimed_total_spld"))
 	slotBRClaimedSplv   = qcrypto.Hash32([]byte("bridge:claimed_total_splv"))
 	slotBROperatorCount = qcrypto.Hash32([]byte("bridge:operator_count"))
+	slotBRThreshold     = qcrypto.Hash32([]byte("bridge:threshold"))
 )
 
 func brOperatorSlot(a qcrypto.Address) [32]byte {
@@ -123,25 +124,37 @@ type bridgeDeployParams struct {
 	SplvSymbol     string `json:"splv_symbol"`
 	SplvMaxSupply  string `json:"splv_max_supply"`  // decimal, > 0: legacy SPLV supply
 	MaxClaimAmount string `json:"max_claim_amount"` // decimal, > 0: per-claim bound, both assets
+	Threshold      uint64 `json:"threshold"`        // >= 1: attestations required per claim
 }
 
 // bridgeActionParams is the wire shape of the owner controls.
 type bridgeActionParams struct {
-	Bridge   string `json:"bridge"`
-	Operator string `json:"operator,omitempty"`  // set_operator
-	Active   *bool  `json:"active,omitempty"`    // set_operator (required: true grants, false revokes)
-	NewOwner string `json:"new_owner,omitempty"` // transfer_ownership
+	Bridge    string `json:"bridge"`
+	Operator  string `json:"operator,omitempty"`  // set_operator
+	Active    *bool  `json:"active,omitempty"`    // set_operator (required: true grants, false revokes)
+	NewOwner  string `json:"new_owner,omitempty"` // transfer_ownership
+	Threshold uint64 `json:"threshold,omitempty"` // set_threshold (>= 1)
+}
+
+// bridgeAttestation is one attestor's authorisation of a claim: their ML-DSA
+// public key and a signature over types.BridgeClaimDigest under CtxBridge. Go
+// []byte, so standard base64 on the wire — the same rule as a tx public_key /
+// signature.
+type bridgeAttestation struct {
+	PubKey    []byte `json:"pubkey"`
+	Signature []byte `json:"signature"`
 }
 
 // bridgeClaimParams is the wire shape of bridge.claim — one EVM burn, one
-// credit.
+// credit, authorised by >= threshold distinct attestors.
 type bridgeClaimParams struct {
-	Bridge    string `json:"bridge"`
-	ID        uint64 `json:"id"`     // the Burned event's id, ≥ 1
-	Asset     string `json:"asset"`  // "spld" | "splv"
-	Amount    string `json:"amount"` // decimal string, smallest unit
-	Recipient string `json:"recipient"`
-	EvmTx     string `json:"evm_tx"` // burn tx hash, audit trail in the event
+	Bridge       string              `json:"bridge"`
+	ID           uint64              `json:"id"`     // the Burned event's id, ≥ 1
+	Asset        string              `json:"asset"`  // "spld" | "splv"
+	Amount       string              `json:"amount"` // decimal string, smallest unit
+	Recipient    string              `json:"recipient"`
+	EvmTx        string              `json:"evm_tx"`       // burn tx hash, in the digest and the event
+	Attestations []bridgeAttestation `json:"attestations"` // >= threshold distinct operators
 }
 
 // ── Bridge ──────────────────────────────────────────────────────────────────
@@ -192,6 +205,12 @@ func DeployBridge(stateDB *state.StateDB, ctx ModuleContext, p bridgeDeployParam
 	if maxClaim.Sign() <= 0 {
 		return qcrypto.Address{}, errors.New(what + "max_claim_amount must be positive")
 	}
+	if p.Threshold < 1 {
+		return qcrypto.Address{}, errors.New(what + "threshold must be at least 1")
+	}
+	if p.Threshold > MaxBridgeOperators {
+		return qcrypto.Address{}, fmt.Errorf(what+"threshold %d exceeds the operator cap of %d", p.Threshold, MaxBridgeOperators)
+	}
 	addr := BridgeAddress(ctx.Caller, ctx.Nonce, ctx.Height)
 	splv := BridgeSplvAddress(addr)
 	b := NewBridge(stateDB, addr)
@@ -218,6 +237,9 @@ func DeployBridge(stateDB *state.StateDB, ctx ModuleContext, p bridgeDeployParam
 			return err
 		}
 		if err := b.setBigSlot(slotBRMaxClaim, maxClaim); err != nil {
+			return err
+		}
+		if err := b.setU64Slot(slotBRThreshold, p.Threshold); err != nil {
 			return err
 		}
 		markContract(stateDB, splv)
@@ -254,6 +276,9 @@ func (b *Bridge) SplvToken() (qcrypto.Address, error) { return b.getAddrSlot(slo
 
 // MaxClaimAmount returns the per-claim bound (both assets).
 func (b *Bridge) MaxClaimAmount() (*big.Int, error) { return b.getBigSlot(slotBRMaxClaim) }
+
+// Threshold returns how many distinct attestations a claim requires.
+func (b *Bridge) Threshold() (uint64, error) { return b.getU64Slot(slotBRThreshold) }
 
 // ClaimedTotal returns the cumulative amount credited for one asset.
 func (b *Bridge) ClaimedTotal(asset string) (*big.Int, error) {
@@ -327,6 +352,7 @@ type BridgeInfo struct {
 	Owner            string   `json:"owner"`
 	Operators        []string `json:"operators"`
 	Paused           bool     `json:"paused"`
+	Threshold        uint64   `json:"threshold"`
 	EvmChainID       uint64   `json:"evm_chain_id"`
 	EvmContract      string   `json:"evm_contract"`
 	SplvToken        string   `json:"splv_token"`
@@ -347,6 +373,10 @@ func (b *Bridge) Info() (*BridgeInfo, error) {
 		return nil, err
 	}
 	paused, err := b.IsPaused()
+	if err != nil {
+		return nil, err
+	}
+	threshold, err := b.Threshold()
 	if err != nil {
 		return nil, err
 	}
@@ -384,6 +414,7 @@ func (b *Bridge) Info() (*BridgeInfo, error) {
 	}
 	return &BridgeInfo{
 		Address: b.addr.String(), Owner: owner.String(), Operators: opStrs, Paused: paused,
+		Threshold:  threshold,
 		EvmChainID: chainID, EvmContract: "0x" + hex.EncodeToString(contract),
 		SplvToken: splv.String(), MaxClaimAmount: maxClaim.String(),
 		ClaimedTotalSpld: spld.String(), ClaimedTotalSplv: splvTotal.String(),
@@ -561,12 +592,79 @@ func (b *Bridge) TransferOwnership(caller, newOwner qcrypto.Address, receipt *ty
 	})
 }
 
+// SetThreshold changes how many distinct attestations a claim requires
+// (>= 1, <= the operator cap). Owner-only. Lowering it below the number of
+// active operators is allowed (an M-of-N choice); raising it above the number
+// that exists simply means no claim passes until enough operators are added —
+// fail-closed, the safe direction.
+func (b *Bridge) SetThreshold(caller qcrypto.Address, threshold uint64, receipt *types.Receipt) error {
+	const what = "bridge set_threshold: "
+	if err := b.requireOwner(what, caller); err != nil {
+		return err
+	}
+	if threshold < 1 {
+		return errors.New(what + "threshold must be at least 1")
+	}
+	if threshold > MaxBridgeOperators {
+		return fmt.Errorf(what+"threshold %d exceeds the operator cap of %d", threshold, MaxBridgeOperators)
+	}
+	return b.atomic(receipt, func() error {
+		if err := b.setU64Slot(slotBRThreshold, threshold); err != nil {
+			return err
+		}
+		b.log(receipt, ThresholdUpdatedEvent(b.addr, threshold))
+		return nil
+	})
+}
+
+// requireAttestations verifies that at least the instance threshold of DISTINCT
+// active operators have signed digest under CtxBridge. The slice is bounded
+// (an over-long one is refused before any signature check, since module calls
+// are unmetered); every supplied attestation must be well-formed, from an
+// active operator, and carry a valid signature; a repeated operator counts
+// once. Iteration is over the slice (deterministic order) and the map is used
+// only for de-duplication lookups, never iterated.
+func (b *Bridge) requireAttestations(what string, digest [32]byte, atts []bridgeAttestation) error {
+	threshold, err := b.Threshold()
+	if err != nil {
+		return err
+	}
+	if uint64(len(atts)) > MaxBridgeOperators {
+		return fmt.Errorf("%s%d attestations exceeds the operator cap of %d", what, len(atts), MaxBridgeOperators)
+	}
+	seen := make(map[qcrypto.Address]bool, len(atts))
+	for i, a := range atts {
+		pub, err := qcrypto.PublicKeyFromBytes(a.PubKey)
+		if err != nil {
+			return fmt.Errorf("%sattestation %d: invalid pubkey: %w", what, i, err)
+		}
+		attestor := qcrypto.DeriveAddress(pub)
+		active, err := b.IsOperator(attestor)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return fmt.Errorf("%sattestation %d: %s is not an active operator", what, i, attestor)
+		}
+		if !qcrypto.Verify(pub, digest[:], qcrypto.CtxBridge, a.Signature) {
+			return fmt.Errorf("%sattestation %d: invalid signature for %s", what, i, attestor)
+		}
+		seen[attestor] = true
+	}
+	if uint64(len(seen)) < threshold {
+		return fmt.Errorf("%s%d distinct attestations, need %d", what, len(seen), threshold)
+	}
+	return nil
+}
+
 // ── Claim ───────────────────────────────────────────────────────────────────
 
 // Claim credits one EVM burn: native SPLD from the escrow pool, or an SPLV
-// mint on the module-managed token. Owner-or-operator; idempotent per burn
-// id; refused while paused. Every refusal is SOFT — the action's own
-// complaint, a failed receipt, never a jammed nonce.
+// mint on the module-managed token. The submitter must be owner-or-operator
+// (a spam gate), but the credit is authorised by >= threshold distinct
+// attestations, not by the submitter alone. Idempotent per burn id; refused
+// while paused. Every refusal is SOFT — the action's own complaint, a failed
+// receipt, never a jammed nonce.
 func (b *Bridge) Claim(ctx ModuleContext, p bridgeClaimParams, receipt *types.Receipt) error {
 	const what = "bridge claim: "
 	if err := b.requireOwnerOrOperator(what, ctx.Caller); err != nil {
@@ -616,6 +714,19 @@ func (b *Bridge) Claim(ctx ModuleContext, p bridgeClaimParams, receipt *types.Re
 	evmTx, err := parseEvmHex(p.EvmTx, 32)
 	if err != nil {
 		return fmt.Errorf(what+"evm_tx: %w", err)
+	}
+	// Threshold attestations authorise the credit — not the submitter alone.
+	// A compromised operator key, or a single hostile legacy-chain RPC feeding
+	// one honest operator, cannot move funds without ≥ threshold DISTINCT
+	// attestors independently signing this exact burn.
+	var evmTx32 [32]byte
+	copy(evmTx32[:], evmTx)
+	digest, err := types.BridgeClaimDigest(types.ChainID, b.addr, p.ID, assetWord, amount, recipient, evmTx32)
+	if err != nil {
+		return fmt.Errorf(what+"%w", err)
+	}
+	if err := b.requireAttestations(what, digest, p.Attestations); err != nil {
+		return err
 	}
 	claimed, _, err := b.ClaimedAt(p.ID)
 	if err != nil {
@@ -667,8 +778,6 @@ func (b *Bridge) Claim(ctx ModuleContext, p bridgeClaimParams, receipt *types.Re
 		if err := b.setBigSlot(totalSlot, new(big.Int).Add(total, amount)); err != nil {
 			return err
 		}
-		var evmTx32 [32]byte
-		copy(evmTx32[:], evmTx)
 		b.log(receipt, BridgeClaimedEvent(b.addr, p.ID, assetWord, amount, recipient, evmTx32))
 		return nil
 	})
@@ -712,6 +821,13 @@ func BridgeClaimedEvent(contract qcrypto.Address, id uint64, asset uint8, amount
 		DataUint256(big.NewInt(int64(asset))).
 		DataUint256(amount).
 		DataHash(evmTx).
+		Build()
+}
+
+// ThresholdUpdatedEvent: the new attestation threshold as a data word.
+func ThresholdUpdatedEvent(contract qcrypto.Address, threshold uint64) *types.Log {
+	return NewEvent(contract, "ThresholdUpdated(uint64)").
+		DataUint256(new(big.Int).SetUint64(threshold)).
 		Build()
 }
 

@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/hex"
 	"math/big"
 	"strings"
 	"testing"
@@ -10,6 +11,23 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
+
+// brAttestor is a bridge operator with a real ML-DSA key, so it can both be
+// registered as an operator and sign claim attestations.
+type brAttestor struct {
+	addr qcrypto.Address
+	pub  *qcrypto.PublicKey
+	priv *qcrypto.PrivateKey
+}
+
+func newBrAttestor(t *testing.T) *brAttestor {
+	t.Helper()
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	return &brAttestor{addr: qcrypto.DeriveAddress(pub), pub: pub, priv: priv}
+}
 
 // ── Fixture ─────────────────────────────────────────────────────────────────
 
@@ -21,11 +39,13 @@ const (
 	brPoolFunding = int64(500_000)
 )
 
-// brFixture is one deployed bridge with a funded escrow pool, an operator and
-// a user recipient.
+// brFixture is one deployed bridge (threshold 1) with a funded escrow pool, one
+// operator/attestor and a user recipient.
 type brFixture struct {
+	t        *testing.T
 	sdb      *state.StateDB
 	owner    qcrypto.Address
+	op       *brAttestor // the registered operator + attestor
 	operator qcrypto.Address
 	user     qcrypto.Address
 	b        *Bridge
@@ -39,12 +59,13 @@ func brForks() forks.Schedule {
 func newBrFixture(t *testing.T) *brFixture {
 	t.Helper()
 	sdb := newTestState(t)
-	f := &brFixture{sdb: sdb, owner: addr(0x21), operator: addr(0x2e), user: addr(0x33)}
+	op := newBrAttestor(t)
+	f := &brFixture{t: t, sdb: sdb, owner: addr(0x21), op: op, operator: op.addr, user: addr(0x33)}
 	rc := &types.Receipt{}
 	if err := DispatchModuleCall(sdb, f.ctx(f.owner), moduleData(t, "bridge", "deploy", bridgeDeployParams{
 		EvmChainID: 2691, EvmContract: brEvmContract,
 		SplvName: "Vested Splendor", SplvSymbol: "SPLV",
-		SplvMaxSupply: brSplvMax, MaxClaimAmount: brMaxClaim,
+		SplvMaxSupply: brSplvMax, MaxClaimAmount: brMaxClaim, Threshold: 1,
 	}), rc); err != nil {
 		t.Fatalf("deploy bridge: %v", err)
 	}
@@ -62,6 +83,45 @@ func newBrFixture(t *testing.T) *brFixture {
 	}
 	f.fundPool(t, brPoolFunding)
 	return f
+}
+
+// attest signs a claim digest with a's key. It reads the (possibly overridden)
+// claim fields; on a malformed field it returns a placeholder attestation so
+// the field-refusal tests still fail at the earlier check (which precedes the
+// attestation check in Claim).
+func (f *brFixture) attest(t *testing.T, a *brAttestor, p map[string]any) bridgeAttestation {
+	t.Helper()
+	placeholder := bridgeAttestation{PubKey: a.pub.Bytes()}
+	bridge, err := qcrypto.AddressFromString(p["bridge"].(string))
+	if err != nil {
+		return placeholder
+	}
+	id, _ := p["id"].(uint64)
+	assetWord, err := bridgeAssetWord(p["asset"].(string))
+	if err != nil {
+		return placeholder
+	}
+	amount, ok := new(big.Int).SetString(p["amount"].(string), 10)
+	if !ok {
+		return placeholder
+	}
+	recipient, err := qcrypto.AddressFromString(p["recipient"].(string))
+	if err != nil {
+		return placeholder
+	}
+	var evmTx [32]byte
+	if b, err := hex.DecodeString(strings.TrimPrefix(p["evm_tx"].(string), "0x")); err == nil && len(b) == 32 {
+		copy(evmTx[:], b)
+	}
+	digest, err := types.BridgeClaimDigest(types.ChainID, bridge, id, assetWord, amount, recipient, evmTx)
+	if err != nil {
+		return placeholder
+	}
+	sig, err := qcrypto.Sign(a.priv, digest[:], qcrypto.CtxBridge)
+	if err != nil {
+		t.Fatalf("sign attestation: %v", err)
+	}
+	return bridgeAttestation{PubKey: a.pub.Bytes(), Signature: sig}
 }
 
 func (f *brFixture) ctx(caller qcrypto.Address) ModuleContext {
@@ -87,14 +147,27 @@ func (f *brFixture) call(t *testing.T, caller qcrypto.Address, action string, pa
 	return rc, DispatchModuleCall(f.sdb, f.ctx(caller), moduleData(t, "bridge", action, params), rc)
 }
 
-// claim submits one claim with sane defaults, overridable per field.
-func (f *brFixture) claimParams(over map[string]any) map[string]any {
+// claimFields builds the claim fields with sane defaults, overridable per
+// field — WITHOUT attestations, so a test can attest over them explicitly.
+func (f *brFixture) claimFields(over map[string]any) map[string]any {
 	p := map[string]any{
 		"bridge": f.b.Address().String(), "id": uint64(1), "asset": BridgeAssetSPLD,
 		"amount": "1000", "recipient": f.user.String(), "evm_tx": brEvmTx,
 	}
 	for k, v := range over {
 		p[k] = v
+	}
+	return p
+}
+
+// claimParams is claimFields plus a valid attestation from the fixture operator
+// over the resulting fields (unless attestations are overridden explicitly).
+func (f *brFixture) claimParams(over map[string]any) map[string]any {
+	p := f.claimFields(over)
+	if _, set := over["attestations"]; !set {
+		p["attestations"] = []bridgeAttestation{f.attest(f.t, f.op, p)}
+	} else {
+		p["attestations"] = over["attestations"]
 	}
 	return p
 }
@@ -184,7 +257,7 @@ func TestBridgeDeployRefusals(t *testing.T) {
 	base := bridgeDeployParams{
 		EvmChainID: 2691, EvmContract: brEvmContract,
 		SplvName: "Vested Splendor", SplvSymbol: "SPLV",
-		SplvMaxSupply: brSplvMax, MaxClaimAmount: brMaxClaim,
+		SplvMaxSupply: brSplvMax, MaxClaimAmount: brMaxClaim, Threshold: 1,
 	}
 	cases := []struct {
 		name string
@@ -199,6 +272,8 @@ func TestBridgeDeployRefusals(t *testing.T) {
 		{"bad splv max", func(p *bridgeDeployParams) { p.SplvMaxSupply = "01" }, "splv_max_supply"},
 		{"zero max claim", func(p *bridgeDeployParams) { p.MaxClaimAmount = "0" }, "max_claim_amount"},
 		{"empty max claim", func(p *bridgeDeployParams) { p.MaxClaimAmount = "" }, "max_claim_amount"},
+		{"zero threshold", func(p *bridgeDeployParams) { p.Threshold = 0 }, "threshold"},
+		{"threshold over cap", func(p *bridgeDeployParams) { p.Threshold = MaxBridgeOperators + 1 }, "threshold"},
 	}
 	for _, tc := range cases {
 		p := base
@@ -244,8 +319,8 @@ func TestBridgeAddressesVaryByHeight(t *testing.T) {
 func TestBridgeForkGate(t *testing.T) {
 	f := newBrFixture(t)
 	acts := KnownModuleActions["bridge"]
-	if len(acts.Writes) != 6 || len(acts.Reads) != 2 {
-		t.Fatalf("bridge lists %d writes and %d reads, want 6 and 2", len(acts.Writes), len(acts.Reads))
+	if len(acts.Writes) != 7 || len(acts.Reads) != 2 {
+		t.Fatalf("bridge lists %d writes and %d reads, want 7 and 2", len(acts.Writes), len(acts.Reads))
 	}
 	for _, action := range sortedKeys(acts.Writes) {
 		if acts.Writes[action] != forks.BridgeV1 {
@@ -513,6 +588,87 @@ func TestBridgeClaimConservesNativeSupply(t *testing.T) {
 	}
 }
 
+// ── Attestations (M-of-N) ───────────────────────────────────────────────────
+
+// A claim is authorised by the attestations, not the submitter: no attestation,
+// a non-operator attestation, or a bad signature is refused — even from a valid
+// operator submitter — so a lone operator key cannot move funds.
+func TestBridgeClaimRequiresAttestations(t *testing.T) {
+	f := newBrFixture(t)
+
+	// No attestations at threshold 1.
+	_, err := f.call(t, f.operator, "claim", f.claimParams(map[string]any{"attestations": []bridgeAttestation{}}))
+	mustSoftBridge(t, err, "need 1")
+
+	// An attestation from a key that is not a registered operator.
+	stranger := newBrAttestor(t)
+	fields := f.claimFields(nil)
+	_, err = f.call(t, f.operator, "claim", f.claimParams(map[string]any{
+		"attestations": []bridgeAttestation{f.attest(t, stranger, fields)},
+	}))
+	mustSoftBridge(t, err, "not an active operator")
+
+	// A well-formed attestation from the operator but with a corrupted
+	// signature (signed over a DIFFERENT burn id).
+	wrong := f.attest(t, f.op, f.claimFields(map[string]any{"id": uint64(999)}))
+	_, err = f.call(t, f.operator, "claim", f.claimParams(map[string]any{
+		"attestations": []bridgeAttestation{wrong},
+	}))
+	mustSoftBridge(t, err, "invalid signature")
+
+	// A revoked operator's attestation no longer counts.
+	if err := f.b.SetOperator(f.owner, f.operator, false, nil); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	_, err = f.call(t, f.owner, "claim", f.claimParams(nil))
+	mustSoftBridge(t, err, "not an active operator")
+}
+
+// With threshold 2, a claim needs two DISTINCT operator attestations; one, or
+// two from the same operator, is refused; two distinct credits.
+func TestBridgeThresholdTwoOfN(t *testing.T) {
+	f := newBrFixture(t)
+	op2 := newBrAttestor(t)
+	if err := f.b.SetOperator(f.owner, op2.addr, true, nil); err != nil {
+		t.Fatalf("add op2: %v", err)
+	}
+
+	// set_threshold is owner-only.
+	thParams := map[string]any{"bridge": f.b.Address().String(), "threshold": uint64(2)}
+	_, err := f.call(t, f.operator, "set_threshold", thParams)
+	mustSoftBridge(t, err, "not the owner")
+	if _, err := f.call(t, f.owner, "set_threshold", thParams); err != nil {
+		t.Fatalf("set_threshold: %v", err)
+	}
+	if th, _ := f.b.Threshold(); th != 2 {
+		t.Fatalf("threshold = %d, want 2", th)
+	}
+
+	fields := f.claimFields(nil)
+
+	// One attestation: below threshold.
+	_, err = f.call(t, f.operator, "claim", f.claimParams(map[string]any{
+		"attestations": []bridgeAttestation{f.attest(t, f.op, fields)},
+	}))
+	mustSoftBridge(t, err, "need 2")
+
+	// Two attestations from the SAME operator: counts once, still below.
+	_, err = f.call(t, f.operator, "claim", f.claimParams(map[string]any{
+		"attestations": []bridgeAttestation{f.attest(t, f.op, fields), f.attest(t, f.op, fields)},
+	}))
+	mustSoftBridge(t, err, "need 2")
+
+	// Two DISTINCT operators: credited.
+	if _, err := f.call(t, f.operator, "claim", f.claimParams(map[string]any{
+		"attestations": []bridgeAttestation{f.attest(t, f.op, fields), f.attest(t, op2, fields)},
+	})); err != nil {
+		t.Fatalf("2-of-N claim: %v", err)
+	}
+	if got := f.nativeBalance(t, f.user); got != 1000 {
+		t.Fatalf("recipient balance = %d, want 1000", got)
+	}
+}
+
 // ── Reads ───────────────────────────────────────────────────────────────────
 
 func TestBridgeReads(t *testing.T) {
@@ -531,6 +687,9 @@ func TestBridgeReads(t *testing.T) {
 	}
 	if bi.MaxClaimAmount != brMaxClaim || bi.SplvToken != BridgeSplvAddress(f.b.Address()).String() {
 		t.Fatalf("info = %+v", bi)
+	}
+	if bi.Threshold != 1 {
+		t.Fatalf("threshold = %d, want 1", bi.Threshold)
 	}
 
 	// claim_status flips with the claim.
