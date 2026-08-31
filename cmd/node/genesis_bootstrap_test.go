@@ -474,7 +474,7 @@ func TestFollowerRestartWithoutAFileKeepsTheSchedule(t *testing.T) {
 	}
 	t.Cleanup(func() { reopened.Close() })
 
-	got, err := loadForkSchedule("", reopened, true)
+	got, err := loadForkSchedule("", reopened, true, forkPolicy{})
 	if err != nil {
 		t.Fatalf("restart without --genesis: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestValidatorRestartWithCorruptGenesisFileIsRefused(t *testing.T) {
 		t.Fatalf("corrupt file: %v", err)
 	}
 	for _, chainEmpty := range []bool{false, true} {
-		if _, err := loadForkSchedule(path, sdb, chainEmpty); err == nil {
+		if _, err := loadForkSchedule(path, sdb, chainEmpty, forkPolicy{}); err == nil {
 			t.Fatalf("chainEmpty=%v: a corrupt --genesis on a scheduled chain booted", chainEmpty)
 		}
 	}
@@ -505,7 +505,7 @@ func TestValidatorRestartWithCorruptGenesisFileIsRefused(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove file: %v", err)
 	}
-	if _, err := loadForkSchedule(path, sdb, false); err == nil {
+	if _, err := loadForkSchedule(path, sdb, false, forkPolicy{}); err == nil {
 		t.Fatal("a missing --genesis on a scheduled chain booted")
 	}
 }
@@ -520,14 +520,14 @@ func TestGenesisFileMustMatchTheStoredSchedule(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 
-	got, err := loadForkSchedule(saveGenesis(t, same), sdb, false)
+	got, err := loadForkSchedule(saveGenesis(t, same), sdb, false, forkPolicy{})
 	if err != nil {
 		t.Fatalf("the document the chain was started from was refused: %v", err)
 	}
 	assertSchedule(t, got, 7)
 
 	differing := scheduledGenesis(t, 8)
-	_, err = loadForkSchedule(saveGenesis(t, differing), sdb, false)
+	_, err = loadForkSchedule(saveGenesis(t, differing), sdb, false, forkPolicy{})
 	if err == nil {
 		t.Fatal("a --genesis scheduling a different height booted on a chain started under another")
 	}
@@ -536,7 +536,7 @@ func TestGenesisFileMustMatchTheStoredSchedule(t *testing.T) {
 	}
 
 	unscheduled := honestGenesis(t)
-	if _, err := loadForkSchedule(saveGenesis(t, unscheduled), sdb, false); err == nil {
+	if _, err := loadForkSchedule(saveGenesis(t, unscheduled), sdb, false, forkPolicy{}); err == nil {
 		t.Fatal("a --genesis with no schedule booted on a chain started with one")
 	}
 
@@ -546,10 +546,10 @@ func TestGenesisFileMustMatchTheStoredSchedule(t *testing.T) {
 	if _, err := applyLocalGenesis(saveGenesis(t, unscheduled), sdb2, ex2, genesisPolicy{}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if got, err := loadForkSchedule(saveGenesis(t, honestGenesis(t)), sdb2, false); err != nil || len(got) != 0 {
+	if got, err := loadForkSchedule(saveGenesis(t, honestGenesis(t)), sdb2, false, forkPolicy{}); err != nil || len(got) != 0 {
 		t.Fatalf("unscheduled chain with unscheduled file: (%v, %v), want empty schedule", got, err)
 	}
-	if _, err := loadForkSchedule(saveGenesis(t, same), sdb2, false); err == nil {
+	if _, err := loadForkSchedule(saveGenesis(t, same), sdb2, false, forkPolicy{}); err == nil {
 		t.Fatal("a --genesis with a schedule booted on a chain started without one")
 	}
 }
@@ -561,22 +561,22 @@ func TestGenesisFileMustMatchTheStoredSchedule(t *testing.T) {
 func TestLoadForkScheduleWithoutAStoredMap(t *testing.T) {
 	sdb, _ := newBootstrapNode(t)
 
-	if got, err := loadForkSchedule("", sdb, true); err != nil || got != nil {
+	if got, err := loadForkSchedule("", sdb, true, forkPolicy{}); err != nil || got != nil {
 		t.Fatalf("no file, empty chain: (%v, %v), want (nil, nil)", got, err)
 	}
-	if got, err := loadForkSchedule("", sdb, false); err != nil || got != nil {
+	if got, err := loadForkSchedule("", sdb, false, forkPolicy{}); err != nil || got != nil {
 		t.Fatalf("no file, legacy chain: (%v, %v), want (nil, nil)", got, err)
 	}
 
 	unreadable := filepath.Join(t.TempDir(), "missing.json")
-	if got, err := loadForkSchedule(unreadable, sdb, true); err != nil || got != nil {
+	if got, err := loadForkSchedule(unreadable, sdb, true, forkPolicy{}); err != nil || got != nil {
 		t.Fatalf("unreadable file, empty chain: (%v, %v), want (nil, nil) — the apply path reports it", got, err)
 	}
-	if _, err := loadForkSchedule(unreadable, sdb, false); err == nil {
+	if _, err := loadForkSchedule(unreadable, sdb, false, forkPolicy{}); err == nil {
 		t.Fatal("unreadable --genesis on a non-empty chain with no stored schedule booted")
 	}
 
-	got, err := loadForkSchedule(saveGenesis(t, scheduledGenesis(t, 7)), sdb, false)
+	got, err := loadForkSchedule(saveGenesis(t, scheduledGenesis(t, 7)), sdb, false, forkPolicy{})
 	if err != nil {
 		t.Fatalf("readable file, nothing stored: %v", err)
 	}
@@ -587,7 +587,7 @@ func TestLoadForkScheduleWithoutAStoredMap(t *testing.T) {
 
 	unknown := honestGenesis(t)
 	unknown.Forks = forks.Schedule{"not_a_real_upgrade": 1}
-	if _, err := loadForkSchedule(saveGenesis(t, unknown), sdb, true); err == nil {
+	if _, err := loadForkSchedule(saveGenesis(t, unknown), sdb, true, forkPolicy{}); err == nil {
 		t.Fatal("a file scheduling an unknown upgrade booted")
 	}
 }
