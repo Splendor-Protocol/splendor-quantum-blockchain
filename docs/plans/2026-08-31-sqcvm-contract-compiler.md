@@ -222,9 +222,36 @@ The v0.5.2 rollout cleared it, as predicted: the mempool is in memory, so the
 restart dropped the stuck transaction. Worth remembering that a node restart is
 the only remedy — and that `sqc-deploy`'s `awaitNonce` now reports a stalled
 nonce as a jam rather than waiting on something that cannot resolve itself.
-5. **Optimizer**: none — codegen is naive (redundant `PUSH`/`POP`, no common
-   subexpression elimination, recomputes mapping slots). Fine for correctness,
-   not for gas.
+5. **Optimizer**: one pass so far — **mapping-slot caching**. A slot is
+   `SHA3-256(pad32(key) ‖ pad32(baseSlot))` and depends only on the key and the
+   base slot, never on what is stored there, so it is invariant for as long as
+   the key is. Codegen now derives it once per straight-line region and reuses
+   it from a memory word. Only provably stable keys qualify (`msg.sender`,
+   `msg.value`, a literal, or a name never assigned in that function), and the
+   live set is saved and restored around branches and loop bodies so a slot
+   derived inside an `if` is never loaded by code that runs when the branch did
+   not. Measured on devnet, same chain and same call: token `transfer`
+   **44,618 → 43,351 gas** and the contract **445 → 413 bytes**; the sender's
+   slot went from three derivations to one. Still naive elsewhere: redundant
+   `PUSH`/`POP`, no constant folding, no common-subexpression elimination
+   beyond mapping slots.
+
+### Mapping access is dominated by SHA3, priced per byte
+
+Worth a decision independent of the compiler. `vm/engine.go` charges
+`SHA3PerByte * size` for `SHA3_MEM`, so deriving one mapping slot over 64 bytes
+costs `30 + 64*6 = 414` gas. The EVM prices the same hash **per word**:
+`30 + 6*ceil(64/32) = 42`. SHA3-256 and keccak-256 are the same permutation and
+cost essentially the same to compute, so the 10x is a pricing choice rather than
+a cost recovery.
+
+The consequence is that on this chain a mapping read is mostly hashing: a
+measured `balanceOf` costs 661 gas, of which 414 is the derivation and 100 the
+`SLOAD`. Every token, registry and balance table pays it on every access. If the
+per-byte rate is deliberate the caching above matters more, not less; if it is
+an oversight, switching `SHA3_MEM` to per-word pricing is a one-line change with
+a far larger effect than any compiler pass — but it IS a consensus change and
+would need a fork gate.
 6. **Safety analysis**: reentrancy is possible via `CALL` once external calls
    are added; add checks-effects enforcement and optional reentrancy guards.
 7. **Revisit approach (a)** once the subset is proven in production: reusing
