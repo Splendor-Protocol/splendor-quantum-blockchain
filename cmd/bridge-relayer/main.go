@@ -66,6 +66,12 @@ func main() {
 	if err != nil {
 		fail("--bridge: %v", err)
 	}
+	if *batch == 0 {
+		fail("--batch must be >= 1 (0 scans nothing, forever)")
+	}
+	if *confirmations == 0 {
+		log.Printf("WARNING: --confirmations 0 removes reorg protection; a legacy reorg can strand claims")
+	}
 	if err := types.SetClientChainID(*chainID); err != nil {
 		fail("--chain-id: %v", err)
 	}
@@ -87,7 +93,12 @@ func main() {
 		if *startBlock == 0 {
 			fail("no state file at %s: --start-block is required on the first run", *statePath)
 		}
-		state = &relayerState{LastProcessed: *startBlock - 1}
+		state = &relayerState{
+			EvmChainID: *evmChainID, EvmContract: contract, Bridge: bridge.String(),
+			LastProcessed: *startBlock - 1,
+		}
+	} else if err := state.verifyIdentity(*evmChainID, contract, bridge.String()); err != nil {
+		fail("%v", err)
 	}
 
 	r := &Relayer{
@@ -98,7 +109,8 @@ func main() {
 		Confirmations: *confirmations, BatchBlocks: *batch, Fee: *fee,
 		MaxAttempts: *maxAttempts, ReceiptWait: *receiptWait,
 		State: state, StatePath: *statePath,
-		Logf: log.Printf,
+		attempts: map[uint64]int{},
+		Logf:     log.Printf,
 	}
 
 	if err := r.Preflight(*evmChainID, *chainID); err != nil {
@@ -122,6 +134,10 @@ func main() {
 			log.Printf("pass complete: %d claims, cursor %d", n, r.State.LastProcessed)
 		}
 		if *once {
+			if err != nil {
+				// A oneshot (cron/systemd) caller must be able to see failure.
+				os.Exit(1)
+			}
 			return
 		}
 		time.Sleep(*poll)

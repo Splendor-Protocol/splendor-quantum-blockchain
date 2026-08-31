@@ -95,7 +95,9 @@ type stubChains struct {
 	receipts map[string]int // hash -> status
 	bridge   qcrypto.Address
 	operator qcrypto.Address
-	failNext int // submit rejections to serve before accepting
+	failNext int  // transient submit rejections to serve before accepting
+	revert   bool // when true, submitted claims mine as a SOFT revert (status 0)
+	paused   bool // when true, /bridge/{addr} reports the bridge paused
 }
 
 func (s *stubChains) evmHandler(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +146,7 @@ func (s *stubChains) quantumHandler(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/bridge/"):
 		_ = json.NewEncoder(w).Encode(map[string]any{"info": map[string]any{
 			"owner": s.operator.String(), "operators": []string{s.operator.String()},
-			"paused": false, "evm_chain_id": 2691,
+			"paused": s.paused, "evm_chain_id": 2691,
 			"evm_contract": "0x00000000000000000000000000000000000dea11",
 			"pool_balance": "1000000",
 		}})
@@ -174,14 +176,26 @@ func (s *stubChains) quantumHandler(w http.ResponseWriter, r *http.Request) {
 			s.t.Errorf("submit: envelope %+v", mc)
 		}
 		s.submits = append(s.submits, cp)
-		s.claimed[cp.ID] = true
 		hash := fmt.Sprintf("%064x", len(s.submits))
-		s.receipts[hash] = 1
+		if s.revert {
+			// Mined but reverted: a real on-chain failure. The claimed slot is
+			// NOT set — the claim did not take.
+			s.receipts[hash] = 0
+		} else {
+			s.receipts[hash] = 1
+			s.claimed[cp.ID] = true
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "hash": hash})
 	case strings.HasSuffix(path, "/receipt"):
 		hash := strings.TrimSuffix(strings.TrimPrefix(path, "/tx/"), "/receipt")
 		if st, ok := s.receipts[hash]; ok {
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": st, "receipt": map[string]any{"error": ""}})
+			// Raw-receipt shape: status and error are BOTH top-level (matches
+			// rpc/explorer.go /tx/{hash}/receipt, not the nested /tx/{hash}).
+			msg := ""
+			if st == 0 {
+				msg = "bridge claim: bridge is paused"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": st, "error": msg})
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -297,26 +311,172 @@ func TestRelayerSkipsAlreadyClaimed(t *testing.T) {
 	}
 }
 
-func TestRelayerRetriesThenSkips(t *testing.T) {
+// A claim that MINES AND REVERTS repeatedly is genuinely unclaimable-as-is:
+// after MaxAttempts mined reverts it is recorded skipped and the cursor moves.
+func TestRelayerRevertsThenSkips(t *testing.T) {
 	r, s := newRelayerFixture(t)
 	rec := strings.Repeat("cd", 32)
 	s.head = 300
 	s.logs = []evmLog{makeLog(1, 0, "1000", rec, 50)}
-	s.failNext = 99 // every submit is rejected
+	s.revert = true // every submitted claim mines as a SOFT revert
 
-	// Attempt 1 leaves the cursor put; the pass making the final allowed
-	// attempt (MaxAttempts = 2) records the skip and moves on.
+	// Attempt 1 (mined revert) holds the cursor.
 	if _, err := r.RunOnce(); err != nil {
 		t.Fatalf("pass: %v", err)
 	}
 	if r.State.LastProcessed != 0 {
 		t.Fatalf("cursor moved past an unsettled burn")
 	}
+	// Attempt 2 reaches MaxAttempts (2) → record skip, advance.
 	if _, err := r.RunOnce(); err != nil {
 		t.Fatalf("pass: %v", err)
 	}
 	if r.State.LastProcessed != 200 || len(r.State.Skipped) != 1 || r.State.Skipped[0].ID != 1 {
 		t.Fatalf("state = %+v", r.State)
+	}
+
+	// A once-skipped burn is not re-submitted on later passes (no fee waste,
+	// no duplicate skip entries).
+	before := len(s.submits)
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if len(s.submits) != before || len(r.State.Skipped) != 1 {
+		t.Fatalf("skipped burn re-settled: submits %d->%d, skipped %d", before, len(s.submits), len(r.State.Skipped))
+	}
+}
+
+// A TRANSIENT submit rejection (rate limit, fee floor, duplicate pending
+// nonce) must never count toward the skip limit — congestion is not a claim
+// failure. The burn holds and is retried indefinitely; the cursor never moves.
+func TestRelayerTransientSubmitNeverSkips(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	rec := strings.Repeat("cd", 32)
+	s.head = 300
+	s.logs = []evmLog{makeLog(1, 0, "1000", rec, 50)}
+	s.failNext = 999 // every submit rejected, forever
+
+	for i := 0; i < 5; i++ {
+		if _, err := r.RunOnce(); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+	if r.State.LastProcessed != 0 {
+		t.Fatalf("cursor advanced past a burn that only saw transient failures")
+	}
+	if len(r.State.Skipped) != 0 {
+		t.Fatalf("transient submit failures were recorded as skips: %+v", r.State.Skipped)
+	}
+
+	// Once the transient condition clears, the burn settles and the cursor
+	// advances — no manual replay needed.
+	s.mu.Lock()
+	s.failNext = 0
+	s.mu.Unlock()
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("recovery pass: %v", err)
+	}
+	if len(s.submits) == 0 || r.State.LastProcessed != 200 {
+		t.Fatalf("did not self-heal: submits=%d cursor=%d", len(s.submits), r.State.LastProcessed)
+	}
+}
+
+// While the bridge is paused the relayer holds the cursor and submits nothing —
+// pause is the incident brake, not a signal to shunt every burn into replay.
+func TestRelayerHoldsWhilePaused(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	rec := strings.Repeat("cd", 32)
+	s.head = 300
+	s.logs = []evmLog{makeLog(1, 0, "1000", rec, 50)}
+	s.paused = true
+
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if len(s.submits) != 0 || r.State.LastProcessed != 0 || len(r.State.Skipped) != 0 {
+		t.Fatalf("paused pass acted: submits=%d cursor=%d skipped=%d", len(s.submits), r.State.LastProcessed, len(r.State.Skipped))
+	}
+
+	// Unpause → the held burn is claimed and the cursor advances.
+	s.mu.Lock()
+	s.paused = false
+	s.mu.Unlock()
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("unpaused pass: %v", err)
+	}
+	if len(s.submits) != 1 || r.State.LastProcessed != 200 {
+		t.Fatalf("did not resume after unpause: submits=%d cursor=%d", len(s.submits), r.State.LastProcessed)
+	}
+}
+
+// An undecodable Burned log from the pinned contract holds the cursor (never
+// silently dropped) and self-heals when good data returns.
+func TestRelayerHoldsOnUndecodableLog(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	rec := strings.Repeat("cd", 32)
+	good := makeLog(1, 0, "1000", rec, 50)
+	corrupt := makeLog(2, 0, "2000", rec, 60)
+	corrupt.Data = "0xdead" // too short to decode
+	s.head = 300
+	s.logs = []evmLog{good, corrupt}
+
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	// The good burn (id 1) settled; the cursor is held at 0 by the corrupt log.
+	if r.State.LastProcessed != 0 {
+		t.Fatalf("cursor advanced past a corrupt log: %d", r.State.LastProcessed)
+	}
+	if !s.claimed[1] {
+		t.Fatalf("the decodable burn before the corrupt one was not claimed")
+	}
+
+	// Good data returns → the batch completes and the cursor advances.
+	s.mu.Lock()
+	s.logs[1] = makeLog(2, 0, "2000", rec, 60)
+	s.mu.Unlock()
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("recovery pass: %v", err)
+	}
+	if r.State.LastProcessed != 200 || !s.claimed[2] {
+		t.Fatalf("did not self-heal: cursor=%d claimed2=%v", r.State.LastProcessed, s.claimed[2])
+	}
+}
+
+// --replay-id must not panic when the replayed claim fails, even on a Relayer
+// whose attempts map was never initialised (the Replay path skips RunOnce).
+func TestSettleNilAttemptsNoPanic(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	r.attempts = nil // simulate the direct-Replay path
+	s.revert = true
+	rec := strings.Repeat("cd", 32)
+	ok, err := r.settle(Burn{ID: 1, Asset: "spld", Amount: mustBig(t, "1000"), Recipient: "SQ:" + rec, TxHash: "0x" + strings.Repeat("ab", 32), Block: 50})
+	if err != nil || ok {
+		t.Fatalf("settle = (%v, %v), want (false, nil)", ok, err)
+	}
+	if r.attempts[1] != 1 {
+		t.Fatalf("mined revert not counted: %d", r.attempts[1])
+	}
+}
+
+func mustBig(t *testing.T, s string) *big.Int {
+	t.Helper()
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		t.Fatalf("bad big %q", s)
+	}
+	return v
+}
+
+// A state file bound to a different deployment is refused, so a reused cursor
+// can never silently skip a new contract's early burns.
+func TestStateIdentityMismatchRefused(t *testing.T) {
+	st := &relayerState{EvmChainID: 2692, EvmContract: "0xaaaa", Bridge: "SQ:aa", LastProcessed: 500}
+	if err := st.verifyIdentity(2691, "0xbbbb", "SQ:bb"); err == nil {
+		t.Fatal("mismatched identity accepted")
+	}
+	if err := st.verifyIdentity(2692, "0xaaaa", "SQ:aa"); err != nil {
+		t.Fatalf("matching identity refused: %v", err)
 	}
 }
 
