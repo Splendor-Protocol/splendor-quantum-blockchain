@@ -1,0 +1,19 @@
+// Exercises the operator surface: checked / %, short-circuit &&, ||, !, else.
+// safeDiv(10, 0) returns 0 WITHOUT reverting — the && never evaluates 10/0.
+contract MathDemo {
+    function div(uint256 a, uint256 b) public view returns (uint256) { return a / b; }
+    function mod(uint256 a, uint256 b) public view returns (uint256) { return a % b; }
+    function safeDiv(uint256 a, uint256 b) public view returns (uint256) {
+        if (b != 0 && a / b > 1) { return a / b; }
+        return 0;
+    }
+    function pick(uint256 a) public view returns (uint256) {
+        if (a == 1) { return 10; }
+        else if (a == 2) { return 20; }
+        else { return 30; }
+    }
+    function guarded(uint256 v) public view returns (uint256) {
+        require(v > 10, "too small");
+        return v;
+    }
+}
