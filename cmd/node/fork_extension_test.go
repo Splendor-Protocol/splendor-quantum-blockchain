@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 )
 
@@ -174,6 +175,47 @@ func TestForkExtensionAcceptsReservedNameAtHeightZero(t *testing.T) {
 	}
 	if _, ok := got.At(forks.VMRevertV1); ok {
 		t.Fatalf("schedule = %v, want %s reserved but NOT active", got, forks.VMRevertV1)
+	}
+}
+
+// A chain that scheduled NOTHING (mainnet's position) can still be extended,
+// and an upgrade with a dependency must bring the dependency with it in the
+// same document: Schedule.Validate requires module_revert_v1 no later than the
+// routed-module upgrades, so adding one alone is refused rather than adopted
+// into a schedule the chain cannot run.
+func TestForkExtensionOnEmptyScheduleCarriesDependencies(t *testing.T) {
+	newChain := func(t *testing.T) *state.StateDB {
+		t.Helper()
+		sdb, ex := newBootstrapNode(t)
+		if _, err := applyLocalGenesis(saveGenesis(t, forkGenesis(t, forks.Schedule{})), sdb, ex, genesisPolicy{}); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		return sdb
+	}
+
+	// The dependent alone: refused, naming the dependency it lacks.
+	alone := saveGenesis(t, forkGenesis(t, forks.Schedule{forks.ExchangeV1: 200}))
+	_, err := loadForkSchedule(alone, newChain(t), false, forkPolicy{Head: 100, AllowExtension: true})
+	if err == nil {
+		t.Fatal("adopted an upgrade whose dependency the chain does not schedule")
+	}
+	if !strings.Contains(err.Error(), forks.ModuleRevertV1) {
+		t.Fatalf("refusal does not name the missing dependency: %v", err)
+	}
+
+	// Both together, dependency no later than the dependent: accepted.
+	together := saveGenesis(t, forkGenesis(t, forks.Schedule{
+		forks.ModuleRevertV1: 200,
+		forks.ExchangeV1:     200,
+	}))
+	got, err := loadForkSchedule(together, newChain(t), false, forkPolicy{Head: 100, AllowExtension: true})
+	if err != nil {
+		t.Fatalf("an upgrade adopted with its dependency was refused: %v", err)
+	}
+	for _, name := range []string{forks.ModuleRevertV1, forks.ExchangeV1} {
+		if at, ok := got.At(name); !ok || at != 200 {
+			t.Fatalf("schedule = %v, want %s at 200", got, name)
+		}
 	}
 }
 
