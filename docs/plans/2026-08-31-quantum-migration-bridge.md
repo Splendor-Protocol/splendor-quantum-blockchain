@@ -31,11 +31,15 @@ like `splendor-quantum-explorer`, (3) a native flow in the Splendor Wallet app.
   Idempotency lives on-chain in a per-burn-id slot — a relayer crash/restart can never
   double-pay. Failures are SOFT under `module_revert_v1` so a bad claim can't jam the
   relayer's nonce.
-- **Trust model v1: single organization.** The relayer holds an operator key registered
-  on-chain in a bounded operator set (max 64, exchange pattern). A compromised operator can at
-  most drain the escrow pool / mint SPLV up to the cap to wrong recipients — bounded,
-  auditable via events, stoppable via `pause`. M-of-N attestation is a listed follow-on, not
-  v1.
+- **Trust model: M-of-N attestations (no single point of trust).** A `claim` is authorised
+  by `threshold` DISTINCT operator attestations over `types.BridgeClaimDigest` (under
+  `CtxBridge`), not by the submitter alone. With `threshold ≥ 2` and operators who each watch
+  the legacy chain with their own RPC, neither one compromised operator key nor one hostile
+  legacy RPC can move funds — an attacker needs `threshold` keys AND `threshold` independent
+  views to agree on a forged burn. `threshold = 1` is single-operator trust (the earlier
+  design); `set_threshold` raises it once independent attestors exist. Operators are a bounded
+  set (max 16); the owner sets policy (operators, threshold, pause) but has no claim bypass.
+  Bounded, auditable via events, stoppable via `pause`. See `docs/modules/bridge.md` §Attestations.
 - **Confirmation depth on 2691 before claiming: 120 blocks (~2 min at 1 s blocks),
   configurable.** Congress PoA has clique-style probabilistic finality only, and
   `infra/rpc-fleet` documents a real rewind incident. "Instant finality" marketing is not a
@@ -273,7 +277,8 @@ a structural clone of the proven `SplvSwapScreen` + `splvToSpldSwapService` pair
 
 ## Follow-ons (explicitly out of v1)
 
-- M-of-N operator attestations on `claim`.
+- ~~M-of-N operator attestations on `claim`~~ — **done** (`threshold`, `attestations`,
+  `set_threshold`, `CtxBridge`/`BridgeClaimDigest`, relayer `--attestation-dir`).
 - `splendor-infra` indexer support for `bridge` events + SPLV token metadata.
 - Reverse direction (quantum → legacy) — not planned; migration is one-way by design.
 - An EVM-signature→SQ derivation helper in the dapp (`@splendor/pq-bridge`) for users

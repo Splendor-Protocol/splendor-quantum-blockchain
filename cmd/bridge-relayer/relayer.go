@@ -103,15 +103,16 @@ type Relayer struct {
 	EVM     *EVMClient
 	Quantum *QuantumClient
 
-	EvmContract   string // burn contract, 0x + 40 lowercase hex
-	Bridge        qcrypto.Address
-	Operator      qcrypto.Address
-	Priv          *qcrypto.PrivateKey
-	Confirmations uint64
-	BatchBlocks   uint64
-	Fee           int64
-	MaxAttempts   int
-	ReceiptWait   time.Duration
+	EvmContract    string // burn contract, 0x + 40 lowercase hex
+	Bridge         qcrypto.Address
+	Operator       qcrypto.Address
+	Priv           *qcrypto.PrivateKey
+	Confirmations  uint64
+	BatchBlocks    uint64
+	Fee            int64
+	MaxAttempts    int
+	ReceiptWait    time.Duration
+	AttestationDir string // shared dir for M-of-N attestations ("" = self-attest only)
 
 	State     *relayerState
 	StatePath string
@@ -236,7 +237,7 @@ func (r *Relayer) RunOnce() (int, error) {
 		if skipped[burn.ID] {
 			continue
 		}
-		ok, serr := r.settle(burn)
+		ok, serr := r.settle(burn, info.Threshold)
 		if serr != nil {
 			return claimed, serr // transport-level trouble: retry the batch next pass
 		}
@@ -274,7 +275,7 @@ func (r *Relayer) RunOnce() (int, error) {
 // unmined, a connection blip) and a receipt that does not arrive in the window
 // are both retried without counting — otherwise a few minutes of congestion or
 // a producer stall would permanently shunt live burns into the skip list.
-func (r *Relayer) settle(b Burn) (bool, error) {
+func (r *Relayer) settle(b Burn, threshold uint64) (bool, error) {
 	if r.attempts == nil {
 		r.attempts = map[uint64]int{}
 	}
@@ -285,11 +286,23 @@ func (r *Relayer) settle(b Burn) (bool, error) {
 	if already {
 		return true, nil
 	}
+	// Gather >= threshold distinct attestations (this relayer's own, plus
+	// peers' from the shared dir when threshold > 1). Below threshold we hold
+	// and retry — NOT counted, since waiting for co-attestors is not a failure.
+	atts, enough, err := r.gatherAttestations(b, threshold)
+	if err != nil {
+		r.logf("burn %d: attestation error (not counted): %v", b.ID, err)
+		return false, nil
+	}
+	if !enough {
+		r.logf("burn %d: %d/%d attestations gathered, waiting for co-attestors", b.ID, len(atts), threshold)
+		return false, nil
+	}
 	nonce, err := r.Quantum.Nonce(r.Operator)
 	if err != nil {
 		return false, err
 	}
-	hash, err := r.Quantum.SubmitClaim(r.Priv, r.Operator, nonce, r.Fee, r.Bridge, b)
+	hash, err := r.Quantum.SubmitClaim(r.Priv, r.Operator, nonce, r.Fee, r.Bridge, b, atts)
 	if err != nil {
 		// Transient by nature — not counted. Held and retried next pass; the
 		// on-chain claimed slot keeps a duplicate safe if a prior submit

@@ -430,6 +430,7 @@ const (
 	orderDigestPrefix          = "exchange:order:v1:"
 	cancelDigestPrefix         = "exchange:cancel:v1:"
 	incrementNonceDigestPrefix = "exchange:nonce:v1:"
+	bridgeClaimDigestPrefix    = "bridge:claim:v1:"
 )
 
 // Order sides as signed into an order and carried on the wire.
@@ -549,6 +550,54 @@ func IncrementNonceDigest(chainID string, exchange, maker qcrypto.Address, expec
 	msg = append(msg, exchange[:]...)
 	msg = append(msg, maker[:]...)
 	msg = appendUint64BE(msg, expectedNonce)
+	return qcrypto.Hash32(msg), nil
+}
+
+// BridgeClaimDigest is the message a migration-bridge attestor signs (under
+// crypto.CtxBridge) to authorise crediting one legacy-chain burn. A claim on
+// the bridge module is accepted only when at least the instance's threshold of
+// distinct registered attestors have signed this digest, so no single operator
+// key — and no single legacy-chain RPC feeding one — can move funds.
+//
+// Preimage, fixed-width so no field can borrow bytes from its neighbour:
+//
+//	"bridge:claim:v1:" ‖ u16be(len(chainID)) ‖ chainID
+//	‖ bridge[32] ‖ id[8, big-endian] ‖ asset[1]
+//	‖ amount[32, big-endian] ‖ recipient[32] ‖ evm_tx[32]
+//
+// digest = SHA3-256(preimage). The chain id is folded in for the same reason
+// as the permit digest (a bridge address can repeat across a re-genesis that
+// keeps its chain id only if height also repeated — belt and braces), and the
+// bridge address and id pin the attestation to exactly one burn so it can
+// never be replayed for another amount, recipient or instance. It lives here,
+// not in vm, so the relayer/attestor can compute it without linking the state
+// database. It errors rather than panics on caller-supplied input.
+func BridgeClaimDigest(
+	chainID string,
+	bridge qcrypto.Address,
+	id uint64,
+	asset uint8,
+	amount *big.Int,
+	recipient qcrypto.Address,
+	evmTx [32]byte,
+) ([32]byte, error) {
+	if err := ValidateChainID(chainID); err != nil {
+		return [32]byte{}, fmt.Errorf("bridge claim digest: %w", err)
+	}
+	amountWord, err := uint256Word("bridge claim digest", "amount", amount)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	msg := make([]byte, 0, len(bridgeClaimDigestPrefix)+2+len(chainID)+qcrypto.AddressSize+8+1+32+qcrypto.AddressSize+32)
+	msg = append(msg, bridgeClaimDigestPrefix...)
+	msg = append(msg, byte(len(chainID)>>8), byte(len(chainID)))
+	msg = append(msg, chainID...)
+	msg = append(msg, bridge[:]...)
+	msg = appendUint64BE(msg, id)
+	msg = append(msg, asset)
+	msg = append(msg, amountWord[:]...)
+	msg = append(msg, recipient[:]...)
+	msg = append(msg, evmTx[:]...)
 	return qcrypto.Hash32(msg), nil
 }
 

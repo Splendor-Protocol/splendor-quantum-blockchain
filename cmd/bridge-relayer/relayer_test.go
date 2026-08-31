@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -86,18 +87,19 @@ func TestDecodeBurn(t *testing.T) {
 // ── End-to-end pass against stubbed chains ──────────────────────────────────
 
 type stubChains struct {
-	t        *testing.T
-	mu       sync.Mutex
-	head     uint64
-	logs     []evmLog
-	claimed  map[uint64]bool
-	submits  []claimParams
-	receipts map[string]int // hash -> status
-	bridge   qcrypto.Address
-	operator qcrypto.Address
-	failNext int  // transient submit rejections to serve before accepting
-	revert   bool // when true, submitted claims mine as a SOFT revert (status 0)
-	paused   bool // when true, /bridge/{addr} reports the bridge paused
+	t         *testing.T
+	mu        sync.Mutex
+	head      uint64
+	logs      []evmLog
+	claimed   map[uint64]bool
+	submits   []claimParams
+	receipts  map[string]int // hash -> status
+	bridge    qcrypto.Address
+	operator  qcrypto.Address
+	failNext  int    // transient submit rejections to serve before accepting
+	revert    bool   // when true, submitted claims mine as a SOFT revert (status 0)
+	paused    bool   // when true, /bridge/{addr} reports the bridge paused
+	threshold uint64 // attestation threshold /bridge/{addr} reports (0 → 1)
 }
 
 func (s *stubChains) evmHandler(w http.ResponseWriter, r *http.Request) {
@@ -144,9 +146,13 @@ func (s *stubChains) quantumHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(path[strings.LastIndex(path, "/")+1:], "%d", &id)
 		_ = json.NewEncoder(w).Encode(map[string]any{"claimed": s.claimed[id]})
 	case strings.HasPrefix(path, "/bridge/"):
+		th := s.threshold
+		if th == 0 {
+			th = 1
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"info": map[string]any{
 			"owner": s.operator.String(), "operators": []string{s.operator.String()},
-			"paused": s.paused, "evm_chain_id": 2691,
+			"paused": s.paused, "threshold": th, "evm_chain_id": 2691,
 			"evm_contract": "0x00000000000000000000000000000000000dea11",
 			"pool_balance": "1000000",
 		}})
@@ -175,6 +181,9 @@ func (s *stubChains) quantumHandler(w http.ResponseWriter, r *http.Request) {
 		if mc.Module != "bridge" || mc.Action != "claim" {
 			s.t.Errorf("submit: envelope %+v", mc)
 		}
+		// Every claim must carry a cryptographically valid attestation over the
+		// canonical digest — the on-chain safety property, checked end to end.
+		s.verifyAttestation(cp)
 		s.submits = append(s.submits, cp)
 		hash := fmt.Sprintf("%064x", len(s.submits))
 		if s.revert {
@@ -203,6 +212,44 @@ func (s *stubChains) quantumHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.t.Errorf("unexpected quantum path %s", path)
 		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// verifyAttestation reconstructs the claim digest from the submitted params and
+// checks at least one attestation signature verifies under CtxBridge — the same
+// check the module does on-chain.
+func (s *stubChains) verifyAttestation(cp claimParams) {
+	if len(cp.Attestations) == 0 {
+		s.t.Fatalf("claim %d carries no attestations", cp.ID)
+	}
+	aw, err := assetWord(cp.Asset)
+	if err != nil {
+		s.t.Fatalf("asset: %v", err)
+	}
+	recipient, err := qcrypto.AddressFromString(cp.Recipient)
+	if err != nil {
+		s.t.Fatalf("recipient: %v", err)
+	}
+	amount, _ := new(big.Int).SetString(cp.Amount, 10)
+	var evmTx [32]byte
+	raw, _ := hex.DecodeString(strings.TrimPrefix(cp.EvmTx, "0x"))
+	copy(evmTx[:], raw)
+	digest, err := types.BridgeClaimDigest(types.ChainID, s.bridge, cp.ID, aw, amount, recipient, evmTx)
+	if err != nil {
+		s.t.Fatalf("digest: %v", err)
+	}
+	ok := false
+	for _, a := range cp.Attestations {
+		pub, err := qcrypto.PublicKeyFromBytes(a.PubKey)
+		if err != nil {
+			continue
+		}
+		if qcrypto.Verify(pub, digest[:], qcrypto.CtxBridge, a.Signature) {
+			ok = true
+		}
+	}
+	if !ok {
+		s.t.Fatalf("claim %d has no valid attestation", cp.ID)
 	}
 }
 
@@ -450,7 +497,7 @@ func TestSettleNilAttemptsNoPanic(t *testing.T) {
 	r.attempts = nil // simulate the direct-Replay path
 	s.revert = true
 	rec := strings.Repeat("cd", 32)
-	ok, err := r.settle(Burn{ID: 1, Asset: "spld", Amount: mustBig(t, "1000"), Recipient: "SQ:" + rec, TxHash: "0x" + strings.Repeat("ab", 32), Block: 50})
+	ok, err := r.settle(Burn{ID: 1, Asset: "spld", Amount: mustBig(t, "1000"), Recipient: "SQ:" + rec, TxHash: "0x" + strings.Repeat("ab", 32), Block: 50}, 1)
 	if err != nil || ok {
 		t.Fatalf("settle = (%v, %v), want (false, nil)", ok, err)
 	}
@@ -477,6 +524,51 @@ func TestStateIdentityMismatchRefused(t *testing.T) {
 	}
 	if err := st.verifyIdentity(2692, "0xaaaa", "SQ:aa"); err != nil {
 		t.Fatalf("matching identity refused: %v", err)
+	}
+}
+
+// M-of-N via the shared attestation dir: with threshold 2, one relayer alone
+// holds (1/2), and a second relayer sharing the dir sees the first's
+// attestation and submits a claim carrying two distinct attestations.
+func TestRelayerMOfNViaSharedDir(t *testing.T) {
+	r1, s := newRelayerFixture(t)
+	s.threshold = 2
+	dir := t.TempDir()
+	r1.AttestationDir = dir
+
+	// A second attestor sharing the same chains and dir, own key and cursor.
+	pub2, priv2, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	r2 := *r1
+	r2.Priv = priv2
+	r2.Operator = qcrypto.DeriveAddress(pub2)
+	r2.attempts = map[uint64]int{}
+	r2.State = &relayerState{}
+	r2.StatePath = filepath.Join(t.TempDir(), "state2.json")
+
+	rec := strings.Repeat("cd", 32)
+	s.head = 300
+	s.logs = []evmLog{makeLog(1, 0, "1000", rec, 50)}
+
+	// r1 alone: 1/2 attestations → holds, submits nothing, cursor unmoved.
+	if _, err := r1.RunOnce(); err != nil {
+		t.Fatalf("r1 pass: %v", err)
+	}
+	if len(s.submits) != 0 || r1.State.LastProcessed != 0 {
+		t.Fatalf("r1 acted alone: submits=%d cursor=%d", len(s.submits), r1.State.LastProcessed)
+	}
+
+	// r2 sees r1's attestation in the shared dir → 2/2 → submits.
+	if _, err := r2.RunOnce(); err != nil {
+		t.Fatalf("r2 pass: %v", err)
+	}
+	if len(s.submits) != 1 {
+		t.Fatalf("r2 did not submit with quorum: submits=%d", len(s.submits))
+	}
+	if len(s.submits[0].Attestations) != 2 {
+		t.Fatalf("claim carried %d attestations, want 2", len(s.submits[0].Attestations))
 	}
 }
 

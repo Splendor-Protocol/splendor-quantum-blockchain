@@ -66,6 +66,11 @@ var (
 	// signed nonce bumps (types.IncrementNonceDigest). Appended after
 	// CtxMultisig: the block is append-only.
 	CtxOrder = []byte("SPLENDOR-QC-ORDER-v1")
+	// CtxBridge domain-separates migration-bridge claim attestations: an
+	// attestor signs types.BridgeClaimDigest over one legacy-chain burn to
+	// authorise crediting it. Appended after CtxOrder: the block is
+	// append-only.
+	CtxBridge = []byte("SPLENDOR-QC-BRIDGE-v1")
 )
 
 // maxContextSize is the FIPS 204 limit on the signing context string.

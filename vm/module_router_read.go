@@ -108,8 +108,9 @@ var KnownModuleActions = map[string]ModuleActions{
 		// bridge_v1: the legacy-mainnet migration bridge, routed whole.
 		Writes: map[string]string{
 			"deploy": forks.BridgeV1, "claim": forks.BridgeV1,
-			"set_operator": forks.BridgeV1, "pause": forks.BridgeV1,
-			"unpause": forks.BridgeV1, "transfer_ownership": forks.BridgeV1,
+			"set_operator": forks.BridgeV1, "set_threshold": forks.BridgeV1,
+			"pause": forks.BridgeV1, "unpause": forks.BridgeV1,
+			"transfer_ownership": forks.BridgeV1,
 		},
 		Reads: map[string]bool{
 			"bridge_info": true, "claim_status": true,

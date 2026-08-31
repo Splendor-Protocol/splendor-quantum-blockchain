@@ -150,6 +150,7 @@ var (
 	TopicRedeemFeeUpdated    = EventTopic("RedeemFeeUpdated(uint256)")
 	TopicFeeRecipientUpdated = EventTopic("FeeRecipientUpdated(sqaddress)")
 	TopicBridgeClaimed       = EventTopic("BridgeClaimed(uint64,uint8,uint256,sqaddress,bytes32)")
+	TopicThresholdUpdated    = EventTopic("ThresholdUpdated(uint64)")
 )
 
 // ── Event builder ─────────────────────────────────────────────────────────────
