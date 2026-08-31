@@ -28,6 +28,7 @@ type token struct {
 var keywords = map[string]bool{
 	"contract": true, "function": true, "returns": true, "return": true,
 	"require": true, "emit": true, "mapping": true, "if": true, "else": true,
+	"for": true, "while": true,
 	"uint256": true, "address": true, "bool": true, "view": true,
 	"msg": true, "true": true, "false": true,
 	// Visibility / mutability modifiers: parsed and ignored — they gate

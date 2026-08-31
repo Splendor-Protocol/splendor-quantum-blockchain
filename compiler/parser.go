@@ -306,57 +306,156 @@ func (p *parser) parseStmt() (stmt, error) {
 		return &emitStmt{event: nameTok.text, args: args}, nil
 	case p.isKeyword("if"):
 		return p.parseIf()
-	default:
-		// assignment: target ('[' key ']')? ('='|'+='|'-='|'*='|'/='|'%=') expr ';'
-		nameTok := p.next()
-		if nameTok.kind != tIdent {
-			return nil, fmt.Errorf("line %d: expected a statement", nameTok.line)
-		}
-		target := &indexExpr{name: nameTok.text}
-		if p.isPunct("[") {
-			p.next()
-			k, err := p.parseExpr()
-			if err != nil {
-				return nil, err
-			}
-			if err := p.expectPunct("]"); err != nil {
-				return nil, err
-			}
-			target.key = k
-		}
-		opTok := p.cur()
-		if opTok.kind != tOp {
-			return nil, fmt.Errorf("line %d: expected '=' in assignment", opTok.line)
-		}
-		var binOp string
-		switch opTok.text {
-		case "=":
-		case "+=", "-=", "*=", "/=", "%=":
-			binOp = opTok.text[:1]
-		default:
-			return nil, fmt.Errorf("line %d: expected '=' in assignment", opTok.line)
-		}
+	case p.isKeyword("for"):
+		return p.parseFor()
+	case p.isKeyword("while"):
 		p.next()
-		val, err := p.parseExpr()
+		if err := p.expectPunct("("); err != nil {
+			return nil, err
+		}
+		cond, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expectPunct(")"); err != nil {
+			return nil, err
+		}
+		body, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		return &whileStmt{cond: cond, body: body}, nil
+	default:
+		s, err := p.parseSimpleStmt()
 		if err != nil {
 			return nil, err
 		}
 		if err := p.expectPunct(";"); err != nil {
 			return nil, err
 		}
-		if binOp != "" {
-			// Desugar `t op= e` to `t = t op e`. The subset's expressions are
-			// side-effect-free, so re-evaluating a mapping key is safe.
-			var cur expr
-			if target.key == nil {
-				cur = &identExpr{name: target.name}
-			} else {
-				cur = &indexExpr{name: target.name, key: target.key}
-			}
-			val = &binaryExpr{opText: binOp, left: cur, right: val}
-		}
-		return &assignStmt{target: target, value: val}, nil
+		return s, nil
 	}
+}
+
+// parseSimpleStmt parses a declaration or an assignment WITHOUT consuming the
+// trailing ';'. A `for` header needs exactly this: its clauses are separated by
+// semicolons the loop parser owns.
+//
+//	declaration: T name = expr
+//	assignment:  name ('[' key ']')? ('='|'+='|'-='|'*='|'/='|'%=') expr
+func (p *parser) parseSimpleStmt() (stmt, error) {
+	// A type keyword in statement position starts a local declaration.
+	if t := p.cur(); t.kind == tKeyword {
+		if vt, ok := parseType(t); ok {
+			p.next()
+			nameTok := p.next()
+			if nameTok.kind != tIdent {
+				return nil, fmt.Errorf("line %d: expected a name after %s", nameTok.line, t.text)
+			}
+			if !p.isOp("=") {
+				return nil, fmt.Errorf("line %d: local %q must be initialised (%s %s = ...)",
+					p.cur().line, nameTok.text, t.text, nameTok.text)
+			}
+			p.next()
+			val, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			return &varDeclStmt{name: nameTok.text, typ: vt, value: val}, nil
+		}
+	}
+
+	nameTok := p.next()
+	if nameTok.kind != tIdent {
+		return nil, fmt.Errorf("line %d: expected a statement", nameTok.line)
+	}
+	target := &indexExpr{name: nameTok.text}
+	if p.isPunct("[") {
+		p.next()
+		k, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expectPunct("]"); err != nil {
+			return nil, err
+		}
+		target.key = k
+	}
+	opTok := p.cur()
+	if opTok.kind != tOp {
+		return nil, fmt.Errorf("line %d: expected '=' in assignment", opTok.line)
+	}
+	var binOp string
+	switch opTok.text {
+	case "=":
+	case "+=", "-=", "*=", "/=", "%=":
+		binOp = opTok.text[:1]
+	default:
+		return nil, fmt.Errorf("line %d: expected '=' in assignment", opTok.line)
+	}
+	p.next()
+	val, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if binOp != "" {
+		// Desugar `t op= e` to `t = t op e`. The subset's expressions are
+		// side-effect-free, so re-evaluating a mapping key is safe.
+		var cur expr
+		if target.key == nil {
+			cur = &identExpr{name: target.name}
+		} else {
+			cur = &indexExpr{name: target.name, key: target.key}
+		}
+		val = &binaryExpr{opText: binOp, left: cur, right: val}
+	}
+	return &assignStmt{target: target, value: val}, nil
+}
+
+// parseFor parses `for (init; cond; post) { body }`. Every clause is optional:
+// `for (;;) { }` is a bare loop the gas ceiling ends.
+func (p *parser) parseFor() (stmt, error) {
+	p.next() // 'for'
+	if err := p.expectPunct("("); err != nil {
+		return nil, err
+	}
+	st := &forStmt{}
+	if !p.isPunct(";") {
+		init, err := p.parseSimpleStmt()
+		if err != nil {
+			return nil, err
+		}
+		st.init = init
+	}
+	if err := p.expectPunct(";"); err != nil {
+		return nil, err
+	}
+	if !p.isPunct(";") {
+		cond, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		st.cond = cond
+	}
+	if err := p.expectPunct(";"); err != nil {
+		return nil, err
+	}
+	if !p.isPunct(")") {
+		post, err := p.parseSimpleStmt()
+		if err != nil {
+			return nil, err
+		}
+		st.post = post
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	st.body = body
+	return st, nil
 }
 
 // parseIf parses `if (cond) { body }` with an optional `else { … }` or

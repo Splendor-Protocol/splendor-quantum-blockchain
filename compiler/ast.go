@@ -74,11 +74,36 @@ type ifStmt struct {
 	elseBody []stmt // nil when there is no else; `else if` nests an ifStmt here
 }
 
+// varDeclStmt declares a function-local 256-bit word: `uint256 x = e;`. Locals
+// live in scratch memory for the duration of one call, not in storage.
+type varDeclStmt struct {
+	name  string
+	typ   varType
+	value expr
+}
+
+// forStmt is `for (init; cond; post) { body }`. Any of the three clauses may be
+// absent; an absent cond means "always true" (the gas ceiling ends the loop).
+type forStmt struct {
+	init stmt // nil, a varDeclStmt, or an assignStmt
+	cond expr // nil = always true
+	post stmt // nil or an assignStmt
+	body []stmt
+}
+
+type whileStmt struct {
+	cond expr
+	body []stmt
+}
+
 func (*assignStmt) isStmt()  {}
 func (*requireStmt) isStmt() {}
 func (*returnStmt) isStmt()  {}
 func (*emitStmt) isStmt()    {}
 func (*ifStmt) isStmt()      {}
+func (*varDeclStmt) isStmt() {}
+func (*forStmt) isStmt()     {}
+func (*whileStmt) isStmt()   {}
 
 // ── expressions ───────────────────────────────────────────────────────────────
 
