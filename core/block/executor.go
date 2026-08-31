@@ -856,7 +856,7 @@ func (e *Executor) ProduceBlock(
 		blockSize int
 	)
 
-	for i, tx := range txs {
+	for _, tx := range txs {
 		// Snapshot so a skipped (failed) tx leaves NO residue: executeTx deducts
 		// fee + bumps nonce before the op, so without reverting, a failed tx that
 		// is excluded from `executed` would still dirty the state → the block's
@@ -885,7 +885,13 @@ func (e *Executor) ProduceBlock(
 		// the pending layer would carry residue the header's state root could
 		// not honestly cover, so it is discarded rather than produced from.
 		snap := e.state.Snapshot()
-		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{})
+		// The receipt's index is the position in the BLOCK, which is
+		// len(executed) — not the candidate index i. Candidates are skipped
+		// above (bad nonce, unfunded, hook rejection), so after any skip i runs
+		// ahead of the real position, and every follower path indexes
+		// b.Transactions. Using i made a producing node disagree with its own
+		// transaction index, and with every other node, about the same block.
+		receipt, _ := types.NewReceipt(tx, uint32(len(executed)), height, [32]byte{})
 		if err := e.executeTx(tx, height, blockTime, receipt); err != nil {
 			if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
 				e.state.DiscardPending()

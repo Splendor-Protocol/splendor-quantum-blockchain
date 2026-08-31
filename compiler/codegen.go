@@ -90,6 +90,20 @@ func (g *codegen) declareLocal(name string) (int, error) {
 	if _, ok := cur[name]; ok {
 		return 0, fmt.Errorf("local %q is declared twice in the same scope", name)
 	}
+	// Shadowing is refused, as Solidity has refused it since 0.5.
+	//
+	// It is not a style rule here. One name resolving to two bindings broke two
+	// things at once: the mapping-slot cache is keyed on the NAME, so the inner
+	// binding was handed the outer one's derived slot and wrote to it; and an
+	// initialiser like `uint256 s = s + 1` read the slot being declared —
+	// zero — instead of the binding it shadows. Both are silent wrong-slot
+	// writes, so the source reads correctly and nothing reverts.
+	if _, ok := g.lookupLocal(name); ok {
+		return 0, fmt.Errorf("local %q shadows an enclosing local of the same name", name)
+	}
+	if _, ok := g.states[name]; ok {
+		return 0, fmt.Errorf("local %q shadows a state variable of the same name", name)
+	}
 	slot := g.nextLocal
 	g.nextLocal++
 	cur[name] = slot
@@ -883,9 +897,20 @@ func (g *codegen) genLogical(ex *binaryExpr) error {
 	g.a.op(vm.OpSWAP1) // [a, dest, c]
 	g.a.op(vm.OpJUMPI) // [a] — jumped: a decides the result
 	g.a.op(vm.OpPOP)   // []
+
+	// The right operand sits behind that JUMPI, so on the short-circuit path it
+	// does NOT run. A mapping slot derived here is therefore not written on
+	// every path reaching the code after this expression, and must not be
+	// marked live — exactly as for a branch body (genBlock) or a loop
+	// (genLoop). Without this, a later access to that key loaded a
+	// never-written memory word, read 0 as the slot, and wrote the contract's
+	// FIRST state variable instead of the mapping.
+	live := g.saveLive()
 	if err := g.genExpr(ex.right); err != nil {
 		return err
 	}
+	g.slotLive = live
+
 	g.a.label(end)
 	g.a.op(vm.OpISZERO) // normalize to 0/1
 	g.a.op(vm.OpISZERO)
