@@ -219,6 +219,62 @@ func TestForkExtensionOnEmptyScheduleCarriesDependencies(t *testing.T) {
 	}
 }
 
+// The fork schedule is part of the genesis hash, so an EXTENDED document is by
+// construction not the one an operator pinned with --genesis-doc-hash. The pin
+// says "this exact document is my network's identity"; adopting a different one
+// behind its back would undercut that, and would mean anyone who can write
+// genesis.json on a host where --allow-fork-extension was left on could
+// schedule a consensus rule change. Adopting a new document therefore takes two
+// deliberate changes: the flag AND an updated pin.
+func TestForkExtensionRefusesADocumentThatIsNotThePinned(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	original := forkGenesis(t, forks.Schedule{forks.MultiValidator: 1})
+	if _, err := applyLocalGenesis(saveGenesis(t, original), sdb, ex, genesisPolicy{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	stalePin := original.Hash()
+
+	extended := forkGenesis(t, forks.Schedule{
+		forks.MultiValidator: 1,
+		forks.VMRevertV1:     200,
+	})
+	path := saveGenesis(t, extended)
+
+	_, err := loadForkSchedule(path, sdb, false, forkPolicy{
+		Head: 100, AllowExtension: true, DocHash: &stalePin,
+	})
+	if err == nil {
+		t.Fatal("adopted a document that does not match the operator's pin")
+	}
+	if !strings.Contains(err.Error(), "--genesis-doc-hash") {
+		t.Fatalf("refusal does not name the pin the operator must update: %v", err)
+	}
+}
+
+// Re-pinning to the new document is the operator saying "yes, this one" — and
+// then the extension proceeds.
+func TestForkExtensionAcceptsTheDocumentMatchingItsPin(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	if _, err := applyLocalGenesis(saveGenesis(t, forkGenesis(t, forks.Schedule{forks.MultiValidator: 1})), sdb, ex, genesisPolicy{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	extended := forkGenesis(t, forks.Schedule{
+		forks.MultiValidator: 1,
+		forks.VMRevertV1:     200,
+	})
+	freshPin := extended.Hash()
+	got, err := loadForkSchedule(saveGenesis(t, extended), sdb, false, forkPolicy{
+		Head: 100, AllowExtension: true, DocHash: &freshPin,
+	})
+	if err != nil {
+		t.Fatalf("a correctly re-pinned document was refused: %v", err)
+	}
+	if at, ok := got.At(forks.VMRevertV1); !ok || at != 200 {
+		t.Fatalf("schedule = %v, want the extension adopted", got)
+	}
+}
+
 // An unchanged file on a scheduled chain still needs no flag — the ordinary
 // restart path must not regress.
 func TestUnchangedScheduleNeedsNoFlag(t *testing.T) {
