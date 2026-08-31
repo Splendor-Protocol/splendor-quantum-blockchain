@@ -1,0 +1,167 @@
+# A contract compiler for SQC-VM — design + prototype
+
+## The question
+
+Features like the migration bridge ship today as **native Go modules compiled
+into `sqc-node`** — consensus code every validator runs. Could they instead be
+**deployed contracts**, the way tokens are on an EVM chain? That needs a
+compiler: a high-level language that produces SQC-VM v4 bytecode a `TxDeploy`
+can carry. This doc decides the approach and lands a working prototype.
+
+## What already exists (verified in code)
+
+- **A real bytecode VM** — `vm/engine.go` (SQC-VM v4): a 256-bit stack machine,
+  SHA3-256 storage slots, gas metering, `CALL`/`DELEGATECALL`/`STATICCALL`,
+  `LOG0-4`, `REVERT`/`REQUIRE`. `TxDeploy` stores `tx.Data` **verbatim as
+  runtime code** (`vm/engine.go` `Deploy`, `core/block/executor.go`
+  `execDeploy`) — there is no EVM-style constructor/init-code phase.
+- **No compiler and no language.** `readme.md` §8 is explicit: QSol is "a
+  specification and an intention… No parser, no compiler, no toolchain exists."
+  The dialect notes amount to: `sqaddress` for 32-byte addresses, `sha3()` for
+  `keccak256()`, a `verify_mldsa(...)` builtin, no `ecrecover()`.
+
+## Where SQC-VM diverges from the EVM (the constraints a compiler must honor)
+
+| Dimension | EVM | SQC-VM v4 | Consequence |
+|---|---|---|---|
+| Address width | 20 bytes | **32 bytes** (`SQ:` = SHA3-256(pubkey)) | An address is a full word; no masking, but every ABI/mapping layout that assumes 20 bytes is wrong. |
+| Hash | keccak-256 | **SHA3-256** everywhere (`qcrypto.Hash32`) | Selectors, event topics and mapping slots must be SHA3-256. solc output (keccak) is layout-incompatible. |
+| Opcode numbering | EVM table | **v4 relocations** (PUSH/DUP/SWAP at 0x60-0x9F; SSTORE 0x55, JUMP 0x56, etc.) | Raw EVM bytecode will not run; codegen targets the v4 table. |
+| `SELECTOR`/`ABI_ENCODE`/`ABI_DECODE` (0x43-0x45) | n/a | **declared but NOT implemented** — they hit the `default: unknown opcode` path (confirmed: no handler in `engine.go`, only `disasm.go` names them) | The compiler must do selector extraction and ABI layout **itself**, with `CALLDATALOAD`+`SHR`, not these opcodes. |
+| Several operand orders | — | `MSTORE`/`SSTORE` pop **value then offset/slot**; `JUMPI` pops **cond then dest**; `LOG*`/`RETURN`/`REVERT`/`SHA3_MEM` pop **size then offset**; `CREATE` pops offset-then-size | Codegen must emit pushes in the exact order each handler pops (encoded in `codegen.go` comments). |
+| Top-level `REVERT` | rolls back the whole tx | **does NOT roll back storage written in the entry frame** | Verified: `TestTopLevelRevertDoesNotRollBackStorage`. The engine snapshots sub-`CALL`s (`subSnap`) but runs the entry frame directly on state, and the executor commits a reverted bytecode tx's snapshot (only the receipt is marked failed). **Compiled code MUST place every `require` before any storage write** (checks-effects), and production should also patch the executor to snapshot the entry frame. |
+| `ecrecover` / secp256k1 | precompile | **absent** — only `VERIFY_MLDSA` | No Solidity contract relying on ECDSA signatures can be honored; PQ signatures use `verify_mldsa`. |
+| `SELFDESTRUCT`, `GAS`, `GASPRICE`, `BLOCKHASH`, `CHAINID`, `COINBASE` | present | mostly absent/different (`TOTALGAS` exists; no `BLOCKHASH`) | A subset language, not full Solidity. |
+
+## Approaches considered
+
+**(a) Reuse solc's frontend: Solidity → Yul IR → SQC-VM backend.** Rejected as
+the first step. solc's Yul assumes keccak-256 for mapping/storage layout,
+20-byte `address`, the EVM memory model (free-memory pointer at 0x40), EVM ABI
+head/tail encoding, and a large builtin set (`keccak256`, `datacopy`,
+`mload`/`mstore`, `call`, …). A Yul→SQC-VM backend means reimplementing a Yul
+dialect + codegen + optimizer — months of work — for a language whose semantics
+we are already breaking the moment `keccak256` becomes `sha3` (every existing
+contract's storage layout changes, so "compatibility with real Solidity" is
+illusory anyway). Worth revisiting **later** to reuse solc's mature parser and
+optimizer, but not to bootstrap.
+
+**(b) A Solidity-subset compiler written from scratch in Go — CHOSEN.** Smallest
+honest surface: a lexer, parser and stack codegen targeting the v4 table
+directly, in a **non-consensus** package. Honest about being a "Solidity-flavored
+subset" (this *is* QSol, scoped to what works). No external dependency, no solc,
+full control over the SHA3/32-byte/opcode-order divergences. It is the
+pragmatic first rung and it produces bytecode the existing engine runs today.
+
+**(c) Implement QSol per the repo's spec.** There is no spec to implement
+against — only the dialect notes above. So (c) *is* (b) in practice; this
+prototype is the first concrete QSol.
+
+**Why not a plugin/WASM runtime** (recorded so it is not re-litigated):
+`docs/plans/2026-08-27-blockpeak-settlement-module.md` rejected a WASM/plugin
+contract runtime as a 6–12 month, CosmWasm-class determinism-and-gas risk. A
+compiler to the *existing, audited* SQC-VM avoids introducing a second
+execution engine entirely — it reuses the one the chain already runs.
+
+## The prototype (this branch)
+
+Package `compiler/` (non-consensus). Pipeline: **source → lexer → parser → AST
+→ semantic check → stack codegen → assembler → SQC-VM v4 bytecode + ABI.**
+
+- `lexer.go` — tokens, comments, `0x`/decimal numbers.
+- `parser.go` — recursive-descent; `contract`, state vars (scalars + `mapping`),
+  functions with params / `view` / `returns`, and statements
+  (`=`, `require`, `return`, `emit`, `if`).
+- `codegen.go` — the stack machine mapping, with every VM operand order
+  documented at its use site.
+- `asm.go` — a two-pass assembler; jump targets are fixed-width `PUSH2` so label
+  addresses resolve in one pass (no push-width fixpoint).
+- `compiler.go` — `Compile(src) (*Contract, error)`; the `Contract` carries the
+  bytecode plus an ABI (function selectors, event topics) and `EncodeCall`.
+
+### Calling convention (compiler-defined, since the ABI opcodes are unimplemented)
+
+- **Selector**: top 4 bytes of `SHA3-256("name(type,type)")`. Runtime dispatch
+  loads `CALLDATALOAD(0)`, `SHR 224`, and compares against each function's
+  selector, jumping to its body; no match falls through to `REVERT`.
+- **Arguments**: 32-byte big-endian words at calldata offset `4 + 32*i`.
+  A 32-byte `address` argument is its raw word.
+- **Return**: a single word via `MSTORE`+`RETURN` (offset 0, size 32).
+- **Storage layout**: scalars occupy sequential slots `0,1,2,…`. A mapping at
+  base slot `S` stores `m[k]` at `SHA3-256( pad32(k) ‖ pad32(S) )` (distinct
+  per mapping because `S` differs; the two words are laid into scratch memory
+  and hashed with `SHA3_MEM`). This is the SHA3 analogue of Solidity's
+  keccak mapping layout.
+- **Events**: `emit E(a,b)` → `LOG1` with `topic0 = SHA3-256("E(uint256,…)")`
+  and the args as consecutive 32-byte data words — the shape the explorer and
+  indexer already read (`vm/events.go`).
+
+### What the prototype proves (all green — `go test ./compiler/`)
+
+- `TestCounter` — storage read/write across calls (`inc`, `add(n)`, `get`).
+- `TestToken` — a mapping, a **guarded owner action** (`require(msg.sender ==
+  owner)`), balance transfer with a **revert path** (`require(bal >= amount)`),
+  and **events** (`Mint`, `Transfer`) with SHA3 topics and correct data words.
+- `TestUnknownSelectorReverts` — dispatcher fallthrough.
+- `TestSelectorsAreSha3Based` — the ABI's selectors equal the runtime's.
+- `TestCompileDeterministic` — identical source → byte-identical bytecode
+  (consensus-critical: every node compiling the same source agrees).
+- `TestTopLevelRevertDoesNotRollBackStorage` — the checks-effects rationale,
+  proven against the real engine.
+
+## Security / determinism model
+
+- **The compiler is not consensus code.** It runs off-chain; only its emitted
+  bytecode is deployed, and the node executes that bytecode exactly as it
+  executes any `TxDeploy` payload. A compiler bug can produce a wrong contract,
+  never a chain split.
+- **Determinism** is the one consensus-relevant property, and it holds two ways:
+  the VM is already deterministic (this is why the plugin/WASM path was
+  rejected), and `Compile` is a pure function of its input (no clock, no map
+  iteration in codegen order — states/functions are walked in source order),
+  so the same source yields identical bytecode on every builder. A production
+  toolchain should pin the compiler version in build metadata so a redeploy is
+  reproducible.
+- **Checks-effects is mandatory**, not stylistic, until the executor snapshots
+  the entry frame (see the divergence table). The prototype's codegen naturally
+  emits `require`s before writes; a production compiler must *enforce* it (or
+  the engine must change).
+
+## Gap list: prototype → production
+
+1. **Language coverage**: no `for`/`while` loops, no internal function calls, no
+   structs/arrays/strings, no `constructor` (deploy stores runtime code
+   directly — needs an initializer convention or an init-code phase), no
+   multiple return values, no explicit `event`/`error` declarations, no
+   `modifier`s, no inheritance, one contract per source unit. Integer math wraps
+   at 2^256 with **no overflow checks** (add `checked` arithmetic before real
+   value-bearing use).
+2. **Engine gaps to close**: implement `SELECTOR`/`ABI_ENCODE`/`ABI_DECODE`
+   (0x43-0x45) or delete them from the table; **snapshot the top-level call
+   frame so a bytecode `REVERT` is atomic** (currently only sub-calls roll back)
+   — this is a correctness fix the compiler is currently working around.
+3. **Deploy path**: a constructor/init-code convention so state can be set at
+   deploy (today a separate guarded `init()` call is required, as in the token
+   sample); deploy-time code-size/gas limits.
+4. **Toolchain**: a `cmd/sqc-solc` CLI (source → hex + ABI JSON), wiring into
+   `POST /vm/validate` and `/vm/estimate-gas`, source verification on the
+   explorer (compile server-side, compare bytecode), and a disassembler
+   round-trip test in CI.
+5. **Optimizer**: none — codegen is naive (redundant `PUSH`/`POP`, no common
+   subexpression elimination, recomputes mapping slots). Fine for correctness,
+   not for gas.
+6. **Safety analysis**: reentrancy is possible via `CALL` once external calls
+   are added; add checks-effects enforcement and optional reentrancy guards.
+7. **Revisit approach (a)** once the subset is proven in production: reusing
+   solc's parser/optimizer via a Yul→SQC-VM backend could widen coverage without
+   hand-writing a full frontend — but only after the SHA3/32-byte/opcode-order
+   backend is battle-tested here first.
+
+## Recommendation
+
+Land the subset compiler as the first rung of QSol. It lets internal contracts
+(a bridge, a token, a vesting vault) ship as **deployed, auditable-as-source
+bytecode** on the existing VM instead of as consensus-code modules — reserving
+native Go modules for things that genuinely must be in consensus. Close engine
+gap #2 (entry-frame revert atomicity) early, because it is a latent hazard for
+*any* contract, module-authored or compiled.
