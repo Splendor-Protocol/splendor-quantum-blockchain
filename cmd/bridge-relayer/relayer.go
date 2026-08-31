@@ -21,11 +21,19 @@ import (
 
 // relayerState is the persisted cursor.
 type relayerState struct {
+	// Identity binds this cursor to one deployment. A state file whose
+	// identity does not match the configured chain/contract/bridge is refused
+	// at load, so a testnet cursor reused for mainnet (or for a redeployed
+	// contract) can never silently skip the new deployment's early burns.
+	EvmChainID  uint64 `json:"evm_chain_id"`
+	EvmContract string `json:"evm_contract"`
+	Bridge      string `json:"bridge"`
+
 	// LastProcessed is the highest legacy block whose burns are all settled.
 	LastProcessed uint64 `json:"last_processed"`
-	// Skipped records burns given up after maxAttempts, for manual replay
-	// (--replay-id rescans the recorded block). The claimed slot on-chain
-	// keeps a replay safe however often it is run.
+	// Skipped records burns given up after repeated mined reverts, for manual
+	// replay (--replay-id rescans the recorded block). The claimed slot
+	// on-chain keeps a replay safe however often it is run.
 	Skipped []skippedBurn `json:"skipped,omitempty"`
 }
 
@@ -33,6 +41,17 @@ type skippedBurn struct {
 	ID     uint64 `json:"id"`
 	Block  uint64 `json:"block"`
 	Reason string `json:"reason"`
+}
+
+// verifyIdentity refuses a state file that belongs to a different deployment.
+func (s *relayerState) verifyIdentity(evmChainID uint64, evmContract, bridge string) error {
+	if s.EvmChainID != evmChainID || s.EvmContract != evmContract || s.Bridge != bridge {
+		return fmt.Errorf(
+			"state file is bound to (chain %d, contract %s, bridge %s) but this run is (chain %d, contract %s, bridge %s); "+
+				"use a separate --state file per deployment",
+			s.EvmChainID, s.EvmContract, s.Bridge, evmChainID, evmContract, bridge)
+	}
+	return nil
 }
 
 func loadState(path string) (*relayerState, error) {
@@ -50,13 +69,30 @@ func loadState(path string) (*relayerState, error) {
 	return &s, nil
 }
 
+// save writes the state atomically and durably: write a temp file, fsync it,
+// then rename. The fsync matters because the cursor is the one piece of
+// relayer state whose loss (a torn write on power failure) would re-scan or,
+// worse, be unreadable; loadState fails loudly on a corrupt file rather than
+// silently starting fresh.
 func (s *relayerState) save(path string) error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -141,6 +177,20 @@ func (r *Relayer) RunOnce() (int, error) {
 	if r.attempts == nil {
 		r.attempts = map[uint64]int{}
 	}
+
+	// Hold entirely while the bridge is paused. Pause is the incident brake
+	// (a deep legacy reorg, an operator-key problem); submitting into it would
+	// only mine reverts and shunt every burn in range into the skip list — the
+	// opposite of what pause is for. Hold the cursor and alarm.
+	info, err := r.Quantum.Bridge(r.Bridge.String())
+	if err != nil {
+		return 0, err
+	}
+	if info.Paused {
+		r.logf("ALARM: bridge is paused — holding cursor at block %d, no claims this pass", r.State.LastProcessed)
+		return 0, nil
+	}
+
 	head, err := r.EVM.BlockNumber()
 	if err != nil {
 		return 0, err
@@ -161,26 +211,45 @@ func (r *Relayer) RunOnce() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	// Ids already given up on: don't re-submit (fee waste) or re-record them;
+	// they advance with the cursor and are recovered with --replay-id.
+	skipped := map[uint64]bool{}
+	for _, s := range r.State.Skipped {
+		skipped[s.ID] = true
+	}
+
 	claimed := 0
 	for _, l := range logs {
-		burn, err := decodeBurn(l)
-		if err != nil {
-			// A malformed log from the pinned contract is an alarm, not a
-			// claim; it cannot block the cursor because it has no valid id.
-			r.logf("skipping undecodable log in tx %s: %v", l.TxHash, err)
+		burn, derr := decodeBurn(l)
+		if derr != nil {
+			// A well-formed Burned log from the pinned contract must always
+			// decode; a failure means corrupt or hostile RPC data. Do NOT
+			// advance past it — that would silently drop a real burn. Hold the
+			// cursor and alarm: transient corruption self-heals on the next
+			// pass, persistent corruption halts loudly so an operator can move
+			// to a trustworthy endpoint.
+			r.logf("ALARM: undecodable Burned log in tx %s (block %s): %v — holding cursor at %d",
+				l.TxHash, l.BlockNumber, derr, r.State.LastProcessed)
+			return claimed, nil
+		}
+		if skipped[burn.ID] {
 			continue
 		}
-		ok, err := r.settle(burn)
-		if err != nil {
-			return claimed, err // transport-level trouble: retry the batch next pass
+		ok, serr := r.settle(burn)
+		if serr != nil {
+			return claimed, serr // transport-level trouble: retry the batch next pass
 		}
 		if !ok {
-			// Give up on this burn for now without advancing the cursor —
-			// unless it has exhausted its attempts, in which case it is
-			// recorded and the cursor moves on.
+			// Only a claim that MINED and REVERTED counts toward the limit
+			// (bad params, over-cap, paused) — a transient submit failure or a
+			// still-pending receipt does not (see settle). Skip only a burn the
+			// chain has actually rejected repeatedly; otherwise hold and retry.
 			if r.attempts[burn.ID] >= r.MaxAttempts {
-				r.logf("ALARM: burn %d failed %d times, recording as skipped (replay with --replay-id %d)", burn.ID, r.attempts[burn.ID], burn.ID)
-				r.State.Skipped = append(r.State.Skipped, skippedBurn{ID: burn.ID, Block: burn.Block, Reason: "max attempts"})
+				r.logf("ALARM: burn %d reverted on-chain %d times, recording as skipped (recover with --replay-id %d)",
+					burn.ID, r.attempts[burn.ID], burn.ID)
+				r.State.Skipped = append(r.State.Skipped, skippedBurn{ID: burn.ID, Block: burn.Block, Reason: "max mined reverts"})
+				skipped[burn.ID] = true
 				continue
 			}
 			return claimed, nil
@@ -198,7 +267,17 @@ func (r *Relayer) RunOnce() (int, error) {
 
 // settle brings one burn to a settled state: already claimed, or claimed now
 // with a success receipt. false with nil error means "not settled, try again".
+//
+// Only a claim that MINES AND REVERTS increments the attempt count that
+// RunOnce uses to give up (r.MaxAttempts). A transient submit rejection (rate
+// limit, mempool fee floor, a duplicate pending nonce while a prior claim is
+// unmined, a connection blip) and a receipt that does not arrive in the window
+// are both retried without counting — otherwise a few minutes of congestion or
+// a producer stall would permanently shunt live burns into the skip list.
 func (r *Relayer) settle(b Burn) (bool, error) {
+	if r.attempts == nil {
+		r.attempts = map[uint64]int{}
+	}
 	already, err := r.Quantum.Claimed(r.Bridge.String(), b.ID)
 	if err != nil {
 		return false, err
@@ -212,8 +291,10 @@ func (r *Relayer) settle(b Burn) (bool, error) {
 	}
 	hash, err := r.Quantum.SubmitClaim(r.Priv, r.Operator, nonce, r.Fee, r.Bridge, b)
 	if err != nil {
-		r.attempts[b.ID]++
-		r.logf("burn %d: submit failed (attempt %d): %v", b.ID, r.attempts[b.ID], err)
+		// Transient by nature — not counted. Held and retried next pass; the
+		// on-chain claimed slot keeps a duplicate safe if a prior submit
+		// actually landed.
+		r.logf("burn %d: submit deferred (transient, not counted): %v", b.ID, err)
 		return false, nil
 	}
 	r.logf("burn %d (%s %s -> %s): claim %s submitted", b.ID, b.Amount, b.Asset, b.Recipient, hash)
@@ -229,14 +310,17 @@ func (r *Relayer) settle(b Burn) (bool, error) {
 			r.logf("burn %d: claimed in %s", b.ID, hash)
 			return true, nil
 		case 0:
+			// Mined and reverted: a real, likely-permanent execution failure.
+			// This is the only path that counts toward giving up.
 			r.attempts[b.ID]++
-			r.logf("burn %d: claim reverted (attempt %d): %s", b.ID, r.attempts[b.ID], msg)
+			r.logf("burn %d: claim reverted on-chain (mined-revert %d/%d): %s", b.ID, r.attempts[b.ID], r.MaxAttempts, msg)
 			return false, nil
 		}
 		time.Sleep(time.Second)
 	}
-	// The receipt never appeared inside the window. The claimed slot decides
-	// on the next pass whether it actually landed.
-	r.logf("burn %d: receipt for %s not seen in %s, will re-check", b.ID, hash, r.ReceiptWait)
+	// Accepted but not mined inside the window (a slow producer, still
+	// pending). Not counted; the claimed slot decides next pass whether it
+	// actually landed.
+	r.logf("burn %d: %s accepted but not mined in %s, will re-check", b.ID, hash, r.ReceiptWait)
 	return false, nil
 }

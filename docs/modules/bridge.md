@@ -102,9 +102,27 @@ the QRC-20 `Mint` at the token address.
    each burn, skip if `claim_status` is claimed, else submit one
    `bridge.claim` and wait for its receipt.
 3. The cursor advances only past blocks whose burns are settled; it persists
-   to a state file. Restarts are safe — idempotency lives on-chain. A claim
-   that keeps failing SOFT is recorded as skipped after `--max-attempts` and
-   replayed manually with `--replay-id`.
+   to a state file. Restarts are safe — idempotency lives on-chain. Only a
+   claim that MINES AND REVERTS counts toward `--max-attempts`; a transient
+   submit rejection (rate limit, fee floor, a still-pending nonce) or a slow
+   receipt is retried without counting, so congestion never turns live burns
+   into skips. A genuinely-reverting claim is recorded skipped and replayed
+   with `--replay-id`. While the bridge is paused the relayer holds the cursor
+   and submits nothing; an undecodable log from the pinned contract also holds
+   the cursor (never silently dropped) and alarms.
+
+Operational requirements:
+
+- **Point the relayer at one trusted legacy RPC**, not a load balancer. It
+  reads `eth_blockNumber` and `eth_getLogs` and trusts the results; a hostile
+  or buggy node can fabricate or withhold logs (the RPC endpoint is inside the
+  operator trust boundary), and a lagging backend behind a load balancer can
+  return an empty range without error and advance the cursor past unseen
+  burns. Use a node you control, ideally archive.
+- **One `--state` file per deployment.** The file is stamped with its
+  (evm chain id, burn contract, bridge) and refuses to load against a
+  different one, so a testnet cursor can't be reused for mainnet — but give
+  each tier its own path regardless.
 
 ## Caps and determinism
 

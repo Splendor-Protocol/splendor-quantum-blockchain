@@ -170,12 +170,16 @@ func moduleRouterAddress() qcrypto.Address {
 
 // ReceiptStatus polls /tx/{hash}/receipt once: -1 not found yet, 0 failed
 // (with the module's error text), 1 success.
+//
+// The endpoint returns the raw receipt, so `status` and `error` are BOTH
+// top-level (rpc/explorer.go serves the receipt object directly;
+// core/types/receipt.go tags them `status` and `error`). Reading `error` from
+// a nested "receipt" key — the shape GET /tx/{hash} produces — would silently
+// yield an empty reason on every reverted claim.
 func (c *QuantumClient) ReceiptStatus(hash string) (int, string, error) {
 	var out struct {
-		Status  *int `json:"status"`
-		Receipt *struct {
-			Error string `json:"error"`
-		} `json:"receipt"`
+		Status *int   `json:"status"`
+		Error  string `json:"error"`
 	}
 	if err := c.getJSON("/tx/"+hash+"/receipt", &out); err != nil {
 		return -1, "", nil // not indexed yet (or transient) — poll again
@@ -183,9 +187,5 @@ func (c *QuantumClient) ReceiptStatus(hash string) (int, string, error) {
 	if out.Status == nil {
 		return -1, "", nil
 	}
-	msg := ""
-	if out.Receipt != nil {
-		msg = out.Receipt.Error
-	}
-	return *out.Status, msg, nil
+	return *out.Status, out.Error, nil
 }
