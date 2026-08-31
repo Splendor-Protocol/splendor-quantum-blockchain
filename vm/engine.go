@@ -1284,6 +1284,21 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
+			// Affordability is checked BEFORE the child is written. Deploying
+			// first and transferring second meant a creator that could not
+			// afford the endowment pushed 0 — the universal "creation failed"
+			// signal — while the contract was already live and callable at the
+			// derived address. There is no snapshot around CREATE (contrast
+			// OpCALL below), so the frame returned normally and the executor
+			// committed the orphan. A caller told creation failed must be able
+			// to rely on nothing having been created.
+			if value.Sign() > 0 {
+				creator, gerr := e.state.GetAccount(ctx.Contract)
+				if gerr != nil || creator.Balance == nil || creator.Balance.Cmp(value) < 0 {
+					stk.push(big.NewInt(0))
+					break
+				}
+			}
 			contractAddr, deployErr := e.Deploy(ctx.Contract, bytecode, uint64(pc))
 			if deployErr != nil {
 				stk.push(big.NewInt(0))
@@ -1340,6 +1355,17 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if existing, gerr := e.state.GetAccount(contractAddr); gerr == nil {
 				if existing.IsContract || existing.Nonce > 0 ||
 					(existing.Balance != nil && existing.Balance.Sign() > 0) {
+					stk.push(big.NewInt(0))
+					break
+				}
+			}
+
+			// Afford the endowment before writing the child, for the same reason
+			// as CREATE: reporting failure after the contract is already live
+			// leaves an orphan the caller was told does not exist.
+			if value.Sign() > 0 {
+				creator, gerr := e.state.GetAccount(ctx.Contract)
+				if gerr != nil || creator.Balance == nil || creator.Balance.Cmp(value) < 0 {
 					stk.push(big.NewInt(0))
 					break
 				}
@@ -1432,6 +1458,23 @@ func (e *Engine) Deploy(deployer qcrypto.Address, bytecode []byte, nonce uint64)
 	hash := qcrypto.Hash32(input)
 	var addr qcrypto.Address
 	copy(addr[:], hash[:])
+
+	// Refuse to deploy over an account that already exists.
+	//
+	// SetAccount REPLACES rather than merges, so writing a fresh types.NewAccount
+	// here zeroes any balance held at the address — destroying it out of total
+	// supply — and swaps any live code while that contract's storage, which
+	// lives under a separate store:addr:slot leaf, survives: new code running on
+	// stale state. CREATE2 already refuses exactly this (see OpCREATE2, whose
+	// comment notes an unguarded deploy "could destroy the SPLD held by any
+	// pre-funded address"); TxDeploy and OpCREATE both reach the same hazard
+	// through here and were never guarded.
+	if existing, gerr := e.state.GetAccount(addr); gerr == nil {
+		if existing.IsContract || existing.Nonce > 0 ||
+			(existing.Balance != nil && existing.Balance.Sign() > 0) {
+			return qcrypto.Address{}, fmt.Errorf("deploy: %s is already occupied", addr)
+		}
+	}
 
 	codeHash := qcrypto.Hash32(bytecode)
 	e.state.SetCode(codeHash, bytecode)
