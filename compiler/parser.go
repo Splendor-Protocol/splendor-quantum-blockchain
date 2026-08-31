@@ -43,6 +43,33 @@ func (p *parser) isOp(s string) bool {
 	return t.kind == tOp && t.text == s
 }
 
+// skipModifiers consumes any run of the listed modifier keywords. They are
+// parsed and IGNORED: the subset dispatches every function externally and has
+// no inheritance, so visibility/mutability gate nothing — but real-world
+// sources are full of them.
+func (p *parser) skipModifiers(names ...string) {
+	for {
+		t := p.cur()
+		if t.kind != tKeyword {
+			return
+		}
+		matched := false
+		for _, n := range names {
+			if t.text == n {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return
+		}
+		p.next()
+	}
+}
+
+var varModifiers = []string{"public", "private", "internal"}
+var fnModifiers = []string{"public", "private", "internal", "external", "view", "pure", "payable"}
+
 func parseType(t token) (varType, bool) {
 	switch t.text {
 	case "uint256":
@@ -119,6 +146,7 @@ func (p *parser) parseStateVar(nextSlot *int64) (*stateVar, error) {
 		if err := p.expectPunct(")"); err != nil {
 			return nil, err
 		}
+		p.skipModifiers(varModifiers...)
 		nameTok := p.next()
 		if nameTok.kind != tIdent {
 			return nil, fmt.Errorf("line %d: expected mapping name", nameTok.line)
@@ -134,6 +162,7 @@ func (p *parser) parseStateVar(nextSlot *int64) (*stateVar, error) {
 	if !ok {
 		return nil, fmt.Errorf("line %d: expected a type or 'function'", p.toks[p.pos-1].line)
 	}
+	p.skipModifiers(varModifiers...)
 	nameTok := p.next()
 	if nameTok.kind != tIdent {
 		return nil, fmt.Errorf("line %d: expected variable name", nameTok.line)
@@ -175,10 +204,8 @@ func (p *parser) parseFunc() (*funcNode, error) {
 	if err := p.expectPunct(")"); err != nil {
 		return nil, err
 	}
-	// Optional `view` and `returns (T)`.
-	if p.isKeyword("view") {
-		p.next()
-	}
+	// Optional modifiers (any order, ignored), then optional `returns (T)`.
+	p.skipModifiers(fnModifiers...)
 	if p.isKeyword("returns") {
 		p.next()
 		if err := p.expectPunct("("); err != nil {
@@ -221,13 +248,25 @@ func (p *parser) parseStmt() (stmt, error) {
 		if err != nil {
 			return nil, err
 		}
+		reason := ""
+		if p.isPunct(",") {
+			p.next()
+			rt := p.next()
+			if rt.kind != tString {
+				return nil, fmt.Errorf("line %d: require reason must be a string literal", rt.line)
+			}
+			if len(rt.text) > 32 {
+				return nil, fmt.Errorf("line %d: require reason %q exceeds 32 bytes (the REQUIRE message word)", rt.line, rt.text)
+			}
+			reason = rt.text
+		}
 		if err := p.expectPunct(")"); err != nil {
 			return nil, err
 		}
 		if err := p.expectPunct(";"); err != nil {
 			return nil, err
 		}
-		return &requireStmt{cond: cond}, nil
+		return &requireStmt{cond: cond, reason: reason}, nil
 	case p.isKeyword("return"):
 		p.next()
 		v, err := p.parseExpr()
@@ -266,34 +305,9 @@ func (p *parser) parseStmt() (stmt, error) {
 		}
 		return &emitStmt{event: nameTok.text, args: args}, nil
 	case p.isKeyword("if"):
-		p.next()
-		if err := p.expectPunct("("); err != nil {
-			return nil, err
-		}
-		cond, err := p.parseExpr()
-		if err != nil {
-			return nil, err
-		}
-		if err := p.expectPunct(")"); err != nil {
-			return nil, err
-		}
-		if err := p.expectPunct("{"); err != nil {
-			return nil, err
-		}
-		var body []stmt
-		for !p.isPunct("}") {
-			s, err := p.parseStmt()
-			if err != nil {
-				return nil, err
-			}
-			body = append(body, s)
-		}
-		if err := p.expectPunct("}"); err != nil {
-			return nil, err
-		}
-		return &ifStmt{cond: cond, body: body}, nil
+		return p.parseIf()
 	default:
-		// assignment: target ('[' key ']')? '=' expr ';'
+		// assignment: target ('[' key ']')? ('='|'+='|'-='|'*='|'/='|'%=') expr ';'
 		nameTok := p.next()
 		if nameTok.kind != tIdent {
 			return nil, fmt.Errorf("line %d: expected a statement", nameTok.line)
@@ -310,8 +324,17 @@ func (p *parser) parseStmt() (stmt, error) {
 			}
 			target.key = k
 		}
-		if !p.isOp("=") {
-			return nil, fmt.Errorf("line %d: expected '=' in assignment", p.cur().line)
+		opTok := p.cur()
+		if opTok.kind != tOp {
+			return nil, fmt.Errorf("line %d: expected '=' in assignment", opTok.line)
+		}
+		var binOp string
+		switch opTok.text {
+		case "=":
+		case "+=", "-=", "*=", "/=", "%=":
+			binOp = opTok.text[:1]
+		default:
+			return nil, fmt.Errorf("line %d: expected '=' in assignment", opTok.line)
 		}
 		p.next()
 		val, err := p.parseExpr()
@@ -321,16 +344,119 @@ func (p *parser) parseStmt() (stmt, error) {
 		if err := p.expectPunct(";"); err != nil {
 			return nil, err
 		}
+		if binOp != "" {
+			// Desugar `t op= e` to `t = t op e`. The subset's expressions are
+			// side-effect-free, so re-evaluating a mapping key is safe.
+			var cur expr
+			if target.key == nil {
+				cur = &identExpr{name: target.name}
+			} else {
+				cur = &indexExpr{name: target.name, key: target.key}
+			}
+			val = &binaryExpr{opText: binOp, left: cur, right: val}
+		}
 		return &assignStmt{target: target, value: val}, nil
 	}
 }
 
-// Expression grammar (lowest to highest precedence):
-//   comparison := additive ( (==|!=|<|<=|>|>=) additive )?
-//   additive   := primary ( (+|-|*) primary )*
-//   primary    := number | msg.field | ident ('[' expr ']')? | '(' expr ')'
+// parseIf parses `if (cond) { body }` with an optional `else { … }` or
+// `else if …` chain (which nests as a single-statement elseBody).
+func (p *parser) parseIf() (stmt, error) {
+	p.next() // 'if'
+	if err := p.expectPunct("("); err != nil {
+		return nil, err
+	}
+	cond, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expectPunct(")"); err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	st := &ifStmt{cond: cond, body: body}
+	if p.isKeyword("else") {
+		p.next()
+		if p.isKeyword("if") {
+			nested, err := p.parseIf()
+			if err != nil {
+				return nil, err
+			}
+			st.elseBody = []stmt{nested}
+		} else {
+			st.elseBody, err = p.parseBlock()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return st, nil
+}
 
-func (p *parser) parseExpr() (expr, error) { return p.parseComparison() }
+// parseBlock parses `{ stmt* }`.
+func (p *parser) parseBlock() ([]stmt, error) {
+	if err := p.expectPunct("{"); err != nil {
+		return nil, err
+	}
+	var body []stmt
+	for !p.isPunct("}") {
+		s, err := p.parseStmt()
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, s)
+	}
+	if err := p.expectPunct("}"); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// Expression grammar (lowest to highest precedence, Solidity order):
+//   or         := and ( '||' and )*
+//   and        := comparison ( '&&' comparison )*
+//   comparison := additive ( (==|!=|<|<=|>|>=) additive )?
+//   additive   := multiplicative ( (+|-) multiplicative )*
+//   mult       := unary ( (*|/|%) unary )*
+//   unary      := '!' unary | primary
+//   primary    := number | true | false | msg.field | ident ('[' expr ']')? | '(' expr ')'
+
+func (p *parser) parseExpr() (expr, error) { return p.parseOr() }
+
+func (p *parser) parseOr() (expr, error) {
+	left, err := p.parseAnd()
+	if err != nil {
+		return nil, err
+	}
+	for p.isOp("||") {
+		p.next()
+		right, err := p.parseAnd()
+		if err != nil {
+			return nil, err
+		}
+		left = &binaryExpr{opText: "||", left: left, right: right}
+	}
+	return left, nil
+}
+
+func (p *parser) parseAnd() (expr, error) {
+	left, err := p.parseComparison()
+	if err != nil {
+		return nil, err
+	}
+	for p.isOp("&&") {
+		p.next()
+		right, err := p.parseComparison()
+		if err != nil {
+			return nil, err
+		}
+		left = &binaryExpr{opText: "&&", left: left, right: right}
+	}
+	return left, nil
+}
 
 func (p *parser) parseComparison() (expr, error) {
 	left, err := p.parseAdditive()
@@ -352,15 +478,15 @@ func (p *parser) parseComparison() (expr, error) {
 }
 
 func (p *parser) parseAdditive() (expr, error) {
-	left, err := p.parsePrimary()
+	left, err := p.parseMultiplicative()
 	if err != nil {
 		return nil, err
 	}
 	for {
 		t := p.cur()
-		if t.kind == tOp && (t.text == "+" || t.text == "-" || t.text == "*") {
+		if t.kind == tOp && (t.text == "+" || t.text == "-") {
 			p.next()
-			right, err := p.parsePrimary()
+			right, err := p.parseMultiplicative()
 			if err != nil {
 				return nil, err
 			}
@@ -369,6 +495,38 @@ func (p *parser) parseAdditive() (expr, error) {
 		}
 		return left, nil
 	}
+}
+
+func (p *parser) parseMultiplicative() (expr, error) {
+	left, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		t := p.cur()
+		if t.kind == tOp && (t.text == "*" || t.text == "/" || t.text == "%") {
+			p.next()
+			right, err := p.parseUnary()
+			if err != nil {
+				return nil, err
+			}
+			left = &binaryExpr{opText: t.text, left: left, right: right}
+			continue
+		}
+		return left, nil
+	}
+}
+
+func (p *parser) parseUnary() (expr, error) {
+	if p.isOp("!") {
+		p.next()
+		operand, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		return &unaryExpr{opText: "!", operand: operand}, nil
+	}
+	return p.parsePrimary()
 }
 
 func (p *parser) parsePrimary() (expr, error) {

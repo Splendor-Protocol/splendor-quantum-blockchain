@@ -54,7 +54,12 @@ type assignStmt struct {
 	value  expr
 }
 
-type requireStmt struct{ cond expr }
+// requireStmt reverts when cond is zero; reason (may be empty) is a ≤32-byte
+// message carried in the REQUIRE opcode's message word.
+type requireStmt struct {
+	cond   expr
+	reason string
+}
 
 type returnStmt struct{ value expr }
 
@@ -64,8 +69,9 @@ type emitStmt struct {
 }
 
 type ifStmt struct {
-	cond expr
-	body []stmt
+	cond     expr
+	body     []stmt
+	elseBody []stmt // nil when there is no else; `else if` nests an ifStmt here
 }
 
 func (*assignStmt) isStmt()  {}
@@ -99,8 +105,15 @@ type binaryExpr struct {
 	right  expr
 }
 
+// unaryExpr is `!operand` (logical not).
+type unaryExpr struct {
+	opText  string
+	operand expr
+}
+
 func (*numberExpr) isExpr() {}
 func (*identExpr) isExpr()  {}
 func (*indexExpr) isExpr()  {}
 func (*msgExpr) isExpr()    {}
 func (*binaryExpr) isExpr() {}
+func (*unaryExpr) isExpr()  {}

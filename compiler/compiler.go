@@ -155,6 +155,11 @@ func checkStmt(s stmt, states map[string]*stateVar, locals map[string]bool) erro
 				return err
 			}
 		}
+		for _, inner := range st.elseBody {
+			if err := checkStmt(inner, states, locals); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	return nil
@@ -187,6 +192,8 @@ func checkExpr(e expr, states map[string]*stateVar, locals map[string]bool) erro
 			return err
 		}
 		return checkExpr(ex.right, states, locals)
+	case *unaryExpr:
+		return checkExpr(ex.operand, states, locals)
 	}
 	return fmt.Errorf("unhandled expression in checker")
 }
