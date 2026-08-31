@@ -595,13 +595,27 @@ before the field existed.
   The convention for a fresh chain is to schedule every rule it starts with at
   height **1**.
 - **Names.** `multi_validator` is reserved today. The settlement upgrades are
-  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`; each becomes
-  schedulable only in the release that implements it. `qrc20_v2`, `qrc1155_v1`
-  and `exchange_v1` each require `module_revert_v1` at the same or an earlier
-  height (a failed module call must be a failed receipt, not a dropped
-  transaction that pins the sender's nonce). Devnet and testnet
-  schedule all four at 1; **mainnet omits `exchange_v1`** (the real-money gate
-  stays closed).
+  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`, and the
+  legacy-migration bridge is `bridge_v1` (`docs/modules/bridge.md`); each
+  becomes schedulable only in the release that implements it. `qrc20_v2`,
+  `qrc1155_v1`, `exchange_v1` and `bridge_v1` each require `module_revert_v1`
+  at the same or an earlier height (a failed module call must be a failed
+  receipt, not a dropped transaction that pins the sender's nonce). Devnet and
+  testnet schedule the settlement four at 1; add `bridge_v1` (at 1, or at a
+  height in the future) **to the genesis document of the chain's next start** —
+  the schedule is frozen at block 0 and cannot be added to a running chain (see
+  the note below). **Mainnet omits `exchange_v1`** (the real-money gate stays
+  closed); scheduling `bridge_v1` there is likewise part of a mainnet genesis,
+  not a live change.
+- **The schedule cannot be changed on a running chain.** `loadForkSchedule`
+  (`cmd/node/main.go`) persists the genesis schedule to `meta:forks` at block 0
+  and treats that stored copy as authoritative on every later start; a
+  `--genesis` whose `forks` differ from it is refused at boot ("a node running
+  a different schedule would fork at the first activation height"). So a new
+  fork such as `bridge_v1` takes effect only from a chain whose genesis carried
+  it — i.e. via a re-genesis of the tier (a fresh start; balances preserved
+  through allocations), never by editing a live chain's config. Schedule it at
+  a future height in that genesis if you want a delayed activation.
 - **A name the binary does not implement is refused at boot**, not ignored: a
   node cannot start on a document it does not understand. Deploy the binary that
   knows a name everywhere *before* using a document that schedules it, and
