@@ -121,6 +121,7 @@ interface BridgeStats {
   poolBalance: string;
   claimedSpld: string;
   claimedSplv: string;
+  maxClaimAmount: string;
   paused: boolean;
 }
 
@@ -161,8 +162,9 @@ async function fetchBridgeStats(cfg: AppConfig, nowMs: number): Promise<BridgeSt
     const poolBalance = asDecimalString(o.pool_balance);
     const claimedSpld = asDecimalString(o.claimed_total_spld);
     const claimedSplv = asDecimalString(o.claimed_total_splv);
-    if (poolBalance !== null && claimedSpld !== null && claimedSplv !== null) {
-      stats = { poolBalance, claimedSpld, claimedSplv, paused: o.paused === true };
+    const maxClaimAmount = asDecimalString(o.max_claim_amount);
+    if (poolBalance !== null && claimedSpld !== null && claimedSplv !== null && maxClaimAmount !== null) {
+      stats = { poolBalance, claimedSpld, claimedSplv, maxClaimAmount, paused: o.paused === true };
     }
   }
   statsCache = { key, atMs: nowMs, stats };
@@ -302,6 +304,10 @@ async function handleInfo(env: Env): Promise<Response> {
     burnContract: cfg.burnContract,
     splvToken: cfg.splvToken,
     minBurn: cfg.minBurn,
+    // The per-burn ceiling (== the burn contract's immutable maxBurn), for the
+    // UI to clamp against. null when the quantum node is unreachable — the
+    // contract still rejects an over-cap burn on-chain, so this is UX only.
+    maxBurn: stats ? stats.maxClaimAmount : null,
     confirmations: cfg.confirmations,
     quantum: {
       explorer: cfg.quantumExplorerUrl,

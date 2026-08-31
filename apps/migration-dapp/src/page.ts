@@ -332,10 +332,24 @@ footer a:hover{color:var(--acid)}
       credit on the Splendor Quantum chain.</div>
     </details>
     <details>
+      <summary>Is there a per-burn limit?</summary>
+      <div>Yes. Each burn is between 1 token and a per-burn maximum (shown under
+      the amount field once your wallet is connected). The maximum equals the
+      bridge's claim ceiling, so a larger burn could never be credited &#8212;
+      it is refused on-chain. Migrate a large balance as several burns.</div>
+    </details>
+    <details>
       <summary>Why at least 1 token?</summary>
       <div>The contract enforces a minimum of 1 whole token (10&#185;&#8312; smallest units
       &#8212; 1.0 SPLD or 1.0 SPLV) per burn. Smaller burns are refused on-chain before
       anything is destroyed.</div>
+    </details>
+    <details>
+      <summary>Use only your own wallet's quantum address</summary>
+      <div>The bridge credits <b>exactly</b> the address the burn event names, and
+      cannot credit a made-up address or a quantum contract address (a token, the
+      bridge itself) &#8212; a burn to one of those is destroyed and never claimable.
+      Paste only the <code>Quantum</code> tab address from your own Splendor Wallet.</div>
     </details>
     <details>
       <summary>Never plain-transfer SPLV to the contract</summary>
@@ -432,9 +446,11 @@ function pad32(hex) { return hex.replace(/^0x/, '').toLowerCase().padStart(64, '
 function encU256(v) { return v.toString(16).padStart(64, '0'); }
 
 // Liberal SQ: extraction — find the address anywhere in a paste, any case,
-// then hold it to the strict canonical form.
+// then hold it to the strict canonical form. The trailing (?![0-9a-f]) refuses
+// a 65th hex character so a double-paste or trailing garbage is rejected
+// rather than silently truncated to a valid-looking WRONG destination.
 function extractSq(raw) {
-  var m = /sq:([0-9a-f]{64})/i.exec(String(raw).trim());
+  var m = /sq:([0-9a-f]{64})(?![0-9a-f])/i.exec(String(raw).trim());
   if (!m) return null;
   var norm = 'SQ:' + m[1].toLowerCase();
   return /^SQ:[0-9a-f]{64}$/.test(norm) ? norm : null;
@@ -575,11 +591,14 @@ function currentAsset() { return document.querySelector('input[name=asset]:check
 function currentSq() { return extractSq($('sq').value); }
 function currentAmount() { return parseAmount($('amt').value); }
 
+function maxBurnWei() { return INFO && INFO.maxBurn ? BigInt(INFO.maxBurn) : null; }
 function validate() {
   var sq = currentSq(), amt = currentAmount(), asset = currentAsset();
   var bal = asset === 'spld' ? balSpld : balSplv;
+  var mx = maxBurnWei();
   var ok = !!acct && chainOk && !!INFO && sq !== null && amt !== null &&
-    amt >= BigInt(INFO.minBurn) && (bal === null || amt <= bal) && $('ack').checked && !busy;
+    amt >= BigInt(INFO.minBurn) && (mx === null || amt <= mx) &&
+    (bal === null || amt <= bal) && $('ack').checked && !busy;
   $('go').disabled = !ok;
   return ok;
 }
@@ -607,9 +626,14 @@ $('amt').addEventListener('input', function () {
   var raw = $('amt').value.trim(), amt = parseAmount(raw);
   var asset = currentAsset(), bal = asset === 'spld' ? balSpld : balSplv;
   var min = INFO ? BigInt(INFO.minBurn) : WEI;
-  var msg = 'Minimum 1 token per burn. 18 decimals.', cls = 'hint';
+  var mx = maxBurnWei();
+  var msg = mx !== null
+    ? 'Between 1 and ' + fmtUnits(mx) + ' tokens per burn. 18 decimals.'
+    : 'Minimum 1 token per burn. 18 decimals.';
+  var cls = 'hint';
   if (raw.length > 0 && amt === null) { msg = 'Enter a plain decimal amount, e.g. 12.5'; cls = 'hint bad'; }
   else if (amt !== null && amt < min) { msg = 'Below the minimum \\u2014 burn at least 1 whole token.'; cls = 'hint bad'; }
+  else if (amt !== null && mx !== null && amt > mx) { msg = 'Above the ' + fmtUnits(mx) + '-token per-burn limit \\u2014 migrate in several burns.'; cls = 'hint bad'; }
   else if (amt !== null && bal !== null && amt > bal) { msg = 'More than your ' + asset.toUpperCase() + ' balance.'; cls = 'hint bad'; }
   $('amt').setAttribute('aria-invalid', cls.indexOf('bad') >= 0 ? 'true' : 'false');
   $('amt-hint').className = cls;
@@ -627,6 +651,9 @@ $('max').addEventListener('click', function () {
     ? (balSpld !== null ? (balSpld > GAS_HEADROOM ? balSpld - GAS_HEADROOM : 0n) : null)
     : balSplv;
   if (v === null) return;
+  // Clamp to the per-burn ceiling: MAX means "the most this one burn may be".
+  var mx = maxBurnWei();
+  if (mx !== null && v > mx) v = mx;
   $('amt').value = fmtUnits(v, 18);
   $('amt').dispatchEvent(new Event('input'));
 });
