@@ -134,9 +134,12 @@ Package `compiler/` (non-consensus). Pipeline: **source → lexer → parser →
    structs/arrays/strings, no `constructor` (deploy stores runtime code
    directly — needs an initializer convention or an init-code phase), no
    multiple return values, no explicit `event`/`error` declarations, no
-   `modifier`s, no inheritance, one contract per source unit. Integer math wraps
-   at 2^256 with **no overflow checks** (add `checked` arithmetic before real
-   value-bearing use).
+   `modifier`s, no inheritance, one contract per source unit.
+   Landed since the prototype: `/ %`, short-circuit `&& ||`, `!`, `else`,
+   compound assignment, `require(cond, "reason")`, visibility modifiers
+   (ignored), Solidity operator precedence, and **checked arithmetic**
+   (overflow/underflow/div-by-zero revert — Solidity ≥0.8 parity, closing the
+   wrap-vs-revert divergence the EVM differential test exposed).
 2. **Engine gaps to close**: implement `SELECTOR`/`ABI_ENCODE`/`ABI_DECODE`
    (0x43-0x45) or delete them from the table. ~~Snapshot the top-level call
    frame so a bytecode `REVERT` is atomic~~ — **done**: the `vm_revert_v1`

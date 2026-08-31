@@ -30,11 +30,12 @@ const (
 
 // codegen holds the per-contract compilation state.
 type codegen struct {
-	a      *asm
-	c      *contractNode
-	states map[string]*stateVar
-	fn     *funcNode      // function currently being compiled
-	params map[string]int // param name → calldata word index
+	a        *asm
+	c        *contractNode
+	states   map[string]*stateVar
+	fn       *funcNode      // function currently being compiled
+	params   map[string]int // param name → calldata word index
+	labelSeq int            // per-compilation counter so Compile stays race-free
 }
 
 func newCodegen(c *contractNode) *codegen {
@@ -218,15 +219,13 @@ func (g *codegen) genMappingSlot(sv *stateVar, key expr) error {
 	return nil
 }
 
-// genRequire reverts when cond is zero.
-//
-//	REQUIRE pops msg (top) then cond, so: <push cond>; <push msg=0>; REQUIRE.
+// genRequire reverts when cond is zero, with the statement's reason (possibly
+// empty) as the REQUIRE message word.
 func (g *codegen) genRequire(st *requireStmt) error {
 	if err := g.genExpr(st.cond); err != nil {
 		return err
 	}
-	g.a.pushInt(0) // no message
-	g.a.op(vm.OpREQUIRE)
+	g.requireTop(st.reason)
 	return nil
 }
 
@@ -267,34 +266,57 @@ func (g *codegen) genEmit(st *emitStmt) error {
 	return nil
 }
 
-// genIf runs body only when cond is non-zero. Implemented as: if cond==0 jump
-// past the body.
+// genIf runs body when cond is non-zero, elseBody (if any) otherwise.
+// Implemented as: if cond==0 jump to else/end; body; jump end; else; end.
 func (g *codegen) genIf(st *ifStmt) error {
 	end := g.freshLabel("endif")
+	skip := end
+	if len(st.elseBody) > 0 {
+		skip = g.freshLabel("else")
+	}
 	if err := g.genExpr(st.cond); err != nil {
 		return err
 	}
 	g.a.op(vm.OpISZERO) // [cond==0]
 	// JUMPI pops cond (top) then dest, so: <push dest>; <cond already on stack>… reorder:
 	// stack is [cond==0]; we need [dest, cond==0].
-	// Emit dest below by pushing it, then swapping into place.
-	g.a.pushLabel(end) // [cond0, dest]
-	g.a.op(vm.OpSWAP1) // [dest, cond0]
-	g.a.op(vm.OpJUMPI) // jump to end if cond was zero
+	g.a.pushLabel(skip) // [cond0, dest]
+	g.a.op(vm.OpSWAP1)  // [dest, cond0]
+	g.a.op(vm.OpJUMPI)  // jump past the body if cond was zero
 	for _, s := range st.body {
 		if err := g.genStmt(s); err != nil {
 			return err
+		}
+	}
+	if len(st.elseBody) > 0 {
+		g.a.pushLabel(end)
+		g.a.op(vm.OpJUMP)
+		g.a.label(skip)
+		for _, s := range st.elseBody {
+			if err := g.genStmt(s); err != nil {
+				return err
+			}
 		}
 	}
 	g.a.label(end)
 	return nil
 }
 
-var labelSeq int
-
 func (g *codegen) freshLabel(prefix string) string {
-	labelSeq++
-	return fmt.Sprintf("%s_%d", prefix, labelSeq)
+	g.labelSeq++
+	return fmt.Sprintf("%s_%d", prefix, g.labelSeq)
+}
+
+// reasonWord encodes a ≤32-byte message as the REQUIRE opcode's message word
+// (the engine renders it with string(msg.Bytes())).
+func reasonWord(s string) *big.Int { return new(big.Int).SetBytes([]byte(s)) }
+
+// requireTop emits REQUIRE against the value on top of the stack, consuming it.
+//
+//	REQUIRE pops msg (top) then cond, so: <cond on stack>; <push msg>; REQUIRE.
+func (g *codegen) requireTop(reason string) {
+	g.a.pushBig(reasonWord(reason))
+	g.a.op(vm.OpREQUIRE)
 }
 
 // genExpr pushes the value of e onto the stack.
@@ -340,6 +362,12 @@ func (g *codegen) genExpr(e expr) error {
 		return nil
 	case *binaryExpr:
 		return g.genBinary(ex)
+	case *unaryExpr:
+		if err := g.genExpr(ex.operand); err != nil {
+			return err
+		}
+		g.a.op(vm.OpISZERO) // logical not: 0 → 1, non-zero → 0
+		return nil
 	default:
 		return fmt.Errorf("unhandled expression")
 	}
@@ -348,7 +376,15 @@ func (g *codegen) genExpr(e expr) error {
 // genBinary evaluates left then right (left lower on the stack) and applies the
 // operator. Every VM binary op computes `a OP b` where b is the top of stack,
 // which is exactly right = top, left = below.
+//
+// Arithmetic is CHECKED, matching Solidity ≥0.8: overflow, underflow and
+// division by zero revert (via REQUIRE, so the reason reaches the receipt)
+// instead of wrapping or yielding 0 as the raw VM ops would.
 func (g *codegen) genBinary(ex *binaryExpr) error {
+	// && and || short-circuit, so they evaluate their own operands.
+	if ex.opText == "&&" || ex.opText == "||" {
+		return g.genLogical(ex)
+	}
 	if err := g.genExpr(ex.left); err != nil {
 		return err
 	}
@@ -357,11 +393,52 @@ func (g *codegen) genBinary(ex *binaryExpr) error {
 	}
 	switch ex.opText {
 	case "+":
+		// s = l + r; require(s >= l).
+		// [l, r] DUP2 ADD → [l, s]; DUP1 SWAP2 → [s, s, l]; GTE → [s, s>=l].
+		g.a.op(vm.OpDUP1 + 1) // DUP2
 		g.a.op(vm.OpADD)
+		g.a.op(vm.OpDUP1)
+		g.a.op(vm.OpSWAP1 + 1) // SWAP2
+		g.a.op(vm.OpGTE)
+		g.requireTop("overflow")
 	case "-":
+		// require(l >= r) BEFORE subtracting.
+		// [l, r] DUP2 DUP2 → [l, r, l, r]; GTE → [l, r, l>=r].
+		g.a.op(vm.OpDUP1 + 1) // DUP2
+		g.a.op(vm.OpDUP1 + 1) // DUP2
+		g.a.op(vm.OpGTE)
+		g.requireTop("underflow")
 		g.a.op(vm.OpSUB)
 	case "*":
+		// s = l * r; require(l == 0 || s / l == r).
+		// [l, r] DUP2 DUP2 MUL → [l, r, s];
+		// DUP1 DUP4 DIV → [l, r, s, s/l] (DIV yields 0 when l == 0);
+		// DUP3 EQ → [l, r, s, q==r]; DUP4 ISZERO OR → [l, r, s, ok];
+		// require; SWAP2 POP POP → [s].
+		g.a.op(vm.OpDUP1 + 1) // DUP2
+		g.a.op(vm.OpDUP1 + 1) // DUP2
 		g.a.op(vm.OpMUL)
+		g.a.op(vm.OpDUP1)
+		g.a.op(vm.OpDUP1 + 3) // DUP4
+		g.a.op(vm.OpDIV)
+		g.a.op(vm.OpDUP1 + 2) // DUP3
+		g.a.op(vm.OpEQ)
+		g.a.op(vm.OpDUP1 + 3) // DUP4
+		g.a.op(vm.OpISZERO)
+		g.a.op(vm.OpOR)
+		g.requireTop("overflow")
+		g.a.op(vm.OpSWAP1 + 1) // SWAP2
+		g.a.op(vm.OpPOP)
+		g.a.op(vm.OpPOP)
+	case "/":
+		// require(r != 0); the VM's DIV would yield 0 silently.
+		g.a.op(vm.OpDUP1)
+		g.requireTop("division by zero")
+		g.a.op(vm.OpDIV)
+	case "%":
+		g.a.op(vm.OpDUP1)
+		g.requireTop("division by zero")
+		g.a.op(vm.OpMOD)
 	case "==":
 		g.a.op(vm.OpEQ)
 	case "!=":
@@ -377,5 +454,30 @@ func (g *codegen) genBinary(ex *binaryExpr) error {
 	default:
 		return fmt.Errorf("unhandled operator %q", ex.opText)
 	}
+	return nil
+}
+
+// genLogical emits short-circuit && / ||: the right operand is not evaluated
+// when the left already decides the result (so `b != 0 && a / b > 1` never
+// divides by zero). The result is normalized to 0/1.
+func (g *codegen) genLogical(ex *binaryExpr) error {
+	end := g.freshLabel("bool")
+	if err := g.genExpr(ex.left); err != nil {
+		return err
+	}
+	g.a.op(vm.OpDUP1) // [a, a]
+	if ex.opText == "&&" {
+		g.a.op(vm.OpISZERO) // [a, a==0] — skip right when a is false
+	}
+	g.a.pushLabel(end) // [a, c, dest]
+	g.a.op(vm.OpSWAP1) // [a, dest, c]
+	g.a.op(vm.OpJUMPI) // [a] — jumped: a decides the result
+	g.a.op(vm.OpPOP)   // []
+	if err := g.genExpr(ex.right); err != nil {
+		return err
+	}
+	g.a.label(end)
+	g.a.op(vm.OpISZERO) // normalize to 0/1
+	g.a.op(vm.OpISZERO)
 	return nil
 }

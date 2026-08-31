@@ -27,11 +27,18 @@ data, _ := compiler.EncodeCall(c.Functions[0], arg0, arg1) // calldata
 
 - One `contract Name { … }` per source unit.
 - State: scalar `uint256` / `address` / `bool`, and `mapping(K => V)`.
-- Functions with value-type params, optional `view`, optional `returns (T)`.
-- Statements: assignment (`x = e;`, `m[k] = e;`), `require(cond);`,
-  `return e;`, `emit E(args);`, `if (cond) { … }`.
-- Expressions: `+ - *`, comparisons (`== != < <= > >=`), literals (decimal /
-  `0x`), `msg.sender`, `msg.value`, params, scalars, `m[key]`.
+  Visibility modifiers (`public` etc.) parse and are ignored.
+- Functions with value-type params, optional modifiers (`view` / `pure` /
+  `payable` / visibility — parsed, ignored), optional `returns (T)`.
+- Statements: assignment (`x = e;`, `m[k] = e;`) and compound assignment
+  (`+= -= *= /= %=`), `require(cond);` / `require(cond, "reason");`
+  (reason ≤32 bytes, surfaces in the revert error), `return e;`,
+  `emit E(args);`, `if (cond) { … } else if … else { … }`.
+- Expressions: `+ - * / %` (all **checked**, Solidity ≥0.8 semantics:
+  overflow/underflow/division-by-zero revert), comparisons
+  (`== != < <= > >=`), short-circuit `&&` / `||`, `!`, literals (decimal /
+  `0x` / `true` / `false`), `msg.sender`, `msg.value`, params, scalars,
+  `m[key]`. Solidity precedence (`*` binds tighter than `+`).
 
 ## Conventions the compiler defines
 
@@ -50,7 +57,7 @@ unimplemented, the compiler defines the calling convention itself:
 ## Known limits
 
 No loops, internal calls, arrays/structs/strings, constructor (use a guarded
-`init()`), overflow checks, or optimizer. Integer math wraps at 2^256.
+`init()`), or optimizer.
 `require` before any storage write (checks-effects) remains the compiler's
 emission order: the ENGINE does not roll back entry-frame storage on a
 top-level `REVERT` (proven in `compiler_test.go`); the executor cleans up —
