@@ -595,13 +595,16 @@ before the field existed.
   The convention for a fresh chain is to schedule every rule it starts with at
   height **1**.
 - **Names.** `multi_validator` is reserved today. The settlement upgrades are
-  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`; each becomes
-  schedulable only in the release that implements it. `qrc20_v2`, `qrc1155_v1`
-  and `exchange_v1` each require `module_revert_v1` at the same or an earlier
-  height (a failed module call must be a failed receipt, not a dropped
-  transaction that pins the sender's nonce). Devnet and testnet
-  schedule all four at 1; **mainnet omits `exchange_v1`** (the real-money gate
-  stays closed).
+  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`, and the
+  legacy-migration bridge is `bridge_v1` (`docs/modules/bridge.md`); each
+  becomes schedulable only in the release that implements it. `qrc20_v2`,
+  `qrc1155_v1`, `exchange_v1` and `bridge_v1` each require `module_revert_v1`
+  at the same or an earlier height (a failed module call must be a failed
+  receipt, not a dropped transaction that pins the sender's nonce). Devnet and
+  testnet schedule the settlement four at 1 (add `bridge_v1` at 1 on the next
+  reset, or at a coordinated future height on a running tier); **mainnet omits
+  `exchange_v1`** (the real-money gate stays closed) and schedules `bridge_v1`
+  at the migration launch height.
 - **A name the binary does not implement is refused at boot**, not ignored: a
   node cannot start on a document it does not understand. Deploy the binary that
   knows a name everywhere *before* using a document that schedules it, and
