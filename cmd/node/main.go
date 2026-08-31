@@ -470,6 +470,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	forkSchedule, err := loadForkSchedule(flagGenesisPath, stateDB, headBlock == nil, forkPolicy{
 		Head:           headHeight,
 		AllowExtension: flagAllowForkExtension,
+		DocHash:        genesisDocPin,
 	})
 	if err != nil {
 		return err
@@ -1290,6 +1291,17 @@ func loadForkSchedule(genesisPath string, stateDB *state.StateDB, chainEmpty boo
 		if err != nil {
 			return nil, err
 		}
+		if len(added) > 0 && policy.DocHash != nil {
+			// The document changed, so its hash did too. An operator who
+			// pinned one must say "yes, this one" by re-pinning, making a
+			// consensus rule change take two deliberate acts rather than one.
+			if got := g.Hash(); got != *policy.DocHash {
+				return nil, fmt.Errorf("--genesis %q hashes to %x but --genesis-doc-hash pins %x — "+
+					"extending the schedule changes the document, so re-pin with "+
+					"'sqc-node genesis-hash %s' once you have checked the change is the one you intend",
+					genesisPath, got[:8], (*policy.DocHash)[:8], genesisPath)
+			}
+		}
 		if len(added) > 0 {
 			// Persisted now, so the merged schedule is what this chain was
 			// started under from here on: the next restart matches the file
@@ -1382,6 +1394,14 @@ type forkPolicy struct {
 	// after the fact, and a node that adopted a rule on its own would fork at
 	// the activation height.
 	AllowExtension bool
+	// DocHash is the operator's --genesis-doc-hash pin, when set. The fork
+	// schedule is part of the genesis hash, so an EXTENDED document is by
+	// construction not the pinned one: adopting it without re-pinning would
+	// undercut what the pin asserts, and would let anyone who can write
+	// genesis.json on a host where the flag was left on schedule a rule
+	// change. Checked only on the extension path — an unchanged document
+	// hashes to its pin already.
+	DocHash *[32]byte
 }
 
 // extendForkSchedule reconciles a --genesis schedule with the one a running
