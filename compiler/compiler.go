@@ -65,6 +65,9 @@ func Compile(src string) (*Contract, error) {
 		}
 		out.Functions = append(out.Functions, f)
 	}
+	if err := checkSelectorCollisions(out.Functions); err != nil {
+		return nil, err
+	}
 	// Events are discovered from emit statements (the subset has no event
 	// declarations); dedupe by signature.
 	seen := map[string]bool{}
@@ -88,10 +91,45 @@ func collectEvents(s stmt, seen map[string]bool, out *Contract) {
 			})
 		}
 	case *ifStmt:
+		// Both arms: an event emitted only from an else branch is still an
+		// event this contract can log.
+		for _, inner := range st.body {
+			collectEvents(inner, seen, out)
+		}
+		for _, inner := range st.elseBody {
+			collectEvents(inner, seen, out)
+		}
+	case *forStmt:
+		for _, inner := range st.body {
+			collectEvents(inner, seen, out)
+		}
+	case *whileStmt:
 		for _, inner := range st.body {
 			collectEvents(inner, seen, out)
 		}
 	}
+}
+
+// checkSelectorCollisions refuses a contract whose dispatcher could not reach
+// one of its own functions.
+//
+// The dispatcher compares the incoming 4-byte selector against each function in
+// source order and jumps to the first match, so two functions sharing a
+// selector leave the second permanently unreachable — silently, and only for
+// that contract. A selector is SHA3-256 of the signature truncated to 4 bytes,
+// so a collision needs ~2^32 work to construct deliberately and will not happen
+// by accident; the check exists because the failure it prevents is invisible.
+func checkSelectorCollisions(fns []ABIFunction) error {
+	bySelector := make(map[[4]byte]string, len(fns))
+	for _, f := range fns {
+		if prev, dup := bySelector[f.Selector]; dup {
+			return fmt.Errorf("functions %s and %s share selector %x: "+
+				"the dispatcher matches the first, so the second could never be called",
+				prev, f.Signature, f.Selector)
+		}
+		bySelector[f.Selector] = f.Signature
+	}
+	return nil
 }
 
 // check is a small semantic pass: duplicate names, and every referenced
