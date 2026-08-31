@@ -5,13 +5,12 @@
 // inspecting what the compiler generated.
 //
 // Example output:
-//
-//	0000  PUSH1       0x01
-//	0002  PUSH1       0x02
-//	0004  ADD
-//	0005  PUSH32      0x0000...0001  (32 bytes)
-//	0038  SLOAD
-//	0039  STOP
+//   0000  PUSH1       0x01
+//   0002  PUSH1       0x02
+//   0004  ADD
+//   0005  PUSH32      0x0000...0001  (32 bytes)
+//   0038  SLOAD
+//   0039  STOP
 package vm
 
 import (
@@ -115,134 +114,70 @@ func OpName(op byte) string {
 	}
 
 	switch op {
-	case OpSTOP:
-		return "STOP"
-	case OpADD:
-		return "ADD"
-	case OpSUB:
-		return "SUB"
-	case OpMUL:
-		return "MUL"
-	case OpDIV:
-		return "DIV"
-	case OpMOD:
-		return "MOD"
-	case OpEXP:
-		return "EXP"
-	case OpADDMOD:
-		return "ADDMOD"
-	case OpMULMOD:
-		return "MULMOD"
-	case OpISZERO:
-		return "ISZERO"
-	case OpBYTE:
-		return "BYTE"
-	case OpSIGNEXTEND:
-		return "SIGNEXTEND"
-	case OpEQ:
-		return "EQ"
-	case OpNEQ:
-		return "NEQ"
-	case OpLT:
-		return "LT"
-	case OpGT:
-		return "GT"
-	case OpLTE:
-		return "LTE"
-	case OpGTE:
-		return "GTE"
-	case OpAND:
-		return "AND"
-	case OpOR:
-		return "OR"
-	case OpXOR:
-		return "XOR"
-	case OpNOT:
-		return "NOT"
-	case OpSHL:
-		return "SHL"
-	case OpSHR:
-		return "SHR"
-	case OpPOP:
-		return "POP"
-	case OpMLOAD:
-		return "MLOAD"
-	case OpMSTORE:
-		return "MSTORE"
-	case OpMSTORE8:
-		return "MSTORE8"
-	case OpMSIZE:
-		return "MSIZE"
-	case OpSLOAD:
-		return "SLOAD"
-	case OpSSTORE:
-		return "SSTORE"
-	case OpJUMP:
-		return "JUMP"
-	case OpJUMPI:
-		return "JUMPI"
-	case OpPC:
-		return "PC"
-	case OpJUMPDEST:
-		return "JUMPDEST"
-	case OpCALLDATALOAD:
-		return "CALLDATALOAD"
-	case OpCALLDATASIZE:
-		return "CALLDATASIZE"
-	case OpCALLDATACOPY:
-		return "CALLDATACOPY"
-	case OpCODECOPY:
-		return "CODECOPY"
-	case OpRETURNDATASIZE:
-		return "RETURNDATASIZE"
-	case OpRETURNDATACOPY:
-		return "RETURNDATACOPY"
-	case OpCALLER:
-		return "CALLER"
-	case OpORIGIN:
-		return "ORIGIN"
-	case OpCALLVALUE:
-		return "CALLVALUE"
-	case OpCODESIZE:
-		return "CODESIZE"
-	case OpBLOCKHEIGHT:
-		return "BLOCKHEIGHT"
-	case OpTIMESTAMP:
-		return "TIMESTAMP"
-	case OpADDRESS:
-		return "ADDRESS"
-	case OpGASLIMIT:
-		return "GASLIMIT"
-	case OpSHA3:
-		return "SHA3"
-	case OpVERIFY_MLDSA:
-		return "VERIFY_MLDSA"
-	case OpSHA3_MEM:
-		return "SHA3_MEM"
-	case OpCALL:
-		return "CALL"
-	case OpSTATICCALL:
-		return "STATICCALL"
-	case OpDELEGATECALL:
-		return "DELEGATECALL"
-	case OpCREATE:
-		return "CREATE"
-	case OpSELFDESTRUCT:
-		return "SELFDESTRUCT"
-	case OpCREATE2:
-		return "CREATE2"
-	case OpTRANSFER:
-		return "TRANSFER"
-	case OpBALANCE:
-		return "BALANCE"
-	case OpTOTALGAS:
-		return "TOTALGAS"
-	case OpRETURN:
-		return "RETURN"
-	case OpREVERT:
-		return "REVERT"
-	case OpREQUIRE:
-		return "REQUIRE"
+	case OpSTOP:             return "STOP"
+	case OpADD:              return "ADD"
+	case OpSUB:              return "SUB"
+	case OpMUL:              return "MUL"
+	case OpDIV:              return "DIV"
+	case OpMOD:              return "MOD"
+	case OpEXP:              return "EXP"
+	case OpADDMOD:           return "ADDMOD"
+	case OpMULMOD:           return "MULMOD"
+	case OpISZERO:           return "ISZERO"
+	case OpBYTE:             return "BYTE"
+	case OpSIGNEXTEND:       return "SIGNEXTEND"
+	case OpEQ:               return "EQ"
+	case OpNEQ:              return "NEQ"
+	case OpLT:               return "LT"
+	case OpGT:               return "GT"
+	case OpLTE:              return "LTE"
+	case OpGTE:              return "GTE"
+	case OpAND:              return "AND"
+	case OpOR:               return "OR"
+	case OpXOR:              return "XOR"
+	case OpNOT:              return "NOT"
+	case OpSHL:              return "SHL"
+	case OpSHR:              return "SHR"
+	case OpPOP:              return "POP"
+	case OpMLOAD:            return "MLOAD"
+	case OpMSTORE:           return "MSTORE"
+	case OpMSTORE8:          return "MSTORE8"
+	case OpMSIZE:            return "MSIZE"
+	case OpSLOAD:            return "SLOAD"
+	case OpSSTORE:           return "SSTORE"
+	case OpJUMP:             return "JUMP"
+	case OpJUMPI:            return "JUMPI"
+	case OpPC:               return "PC"
+	case OpJUMPDEST:         return "JUMPDEST"
+	case OpCALLDATALOAD:     return "CALLDATALOAD"
+	case OpCALLDATASIZE:     return "CALLDATASIZE"
+	case OpCALLDATACOPY:     return "CALLDATACOPY"
+	case OpCODECOPY:         return "CODECOPY"
+	case OpRETURNDATASIZE:   return "RETURNDATASIZE"
+	case OpRETURNDATACOPY:   return "RETURNDATACOPY"
+	case OpCALLER:           return "CALLER"
+	case OpORIGIN:           return "ORIGIN"
+	case OpCALLVALUE:        return "CALLVALUE"
+	case OpCODESIZE:         return "CODESIZE"
+	case OpBLOCKHEIGHT:      return "BLOCKHEIGHT"
+	case OpTIMESTAMP:        return "TIMESTAMP"
+	case OpADDRESS:          return "ADDRESS"
+	case OpGASLIMIT:         return "GASLIMIT"
+	case OpSHA3:             return "SHA3"
+	case OpVERIFY_MLDSA: return "VERIFY_MLDSA"
+	case OpSHA3_MEM:         return "SHA3_MEM"
+	case OpCALL:             return "CALL"
+	case OpSTATICCALL:       return "STATICCALL"
+	case OpDELEGATECALL:     return "DELEGATECALL"
+	case OpCREATE:           return "CREATE"
+	case OpSELFDESTRUCT:     return "SELFDESTRUCT"
+	case OpCREATE2:          return "CREATE2"
+	case OpTRANSFER:         return "TRANSFER"
+	case OpBALANCE:          return "BALANCE"
+	case OpTOTALGAS:         return "TOTALGAS"
+	case OpRETURN:           return "RETURN"
+	case OpREVERT:           return "REVERT"
+	case OpREQUIRE:          return "REQUIRE"
 	default:
 		return fmt.Sprintf("UNKNOWN_0x%02X", op)
 	}
