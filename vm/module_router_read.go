@@ -104,6 +104,18 @@ var KnownModuleActions = map[string]ModuleActions{
 			"position": true, "position_id": true, "simulate_match": true,
 		},
 	},
+	"bridge": {
+		// bridge_v1: the legacy-mainnet migration bridge, routed whole.
+		Writes: map[string]string{
+			"deploy": forks.BridgeV1, "claim": forks.BridgeV1,
+			"set_operator": forks.BridgeV1, "set_threshold": forks.BridgeV1,
+			"pause": forks.BridgeV1, "unpause": forks.BridgeV1,
+			"transfer_ownership": forks.BridgeV1,
+		},
+		Reads: map[string]bool{
+			"bridge_info": true, "claim_status": true,
+		},
+	},
 }
 
 // qrc20ReadParams / dexReadParams are the parameter shapes for read actions.
@@ -177,8 +189,65 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 		return dispatchDEXRead(stateDB, mc.Action, mc.Params)
 	case "exchange":
 		return dispatchExchangeRead(stateDB, rctx, mc.Action, mc.Params)
+	case "bridge":
+		return dispatchBridgeRead(stateDB, mc.Action, mc.Params)
 	default:
 		return nil, fmt.Errorf("module call: unknown module %q", mc.Module)
+	}
+}
+
+// bridgeReadParams is the parameter shape for bridge reads.
+type bridgeReadParams struct {
+	Bridge string `json:"bridge"`       // instance SQ: address (required)
+	ID     uint64 `json:"id,omitempty"` // claim_status: the EVM burn id
+}
+
+func dispatchBridgeRead(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
+	var p bridgeReadParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("bridge read: bad params: %w", err)
+	}
+	addr, err := qcrypto.AddressFromString(p.Bridge)
+	if err != nil {
+		return nil, fmt.Errorf("bridge read: bridge: %w", err)
+	}
+	b := NewBridge(stateDB, addr)
+
+	switch action {
+	case "bridge_info":
+		if err := b.requireDeployed("bridge bridge_info: "); err != nil {
+			return nil, err
+		}
+		info, err := b.Info()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"module": "bridge", "action": "bridge_info", "info": info,
+		}, nil
+
+	case "claim_status":
+		if err := b.requireDeployed("bridge claim_status: "); err != nil {
+			return nil, err
+		}
+		if p.ID == 0 {
+			return nil, fmt.Errorf("bridge claim_status: id must be positive (burn ids start at 1)")
+		}
+		claimed, height, err := b.ClaimedAt(p.ID)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]interface{}{
+			"module": "bridge", "action": "claim_status",
+			"bridge": addr.String(), "id": p.ID, "claimed": claimed,
+		}
+		if claimed {
+			out["height"] = height
+		}
+		return out, nil
+
+	default:
+		return nil, fmt.Errorf("bridge: unknown read action %q", action)
 	}
 }
 

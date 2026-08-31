@@ -915,6 +915,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// exchange /call reads, labelled with the live chain head.
 	rpc.RegisterExchangeRoutes(router, stateDB, rpc.HeadFunc(executor))
 
+	// Migration bridge read routes — the GET mirrors of the bridge /call reads.
+	rpc.RegisterBridgeRoutes(router, stateDB)
+
 	// Contract-interaction routes (/call view calls, /estimate gas+fee) — issue #4
 	rpc.RegisterCallRoutes(router, stateDB, executor, pool, coreRPC.SimGuard())
 

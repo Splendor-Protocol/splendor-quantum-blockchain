@@ -689,6 +689,7 @@ unappliable in a block.
 | `qrc1155` | `deploy`, `mint`, `mint_batch`, `transfer`, `batch_transfer`, `set_approval_for_all`, `burn`, `burn_batch`, `transfer_ownership` | `qrc1155_v1` | `balance_of`, `balance_of_batch`, `is_approved_for_all`, `uri`, `total_supply`, `token_info` |
 | `dex` | `deploy_pool`, `add_liquidity`, `swap` | — (since launch) | `reserves`, `pool_info` (also `GET /dex/pool/...`) |
 | `exchange` | `deploy`, `create_condition`, `split`, `merge`, `match`, `cancel_order`, `increment_nonce`, `resolve`, `redeem`, `redeem_for`, `pause`, `unpause`, `set_redeem_fee_bps`, `set_fee_recipient`, `set_operator`, `transfer_ownership` | `exchange_v1` (requires `module_revert_v1`) | `exchange_info`, `condition_info`, `order_status`, `order_remaining`, `order_hash`, `nonce`, `is_operator`, `position`, `position_id`, `simulate_match` (also `GET /exchange/...`) |
+| `bridge` | `deploy`, `claim` (M-of-N attested), `set_operator`, `set_threshold`, `pause`, `unpause`, `transfer_ownership` | `bridge_v1` (requires `module_revert_v1`) | `bridge_info`, `claim_status` (also `GET /bridge/...`) — see `docs/modules/bridge.md` |
 
 A fifth name, `module_revert_v1`, is not a module but the failure rule: under
 it a module call that errors is included with a failed receipt (fee kept,
@@ -1140,7 +1141,7 @@ The blockchain industry has not acted. The first quantum-native chain that attra
 📋 Wallet apps — desktop and mobile UIs are designed only; today there is a CLI wallet and a browser Connect flow  
 📋 NFC card and QR airgapped signing — flows are designed; no hardware integration in this repo  
 📋 Python and Go SDKs — only the JavaScript/TypeScript SDK is published  
-📋 Bridge protocol — no design or code in this repository  
+🔄 Migration bridge — the one-way legacy→quantum burn-and-claim rail is implemented (`bridge_v1` module, `cmd/bridge-relayer`, `contracts/legacy-burn/`, `docs/modules/bridge.md`); awaiting per-tier fork scheduling and deploys. A general two-way bridge protocol remains unplanned  
 
 ---
 
