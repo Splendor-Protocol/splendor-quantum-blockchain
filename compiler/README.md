@@ -30,10 +30,15 @@ data, _ := compiler.EncodeCall(c.Functions[0], arg0, arg1) // calldata
   Visibility modifiers (`public` etc.) parse and are ignored.
 - Functions with value-type params, optional modifiers (`view` / `pure` /
   `payable` / visibility — parsed, ignored), optional `returns (T)`.
+- Local variables: `uint256 x = e;` — function-scoped 256-bit words living in
+  scratch memory, block-scoped so two sequential loops may each declare `i`.
+  Parameters are locals too (copied from calldata on entry), so a function may
+  assign to its own parameters as in Solidity.
 - Statements: assignment (`x = e;`, `m[k] = e;`) and compound assignment
   (`+= -= *= /= %=`), `require(cond);` / `require(cond, "reason");`
   (reason ≤32 bytes, surfaces in the revert error), `return e;`,
-  `emit E(args);`, `if (cond) { … } else if … else { … }`.
+  `emit E(args);`, `if (cond) { … } else if … else { … }`,
+  `for (init; cond; post) { … }`, `while (cond) { … }`.
 - Expressions: `+ - * / %` (all **checked**, Solidity ≥0.8 semantics:
   overflow/underflow/division-by-zero revert), comparisons
   (`== != < <= > >=`), short-circuit `&&` / `||`, `!`, literals (decimal /
@@ -56,8 +61,9 @@ unimplemented, the compiler defines the calling convention itself:
 
 ## Known limits
 
-No loops, internal calls, arrays/structs/strings, constructor (use a guarded
-`init()`), or optimizer.
+No internal function calls, arrays/structs/strings, constructor (use a guarded
+`init()`), `break`/`continue`, or optimizer. A loop is bounded only by the gas
+ceiling, which ends an unbounded one with a revert rather than a hang.
 `require` before any storage write (checks-effects) remains the compiler's
 emission order: the ENGINE does not roll back entry-frame storage on a
 top-level `REVERT` (proven in `compiler_test.go`); the executor cleans up —

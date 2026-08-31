@@ -112,9 +112,6 @@ type GasTable struct {
 	CREATE2      uint64
 
 	// ABI
-	ABI_ENCODE uint64
-	ABI_DECODE uint64
-	SELECTOR   uint64
 
 	// Return / Revert
 	RETURN  uint64
@@ -223,9 +220,6 @@ func DefaultGasTable() GasTable {
 		CREATE2:      32_000,
 
 		// ABI
-		ABI_ENCODE: 20,
-		ABI_DECODE: 20,
-		SELECTOR:   15,
 
 		// Return
 		RETURN:  0,
@@ -317,9 +311,6 @@ func (g *GasTable) GasOf(op byte) uint64 {
 	case OpBLOCKHEIGHT: return g.BLOCKHEIGHT
 	case OpTIMESTAMP: return g.TIMESTAMP
 	case OpGASLIMIT: return g.GASLIMIT
-	case OpABI_ENCODE: return g.ABI_ENCODE
-	case OpABI_DECODE: return g.ABI_DECODE
-	case OpSELECTOR: return g.SELECTOR
 	case OpPOP: return g.POP
 	case OpMLOAD: return g.MLOAD
 	case OpMSTORE: return g.MSTORE
@@ -369,7 +360,7 @@ func divideAll(t *GasTable, divisor uint64) {
 		&t.LOG0, &t.LOGPerTopic, &t.LOGPerByte,
 		&t.TRANSFER, &t.BALANCE,
 		&t.CREATE, &t.SELFDESTRUCT, &t.CALL, &t.STATICCALL, &t.DELEGATECALL, &t.CREATE2,
-		&t.REQUIRE, &t.ABI_ENCODE, &t.ABI_DECODE, &t.SELECTOR,
+		&t.REQUIRE,
 	}
 	for _, f := range fields {
 		if *f > 0 {

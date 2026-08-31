@@ -36,7 +36,7 @@
 //	0x30-0x32  SHA3 SHA3_MEM VERIFY_MLDSA
 //	0x33-0x3F  ADDRESS BALANCE ORIGIN CALLER CALLVALUE CALLDATALOAD CALLDATASIZE
 //	           CALLDATACOPY CODESIZE CODECOPY RETURNDATASIZE RETURNDATACOPY TRANSFER
-//	0x40-0x45  BLOCKHEIGHT TIMESTAMP GASLIMIT ABI_ENCODE ABI_DECODE SELECTOR
+//	0x40-0x42  BLOCKHEIGHT TIMESTAMP GASLIMIT   (0x43-0x45 reserved, unassigned)
 //	0x50-0x5B  POP MLOAD MSTORE MSTORE8 SLOAD SSTORE JUMP JUMPI PC MSIZE TOTALGAS JUMPDEST
 //	0x60-0x7F  PUSH1-PUSH32
 //	0x80-0x8F  DUP1-DUP16
@@ -114,13 +114,25 @@ const (
 	OpRETURNDATACOPY byte = 0x3E
 	OpTRANSFER       byte = 0x3F
 
-	// ── Block context & ABI helpers (0x40–0x45) ──────────────────────────
+	// ── Block context (0x40–0x42) ────────────────────────────────────────
 	OpBLOCKHEIGHT byte = 0x40
 	OpTIMESTAMP   byte = 0x41
 	OpGASLIMIT    byte = 0x42
-	OpABI_ENCODE  byte = 0x43
-	OpABI_DECODE  byte = 0x44
-	OpSELECTOR    byte = 0x45
+
+	// 0x43-0x45 are RESERVED and unassigned. They were once declared as
+	// ABI_ENCODE / ABI_DECODE / SELECTOR, named by the disassembler and priced
+	// by the gas table, but no case here ever executed one — bytecode reaching
+	// them died on the unknown-opcode path while tooling reported them as real.
+	//
+	// They were removed rather than implemented because there is no
+	// specification to implement: this chain's calling convention is defined by
+	// the compiler (32-byte argument words, SHA3-256 selectors), not by
+	// consensus, so an encoding opcode would freeze a convention that does not
+	// exist yet. SELECTOR was four bytes of CALLDATALOAD+SHR the compiler
+	// already emits.
+	//
+	// Leave the numbers unassigned until something specifies AND implements
+	// them, so a future assignment is a deliberate act rather than a collision.
 
 	// ── Memory, storage, control flow (0x50–0x5B) ────────────────────────
 	OpPOP      byte = 0x50

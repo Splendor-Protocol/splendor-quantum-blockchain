@@ -126,8 +126,9 @@ func check(c *contractNode) error {
 func checkStmt(s stmt, states map[string]*stateVar, locals map[string]bool) error {
 	switch st := s.(type) {
 	case *assignStmt:
-		if states[st.target.name] == nil {
-			return fmt.Errorf("assignment to unknown state variable %q", st.target.name)
+		// A local is assignable too; only a name that is neither is unknown.
+		if !locals[st.target.name] && states[st.target.name] == nil {
+			return fmt.Errorf("assignment to unknown variable %q", st.target.name)
 		}
 		if st.target.key != nil {
 			if err := checkExpr(st.target.key, states, locals); err != nil {
@@ -135,6 +136,46 @@ func checkStmt(s stmt, states map[string]*stateVar, locals map[string]bool) erro
 			}
 		}
 		return checkExpr(st.value, states, locals)
+	case *varDeclStmt:
+		// The initialiser is checked BEFORE the name is in scope, so
+		// `uint256 x = x;` is caught rather than reading an uninitialised slot.
+		if err := checkExpr(st.value, states, locals); err != nil {
+			return err
+		}
+		locals[st.name] = true
+		return nil
+	case *forStmt:
+		if st.init != nil {
+			if err := checkStmt(st.init, states, locals); err != nil {
+				return err
+			}
+		}
+		if st.cond != nil {
+			if err := checkExpr(st.cond, states, locals); err != nil {
+				return err
+			}
+		}
+		if st.post != nil {
+			if err := checkStmt(st.post, states, locals); err != nil {
+				return err
+			}
+		}
+		for _, inner := range st.body {
+			if err := checkStmt(inner, states, locals); err != nil {
+				return err
+			}
+		}
+		return nil
+	case *whileStmt:
+		if err := checkExpr(st.cond, states, locals); err != nil {
+			return err
+		}
+		for _, inner := range st.body {
+			if err := checkStmt(inner, states, locals); err != nil {
+				return err
+			}
+		}
+		return nil
 	case *requireStmt:
 		return checkExpr(st.cond, states, locals)
 	case *returnStmt:
