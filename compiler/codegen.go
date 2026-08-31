@@ -50,8 +50,32 @@ type codegen struct {
 	// function needs exactly countLocals(body) of them and no liveness
 	// analysis is required to keep two locals apart.
 	nextLocal int
-	// emitBase is where this function's emit data words start, above its locals.
+	// emitBase is where this function's emit data words start, above its locals
+	// and its mapping-slot cache.
 	emitBase int64
+
+	// assigned names every variable this function ever writes, so a mapping
+	// keyed on one is never cached.
+	assigned map[string]bool
+	// slotIdx maps a reusable mapping access to its word in the cache region;
+	// slotBase is where that region starts.
+	slotIdx  map[string]int
+	slotBase int64
+	// slotLive marks the cached slots already written on every path reaching
+	// here. Saved and restored around branches and loop bodies.
+	slotLive map[string]bool
+}
+
+// slotAddr is the memory offset of cache word i.
+func (g *codegen) slotAddr(i int) int64 { return g.slotBase + int64(i)*32 }
+
+// saveLive copies the live set, for restoring after a branch or loop body.
+func (g *codegen) saveLive() map[string]bool {
+	out := make(map[string]bool, len(g.slotLive))
+	for k, v := range g.slotLive {
+		out[k] = v
+	}
+	return out
 }
 
 func (g *codegen) pushScope() { g.scopes = append(g.scopes, map[string]int{}) }
@@ -80,6 +104,157 @@ func (g *codegen) lookupLocal(name string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// ── mapping-slot caching ─────────────────────────────────────────────────────
+//
+// A mapping slot is SHA3-256(pad32(key) ‖ pad32(baseSlot)). The engine charges
+// SHA3 per BYTE, so deriving one over 64 bytes costs 30 + 64*6 = 414 gas —
+// more than the SLOAD it exists to address, and far more than the EVM's
+// per-word 42. `m[k] = m[k] + 1` derived the identical slot twice; the token's
+// transfer derived the sender's three times.
+//
+// The slot depends only on the key and the base slot, never on what is stored
+// there, so it stays valid for as long as the KEY does. Caching one costs a
+// DUP/PUSH/SWAP/MSTORE (12 gas) and each reuse a PUSH/MLOAD (6), against 414 to
+// derive again.
+//
+// Two restrictions keep it honest:
+//
+//   - Only keys that cannot change are cached: msg.sender/msg.value, a literal,
+//     or a name never assigned anywhere in the function. A reassigned key names
+//     a different slot, so it is never cached at all.
+//   - A cached word is only read where it was certainly written. The live set
+//     is saved before a branch or loop body and restored after, so a slot
+//     derived inside an `if` is never loaded by code that runs when the branch
+//     did not.
+
+// assignedNames collects every name used as an assignment target anywhere in a
+// statement tree — locals, parameters and state variables alike. A name in here
+// is not stable, so a mapping keyed on it cannot have its slot reused.
+func assignedNames(body []stmt, into map[string]bool) {
+	for _, s := range body {
+		switch st := s.(type) {
+		case *assignStmt:
+			into[st.target.name] = true
+		case *ifStmt:
+			assignedNames(st.body, into)
+			assignedNames(st.elseBody, into)
+		case *forStmt:
+			if st.init != nil {
+				assignedNames([]stmt{st.init}, into)
+			}
+			if st.post != nil {
+				assignedNames([]stmt{st.post}, into)
+			}
+			assignedNames(st.body, into)
+		case *whileStmt:
+			assignedNames(st.body, into)
+		}
+	}
+}
+
+// mappingCacheKey identifies a mapping access whose slot can be reused, or ""
+// when it cannot.
+func mappingCacheKey(mapping string, key expr, assigned map[string]bool) string {
+	switch k := key.(type) {
+	case *msgExpr:
+		return mapping + "|msg." + k.field
+	case *numberExpr:
+		return mapping + "|#" + k.value.String()
+	case *identExpr:
+		if assigned[k.name] {
+			return ""
+		}
+		return mapping + "|" + k.name
+	}
+	return ""
+}
+
+// walkMappingAccesses visits every mapping access in a statement tree.
+func walkMappingAccesses(body []stmt, visit func(mapping string, key expr)) {
+	var expr_ func(expr)
+	expr_ = func(e expr) {
+		switch ex := e.(type) {
+		case *indexExpr:
+			if ex.key != nil {
+				visit(ex.name, ex.key)
+				expr_(ex.key)
+			}
+		case *binaryExpr:
+			expr_(ex.left)
+			expr_(ex.right)
+		case *unaryExpr:
+			expr_(ex.operand)
+		}
+	}
+	var stmts func([]stmt)
+	stmts = func(ss []stmt) {
+		for _, s := range ss {
+			switch st := s.(type) {
+			case *assignStmt:
+				if st.target.key != nil {
+					visit(st.target.name, st.target.key)
+					expr_(st.target.key)
+				}
+				expr_(st.value)
+			case *varDeclStmt:
+				expr_(st.value)
+			case *requireStmt:
+				expr_(st.cond)
+			case *returnStmt:
+				expr_(st.value)
+			case *emitStmt:
+				for _, a := range st.args {
+					expr_(a)
+				}
+			case *ifStmt:
+				expr_(st.cond)
+				stmts(st.body)
+				stmts(st.elseBody)
+			case *forStmt:
+				if st.init != nil {
+					stmts([]stmt{st.init})
+				}
+				if st.cond != nil {
+					expr_(st.cond)
+				}
+				if st.post != nil {
+					stmts([]stmt{st.post})
+				}
+				stmts(st.body)
+			case *whileStmt:
+				expr_(st.cond)
+				stmts(st.body)
+			}
+		}
+	}
+	stmts(body)
+}
+
+// planSlotCache assigns a memory word to each reusable mapping slot that the
+// function derives MORE THAN ONCE. A single-use slot is left alone: caching it
+// would cost 12 gas to save a derivation that never happens again.
+func planSlotCache(fn *funcNode, assigned map[string]bool) map[string]int {
+	counts := map[string]int{}
+	var order []string
+	walkMappingAccesses(fn.body, func(mapping string, key expr) {
+		ck := mappingCacheKey(mapping, key, assigned)
+		if ck == "" {
+			return
+		}
+		if counts[ck] == 0 {
+			order = append(order, ck)
+		}
+		counts[ck]++
+	})
+	idx := map[string]int{}
+	for _, ck := range order {
+		if counts[ck] > 1 {
+			idx[ck] = len(idx)
+		}
+	}
+	return idx
 }
 
 // countLocals totals the declarations in a statement tree, including nested
@@ -220,8 +395,14 @@ func (g *codegen) genFunc(fn *funcNode) error {
 		g.a.op(vm.OpCALLDATALOAD)    // value
 		g.a.op(vm.OpMSTORE)
 	}
-	// Emit data sits above the parameters and every local this function declares.
-	g.emitBase = localAddr(g.nextLocal + countLocals(fn.body))
+	// Memory above the locals holds this function's mapping-slot cache, and the
+	// emit region sits above both.
+	g.assigned = map[string]bool{}
+	assignedNames(fn.body, g.assigned)
+	g.slotIdx = planSlotCache(fn, g.assigned)
+	g.slotLive = map[string]bool{}
+	g.slotBase = localAddr(g.nextLocal + countLocals(fn.body))
+	g.emitBase = g.slotBase + int64(len(g.slotIdx))*32
 
 	for _, s := range fn.body {
 		if err := g.genStmt(s); err != nil {
@@ -292,6 +473,13 @@ func (g *codegen) genLoop(init stmt, cond expr, post stmt, body []stmt) error {
 			return err
 		}
 	}
+	// Nothing derived inside the loop may be assumed on entry (the first
+	// iteration has not run it) or after it (the loop may run zero times), so
+	// the whole construct gets its own view and the caller's is restored.
+	outer := g.saveLive()
+	defer func() { g.slotLive = outer }()
+	g.slotLive = map[string]bool{}
+
 	top := g.freshLabel("loop")
 	end := g.freshLabel("endloop")
 	g.a.label(top)
@@ -375,6 +563,32 @@ func (g *codegen) genAssign(st *assignStmt) error {
 //	SHA3_MEM pops size (top) then offset, so: <push offset>; <push size>; SHA3_MEM.
 //	MSTORE pops value (top) then offset, so: <push offset>; <push value>; MSTORE.
 func (g *codegen) genMappingSlot(sv *stateVar, key expr) error {
+	ck := mappingCacheKey(sv.name, key, g.assigned)
+	idx, cached := g.slotIdx[ck]
+	if ck != "" && cached && g.slotLive[ck] {
+		// Already derived on every path to here: load it back for 6 gas.
+		g.a.pushInt(g.slotAddr(idx))
+		g.a.op(vm.OpMLOAD)
+		return nil
+	}
+	if err := g.emitMappingSlot(sv, key); err != nil {
+		return err
+	}
+	if ck != "" && cached {
+		// Keep a copy for the next access. Stack is [slot]; MSTORE pops value
+		// then offset, so: DUP1 -> [slot, slot]; PUSH addr -> [slot, slot,
+		// addr]; SWAP1 -> [slot, addr, slot]; MSTORE -> [slot].
+		g.a.op(vm.OpDUP1)
+		g.a.pushInt(g.slotAddr(idx))
+		g.a.op(vm.OpSWAP1)
+		g.a.op(vm.OpMSTORE)
+		g.slotLive[ck] = true
+	}
+	return nil
+}
+
+// emitMappingSlot derives the slot unconditionally.
+func (g *codegen) emitMappingSlot(sv *stateVar, key expr) error {
 	// mem[memKey] = key
 	g.a.pushInt(memKey)
 	if err := g.genExpr(key); err != nil {
@@ -472,10 +686,12 @@ func (g *codegen) genIf(st *ifStmt) error {
 }
 
 // genBlock emits a braced body in its own scope, so a local declared inside it
-// does not leak out.
+// does not leak out — and with its own view of the slot cache, so a slot
+// derived inside a body that may not run is not loaded by code after it.
 func (g *codegen) genBlock(body []stmt) error {
 	g.pushScope()
-	defer g.popScope()
+	live := g.saveLive()
+	defer func() { g.popScope(); g.slotLive = live }()
 	for _, s := range body {
 		if err := g.genStmt(s); err != nil {
 			return err
