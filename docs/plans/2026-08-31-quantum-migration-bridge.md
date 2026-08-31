@@ -173,15 +173,18 @@ call (`tx.Amount` is ignored on the router path). Structured logs; per-iteration
 backoff; a permanently SOFT-failing claim is logged and skipped after N attempts, never
 blocks the cursor (it can be re-submitted manually — the slot guarantees safety).
 
-### 4. Migration dapp — `apps/migration-dapp/`
+### 4. Migration dapp — moved to `Splendor-Protocol/splendor-quantum-dapps`
 
-Single Cloudflare Worker, faucet architecture (no framework: `index.ts` router +
-`page.ts` render + inline script), explorer design language (ink `#070709`, acid `#c8ff63`,
-violet `#936dff`, cyan `#66e7ff`, mono-uppercase data register — palette copied per the
-faucet's precedent comment). Scaffolded in-repo for review; extract to
-`Splendor-Protocol/splendor-quantum-migration` before deploy (infra decision 0001: one
-service, one repo). Target domain: `quantum-migration.splendor.org` (Worker custom domain,
-same as the faucet's).
+**The dapp now lives in its own repo, `splendor-quantum-dapps`** (infra decision 0001: one
+service, one repo), as one dapp inside the **`dapps.splendor.org` portal**: the portal at `/`
+(icon buttons — Bridge, Explorer, Faucet) and the bridge at `/bridge` with its read-only API
+under `/bridge/api/*`, plus Splendor Connect (optional `SQ:`-address prefill). It was
+scaffolded in this repo for review during the bridge build and then extracted; the code and
+its README are authoritative there.
+
+Single Cloudflare Worker, faucet architecture (no framework: router + inline-script pages),
+explorer design language (ink `#070709`, acid `#c8ff63`, violet `#936dff`, cyan `#66e7ff`,
+mono-uppercase data register). Worker API (server-side fetch, no keys, read-only):
 
 Client flow (all EVM interaction via the user's injected wallet — page CSP stays
 `connect-src 'self'` + wallet extension, no third-party scripts):
