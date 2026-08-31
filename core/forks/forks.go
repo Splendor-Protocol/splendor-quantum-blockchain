@@ -51,6 +51,12 @@ const (
 	// ModuleRevertV1 makes a failing module call a failed receipt instead of a
 	// dropped transaction.
 	ModuleRevertV1 = "module_revert_v1"
+	// VMRevertV1 makes a top-level bytecode REVERT atomic: the entry frame's
+	// storage writes and logs roll back with it (the engine snapshots only
+	// sub-calls), while the fee stays charged and the nonce consumed. Without
+	// it, a contract that writes then reverts keeps the write although its
+	// receipt says "execution reverted".
+	VMRevertV1 = "vm_revert_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -59,7 +65,7 @@ const (
 // fork name is otherwise invisible: the node reports a healthy schedule, the
 // rule never activates, and nobody finds out until the height passes without
 // anything happening.
-var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1}
+var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1}
 
 // Schedule maps an upgrade name to the height at which it takes effect.
 type Schedule map[string]uint64
