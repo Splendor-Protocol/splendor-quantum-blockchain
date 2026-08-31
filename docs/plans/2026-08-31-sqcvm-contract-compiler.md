@@ -29,7 +29,7 @@ can carry. This doc decides the approach and lands a working prototype.
 | Opcode numbering | EVM table | **v4 relocations** (PUSH/DUP/SWAP at 0x60-0x9F; SSTORE 0x55, JUMP 0x56, etc.) | Raw EVM bytecode will not run; codegen targets the v4 table. |
 | `SELECTOR`/`ABI_ENCODE`/`ABI_DECODE` (0x43-0x45) | n/a | **declared but NOT implemented** — they hit the `default: unknown opcode` path (confirmed: no handler in `engine.go`, only `disasm.go` names them) | The compiler must do selector extraction and ABI layout **itself**, with `CALLDATALOAD`+`SHR`, not these opcodes. |
 | Several operand orders | — | `MSTORE`/`SSTORE` pop **value then offset/slot**; `JUMPI` pops **cond then dest**; `LOG*`/`RETURN`/`REVERT`/`SHA3_MEM` pop **size then offset**; `CREATE` pops offset-then-size | Codegen must emit pushes in the exact order each handler pops (encoded in `codegen.go` comments). |
-| Top-level `REVERT` | rolls back the whole tx | **does NOT roll back storage written in the entry frame** | Verified: `TestTopLevelRevertDoesNotRollBackStorage`. The engine snapshots sub-`CALL`s (`subSnap`) but runs the entry frame directly on state, and the executor commits a reverted bytecode tx's snapshot (only the receipt is marked failed). **Compiled code MUST place every `require` before any storage write** (checks-effects), and production should also patch the executor to snapshot the entry frame. |
+| Top-level `REVERT` | rolls back the tx, tx included with failed receipt | **engine does not roll back entry-frame storage**; executor pre-fork treats the reverted call as UNAPPLIABLE (dropped by the producer, block carrying one rejected) | Verified: `TestTopLevelRevertDoesNotRollBackStorage` (engine level) and `core/block/vm_revert_test.go` (executor level). **Fixed by the `vm_revert_v1` fork**: the executor wraps the frame in a nested snapshot, rolls back writes+logs on revert, and includes the tx with a failed receipt (fee kept, nonce consumed) — EVM semantics. Compiled code still places every `require` before any storage write (checks-effects) as hygiene. |
 | `ecrecover` / secp256k1 | precompile | **absent** — only `VERIFY_MLDSA` | No Solidity contract relying on ECDSA signatures can be honored; PQ signatures use `verify_mldsa`. |
 | `SELFDESTRUCT`, `GAS`, `GASPRICE`, `BLOCKHASH`, `CHAINID`, `COINBASE` | present | mostly absent/different (`TOTALGAS` exists; no `BLOCKHASH`) | A subset language, not full Solidity. |
 
@@ -122,10 +122,11 @@ Package `compiler/` (non-consensus). Pipeline: **source → lexer → parser →
   so the same source yields identical bytecode on every builder. A production
   toolchain should pin the compiler version in build metadata so a redeploy is
   reproducible.
-- **Checks-effects is mandatory**, not stylistic, until the executor snapshots
-  the entry frame (see the divergence table). The prototype's codegen naturally
-  emits `require`s before writes; a production compiler must *enforce* it (or
-  the engine must change).
+- **Checks-effects ordering** is what the codegen emits (`require`s before
+  writes). With the `vm_revert_v1` fork active the executor makes a top-level
+  revert atomic, so the ordering is hygiene rather than a safety line — but it
+  remains the only protection for embedders that run the engine without the
+  executor's snapshots.
 
 ## Gap list: prototype → production
 
@@ -137,9 +138,11 @@ Package `compiler/` (non-consensus). Pipeline: **source → lexer → parser →
    at 2^256 with **no overflow checks** (add `checked` arithmetic before real
    value-bearing use).
 2. **Engine gaps to close**: implement `SELECTOR`/`ABI_ENCODE`/`ABI_DECODE`
-   (0x43-0x45) or delete them from the table; **snapshot the top-level call
-   frame so a bytecode `REVERT` is atomic** (currently only sub-calls roll back)
-   — this is a correctness fix the compiler is currently working around.
+   (0x43-0x45) or delete them from the table. ~~Snapshot the top-level call
+   frame so a bytecode `REVERT` is atomic~~ — **done**: the `vm_revert_v1`
+   fork makes the executor snapshot the frame and include a reverted call with
+   a failed receipt (`core/block/vm_revert_test.go`); schedule it in genesis
+   documents alongside `module_revert_v1`.
 3. **Deploy path**: a constructor/init-code convention so state can be set at
    deploy (today a separate guarded `init()` call is required, as in the token
    sample); deploy-time code-size/gas limits.
