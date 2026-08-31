@@ -82,6 +82,15 @@ func (l *lexer) tokenize() ([]token, error) {
 			if !ok {
 				return nil, fmt.Errorf("line %d: invalid number %q", l.line, raw)
 			}
+			// The VM's word is 256 bits, and a wider constant has nowhere to
+			// go: the assembler's PUSH width would exceed PUSH32. Caught here,
+			// with a line number, because the alternative was a panic deep in
+			// codegen — reachable from POST /contract/verify, which compiles
+			// source supplied by an unauthenticated caller.
+			if n.BitLen() > 256 {
+				return nil, fmt.Errorf("line %d: literal %q needs %d bits, above the 256-bit word",
+					l.line, raw, n.BitLen())
+			}
 			out = append(out, token{kind: tNumber, text: raw, num: n, line: l.line})
 		case strings.IndexByte("(){}[];,.", c) >= 0:
 			out = append(out, token{kind: tPunct, text: string(c), line: l.line})
