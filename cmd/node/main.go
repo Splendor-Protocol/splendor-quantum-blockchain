@@ -926,6 +926,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// Contract-interaction routes (/call view calls, /estimate gas+fee) — issue #4
 	rpc.RegisterCallRoutes(router, stateDB, executor, pool, coreRPC.SimGuard())
+	// Source verification shares the metered plane: it compiles submitted
+	// source, which is CPU spent on an anonymous caller's say-so.
+	rpc.RegisterVerifyRoutes(router, stateDB, coreRPC.SimGuard())
 
 	// Lending routes
 	rpc.RegisterLendingRoutes(router, stateDB)
