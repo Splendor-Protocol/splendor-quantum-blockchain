@@ -380,13 +380,21 @@ func (g *codegen) genFunc(fn *funcNode) error {
 	g.scopes = []map[string]int{{}}
 	g.nextLocal = 0
 
+	g.assigned = map[string]bool{}
+	assignedNames(fn.body, g.assigned)
+
 	// The selector left on the stack by the dispatcher is dead here.
 	g.a.op(vm.OpPOP)
 
-	// Parameters are locals initialised from calldata. Solidity lets a function
-	// assign to its own parameters, and calldata is read-only, so each one gets
-	// a memory slot copied in on entry — one MSTORE per parameter per call.
+	// Solidity lets a function assign to its own parameters, and calldata is
+	// read-only, so an ASSIGNED parameter is copied into a memory word on
+	// entry. One that is never written stays where it is: a calldata read costs
+	// the same 3 gas as a memory read, so copying it would be a
+	// PUSH/PUSH/CALLDATALOAD/MSTORE prologue paid on every call for nothing.
 	for i, p := range fn.params {
+		if !g.assigned[p.name] {
+			continue // read straight from calldata (see genExpr)
+		}
 		slot := g.nextLocal
 		g.nextLocal++
 		g.scopes[0][p.name] = slot
@@ -397,8 +405,6 @@ func (g *codegen) genFunc(fn *funcNode) error {
 	}
 	// Memory above the locals holds this function's mapping-slot cache, and the
 	// emit region sits above both.
-	g.assigned = map[string]bool{}
-	assignedNames(fn.body, g.assigned)
 	g.slotIdx = planSlotCache(fn, g.assigned)
 	g.slotLive = map[string]bool{}
 	g.slotBase = localAddr(g.nextLocal + countLocals(fn.body))
@@ -732,10 +738,16 @@ func (g *codegen) genExpr(e expr) error {
 		}
 		return nil
 	case *identExpr:
-		// A parameter or local (both memory words), or a scalar state variable.
+		// A local or an assigned parameter (memory), an unassigned parameter
+		// (still in calldata), or a scalar state variable.
 		if slot, ok := g.lookupLocal(ex.name); ok {
 			g.a.pushInt(localAddr(slot))
 			g.a.op(vm.OpMLOAD)
+			return nil
+		}
+		if idx, ok := g.params[ex.name]; ok {
+			g.a.pushInt(int64(4 + idx*32)) // calldata offset (4-byte selector prefix)
+			g.a.op(vm.OpCALLDATALOAD)
 			return nil
 		}
 		sv, ok := g.states[ex.name]
