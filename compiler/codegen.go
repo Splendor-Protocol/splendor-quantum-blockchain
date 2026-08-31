@@ -13,20 +13,25 @@ var (
 	bigOne  = big.NewInt(1)
 )
 
-// Scratch memory layout used by codegen. The compiled contract only ever holds
-// live values on the stack, so these fixed slots are safe to reuse between
-// statements:
+// Scratch memory layout used by codegen:
 //
-//	[0x00,0x20) — mapping key / return value / log word 0
+//	[0x00,0x20) — mapping key / return value
 //	[0x20,0x40) — mapping base slot
+//	[0x40,0x40+32n) — the function's n locals, one word each
+//	[0x40+32n, …)   — the data words an `emit` lays out
 //
-// emit uses a growing region from 0x00 for its data words; it never overlaps a
-// live mapping computation because an emit statement evaluates its args to the
-// stack first (see genEmit).
+// Locals sit above the mapping scratch so a mapping computation inside a loop
+// cannot clobber the loop counter, and emit data sits above the locals so
+// logging cannot clobber them either. n is the function's total declaration
+// count (counted before emitting), so the emit region is fixed per function.
 const (
-	memKey  = 0x00
-	memBase = 0x20
+	memKey     = 0x00
+	memBase    = 0x20
+	localsBase = 0x40
 )
+
+// localAddr is the memory offset of local slot i.
+func localAddr(i int) int64 { return localsBase + int64(i)*32 }
 
 // codegen holds the per-contract compilation state.
 type codegen struct {
@@ -36,6 +41,70 @@ type codegen struct {
 	fn       *funcNode      // function currently being compiled
 	params   map[string]int // param name → calldata word index
 	labelSeq int            // per-compilation counter so Compile stays race-free
+
+	// scopes is a stack of local name → slot maps, innermost last. Blocks push
+	// and pop, so two sequential loops may each declare `i` without colliding,
+	// while a redeclaration inside one scope is an error.
+	scopes []map[string]int
+	// nextLocal allocates slots monotonically: a slot is never reused, so a
+	// function needs exactly countLocals(body) of them and no liveness
+	// analysis is required to keep two locals apart.
+	nextLocal int
+	// emitBase is where this function's emit data words start, above its locals.
+	emitBase int64
+}
+
+func (g *codegen) pushScope() { g.scopes = append(g.scopes, map[string]int{}) }
+func (g *codegen) popScope()  { g.scopes = g.scopes[:len(g.scopes)-1] }
+
+// declareLocal allocates a slot for a new local in the innermost scope.
+func (g *codegen) declareLocal(name string) (int, error) {
+	if _, ok := g.params[name]; ok {
+		return 0, fmt.Errorf("local %q shadows a parameter of the same name", name)
+	}
+	cur := g.scopes[len(g.scopes)-1]
+	if _, ok := cur[name]; ok {
+		return 0, fmt.Errorf("local %q is declared twice in the same scope", name)
+	}
+	slot := g.nextLocal
+	g.nextLocal++
+	cur[name] = slot
+	return slot, nil
+}
+
+// lookupLocal resolves a name against the scope stack, innermost first.
+func (g *codegen) lookupLocal(name string) (int, bool) {
+	for i := len(g.scopes) - 1; i >= 0; i-- {
+		if slot, ok := g.scopes[i][name]; ok {
+			return slot, true
+		}
+	}
+	return 0, false
+}
+
+// countLocals totals the declarations in a statement tree, including nested
+// blocks. Slots are never reused, so this is exactly how many a function needs.
+func countLocals(body []stmt) int {
+	n := 0
+	for _, s := range body {
+		switch st := s.(type) {
+		case *varDeclStmt:
+			n++
+		case *ifStmt:
+			n += countLocals(st.body) + countLocals(st.elseBody)
+		case *forStmt:
+			if st.init != nil {
+				n += countLocals([]stmt{st.init})
+			}
+			if st.post != nil {
+				n += countLocals([]stmt{st.post})
+			}
+			n += countLocals(st.body)
+		case *whileStmt:
+			n += countLocals(st.body)
+		}
+	}
+	return n
 }
 
 func newCodegen(c *contractNode) *codegen {
@@ -133,8 +202,26 @@ func (g *codegen) genFunc(fn *funcNode) error {
 	for i, p := range fn.params {
 		g.params[p.name] = i
 	}
+	g.scopes = []map[string]int{{}}
+	g.nextLocal = 0
+
 	// The selector left on the stack by the dispatcher is dead here.
 	g.a.op(vm.OpPOP)
+
+	// Parameters are locals initialised from calldata. Solidity lets a function
+	// assign to its own parameters, and calldata is read-only, so each one gets
+	// a memory slot copied in on entry — one MSTORE per parameter per call.
+	for i, p := range fn.params {
+		slot := g.nextLocal
+		g.nextLocal++
+		g.scopes[0][p.name] = slot
+		g.a.pushInt(localAddr(slot)) // MSTORE offset
+		g.a.pushInt(int64(4 + i*32)) // calldata offset (4-byte selector prefix)
+		g.a.op(vm.OpCALLDATALOAD)    // value
+		g.a.op(vm.OpMSTORE)
+	}
+	// Emit data sits above the parameters and every local this function declares.
+	g.emitBase = localAddr(g.nextLocal + countLocals(fn.body))
 
 	for _, s := range fn.body {
 		if err := g.genStmt(s); err != nil {
@@ -158,15 +245,101 @@ func (g *codegen) genStmt(s stmt) error {
 		return g.genEmit(st)
 	case *ifStmt:
 		return g.genIf(st)
+	case *varDeclStmt:
+		return g.genVarDecl(st)
+	case *forStmt:
+		return g.genFor(st)
+	case *whileStmt:
+		return g.genLoop(nil, st.cond, nil, st.body)
 	default:
 		return fmt.Errorf("unhandled statement")
 	}
+}
+
+// genVarDecl allocates a slot and stores the initialiser into it.
+//
+//	MSTORE pops value (top) then offset, so: <push offset>; <push value>; MSTORE.
+func (g *codegen) genVarDecl(st *varDeclStmt) error {
+	slot, err := g.declareLocal(st.name)
+	if err != nil {
+		return err
+	}
+	g.a.pushInt(localAddr(slot))
+	if err := g.genExpr(st.value); err != nil {
+		return err
+	}
+	g.a.op(vm.OpMSTORE)
+	return nil
+}
+
+// genFor scopes the init clause to the loop, so two sequential loops may each
+// declare their own counter.
+func (g *codegen) genFor(st *forStmt) error {
+	g.pushScope()
+	defer g.popScope()
+	return g.genLoop(st.init, st.cond, st.post, st.body)
+}
+
+// genLoop emits the shared shape of `for` and `while`:
+//
+//	init; top: cond? ISZERO -> end; body; post; JUMP top; end:
+//
+// A nil cond loops forever, which is not a hang: the VM's gas ceiling ends it
+// and the call reverts.
+func (g *codegen) genLoop(init stmt, cond expr, post stmt, body []stmt) error {
+	if init != nil {
+		if err := g.genStmt(init); err != nil {
+			return err
+		}
+	}
+	top := g.freshLabel("loop")
+	end := g.freshLabel("endloop")
+	g.a.label(top)
+	if cond != nil {
+		if err := g.genExpr(cond); err != nil {
+			return err
+		}
+		g.a.op(vm.OpISZERO) // [cond==0]
+		// JUMPI pops cond (top) then dest: stack is [cond0], we need [dest, cond0].
+		g.a.pushLabel(end)
+		g.a.op(vm.OpSWAP1)
+		g.a.op(vm.OpJUMPI)
+	}
+	g.pushScope()
+	for _, s := range body {
+		if err := g.genStmt(s); err != nil {
+			g.popScope()
+			return err
+		}
+	}
+	g.popScope()
+	if post != nil {
+		if err := g.genStmt(post); err != nil {
+			return err
+		}
+	}
+	g.a.pushLabel(top)
+	g.a.op(vm.OpJUMP)
+	g.a.label(end)
+	return nil
 }
 
 // genAssign writes to a scalar slot or a mapping element.
 //
 //	SSTORE pops value (top) then slot, so the sequence is: <push slot>; <push value>; SSTORE.
 func (g *codegen) genAssign(st *assignStmt) error {
+	// A local is a memory word, and cannot be indexed.
+	if slot, ok := g.lookupLocal(st.target.name); ok {
+		if st.target.key != nil {
+			return fmt.Errorf("local %q is not a mapping", st.target.name)
+		}
+		g.a.pushInt(localAddr(slot))
+		if err := g.genExpr(st.value); err != nil {
+			return err
+		}
+		g.a.op(vm.OpMSTORE)
+		return nil
+	}
 	sv, ok := g.states[st.target.name]
 	if !ok {
 		return fmt.Errorf("assignment to unknown state variable %q", st.target.name)
@@ -251,7 +424,7 @@ func (g *codegen) genReturn(st *returnStmt) error {
 //	<push topic0>; <push offset=0>; <push size=32*n>; LOG1.
 func (g *codegen) genEmit(st *emitStmt) error {
 	for i, arg := range st.args {
-		g.a.pushInt(int64(i * 32)) // offset
+		g.a.pushInt(g.emitBase + int64(i*32)) // offset, above this function's locals
 		if err := g.genExpr(arg); err != nil {
 			return err
 		}
@@ -260,7 +433,7 @@ func (g *codegen) genEmit(st *emitStmt) error {
 	sig := eventSignature(st.event, len(st.args))
 	topic := qcrypto.Hash32([]byte(sig))
 	g.a.pushBytes32(topic)
-	g.a.pushInt(0)                        // data offset
+	g.a.pushInt(g.emitBase)               // data offset
 	g.a.pushInt(int64(len(st.args) * 32)) // data size
 	g.a.op(vm.OpLOG1)
 	return nil
@@ -283,22 +456,31 @@ func (g *codegen) genIf(st *ifStmt) error {
 	g.a.pushLabel(skip) // [cond0, dest]
 	g.a.op(vm.OpSWAP1)  // [dest, cond0]
 	g.a.op(vm.OpJUMPI)  // jump past the body if cond was zero
-	for _, s := range st.body {
-		if err := g.genStmt(s); err != nil {
-			return err
-		}
+	if err := g.genBlock(st.body); err != nil {
+		return err
 	}
 	if len(st.elseBody) > 0 {
 		g.a.pushLabel(end)
 		g.a.op(vm.OpJUMP)
 		g.a.label(skip)
-		for _, s := range st.elseBody {
-			if err := g.genStmt(s); err != nil {
-				return err
-			}
+		if err := g.genBlock(st.elseBody); err != nil {
+			return err
 		}
 	}
 	g.a.label(end)
+	return nil
+}
+
+// genBlock emits a braced body in its own scope, so a local declared inside it
+// does not leak out.
+func (g *codegen) genBlock(body []stmt) error {
+	g.pushScope()
+	defer g.popScope()
+	for _, s := range body {
+		if err := g.genStmt(s); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -334,10 +516,10 @@ func (g *codegen) genExpr(e expr) error {
 		}
 		return nil
 	case *identExpr:
-		// A parameter, or a scalar state variable.
-		if idx, ok := g.params[ex.name]; ok {
-			g.a.pushInt(int64(4 + idx*32)) // calldata offset (4-byte selector prefix)
-			g.a.op(vm.OpCALLDATALOAD)
+		// A parameter or local (both memory words), or a scalar state variable.
+		if slot, ok := g.lookupLocal(ex.name); ok {
+			g.a.pushInt(localAddr(slot))
+			g.a.op(vm.OpMLOAD)
 			return nil
 		}
 		sv, ok := g.states[ex.name]

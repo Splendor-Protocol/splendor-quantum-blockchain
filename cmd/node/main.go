@@ -50,40 +50,41 @@ import (
 )
 
 var (
-	flagDataDir           string
-	flagRPCAddr           string
-	flagMetricsAddr       string
-	flagWalletPath        string
-	flagWalletPass        string
-	flagWalletPassFile    string
-	flagNodeKeyPassFile   string
-	flagPeers             []string
-	flagBlockInterval     int
-	flagIsValidator       bool
-	flagLogLevel          string
-	flagGenesisPath       string
-	flagValidatorPKHex    string
-	flagGenesisHashHex    string
-	flagGenesisDocHashHex string
-	flagTrustPeerGenesis  bool
-	flagChainID           string
-	flagTLSRequireHybrid  bool
-	flagRPCAuthToken      string
-	flagAllowPrivatePeers bool
-	flagCORSOrigins       []string
-	flagRateLimit         float64
-	flagRateBurst         float64
-	flagTrustProxy        bool
-	flagSimRate           float64
-	flagSimBurst          float64
-	flagSimMaxInFlight    int
-	flagSimTimeout        time.Duration
-	flagTLSCert           string
-	flagTLSKey            string
-	flagPublicURL         string
-	flagAllowPlaintextP2P bool
-	flagPeerPins          []string
-	flagRequirePeerPins   bool
+	flagDataDir            string
+	flagRPCAddr            string
+	flagMetricsAddr        string
+	flagWalletPath         string
+	flagWalletPass         string
+	flagWalletPassFile     string
+	flagNodeKeyPassFile    string
+	flagPeers              []string
+	flagBlockInterval      int
+	flagIsValidator        bool
+	flagLogLevel           string
+	flagGenesisPath        string
+	flagValidatorPKHex     string
+	flagGenesisHashHex     string
+	flagGenesisDocHashHex  string
+	flagTrustPeerGenesis   bool
+	flagAllowForkExtension bool
+	flagChainID            string
+	flagTLSRequireHybrid   bool
+	flagRPCAuthToken       string
+	flagAllowPrivatePeers  bool
+	flagCORSOrigins        []string
+	flagRateLimit          float64
+	flagRateBurst          float64
+	flagTrustProxy         bool
+	flagSimRate            float64
+	flagSimBurst           float64
+	flagSimMaxInFlight     int
+	flagSimTimeout         time.Duration
+	flagTLSCert            string
+	flagTLSKey             string
+	flagPublicURL          string
+	flagAllowPlaintextP2P  bool
+	flagPeerPins           []string
+	flagRequirePeerPins    bool
 )
 
 func main() {
@@ -120,6 +121,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagGenesisDocHashHex, "genesis-doc-hash", "", "Pinned hash of the genesis DOCUMENT (hex) — print it with 'sqc-node genesis-hash <genesis.json>'. A node that has no local --genesis credits a peer-served genesis.json only when it hashes to this. Distinct from --genesis-hash, which pins block 0's header.")
 	root.Flags().StringVar(&flagChainID, "chain-id", "", "Chain id this node is expected to be on (e.g. splendor-quantum-devnet-1). When set, a genesis document naming a different chain is refused instead of adopted. Leave empty to take whatever the verified genesis says. (or SQC_CHAIN_ID env)")
 	root.Flags().BoolVar(&flagTrustPeerGenesis, "trust-peer-genesis", false, "Credit a peer-served genesis.json with no --genesis-doc-hash pin. The peer can then mint any balance it likes into this node's state. Lab networks only.")
+	root.Flags().BoolVar(&flagAllowForkExtension, "allow-fork-extension", false, "Adopt upgrades that --genesis schedules but this chain was not started under, when they activate above the current head. Adopting a rule is a network-wide decision: run this only when every validator is on the same genesis document, or this node forks at the activation height.")
 	root.Flags().StringVar(&flagRPCAuthToken, "rpc-auth-token", "", "Shared secret for the write plane: POST /block and POST /peers/announce. All nodes in a cluster must share it. (or SQC_RPC_AUTH_TOKEN env)")
 	root.Flags().BoolVar(&flagAllowPrivatePeers, "allow-private-peers", false, "Allow loopback/private-IP peers in discovery + /peers/announce (private-network or local clusters; default off = public SSRF-safe)")
 	root.Flags().StringArrayVar(&flagCORSOrigins, "cors-origin", nil, "Browser origin allowed to call this node (repeatable). Default: none. Use '*' to allow any origin.")
@@ -461,7 +463,15 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// executor here, before crash recovery below, so a block replayed by
 	// ReconcileState is gated exactly as it was when first applied.
 	headBlock, _ := executor.LatestBlock()
-	forkSchedule, err := loadForkSchedule(flagGenesisPath, stateDB, headBlock == nil)
+	var headHeight uint64
+	if headBlock != nil {
+		headHeight = headBlock.Header.Height
+	}
+	forkSchedule, err := loadForkSchedule(flagGenesisPath, stateDB, headBlock == nil, forkPolicy{
+		Head:           headHeight,
+		AllowExtension: flagAllowForkExtension,
+		DocHash:        genesisDocPin,
+	})
 	if err != nil {
 		return err
 	}
@@ -920,6 +930,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// Contract-interaction routes (/call view calls, /estimate gas+fee) — issue #4
 	rpc.RegisterCallRoutes(router, stateDB, executor, pool, coreRPC.SimGuard())
+	// Source verification shares the metered plane: it compiles submitted
+	// source, which is CPU spent on an anonymous caller's say-so.
+	rpc.RegisterVerifyRoutes(router, stateDB, coreRPC.SimGuard())
 
 	// Lending routes
 	rpc.RegisterLendingRoutes(router, stateDB)
@@ -1254,7 +1267,7 @@ const metaForksKey = "forks"
 // Starting anyway would mean running a node that silently ignores a rule change
 // the rest of the network applies, and the symptom of that is a fork at the
 // activation height rather than an error now.
-func loadForkSchedule(genesisPath string, stateDB *state.StateDB, chainEmpty bool) (forks.Schedule, error) {
+func loadForkSchedule(genesisPath string, stateDB *state.StateDB, chainEmpty bool, policy forkPolicy) (forks.Schedule, error) {
 	stored, ok, err := readStoredForkSchedule(stateDB)
 	if err != nil {
 		return nil, err
@@ -1271,12 +1284,44 @@ func loadForkSchedule(genesisPath string, stateDB *state.StateDB, chainEmpty boo
 			return nil, fmt.Errorf("this chain was started under fork schedule %s but --genesis %q cannot be read: %w",
 				formatForkSchedule(stored), genesisPath, err)
 		}
-		if !sameForkSchedule(g.Forks, stored) {
-			return nil, fmt.Errorf("--genesis %q schedules %s but this chain was started under %s — "+
-				"a node running a different schedule would fork at the first activation height",
-				genesisPath, formatForkSchedule(g.Forks), formatForkSchedule(stored))
+		if sameForkSchedule(g.Forks, stored) {
+			return stored, nil
 		}
-		return stored, nil
+		// The file differs. The one legitimate reason is a rule decided AFTER
+		// this chain launched — the case that otherwise costs the chain its
+		// history, which is what the schedule exists to prevent.
+		merged, added, err := extendForkSchedule(stored, g.Forks, genesisPath, policy)
+		if err != nil {
+			return nil, err
+		}
+		if len(added) > 0 && policy.DocHash != nil {
+			// The document changed, so its hash did too. An operator who
+			// pinned one must say "yes, this one" by re-pinning, making a
+			// consensus rule change take two deliberate acts rather than one.
+			if got := g.Hash(); got != *policy.DocHash {
+				return nil, fmt.Errorf("--genesis %q hashes to %x but --genesis-doc-hash pins %x — "+
+					"extending the schedule changes the document, so re-pin with "+
+					"'sqc-node genesis-hash %s' once you have checked the change is the one you intend",
+					genesisPath, got[:8], (*policy.DocHash)[:8], genesisPath)
+			}
+		}
+		if len(added) > 0 {
+			// Persisted now, so the merged schedule is what this chain was
+			// started under from here on: the next restart matches the file
+			// without the flag, and a crash between here and the first block
+			// re-reads the schedule it adopted rather than the older one.
+			if err := storeForkSchedule(stateDB, merged); err != nil {
+				return nil, err
+			}
+			for _, name := range added {
+				log.Warn().
+					Str("upgrade", name).
+					Uint64("at_height", merged[name]).
+					Uint64("head", policy.Head).
+					Msg("adopting a consensus rule this chain was NOT started under — every validator must run this schedule before the activation height")
+			}
+		}
+		return merged, nil
 	}
 	if genesisPath == "" {
 		return nil, nil
@@ -1332,6 +1377,111 @@ func persistForkSchedule(stateDB *state.StateDB, executor *block.Executor, s for
 	if s == nil {
 		s = forks.Schedule{}
 	}
+	if err := storeForkSchedule(stateDB, s); err != nil {
+		return err
+	}
+	executor.SetForks(s)
+	return nil
+}
+
+// forkPolicy carries what loadForkSchedule needs to judge a --genesis file
+// scheduling more than the chain was started under.
+type forkPolicy struct {
+	// Head is the height of this chain's newest applied block. An upgrade may
+	// only be ADDED above it: at or below, blocks already applied would have
+	// been judged under a rule the node is only now adopting, so the schedule
+	// and the chain would disagree about history.
+	Head uint64
+	// AllowExtension permits adopting upgrades the stored schedule lacks
+	// (--allow-fork-extension). Off by default: a genesis file can be edited
+	// after the fact, and a node that adopted a rule on its own would fork at
+	// the activation height.
+	AllowExtension bool
+	// DocHash is the operator's --genesis-doc-hash pin, when set. The fork
+	// schedule is part of the genesis hash, so an EXTENDED document is by
+	// construction not the pinned one: adopting it without re-pinning would
+	// undercut what the pin asserts, and would let anyone who can write
+	// genesis.json on a host where the flag was left on schedule a rule
+	// change. Checked only on the extension path — an unchanged document
+	// hashes to its pin already.
+	DocHash *[32]byte
+}
+
+// extendForkSchedule reconciles a --genesis schedule with the one a running
+// chain was started under, returning the merged schedule and the names it adds.
+//
+// Exactly one kind of difference is legitimate: a NEW upgrade activating above
+// the current head. A moved activation height, a dropped upgrade, or an
+// activation at or below the head describe a different chain rather than a
+// later decision about this one, and are refused whatever the flag says.
+//
+// An entry at height 0 is "never" (see package forks), so adding one reserves a
+// name without changing any rule. That is the documented way to name an upgrade
+// before the code that honours it exists, so it needs no flag.
+func extendForkSchedule(stored, want forks.Schedule, genesisPath string, policy forkPolicy) (forks.Schedule, []string, error) {
+	merged := forks.Schedule{}
+	for name, at := range stored {
+		merged[name] = at
+	}
+
+	// Everything the chain already runs under must survive untouched. Names are
+	// walked in sorted order so two runs over the same pair of documents report
+	// the same offending upgrade.
+	for _, name := range stored.Names() {
+		at := stored[name]
+		got, present := want[name]
+		if !present {
+			return nil, nil, fmt.Errorf("--genesis %q drops %s, which this chain was started under (%s) — "+
+				"a node that stopped applying a rule its peers still apply would fork",
+				genesisPath, name, formatForkSchedule(stored))
+		}
+		if got != at {
+			return nil, nil, fmt.Errorf("--genesis %q moves %s from height %d to %d, but this chain was started under %s — "+
+				"an activation height is part of what this chain agreed on and cannot be edited afterwards",
+				genesisPath, name, at, got, formatForkSchedule(stored))
+		}
+	}
+
+	var added []string
+	for _, name := range want.Names() {
+		if _, present := stored[name]; present {
+			continue
+		}
+		at := want[name]
+		if at == 0 {
+			merged[name] = 0 // a reserved name, inert until a height is set
+			continue
+		}
+		if at <= policy.Head {
+			return nil, nil, fmt.Errorf("--genesis %q schedules %s at height %d but this chain is already at %d — "+
+				"an upgrade can only be added ABOVE the head, or blocks already applied would have been judged "+
+				"under a rule being adopted only now",
+				genesisPath, name, at, policy.Head)
+		}
+		merged[name] = at
+		added = append(added, name)
+	}
+
+	if len(added) > 0 && !policy.AllowExtension {
+		return nil, nil, fmt.Errorf("--genesis %q schedules %s, which this chain was not started under (%s). "+
+			"Adopting a consensus rule is a network-wide decision: every validator must run the same schedule "+
+			"before the activation height, and a node adopting one alone would fork there. "+
+			"Restart with --allow-fork-extension once the whole network is on this document",
+			genesisPath, strings.Join(added, ", "), formatForkSchedule(stored))
+	}
+	if err := merged.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("--genesis %q would extend this chain to a schedule it cannot run: %w", genesisPath, err)
+	}
+	return merged, added, nil
+}
+
+// storeForkSchedule records the schedule a chain runs under, without touching
+// the executor: the caller installs it (loadForkSchedule runs before the
+// executor is given its schedule).
+func storeForkSchedule(stateDB *state.StateDB, s forks.Schedule) error {
+	if s == nil {
+		s = forks.Schedule{}
+	}
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("encode fork schedule: %w", err)
@@ -1339,7 +1489,6 @@ func persistForkSchedule(stateDB *state.StateDB, executor *block.Executor, s for
 	if err := stateDB.PutMeta(metaForksKey, raw); err != nil {
 		return fmt.Errorf("persist fork schedule: %w", err)
 	}
-	executor.SetForks(s)
 	return nil
 }
 
