@@ -1,0 +1,94 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "quantum-migration",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+
+  "observability": { "enabled": true },
+
+  // Per-IP cooldown bookkeeping for /api/status polling.
+  // Replace the id with the one printed by:
+  //   npx wrangler kv namespace create MIGRATION_KV
+  "kv_namespaces": [
+    {
+      "binding": "MIGRATION_KV",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // Public, non-secret configuration. This Worker holds NO keys and signs
+  // nothing — it only renders the page and proxies read-only chain state.
+  //
+  // BURN_CONTRACT_ADDRESS / QUANTUM_RPC_BASE / QUANTUM_BRIDGE_ADDRESS have no
+  // safe default (the contract and bridge instance do not exist until deploy)
+  // — until they are set the API answers 503 `unconfigured` and the page says
+  // so, faucet-style.
+  "vars": {
+    "EVM_RPC_URL": "https://mainnet-rpc.splendor.org/",
+    "EVM_CHAIN_ID_HEX": "0xa83",
+    "EVM_EXPLORER_URL": "https://explorer.splendor.org",
+    "BURN_CONTRACT_ADDRESS": "",
+    "SPLV_TOKEN_ADDRESS": "0xd196c83A64cdf8d2763721D8c3D135A15B1Cb689",
+    "CONFIRMATIONS": "120",
+    "QUANTUM_RPC_BASE": "",
+    "QUANTUM_BRIDGE_ADDRESS": "",
+    "QUANTUM_EXPLORER_URL": "https://quantum-explorer.splendor.org"
+  },
+
+  "env": {
+    // Production: the public dapp on its custom domain. `custom_domain: true`
+    // makes Cloudflare create/manage the DNS record — the zone just has to be
+    // on this account (same pattern as quantum-faucet.splendor.org).
+    "production": {
+      "name": "quantum-migration",
+      "routes": [
+        {
+          "pattern": "quantum-migration.splendor.org",
+          "custom_domain": true
+        }
+      ],
+      "observability": { "enabled": true },
+      "kv_namespaces": [
+        {
+          "binding": "MIGRATION_KV",
+          "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+        }
+      ],
+      "vars": {
+        "EVM_RPC_URL": "https://mainnet-rpc.splendor.org/",
+        "EVM_CHAIN_ID_HEX": "0xa83",
+        "EVM_EXPLORER_URL": "https://explorer.splendor.org",
+        "BURN_CONTRACT_ADDRESS": "REPLACE_WITH_DEPLOYED_BURN_CONTRACT",
+        "SPLV_TOKEN_ADDRESS": "0xd196c83A64cdf8d2763721D8c3D135A15B1Cb689",
+        "CONFIRMATIONS": "120",
+        "QUANTUM_RPC_BASE": "REPLACE_WITH_QUANTUM_RPC_BASE",
+        "QUANTUM_BRIDGE_ADDRESS": "REPLACE_WITH_BRIDGE_INSTANCE_ADDRESS",
+        "QUANTUM_EXPLORER_URL": "https://quantum-explorer.splendor.org"
+      }
+    },
+
+    // Staging: workers.dev only, pointed at the 2692 testnet stand-in + the
+    // quantum testnet tier (rollout step 3 of the bridge plan).
+    "staging": {
+      "name": "quantum-migration-staging",
+      "observability": { "enabled": true },
+      "kv_namespaces": [
+        {
+          "binding": "MIGRATION_KV",
+          "id": "REPLACE_WITH_STAGING_KV_NAMESPACE_ID"
+        }
+      ],
+      "vars": {
+        "EVM_RPC_URL": "https://testnet-rpc.splendor.org/",
+        "EVM_CHAIN_ID_HEX": "0xa84",
+        "EVM_EXPLORER_URL": "https://testnet-explorer.splendor.org",
+        "BURN_CONTRACT_ADDRESS": "REPLACE_WITH_TESTNET_BURN_CONTRACT",
+        "SPLV_TOKEN_ADDRESS": "REPLACE_WITH_TESTNET_SPLV",
+        "CONFIRMATIONS": "24",
+        "QUANTUM_RPC_BASE": "https://quantum-rpc-testnet.splendor.org",
+        "QUANTUM_BRIDGE_ADDRESS": "REPLACE_WITH_TESTNET_BRIDGE_INSTANCE",
+        "QUANTUM_EXPLORER_URL": "https://quantum-testnet-explorer.splendor.org"
+      }
+    }
+  }
+}

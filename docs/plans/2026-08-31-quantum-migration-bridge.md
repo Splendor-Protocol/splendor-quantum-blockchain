@@ -190,8 +190,10 @@ Worker API (server-side fetch, no keys, read-only):
 - `GET /api/info` — burn contract address, SPLV address, min burn, confirmation depth, bridge
   address, pool balance + claimed totals (from `/bridge/{addr}`), paused flags.
 - `GET /api/status/{burnTxHash}` — 2691 receipt + confirmation count (via server-side RPC) +
-  decoded burn id → quantum `claim_status` + credited tx link. Rate-limited per-IP (KV),
-  byte-bounded bodies, strict CSP with per-response nonce — all faucet patterns.
+  decoded burns → per-burn quantum `claim_status`; the credited step links the recipient's
+  address page on the quantum explorer (the claim tx hash is not exposed by the REST read).
+  Rate-limited per-IP (KV), byte-bounded bodies, strict CSP with per-response nonce — all
+  faucet patterns.
 
 ### 5. Splendor Wallet app — integration spec (separate repo, not edited in this job)
 

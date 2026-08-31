@@ -17,15 +17,13 @@ import (
 )
 
 // The topic constant is the keccak256 of the exact Solidity signature; a
-// drift here silently blinds the relayer, so it is pinned.
+// drift here silently blinds the relayer. The literal is cross-pinned with
+// the migration dapp (apps/migration-dapp/src/selectors.ts), which verifies
+// it independently against @noble/hashes.
 func TestBurnedTopic(t *testing.T) {
-	const want = "0x18b60b8e8d4e88d15a4bcba54878d3e2fba1c6d0b45cdd0c60b9bfaf6f4a2c47"
-	if burnedTopic0 != want && len(burnedTopic0) != 66 {
-		t.Fatalf("burnedTopic0 = %s", burnedTopic0)
-	}
-	// Regardless of the literal, it must be 0x + 32 bytes of hex.
-	if len(burnedTopic0) != 66 || !strings.HasPrefix(burnedTopic0, "0x") {
-		t.Fatalf("burnedTopic0 = %s", burnedTopic0)
+	const want = "0x18fb7d6af55f185ad81a39bf0537706c6c62595e260cf5aaeb3f491a4240cd58"
+	if burnedTopic0 != want {
+		t.Fatalf("burnedTopic0 = %s, want %s", burnedTopic0, want)
 	}
 }
 
