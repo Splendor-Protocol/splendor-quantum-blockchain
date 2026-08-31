@@ -60,7 +60,17 @@ instead.
 amount; amount above `max_claim_amount`; a zero, module-address or contract
 recipient (no key could spend the credit); malformed `evm_tx`; and — the
 idempotency core — an `id` whose claimed slot is already set, whatever the
-asset. On success it transfers from the pool (`spld` — refused SOFT when the
+asset.
+
+> **`max_claim_amount` and the burn contract's `maxBurn` must be equal.** The
+> module rejecting an over-cap claim only protects against operator fraud; a
+> legitimate user who burns above the cap on the legacy chain would strand
+> those funds (the burn is irreversible, the claim never passes). The burn
+> contract therefore enforces the identical ceiling, so an over-cap burn
+> cannot happen. Set both at deploy; changing the cap means redeploying both.
+> The burn contract also relies on a **single global `id` counter** (one
+> `++burnCount` shared by `burnSpld`/`burnSplv`); the idempotency slot keys on
+> `id` alone, so per-asset counters would collide id 5/spld with id 5/splv. On success it transfers from the pool (`spld` — refused SOFT when the
 pool is short, and the id stays claimable after funding) or mints on the SPLV
 token (`splv` — the token's `max_supply` cap refuses over-mint), records the
 claim height, bumps `claimed_total_{spld,splv}`, and emits `BridgeClaimed`.

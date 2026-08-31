@@ -650,6 +650,12 @@ func (b *Bridge) Claim(ctx ModuleContext, p bridgeClaimParams, receipt *types.Re
 			if err := NewQRC20Token(b.stateDB, splv).MintWithEvents(b.addr, recipient, amount, receipt); err != nil {
 				return fmt.Errorf(what+"%w", err)
 			}
+		default:
+			// Unreachable: p.Asset is validated by bridgeAssetWord and
+			// claimedTotalSlot above. The default exists so a future refactor
+			// that drops either check fails loudly instead of marking an id
+			// claimed without crediting anything.
+			return fmt.Errorf(what+"unhandled asset %q", p.Asset)
 		}
 		if err := b.setBigSlot(brClaimSlot(p.ID), new(big.Int).SetUint64(ctx.Height+1)); err != nil {
 			return err
