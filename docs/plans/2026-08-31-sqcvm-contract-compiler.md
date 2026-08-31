@@ -149,10 +149,33 @@ Package `compiler/` (non-consensus). Pipeline: **source → lexer → parser →
 3. **Deploy path**: a constructor/init-code convention so state can be set at
    deploy (today a separate guarded `init()` call is required, as in the token
    sample); deploy-time code-size/gas limits.
-4. **Toolchain**: a `cmd/sqc-solc` CLI (source → hex + ABI JSON), wiring into
-   `POST /vm/validate` and `/vm/estimate-gas`, source verification on the
-   explorer (compile server-side, compare bytecode), and a disassembler
-   round-trip test in CI.
+4. **Toolchain**: `cmd/sqc-solc` (source → hex + ABI JSON) and `cmd/sqc-deploy`
+   (deploy / call / view / **verify** against a live node) exist. `verify` is
+   the source-verification primitive: `Compile` is deterministic, so
+   byte-equality against `GET /contract/{addr}/code` proves a source file
+   matches a deployed contract. Still open: a node/explorer endpoint so the
+   explorer UI can verify server-side (the explorer has no source-verify UI
+   yet), and a disassembler round-trip test in CI.
+
+### Live devnet deployment (2026-08-31, splendor-quantum-devnet-1)
+
+Deployed with `sqc-deploy` and verified end-to-end against the running chain
+(all view answers identical to the local engine tests and the anvil/EVM
+differential):
+
+| contract | address |
+|---|---|
+| `examples/counter.qsol` | `SQ:fe12de831bcb2148c664dbcca1bdbddf7bd4ea6714f1fa838b49c9a46bb72775` |
+| `examples/mathdemo.qsol` | `SQ:825f23595a7e1daa665096307ac5da2ab85db35a9f850904fdeaec0d82f8b4a1` |
+| `examples/token.qsol` | `SQ:1c15a50d03e68c169a8aa2c12984d9ab4c60a305a70105e4729237c7b19bc2c7` |
+
+Observed live: checked arithmetic (`add(2^256-1)` → `require: overflow`),
+short-circuit `&&` (`safeDiv(10,0)` → `0`, no revert), require reasons in
+`revert_reason`, SHA3 mapping balances after mint/transfer, and — because the
+devnet predates `vm_revert_v1` — a reverting TRANSACTION is dropped by the
+producer (no receipt, no charge), exactly the legacy behavior the fork fixes.
+All three addresses verify with `sqc-deploy verify`; a wrong source correctly
+reports MISMATCH.
 5. **Optimizer**: none — codegen is naive (redundant `PUSH`/`POP`, no common
    subexpression elimination, recomputes mapping slots). Fine for correctness,
    not for gas.
