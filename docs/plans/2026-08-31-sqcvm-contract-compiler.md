@@ -130,11 +130,16 @@ Package `compiler/` (non-consensus). Pipeline: **source → lexer → parser →
 
 ## Gap list: prototype → production
 
-1. **Language coverage**: no `for`/`while` loops, no internal function calls, no
-   structs/arrays/strings, no `constructor` (deploy stores runtime code
-   directly — needs an initializer convention or an init-code phase), no
-   multiple return values, no explicit `event`/`error` declarations, no
-   `modifier`s, no inheritance, one contract per source unit.
+1. **Language coverage**: no internal function calls, no structs/arrays/strings,
+   no `constructor` (deploy stores runtime code directly — needs an initializer
+   convention or an init-code phase), no multiple return values, no explicit
+   `event`/`error` declarations, no `modifier`s, no inheritance, no
+   `break`/`continue`, one contract per source unit.
+   Landed since: **local variables and `for`/`while` loops**. Locals are
+   256-bit words in scratch memory above the mapping scratch, block-scoped,
+   with slots allocated monotonically (no liveness analysis). Parameters are
+   locals copied from calldata on entry, so a function can assign to its own
+   parameters as in Solidity. An unbounded loop ends on the gas ceiling.
    Landed since the prototype: `/ %`, short-circuit `&& ||`, `!`, `else`,
    compound assignment, `require(cond, "reason")`, visibility modifiers
    (ignored), Solidity operator precedence, and **checked arithmetic**
