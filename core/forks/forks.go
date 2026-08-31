@@ -51,6 +51,9 @@ const (
 	// ModuleRevertV1 makes a failing module call a failed receipt instead of a
 	// dropped transaction.
 	ModuleRevertV1 = "module_revert_v1"
+	// BridgeV1 activates the one-way legacy-mainnet migration bridge module.
+	// Requires ModuleRevertV1 no later than itself (see Validate).
+	BridgeV1 = "bridge_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -59,7 +62,7 @@ const (
 // fork name is otherwise invisible: the node reports a healthy schedule, the
 // rule never activates, and nobody finds out until the height passes without
 // anything happening.
-var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1}
+var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, BridgeV1}
 
 // Schedule maps an upgrade name to the height at which it takes effect.
 type Schedule map[string]uint64
@@ -111,7 +114,7 @@ func (s Schedule) Validate() error {
 	// before (or without) that rule describes a chain that cannot run it
 	// safely, so the document is refused rather than honoured in part. The
 	// dependents are checked in sorted order for a stable report.
-	for _, name := range []string{ExchangeV1, QRC1155V1, QRC20V2} {
+	for _, name := range []string{BridgeV1, ExchangeV1, QRC1155V1, QRC20V2} {
 		at, ok := s.At(name)
 		if !ok {
 			continue
