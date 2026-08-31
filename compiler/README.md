@@ -51,9 +51,12 @@ unimplemented, the compiler defines the calling convention itself:
 
 No loops, internal calls, arrays/structs/strings, constructor (use a guarded
 `init()`), overflow checks, or optimizer. Integer math wraps at 2^256.
-**`require` must precede any storage write**: a top-level `REVERT` does not roll
-back entry-frame storage (proven in `compiler_test.go`), so codegen relies on
-checks-effects ordering. See the design doc's gap list.
+`require` before any storage write (checks-effects) remains the compiler's
+emission order: the ENGINE does not roll back entry-frame storage on a
+top-level `REVERT` (proven in `compiler_test.go`); the executor cleans up —
+pre-fork by dropping the tx as unappliable, under the `vm_revert_v1` fork by
+rolling back the frame and including the tx with a failed receipt. See the
+design doc's gap list.
 
 ## Files
 

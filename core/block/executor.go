@@ -707,15 +707,54 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 	fromAcc.IncrNonce()
 	e.state.SetAccount(fromAcc)
 
+	// vm_revert_v1: the frame runs inside its own snapshot, nested in the
+	// per-tx one, so a top-level REVERT can undo the frame's writes while the
+	// fee debit and nonce bump above are kept. The engine snapshots only
+	// sub-calls; the entry frame runs directly on state, so without this a
+	// reverting call is unappliable (the producer drops it and the sender's
+	// call can never land — the jam module_revert_v1 fixed for modules).
+	vmRevert := e.schedule().Active(forks.VMRevertV1, blockHeight)
+	var frame uint64
+	if vmRevert {
+		frame = e.state.Snapshot()
+	}
+
 	result, err := e.vmEngine.CallWithContext(
 		tx.From, tx.From, tx.To, tx.Data, tx.Amount,
 		blockHeight, blockTime, false,
 	)
-	if err != nil {
-		return fmt.Errorf("call failed: %w", err)
-	}
 
 	reverted := result != nil && result.Reverted
+	if vmRevert && reverted {
+		// Included with a failed receipt: fee kept, nonce consumed, gas
+		// recorded — and every write and log of the frame rolled back, the
+		// deal a reverted EVM transaction gets. A snapshot-layer error makes
+		// the tx unappliable; the per-tx checkpoint then decides whether the
+		// block survives.
+		if rerr := e.state.RevertToSnapshot(frame); rerr != nil {
+			return fmt.Errorf("revert of reverted call frame: %w", rerr)
+		}
+		receipt.GasUsed = result.GasUsed
+		receipt.Logs = []*types.Log{}
+		msg := "execution reverted"
+		if result.Err != nil {
+			msg = result.Err.Error()
+		}
+		receipt.SetFailed(msg)
+		return nil
+	}
+	if err != nil {
+		// Hard error (or any revert under legacy rules): unappliable, exactly
+		// as before the fork. The open frame checkpoint, if any, is consumed
+		// by the per-tx revert above this call.
+		return fmt.Errorf("call failed: %w", err)
+	}
+	if vmRevert {
+		if cerr := e.state.CommitSnapshot(frame); cerr != nil {
+			return fmt.Errorf("commit of call frame snapshot: %w", cerr)
+		}
+	}
+
 	if result != nil {
 		receipt.GasUsed = result.GasUsed
 		for _, l := range result.Logs {

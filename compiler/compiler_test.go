@@ -292,12 +292,16 @@ func TestCompileErrors(t *testing.T) {
 var _ = mustBig
 
 // TestTopLevelRevertDoesNotRollBackStorage documents a load-bearing VM fact the
-// compiler MUST honor: a REVERT in the top-level call frame does NOT undo the
-// SSTOREs made before it. The engine snapshots sub-calls (OpCALL) but runs the
-// entry frame directly against state, and the executor commits a reverted
-// bytecode tx's snapshot (only the receipt is marked failed). So generated code
-// must place every `require` BEFORE any storage write — which this compiler
-// does. Hand-written bytecode proves the underlying behavior.
+// compiler designs around: at the ENGINE level, a REVERT in the top-level call
+// frame does NOT undo the SSTOREs made before it — the engine snapshots
+// sub-calls (OpCALL) but runs the entry frame directly against state. The
+// EXECUTOR is what cleans up: pre-fork it treats the reverted call as
+// unappliable (per-tx snapshot reverts everything, tx dropped); under
+// vm_revert_v1 it wraps the frame in a nested snapshot and includes the tx
+// with a failed receipt. Generated code still places every `require` BEFORE
+// any storage write (checks-effects) — good hygiene, and the only protection
+// for callers that embed the engine without the executor's snapshots.
+// Hand-written bytecode proves the underlying engine behavior.
 func TestTopLevelRevertDoesNotRollBackStorage(t *testing.T) {
 	sdb := newState(t)
 	at := acc(0xD0)
