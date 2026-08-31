@@ -1,0 +1,31 @@
+// Loops and locals. Every arithmetic op is checked, so `sumTo` reverts with
+// "overflow" long before the counter could wrap.
+contract Loops {
+    mapping(uint256 => uint256) squares;
+
+    function sumTo(uint256 n) public view returns (uint256) {
+        uint256 total = 0;
+        for (uint256 i = 1; i <= n; i += 1) {
+            total += i;
+        }
+        return total;
+    }
+
+    // Assigns to its own parameter, as Solidity allows.
+    function halvings(uint256 n) public view returns (uint256) {
+        uint256 steps = 0;
+        while (n > 1) {
+            n = n / 2;
+            steps += 1;
+        }
+        return steps;
+    }
+
+    function fill(uint256 n) public {
+        for (uint256 i = 0; i < n; i += 1) {
+            squares[i] = i * i;
+        }
+    }
+
+    function squareOf(uint256 k) public view returns (uint256) { return squares[k]; }
+}
