@@ -141,6 +141,7 @@ contract QuantumMigrationBurnTest is Test {
     bytes32 constant RECIPIENT = keccak256("SQ:test-recipient");
     address constant BURN_SINK = 0x000000000000000000000000000000000000dEaD;
     uint256 constant MIN_BURN = 1e18;
+    uint256 constant MAX_BURN = 100 ether;
 
     event Burned(
         uint256 indexed id, address indexed sender, uint8 indexed asset, uint256 amount, bytes32 quantumRecipient
@@ -154,7 +155,7 @@ contract QuantumMigrationBurnTest is Test {
     function setUp() public {
         splv = new MockSplv();
         vm.prank(ownerAddr);
-        burn = new QuantumMigrationBurn(address(splv), pauserAddr);
+        burn = new QuantumMigrationBurn(address(splv), pauserAddr, MAX_BURN);
 
         splv.mint(user, 1_000 ether);
         vm.deal(user, 1_000 ether);
@@ -175,6 +176,7 @@ contract QuantumMigrationBurnTest is Test {
         assertEq(burn.pauser(), pauserAddr);
         assertEq(burn.pendingOwner(), address(0));
         assertEq(burn.MIN_BURN(), 1e18);
+        assertEq(burn.maxBurn(), MAX_BURN);
         assertEq(burn.BURN_SINK(), BURN_SINK);
         assertEq(burn.ASSET_SPLD(), 0);
         assertEq(burn.ASSET_SPLV(), 1);
@@ -184,13 +186,21 @@ contract QuantumMigrationBurnTest is Test {
 
     function test_ConstructorRejectsInvalidInputs() public {
         vm.expectRevert(QuantumMigrationBurn.ZeroAddress.selector);
-        new QuantumMigrationBurn(address(0), pauserAddr);
+        new QuantumMigrationBurn(address(0), pauserAddr, MAX_BURN);
 
         vm.expectRevert(QuantumMigrationBurn.ZeroAddress.selector);
-        new QuantumMigrationBurn(address(splv), address(0));
+        new QuantumMigrationBurn(address(splv), address(0), MAX_BURN);
 
         vm.expectRevert(QuantumMigrationBurn.SplvNotContract.selector);
-        new QuantumMigrationBurn(other, pauserAddr);
+        new QuantumMigrationBurn(other, pauserAddr, MAX_BURN);
+
+        // maxBurn below the minimum burn is nonsensical and refused.
+        vm.expectRevert(QuantumMigrationBurn.InvalidMaxBurn.selector);
+        new QuantumMigrationBurn(address(splv), pauserAddr, MIN_BURN - 1);
+
+        // Exactly MIN_BURN is the smallest legal ceiling.
+        QuantumMigrationBurn tight = new QuantumMigrationBurn(address(splv), pauserAddr, MIN_BURN);
+        assertEq(tight.maxBurn(), MIN_BURN);
     }
 
     // ------------------------------------------------------------------
@@ -231,6 +241,18 @@ contract QuantumMigrationBurnTest is Test {
         vm.prank(user);
         vm.expectRevert(QuantumMigrationBurn.ZeroQuantumRecipient.selector);
         burn.burnSpld{value: 1 ether}(bytes32(0));
+    }
+
+    function test_BurnSpldEnforcesMaxBurn() public {
+        vm.deal(user, MAX_BURN + 1);
+        vm.prank(user);
+        vm.expectRevert(QuantumMigrationBurn.AboveMaximumBurn.selector);
+        burn.burnSpld{value: MAX_BURN + 1}(RECIPIENT);
+
+        // Exactly the maximum is accepted.
+        vm.prank(user);
+        burn.burnSpld{value: MAX_BURN}(RECIPIENT);
+        assertEq(burn.burnCount(), 1);
     }
 
     // ------------------------------------------------------------------
@@ -284,6 +306,20 @@ contract QuantumMigrationBurnTest is Test {
         burn.burnSplv(1 ether, RECIPIENT);
     }
 
+    function test_BurnSplvEnforcesMaxBurn() public {
+        splv.mint(user, MAX_BURN + 1);
+        _approve(user, type(uint256).max);
+
+        vm.prank(user);
+        vm.expectRevert(QuantumMigrationBurn.AboveMaximumBurn.selector);
+        burn.burnSplv(MAX_BURN + 1, RECIPIENT);
+
+        // Exactly the maximum is accepted.
+        vm.prank(user);
+        burn.burnSplv(MAX_BURN, RECIPIENT);
+        assertEq(burn.burnCount(), 1);
+    }
+
     // ------------------------------------------------------------------
     // Shared burn id counter
     // ------------------------------------------------------------------
@@ -316,7 +352,7 @@ contract QuantumMigrationBurnTest is Test {
     function test_FeeOnTransferSplvRefused() public {
         FeeSplv feeToken = new FeeSplv();
         vm.prank(ownerAddr);
-        QuantumMigrationBurn feeBurn = new QuantumMigrationBurn(address(feeToken), pauserAddr);
+        QuantumMigrationBurn feeBurn = new QuantumMigrationBurn(address(feeToken), pauserAddr, MAX_BURN);
 
         feeToken.mint(user, 100 ether);
         vm.prank(user);
@@ -332,7 +368,7 @@ contract QuantumMigrationBurnTest is Test {
     function test_NoReturnSplvAccepted() public {
         NoReturnSplv usdtStyle = new NoReturnSplv();
         vm.prank(ownerAddr);
-        QuantumMigrationBurn nrBurn = new QuantumMigrationBurn(address(usdtStyle), pauserAddr);
+        QuantumMigrationBurn nrBurn = new QuantumMigrationBurn(address(usdtStyle), pauserAddr, MAX_BURN);
 
         usdtStyle.mint(user, 100 ether);
         vm.prank(user);
@@ -351,7 +387,7 @@ contract QuantumMigrationBurnTest is Test {
     function test_FalseReturnSplvRefused() public {
         FalseReturnSplv falseToken = new FalseReturnSplv();
         vm.prank(ownerAddr);
-        QuantumMigrationBurn frBurn = new QuantumMigrationBurn(address(falseToken), pauserAddr);
+        QuantumMigrationBurn frBurn = new QuantumMigrationBurn(address(falseToken), pauserAddr, MAX_BURN);
 
         falseToken.mint(user, 100 ether);
         vm.prank(user);
@@ -462,7 +498,7 @@ contract QuantumMigrationBurnTest is Test {
     function test_ReentrancyViaMaliciousTokenBlocked() public {
         ReentrantSplv evil = new ReentrantSplv();
         vm.prank(ownerAddr);
-        QuantumMigrationBurn evilBurn = new QuantumMigrationBurn(address(evil), pauserAddr);
+        QuantumMigrationBurn evilBurn = new QuantumMigrationBurn(address(evil), pauserAddr, MAX_BURN);
         evil.setTarget(evilBurn);
         vm.deal(address(evil), 1 ether);
 

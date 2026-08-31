@@ -83,11 +83,17 @@ Solidity 0.8.28, `evm_version = london` (the node is pre-Merge geth ~1.10.x — 
 with a Cancun default). Non-upgradeable. OpenZeppelin `AccessControl` (PAUSER_ROLE only) +
 `Pausable` + `ReentrancyGuard`.
 
-- `burnSpld(bytes32 quantumRecipient) payable` — requires `msg.value >= 1e18`,
+- `burnSpld(bytes32 quantumRecipient) payable` — requires `1e18 <= msg.value <= maxBurn`,
   `quantumRecipient != 0`, not paused. Forwards the full value to `0x…dEaD`.
-- `burnSplv(uint256 amount, bytes32 quantumRecipient)` — requires `amount >= 1e18`;
+- `burnSplv(uint256 amount, bytes32 quantumRecipient)` — requires `1e18 <= amount <= maxBurn`;
   `transferFrom(msg.sender, 0x…dEaD, amount)` with a `balanceOf(dEaD)` before/after check
   (`received == amount`, the swap contract's fee-on-transfer defence).
+- **`maxBurn` (immutable) MUST equal the bridge module's `max_claim_amount`.** The module
+  refuses to credit a claim above that cap, so a burn above it would be destroyed and never
+  claimable — enforcing the same ceiling on the burn side makes an un-creditable burn
+  structurally impossible; a larger migration is several sub-cap burns. Deploy the module
+  first, read its cap, pass the identical value to the burn constructor. This closes the
+  review's one money-loss finding (over-cap burn stranding).
 - `event Burned(uint256 indexed id, address indexed sender, uint8 indexed asset,
   uint256 amount, bytes32 quantumRecipient)` — `id` is a monotonically increasing counter
   starting at 1; `asset` is 0 = SPLD, 1 = SPLV. `quantumRecipient` is the 32 raw bytes of the

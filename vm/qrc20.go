@@ -497,17 +497,31 @@ func (t *QRC20Token) MintWithEvents(caller, recipient qcrypto.Address, amount *b
 		return fmt.Errorf("QRC20 mint: cannot mint to zero address")
 	}
 
-	// Check cap
-	maxSupply, _ := t.MaxSupply()
+	// Check cap. A StateDB read error must PROPAGATE, never fold to zero: a
+	// node that read max_supply/total_supply/balance as 0 on an I/O fault
+	// would skip the cap and OVERWRITE (not add to) supply and balance,
+	// diverging from nodes that read them cleanly. This is the same
+	// "divergence lesson" the exchange readers were written to honour, and it
+	// matters here because a module-managed mint (the bridge's capped SPLV) is
+	// a consensus-critical caller of this path.
+	maxSupply, err := t.MaxSupply()
+	if err != nil {
+		return err
+	}
+	supply, err := t.TotalSupply()
+	if err != nil {
+		return err
+	}
 	if maxSupply.Sign() > 0 {
-		supply, _ := t.TotalSupply()
 		if new(big.Int).Add(supply, amount).Cmp(maxSupply) > 0 {
 			return fmt.Errorf("QRC20 mint: would exceed max supply (%s)", maxSupply)
 		}
 	}
 
-	supply, _ := t.TotalSupply()
-	bal, _ := t.BalanceOf(recipient)
+	bal, err := t.BalanceOf(recipient)
+	if err != nil {
+		return err
+	}
 
 	if err := t.setBigInt(slotTotalSupply, new(big.Int).Add(supply, amount)); err != nil {
 		return err

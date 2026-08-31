@@ -53,6 +53,11 @@ contract QuantumMigrationBurn {
     error ExpectedPause();
     /// @dev Burn amount is below {MIN_BURN}.
     error BelowMinimumBurn();
+    /// @dev Burn amount is above {maxBurn} — it could never be claimed on the
+    ///      quantum side, so it is refused here rather than destroyed.
+    error AboveMaximumBurn();
+    /// @dev Constructor was given a maxBurn below {MIN_BURN}.
+    error InvalidMaxBurn();
     /// @dev The quantum recipient is bytes32(0).
     error ZeroQuantumRecipient();
     /// @dev Reentrant call detected.
@@ -78,6 +83,15 @@ contract QuantumMigrationBurn {
 
     /// @notice Minimum burn per transaction, both assets: 1 whole token.
     uint256 public constant MIN_BURN = 1e18;
+
+    /// @notice Maximum burn per transaction, both assets. MUST equal the
+    ///         quantum bridge's `max_claim_amount`: the quantum module refuses
+    ///         to credit a claim larger than that, so a burn above it would be
+    ///         destroyed on this chain and never claimable. Enforcing the same
+    ///         ceiling here makes an un-creditable burn structurally
+    ///         impossible; a larger migration is done as several burns.
+    ///         Immutable — changing it (or the claim cap) means redeploying.
+    uint256 public immutable maxBurn;
 
     /// @notice Where every burn ends up. No key exists for this address.
     address public constant BURN_SINK = 0x000000000000000000000000000000000000dEaD;
@@ -159,11 +173,15 @@ contract QuantumMigrationBurn {
     /// @param splv_ The legacy SPLV ERC-20 token (must have code).
     /// @param pauser_ Initial pauser (must be non-zero; the incident brake
     ///        should exist from block one).
-    constructor(address splv_, address pauser_) {
+    /// @param maxBurn_ Maximum burn per transaction; MUST equal the quantum
+    ///        bridge's max_claim_amount (see {maxBurn}). Must be >= {MIN_BURN}.
+    constructor(address splv_, address pauser_, uint256 maxBurn_) {
         if (splv_ == address(0) || pauser_ == address(0)) revert ZeroAddress();
         if (splv_.code.length == 0) revert SplvNotContract();
+        if (maxBurn_ < MIN_BURN) revert InvalidMaxBurn();
 
         splv = IERC20(splv_);
+        maxBurn = maxBurn_;
         owner = msg.sender;
         pauser = pauser_;
 
@@ -177,11 +195,14 @@ contract QuantumMigrationBurn {
 
     /// @notice Burns native SPLD for migration: forwards the full `msg.value`
     ///         to {BURN_SINK} and emits {Burned} with asset = 0.
-    /// @dev The contract balance is zero before and after; nothing is held.
+    /// @dev Forwards `msg.value` (never `address(this).balance`), so no burn
+    ///      path leaves the contract holding funds. Value force-sent via
+    ///      selfdestruct/coinbase is unreachable by design and never credited.
     /// @param quantumRecipient 32 raw bytes of the destination `SQ:` address
     ///        (the hex after the `SQ:` prefix). Must not be zero.
     function burnSpld(bytes32 quantumRecipient) external payable whenNotPaused nonReentrant {
         if (msg.value < MIN_BURN) revert BelowMinimumBurn();
+        if (msg.value > maxBurn) revert AboveMaximumBurn();
         if (quantumRecipient == bytes32(0)) revert ZeroQuantumRecipient();
 
         uint256 id = ++burnCount;
@@ -205,6 +226,7 @@ contract QuantumMigrationBurn {
     ///        Must not be zero.
     function burnSplv(uint256 amount, bytes32 quantumRecipient) external whenNotPaused nonReentrant {
         if (amount < MIN_BURN) revert BelowMinimumBurn();
+        if (amount > maxBurn) revert AboveMaximumBurn();
         if (quantumRecipient == bytes32(0)) revert ZeroQuantumRecipient();
 
         uint256 sinkBefore = splv.balanceOf(BURN_SINK);
