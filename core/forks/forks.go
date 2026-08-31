@@ -12,6 +12,16 @@
 // before block 0, is covered by the genesis hash operators pin, and is
 // identical on every node by construction rather than by coordination.
 //
+// A rule decided AFTER launch is the remaining case, and it is a real one: a
+// consensus bug found at height 100k cannot wait for the next network. Such an
+// upgrade may be ADDED to a running chain's schedule — never one already in it,
+// and only at a height above the chain's head, so no applied block is
+// retroactively judged under a rule adopted later. That is deliberately an
+// operator action (`sqc-node --allow-fork-extension`), not an automatic one:
+// the whole network must be on the new document before the activation height,
+// and a node adopting a rule alone forks there. See cmd/node's
+// extendForkSchedule for the reconciliation rules.
+//
 // A height of 0 (or an absent name) means "never" rather than "at genesis".
 // Genesis is height 0, so treating 0 as active would silently switch on every
 // unset rule from the first block — the opposite of the intended default, and
