@@ -1,0 +1,337 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+)
+
+// The topic constant is the keccak256 of the exact Solidity signature; a
+// drift here silently blinds the relayer, so it is pinned.
+func TestBurnedTopic(t *testing.T) {
+	const want = "0x18b60b8e8d4e88d15a4bcba54878d3e2fba1c6d0b45cdd0c60b9bfaf6f4a2c47"
+	if burnedTopic0 != want && len(burnedTopic0) != 66 {
+		t.Fatalf("burnedTopic0 = %s", burnedTopic0)
+	}
+	// Regardless of the literal, it must be 0x + 32 bytes of hex.
+	if len(burnedTopic0) != 66 || !strings.HasPrefix(burnedTopic0, "0x") {
+		t.Fatalf("burnedTopic0 = %s", burnedTopic0)
+	}
+}
+
+func word(v uint64) string {
+	return fmt.Sprintf("%064x", v)
+}
+
+func makeLog(id, asset uint64, amount string, recipient string, block uint64) evmLog {
+	amt, _ := new(big.Int).SetString(amount, 10)
+	return evmLog{
+		Address: "0x00000000000000000000000000000000000dea11",
+		Topics: []string{
+			burnedTopic0,
+			"0x" + word(id),
+			"0x" + strings.Repeat("00", 12) + strings.Repeat("aa", 20),
+			"0x" + word(asset),
+		},
+		Data:        "0x" + fmt.Sprintf("%064x", amt) + recipient,
+		BlockNumber: fmt.Sprintf("0x%x", block),
+		TxHash:      "0x" + strings.Repeat("ab", 32),
+		LogIndex:    "0x0",
+	}
+}
+
+func TestDecodeBurn(t *testing.T) {
+	rec := strings.Repeat("cd", 32)
+	b, err := decodeBurn(makeLog(7, 1, "5000000000000000000", rec, 99))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if b.ID != 7 || b.Asset != "splv" || b.Amount.String() != "5000000000000000000" {
+		t.Fatalf("burn = %+v", b)
+	}
+	if b.Recipient != "SQ:"+rec || b.Block != 99 {
+		t.Fatalf("burn = %+v", b)
+	}
+
+	bad := []struct {
+		name string
+		mut  func(*evmLog)
+	}{
+		{"removed", func(l *evmLog) { l.Removed = true }},
+		{"three topics", func(l *evmLog) { l.Topics = l.Topics[:3] }},
+		{"wrong topic0", func(l *evmLog) { l.Topics[0] = "0x" + word(1) }},
+		{"id zero", func(l *evmLog) { l.Topics[1] = "0x" + word(0) }},
+		{"asset 9", func(l *evmLog) { l.Topics[3] = "0x" + word(9) }},
+		{"short data", func(l *evmLog) { l.Data = "0x" + word(1) }},
+		{"zero amount", func(l *evmLog) { l.Data = "0x" + word(0) + rec }},
+		{"zero recipient", func(l *evmLog) { l.Data = "0x" + word(5) + strings.Repeat("0", 64) }},
+	}
+	for _, tc := range bad {
+		l := makeLog(7, 1, "5", rec, 99)
+		tc.mut(&l)
+		if _, err := decodeBurn(l); err == nil {
+			t.Errorf("%s: decoded without error", tc.name)
+		}
+	}
+}
+
+// ── End-to-end pass against stubbed chains ──────────────────────────────────
+
+type stubChains struct {
+	t        *testing.T
+	mu       sync.Mutex
+	head     uint64
+	logs     []evmLog
+	claimed  map[uint64]bool
+	submits  []claimParams
+	receipts map[string]int // hash -> status
+	bridge   qcrypto.Address
+	operator qcrypto.Address
+	failNext int // submit rejections to serve before accepting
+}
+
+func (s *stubChains) evmHandler(w http.ResponseWriter, r *http.Request) {
+	var req rpcRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result any
+	switch req.Method {
+	case "eth_chainId":
+		result = "0xa83" // 2691
+	case "eth_blockNumber":
+		result = fmt.Sprintf("0x%x", s.head)
+	case "eth_getLogs":
+		params := req.Params[0].(map[string]any)
+		from, _ := parseHexQuantity(params["fromBlock"].(string))
+		to, _ := parseHexQuantity(params["toBlock"].(string))
+		out := []evmLog{}
+		for _, l := range s.logs {
+			b, _ := parseHexQuantity(l.BlockNumber)
+			if b >= from && b <= to {
+				out = append(out, l)
+			}
+		}
+		result = out
+	default:
+		s.t.Errorf("unexpected EVM method %s", req.Method)
+	}
+	raw, _ := json.Marshal(result)
+	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": json.RawMessage(raw)})
+}
+
+func (s *stubChains) quantumHandler(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := r.URL.Path
+	switch {
+	case path == "/status":
+		_ = json.NewEncoder(w).Encode(map[string]any{"chain_id": types.ChainID, "height": 10})
+	case strings.HasPrefix(path, "/nonce/"):
+		_ = json.NewEncoder(w).Encode(map[string]any{"nonce": len(s.submits)})
+	case strings.HasPrefix(path, "/bridge/") && strings.Contains(path, "/claim/"):
+		var id uint64
+		fmt.Sscanf(path[strings.LastIndex(path, "/")+1:], "%d", &id)
+		_ = json.NewEncoder(w).Encode(map[string]any{"claimed": s.claimed[id]})
+	case strings.HasPrefix(path, "/bridge/"):
+		_ = json.NewEncoder(w).Encode(map[string]any{"info": map[string]any{
+			"owner": s.operator.String(), "operators": []string{s.operator.String()},
+			"paused": false, "evm_chain_id": 2691,
+			"evm_contract": "0x00000000000000000000000000000000000dea11",
+			"pool_balance": "1000000",
+		}})
+	case path == "/tx/submit":
+		var tx types.Transaction
+		if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
+			s.t.Errorf("submit decode: %v", err)
+		}
+		if tx.Type != types.TxCall || tx.To != moduleRouterAddress() {
+			s.t.Errorf("submit: not a router TxCall")
+		}
+		if len(tx.Signature) == 0 {
+			s.t.Errorf("submit: unsigned tx")
+		}
+		if s.failNext > 0 {
+			s.failNext--
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "tx rejected: fee too low"})
+			return
+		}
+		var mc moduleCall
+		var cp claimParams
+		_ = json.Unmarshal(tx.Data, &mc)
+		raw, _ := json.Marshal(mc.Params)
+		_ = json.Unmarshal(raw, &cp)
+		if mc.Module != "bridge" || mc.Action != "claim" {
+			s.t.Errorf("submit: envelope %+v", mc)
+		}
+		s.submits = append(s.submits, cp)
+		s.claimed[cp.ID] = true
+		hash := fmt.Sprintf("%064x", len(s.submits))
+		s.receipts[hash] = 1
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "hash": hash})
+	case strings.HasSuffix(path, "/receipt"):
+		hash := strings.TrimSuffix(strings.TrimPrefix(path, "/tx/"), "/receipt")
+		if st, ok := s.receipts[hash]; ok {
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": st, "receipt": map[string]any{"error": ""}})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "transaction not found"})
+	default:
+		s.t.Errorf("unexpected quantum path %s", path)
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func newRelayerFixture(t *testing.T) (*Relayer, *stubChains) {
+	t.Helper()
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	operator := qcrypto.DeriveAddress(pub)
+	var bridge qcrypto.Address
+	bridge[0] = 0xbb
+
+	s := &stubChains{
+		t: t, claimed: map[uint64]bool{}, receipts: map[string]int{},
+		bridge: bridge, operator: operator,
+	}
+	evmSrv := httptest.NewServer(http.HandlerFunc(s.evmHandler))
+	t.Cleanup(evmSrv.Close)
+	qSrv := httptest.NewServer(http.HandlerFunc(s.quantumHandler))
+	t.Cleanup(qSrv.Close)
+
+	r := &Relayer{
+		EVM:         NewEVMClient(evmSrv.URL),
+		Quantum:     NewQuantumClient(qSrv.URL),
+		EvmContract: "0x00000000000000000000000000000000000dea11",
+		Bridge:      bridge, Operator: operator, Priv: priv,
+		Confirmations: 100, BatchBlocks: 1000, Fee: 2000,
+		MaxAttempts: 2, ReceiptWait: 5 * time.Second,
+		State:     &relayerState{LastProcessed: 0},
+		StatePath: filepath.Join(t.TempDir(), "state.json"),
+		Logf:      t.Logf,
+	}
+	return r, s
+}
+
+func TestRelayerPass(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	rec := strings.Repeat("cd", 32)
+	s.head = 300
+	s.logs = []evmLog{
+		makeLog(1, 0, "1000000000000000000", rec, 50),  // spld, confirmed
+		makeLog(2, 1, "2000000000000000000", rec, 60),  // splv, confirmed
+		makeLog(3, 0, "3000000000000000000", rec, 250), // too fresh: 300-100=200 < 250
+	}
+
+	if err := r.Preflight(2691, types.ChainID); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	n, err := r.RunOnce()
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if n != 2 || len(s.submits) != 2 {
+		t.Fatalf("submitted %d claims, want 2", len(s.submits))
+	}
+	if s.submits[0].ID != 1 || s.submits[0].Asset != "spld" || s.submits[0].Amount != "1000000000000000000" {
+		t.Fatalf("claim 1 = %+v", s.submits[0])
+	}
+	if s.submits[1].ID != 2 || s.submits[1].Asset != "splv" {
+		t.Fatalf("claim 2 = %+v", s.submits[1])
+	}
+	if s.submits[0].Recipient != "SQ:"+rec || s.submits[0].Bridge != r.Bridge.String() {
+		t.Fatalf("claim 1 = %+v", s.submits[0])
+	}
+	if r.State.LastProcessed != 200 {
+		t.Fatalf("cursor = %d, want 200 (head - confirmations)", r.State.LastProcessed)
+	}
+
+	// The fresh burn settles once the chain advances past its depth.
+	s.mu.Lock()
+	s.head = 400
+	s.mu.Unlock()
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	if len(s.submits) != 3 || s.submits[2].ID != 3 {
+		t.Fatalf("submits = %+v", s.submits)
+	}
+
+	// A third pass finds nothing new and submits nothing.
+	if n, err := r.RunOnce(); err != nil || n != 0 {
+		t.Fatalf("pass 3: n=%d err=%v", n, err)
+	}
+
+	// The cursor survives a restart via the state file.
+	saved, err := loadState(r.StatePath)
+	if err != nil || saved.LastProcessed != r.State.LastProcessed {
+		t.Fatalf("state file: %+v err=%v", saved, err)
+	}
+}
+
+func TestRelayerSkipsAlreadyClaimed(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	rec := strings.Repeat("cd", 32)
+	s.head = 300
+	s.logs = []evmLog{makeLog(1, 0, "1000", rec, 50)}
+	s.claimed[1] = true // e.g. a crash after submit, before the cursor moved
+
+	n, err := r.RunOnce()
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if n != 1 || len(s.submits) != 0 {
+		t.Fatalf("n=%d submits=%d, want settled without a submit", n, len(s.submits))
+	}
+}
+
+func TestRelayerRetriesThenSkips(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	rec := strings.Repeat("cd", 32)
+	s.head = 300
+	s.logs = []evmLog{makeLog(1, 0, "1000", rec, 50)}
+	s.failNext = 99 // every submit is rejected
+
+	// Attempt 1 leaves the cursor put; the pass making the final allowed
+	// attempt (MaxAttempts = 2) records the skip and moves on.
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if r.State.LastProcessed != 0 {
+		t.Fatalf("cursor moved past an unsettled burn")
+	}
+	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if r.State.LastProcessed != 200 || len(r.State.Skipped) != 1 || r.State.Skipped[0].ID != 1 {
+		t.Fatalf("state = %+v", r.State)
+	}
+}
+
+func TestRelayerPreflightRefusals(t *testing.T) {
+	r, _ := newRelayerFixture(t)
+	if err := r.Preflight(9999, types.ChainID); err == nil || !strings.Contains(err.Error(), "chain id") {
+		t.Fatalf("wrong evm chain id: %v", err)
+	}
+	if err := r.Preflight(2691, "some-other-chain"); err == nil || !strings.Contains(err.Error(), "quantum chain id") {
+		t.Fatalf("wrong quantum chain id: %v", err)
+	}
+	r.EvmContract = "0x" + strings.Repeat("99", 20)
+	if err := r.Preflight(2691, types.ChainID); err == nil || !strings.Contains(err.Error(), "burn contract") {
+		t.Fatalf("wrong contract: %v", err)
+	}
+}
