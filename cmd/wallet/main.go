@@ -208,13 +208,18 @@ func cmdBalance() *cobra.Command {
 // ── send ──────────────────────────────────────────────────────────────────
 
 func cmdSend() *cobra.Command {
-	var walletPath, nodeAddr, toAddr, amountSPLD, memo string
+	var walletPath, nodeAddr, toAddr, amountSPLD, memo, chainID string
 	var feeUnits int64
 
 	cmd := &cobra.Command{
 		Use:   "send",
 		Short: "Send SPLD to another address",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if chainID != "" {
+				if err := types.SetClientChainID(chainID); err != nil {
+					return fmt.Errorf("invalid --chain-id: %w", err)
+				}
+			}
 			pub, priv, err := loadWalletInteractive(walletPath)
 			if err != nil {
 				return err
@@ -303,6 +308,7 @@ func cmdSend() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&walletPath, "wallet", "w", "wallet.sqwallet", "Wallet file path")
 	cmd.Flags().StringVar(&nodeAddr, "node", "http://localhost:8080", "Node RPC address")
+	cmd.Flags().StringVar(&chainID, "chain-id", "", "Chain ID to sign for (e.g. splendor-quantum-testnet-1); defaults to mainnet")
 	cmd.Flags().StringVar(&toAddr, "to", "", "Recipient SQ address (required)")
 	cmd.Flags().StringVar(&amountSPLD, "amount", "", "Amount in SPLD (e.g. 10.5) (required)")
 	cmd.Flags().Int64Var(&feeUnits, "fee", 1000, "Transaction fee in smallest SPLD units")
