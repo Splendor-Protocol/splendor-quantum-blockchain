@@ -161,6 +161,35 @@ contract Spin {
 	}
 }
 
+// The ABI's event list is what an indexer uses to know a topic, and what
+// /contract/verify hands back. An event emitted from a nested body — an else
+// branch, a loop — is emitted by the bytecode either way, so if the collector
+// misses it the contract logs a topic nobody can decode.
+func TestEventsInNestedBodiesReachTheABI(t *testing.T) {
+	c, err := Compile(`
+contract Nested {
+    uint256 v;
+    function f(uint256 a) public {
+        if (a == 0) { emit FromIf(a); }
+        else { emit FromElse(a); }
+        for (uint256 i = 0; i < a; i += 1) { emit FromFor(i); }
+        while (v > a) { v = a; emit FromWhile(v); }
+    }
+}`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	found := map[string]bool{}
+	for _, e := range c.Events {
+		found[e.Name] = true
+	}
+	for _, want := range []string{"FromIf", "FromElse", "FromFor", "FromWhile"} {
+		if !found[want] {
+			t.Errorf("event %s is emitted by the bytecode but missing from the ABI (have %v)", want, found)
+		}
+	}
+}
+
 // Using a name that was never declared is a compile error, not a silent zero.
 func TestUndeclaredLocalIsRejected(t *testing.T) {
 	if _, err := Compile(`
