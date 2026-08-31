@@ -162,49 +162,66 @@ Package `compiler/` (non-consensus). Pipeline: **source → lexer → parser →
    explorer UI can verify server-side (the explorer has no source-verify UI
    yet), and a disassembler round-trip test in CI.
 
-### Live devnet deployment (2026-08-31, splendor-quantum-devnet-1)
+### Live devnet deployment (splendor-quantum-devnet-1, node v0.5.2 / 65bbece)
 
-Deployed with `sqc-deploy` and verified end-to-end against the running chain
-(all view answers identical to the local engine tests and the anvil/EVM
-differential):
+Deployed with `sqc-deploy` and verified through the node's own
+`POST /contract/verify`. All view answers match the local engine tests and the
+anvil/EVM differential.
 
 | contract | address |
 |---|---|
-| `examples/counter.qsol` | `SQ:fe12de831bcb2148c664dbcca1bdbddf7bd4ea6714f1fa838b49c9a46bb72775` |
-| `examples/mathdemo.qsol` | `SQ:825f23595a7e1daa665096307ac5da2ab85db35a9f850904fdeaec0d82f8b4a1` |
-| `examples/token.qsol` | `SQ:1c15a50d03e68c169a8aa2c12984d9ab4c60a305a70105e4729237c7b19bc2c7` |
+| `examples/counter.qsol` | `SQ:99723ae98ce6aeb711194ca77cf4e326913d9d5872a4b86b533817df0a20eccf` |
+| `examples/mathdemo.qsol` | `SQ:74faa98c07a5e3fc327aeb3cbb1d06de3f683bfe60dc03910a6f5348cc25cb2c` |
+| `examples/token.qsol` | `SQ:b92f99b50ce70d8da77fcce32d3140e0174cb8b45ea29f1050503e9ffdf6a7bb` |
+| `examples/loops.qsol` | `SQ:35b523370443270beefb5cf7ba703a23d3fd261d420db09a735e0efaf38c357e` |
 
 Observed live: checked arithmetic (`add(2^256-1)` → `require: overflow`),
 short-circuit `&&` (`safeDiv(10,0)` → `0`, no revert), require reasons in
-`revert_reason`, SHA3 mapping balances after mint/transfer, and — because the
-devnet predates `vm_revert_v1` — a reverting TRANSACTION is dropped by the
-producer (no receipt, no charge), exactly the legacy behavior the fork fixes.
-At deploy time all three verified with `sqc-deploy verify`, and a wrong source
-correctly reported MISMATCH.
+`revert_reason`, SHA3 mapping balances after mint/transfer, and loops —
+`sumTo(100)` → 5050 (12,134 gas), `halvings(1024)` → 10 via a `while` that
+assigns to its own parameter, and `fill(6)` writing a mapping inside a `for`
+(123,652 gas) with `squareOf(5)` → 25 and unwritten keys still 0.
 
-**They no longer verify against current source**, and that is expected: the
-locals/loops change added a parameter-copy prologue to every function, so the
-same source now compiles to different bytecode (counter: 111 → 117 bytes).
-This is compiler-version drift, and it is the concrete argument for pinning the
-compiler version in build metadata — a verification claim is only meaningful
-against a named compiler build. Redeploying is blocked on the mempool jam noted
-below.
+`vm_revert_v1` is NOT yet scheduled on this tier, so a reverting TRANSACTION is
+still dropped by the producer (no receipt, no charge) — the legacy behaviour the
+fork fixes, and the reason the fork still has to be activated separately.
 
-### Devnet faucet account is jammed (2026-08-31, unresolved)
+**An earlier set of addresses stopped verifying** when the locals/loops change
+added a parameter-copy prologue to every function (counter: 111 → 117 bytes).
+That is compiler-version drift, not a regression, and it is the concrete
+argument for pinning the compiler version in build metadata: a verification
+claim is only meaningful against a named compiler build. The addresses above
+were redeployed with the current compiler and verify today.
 
-A `TxDeploy` submitted from the faucet account at nonce 9 is accepted into the
-mempool but skipped by `ProduceBlock` every round, so it never lands. It also
-cannot be evicted: `PruneStale` only drops txs whose nonce is BELOW the
-committed nonce, and this one's nonce IS the committed nonce. There is no
-replace-by-fee — a resubmission is refused as a duplicate pending nonce — so
-the account cannot send anything else.
+### Fleet: 250 generated contracts, deployed and verified on the live chain
 
-That account is the devnet faucet's signing key, so devnet drips are blocked
-too. The shape is the one `mempool.PruneStale`'s comment already describes
-("observed live as a jammed heartbeat"). Clearing it needs a node restart or a
-mempool flush; the underlying question — why the producer skips an otherwise
-valid deploy — needs the node's logs, which say why on the "skipping invalid
-tx" path.
+`sqc-deploy fleet -fleet-count 250 -fleet-seed 7` generated 250 distinct
+contracts (varying scalars, mappings, function mixes, loops, branches, events,
+guards), deployed each with a sequential nonce, and verified every one through
+the node's endpoint:
+
+    deployed 250/250 (0 submit failures)
+    verified 250, mismatched 0, errored 0
+
+That exercises what a handful of samples cannot: address derivation across 250
+deploys, mempool admission and block inclusion under sustained load, and
+agreement between the compiler and the node's verifier across 250 distinct
+bytecodes. The in-repo `TestFleetCompilesDeploysAndVerifies` runs the same
+pipeline against the engine and passes at 5000.
+
+### Resolved: the devnet faucet jam
+
+A `TxDeploy` from the faucet at nonce 9 was admitted to the mempool but skipped
+by `ProduceBlock` every round, and could not be evicted — `PruneStale` only
+drops nonces BELOW the committed one, and this one's nonce WAS the committed
+one, with no replace-by-fee. The account, which is the devnet faucet's signer,
+could send nothing. The shape is the one `mempool.PruneStale`'s own comment
+describes ("observed live as a jammed heartbeat").
+
+The v0.5.2 rollout cleared it, as predicted: the mempool is in memory, so the
+restart dropped the stuck transaction. Worth remembering that a node restart is
+the only remedy — and that `sqc-deploy`'s `awaitNonce` now reports a stalled
+nonce as a jam rather than waiting on something that cannot resolve itself.
 5. **Optimizer**: none — codegen is naive (redundant `PUSH`/`POP`, no common
    subexpression elimination, recomputes mapping slots). Fine for correctness,
    not for gas.
