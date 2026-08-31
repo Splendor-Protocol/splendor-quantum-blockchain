@@ -179,8 +179,32 @@ short-circuit `&&` (`safeDiv(10,0)` → `0`, no revert), require reasons in
 `revert_reason`, SHA3 mapping balances after mint/transfer, and — because the
 devnet predates `vm_revert_v1` — a reverting TRANSACTION is dropped by the
 producer (no receipt, no charge), exactly the legacy behavior the fork fixes.
-All three addresses verify with `sqc-deploy verify`; a wrong source correctly
-reports MISMATCH.
+At deploy time all three verified with `sqc-deploy verify`, and a wrong source
+correctly reported MISMATCH.
+
+**They no longer verify against current source**, and that is expected: the
+locals/loops change added a parameter-copy prologue to every function, so the
+same source now compiles to different bytecode (counter: 111 → 117 bytes).
+This is compiler-version drift, and it is the concrete argument for pinning the
+compiler version in build metadata — a verification claim is only meaningful
+against a named compiler build. Redeploying is blocked on the mempool jam noted
+below.
+
+### Devnet faucet account is jammed (2026-08-31, unresolved)
+
+A `TxDeploy` submitted from the faucet account at nonce 9 is accepted into the
+mempool but skipped by `ProduceBlock` every round, so it never lands. It also
+cannot be evicted: `PruneStale` only drops txs whose nonce is BELOW the
+committed nonce, and this one's nonce IS the committed nonce. There is no
+replace-by-fee — a resubmission is refused as a duplicate pending nonce — so
+the account cannot send anything else.
+
+That account is the devnet faucet's signing key, so devnet drips are blocked
+too. The shape is the one `mempool.PruneStale`'s comment already describes
+("observed live as a jammed heartbeat"). Clearing it needs a node restart or a
+mempool flush; the underlying question — why the producer skips an otherwise
+valid deploy — needs the node's logs, which say why on the "skipping invalid
+tx" path.
 5. **Optimizer**: none — codegen is naive (redundant `PUSH`/`POP`, no common
    subexpression elimination, recomputes mapping slots). Fine for correctness,
    not for gas.
