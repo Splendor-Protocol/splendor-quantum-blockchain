@@ -1,0 +1,27 @@
+// A minimal QSol-subset token: guarded mint, checked transfer, events.
+// Compile with: sqc-solc compiler/examples/token.qsol
+contract Token {
+    mapping(address => uint256) balances;
+    address owner;
+    uint256 totalSupply;
+
+    function init() {
+        require(owner == 0);
+        owner = msg.sender;
+    }
+    function mint(address to, uint256 amount) {
+        require(msg.sender == owner);
+        balances[to] = balances[to] + amount;
+        totalSupply = totalSupply + amount;
+        emit Mint(to, amount);
+    }
+    function transfer(address to, uint256 amount) {
+        require(balances[msg.sender] >= amount);
+        balances[msg.sender] = balances[msg.sender] - amount;
+        balances[to] = balances[to] + amount;
+        emit Transfer(msg.sender, to, amount);
+    }
+    function balanceOf(address who) view returns (uint256) {
+        return balances[who];
+    }
+}

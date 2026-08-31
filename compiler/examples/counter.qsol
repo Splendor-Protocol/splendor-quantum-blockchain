@@ -1,0 +1,9 @@
+// A minimal counter. Arithmetic is checked (Solidity >=0.8 semantics): the
+// counter can never wrap — an overflowing add reverts with "overflow".
+contract Counter {
+    uint256 count;
+
+    function inc() public { count += 1; }
+    function add(uint256 n) public { count += n; }
+    function get() public view returns (uint256) { return count; }
+}
