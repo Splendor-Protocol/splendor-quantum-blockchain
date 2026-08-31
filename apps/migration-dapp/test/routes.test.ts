@@ -186,19 +186,23 @@ describe('GET /api/info', () => {
       poolBalance: '900000000000000000000000',
       claimedSpld: '5000000000000000000',
       claimedSplv: '7000000000000000000',
+      maxClaimAmount: '1000000000000000000000000',
       paused: false,
     });
+    // The per-burn ceiling is surfaced at top level for the UI clamp.
+    expect(data.maxBurn).toBe('1000000000000000000000000');
     // Asked exactly the bridge REST endpoint.
     expect(calls.map((c) => c.url)).toEqual([`${QRB}/bridge/${BRIDGE}`]);
   });
 
-  it('degrades to stats:null when the quantum node is dark — never a 5xx', async () => {
+  it('degrades to stats:null and maxBurn:null when the quantum node is dark — never a 5xx', async () => {
     bridgeInfoStatus = 502;
     const res = await worker.fetch(get('/api/info'), env());
     expect(res.status).toBe(200);
     const data = (await res.json()) as Record<string, any>;
     expect(data.ok).toBe(true);
     expect(data.stats).toBeNull();
+    expect(data.maxBurn).toBeNull();
   });
 
   it('degrades to stats:null when fetch itself throws', async () => {
