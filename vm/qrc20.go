@@ -138,6 +138,48 @@ func DeployQRC20Capped(
 	return contractAddr, nil
 }
 
+// initQRC20At writes a fresh token's owner, metadata and cap at addr with a
+// zero initial supply. It is how a native module creates the token it manages
+// (owner == the module's own instance address, which no key derives, so only
+// in-package calls can ever satisfy requireOwner). Like initQRC1155At it
+// refuses to run twice: re-initialising would rewrite the owner and cap of a
+// token that already has holders.
+func initQRC20At(
+	stateDB *state.StateDB,
+	addr, owner qcrypto.Address,
+	name, symbol string,
+	decimals uint8,
+	maxSupply *big.Int,
+) error {
+	if owner.IsZero() {
+		return fmt.Errorf("QRC20 deploy: owner is zero address")
+	}
+	t := NewQRC20Token(stateDB, addr)
+	if existing, _ := t.Owner(); !existing.IsZero() {
+		return fmt.Errorf("QRC20 deploy: token %s already initialised", addr)
+	}
+	if err := t.setString(slotName, name); err != nil {
+		return err
+	}
+	if err := t.setString(slotSymbol, symbol); err != nil {
+		return err
+	}
+	if err := t.setUint8(slotDecimals, decimals); err != nil {
+		return err
+	}
+	if err := t.setBigInt(slotTotalSupply, big.NewInt(0)); err != nil {
+		return err
+	}
+	if err := stateDB.SetStorageValue(addr, slotOwner, owner[:]); err != nil {
+		return err
+	}
+	cap := big.NewInt(0)
+	if maxSupply != nil {
+		cap = maxSupply
+	}
+	return t.setBigInt(slotMaxSupply, cap)
+}
+
 // ── Metadata ──────────────────────────────────────────────────────────────────
 
 func (t *QRC20Token) Name() (string, error)          { return t.getString(slotName) }

@@ -39,7 +39,7 @@ func deriveModuleRouterAddress() qcrypto.Address {
 
 // ModuleCall is the JSON envelope in a module TxCall's Data field.
 type ModuleCall struct {
-	Module string          `json:"module"` // "qrc20" | "qrc1155" | "dex" | "exchange"
+	Module string          `json:"module"` // "qrc20" | "qrc1155" | "dex" | "exchange" | "bridge"
 	Action string          `json:"action"` // e.g. "deploy", "mint", "transfer"
 	Params json.RawMessage `json:"params"`
 }
@@ -94,6 +94,8 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 		return dispatchDEX(stateDB, ctx, mc.Action, mc.Params, receipt)
 	case "exchange":
 		return dispatchExchange(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "bridge":
+		return dispatchBridge(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
 		return hard(fmt.Errorf("module call: unknown module %q", mc.Module))
 	}
@@ -1117,6 +1119,135 @@ func dispatchExchange(stateDB *state.StateDB, ctx ModuleContext, action string, 
 
 	default:
 		return hard(fmt.Errorf("exchange: unknown action %q", action))
+	}
+}
+
+// ── Bridge ──────────────────────────────────────────────────────────────────
+
+// parseBridgeParams is the first step of every bridge write: the fork gate
+// (HARD before the height), then the params (SOFT: the action's own "bad
+// params" complaint).
+func parseBridgeParams(ctx ModuleContext, action string, raw json.RawMessage, p any) error {
+	if err := requireFork(ctx, forks.BridgeV1); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, p); err != nil {
+		return fmt.Errorf("bridge %s: bad params: %w", action, err)
+	}
+	return nil
+}
+
+// bridgeAt resolves the instance a non-deploy action names. Whether anything
+// is deployed there is the action's own check (requireDeployed).
+func bridgeAt(stateDB *state.StateDB, action, s string) (*Bridge, error) {
+	a, err := qcrypto.AddressFromString(s)
+	if err != nil {
+		return nil, fmt.Errorf("bridge %s: bridge: %w", action, err)
+	}
+	return NewBridge(stateDB, a), nil
+}
+
+// bridgeAddressParam decodes one address field of a bridge action.
+func bridgeAddressParam(action, field, s string) (qcrypto.Address, error) {
+	a, err := qcrypto.AddressFromString(s)
+	if err != nil {
+		return qcrypto.Address{}, fmt.Errorf("bridge %s: %s: %w", action, field, err)
+	}
+	return a, nil
+}
+
+// dispatchBridge routes the migration bridge's writes (bridge_v1). Every
+// action is gated first; everything after the gate is SOFT and prefixed
+// "bridge <action>: ". The module methods snapshot and revert on their own.
+func dispatchBridge(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
+	switch action {
+	case "deploy":
+		var p bridgeDeployParams
+		if err := parseBridgeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		if err := capString("bridge deploy", "splv_name", p.SplvName, MaxModuleNameBytes); err != nil {
+			return err
+		}
+		if err := capString("bridge deploy", "splv_symbol", p.SplvSymbol, MaxModuleNameBytes); err != nil {
+			return err
+		}
+		addr, err := DeployBridge(stateDB, ctx, p)
+		if err != nil {
+			return err
+		}
+		receipt.ContractAddress = &addr
+		return nil
+
+	case "claim":
+		var p bridgeClaimParams
+		if err := parseBridgeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		b, err := bridgeAt(stateDB, action, p.Bridge)
+		if err != nil {
+			return err
+		}
+		return b.Claim(ctx, p, receipt)
+
+	case "set_operator":
+		var p bridgeActionParams
+		if err := parseBridgeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		b, err := bridgeAt(stateDB, action, p.Bridge)
+		if err != nil {
+			return err
+		}
+		operator, err := bridgeAddressParam(action, "operator", p.Operator)
+		if err != nil {
+			return err
+		}
+		if p.Active == nil {
+			// Explicit on purpose: a missing flag must not silently revoke.
+			return fmt.Errorf("bridge set_operator: active is required (true grants, false revokes)")
+		}
+		return b.SetOperator(ctx.Caller, operator, *p.Active, receipt)
+
+	case "pause":
+		var p bridgeActionParams
+		if err := parseBridgeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		b, err := bridgeAt(stateDB, action, p.Bridge)
+		if err != nil {
+			return err
+		}
+		return b.Pause(ctx.Caller, receipt)
+
+	case "unpause":
+		var p bridgeActionParams
+		if err := parseBridgeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		b, err := bridgeAt(stateDB, action, p.Bridge)
+		if err != nil {
+			return err
+		}
+		return b.Unpause(ctx.Caller, receipt)
+
+	case "transfer_ownership":
+		var p bridgeActionParams
+		if err := parseBridgeParams(ctx, action, raw, &p); err != nil {
+			return err
+		}
+		b, err := bridgeAt(stateDB, action, p.Bridge)
+		if err != nil {
+			return err
+		}
+		newOwner, err := bridgeAddressParam(action, "new_owner", p.NewOwner)
+		if err != nil {
+			return err
+		}
+		return b.TransferOwnership(ctx.Caller, newOwner, receipt)
+
+	default:
+		return hard(fmt.Errorf("bridge: unknown action %q", action))
 	}
 }
 
