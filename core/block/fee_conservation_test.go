@@ -8,6 +8,7 @@ import (
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
 // supplyOf sums the balances of every address the test cares about.
@@ -189,5 +190,45 @@ func TestSelfTransferBlockDoesNotMint(t *testing.T) {
 	}
 	if total := supplyOf(t, sdb, from, vaddr); total.Cmp(big.NewInt(start)) != 0 {
 		t.Fatalf("supply = %s, want %d — self-transfer minted SPLD", total, start)
+	}
+}
+
+// A module call that fails under module_revert_v1 keeps its fee: the sender
+// is debited, the validator credited, and nothing else moves — supply is
+// conserved exactly as for a reverted bytecode call.
+func TestFailedModuleCallConservesSupply(t *testing.T) {
+	pub, priv, _ := qcrypto.GenerateKeypair()
+	from := qcrypto.DeriveAddress(pub)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	vaddr := qcrypto.DeriveAddress(vpub)
+
+	ex, sdb := newTestExecutor(t)
+	defer ex.Close()
+	defer sdb.Close()
+	ex.WithForks(revertForks())
+
+	const start = int64(1_000_000)
+	fund(t, sdb, from, start)
+
+	tx := softFailingCall(t, from, priv, 0)
+	b, err := ex.ProduceBlock([]*types.Transaction{tx}, vaddr, vpub.Bytes(), vpriv, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+	if len(b.Transactions) != 1 {
+		t.Fatal("the failed module call must be included under module_revert_v1")
+	}
+
+	fromBal, _ := sdb.GetBalance(from)
+	if fromBal.Cmp(big.NewInt(start-testFee)) != 0 {
+		t.Errorf("sender balance = %s, want %d (only the fee leaves)", fromBal, start-testFee)
+	}
+	vBal, _ := sdb.GetBalance(vaddr)
+	if vBal.Cmp(big.NewInt(testFee)) != 0 {
+		t.Errorf("validator balance = %s, want %d", vBal, testFee)
+	}
+	// The addresses the failing action named must be untouched.
+	if total := supplyOf(t, sdb, from, vaddr, testAddr(0x44), testAddr(0x55), vm.ModuleRouterAddress); total.Cmp(big.NewInt(start)) != 0 {
+		t.Fatalf("supply = %s, want %d — a failed module call minted or burned SPLD", total, start)
 	}
 }

@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -12,7 +13,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	alice := addr(0x22)
 
 	dep := &types.Receipt{}
-	if err := DispatchModuleCall(sdb, owner, 7, moduleData(t, "qrc20", "deploy", qrc20DeployParams{
+	if err := DispatchModuleCall(sdb, ModuleContext{Caller: owner, Nonce: 7}, moduleData(t, "qrc20", "deploy", qrc20DeployParams{
 		Name: "Read Test", Symbol: "RTEST", Decimals: 18,
 		TotalSupply: "1000000000000000000000000",
 	}), dep); err != nil {
@@ -24,7 +25,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	token := *dep.ContractAddress
 
 	// balance_of(owner) == total supply
-	res, err := DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "balance_of", map[string]string{
+	res, err := DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "balance_of", map[string]string{
 		"token": token.String(), "owner": owner.String(),
 	}))
 	if err != nil {
@@ -39,7 +40,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	}
 
 	// balance_of(alice) == 0 (no holdings, no error)
-	res, err = DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "balance_of", map[string]string{
+	res, err = DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "balance_of", map[string]string{
 		"token": token.String(), "owner": alice.String(),
 	}))
 	if err != nil {
@@ -50,7 +51,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	}
 
 	// total_supply carries metadata
-	res, err = DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "total_supply", map[string]string{
+	res, err = DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "total_supply", map[string]string{
 		"token": token.String(),
 	}))
 	if err != nil {
@@ -62,7 +63,7 @@ func TestModuleReadQRC20(t *testing.T) {
 	}
 
 	// allowance defaults to 0
-	res, err = DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "allowance", map[string]string{
+	res, err = DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "allowance", map[string]string{
 		"token": token.String(), "owner": owner.String(), "spender": alice.String(),
 	}))
 	if err != nil {
@@ -74,7 +75,7 @@ func TestModuleReadQRC20(t *testing.T) {
 
 	// WRITE actions must be rejected on the read path (never mutate state).
 	for _, act := range []string{"mint", "transfer", "approve", "burn", "deploy"} {
-		if _, err := DispatchModuleReadCall(sdb, moduleData(t, "qrc20", act, map[string]string{
+		if _, err := DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", act, map[string]string{
 			"token": token.String(),
 		})); err == nil {
 			t.Errorf("expected write action %q to be rejected on the read path", act)
@@ -82,10 +83,10 @@ func TestModuleReadQRC20(t *testing.T) {
 	}
 
 	// unknown module / action
-	if _, err := DispatchModuleReadCall(sdb, moduleData(t, "nope", "x", map[string]string{})); err == nil {
+	if _, err := DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "nope", "x", map[string]string{})); err == nil {
 		t.Error("expected unknown module to be rejected")
 	}
-	if _, err := DispatchModuleReadCall(sdb, moduleData(t, "qrc20", "explode", map[string]string{
+	if _, err := DispatchModuleReadCall(sdb, ReadContext{}, moduleData(t, "qrc20", "explode", map[string]string{
 		"token": token.String(),
 	})); err == nil {
 		t.Error("expected unknown read action to be rejected")
@@ -93,22 +94,32 @@ func TestModuleReadQRC20(t *testing.T) {
 }
 
 func TestPreflightModuleCall(t *testing.T) {
-	// valid envelopes (read + write actions both parse in preflight)
+	// Write actions pass: they are what a signed TxCall may carry.
 	for _, tc := range []struct{ module, action string }{
-		{"qrc20", "balance_of"}, {"qrc20", "transfer"}, {"dex", "reserves"}, {"dex", "swap"},
+		{"qrc20", "transfer"}, {"qrc20", "deploy"}, {"dex", "swap"}, {"dex", "deploy_pool"},
 	} {
-		if _, err := PreflightModuleCall(moduleData(t, tc.module, tc.action, map[string]string{})); err != nil {
+		if _, err := PreflightModuleCall(moduleData(t, tc.module, tc.action, map[string]string{}), nil, 0); err != nil {
 			t.Errorf("preflight %s:%s rejected: %v", tc.module, tc.action, err)
 		}
 	}
+	// A read action parses but is refused: the write dispatch would treat it
+	// as an unknown action (HARD) and the sender would be jammed at that nonce.
+	for _, tc := range []struct{ module, action string }{
+		{"qrc20", "balance_of"}, {"qrc20", "token_info"}, {"dex", "reserves"},
+	} {
+		_, err := PreflightModuleCall(moduleData(t, tc.module, tc.action, map[string]string{}), nil, 0)
+		if err == nil || !strings.Contains(err.Error(), "is a read action") {
+			t.Errorf("preflight %s:%s: want a read-action refusal, got %v", tc.module, tc.action, err)
+		}
+	}
 	// invalid: unknown action, unknown module, bad JSON
-	if _, err := PreflightModuleCall(moduleData(t, "qrc20", "explode", map[string]string{})); err == nil {
+	if _, err := PreflightModuleCall(moduleData(t, "qrc20", "explode", map[string]string{}), nil, 0); err == nil {
 		t.Error("expected unknown action rejection")
 	}
-	if _, err := PreflightModuleCall(moduleData(t, "nope", "x", map[string]string{})); err == nil {
+	if _, err := PreflightModuleCall(moduleData(t, "nope", "x", map[string]string{}), nil, 0); err == nil {
 		t.Error("expected unknown module rejection")
 	}
-	if _, err := PreflightModuleCall([]byte("nonsense")); err == nil {
+	if _, err := PreflightModuleCall([]byte("nonsense"), nil, 0); err == nil {
 		t.Error("expected bad-JSON rejection")
 	}
 }

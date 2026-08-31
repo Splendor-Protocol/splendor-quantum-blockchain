@@ -16,7 +16,8 @@ func baseGenesis() *Genesis {
 		Allocations: []Allocation{
 			{Address: "SQ:1111111111111111111111111111111111111111111111111111111111111111", Balance: "100"},
 		},
-		TotalSupply: "100",
+		// Derived by Validate; a present value is refused unless it matches.
+		TotalSupply: "",
 	}
 }
 
@@ -90,5 +91,103 @@ func TestKnownForkNameAccepted(t *testing.T) {
 	g.Forks = forks.Schedule{forks.MultiValidator: 100}
 	if err := g.Validate(); err != nil {
 		t.Fatalf("a known fork name should validate: %v", err)
+	}
+}
+
+// One row per upgrade name a tier document may schedule, and whether THIS
+// build honours it. A document must never schedule a name the deployed binary
+// does not implement — forks.Known is a promise, not a stub — so each row flips
+// to accepted only in the change that lands the gate, and a document scheduling
+// it before then is refused at load.
+func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		known bool
+	}{
+		{forks.MultiValidator, true},
+		{forks.ModuleRevertV1, true}, // PR-3
+		{forks.QRC20V2, true},        // PR-4
+		{forks.QRC1155V1, true},      // PR-5
+		{forks.ExchangeV1, true},     // PR-6
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := baseGenesis()
+			g.Forks = forks.Schedule{tc.name: 1}
+			if tc.name == forks.ExchangeV1 || tc.name == forks.QRC20V2 || tc.name == forks.QRC1155V1 {
+				// Its own dependency rule; what is on trial here is the name.
+				g.Forks[forks.ModuleRevertV1] = 1
+			}
+			err := g.Validate()
+			switch {
+			case tc.known && err != nil:
+				t.Fatalf("%s is implemented by this build but was refused: %v", tc.name, err)
+			case !tc.known && err == nil:
+				t.Fatalf("%s is not implemented by this build but a document scheduling it was accepted", tc.name)
+			case !tc.known && !strings.Contains(err.Error(), "unknown upgrade"):
+				t.Fatalf("want an unknown-upgrade refusal for %s, got %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// exchange_v1, qrc20_v2 and qrc1155_v1 each depend on module_revert_v1 being
+// in force no later than themselves: a failed match, permit or transfer must
+// be a failed receipt, never a dropped tx that jams the sender's nonce. Now
+// that the names are honoured the rule is reachable from a genesis document,
+// and a document that gets it wrong is refused at load like an unknown name —
+// never honoured in part.
+func TestGenesisRefusesExchangeWithoutModuleRevert(t *testing.T) {
+	for name, tc := range map[string]struct {
+		forks forks.Schedule
+		ok    bool
+	}{
+		"both at 1":                {forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 1}, true},
+		"revert earlier":           {forks.Schedule{forks.ExchangeV1: 10, forks.ModuleRevertV1: 5}, true},
+		"exchange alone":           {forks.Schedule{forks.ExchangeV1: 1}, false},
+		"revert never":             {forks.Schedule{forks.ExchangeV1: 1, forks.ModuleRevertV1: 0}, false},
+		"revert one block late":    {forks.Schedule{forks.ExchangeV1: 5, forks.ModuleRevertV1: 6}, false},
+		"qrc20_v2 alone":           {forks.Schedule{forks.QRC20V2: 1}, false},
+		"qrc1155_v1 before revert": {forks.Schedule{forks.QRC1155V1: 5, forks.ModuleRevertV1: 6}, false},
+		"all four at 1": {forks.Schedule{
+			forks.ExchangeV1: 1, forks.QRC20V2: 1, forks.QRC1155V1: 1, forks.ModuleRevertV1: 1,
+		}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := baseGenesis()
+			g.Forks = tc.forks
+			err := g.Validate()
+			if tc.ok && err != nil {
+				t.Fatalf("want accepted, got %v", err)
+			}
+			if !tc.ok {
+				if err == nil {
+					t.Fatal("want refused, got nil")
+				}
+				if !strings.Contains(err.Error(), forks.ModuleRevertV1) {
+					t.Fatalf("the refusal must name the missing dependency, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// The document hash a tier pins is computed over the schedule, so the tier
+// documents this plan describes — all four names at height 1, mainnet without
+// the exchange — get distinct pins. The hash is computable regardless (Hash
+// does not validate) and stable.
+func TestTierScheduleShapesHashDistinctly(t *testing.T) {
+	devnet := baseGenesis()
+	devnet.Forks = forks.Schedule{
+		forks.ModuleRevertV1: 1, forks.QRC20V2: 1, forks.QRC1155V1: 1, forks.ExchangeV1: 1,
+	}
+	mainnet := baseGenesis()
+	mainnet.Forks = forks.Schedule{
+		forks.ModuleRevertV1: 1, forks.QRC20V2: 1, forks.QRC1155V1: 1,
+	}
+	if devnet.HashHex() == mainnet.HashHex() {
+		t.Fatal("omitting exchange_v1 must change the document pin")
+	}
+	if devnet.HashHex() == baseGenesis().HashHex() {
+		t.Fatal("a scheduled document must not hash like an unscheduled one")
 	}
 }

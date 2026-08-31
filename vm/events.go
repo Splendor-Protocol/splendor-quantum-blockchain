@@ -8,16 +8,17 @@
 // native Go contract implementations (QRC-20, QRC-721, Staking, Governance).
 //
 // Standard event signatures used across all SQC token contracts:
-//   Transfer(sqaddress,sqaddress,uint256)
-//   Approval(sqaddress,sqaddress,uint256)
-//   ApprovalForAll(sqaddress,sqaddress,bool)
-//   Deposit(sqaddress,sqaddress,uint256,uint256)   [QRC-4626]
-//   Withdraw(sqaddress,sqaddress,uint256,uint256)  [QRC-4626]
-//   ValidatorRegistered(sqaddress,uint256)
-//   ValidatorSlashed(sqaddress,uint256,uint256)
-//   ProposalSubmitted(uint256,sqaddress,string)
-//   VoteCast(uint256,sqaddress,uint8,uint256)
-//   ProposalExecuted(uint256)
+//
+//	Transfer(sqaddress,sqaddress,uint256)
+//	Approval(sqaddress,sqaddress,uint256)
+//	ApprovalForAll(sqaddress,sqaddress,bool)
+//	Deposit(sqaddress,sqaddress,uint256,uint256)   [QRC-4626]
+//	Withdraw(sqaddress,sqaddress,uint256,uint256)  [QRC-4626]
+//	ValidatorRegistered(sqaddress,uint256)
+//	ValidatorSlashed(sqaddress,uint256,uint256)
+//	ProposalSubmitted(uint256,sqaddress,string)
+//	VoteCast(uint256,sqaddress,uint8,uint256)
+//	ProposalExecuted(uint256)
 package vm
 
 import (
@@ -44,13 +45,25 @@ func AddrTopic(addr qcrypto.Address) [32]byte {
 
 // Uint256Topic converts a *big.Int to a 32-byte big-endian topic.
 func Uint256Topic(v *big.Int) [32]byte {
-	var topic [32]byte
-	if v == nil || v.Sign() == 0 {
-		return topic
+	return uint256Word(v)
+}
+
+// uint256Word is the 32-byte big-endian encoding of v (zero word for nil or
+// non-positive). A value that does not fit — reachable through the legacy
+// qrc20 actions, which decode with parseBig — is truncated to its low 32
+// bytes rather than allowed to slice past the word and panic the executor:
+// an event helper must never be able to take a block down.
+func uint256Word(v *big.Int) [32]byte {
+	var word [32]byte
+	if v == nil || v.Sign() <= 0 {
+		return word
 	}
 	b := v.Bytes()
-	copy(topic[32-len(b):], b)
-	return topic
+	if len(b) > 32 {
+		b = b[len(b)-32:]
+	}
+	copy(word[32-len(b):], b)
+	return word
 }
 
 // BoolTopic converts a bool to a 32-byte topic (0x00...01 or 0x00...00).
@@ -77,14 +90,14 @@ func BytesTopic(data []byte) [32]byte {
 
 // Standard topic[0] hashes (computed once at package init time).
 var (
-	TopicTransfer           = EventTopic("Transfer(sqaddress,sqaddress,uint256)")
-	TopicApproval           = EventTopic("Approval(sqaddress,sqaddress,uint256)")
-	TopicApprovalForAll     = EventTopic("ApprovalForAll(sqaddress,sqaddress,bool)")
-	TopicMint               = EventTopic("Mint(sqaddress,uint256,uint256)")
-	TopicBurn               = EventTopic("Burn(sqaddress,uint256,uint256)")
-	TopicDeposit            = EventTopic("Deposit(sqaddress,sqaddress,uint256,uint256)")
-	TopicWithdraw           = EventTopic("Withdraw(sqaddress,sqaddress,uint256,uint256)")
-	TopicYield              = EventTopic("Yield(uint256,uint256)")
+	TopicTransfer            = EventTopic("Transfer(sqaddress,sqaddress,uint256)")
+	TopicApproval            = EventTopic("Approval(sqaddress,sqaddress,uint256)")
+	TopicApprovalForAll      = EventTopic("ApprovalForAll(sqaddress,sqaddress,bool)")
+	TopicMint                = EventTopic("Mint(sqaddress,uint256,uint256)")
+	TopicBurn                = EventTopic("Burn(sqaddress,uint256,uint256)")
+	TopicDeposit             = EventTopic("Deposit(sqaddress,sqaddress,uint256,uint256)")
+	TopicWithdraw            = EventTopic("Withdraw(sqaddress,sqaddress,uint256,uint256)")
+	TopicYield               = EventTopic("Yield(uint256,uint256)")
 	TopicValidatorRegistered = EventTopic("ValidatorRegistered(sqaddress,uint256)")
 	TopicValidatorSlashed    = EventTopic("ValidatorSlashed(sqaddress,uint256,uint256)")
 	TopicValidatorJailed     = EventTopic("ValidatorJailed(sqaddress)")
@@ -96,6 +109,46 @@ var (
 	TopicProposalRejected    = EventTopic("ProposalRejected(uint256)")
 	TopicProposalExecuted    = EventTopic("ProposalExecuted(uint256)")
 	TopicVoteCast            = EventTopic("VoteCast(uint256,sqaddress,uint8,uint256)")
+)
+
+// QRC-20 v2 (qrc20_v2) lifecycle events: pause state and ownership.
+var (
+	TopicPaused               = EventTopic("Paused(sqaddress)")
+	TopicUnpaused             = EventTopic("Unpaused(sqaddress)")
+	TopicOwnershipTransferred = EventTopic("OwnershipTransferred(sqaddress,sqaddress)")
+)
+
+// QRC-1155 (qrc1155_v1) transfer events. operator, from and to are indexed;
+// a mint is a transfer from the zero address and a burn a transfer to it.
+// TransferBatch data is n ‖ ids[n] ‖ values[n], every element a 32-byte word,
+// so an indexer can decode it without a length prefix per element.
+var (
+	TopicTransferSingle = EventTopic("TransferSingle(sqaddress,sqaddress,sqaddress,uint256,uint256)")
+	TopicTransferBatch  = EventTopic("TransferBatch(sqaddress,sqaddress,sqaddress,uint256[],uint256[])")
+)
+
+// Exchange (exchange_v1) settlement events. Every non-indexed value is a
+// 32-byte word (uint64/uint8/bool zero-extended, bytes32 verbatim), never a
+// string. Indexed fields: ConditionCreated → condition; OrderFilled → hash,
+// maker, taker; MintMatched/MergeMatched → taker hash, maker hash;
+// OrderCancelled → hash, maker; NonceIncremented, PositionSplit,
+// PositionsMerged, Redeemed, RedeemFeeCharged, OperatorSet,
+// FeeRecipientUpdated → the address; Resolved → condition.
+var (
+	TopicConditionCreated    = EventTopic("ConditionCreated(uint64,sqaddress,sqaddress,uint64,uint8,bytes32)")
+	TopicOrderFilled         = EventTopic("OrderFilled(bytes32,sqaddress,sqaddress,uint64,uint8,uint8,uint256,uint256)")
+	TopicMintMatched         = EventTopic("MintMatched(bytes32,bytes32,uint64,uint256)")
+	TopicMergeMatched        = EventTopic("MergeMatched(bytes32,bytes32,uint64,uint256)")
+	TopicOrderCancelled      = EventTopic("OrderCancelled(bytes32,sqaddress)")
+	TopicNonceIncremented    = EventTopic("NonceIncremented(sqaddress,uint64)")
+	TopicPositionSplit       = EventTopic("PositionSplit(sqaddress,uint64,uint256)")
+	TopicPositionsMerged     = EventTopic("PositionsMerged(sqaddress,uint64,uint256)")
+	TopicResolved            = EventTopic("Resolved(uint64,uint8)")
+	TopicRedeemed            = EventTopic("Redeemed(sqaddress,uint64,uint256,uint256)")
+	TopicRedeemFeeCharged    = EventTopic("RedeemFeeCharged(sqaddress,uint256)")
+	TopicOperatorSet         = EventTopic("OperatorSet(sqaddress,bool)")
+	TopicRedeemFeeUpdated    = EventTopic("RedeemFeeUpdated(uint256)")
+	TopicFeeRecipientUpdated = EventTopic("FeeRecipientUpdated(sqaddress)")
 )
 
 // ── Event builder ─────────────────────────────────────────────────────────────
@@ -134,13 +187,16 @@ func (e *EventBuilder) IndexBool(v bool) *EventBuilder {
 	return e
 }
 
+// IndexHash adds an indexed bytes32 parameter (an order hash, a question
+// hash) as a topic, verbatim.
+func (e *EventBuilder) IndexHash(h [32]byte) *EventBuilder {
+	e.topics = append(e.topics, h)
+	return e
+}
+
 // DataUint256 appends a non-indexed uint256 to the event data (ABI-encoded as 32 bytes).
 func (e *EventBuilder) DataUint256(v *big.Int) *EventBuilder {
-	var word [32]byte
-	if v != nil && v.Sign() > 0 {
-		b := v.Bytes()
-		copy(word[32-len(b):], b)
-	}
+	word := uint256Word(v)
 	e.data = append(e.data, word[:]...)
 	return e
 }
@@ -150,6 +206,12 @@ func (e *EventBuilder) DataAddr(addr qcrypto.Address) *EventBuilder {
 	var word [32]byte
 	copy(word[32-qcrypto.AddressSize:], addr[:])
 	e.data = append(e.data, word[:]...)
+	return e
+}
+
+// DataHash appends a non-indexed bytes32 to the event data, verbatim.
+func (e *EventBuilder) DataHash(h [32]byte) *EventBuilder {
+	e.data = append(e.data, h[:]...)
 	return e
 }
 
@@ -196,6 +258,59 @@ func ApprovalForAllEvent(contract, owner, operator qcrypto.Address, approved boo
 		IndexAddr(operator).
 		IndexBool(approved).
 		Build()
+}
+
+// PausedEvent builds a Paused event; account is the owner that paused.
+func PausedEvent(contract, account qcrypto.Address) *types.Log {
+	return NewEvent(contract, "Paused(sqaddress)").
+		IndexAddr(account).
+		Build()
+}
+
+// UnpausedEvent builds an Unpaused event; account is the owner that unpaused.
+func UnpausedEvent(contract, account qcrypto.Address) *types.Log {
+	return NewEvent(contract, "Unpaused(sqaddress)").
+		IndexAddr(account).
+		Build()
+}
+
+// OwnershipTransferredEvent builds an OwnershipTransferred event
+// (previousOwner and newOwner both indexed).
+func OwnershipTransferredEvent(contract, previousOwner, newOwner qcrypto.Address) *types.Log {
+	return NewEvent(contract, "OwnershipTransferred(sqaddress,sqaddress)").
+		IndexAddr(previousOwner).
+		IndexAddr(newOwner).
+		Build()
+}
+
+// TransferSingleEvent builds a QRC-1155 TransferSingle event: operator, from
+// and to indexed; id and value as data words.
+func TransferSingleEvent(contract, operator, from, to qcrypto.Address, id, value *big.Int) *types.Log {
+	return NewEvent(contract, "TransferSingle(sqaddress,sqaddress,sqaddress,uint256,uint256)").
+		IndexAddr(operator).
+		IndexAddr(from).
+		IndexAddr(to).
+		DataUint256(id).
+		DataUint256(value).
+		Build()
+}
+
+// TransferBatchEvent builds a QRC-1155 TransferBatch event: operator, from
+// and to indexed; data = n ‖ ids ‖ values as 32-byte words. len(ids) must
+// equal len(values) — the callers check it before any balance moves.
+func TransferBatchEvent(contract, operator, from, to qcrypto.Address, ids, values []*big.Int) *types.Log {
+	e := NewEvent(contract, "TransferBatch(sqaddress,sqaddress,sqaddress,uint256[],uint256[])").
+		IndexAddr(operator).
+		IndexAddr(from).
+		IndexAddr(to).
+		DataUint256(big.NewInt(int64(len(ids))))
+	for _, id := range ids {
+		e.DataUint256(id)
+	}
+	for _, v := range values {
+		e.DataUint256(v)
+	}
+	return e.Build()
 }
 
 // MintEvent builds a standard Mint event (tokenId optional — 0 for QRC-20).

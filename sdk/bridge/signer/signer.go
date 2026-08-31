@@ -23,6 +23,15 @@ import (
 
 // Domain message used for EVM personal_sign → PQ seed derivation.
 // Keep in sync with the TypeScript SDK (sdk/bridge/src/derive.ts).
+//
+// The trailing "chain: splendor-quantum-1" is PERMANENT. It names the
+// derivation scheme, not the network the signer talks to: every SQ: address
+// an EVM key has ever derived is SHA3(personal_sign(this exact message)), so
+// changing one byte of it would change every EVM-derived address on every
+// tier. The network a signature targets comes from types.ChainID (set through
+// SetClientChainID / sqSetChainID) and is bound into each transaction, permit
+// and order digest separately. Do not "fix" this string when a tier is given
+// a new chain id.
 const DerivationDomainMessage = "Splendor Quantum Chain\nKey derivation v1\nchain: splendor-quantum-1"
 
 // SeedSize is the ML-DSA-65 seed length (32 bytes).
@@ -128,9 +137,9 @@ func (w *DerivedWallet) Zeroize() {
 
 // TransferParams are inputs for building and signing a transfer.
 type TransferParams struct {
-	To        string `json:"to"`        // SQ: address or raw 64-char hex
-	Amount    string `json:"amount"`    // decimal string in smallest units
-	Fee       string `json:"fee"`       // decimal string; default "1000"
+	To        string `json:"to"`     // SQ: address or raw 64-char hex
+	Amount    string `json:"amount"` // decimal string in smallest units
+	Fee       string `json:"fee"`    // decimal string; default "1000"
 	Nonce     uint64 `json:"nonce"`
 	Timestamp int64  `json:"timestamp"` // 0 = now
 	Memo      string `json:"memo"`      // optional
@@ -318,6 +327,10 @@ func (w *DerivedWallet) SignX402(p X402Params) ([]byte, error) {
 		return nil, err
 	}
 	payload.Signature = sig
+	// Outside the signed body (see x402.PaymentPayload.PublicKey): lets a payer
+	// whose key is not yet registered on chain verify. The node ignores it for
+	// a registered payer and refuses it unless it derives From.
+	payload.PublicKey = w.PublicKey
 	return json.Marshal(payload)
 }
 
@@ -376,6 +389,369 @@ func (w *DerivedWallet) SignX402Settlement(p X402Params) ([]byte, error) {
 	return json.Marshal(tx)
 }
 
+// ── Off-chain authorisations: QRC-20 permit and exchange orders ─────────────
+//
+// None of these builds a transaction. Each signs a digest from core/types
+// bound to types.ChainID (as set by SetClientChainID) and returns the params
+// object the matching module action accepts verbatim — a relayer or operator
+// wraps it in the module envelope and pays the fee. The signer's public key is
+// attached so an address that has never sent a transaction can be verified
+// (the module checks that it derives the address; a registered key wins).
+
+// PermitParams are inputs for SignPermit: grant spender an allowance of
+// amount over this wallet's balance at token. Nonce is the owner's current
+// permit nonce at token (qrc20 read `permit_nonce`); Deadline is a block
+// time in seconds and must be positive (the chain rejects 0).
+type PermitParams struct {
+	Token    string `json:"token"`
+	Spender  string `json:"spender"`
+	Amount   string `json:"amount"` // decimal string in smallest units
+	Nonce    uint64 `json:"nonce"`
+	Deadline int64  `json:"deadline"`
+}
+
+// SignedPermit is what SignPermit returns: the params of qrc20.permit
+// (token, owner, spender, amount, deadline, signature, owner_pubkey) plus
+// nonce, chain_id and digest_hex, which the module ignores and a client
+// records.
+type SignedPermit struct {
+	Owner       string `json:"owner"`
+	Token       string `json:"token"`
+	Spender     string `json:"spender"`
+	Amount      string `json:"amount"`
+	Nonce       uint64 `json:"nonce"`
+	Deadline    int64  `json:"deadline"`
+	ChainID     string `json:"chain_id"`
+	DigestHex   string `json:"digest_hex"`
+	Signature   []byte `json:"signature"`
+	OwnerPubKey []byte `json:"owner_pubkey"`
+}
+
+// SignPermit signs types.PermitDigest(types.ChainID, …) under CtxPermit with
+// this wallet as the owner and returns the qrc20.permit params as JSON.
+func (w *DerivedWallet) SignPermit(p PermitParams) ([]byte, error) {
+	token, err := parseAddress(p.Token)
+	if err != nil {
+		return nil, fmt.Errorf("permit: token: %w", err)
+	}
+	spender, err := parseAddress(p.Spender)
+	if err != nil {
+		return nil, fmt.Errorf("permit: spender: %w", err)
+	}
+	amount, err := parseUint256(p.Amount, "amount")
+	if err != nil {
+		return nil, fmt.Errorf("permit: %w", err)
+	}
+	if p.Deadline <= 0 {
+		return nil, fmt.Errorf("permit: deadline must be positive (block time in seconds)")
+	}
+	digest, err := types.PermitDigest(types.ChainID, token, w.Address, spender, amount, p.Nonce, p.Deadline)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := qcrypto.Sign(w.Private, digest[:], qcrypto.CtxPermit)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(SignedPermit{
+		Owner:       w.Address.String(),
+		Token:       token.String(),
+		Spender:     spender.String(),
+		Amount:      amount.String(),
+		Nonce:       p.Nonce,
+		Deadline:    p.Deadline,
+		ChainID:     types.ChainID,
+		DigestHex:   hex.EncodeToString(digest[:]),
+		Signature:   sig,
+		OwnerPubKey: w.PublicKey,
+	})
+}
+
+// OrderParams are inputs for SignOrder and SignCancel: an exchange order
+// with this wallet as the maker. Salt is 32 bytes of hex; empty means a
+// random salt (SignOrder only — a cancel must name the exact order). Nonce is
+// the maker's current order nonce at exchange (exchange read `nonce`).
+// Recipient empty means "pay the maker". Price is 1e6-scaled, in (0, 1e6).
+type OrderParams struct {
+	Exchange    string `json:"exchange"`
+	Salt        string `json:"salt,omitempty"` // 64 hex chars; empty = random
+	Condition   uint64 `json:"condition"`
+	Outcome     uint8  `json:"outcome"`
+	Side        uint8  `json:"side"` // types.OrderSideBuy / types.OrderSideSell
+	ShareAmount string `json:"share_amount"`
+	Price       string `json:"price"`
+	Expiration  int64  `json:"expiration"` // block time in seconds; 0 = never
+	Nonce       uint64 `json:"nonce"`
+	Recipient   string `json:"recipient,omitempty"`
+}
+
+// OrderWire is the order object the exchange module accepts in
+// match.taker_order, match.maker_orders[] and cancel_order.order. Field
+// names, encodings and omissions match vm.exchangeOrderWire exactly.
+type OrderWire struct {
+	Salt        string `json:"salt"`
+	Maker       string `json:"maker"`
+	Exchange    string `json:"exchange"`
+	Condition   uint64 `json:"condition"`
+	Outcome     uint8  `json:"outcome"`
+	Side        uint8  `json:"side"`
+	ShareAmount string `json:"share_amount"`
+	Price       string `json:"price"`
+	Expiration  int64  `json:"expiration"`
+	Nonce       uint64 `json:"nonce"`
+	Recipient   string `json:"recipient,omitempty"`
+	Signature   []byte `json:"signature,omitempty"`
+	MakerPubKey []byte `json:"maker_pubkey,omitempty"`
+}
+
+// SignedOrder is what SignOrder returns: the OrderWire with signature and
+// maker_pubkey set, plus hash (the order's on-chain id, hex) and chain_id,
+// which the module ignores.
+type SignedOrder struct {
+	OrderWire
+	Hash    string `json:"hash"`
+	ChainID string `json:"chain_id"`
+}
+
+// SignOrder signs types.OrderDigest(types.ChainID, order) under CtxOrder
+// with this wallet as the maker and returns the wire order as JSON.
+func (w *DerivedWallet) SignOrder(p OrderParams) ([]byte, error) {
+	o, err := w.buildOrder(p, true)
+	if err != nil {
+		return nil, fmt.Errorf("order: %w", err)
+	}
+	hash, err := types.OrderDigest(types.ChainID, o)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := qcrypto.Sign(w.Private, hash[:], qcrypto.CtxOrder)
+	if err != nil {
+		return nil, err
+	}
+	wire := orderWireOf(o)
+	wire.Signature = sig
+	wire.MakerPubKey = w.PublicKey
+	return json.Marshal(SignedOrder{
+		OrderWire: wire,
+		Hash:      hex.EncodeToString(hash[:]),
+		ChainID:   types.ChainID,
+	})
+}
+
+// SignedCancel is what SignCancel returns: the params of
+// exchange.cancel_order (exchange, order, cancel_signature, maker_pubkey)
+// that anyone may submit on the maker's behalf, plus order_hash, digest_hex
+// and chain_id, which the module ignores. The nested order carries no
+// signature: a cancel needs only the hash.
+type SignedCancel struct {
+	Exchange        string    `json:"exchange"`
+	Order           OrderWire `json:"order"`
+	CancelSignature []byte    `json:"cancel_signature"`
+	MakerPubKey     []byte    `json:"maker_pubkey"`
+	OrderHash       string    `json:"order_hash"`
+	DigestHex       string    `json:"digest_hex"`
+	ChainID         string    `json:"chain_id"`
+}
+
+// SignCancel signs types.CancelDigest(order hash) under CtxOrder for the
+// order p describes (Salt required) and returns the cancel_order params as
+// JSON. Idempotent on chain, so it can be signed once and kept.
+func (w *DerivedWallet) SignCancel(p OrderParams) ([]byte, error) {
+	o, err := w.buildOrder(p, false)
+	if err != nil {
+		return nil, fmt.Errorf("cancel: %w", err)
+	}
+	hash, err := types.OrderDigest(types.ChainID, o)
+	if err != nil {
+		return nil, err
+	}
+	digest := types.CancelDigest(hash)
+	sig, err := qcrypto.Sign(w.Private, digest[:], qcrypto.CtxOrder)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(SignedCancel{
+		Exchange:        o.Exchange.String(),
+		Order:           orderWireOf(o),
+		CancelSignature: sig,
+		MakerPubKey:     w.PublicKey,
+		OrderHash:       hex.EncodeToString(hash[:]),
+		DigestHex:       hex.EncodeToString(digest[:]),
+		ChainID:         types.ChainID,
+	})
+}
+
+// IncrementNonceParams are inputs for SignIncrementNonce. ExpectedNonce must
+// equal the maker's current order nonce at exchange (exchange read `nonce`);
+// the chain refuses anything else, which is what makes the signature
+// single-use.
+type IncrementNonceParams struct {
+	Exchange      string `json:"exchange"`
+	ExpectedNonce uint64 `json:"expected_nonce"`
+}
+
+// SignedIncrementNonce is what SignIncrementNonce returns: the params of
+// exchange.increment_nonce (exchange, maker, expected_nonce, signature,
+// maker_pubkey) that anyone may submit on the maker's behalf, plus chain_id
+// and digest_hex, which the module ignores.
+type SignedIncrementNonce struct {
+	Exchange      string `json:"exchange"`
+	Maker         string `json:"maker"`
+	ExpectedNonce uint64 `json:"expected_nonce"`
+	Signature     []byte `json:"signature"`
+	MakerPubKey   []byte `json:"maker_pubkey"`
+	ChainID       string `json:"chain_id"`
+	DigestHex     string `json:"digest_hex"`
+}
+
+// SignIncrementNonce signs types.IncrementNonceDigest(types.ChainID,
+// exchange, maker, expected_nonce) under CtxOrder and returns the
+// increment_nonce params as JSON. Bumping the nonce invalidates every order
+// this wallet signed at exchange with the old one.
+func (w *DerivedWallet) SignIncrementNonce(p IncrementNonceParams) ([]byte, error) {
+	exchange, err := parseAddress(p.Exchange)
+	if err != nil {
+		return nil, fmt.Errorf("increment_nonce: exchange: %w", err)
+	}
+	if exchange.IsZero() {
+		return nil, fmt.Errorf("increment_nonce: exchange is the zero address")
+	}
+	digest, err := types.IncrementNonceDigest(types.ChainID, exchange, w.Address, p.ExpectedNonce)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := qcrypto.Sign(w.Private, digest[:], qcrypto.CtxOrder)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(SignedIncrementNonce{
+		Exchange:      exchange.String(),
+		Maker:         w.Address.String(),
+		ExpectedNonce: p.ExpectedNonce,
+		Signature:     sig,
+		MakerPubKey:   w.PublicKey,
+		ChainID:       types.ChainID,
+		DigestHex:     hex.EncodeToString(digest[:]),
+	})
+}
+
+// OrderPriceScale is the exchange's price denominator: prices are in
+// (0, OrderPriceScale) and mean price/OrderPriceScale collateral per share.
+// Mirrors vm.ExchangePriceScale; the signer cannot import vm.
+const OrderPriceScale = 1_000_000
+
+// buildOrder validates OrderParams the way the module's parseOrder will and
+// returns the types.Order this wallet is the maker of. randomSalt allows an
+// empty salt to be filled from crypto/rand.
+func (w *DerivedWallet) buildOrder(p OrderParams, randomSalt bool) (types.Order, error) {
+	var o types.Order
+	exchange, err := parseAddress(p.Exchange)
+	if err != nil {
+		return o, fmt.Errorf("exchange: %w", err)
+	}
+	if exchange.IsZero() {
+		return o, fmt.Errorf("exchange is the zero address")
+	}
+	var salt [32]byte
+	switch {
+	case p.Salt != "":
+		if salt, err = parseNonceHex(p.Salt); err != nil {
+			return o, fmt.Errorf("salt must be 32-byte hex")
+		}
+	case randomSalt:
+		if _, err := rand.Read(salt[:]); err != nil {
+			return o, err
+		}
+	default:
+		return o, fmt.Errorf("salt is required (the order's own 32-byte salt)")
+	}
+	if p.Side != types.OrderSideBuy && p.Side != types.OrderSideSell {
+		return o, fmt.Errorf("side must be %d (buy) or %d (sell), got %d", types.OrderSideBuy, types.OrderSideSell, p.Side)
+	}
+	shares, err := parseUint256(p.ShareAmount, "share_amount")
+	if err != nil {
+		return o, err
+	}
+	if shares.Sign() == 0 {
+		return o, fmt.Errorf("share_amount must be positive")
+	}
+	price, err := parseUint256(p.Price, "price")
+	if err != nil {
+		return o, err
+	}
+	if price.Sign() == 0 || price.Cmp(big.NewInt(OrderPriceScale)) >= 0 {
+		return o, fmt.Errorf("price must be in (0, %d), got %s", OrderPriceScale, price)
+	}
+	if p.Expiration < 0 {
+		return o, fmt.Errorf("expiration must not be negative")
+	}
+	var recipient qcrypto.Address
+	if p.Recipient != "" {
+		if recipient, err = parseAddress(p.Recipient); err != nil {
+			return o, fmt.Errorf("recipient: %w", err)
+		}
+	}
+	if recipient == exchange || recipient == ModuleRouterAddress() {
+		return o, fmt.Errorf("recipient %s is a module address; funds sent there are stranded", recipient)
+	}
+	return types.Order{
+		Salt: salt, Maker: w.Address, Exchange: exchange, Condition: p.Condition,
+		Outcome: p.Outcome, Side: p.Side, ShareAmount: shares, Price: price,
+		Expiration: p.Expiration, Nonce: p.Nonce, Recipient: recipient,
+	}, nil
+}
+
+// orderWireOf renders o in the module's wire shape, unsigned.
+func orderWireOf(o types.Order) OrderWire {
+	w := OrderWire{
+		Salt: hex.EncodeToString(o.Salt[:]), Maker: o.Maker.String(), Exchange: o.Exchange.String(),
+		Condition: o.Condition, Outcome: o.Outcome, Side: o.Side,
+		ShareAmount: o.ShareAmount.String(), Price: o.Price.String(),
+		Expiration: o.Expiration, Nonce: o.Nonce,
+	}
+	if !o.Recipient.IsZero() {
+		w.Recipient = o.Recipient.String()
+	}
+	return w
+}
+
+// ModuleRouterAddress is the reserved account every native-module call is
+// addressed to (the `contract` of a SignCall carrying a module envelope):
+// SHA3-256("splendor:module-router:v1"), recomputed here so the signer and
+// the WASM never link vm. router_address_test pins it to vm.ModuleRouterAddress.
+func ModuleRouterAddress() qcrypto.Address {
+	h := qcrypto.Hash32([]byte("splendor:module-router:v1"))
+	var a qcrypto.Address
+	copy(a[:], h[:])
+	return a
+}
+
+// parseUint256 is the strict decoder the module actions use for amounts,
+// prices and ids: canonical decimal only (ASCII digits, no sign, no leading
+// zero except "0" itself) and below 2^256. A value the chain would refuse is
+// refused here, before anything is signed.
+func parseUint256(s, name string) (*big.Int, error) {
+	if s == "" {
+		return nil, fmt.Errorf("%s is required", name)
+	}
+	if len(s) > 1 && s[0] == '0' {
+		return nil, fmt.Errorf("invalid %s: %q (leading zero)", name, s)
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return nil, fmt.Errorf("invalid %s: %q (canonical decimal only)", name, s)
+		}
+	}
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid %s: %q", name, s)
+	}
+	if v.BitLen() > 256 {
+		return nil, fmt.Errorf("invalid %s: %q does not fit in 256 bits", name, s)
+	}
+	return v, nil
+}
+
 // parseNonceHex decodes a 32-byte X402 payment nonce.
 func parseNonceHex(s string) ([32]byte, error) {
 	var nonce [32]byte
@@ -398,6 +774,7 @@ type x402Payload struct {
 	ValidBefore int64           `json:"valid_before"`
 	Nonce       [32]byte        `json:"nonce"`
 	Signature   []byte          `json:"signature,omitempty"`
+	PublicKey   []byte          `json:"public_key,omitempty"`
 }
 
 type x402PayloadBody struct {

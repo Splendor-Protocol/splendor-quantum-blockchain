@@ -25,7 +25,7 @@
       "gatewayPort": 3090,
       "wasmUrl": "/sqc_signer.wasm",
       "execUrl": "/wasm_exec.js",
-      "wasmSha256": "77278ad14c6bd83986e936c7aae83c4c24eb405dfb5f585e3f92aef5a2bcb768",
+      "wasmSha256": "3a1fa8b247b8a714b9b7a75c0bd5f12578eccd4d779afdd007fe886ddba2d896",
       "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
       "timeoutMs": 15000,
       "retries": 2
@@ -42,7 +42,7 @@
       "gatewayPort": 443,
       "wasmUrl": "/sqc_signer.wasm",
       "execUrl": "/wasm_exec.js",
-      "wasmSha256": "77278ad14c6bd83986e936c7aae83c4c24eb405dfb5f585e3f92aef5a2bcb768",
+      "wasmSha256": "3a1fa8b247b8a714b9b7a75c0bd5f12578eccd4d779afdd007fe886ddba2d896",
       "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
       "timeoutMs": 20000,
       "retries": 3
@@ -59,7 +59,7 @@
       "gatewayPort": 443,
       "wasmUrl": "/sqc_signer.wasm",
       "execUrl": "/wasm_exec.js",
-      "wasmSha256": "77278ad14c6bd83986e936c7aae83c4c24eb405dfb5f585e3f92aef5a2bcb768",
+      "wasmSha256": "3a1fa8b247b8a714b9b7a75c0bd5f12578eccd4d779afdd007fe886ddba2d896",
       "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
       "timeoutMs": 20000,
       "retries": 3

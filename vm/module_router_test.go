@@ -58,7 +58,7 @@ func TestQRC20DeployMintTransfer(t *testing.T) {
 
 	// deploy (nonce 7 → deterministic address)
 	dep := &types.Receipt{}
-	err := DispatchModuleCall(sdb, owner, 7, moduleData(t, "qrc20", "deploy", qrc20DeployParams{
+	err := DispatchModuleCall(sdb, ModuleContext{Caller: owner, Nonce: 7}, moduleData(t, "qrc20", "deploy", qrc20DeployParams{
 		Name: "Splendor Test", Symbol: "STEST", Decimals: 18,
 		TotalSupply: "1000000000000000000000000", // 1,000,000 * 1e18
 	}), dep)
@@ -92,7 +92,7 @@ func TestQRC20DeployMintTransfer(t *testing.T) {
 
 	// mint 500 tokens to owner
 	mintRcpt := &types.Receipt{}
-	if err := DispatchModuleCall(sdb, owner, 8, moduleData(t, "qrc20", "mint", qrc20TokenAction{
+	if err := DispatchModuleCall(sdb, ModuleContext{Caller: owner, Nonce: 8}, moduleData(t, "qrc20", "mint", qrc20TokenAction{
 		Token: token.String(), To: owner.String(), Amount: "500000000000000000000",
 	}), mintRcpt); err != nil {
 		t.Fatalf("mint: %v", err)
@@ -106,7 +106,7 @@ func TestQRC20DeployMintTransfer(t *testing.T) {
 	}
 
 	// transfer 250 tokens owner → alice
-	if err := DispatchModuleCall(sdb, owner, 9, moduleData(t, "qrc20", "transfer", qrc20TokenAction{
+	if err := DispatchModuleCall(sdb, ModuleContext{Caller: owner, Nonce: 9}, moduleData(t, "qrc20", "transfer", qrc20TokenAction{
 		Token: token.String(), To: alice.String(), Amount: "250000000000000000000",
 	}), &types.Receipt{}); err != nil {
 		t.Fatalf("transfer: %v", err)
@@ -116,7 +116,7 @@ func TestQRC20DeployMintTransfer(t *testing.T) {
 	}
 
 	// non-owner mint must be rejected (owner-only)
-	if err := DispatchModuleCall(sdb, alice, 0, moduleData(t, "qrc20", "mint", qrc20TokenAction{
+	if err := DispatchModuleCall(sdb, ModuleContext{Caller: alice, Nonce: 0}, moduleData(t, "qrc20", "mint", qrc20TokenAction{
 		Token: token.String(), To: alice.String(), Amount: "1",
 	}), &types.Receipt{}); err == nil {
 		t.Fatal("expected non-owner mint to be rejected")
@@ -134,7 +134,7 @@ func TestModuleRouterRejectsBadInput(t *testing.T) {
 		{"unknown module", moduleData(t, "nope", "x", struct{}{})},
 		{"unknown action", moduleData(t, "qrc20", "explode", struct{}{})},
 	} {
-		if err := DispatchModuleCall(sdb, caller, 0, tc.data, &types.Receipt{}); err == nil {
+		if err := DispatchModuleCall(sdb, ModuleContext{Caller: caller, Nonce: 0}, tc.data, &types.Receipt{}); err == nil {
 			t.Errorf("%s: expected error", tc.name)
 		}
 	}

@@ -93,6 +93,11 @@ type StateDB struct {
 	// snapshots maps a snapshot ID to its journal-length mark.
 	snapshots map[uint64]int
 
+	// nextSnap is the last snapshot ID this StateDB issued. Per-StateDB on
+	// purpose: ids are looked up only in this StateDB's own map, and a
+	// Simulate() sandbox starts its own count at zero (see Snapshot).
+	nextSnap uint64
+
 	// sandbox marks a throwaway overlay produced by Simulate(). Its pending
 	// layer is private, so speculative execution cannot be committed and cannot
 	// disturb the consensus state db it was derived from.
@@ -107,7 +112,8 @@ var ErrSandboxCommit = errors.New("state: cannot commit a simulation sandbox")
 //
 // It reads through to the same committed LevelDB state and starts from a copy
 // of the current pending layer, but owns that layer outright: its own dirty
-// map, code cache, raw overlay, journal and snapshot marks. Handing the live
+// map, code cache, raw overlay, journal, snapshot marks and snapshot-id
+// counter. Handing the live
 // StateDB to the VM instead (which /call and /estimate did) shares one journal
 // between an unauthenticated public endpoint and block execution. The engine
 // snapshots and reverts freely during a call, and RevertToSnapshot replays
@@ -197,6 +203,51 @@ func (s *StateDB) loadLeaves() error {
 // Close closes the underlying LevelDB.
 func (s *StateDB) Close() error {
 	return s.db.Close()
+}
+
+// PutMeta records node-local bookkeeping under the meta: namespace, next to
+// the applied-height marker.
+//
+// It writes straight to LevelDB rather than through the pending layer: meta
+// keys are not consensus state (loadLeaves skips them, so they never reach the
+// state root), and the callers that use this — the node persisting the fork
+// schedule it was started under — need the value durable on its own, before
+// the allocations it governs are committed. A simulation sandbox refuses, for
+// the same reason it refuses to Commit. "height" is reserved for the marker
+// CommitWithHeight maintains.
+func (s *StateDB) PutMeta(key string, value []byte) error {
+	if s.sandbox {
+		return ErrSandboxCommit
+	}
+	if key == "" {
+		return errors.New("state: meta key must not be empty")
+	}
+	full := prefixMeta + key
+	if full == keyStateHeight {
+		return errors.New("state: meta key \"height\" is reserved for the applied-height marker")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.db.Put([]byte(full), value, nil); err != nil {
+		return fmt.Errorf("state: write meta %q: %w", key, err)
+	}
+	return nil
+}
+
+// GetMeta reads a value stored by PutMeta. ok is false when nothing is stored
+// under the key, which is not an error: a chain older than the key simply has
+// no record.
+func (s *StateDB) GetMeta(key string) (value []byte, ok bool, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, err := s.db.Get([]byte(prefixMeta+key), nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("state: read meta %q: %w", key, err)
+	}
+	return v, true, nil
 }
 
 // ForEachAccount calls fn for every account in COMMITTED state, in key order.
