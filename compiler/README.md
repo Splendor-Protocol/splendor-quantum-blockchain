@@ -62,7 +62,15 @@ unimplemented, the compiler defines the calling convention itself:
 ## Known limits
 
 No internal function calls, arrays/structs/strings, constructor (use a guarded
-`init()`), `break`/`continue`, or optimizer. A loop is bounded only by the gas
+`init()`), or `break`/`continue`.
+
+The only optimisation is **mapping-slot caching**: a slot is
+`SHA3-256(pad32(key) ‖ pad32(baseSlot))`, which the engine charges 414 gas to
+derive, so codegen derives it once per straight-line region and reuses it from
+memory. Only keys that cannot change qualify (`msg.sender`, `msg.value`, a
+literal, or a name never assigned in that function), and reuse never crosses a
+branch or loop body. Everything else is naive: redundant `PUSH`/`POP`, no
+constant folding. A loop is bounded only by the gas
 ceiling, which ends an unbounded one with a revert rather than a hang.
 `require` before any storage write (checks-effects) remains the compiler's
 emission order: the ENGINE does not roll back entry-frame storage on a
