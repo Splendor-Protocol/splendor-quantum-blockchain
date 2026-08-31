@@ -106,16 +106,19 @@ jobs:
           # by that repo's own CI, against the digest published here. Asserting a
           # path this repo no longer owns just fails every build.
 
-          # Every recorded pin must name the same bytes. A pin that agrees with a
-          # stale binary is exactly how this went unnoticed before.
-          for f in sdk/bridge/config/sqc.networks.json sdk/bridge/src/config/sqc.networks.json; do
-            if grep -q '"wasmSha256"' "$f" && ! grep -q "$built" "$f"; then
-              echo "::error::$f pins a digest that is not the built artifact."
-              fail=1
-            fi
-          done
-
           exit "$fail"
+
+      # The pins themselves, per network and per field. The grep this replaced
+      # only asked whether the wasm digest appeared ANYWHERE in the file, so one
+      # correct network masked two wrong ones and execSha256 was never checked at
+      # all — a wrong wasm_exec.js pin makes every consumer refuse to sign, and
+      # would have shipped. check-wasm-dist.mjs is the same check npm publish
+      # already runs; CI just never ran it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Every network pin names the rebuilt bytes
+        run: node sdk/bridge/scripts/check-wasm-dist.mjs
 
       - name: Golden vector still derives the published address
         run: go test -count=1 ./sdk/bridge/signer/ -run 'Golden|Domain'

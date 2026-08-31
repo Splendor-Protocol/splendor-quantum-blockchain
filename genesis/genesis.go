@@ -35,7 +35,9 @@ type Allocation struct {
 
 // Genesis defines the initial state of the chain.
 type Genesis struct {
-	// ChainID must match types.ChainID.
+	// ChainID names the network this document is for. It is adopted as
+	// types.ChainID at startup rather than checked against it: one binary
+	// serves devnet, testnet and mainnet as separate networks.
 	ChainID string `json:"chain_id"`
 
 	// NetworkName is a human-readable name shown in logs and the explorer.
