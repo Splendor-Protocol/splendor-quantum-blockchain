@@ -329,3 +329,243 @@ func ChainIDAdoptedForTest() bool { return chainIDAdopted }
 func RestoreChainIDForTest(id string, adopted bool) {
 	ChainID, chainIDAdopted = id, adopted
 }
+
+// ── QRC-20 permit digest ────────────────────────────────────────────────────
+//
+// This belongs in the leaf package because the signing clients (SDK, WASM
+// signer) must compute it without linking vm → core/state → leveldb. It sits
+// in this file rather than its own because core/types is linked into the
+// pinned WASM signer and, even with every new function dead-code-eliminated,
+// adding a source file to the package changes the linked bytes and breaks the
+// wasmSha256 pin. Move it into its own file only in a change that rebuilds and
+// re-pins the signer.
+
+// permitDigestPrefix is the domain tag of the v2 permit preimage. v1 was
+// "qrc20:permit:" and did not commit to a chain id; it was never reachable
+// from a transaction (no router action), so v2 replaces it outright instead of
+// living beside it.
+const permitDigestPrefix = "qrc20:permit:v2:"
+
+// PermitDigest is the message an owner signs (under crypto.CtxPermit) to grant
+// spender an allowance of amount over its QRC-20 balance at contract, valid
+// while the block time is at most deadline and only while the owner's permit
+// nonce at that contract equals nonce.
+//
+// Preimage, fixed-width so no field can borrow bytes from its neighbour:
+//
+//	"qrc20:permit:v2:" ‖ u16be(len(chainID)) ‖ chainID
+//	‖ contract[32] ‖ owner[32] ‖ spender[32]
+//	‖ amount[32, big-endian] ‖ nonce[8, big-endian] ‖ deadline[8, big-endian]
+//
+// digest = SHA3-256(preimage).
+//
+// Why the chain id is inside the digest: a QRC-20 address is derived from the
+// deployer and its nonce only, and the same tokens are replayed by the same
+// deployer on every tier, so the same token has the same address on devnet
+// and mainnet. Without the chain id a permit signed against a devnet token
+// would verify byte-for-byte against the mainnet one.
+//
+// It lives in core/types rather than vm so a signing client (the SDK, the WASM
+// signer) can compute it without linking the state database. It errors rather
+// than panics on every malformed input because the vm hands it caller-supplied
+// values: a nil, negative or >= 2^256 amount, a negative deadline, or a chain
+// id ValidateChainID refuses (which also keeps the u16 length prefix from
+// wrapping).
+func PermitDigest(
+	chainID string,
+	contract, owner, spender qcrypto.Address,
+	amount *big.Int,
+	nonce uint64,
+	deadline int64,
+) ([32]byte, error) {
+	if err := ValidateChainID(chainID); err != nil {
+		return [32]byte{}, fmt.Errorf("permit digest: %w", err)
+	}
+	if amount == nil {
+		return [32]byte{}, fmt.Errorf("permit digest: nil amount")
+	}
+	if amount.Sign() < 0 {
+		return [32]byte{}, fmt.Errorf("permit digest: negative amount")
+	}
+	if amount.BitLen() > 256 {
+		return [32]byte{}, fmt.Errorf("permit digest: amount does not fit in 256 bits")
+	}
+	if deadline < 0 {
+		return [32]byte{}, fmt.Errorf("permit digest: negative deadline")
+	}
+
+	msg := make([]byte, 0, len(permitDigestPrefix)+2+len(chainID)+3*qcrypto.AddressSize+32+8+8)
+	msg = append(msg, permitDigestPrefix...)
+	msg = append(msg, byte(len(chainID)>>8), byte(len(chainID)))
+	msg = append(msg, chainID...)
+	msg = append(msg, contract[:]...)
+	msg = append(msg, owner[:]...)
+	msg = append(msg, spender[:]...)
+	var amountBytes [32]byte
+	amount.FillBytes(amountBytes[:])
+	msg = append(msg, amountBytes[:]...)
+	msg = appendUint64BE(msg, nonce)
+	msg = appendUint64BE(msg, uint64(deadline))
+	return qcrypto.Hash32(msg), nil
+}
+
+// appendUint64BE appends v as 8 big-endian bytes.
+func appendUint64BE(b []byte, v uint64) []byte {
+	return append(b,
+		byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32),
+		byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+// ── Exchange order-signing digests ──────────────────────────────────────────
+//
+// Same home as the permit digest, for the same reason: the SDK and the WASM
+// signer compute these without linking vm → core/state → leveldb, and a new
+// source file in this package would move the pinned signer bytes. Each is
+// signed under crypto.CtxOrder. The exchange module (vm) verifies them; the
+// range rules it enforces on top (price in (0, 1e6), side in {buy, sell},
+// outcome below the condition's outcome count) are module rules, not digest
+// rules — the digest commits to whatever the maker signed.
+
+const (
+	orderDigestPrefix          = "exchange:order:v1:"
+	cancelDigestPrefix         = "exchange:cancel:v1:"
+	incrementNonceDigestPrefix = "exchange:nonce:v1:"
+)
+
+// Order sides as signed into an order and carried on the wire.
+const (
+	OrderSideBuy  uint8 = 0
+	OrderSideSell uint8 = 1
+)
+
+// Order is what a maker signs to authorise the exchange module to move
+// exactly the amounts a settlement fills from the maker's balances — no
+// allowance, no approval. Every field is committed to by OrderDigest.
+//
+// Recipient is signed on purpose: an unsigned recipient would let the operator
+// redirect shares. A zero Recipient means "pay the maker" and still hashes as
+// thirty-two zero bytes. Expiration is a block time in seconds, 0 = never.
+// Price is 1e6-scaled.
+type Order struct {
+	Salt        [32]byte
+	Maker       qcrypto.Address
+	Exchange    qcrypto.Address
+	Condition   uint64
+	Outcome     uint8
+	Side        uint8 // OrderSideBuy or OrderSideSell
+	ShareAmount *big.Int
+	Price       *big.Int
+	Expiration  int64
+	Nonce       uint64
+	Recipient   qcrypto.Address
+}
+
+// OrderDigest is the message a maker signs (under crypto.CtxOrder) for an
+// order, and the hash an order is tracked by (filled / cancelled) on-chain.
+//
+// Preimage, fixed-width so no field can borrow bytes from its neighbour:
+//
+//	"exchange:order:v1:" ‖ u16be(len(chainID)) ‖ chainID
+//	‖ exchange[32] ‖ salt[32] ‖ maker[32]
+//	‖ condition[8, big-endian] ‖ outcome[1] ‖ side[1]
+//	‖ share_amount[32, big-endian] ‖ price[32, big-endian]
+//	‖ expiration[8, big-endian] ‖ nonce[8, big-endian] ‖ recipient[32]
+//
+// digest = SHA3-256(preimage).
+//
+// The chain id is inside for the same reason as the permit's: exchange
+// instances and their collateral tokens can share an address across tiers.
+// The module computes the digest from the exchange it is called on, not from
+// the order's own field, so an order signed for one instance never verifies
+// at another. Errors rather than panics on a nil, negative or >= 2^256
+// share amount or price, a negative expiration, or a chain id ValidateChainID
+// refuses (which also keeps the u16 length prefix from wrapping).
+func OrderDigest(chainID string, o Order) ([32]byte, error) {
+	if err := ValidateChainID(chainID); err != nil {
+		return [32]byte{}, fmt.Errorf("order digest: %w", err)
+	}
+	shareAmount, err := uint256Word("order digest", "share_amount", o.ShareAmount)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	price, err := uint256Word("order digest", "price", o.Price)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if o.Expiration < 0 {
+		return [32]byte{}, fmt.Errorf("order digest: negative expiration")
+	}
+
+	msg := make([]byte, 0, len(orderDigestPrefix)+2+len(chainID)+4*qcrypto.AddressSize+32+8+1+1+32+32+8+8)
+	msg = append(msg, orderDigestPrefix...)
+	msg = append(msg, byte(len(chainID)>>8), byte(len(chainID)))
+	msg = append(msg, chainID...)
+	msg = append(msg, o.Exchange[:]...)
+	msg = append(msg, o.Salt[:]...)
+	msg = append(msg, o.Maker[:]...)
+	msg = appendUint64BE(msg, o.Condition)
+	msg = append(msg, o.Outcome, o.Side)
+	msg = append(msg, shareAmount[:]...)
+	msg = append(msg, price[:]...)
+	msg = appendUint64BE(msg, uint64(o.Expiration))
+	msg = appendUint64BE(msg, o.Nonce)
+	msg = append(msg, o.Recipient[:]...)
+	return qcrypto.Hash32(msg), nil
+}
+
+// CancelDigest is the message a maker signs (under crypto.CtxOrder) so that
+// anyone — not only the maker or the operator — can submit the cancellation of
+// the order hashed by orderHash. Cancelling is idempotent and the order hash
+// already commits to the chain id and the exchange, so the preimage needs
+// nothing else and cannot fail:
+//
+//	digest = SHA3-256("exchange:cancel:v1:" ‖ order_hash[32])
+func CancelDigest(orderHash [32]byte) [32]byte {
+	msg := make([]byte, 0, len(cancelDigestPrefix)+32)
+	msg = append(msg, cancelDigestPrefix...)
+	msg = append(msg, orderHash[:]...)
+	return qcrypto.Hash32(msg)
+}
+
+// IncrementNonceDigest is the message a maker signs (under crypto.CtxOrder) so
+// that anyone can bump the maker's order nonce at exchange, invalidating every
+// order signed with the old one. It binds expectedNonce, which the module
+// requires to equal the maker's current nonce, so each signature is single-use
+// — without it a captured signature could bulk-cancel the maker's future
+// orders every block.
+//
+//	"exchange:nonce:v1:" ‖ u16be(len(chainID)) ‖ chainID
+//	‖ exchange[32] ‖ maker[32] ‖ expected_nonce[8, big-endian]
+//
+// digest = SHA3-256(preimage). Errors on a chain id ValidateChainID refuses.
+func IncrementNonceDigest(chainID string, exchange, maker qcrypto.Address, expectedNonce uint64) ([32]byte, error) {
+	if err := ValidateChainID(chainID); err != nil {
+		return [32]byte{}, fmt.Errorf("increment-nonce digest: %w", err)
+	}
+	msg := make([]byte, 0, len(incrementNonceDigestPrefix)+2+len(chainID)+2*qcrypto.AddressSize+8)
+	msg = append(msg, incrementNonceDigestPrefix...)
+	msg = append(msg, byte(len(chainID)>>8), byte(len(chainID)))
+	msg = append(msg, chainID...)
+	msg = append(msg, exchange[:]...)
+	msg = append(msg, maker[:]...)
+	msg = appendUint64BE(msg, expectedNonce)
+	return qcrypto.Hash32(msg), nil
+}
+
+// uint256Word encodes v as a 32-byte big-endian word, refusing anything a
+// caller-supplied value could smuggle in: nil, negative, or wider than 256
+// bits. what/field name the digest and the field in the error.
+func uint256Word(what, field string, v *big.Int) ([32]byte, error) {
+	var word [32]byte
+	if v == nil {
+		return word, fmt.Errorf("%s: nil %s", what, field)
+	}
+	if v.Sign() < 0 {
+		return word, fmt.Errorf("%s: negative %s", what, field)
+	}
+	if v.BitLen() > 256 {
+		return word, fmt.Errorf("%s: %s does not fit in 256 bits", what, field)
+	}
+	v.FillBytes(word[:])
+	return word, nil
+}

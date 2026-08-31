@@ -457,11 +457,15 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// The rule-change schedule is read on every start, not only on the run that
 	// applies genesis: a node restarting onto an existing chain still has to know
-	// which rules that chain switches to and when.
-	forkSchedule, err := loadForkSchedule(flagGenesisPath)
+	// which rules that chain switches to and when. It is installed on the
+	// executor here, before crash recovery below, so a block replayed by
+	// ReconcileState is gated exactly as it was when first applied.
+	headBlock, _ := executor.LatestBlock()
+	forkSchedule, err := loadForkSchedule(flagGenesisPath, stateDB, headBlock == nil)
 	if err != nil {
 		return err
 	}
+	executor.WithForks(forkSchedule)
 	for _, name := range forkSchedule.Names() {
 		at, _ := forkSchedule.At(name)
 		log.Info().Str("upgrade", name).Uint64("at_height", at).Msg("Scheduled consensus rule change")
@@ -651,7 +655,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 		var genesisDoc *genesiscfg.Genesis
 		if flagGenesisPath != "" {
 			var genErr error
-			genesisDoc, genErr = applyLocalGenesis(flagGenesisPath, stateDB, genesisPolicy{docHash: genesisDocPin})
+			genesisDoc, genErr = applyLocalGenesis(flagGenesisPath, stateDB, executor, genesisPolicy{docHash: genesisDocPin})
 			if genErr != nil {
 				return genErr
 			}
@@ -843,7 +847,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 			SimBurst:          flagSimBurst,
 			SimMaxInFlight:    flagSimMaxInFlight,
 			SimTimeout:        flagSimTimeout,
-			Forks:             forkSchedule,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
@@ -907,6 +910,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// DEX routes
 	rpc.RegisterDEXRoutes(router, stateDB)
+
+	// Exchange (settlement module) read routes — the GET mirrors of the
+	// exchange /call reads, labelled with the live chain head.
+	rpc.RegisterExchangeRoutes(router, stateDB, rpc.HeadFunc(executor))
 
 	// Contract-interaction routes (/call view calls, /estimate gas+fee) — issue #4
 	rpc.RegisterCallRoutes(router, stateDB, executor, pool, coreRPC.SimGuard())
@@ -1214,34 +1221,71 @@ func bootstrapsGenesisFromPeers(isValidator bool, peers []string, localGenesisPa
 	return !isValidator && len(peers) > 0 && localGenesisPath == ""
 }
 
-// applyLocalGenesis credits the allocations of a genesis.json held on this host.
+// metaForksKey is where the schedule a chain was started under is persisted, in
+// the state DB's node-local meta: namespace (next to meta:height, outside the
+// state root).
+const metaForksKey = "forks"
+
+// loadForkSchedule decides which rule-change schedule this node runs under.
 //
-// A local document is not a peer's, but it is still money: ApplyToState commits
-// balances to LevelDB before any block exists to contradict them, and nothing
-// later removes an account it wrote. So it goes through the same gate — a
-// document for another chain, or one the operator pinned and that no longer
-// matches, stops the node instead of minting a supply nobody meant.
-// loadForkSchedule reads the rule-change schedule out of the local genesis
-// document.
+// A running chain's schedule is the one persisted under meta:forks when its
+// genesis was applied — from --genesis on this host, or fetched from a peer by
+// a node started without one. That stored copy is authoritative: a
+// peer-bootstrapped follower has no file to re-read on restart, and a
+// validator's file can be edited after the fact. So when a stored map exists, a
+// --genesis file that is missing, unreadable, or differs is fatal — it is
+// either the wrong document or a schedule this chain was not started under,
+// and a node that booted anyway would apply rules the rest of the network does
+// not. The --genesis-doc-hash pin protects the document at apply time, so the
+// stored map and the pinned document never disagree on a healthy node.
 //
-// A node with no local --genesis returns an empty schedule rather than an
-// error. That node takes its genesis from a peer, gated by --genesis-doc-hash,
-// and the schedule arrives with it — but that path runs later in startup, so
-// there is nothing to read here yet. An empty schedule means "no rule changes",
-// which is the correct reading of a chain that has not scheduled any.
+// With no stored map, the file is consulted. On a chain that already has blocks
+// (one started before schedules were persisted) an unreadable file is fatal
+// for the same reason. Only an empty chain may proceed past a file it cannot
+// read: the apply path reports the better error, and persists the schedule
+// there, before the allocations land. A node with neither returns nil — no
+// rule changes, which is the correct reading of a chain that scheduled none,
+// and the state a peer-bootstrapped follower is in until its genesis arrives.
 //
-// A malformed or unknown-upgrade schedule is fatal. Starting anyway would mean
-// running a node that silently ignores a rule change the rest of the network
-// applies, and the symptom of that is a fork at the activation height rather
-// than an error now.
-func loadForkSchedule(genesisPath string) (forks.Schedule, error) {
+// A malformed or unknown-upgrade schedule is fatal wherever it comes from.
+// Starting anyway would mean running a node that silently ignores a rule change
+// the rest of the network applies, and the symptom of that is a fork at the
+// activation height rather than an error now.
+func loadForkSchedule(genesisPath string, stateDB *state.StateDB, chainEmpty bool) (forks.Schedule, error) {
+	stored, ok, err := readStoredForkSchedule(stateDB)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		if err := stored.Validate(); err != nil {
+			return nil, fmt.Errorf("this chain's stored fork schedule: %w (is this binary older than the one that started the chain?)", err)
+		}
+		if genesisPath == "" {
+			return stored, nil
+		}
+		g, err := genesiscfg.LoadFile(genesisPath)
+		if err != nil {
+			return nil, fmt.Errorf("this chain was started under fork schedule %s but --genesis %q cannot be read: %w",
+				formatForkSchedule(stored), genesisPath, err)
+		}
+		if !sameForkSchedule(g.Forks, stored) {
+			return nil, fmt.Errorf("--genesis %q schedules %s but this chain was started under %s — "+
+				"a node running a different schedule would fork at the first activation height",
+				genesisPath, formatForkSchedule(g.Forks), formatForkSchedule(stored))
+		}
+		return stored, nil
+	}
 	if genesisPath == "" {
 		return nil, nil
 	}
 	g, err := genesiscfg.LoadFile(genesisPath)
 	if err != nil {
-		// Not fatal here: the genesis path is validated properly by the code that
-		// applies it, which reports a far better error than this would.
+		if !chainEmpty {
+			return nil, fmt.Errorf("this chain has no stored fork schedule and --genesis %q cannot be read: %w",
+				genesisPath, err)
+		}
+		// Not fatal on an empty chain: the genesis path is validated properly by
+		// the code that applies it, which reports a far better error than this.
 		log.Debug().Err(err).Str("path", genesisPath).Msg("no fork schedule read from genesis")
 		return nil, nil
 	}
@@ -1251,12 +1295,92 @@ func loadForkSchedule(genesisPath string) (forks.Schedule, error) {
 	return g.Forks, nil
 }
 
-func applyLocalGenesis(path string, stateDB *state.StateDB, policy genesisPolicy) (*genesiscfg.Genesis, error) {
+// readStoredForkSchedule returns the schedule persisted by persistForkSchedule,
+// and whether one exists. A stored nil is read back as an empty schedule, so
+// "started with no rule changes" is distinguishable from "never recorded".
+func readStoredForkSchedule(stateDB *state.StateDB) (forks.Schedule, bool, error) {
+	raw, ok, err := stateDB.GetMeta(metaForksKey)
+	if err != nil {
+		return nil, false, fmt.Errorf("read stored fork schedule: %w", err)
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	s := forks.Schedule{}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, false, fmt.Errorf("stored fork schedule is corrupt: %w", err)
+	}
+	if s == nil {
+		s = forks.Schedule{}
+	}
+	return s, true, nil
+}
+
+// persistForkSchedule records the schedule a chain is being started under and
+// installs it on the executor.
+//
+// Both genesis apply paths call it BEFORE ApplyToState. The order matters on a
+// follower: its genesis arrives from a peer while the 1 s syncer is already
+// running, and the first block the syncer applies must be gated by the same
+// schedule the validator applied it under — never by a nil one. Persisting
+// first also means a restart between the two writes re-runs the apply path
+// under the schedule it recorded, rather than under none.
+func persistForkSchedule(stateDB *state.StateDB, executor *block.Executor, s forks.Schedule) error {
+	if s == nil {
+		s = forks.Schedule{}
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return fmt.Errorf("encode fork schedule: %w", err)
+	}
+	if err := stateDB.PutMeta(metaForksKey, raw); err != nil {
+		return fmt.Errorf("persist fork schedule: %w", err)
+	}
+	executor.SetForks(s)
+	return nil
+}
+
+func sameForkSchedule(a, b forks.Schedule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, at := range a {
+		if b[name] != at {
+			return false
+		}
+	}
+	return true
+}
+
+// formatForkSchedule renders a schedule for an error message. encoding/json
+// sorts map keys, so the text is the same on every run.
+func formatForkSchedule(s forks.Schedule) string {
+	if s == nil {
+		s = forks.Schedule{}
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return fmt.Sprintf("%v", s)
+	}
+	return string(raw)
+}
+
+// applyLocalGenesis credits the allocations of a genesis.json held on this host.
+//
+// A local document is not a peer's, but it is still money: ApplyToState commits
+// balances to LevelDB before any block exists to contradict them, and nothing
+// later removes an account it wrote. So it goes through the same gate — a
+// document for another chain, or one the operator pinned and that no longer
+// matches, stops the node instead of minting a supply nobody meant.
+func applyLocalGenesis(path string, stateDB *state.StateDB, executor *block.Executor, policy genesisPolicy) (*genesiscfg.Genesis, error) {
 	g, err := genesiscfg.LoadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("load genesis %q: %w", path, err)
 	}
 	if err := verifyGenesisDocument(g, policy.docHash, path); err != nil {
+		return nil, err
+	}
+	if err := persistForkSchedule(stateDB, executor, g.Forks); err != nil {
 		return nil, err
 	}
 	if _, err := g.ApplyToState(stateDB); err != nil {
@@ -1401,6 +1525,12 @@ func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *
 			Msg("--trust-peer-genesis: crediting an unverified peer genesis. Pin this hash with --genesis-doc-hash.")
 	}
 
+	// The schedule lands before the allocations: the syncer is already running
+	// on this node, and the first block it applies must be gated by the
+	// schedule the validator applied it under, never by a nil one.
+	if err := persistForkSchedule(stateDB, executor, g.Forks); err != nil {
+		return err
+	}
 	if _, err := g.ApplyToState(stateDB); err != nil {
 		return fmt.Errorf("apply peer genesis allocations: %w", err)
 	}

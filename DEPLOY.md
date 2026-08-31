@@ -411,6 +411,7 @@ two ever disagree.
 | `--validator` | `false` | Produce blocks |
 | `--block-interval` | `2` | Seconds between blocks (validator only) |
 | `--genesis` | — | Path to `genesis.json`. Allocations are applied once, on an empty chain |
+| `--chain-id` / `SQC_CHAIN_ID` | — | Chain id this node expects (e.g. `splendor-quantum-devnet-1`). Set, a genesis document naming another chain is refused; empty, the node adopts whatever the verified genesis says |
 
 ### Validator key
 
@@ -484,11 +485,16 @@ the install rather than writing an unpinned unit if the identity cannot be read.
 
 ### Fixed at compile time
 
-Some values in this document read like settings but are constants: `chain_id`
-is `splendor-quantum-1` (`core/types/transaction.go`), the mempool cap is 50,000
-transactions (`core/mempool/mempool.go`), the minimum fee hook is 1,000 units,
-and the AI scheduler's batch bounds live in `ai/scheduler.go`. Changing any of
-them means editing and rebuilding.
+Some values in this document read like settings but are constants: the
+mempool cap is 50,000 transactions (`core/mempool/mempool.go`), the minimum fee
+hook is 1,000 units, and the AI scheduler's batch bounds live in
+`ai/scheduler.go`. Changing any of them means editing and rebuilding.
+
+`chain_id` is **not** one of them. The node takes it from the verified genesis
+document (`core/types.DefaultChainID`, `splendor-quantum-1`, is only what a
+binary assumes before it has seen one) and binds it into every transaction,
+permit and order signature; `--chain-id` / `SQC_CHAIN_ID` pins the expected
+value so a node refuses a genesis for another tier instead of adopting it.
 
 ---
 
@@ -566,6 +572,50 @@ zero, and no transaction can meet the 1,000-unit minimum fee. The node logs
 first startup, stop, delete `/var/sqc/data`, and start again with the flag.
 There is no way to apply allocations to a chain that has already produced
 block 0.
+
+### Fork Schedule
+
+`genesis.json` may carry a `forks` object that schedules consensus rule changes
+by block height. It is part of the document's identity: `sqc-node genesis-hash`
+covers it, so two documents that differ only in a schedule get different
+`--genesis-doc-hash` pins. A document without one hashes exactly as it did
+before the field existed.
+
+```json
+"forks": {
+  "module_revert_v1": 1,
+  "qrc20_v2": 1,
+  "qrc1155_v1": 1,
+  "exchange_v1": 1
+}
+```
+
+- **A height is the first block produced under the new rules.** `0` or an absent
+  name means *never* — genesis is block 0, so `0` cannot mean "from genesis".
+  The convention for a fresh chain is to schedule every rule it starts with at
+  height **1**.
+- **Names.** `multi_validator` is reserved today. The settlement upgrades are
+  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`; each becomes
+  schedulable only in the release that implements it. `qrc20_v2`, `qrc1155_v1`
+  and `exchange_v1` each require `module_revert_v1` at the same or an earlier
+  height (a failed module call must be a failed receipt, not a dropped
+  transaction that pins the sender's nonce). Devnet and testnet
+  schedule all four at 1; **mainnet omits `exchange_v1`** (the real-money gate
+  stays closed).
+- **A name the binary does not implement is refused at boot**, not ignored: a
+  node cannot start on a document it does not understand. Deploy the binary that
+  knows a name everywhere *before* using a document that schedules it, and
+  compute the document's pin with that binary — an older one refuses the file.
+- **The schedule is persisted with the chain.** When genesis is applied (from
+  `--genesis`, or from a peer by a node started without one) the node records
+  the schedule in its state DB before it credits a single allocation. On every
+  later boot that stored copy is authoritative: a follower restarted without
+  `--genesis` keeps its schedule, and a node whose `--genesis` file is missing,
+  unreadable, or schedules something different **refuses to boot** rather than
+  run under rules the rest of the network does not.
+- **Check it before the height arrives:** `curl http://localhost:8080/status`
+  reports `forks` on every node that has one. Nodes disagreeing about an
+  activation height do not fail at startup — they split at the height.
 
 ---
 
@@ -1081,6 +1131,12 @@ Save as `diagnostics.sh`, `chmod +x diagnostics.sh`, run with `./diagnostics.sh`
 | `/staking/tiers` | GET | Staking tier info |
 | `/dex/pool/{t0}/{t1}` | GET | Pool info |
 | `/dex/pool/{t0}/{t1}/quote` | GET | Swap quote |
+| `/call` | POST | Module read (`{"module","action","params"}`) or bytecode view call, at the head block |
+| `/exchange/{SQ:addr}` | GET | Exchange instance info (`exchange_info`) |
+| `/exchange/{SQ:addr}/condition/{id}` | GET | Condition state (`condition_info`) |
+| `/exchange/{SQ:addr}/order/{hash}` | GET | Order fill/cancel status (`order_status`) |
+| `/exchange/{SQ:addr}/nonce/{SQ:maker}` | GET | Maker's order nonce (`nonce`) |
+| `/exchange/{SQ:addr}/position/{condition}/{SQ:holder}` | GET | Holder's YES/NO balances (`position`) |
 | `/ws?subscribe=new_block,new_tx` | GET | WebSocket stream (`rpc/websocket.go`) |
 | `/metrics` | GET | Prometheus metrics (:9100) |
 | `/ai/stats` | GET | AI scheduler stats |

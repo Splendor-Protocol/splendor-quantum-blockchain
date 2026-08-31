@@ -187,6 +187,102 @@ func TestX402SettleRequiresSignedTxAndNeverMutatesState(t *testing.T) {
 	}
 }
 
+// A payer that has never sent a transaction has no key in the on-chain
+// registry. Attaching the key that derives the payer address to the payment
+// payload must let /x402/verify accept it, and the payer-signed settlement tx
+// (which carries the same first-use key) must then be admitted by /x402/settle.
+func TestX402VerifyAcceptsNeverSeenPayer(t *testing.T) {
+	payerPub, payerPriv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	payee := qcrypto.Address{0x55}
+	payer := qcrypto.DeriveAddress(payerPub)
+
+	s := newTestServer(t, "secret")
+
+	// Fund the payer but register NO key: a fresh, never-seen account.
+	acc := types.NewAccount(payer)
+	acc.AddBalance(big.NewInt(1_000_000))
+	s.stateDB.SetAccount(acc)
+	if _, err := s.stateDB.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var nonce [32]byte
+	nonce[0] = 0xBB
+	now := time.Now().Unix()
+	payload := &x402.PaymentPayload{
+		Version: 1, ChainID: types.ChainID,
+		From: payer, To: payee, Amount: big.NewInt(500),
+		ValidAfter: now - 30, ValidBefore: now + 300, Nonce: nonce,
+	}
+	if err := payload.Sign(payerPriv); err != nil {
+		t.Fatalf("sign payload: %v", err)
+	}
+	reqs := &x402.PaymentRequirements{
+		PayTo: payee, Amount: big.NewInt(500),
+		ValidAfter: now - 30, ValidBefore: now + 300,
+	}
+
+	verify := func(body any) x402.VerifyResult {
+		raw, _ := json.Marshal(body)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/x402/verify", bytes.NewReader(raw))
+		s.handleX402Verify(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("/x402/verify: got %d (%s), want 200", rec.Code, rec.Body.String())
+		}
+		var res x402.VerifyResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("decode verify result: %v", err)
+		}
+		return res
+	}
+
+	// Without the key the registry has nothing to verify against.
+	if res := verify(map[string]any{"requirements": reqs, "payload": payload}); res.Valid {
+		t.Fatal("never-seen payer without public_key must not verify")
+	}
+
+	// With the derived key attached the same signed payload verifies.
+	payload.PublicKey = payerPub.Bytes()
+	if res := verify(map[string]any{"requirements": reqs, "payload": payload}); !res.Valid {
+		t.Fatalf("never-seen payer with public_key rejected: %s", res.Reason)
+	}
+
+	// A key that does not derive the payer is refused over the wire too.
+	otherPub, _, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	forged := *payload
+	forged.PublicKey = otherPub.Bytes()
+	if res := verify(map[string]any{"requirements": reqs, "payload": &forged}); res.Valid {
+		t.Fatal("public_key that does not derive the payer must be rejected")
+	}
+
+	// The settlement tx carries the same first-use key (Sign with includePubKey)
+	// and is admitted to the mempool; nothing moves outside consensus.
+	settle := x402.NewSettlementTx(payload, big.NewInt(1000), 0)
+	if err := settle.Sign(payerPriv, true); err != nil {
+		t.Fatalf("sign settlement: %v", err)
+	}
+	raw, _ := json.Marshal(map[string]any{"requirements": reqs, "payload": payload, "settlement_tx": settle})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/x402/settle", bytes.NewReader(raw))
+	s.handleX402Settle(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("never-seen payer settlement: got %d (%s), want 202", rec.Code, rec.Body.String())
+	}
+	if s.pool.Size() != 1 {
+		t.Fatalf("settlement tx not queued: mempool size %d", s.pool.Size())
+	}
+	if bal, _ := s.stateDB.GetBalance(payee); bal.Sign() != 0 {
+		t.Fatalf("handler moved funds outside consensus: payee balance %s", bal)
+	}
+}
+
 // The write plane must fail closed with no token and reject a wrong token.
 func TestWritePlaneFailsClosed(t *testing.T) {
 	noToken := NewWriteAuth("")

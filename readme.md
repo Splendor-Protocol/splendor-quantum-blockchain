@@ -673,15 +673,34 @@ multisig and an oracle are implemented in Go inside the node rather than
 compiled from user source. This is how tokens and DeFi ship on this chain
 today, and it is why the absence of a compiler has not blocked anything so far.
 
-Be precise about which of them a transaction can actually drive:
-`DispatchModuleCall` (`vm/module_router.go`) routes exactly two modules,
-`qrc20` and `dex` — deploy, mint, transfer, approve, burn, and pool
-deploy/add-liquidity/swap. `vm/lending.go`, `vm/staking.go`, `vm/governance.go`,
-`vm/oracle.go`, `vm/multisig.go`, `vm/qrc721.go`, `vm/qrc1155.go` and
-`vm/qrc4626.go` are written and tested, and their `/lending/*`, `/staking/*`
-and `/gov/*` RPC routes read their state, but no transaction reaches them:
-until the router learns those module names, they are library code, not a live
-surface.
+Be precise about which of them a transaction can actually drive.
+`DispatchModuleCall` (`vm/module_router.go`) routes four modules; the
+authoritative action list is `vm.KnownModuleActions`
+(`vm/module_router_read.go`), and every write that arrived after a module
+first shipped is gated by a fork the genesis document schedules (`forks` in
+`genesis.json`, see `DEPLOY.md` — "Fork Schedule"). Before that height the
+action is a hard "fork not active" error: refused at `/tx/submit`,
+unappliable in a block.
+
+| Module | Writes | Fork gate | Reads (`POST /call`) |
+|---|---|---|---|
+| `qrc20` | `deploy`, `mint`, `transfer`, `approve`, `burn` | — (since launch) | `balance_of`, `total_supply`, `allowance`, `token_info`, `permit_nonce`, `paused`, `owner` |
+| `qrc20` | `permit`, `transfer_from`, `increase_allowance`, `decrease_allowance`, `burn_from`, `transfer_ownership`, `pause`, `unpause` | `qrc20_v2` | (as above) |
+| `qrc1155` | `deploy`, `mint`, `mint_batch`, `transfer`, `batch_transfer`, `set_approval_for_all`, `burn`, `burn_batch`, `transfer_ownership` | `qrc1155_v1` | `balance_of`, `balance_of_batch`, `is_approved_for_all`, `uri`, `total_supply`, `token_info` |
+| `dex` | `deploy_pool`, `add_liquidity`, `swap` | — (since launch) | `reserves`, `pool_info` (also `GET /dex/pool/...`) |
+| `exchange` | `deploy`, `create_condition`, `split`, `merge`, `match`, `cancel_order`, `increment_nonce`, `resolve`, `redeem`, `redeem_for`, `pause`, `unpause`, `set_redeem_fee_bps`, `set_fee_recipient`, `set_operator`, `transfer_ownership` | `exchange_v1` (requires `module_revert_v1`) | `exchange_info`, `condition_info`, `order_status`, `order_remaining`, `order_hash`, `nonce`, `is_operator`, `position`, `position_id`, `simulate_match` (also `GET /exchange/...`) |
+
+A fifth name, `module_revert_v1`, is not a module but the failure rule: under
+it a module call that errors is included with a failed receipt (fee kept,
+nonce consumed) instead of being dropped, so a relayer whose call fails cannot
+jam its own account. The wire formats are in `docs/modules/qrc20-permit.md`
+and `docs/modules/exchange.md`.
+
+`vm/lending.go`, `vm/staking.go`, `vm/governance.go`, `vm/oracle.go`,
+`vm/multisig.go`, `vm/qrc721.go` and `vm/qrc4626.go` are written and tested,
+and their `/lending/*`, `/staking/*` and `/gov/*` RPC routes read their state,
+but no transaction reaches them: until the router learns those module names,
+they are library code, not a live surface.
 
 **Roadmap, not shipped: Quantum Solidity (QSol).** The intended language is a
 Solidity dialect — `sqaddress` for 32-byte addresses, `sha3()` in place of
@@ -979,8 +998,9 @@ These are use cases the primitives would support. The first two are **not
 implemented in this repository**: there is no attestation registry and no
 credential contract. The third partly is — `vm/governance.go` holds proposals,
 votes, quorum and timelock, and `/gov/*` serves them read-only. What it lacks
-is a way in and a way out: the module router dispatches `qrc20` and `dex` only,
-so no transaction can submit or vote today, and `Execute` marks a proposal
+is a way in and a way out: the module router dispatches `qrc20`, `qrc1155`,
+`dex` and `exchange` (see the table under "Native Go modules"), not
+`governance`, so no transaction can submit or vote today, and `Execute` marks a proposal
 Executed without changing any chain parameter. Read the rest as what the key
 material makes possible, not as a feature list:
 

@@ -4,6 +4,7 @@
 package mempool
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
 const (
@@ -52,7 +54,7 @@ var congestionTiers = []struct {
 // Mempool holds pending transactions ordered by fee (highest first).
 type Mempool struct {
 	mu      sync.RWMutex
-	txs     map[[32]byte]*txEntry // txHash → entry
+	txs     map[[32]byte]*txEntry          // txHash → entry
 	byAddr  map[qcrypto.Address][]*txEntry // addr → sorted by nonce
 	maxSize int
 	state   *state.StateDB
@@ -76,15 +78,31 @@ func New(maxSize int, stateDB *state.StateDB) *Mempool {
 	}
 }
 
+// ValidateEnvelope is the cheap, stateless part of admission: the structural
+// checks and the Data size cap. Add runs it first; an ingress that does any
+// work on tx.Data before Add (the RPC module-call preflight parses it) must
+// run it first too, so an oversized or malformed envelope is refused before
+// its payload is ever looked at.
+func ValidateEnvelope(tx *types.Transaction) error {
+	if err := tx.Validate(); err != nil {
+		return fmt.Errorf("invalid tx: %w", err)
+	}
+	// Bound the tx payload so the pool can't be filled with multi-hundred-KiB txs.
+	if len(tx.Data) > MaxTxDataBytes {
+		return fmt.Errorf("tx data too large: %d bytes (max %d)", len(tx.Data), MaxTxDataBytes)
+	}
+	return nil
+}
+
 // Add validates and adds a transaction to the mempool.
 // Returns an error if the transaction is invalid, duplicate, or the pool is full.
 func (m *Mempool) Add(tx *types.Transaction) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Structural validation
-	if err := tx.Validate(); err != nil {
-		return fmt.Errorf("invalid tx: %w", err)
+	// Structural validation and the payload cap.
+	if err := ValidateEnvelope(tx); err != nil {
+		return err
 	}
 
 	// Minimum fee check, scaled by how full the pool currently is.
@@ -93,9 +111,12 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 		return fmt.Errorf("fee too low: minimum %d at current pool load, got %s", minFee, tx.Fee.String())
 	}
 
-	// Bound the tx payload so the pool can't be filled with multi-hundred-KiB txs.
-	if len(tx.Data) > MaxTxDataBytes {
-		return fmt.Errorf("tx data too large: %d bytes (max %d)", len(tx.Data), MaxTxDataBytes)
+	// A native-module call carries no value: the executor's module branch
+	// returns before the call-value transfer, so an Amount on a router call is
+	// debited from nobody and credited to nobody — the coins simply stay put
+	// while the sender believes they paid. Refuse it at the door.
+	if tx.Type == types.TxCall && tx.To == vm.ModuleRouterAddress && tx.Amount.Sign() != 0 {
+		return fmt.Errorf("module call must carry amount 0, got %s: native modules take no call value", tx.Amount.String())
 	}
 
 	// Reject a duplicate pending (from, nonce): a wallet that reads only the
@@ -203,8 +224,18 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	return nil
 }
 
-// Pending returns up to n transactions sorted by fee descending (highest fee first).
-// This is what the block producer calls to fill a block.
+// Pending returns up to n transactions in the order the block producer should
+// try them: by fee descending, then timestamp ascending (FIFO within a fee),
+// then tx hash, so the order is total and two calls over the same pool agree.
+//
+// A sender's transactions are then re-slotted so they always come out in nonce
+// order: the i-th slot the fee sort gives sender S is filled with S's i-th
+// lowest pending nonce (byAddr is kept nonce-sorted by Add). Without this a
+// higher-fee nonce 2 could be handed to the producer before nonce 1; the
+// executor then rejects nonce 2 ("want 1") and the sender's whole batch
+// stalls. The re-slotting happens BEFORE the cut at n: substituting after
+// truncation could emit nonce n+1 without n when the lower nonce's slot fell
+// past the cut.
 func (m *Mempool) Pending(n int) []*types.Transaction {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -214,22 +245,33 @@ func (m *Mempool) Pending(n int) []*types.Transaction {
 		entries = append(entries, e)
 	}
 
-	// Sort by fee descending, then by timestamp ascending (FIFO within same fee)
 	sort.Slice(entries, func(i, j int) bool {
 		cmp := entries[i].tx.Fee.Cmp(entries[j].tx.Fee)
 		if cmp != 0 {
 			return cmp > 0 // higher fee first
 		}
-		return entries[i].tx.Timestamp < entries[j].tx.Timestamp
+		if entries[i].tx.Timestamp != entries[j].tx.Timestamp {
+			return entries[i].tx.Timestamp < entries[j].tx.Timestamp
+		}
+		return bytes.Compare(entries[i].hash[:], entries[j].hash[:]) < 0
 	})
 
 	if n > len(entries) {
 		n = len(entries)
 	}
 
-	result := make([]*types.Transaction, n)
-	for i := 0; i < n; i++ {
-		result[i] = entries[i].tx
+	// Walking the full sorted pool and cutting at n is the same as
+	// substituting over the whole pool and then truncating: the k-th slot a
+	// sender occupies depends only on the entries before it.
+	result := make([]*types.Transaction, 0, n)
+	seen := make(map[qcrypto.Address]int)
+	for _, e := range entries {
+		if len(result) == n {
+			break
+		}
+		k := seen[e.tx.From]
+		seen[e.tx.From] = k + 1
+		result = append(result, m.byAddr[e.tx.From][k].tx)
 	}
 	return result
 }
@@ -369,7 +411,7 @@ func (m *Mempool) GetStats() Stats {
 	}
 
 	maxFee := new(big.Int)
-	minFee := new(big.Int).SetInt64(1<<62)
+	minFee := new(big.Int).SetInt64(1 << 62)
 	sum := new(big.Int)
 
 	for _, e := range m.txs {

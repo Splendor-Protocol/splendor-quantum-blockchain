@@ -3,14 +3,17 @@ package block
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/syndtr/goleveldb/leveldb"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
@@ -81,6 +84,22 @@ type Executor struct {
 	// genesisHash pins the hash of block 0 when the operator supplied one.
 	// nil = unpinned, which is the pre-existing behaviour.
 	genesisHash *[32]byte
+
+	// forks is the chain's rule-change schedule. It travels into every module
+	// call (vm.ModuleContext.Forks) so a gate is judged against the height of
+	// the block being applied — the one code path producer and follower share.
+	// nil = no rule changes, which is what every chain scheduled before the
+	// executor learned to read one.
+	//
+	// Held behind an atomic pointer, NOT under mu: Forks() feeds /status, the
+	// /tx/submit preflight and /estimate on public RPC goroutines, and taking
+	// the block lock there stalled every one of them for the whole of a
+	// ProduceBlock/ExecuteBlock/ReconcileState. The map behind the pointer is
+	// never mutated after install (installForks stores a private copy), so a
+	// reader only ever needs the pointer. SetForks still serializes on mu, so
+	// the pointer cannot change while a block is in flight: every in-block
+	// read (execCall) sees the schedule installed when the block began.
+	forks atomic.Pointer[forks.Schedule]
 }
 
 // receiptStorer is satisfied by *state.TxIndexStore.
@@ -128,6 +147,70 @@ func (e *Executor) WithTxIndex(idx receiptStorer) *Executor {
 func (e *Executor) WithGenesisHash(h [32]byte) *Executor {
 	e.genesisHash = &h
 	return e
+}
+
+// WithForks installs the rule-change schedule at construction time, before any
+// block is applied. Builder-style like the others above; use SetForks once the
+// executor is live.
+func (e *Executor) WithForks(s forks.Schedule) *Executor {
+	e.installForks(s)
+	return e
+}
+
+// SetForks installs (or replaces) the schedule on a running executor.
+//
+// It takes the block lock, so the change lands between two block transitions
+// and never in the middle of one: a schedule that arrives with a peer-served
+// genesis is visible to the very next block the syncer applies, and no block
+// is applied half under one schedule and half under another. Readers (Forks,
+// execCall) do not take the lock — see the forks field.
+func (e *Executor) SetForks(s forks.Schedule) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.installForks(s)
+}
+
+// installForks publishes a private copy of s, so a caller that keeps mutating
+// its own map after handing it over can never reach what consensus reads.
+// nil stays nil.
+func (e *Executor) installForks(s forks.Schedule) {
+	if s == nil {
+		e.forks.Store(nil)
+		return
+	}
+	own := cloneSchedule(s)
+	e.forks.Store(&own)
+}
+
+// schedule is the executor's own lock-free read of the installed schedule
+// (nil when none is). The map it returns is immutable; never hand it out.
+func (e *Executor) schedule() forks.Schedule {
+	if p := e.forks.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+func cloneSchedule(s forks.Schedule) forks.Schedule {
+	out := make(forks.Schedule, len(s))
+	for name, at := range s {
+		out[name] = at
+	}
+	return out
+}
+
+// Forks returns a copy of the installed schedule (nil when none is).
+//
+// A copy, so a caller reading it for /status or an admission check can never
+// mutate what consensus is about to apply. Lock-free: it must never wait on a
+// block transition, or every RPC that consults the schedule stalls behind
+// ProduceBlock/ExecuteBlock/ReconcileState.
+func (e *Executor) Forks() forks.Schedule {
+	s := e.schedule()
+	if s == nil {
+		return nil
+	}
+	return cloneSchedule(s)
 }
 
 // Close closes the chain database.
@@ -381,16 +464,26 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 	// operation; without this revert, a failed op keeps that dirty mutation, so
 	// the block's account state (and thus the state root) reflects a tx that the
 	// producer excluded — producer and followers then compute divergent roots.
+	//
+	// A failed revert or commit of that per-tx checkpoint is fatal for the
+	// block, not just the tx: the pending layer then holds residue nobody can
+	// account for, and the state root computed over it is one no other node
+	// would reproduce. The error propagates and the caller discards the
+	// pending layer with the block.
 	snap := e.state.Snapshot()
 	if err := e.executeTx(tx, blockHeight, blockTime, receipt); err != nil {
-		e.state.RevertToSnapshot(snap)
+		if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
+			return nil, fmt.Errorf("revert of unappliable tx: %w (tx error: %v)", rerr, err)
+		}
 		log.Warn().Err(err).
 			Str("from", tx.From.String()).
 			Uint64("nonce", tx.Nonce).
 			Msg("transaction in received block could not be applied")
 		return nil, err
 	}
-	e.state.CommitSnapshot(snap)
+	if err := e.state.CommitSnapshot(snap); err != nil {
+		return nil, fmt.Errorf("commit of tx snapshot: %w", err)
+	}
 
 	return receipt, nil
 }
@@ -523,6 +616,27 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, rec
 	return nil
 }
 
+// dispatchModuleCall is the module entry point execCall uses. A variable so a
+// test can stand in a module that panics or writes-then-fails and prove the
+// executor's handling of it, independent of any real module's failure modes.
+var dispatchModuleCall = vm.DispatchModuleCall
+
+// errModulePanic is the SOFT error a recovered module panic becomes under
+// module_revert_v1. The panic value is deliberately not in the text: it can
+// carry addresses or allocation sizes that differ between nodes.
+var errModulePanic = errors.New("module panic")
+
+// runModuleCall dispatches under a recover so a panicking module becomes
+// errModulePanic rather than a dropped tx (legacy) or a halted validator.
+func runModuleCall(stateDB *state.StateDB, ctx vm.ModuleContext, data []byte, receipt *types.Receipt) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errModulePanic
+		}
+	}()
+	return dispatchModuleCall(stateDB, ctx, data, receipt)
+}
+
 func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64, blockTime int64) error {
 	if tx.To == vm.ModuleRouterAddress {
 		if err := fromAcc.SubBalance(tx.Fee); err != nil {
@@ -530,7 +644,56 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		}
 		fromAcc.IncrNonce()
 		e.state.SetAccount(fromAcc)
-		return vm.DispatchModuleCall(e.state, tx.From, tx.Nonce, tx.Data, receipt)
+		// The block height and header time travel with the call so modules
+		// judge deadlines against the block, never the wall clock: the
+		// producer stamped blockTime once and every follower reads the same
+		// value back from the header.
+		// One read per call; SetForks cannot land while this block holds
+		// e.mu, so every tx in the block is judged under the same map.
+		schedule := e.schedule()
+		mctx := vm.ModuleContext{
+			Caller: tx.From,
+			Nonce:  tx.Nonce,
+			Height: blockHeight,
+			Time:   blockTime,
+			Forks:  schedule,
+		}
+
+		// Legacy rules: any module error makes the tx unappliable — the
+		// producer drops it and the enclosing per-tx snapshot reverts the fee
+		// debit and nonce bump. A sender whose call fails for good is stuck at
+		// that nonce, which is what module_revert_v1 fixes.
+		if !schedule.Active(forks.ModuleRevertV1, blockHeight) {
+			return dispatchModuleCall(e.state, mctx, tx.Data, receipt)
+		}
+
+		// module_revert_v1: the module runs inside its own snapshot, nested in
+		// the per-tx one, so its writes can be undone while the fee debit and
+		// nonce bump above are kept.
+		// A snapshot-layer error here makes the tx unappliable; the per-tx
+		// checkpoint around this call then decides whether the block survives.
+		inner := e.state.Snapshot()
+		err := runModuleCall(e.state, mctx, tx.Data, receipt)
+		if err == nil {
+			return e.state.CommitSnapshot(inner)
+		}
+		if rerr := e.state.RevertToSnapshot(inner); rerr != nil {
+			return fmt.Errorf("revert of failed module call: %w (module error: %v)", rerr, err)
+		}
+		if vm.IsHardModuleError(err) {
+			// Unparseable envelope, unknown module or action, fork not active:
+			// statically detectable at admission, so an honest producer never
+			// packs one. Still unappliable — a follower lacking the fork
+			// rejects the block outright instead of diverging on state root.
+			return err
+		}
+		// SOFT: included with a failed receipt, fee kept, nonce consumed —
+		// mirroring the reverted-bytecode branch below. Logs and a deploy
+		// address the module may have set before failing go with its writes.
+		receipt.Logs = []*types.Log{}
+		receipt.ContractAddress = nil
+		receipt.SetFailed(err.Error())
+		return nil
 	}
 
 	// The fee is charged up-front as gas (kept even if the call reverts). The
@@ -679,20 +842,32 @@ func (e *Executor) ProduceBlock(
 			}
 		}
 
+		// A failed revert or commit of the per-tx checkpoint abandons the block:
+		// the pending layer would carry residue the header's state root could
+		// not honestly cover, so it is discarded rather than produced from.
 		snap := e.state.Snapshot()
 		receipt, _ := types.NewReceipt(tx, uint32(i), height, [32]byte{})
 		if err := e.executeTx(tx, height, blockTime, receipt); err != nil {
-			e.state.RevertToSnapshot(snap)
+			if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
+				e.state.DiscardPending()
+				return nil, fmt.Errorf("revert of skipped tx: %w (tx error: %v)", rerr, err)
+			}
 			log.Warn().Err(err).Msg("skipping invalid tx")
 			continue
 		}
 		// Stop packing once the block gas budget is reached (txs are fee-sorted,
 		// so we keep the most valuable ones). Revert this tx's state before break.
 		if blockGas+receipt.GasUsed > MaxBlockGas {
-			e.state.RevertToSnapshot(snap)
+			if err := e.state.RevertToSnapshot(snap); err != nil {
+				e.state.DiscardPending()
+				return nil, fmt.Errorf("revert of over-budget tx: %w", err)
+			}
 			break
 		}
-		e.state.CommitSnapshot(snap)
+		if err := e.state.CommitSnapshot(snap); err != nil {
+			e.state.DiscardPending()
+			return nil, fmt.Errorf("commit of tx snapshot: %w", err)
+		}
 		blockGas += receipt.GasUsed
 		blockSize += txSize
 		totalFees.Add(totalFees, tx.Fee)

@@ -2,11 +2,13 @@
 // Every operation uses post-quantum algorithms only.
 //
 // Signing:     ML-DSA-65 (NIST FIPS 204, CIRCL sign/mldsa/mldsa65). This is the
-//              standardized post-quantum lattice signature. Signing is
-//              deterministic (hedged=false) so a given (key, context, message)
-//              always yields the same signature — required for consensus
-//              reproducibility. NOT interoperable with the earlier round-3
-//              CRYSTALS-Dilithium mode3 (a fresh genesis is required).
+//
+//	standardized post-quantum lattice signature. Signing is
+//	deterministic (hedged=false) so a given (key, context, message)
+//	always yields the same signature — required for consensus
+//	reproducibility. NOT interoperable with the earlier round-3
+//	CRYSTALS-Dilithium mode3 (a fresh genesis is required).
+//
 // Hashing:     SHA-3-256 (NIST FIPS 202)
 // Key storage: AES-256-GCM + Argon2id
 // NO ECDSA. NO SHA-256. NO KECCAK.
@@ -59,6 +61,11 @@ var (
 	CtxPermit = []byte("SPLENDOR-QC-PERMIT-v1")
 	// CtxMultisig domain-separates multisig co-signer approvals.
 	CtxMultisig = []byte("SPLENDOR-QC-MULTISIG-v1")
+	// CtxOrder domain-separates exchange authorisations a maker signs off-chain:
+	// orders (types.OrderDigest), signed cancels (types.CancelDigest) and
+	// signed nonce bumps (types.IncrementNonceDigest). Appended after
+	// CtxMultisig: the block is append-only.
+	CtxOrder = []byte("SPLENDOR-QC-ORDER-v1")
 )
 
 // maxContextSize is the FIPS 204 limit on the signing context string.

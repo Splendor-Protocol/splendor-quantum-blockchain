@@ -32,13 +32,34 @@ import (
 // the name has to be reservable before the code that honours it is written.
 const MultiValidator = "multi_validator"
 
+// The names below are reserved for the upgrades the settlement plan schedules.
+// Each is added to Known only by the change that implements its gate — a name
+// this build "knows" but does not honour would let a genesis document schedule
+// a rule the binary silently fails to apply, the exact failure Validate exists
+// to prevent. Until then a document scheduling one is refused at load.
+const (
+	// QRC20V2 routes the QRC-20 permit/allowance surface and gates the
+	// IsContract guard on approve. Requires ModuleRevertV1 no later than
+	// itself (see Validate).
+	QRC20V2 = "qrc20_v2"
+	// QRC1155V1 routes QRC-1155 behind an owner slot. Requires ModuleRevertV1
+	// no later than itself (see Validate).
+	QRC1155V1 = "qrc1155_v1"
+	// ExchangeV1 activates the settlement module. It requires ModuleRevertV1 to
+	// be in force no later than itself (see Validate).
+	ExchangeV1 = "exchange_v1"
+	// ModuleRevertV1 makes a failing module call a failed receipt instead of a
+	// dropped transaction.
+	ModuleRevertV1 = "module_revert_v1"
+)
+
 // Known lists every upgrade name this build understands.
 //
 // An unrecognised name in genesis is refused rather than ignored. A typo in a
 // fork name is otherwise invisible: the node reports a healthy schedule, the
 // rule never activates, and nobody finds out until the height passes without
 // anything happening.
-var Known = []string{MultiValidator}
+var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1}
 
 // Schedule maps an upgrade name to the height at which it takes effect.
 type Schedule map[string]uint64
@@ -71,13 +92,39 @@ func (s Schedule) At(name string) (uint64, bool) {
 }
 
 // Validate refuses a schedule this build cannot honour.
+//
+// Names are checked in sorted order so two runs over the same document report
+// the same offending name.
 func (s Schedule) Validate() error {
-	for name := range s {
+	for _, name := range s.Names() {
 		if !isKnown(name) {
 			return fmt.Errorf(
 				"genesis schedules unknown upgrade %q at height %d: this build understands only %s. "+
 					"Running it would mean ignoring a rule change the rest of the network applies",
 				name, s[name], strings.Join(Known, ", "))
+		}
+	}
+	// Every routed module relies on a failed module call being a failed
+	// receipt rather than a dropped transaction: an operator whose match
+	// fails permanently, or a holder whose permit or transfer fails SOFT,
+	// would otherwise jam its account at that nonce. Scheduling one of them
+	// before (or without) that rule describes a chain that cannot run it
+	// safely, so the document is refused rather than honoured in part. The
+	// dependents are checked in sorted order for a stable report.
+	for _, name := range []string{ExchangeV1, QRC1155V1, QRC20V2} {
+		at, ok := s.At(name)
+		if !ok {
+			continue
+		}
+		mrAt, ok := s.At(ModuleRevertV1)
+		if !ok {
+			return fmt.Errorf("genesis schedules %s at height %d but never schedules %s, which it depends on",
+				name, at, ModuleRevertV1)
+		}
+		if mrAt > at {
+			return fmt.Errorf("genesis schedules %s at height %d but %s only at height %d: "+
+				"the dependency must be in force no later than the upgrade that needs it",
+				name, at, ModuleRevertV1, mrAt)
 		}
 	}
 	return nil
