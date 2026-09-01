@@ -373,7 +373,7 @@ func (s *Server) handleGetLatestBlock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no blocks yet")
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	writeJSON(w, http.StatusOK, blockResponse(r, b))
 }
 
 func (s *Server) handleGetBlockByHeight(w http.ResponseWriter, r *http.Request) {
@@ -393,7 +393,7 @@ func (s *Server) handleGetBlockByHeight(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	writeJSON(w, http.StatusOK, blockResponse(r, b))
 }
 
 func (s *Server) handleGetBlockByHash(w http.ResponseWriter, r *http.Request) {
@@ -407,7 +407,7 @@ func (s *Server) handleGetBlockByHash(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	writeJSON(w, http.StatusOK, blockResponse(r, b))
 }
 
 func (s *Server) handleIncomingBlock(w http.ResponseWriter, r *http.Request) {

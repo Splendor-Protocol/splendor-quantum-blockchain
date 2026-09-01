@@ -466,7 +466,13 @@ bytes that actually get hashed come from `json.Marshal` of `TransactionBody`
 - `from` and `to` are `[32]byte` with no `MarshalJSON`, so they serialise as
   **JSON arrays of 32 numbers** — `[167,168,169,…]` — not as `"SQ:…"` strings
 - `amount` and `fee` are `*big.Int`, so they serialise as **bare JSON numbers**,
-  not quoted strings
+  not quoted strings. On the way *in*, the node also accepts them as decimal
+  strings (`"amount":"50000000000000000000"`) on `/tx/submit` and the x402
+  bodies — JavaScript cannot hold an integer above 2^53 in a Number, and
+  1 SPLD is 10^18 units. The string is decoded to the same integer and the
+  canonical body is still hashed in the numeric form, so what you sign does not
+  change. On the way *out*, `/tx/{hash}`, `/tx/{hash}/receipt` and `/block/*`
+  emit numbers unless you ask for `?amounts=string`
 - `data` is `[]byte`, so it is base64, and it is omitted entirely when empty
 
 Do not hand-author a signed transaction from this document. Use the WASM signer
@@ -510,7 +516,8 @@ The node:
 1. Decodes the transaction
 2. Looks up Alice's ML-DSA-65 public key (from when she first registered)
 3. Runs `ML_DSA_65.Verify(alice_pubkey, tx_hash, "SPLENDOR-QC-TX-v1", signature)` — **this is the only signature verification needed. No ECDSA.**
-4. Checks Alice's nonce is correct
+4. Checks Alice's nonce is not below her committed nonce — a stale nonce can
+   never execute, so it is refused with `400 nonce too low` rather than queued
 5. Checks Alice has sufficient balance
 6. Adds the transaction to the mempool (queue of pending transactions)
 
