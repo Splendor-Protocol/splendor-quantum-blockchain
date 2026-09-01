@@ -64,7 +64,9 @@ unimplemented, the compiler defines the calling convention itself:
 No internal function calls, arrays/structs/strings, constructor (use a guarded
 `init()`), or `break`/`continue`.
 
-The only optimisation is **mapping-slot caching**: a slot is
+Two optimisation passes. **Parameter-copy elision**: a parameter is copied into
+memory only when the function assigns to it, since a calldata read costs the
+same 3 gas as a memory read. **Mapping-slot caching**: a slot is
 `SHA3-256(pad32(key) ‖ pad32(baseSlot))`, which the engine charges 414 gas to
 derive, so codegen derives it once per straight-line region and reuses it from
 memory. Only keys that cannot change qualify (`msg.sender`, `msg.value`, a
