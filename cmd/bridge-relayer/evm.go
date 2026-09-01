@@ -138,7 +138,7 @@ func (c *EVMClient) BurnedLogs(contract string, from, to uint64) ([]evmLog, erro
 // Burn is one decoded Burned event.
 type Burn struct {
 	ID        uint64
-	Asset     string // "spld" | "splv"
+	Asset     string // quantum payout asset; migration credits native SPLD, so this is "spld" (SPLV burns folded in — see decodeBurn)
 	Amount    *big.Int
 	Recipient string // SQ: address
 	TxHash    string
@@ -173,7 +173,13 @@ func decodeBurn(l evmLog) (Burn, error) {
 	case 0:
 		asset = "spld"
 	case 1:
-		asset = "splv"
+		// Migration policy: an SPLV burn is credited as native SPLD 1:1 on
+		// quantum (the QRC-20 SPLV leg was retired). The 2691 Burned event
+		// still records asset=1, so SPLV provenance is preserved on the legacy
+		// chain and recoverable via the burn id. Downstream the attestation
+		// digest and the claim both read Burn.Asset, so paying SPLD stays
+		// internally consistent.
+		asset = "spld"
 	default:
 		return Burn{}, fmt.Errorf("unknown asset word %d", assetWord)
 	}
