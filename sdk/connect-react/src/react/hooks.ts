@@ -425,3 +425,215 @@ export function useWaitForConfirmation(): {
 
   return { wait, status, error, reset };
 }
+
+export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
+  balance: string | null;
+  tokenInfo: Record<string, unknown> | null;
+  refresh: () => Promise<void>;
+  transfer: (to: string, amount: string, opts?: TransferOpts) => Promise<{ hash?: string }>;
+  approve: (spender: string, amount: string) => Promise<{ hash?: string }>;
+  loading: boolean;
+  txStatus: TxHookStatus;
+  error: Error | null;
+} {
+  const { wallet, ready } = useWallet();
+  const [balance, setBalance] = useState<string | null>(null);
+  const [tokenInfo, setTokenInfo] = useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [txStatus, setTxStatus] = useState<TxHookStatus>('idle');
+  const [error, setError] = useState<Error | null>(null);
+  const { address } = useAccount();
+
+  const refresh = useCallback(async () => {
+    if (!tokenAddress || !ready || !wallet) {
+      setBalance(null);
+      setTokenInfo(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+      const token = new QRC20(wallet.connection, tokenAddress);
+      if (address) {
+        const bal = await token.balanceOf(address);
+        setBalance(bal);
+      }
+      const info = await token.tokenInfo();
+      setTokenInfo(info as Record<string, unknown>);
+    } catch (e) {
+      setError(e instanceof Error ? e : new Error(String(e)));
+    } finally {
+      setLoading(false);
+    }
+  }, [tokenAddress, ready, wallet, address]);
+
+  useEffect(() => {
+    void refresh();
+    if (!tokenAddress || !pollMs) return;
+    const id = setInterval(() => void refresh(), pollMs);
+    return () => clearInterval(id);
+  }, [refresh, tokenAddress, pollMs]);
+
+  const transfer = useCallback(
+    async (to: string, amount: string, opts?: TransferOpts) => {
+      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      setTxStatus('pending');
+      try {
+        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        const token = new QRC20(wallet.connection, tokenAddress);
+        const res = await token.transfer(wallet, to, amount);
+        setTxStatus('success');
+        await refresh();
+        return { hash: res.hash };
+      } catch (e) {
+        setTxStatus('error');
+        throw e;
+      }
+    },
+    [ready, wallet, tokenAddress, refresh],
+  );
+
+  const approve = useCallback(
+    async (spender: string, amount: string) => {
+      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      setTxStatus('pending');
+      try {
+        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        const token = new QRC20(wallet.connection, tokenAddress);
+        const res = await token.approve(wallet, spender, amount);
+        setTxStatus('success');
+        return { hash: res.hash };
+      } catch (e) {
+        setTxStatus('error');
+        throw e;
+      }
+    },
+    [ready, wallet, tokenAddress],
+  );
+
+  return { balance, tokenInfo, refresh, transfer, approve, loading, txStatus, error };
+}
+
+export function useDeployToken(): {
+  deploy: (params: {
+    name: string;
+    symbol: string;
+    decimals: number;
+    totalSupply: string;
+    maxSupply?: string;
+    fee?: string;
+    waitForConfirmation?: boolean;
+  }) => Promise<{ address: string; hash?: string }>;
+  status: TxHookStatus;
+  address: string | null;
+  hash: string | null;
+  error: Error | null;
+  reset: () => void;
+} {
+  const { wallet, ready } = useWallet();
+  const [status, setStatus] = useState<TxHookStatus>('idle');
+  const [address, setAddress] = useState<string | null>(null);
+  const [hash, setHash] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setAddress(null);
+    setHash(null);
+    setError(null);
+  }, []);
+
+  const deploy = useCallback(
+    async (params: {
+      name: string;
+      symbol: string;
+      decimals: number;
+      totalSupply: string;
+      maxSupply?: string;
+      fee?: string;
+      waitForConfirmation?: boolean;
+    }) => {
+      if (!ready || !wallet) throw new Error('Wallet not connected');
+      setStatus('pending');
+      setError(null);
+      try {
+        const { deployQRC20 } = await import('@splendor/sqc-sdk/tokens');
+        const { address: tokenAddr, result } = await deployQRC20(wallet, params, {
+          fee: params.fee,
+          waitForConfirmation: params.waitForConfirmation,
+        });
+        setAddress(tokenAddr);
+        setHash(result.hash ?? null);
+        setStatus('success');
+        return { address: tokenAddr, hash: result.hash };
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus('error');
+        throw err;
+      }
+    },
+    [wallet, ready],
+  );
+
+  return { deploy, status, address, hash, error, reset };
+}
+
+export function usePayX402(): {
+  pay: (opts: {
+    to: string;
+    amount?: string;
+    amountSPLD?: string;
+    requirements?: object;
+    settle?: boolean;
+    fee?: string;
+  }) => Promise<{ payload: object; verify?: { valid: boolean; reason?: string }; settle?: object }>;
+  status: TxHookStatus;
+  error: Error | null;
+  reset: () => void;
+} {
+  const { wallet, ready } = useWallet();
+  const [status, setStatus] = useState<TxHookStatus>('idle');
+  const [error, setError] = useState<Error | null>(null);
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setError(null);
+  }, []);
+
+  const pay = useCallback(
+    async (opts: {
+      to: string;
+      amount?: string;
+      amountSPLD?: string;
+      requirements?: object;
+      settle?: boolean;
+      fee?: string;
+    }) => {
+      if (!ready || !wallet) throw new Error('Wallet not connected');
+      setStatus('pending');
+      setError(null);
+      try {
+        const result = await wallet.payX402({
+          to: opts.to,
+          amount: opts.amount ?? '0',
+          amountSPLD: opts.amountSPLD,
+          requirements: opts.requirements,
+          settle: opts.settle,
+          fee: opts.fee,
+        });
+        setStatus('success');
+        return result;
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        setError(err);
+        setStatus('error');
+        throw err;
+      }
+    },
+    [wallet, ready],
+  );
+
+  return { pay, status, error, reset };
+}

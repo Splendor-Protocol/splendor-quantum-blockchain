@@ -55,6 +55,7 @@
   },
   "peerDependencies": {
     "@splendor/pq-bridge": ">=1.4.0",
+    "@splendor/sqc-sdk": ">=2.0.0",
     "react": ">=18",
     "react-dom": ">=18",
     "vite": ">=5"
@@ -65,6 +66,7 @@
     }
   },
   "devDependencies": {
+    "@splendor/sqc-sdk": "file:../sqc-sdk",
     "@splendor/pq-bridge": "file:../bridge",
     "@types/node": "^26.2.0",
     "@types/react": "^19.0.0",

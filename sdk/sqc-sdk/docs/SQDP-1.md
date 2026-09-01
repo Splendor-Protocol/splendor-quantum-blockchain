@@ -1,0 +1,197 @@
+# Splendor dApp Protocol — SQDP-1
+
+**Status:** Normative  
+**Version:** `1`  
+**Implements:** `@splendor/pq-bridge` ≥ 1.4.0  
+**Keywords:** MUST / SHOULD / MAY (RFC 2119)
+
+This document is the **single source of truth** for how dApps, wallets, and gateways talk to Splendor Quantum Chain via the PQ bridge. Short how-to: [DAPP_INTEGRATION.md](./DAPP_INTEGRATION.md). Conformance checklist: [SQDP-1-CONFORMANCE.md](./SQDP-1-CONFORMANCE.md).
+
+Machine-readable constants are exported as `PROTOCOL` / `SQDP_VERSION` from `@splendor/pq-bridge`.
+
+**Single config file:** network RPCs, gateway ports, WASM paths, min fee, and default network MUST be taken from `src/config/sqc.networks.json` (or the published `config/sqc.networks.json` mirror). dApps SHOULD use `createSplendorClient` / `connectSplendor({ network })` instead of hardcoding URLs.
+
+---
+
+## 1. Identity
+
+1. On-chain accounts MUST use addresses of the form `SQ:` + **exactly 64 hexadecimal characters** (32 bytes).
+2. Canonical form MUST use **lowercase** hex after the `SQ:` prefix (e.g. `SQ:ab12…`). Implementations MUST accept mixed-case hex and SHOULD normalize via `assertAddress`.
+3. An `SQ:` address MUST NOT be treated as interchangeable with an EVM `0x` address. Balances, nonces, and transfers live **only** on the `SQ:` identity.
+4. Address bytes = `SHA3-256(ML-DSA-65 public key bytes)` (1952-byte public key, NIST FIPS 204).
+
+---
+
+## 2. Chain
+
+1. The network `chain_id` MUST be the string `splendor-quantum-1` unless a future SQDP revision defines another network.
+2. Clients MUST call status / `assertChainId` (or equivalent) before submitting signed transactions and MUST reject a mismatch (`CHAIN_MISMATCH`).
+3. MetaMask (or other EVM) chain switches MUST NOT be interpreted as Splendor chain changes. Derivation does not require a specific EVM chain id.
+
+---
+
+## 3. Key derivation (EVM → PQ)
+
+1. Clients that map an EVM account to a PQ wallet MUST use this exact UTF-8 domain message (version `v1`):
+
+```
+Splendor Quantum Chain
+Key derivation v1
+chain: splendor-quantum-1
+```
+
+2. The user MUST authenticate via EIP-191 `personal_sign` of that message (MetaMask or local secp256k1).
+3. The ML-DSA seed MUST be `SHA3-256(signature_bytes)` (65-byte Ethereum-style signature).
+4. Keypair MUST be Cloudflare circl **ML-DSA-65 (NIST FIPS 204)** `mldsa65.NewKeyFromSeed(seed)`.
+5. Changing the domain message is a **breaking** protocol change (new address map).
+
+> **This derivation path is NOT post-quantum secure.** The signatures it produces
+> are ML-DSA-65, but the *key* is a deterministic function of an ECDSA
+> signature. An adversary with a quantum computer can recover the secp256k1
+> private key from any signature the EVM account has ever published, recompute
+> the derivation signature, and obtain this exact ML-DSA key. Implementations
+> MUST surface this to the user (see `DeriveInfo.postQuantumSecure`) and SHOULD
+> present native seed generation as the default for accounts holding value.
+
+Exported: `DERIVATION_DOMAIN_MESSAGE`, `CHAIN_ID`.
+
+---
+
+## 4. Units and fees
+
+1. Native unit: **SPLD**. `1 SPLD = 10^18` base units.
+2. Transaction `fee` MUST be an integer string of base units and MUST be ≥ `1000` (`MIN_FEE` / protocol floor in `sqc.networks.json`).
+3. Clients SHOULD use `fromSPLD` / `toSPLD` helpers rather than ad-hoc decimal math.
+4. The bridge SDK does **not** charge an extra product/markup fee — only the chain mempool fee applies.
+5. Under congestion the live node MAY raise the accepted floor above `1000` (e.g. `MinFee * N` in mempool). Clients MUST treat node `INVALID_FEE` / reject responses as authoritative and retry with a higher fee; SDK `assertFeeAtLeastMin` only enforces the static protocol floor.
+
+---
+
+## 5. Contract call ABI
+
+Named "QSol ABI" in earlier drafts. There is no QSol compiler and no QSol
+source anywhere — this is the calling convention for SQC-VM bytecode and the
+node's native modules, and it is the only contract interface that exists.
+
+1. Function selector MUST be the first **4 bytes** of `SHA3-256(UTF-8 signature)` — **not** Keccak-256.
+2. Arguments MUST be packed as 32-byte big-endian words after the selector.
+3. Address-typed parameters in signatures MUST use the type name **`sqaddress`** (not `address`).
+4. Golden test: `transfer(sqaddress,uint256)` selector = `14cde9ab`.
+5. Encoding an `SQ:` address into a word MUST use the 32 raw bytes (strip `SQ:`), right-aligned in the 32-byte slot (full 32 bytes occupied).
+
+Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
+
+---
+
+## 6. Transactions
+
+| Type | Value | SDK |
+|------|-------|-----|
+| Transfer | `0x01` | `sendTransfer` / `signTransferOnly` |
+| Deploy | `0x02` | `deployContract` |
+| Call | `0x03` | `callContract` |
+| X402 | `0x05` | `payX402` |
+
+1. dApps MUST submit transactions produced by the official WASM signer (`@splendor/pq-bridge`) or an implementation that emits **identical** Go `encoding/json` wire shapes.
+2. dApps MUST NOT hand-author signed tx JSON from human README examples. On the wire, `from` / `to` are JSON **arrays of 32 numbers**; `amount` / `fee` are JSON numbers; `public_key` / `signature` are base64.
+3. When `nonce == 0`, the signed tx MUST include `public_key` (first-account registration).
+4. Clients SHOULD prefer client-side WASM signing and `POST /tx/submit` (or gateway `/v1/tx/submit` with a pre-signed body) for end-user flows.
+
+---
+
+## 7. Confirmation
+
+1. Preferred confirmation: poll `GET /tx/{hash}/receipt` until present (tx index on nodes with explorer routes — mounted by `cmd/node` via `RegisterExplorerRoutes`).
+2. Fallback: **nonce advancement** — wait until account nonce `>` the nonce used when signing (can race with other txs from the same account).
+3. `/ws` is mounted as an SSE/NDJSON stream (not a browser WebSocket). Clients MAY subscribe; `pq-bridge` does not expose a subscribe helper yet.
+4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, `@splendor/pq-bridge` **prefers the receipt path**, then falls back to nonce.
+
+Config field `PROTOCOL.confirmation === 'nonce'` names the **fallback** mechanism for older/minimal RPC mounts. Runtime clients SHOULD treat confirmation as **receipt-first, nonce-fallback**. Caveat string: `PROTOCOL.confirmationCaveat`.
+
+---
+
+## 8. Connection events
+
+Clients using `@splendor/pq-bridge` MUST use these event names and payloads:
+
+| Event | Payload |
+|-------|---------|
+| `connect` | `{ address: string /* SQ: */, evmAddress?: string }` |
+| `disconnect` | `{}` |
+| `lock` | `{}` |
+| `accountsChanged` | `{ address: string, evmAddress?: string }` |
+| `error` | `{ code: string, message: string }` |
+
+1. After MetaMask `accountsChanged`, wallets SHOULD re-`personal_sign` and re-derive (SDK default). Empty accounts SHOULD lock and emit `disconnect`.
+2. `lock()` MUST clear the ML-DSA-65 key from WASM memory and emit a `lock` event. `disconnect()` MUST destroy the session and emit `disconnect`.
+
+---
+
+## 9. Errors
+
+Clients MUST handle these `BridgeError` codes (string `code` field):
+
+`NOT_CONNECTED`, `USER_REJECTED`, `NO_PROVIDER`, `RPC`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`, `UNKNOWN`.
+
+Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` using the same code strings when applicable.
+
+---
+
+## 10. RPC client behaviour
+
+1. Clients MAY supply `rpcUrls: string[]` for read failover. Empty lists MUST be rejected.
+2. On timeout / HTTP 5xx, clients SHOULD retry (per-URL) then fail over to the next URL.
+3. After a successful submit, clients SHOULD sticky-route subsequent submits to the accepting URL.
+4. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `1.4.0`).
+
+---
+
+## 11. Gateway
+
+| Mode | Use |
+|------|-----|
+| `proxy` (default) | End-user / public — relays **pre-signed** `signedTx` only |
+| `service-wallet` | Operator automation only — holds one PQ key |
+
+1. Public gateways MUST run `proxy` mode for end users.
+2. Public proxy MUST reject `seed`, `evmPrivateKey`, and (unless `ALLOW_CUSTODIAL_PROXY=1`) `evmSignature`. Prefer client-side WASM signing + `POST /v1/tx/submit`.
+3. Posting an ML-DSA-65 `seed` or derivation signature to a gateway is **custodial** for that request. `ALLOW_CUSTODIAL_PROXY=1` is for private backends only.
+4. `service-wallet` MUST NOT be used to hold end-user keys. Production service-wallet SHOULD require `GATEWAY_API_KEY`.
+5. Gateways SHOULD enable rate limiting, CORS allowlists, and body size limits.
+
+---
+
+## 12. Security threat model (normative guidance)
+
+| Threat | Mitigation |
+|--------|------------|
+| Phishing a different derivation message | MUST use exact SQDP-1 domain text; show it in UI before sign — the signature **is key material** |
+| Confusing `0x` with `SQ:` | UI MUST display `SQ:` after connect; never send EVM ETH as “funding” |
+| Wrong chain | MUST `assertChainId` before submit (all tx types) |
+| Seed / EVM key / derivation sig theft via gateway | Public proxy MUST reject custodial credentials; submit `signedTx` only |
+| Session residue | MUST `lock` / `disconnect` on logout (`lock` zeroizes ML-DSA-65 key material) |
+| Fake confirmation | MUST NOT treat missing receipt as success without nonce fallback; nonce poll can race with other txs |
+| MetaMask account race | MUST fail-closed (lock + disconnect) if re-derive fails after `accountsChanged` |
+| Tampered WASM | Browser SHOULD set `wasmSha256` network pin and fail closed on mismatch |
+| Signature / address mismatch | MUST `ecrecover` and bind claimed EVM address before derive |
+
+Encrypted browser session cache of ML-DSA-65 seeds is **out of scope** for SQDP-1 (default remains re-sign each session).
+
+Optional SQDP-1.1 path: EIP-712 `SplendorPQDerive` typed data (`derivation: 'eip712-v1'`). Seed rule remains `SHA3-256(signature_bytes)`. Default remains EIP-191 `personal_sign` (`eip191-v1`).
+
+Wire `chain_id` remains `splendor-quantum-1` for all deployments until the node defines otherwise. Client configs expose distinct `networkId` values (`splendor-local` / `splendor-testnet` / `splendor-mainnet`) for UX and failover selection.
+
+---
+
+## 13. Provider vs wallet
+
+1. Read-only access SHOULD use `SqcProvider` (no WASM) until the user connects.
+2. Signing MUST use `SplendorPQBridge` (or `fromProvider`) after connect.
+
+---
+
+## Revision history
+
+| Version | Notes |
+|---------|--------|
+| SQDP-1 | Initial normative protocol aligned with `@splendor/pq-bridge` 1.2.x |
