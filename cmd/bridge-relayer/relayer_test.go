@@ -51,11 +51,12 @@ func makeLog(id, asset uint64, amount string, recipient string, block uint64) ev
 
 func TestDecodeBurn(t *testing.T) {
 	rec := strings.Repeat("cd", 32)
+	// asset word 1 is an SPLV burn; the migration credits it as native SPLD 1:1.
 	b, err := decodeBurn(makeLog(7, 1, "5000000000000000000", rec, 99))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if b.ID != 7 || b.Asset != "splv" || b.Amount.String() != "5000000000000000000" {
+	if b.ID != 7 || b.Asset != "spld" || b.Amount.String() != "5000000000000000000" {
 		t.Fatalf("burn = %+v", b)
 	}
 	if b.Recipient != "SQ:"+rec || b.Block != 99 {
@@ -292,7 +293,7 @@ func TestRelayerPass(t *testing.T) {
 	s.head = 300
 	s.logs = []evmLog{
 		makeLog(1, 0, "1000000000000000000", rec, 50),  // spld, confirmed
-		makeLog(2, 1, "2000000000000000000", rec, 60),  // splv, confirmed
+		makeLog(2, 1, "2000000000000000000", rec, 60),  // splv burn, credited as spld
 		makeLog(3, 0, "3000000000000000000", rec, 250), // too fresh: 300-100=200 < 250
 	}
 
@@ -309,7 +310,7 @@ func TestRelayerPass(t *testing.T) {
 	if s.submits[0].ID != 1 || s.submits[0].Asset != "spld" || s.submits[0].Amount != "1000000000000000000" {
 		t.Fatalf("claim 1 = %+v", s.submits[0])
 	}
-	if s.submits[1].ID != 2 || s.submits[1].Asset != "splv" {
+	if s.submits[1].ID != 2 || s.submits[1].Asset != "spld" {
 		t.Fatalf("claim 2 = %+v", s.submits[1])
 	}
 	if s.submits[0].Recipient != "SQ:"+rec || s.submits[0].Bridge != r.Bridge.String() {
