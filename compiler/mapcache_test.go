@@ -139,6 +139,58 @@ contract C {
 	wantValue(t, d, "get", 0, big.NewInt(9)) // never written
 }
 
+// Parameters became memory locals so a function could assign to its own
+// parameters, as Solidity allows. But the copy is only WORTH anything where an
+// assignment actually happens: calldata reads cost the same 3 gas as memory
+// reads, so every function that never writes its parameters was paying a
+// PUSH/PUSH/CALLDATALOAD/MSTORE prologue per parameter for nothing.
+func TestUnassignedParamsAreNotCopiedToMemory(t *testing.T) {
+	src := `
+contract C {
+    function get(uint256 a) public view returns (uint256) { return a; }
+}`
+	// The only MSTORE left should be the one staging the return value.
+	if got := countOp(t, src, "MSTORE"); got != 1 {
+		t.Fatalf("MSTORE count = %d, want 1 — the parameter is never assigned, so it needs no copy", got)
+	}
+}
+
+// Where the function DOES assign its parameter, the copy is required and must
+// still be correct: calldata is read-only.
+func TestAssignedParamIsStillCopiedAndWritable(t *testing.T) {
+	d := deploy(t, `
+contract C {
+    function halve(uint256 n) public view returns (uint256) {
+        n = n / 2;
+        return n;
+    }
+    function untouched(uint256 n) public view returns (uint256) { return n + 1; }
+}`)
+	wantValue(t, d, "halve", 21, big.NewInt(42))
+	wantValue(t, d, "untouched", 43, big.NewInt(42))
+}
+
+// A mapping keyed on an unassigned parameter is still cacheable — the key now
+// comes from calldata rather than memory, which must not change the slot.
+func TestMappingKeyedOnCalldataParamStillCaches(t *testing.T) {
+	src := `
+contract C {
+    mapping(uint256 => uint256) m;
+    function bump(uint256 k) public { m[k] = m[k] + 1; }
+}`
+	if got := countOp(t, src, "SHA3_MEM"); got != 1 {
+		t.Fatalf("slot derived %d times, want 1", got)
+	}
+	d := deploy(t, src)
+	d.call(acc(1), 0, "bump", big.NewInt(3))
+	d.call(acc(1), 0, "bump", big.NewInt(3))
+	d.call(acc(1), 0, "bump", big.NewInt(4))
+	got := d.call(acc(1), 0, "bump", big.NewInt(3))
+	if got.Reverted {
+		t.Fatalf("bump reverted: %v", got.Err)
+	}
+}
+
 // The token sample must keep behaving exactly as before, at lower gas.
 func TestTokenStillCorrectAfterSlotCaching(t *testing.T) {
 	d := deploy(t, `

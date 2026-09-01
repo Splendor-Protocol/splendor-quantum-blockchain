@@ -90,6 +90,20 @@ func (g *codegen) declareLocal(name string) (int, error) {
 	if _, ok := cur[name]; ok {
 		return 0, fmt.Errorf("local %q is declared twice in the same scope", name)
 	}
+	// Shadowing is refused, as Solidity has refused it since 0.5.
+	//
+	// It is not a style rule here. One name resolving to two bindings broke two
+	// things at once: the mapping-slot cache is keyed on the NAME, so the inner
+	// binding was handed the outer one's derived slot and wrote to it; and an
+	// initialiser like `uint256 s = s + 1` read the slot being declared —
+	// zero — instead of the binding it shadows. Both are silent wrong-slot
+	// writes, so the source reads correctly and nothing reverts.
+	if _, ok := g.lookupLocal(name); ok {
+		return 0, fmt.Errorf("local %q shadows an enclosing local of the same name", name)
+	}
+	if _, ok := g.states[name]; ok {
+		return 0, fmt.Errorf("local %q shadows a state variable of the same name", name)
+	}
 	slot := g.nextLocal
 	g.nextLocal++
 	cur[name] = slot
@@ -380,13 +394,21 @@ func (g *codegen) genFunc(fn *funcNode) error {
 	g.scopes = []map[string]int{{}}
 	g.nextLocal = 0
 
+	g.assigned = map[string]bool{}
+	assignedNames(fn.body, g.assigned)
+
 	// The selector left on the stack by the dispatcher is dead here.
 	g.a.op(vm.OpPOP)
 
-	// Parameters are locals initialised from calldata. Solidity lets a function
-	// assign to its own parameters, and calldata is read-only, so each one gets
-	// a memory slot copied in on entry — one MSTORE per parameter per call.
+	// Solidity lets a function assign to its own parameters, and calldata is
+	// read-only, so an ASSIGNED parameter is copied into a memory word on
+	// entry. One that is never written stays where it is: a calldata read costs
+	// the same 3 gas as a memory read, so copying it would be a
+	// PUSH/PUSH/CALLDATALOAD/MSTORE prologue paid on every call for nothing.
 	for i, p := range fn.params {
+		if !g.assigned[p.name] {
+			continue // read straight from calldata (see genExpr)
+		}
 		slot := g.nextLocal
 		g.nextLocal++
 		g.scopes[0][p.name] = slot
@@ -397,8 +419,6 @@ func (g *codegen) genFunc(fn *funcNode) error {
 	}
 	// Memory above the locals holds this function's mapping-slot cache, and the
 	// emit region sits above both.
-	g.assigned = map[string]bool{}
-	assignedNames(fn.body, g.assigned)
 	g.slotIdx = planSlotCache(fn, g.assigned)
 	g.slotLive = map[string]bool{}
 	g.slotBase = localAddr(g.nextLocal + countLocals(fn.body))
@@ -732,10 +752,16 @@ func (g *codegen) genExpr(e expr) error {
 		}
 		return nil
 	case *identExpr:
-		// A parameter or local (both memory words), or a scalar state variable.
+		// A local or an assigned parameter (memory), an unassigned parameter
+		// (still in calldata), or a scalar state variable.
 		if slot, ok := g.lookupLocal(ex.name); ok {
 			g.a.pushInt(localAddr(slot))
 			g.a.op(vm.OpMLOAD)
+			return nil
+		}
+		if idx, ok := g.params[ex.name]; ok {
+			g.a.pushInt(int64(4 + idx*32)) // calldata offset (4-byte selector prefix)
+			g.a.op(vm.OpCALLDATALOAD)
 			return nil
 		}
 		sv, ok := g.states[ex.name]
@@ -871,9 +897,20 @@ func (g *codegen) genLogical(ex *binaryExpr) error {
 	g.a.op(vm.OpSWAP1) // [a, dest, c]
 	g.a.op(vm.OpJUMPI) // [a] — jumped: a decides the result
 	g.a.op(vm.OpPOP)   // []
+
+	// The right operand sits behind that JUMPI, so on the short-circuit path it
+	// does NOT run. A mapping slot derived here is therefore not written on
+	// every path reaching the code after this expression, and must not be
+	// marked live — exactly as for a branch body (genBlock) or a loop
+	// (genLoop). Without this, a later access to that key loaded a
+	// never-written memory word, read 0 as the slot, and wrote the contract's
+	// FIRST state variable instead of the mapping.
+	live := g.saveLive()
 	if err := g.genExpr(ex.right); err != nil {
 		return err
 	}
+	g.slotLive = live
+
 	g.a.label(end)
 	g.a.op(vm.OpISZERO) // normalize to 0/1
 	g.a.op(vm.OpISZERO)

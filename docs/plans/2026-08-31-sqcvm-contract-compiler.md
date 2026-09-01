@@ -230,11 +230,28 @@ nonce as a jam rather than waiting on something that cannot resolve itself.
    `msg.value`, a literal, or a name never assigned in that function), and the
    live set is saved and restored around branches and loop bodies so a slot
    derived inside an `if` is never loaded by code that runs when the branch did
-   not. Measured on devnet, same chain and same call: token `transfer`
-   **44,618 → 43,351 gas** and the contract **445 → 413 bytes**; the sender's
-   slot went from three derivations to one. Still naive elsewhere: redundant
-   `PUSH`/`POP`, no constant folding, no common-subexpression elimination
-   beyond mapping slots.
+   not. The sender's slot went from three derivations to one.
+
+   The second pass drops the **parameter copy where it is not needed**. Making
+   parameters assignable (Solidity allows it, calldata is read-only) meant
+   copying every one into memory on entry. A calldata read costs the same 3 gas
+   as a memory read, so a function that never writes its parameters was paying a
+   PUSH/PUSH/CALLDATALOAD/MSTORE prologue per parameter for nothing. Only
+   assigned parameters are copied now; the rest are read where they already are.
+
+   Measured on devnet — same chain, same call, same fresh-slot conditions:
+
+   | | gas | size |
+   |---|---|---|
+   | before either pass | 44,618 | 445 B |
+   | + mapping-slot cache | 43,351 | 413 B |
+   | + parameter-copy elision | **43,321** | **382 B** |
+
+   So −1,297 gas (−2.9%) and −63 bytes (−14.2%). The gas figure is held down by
+   the two `SSTORE`s a transfer performs (40,000 of the total); against
+   everything that is NOT storage it is closer to a quarter. Still naive
+   elsewhere: redundant `PUSH`/`POP`, no constant folding, no
+   common-subexpression elimination beyond mapping slots.
 
 ### Mapping access is dominated by SHA3, priced per byte
 
