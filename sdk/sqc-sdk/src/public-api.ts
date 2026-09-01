@@ -1,0 +1,131 @@
+/**
+ * Shared public API surface for Node (`index`) and browser (`browser`) entries.
+ */
+export {
+  DERIVATION_DOMAIN_MESSAGE,
+  CHAIN_ID,
+  seedFromEvmSignature,
+  signDerivationMessage,
+  recoverPersonalSignAddress,
+  recoverEip712Address,
+  assertSignatureMatchesAddress,
+  evmAddressFromPrivateKey,
+  eip712DerivationTypedData,
+  eip712Hash,
+  personalSignHash,
+} from './derive.js';
+export type { DerivationScheme, Eip712DeriveTypedData } from './derive.js';
+export { fromSPLD, toSPLD, SqRpc } from './rpc.js';
+export type { RpcOptions } from './rpc.js';
+export { SqcProvider } from './provider.js';
+export type { ProviderOptions } from './provider.js';
+export {
+  connectMetaMask,
+  signDerivationWithMetaMask,
+  onMetaMaskAccountsChanged,
+  onMetaMaskDisconnect,
+} from './metamask.js';
+export type { EthereumProvider, SignDerivationOpts } from './metamask.js';
+export { BridgeError, isBridgeError } from './errors.js';
+export type { BridgeErrorCode } from './errors.js';
+export { isValidAddress, assertAddress, canonicalizeAddress } from './address.js';
+export { MIN_FEE, bytesToHex, hexToBytes, isHexString } from './encoding.js';
+export {
+  encodeFunctionData,
+  encodeFunctionDataHex,
+  functionSelector,
+  functionSelectorHex,
+  decodeAddress,
+  decodeUint256,
+  decodeArgAddress,
+  decodeArgUint256,
+  assertQSolSignature,
+} from './abi.js';
+export type { AbiArg } from './abi.js';
+export type { BridgeEventMap } from './events.js';
+export {
+  SQDP_VERSION,
+  PROTOCOL,
+  BRIDGE_CLIENT_VERSION,
+  ADDRESS_PREFIX,
+  ADDRESS_HEX_LEN,
+  ADDRESS_PATTERN,
+} from './protocol.js';
+export type { ProtocolConstants } from './protocol.js';
+export {
+  getNetworksFile,
+  getProtocolConfig,
+  getDefaultNetworkId,
+  getDefaultNetwork,
+  listNetworks,
+  listSelectableNetworks,
+  getNetwork,
+  resolveNetwork,
+  isPlaceholderNetwork,
+  registerNetwork,
+  unregisterNetwork,
+  clearRegisteredNetworks,
+  txExplorerUrl,
+  derivationDomainMessage,
+  networkToRpcOptions,
+} from './networks.js';
+export type {
+  NetworkConfig,
+  NetworkId,
+  ProtocolConfig,
+  NetworksFile,
+  ResolveNetworkOptions,
+} from './networks.js';
+export { createSplendorClient, connectSplendor } from './connect.js';
+export type {
+  ConnectMode,
+  CreateClientOptions,
+  ConnectSplendorOptions,
+  ClientSession,
+} from './connect.js';
+export { SplendorPQBridge, Wallet } from './splendor-wallet.js';
+export type {
+  BridgeOptions,
+  DeriveInfo,
+  ConnectionState,
+  TransferOpts,
+  CallOpts,
+  DeployOpts,
+  X402PayOpts,
+  PreflightResult,
+  ModuleCallOpts,
+  PermitParams,
+  SignedPermit,
+  OrderParams,
+  SignedOrder,
+  SignedCancel,
+  IncrementNonceParams,
+  SignedIncrementNonce,
+} from './types.js';
+export { Connection } from './core/connection.js';
+export { buildModuleCall, encodeModuleCallHex, type ModuleCall } from './core/module-call.js';
+export { Program } from './core/program.js';
+export { RpcTransport } from './core/transport/rpc-transport.js';
+export type { Transport } from './core/transport/types.js';
+export { MODULE_ROUTER_ADDRESS, qrc20Address } from './addresses/index.js';
+export { QRC20, deployQRC20, getToken } from './tokens/qrc20.js';
+export { Contract, deployBytecode, getContract } from './contracts/contract.js';
+export { X402Client, createX402Middleware } from './x402/client.js';
+export type { PaymentRequirements, PaymentPayload } from './x402/client.js';
+export { subscribe } from './core/subscribe.js';
+export type {
+  EstimateGasRequest,
+  EstimateGasResponse,
+  LogFilter,
+  GetLogsResponse,
+  WsEventType,
+  WsEvent,
+  Subscription,
+  VerifyContractResponse,
+} from './core/explorer-types.js';
+export { bytecodeContractAddress } from './addresses/index.js';
+export { Keypair } from './wallet/keypair.js';
+export { connect } from './wallet/connect.js';
+export type { ConnectOptions, ConnectResult } from './wallet/connect.js';
+export { SplendorClient } from './client.js';
+export { loadWasmSigner, resetWasmLoader } from './wasm-loader.js';

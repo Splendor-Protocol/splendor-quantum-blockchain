@@ -1,85 +1,41 @@
 {
   "name": "@splendor/pq-bridge",
-  "version": "1.4.0",
-  "description": "Non-custodial EVM→PQ (ML-DSA-65) bridge SDK for Splendor Quantum Chain. Node.js-first; loads Go WASM signer internally.",
+  "version": "1.5.0",
+  "description": "Deprecated shim — re-exports @splendor/sqc-sdk. Use @splendor/sqc-sdk directly.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "browser": "./dist/browser.js",
+      "browser": "./dist/index.js",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./browser": {
-      "types": "./dist/browser.d.ts",
-      "import": "./dist/browser.js",
-      "default": "./dist/browser.js"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     },
     "./react": {
-      "types": "./dist/react.d.ts",
-      "import": "./dist/react.js"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
-  "sideEffects": [
-    "./dist/wasm-loader*.js",
-    "./dist/browser.js"
-  ],
-  "files": [
-    "dist",
-    "wasm/dist",
-    "config",
-    "README.md",
-    "docs"
-  ],
   "scripts": {
-    "sync:config": "node ./scripts/sync-config.mjs",
-    "build:wasm": "powershell -ExecutionPolicy Bypass -File ./wasm/build.ps1",
-    "build:wasm:sh": "bash ./wasm/build.sh",
-    "prebuild:ts": "npm run sync:config",
-    "build:ts": "tsc -p tsconfig.json",
-    "build": "npm run build:ts",
-    "prepare": "npm run build:ts",
-    "prepublishOnly": "node ./scripts/check-wasm-dist.mjs && npm run build:ts",
-    "test": "vitest run",
-    "test:go": "go test github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer -count=1",
-    "test:gateway": "npm --prefix gateway test",
-    "test:security": "vitest run security- && npm run test:go && npm run test:gateway",
-    "test:e2e": "node examples/e2e-offline.mjs",
-    "test:live": "node examples/live-e2e.mjs",
-    "example:node": "node examples/node-transfer.mjs",
-    "example:one-touch": "node examples/one-touch.mjs",
-    "gateway:smoke": "node examples/gateway-smoke.mjs"
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build"
   },
-  "engines": {
-    "node": ">=22.20"
+  "dependencies": {
+    "@splendor/sqc-sdk": "file:../sqc-sdk"
   },
   "peerDependencies": {
     "react": ">=18"
   },
   "peerDependenciesMeta": {
-    "react": {
-      "optional": true
-    }
-  },
-  "dependencies": {
-    "@noble/curves": "^1.8.1",
-    "@noble/hashes": "^1.7.1"
+    "react": { "optional": true }
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "@types/react": "^19.0.0",
-    "typescript": "^5.7.2",
-    "vitest": "^3.0.5"
+    "typescript": "^5.7.2"
   },
-  "keywords": [
-    "splendor",
-    "post-quantum",
-    "ml-dsa",
-    "metamask",
-    "bridge",
-    "wasm"
-  ],
   "license": "MIT"
 }

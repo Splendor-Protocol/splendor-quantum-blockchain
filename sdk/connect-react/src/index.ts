@@ -66,6 +66,9 @@ export {
   useDeployContract,
   usePreflight,
   useWaitForConfirmation,
+  useQRC20,
+  useDeployToken,
+  usePayX402,
 } from './react/hooks.js';
 export type { TxHookStatus } from './react/hooks.js';
 
