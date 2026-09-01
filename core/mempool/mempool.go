@@ -119,6 +119,17 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 		return fmt.Errorf("module call must carry amount 0, got %s: native modules take no call value", tx.Amount.String())
 	}
 
+	// A nonce below the committed nonce can never execute: the executor demands
+	// tx.Nonce == account.Nonce and an account nonce only advances. Admitting it
+	// would spend a signature verification and a pool slot (until PruneStale)
+	// on a tx the producer will only ever skip, while /tx/submit reports it
+	// accepted. One cheap state read, before the expensive verify. Best-effort
+	// like the balance check below: a state read error defers to the executor.
+	if committed, err := m.state.GetNonce(tx.From); err == nil && tx.Nonce < committed {
+		return fmt.Errorf("%w: committed nonce for %s is %d, got %d",
+			types.ErrNonceTooLow, tx.From.String(), committed, tx.Nonce)
+	}
+
 	// Reject a duplicate pending (from, nonce): a wallet that reads only the
 	// committed nonce re-submits the same nonce while its prior tx is still
 	// pending. Without this, those resends pile up and hit MaxPerAddr, locking the
