@@ -111,6 +111,18 @@ func GenerateKeypair() (*PublicKey, *PrivateKey, error) {
 	return &PublicKey{k: pub}, &PrivateKey{k: priv}, nil
 }
 
+// KeypairFromSeed derives the ML-DSA-65 keypair from a 32-byte FIPS 204 seed.
+// Same seed as qkey / the faucet encoder (noble ml_dsa65.keygen).
+func KeypairFromSeed(seed []byte) (*PublicKey, *PrivateKey, error) {
+	if len(seed) != mldsa65.SeedSize {
+		return nil, nil, fmt.Errorf("seed: want %d bytes, got %d", mldsa65.SeedSize, len(seed))
+	}
+	var s [mldsa65.SeedSize]byte
+	copy(s[:], seed)
+	pub, priv := mldsa65.NewKeyFromSeed(&s)
+	return &PublicKey{k: pub}, &PrivateKey{k: priv}, nil
+}
+
 // PublicKeyFromBytes deserialises 1952 bytes into a public key.
 func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
 	if len(b) != PublicKeySize {
