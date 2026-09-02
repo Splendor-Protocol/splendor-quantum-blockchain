@@ -477,10 +477,26 @@ function x402Middleware(sdk, config) {
         });
       }
 
-      // Settle payment (async — don't block the response)
-      sdk.x402Settle(requirements, payload).catch((err) => {
-        console.error('[x402] settlement error:', err);
+      // Reject incomplete payments: settlement_tx is required for on-chain settlement.
+      // The payer must include a signed TxX402 in the X-Payment payload.
+      const settlementTx = payload.settlement_tx;
+      if (!settlementTx) {
+        return res.status(402).json({
+          error: 'Incomplete Payment',
+          reason: 'X-Payment payload missing settlement_tx. The payer must include a ' +
+            'signed TxX402 settlement transaction. Use the TypeScript SDK payX402() ' +
+            'for a compliant client.',
+        });
+      }
+
+      // Submit settlement on-chain — fire and forget so the API response is not
+      // blocked, but log failures loudly so operators can detect broken settlement.
+      sdk.x402Settle(requirements, payload, settlementTx).catch((err) => {
+        console.error('[x402] settlement error (verified but settlement failed):', err.message || err);
       });
+
+      // Report settlement tx hash in response headers so callers can track it.
+      res.setHeader('X-Settlement-Tx', (settlementTx && settlementTx.hash) || 'submitted');
 
       next();
     } catch (err) {
