@@ -5,6 +5,7 @@ package mempool
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/big"
 	"sort"
@@ -37,6 +38,13 @@ const (
 	// calldata and contract code.
 	MaxTxDataBytes = 128 * 1024
 )
+
+// ErrNonceTooLow: the nonce is below the sender's committed nonce, so the
+// transaction can never execute (account nonces only advance). Refused at
+// admission rather than left to pin a pool slot until PruneStale. Lives here,
+// not in core/types, because core/types is compiled into the pinned signer
+// WASM and a new symbol there would change that binary.
+var ErrNonceTooLow = errors.New("nonce too low")
 
 // Fee floor multipliers applied as the pool fills. A flat MinFee makes flooding
 // cheap: an attacker pays the same 1000 units for the last slot as for the
@@ -127,7 +135,7 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	// like the balance check below: a state read error defers to the executor.
 	if committed, err := m.state.GetNonce(tx.From); err == nil && tx.Nonce < committed {
 		return fmt.Errorf("%w: committed nonce for %s is %d, got %d",
-			types.ErrNonceTooLow, tx.From.String(), committed, tx.Nonce)
+			ErrNonceTooLow, tx.From.String(), committed, tx.Nonce)
 	}
 
 	// Reject a duplicate pending (from, nonce): a wallet that reads only the

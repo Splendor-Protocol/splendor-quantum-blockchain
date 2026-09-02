@@ -139,12 +139,17 @@ func TestBlockResponseRendersTxAmountsAsStringsOnRequest(t *testing.T) {
 	if decoded.Transactions[0]["from"] == nil || decoded.Transactions[0]["nonce"] != float64(0) || decoded.Transactions[0]["signature"] == nil {
 		t.Fatalf("tx fields lost in the string view: %s", raw)
 	}
-	// The string view must itself decode as a Transaction (round trip).
-	var back types.Block
-	if err := json.Unmarshal(raw, &back); err != nil {
-		t.Fatalf("string view is not decodable by a new node: %v", err)
+	// A string view fed back through the ingress normaliser decodes exactly
+	// (core/types itself stays numeric-only: it is compiled into the signer).
+	normalized, err := normalizeWireAmounts(raw)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if back.Transactions[0].Amount.Cmp(hugeBig(t)) != 0 {
-		t.Fatalf("round trip lost the amount: %v", back.Transactions[0].Amount)
+	var back types.Block
+	if err := json.Unmarshal(normalized, &back); err != nil {
+		t.Fatalf("string view does not round-trip through the ingress: %v", err)
+	}
+	if back.Transactions[0].Amount.Cmp(hugeBig(t)) != 0 || back.Transactions[1].Amount != nil {
+		t.Fatalf("round trip changed the amounts: %v %v", back.Transactions[0].Amount, back.Transactions[1].Amount)
 	}
 }
