@@ -915,6 +915,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 		},
 	})
 
+	// State proof routes (GET /state/root, /state/account/:addr, /state/proof/:addr)
+	rpc.RegisterStateRoutes(router, stateDB, executor)
+
 	// Governance + staking routes
 	rpc.RegisterGovRoutes(router, stateDB)
 
