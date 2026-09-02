@@ -28,7 +28,7 @@ func TestAddRejectsNonceBelowCommitted(t *testing.T) {
 	stale := types.NewTransfer(from, to, big.NewInt(0), big.NewInt(int64(MinFee)), 0, 1_700_000_000)
 	_ = stale.Sign(priv, true)
 	err := m.Add(stale)
-	if !errors.Is(err, types.ErrNonceTooLow) {
+	if !errors.Is(err, ErrNonceTooLow) {
 		t.Fatalf("stale nonce: want ErrNonceTooLow, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "nonce too low") {

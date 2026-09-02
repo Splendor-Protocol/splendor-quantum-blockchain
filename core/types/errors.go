@@ -5,7 +5,6 @@ import "errors"
 var (
 	ErrInsufficientBalance = errors.New("insufficient balance")
 	ErrInvalidNonce        = errors.New("invalid nonce")
-	ErrNonceTooLow         = errors.New("nonce too low") // below the committed nonce: can never execute
 	ErrInvalidSignature    = errors.New("invalid signature")
 	ErrUnknownAccount      = errors.New("account not found")
 	ErrContractNotFound    = errors.New("contract not found")

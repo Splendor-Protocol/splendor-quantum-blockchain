@@ -266,6 +266,14 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// amount/fee may arrive as decimal strings (JS cannot carry >2^53 in a
+	// Number); rewrite them to the numeric form the core types decode.
+	body, err = normalizeWireAmounts(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction JSON: %v", err))
+		return
+	}
+
 	var tx types.Transaction
 	if err := json.Unmarshal(body, &tx); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction JSON: %v", err))
@@ -472,7 +480,7 @@ func (s *Server) handleX402Verify(w http.ResponseWriter, r *http.Request) {
 		Requirements x402.PaymentRequirements `json:"requirements"`
 		Payload      x402.PaymentPayload      `json:"payload"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeWireJSON(r.Body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
 		return
 	}
@@ -500,7 +508,7 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 		// and consumes the payer's account nonce.
 		SettlementTx *types.Transaction `json:"settlement_tx"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeWireJSON(r.Body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
 		return
 	}
