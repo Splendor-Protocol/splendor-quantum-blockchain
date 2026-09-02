@@ -11,7 +11,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -43,7 +42,6 @@ Addresses are derived as SHA3-256(ml_dsa_65_public_key) — no ECDSA.`,
 
 	root.AddCommand(
 		cmdGenerate(),
-		cmdImportSeed(),
 		cmdAddress(),
 		cmdPubkey(),
 		cmdBalance(),
@@ -99,49 +97,6 @@ func cmdGenerate() *cobra.Command {
 			fmt.Printf("   There is no seed phrase. The wallet file IS the key.\n")
 			fmt.Printf("   Private key size: %d bytes (ML-DSA-65)\n", qcrypto.PrivateKeySize)
 
-			return nil
-		},
-	}
-	cmd.Flags().StringVarP(&outPath, "out", "o", "wallet.sqwallet", "Output wallet file path")
-	return cmd
-}
-
-func cmdImportSeed() *cobra.Command {
-	var outPath string
-	cmd := &cobra.Command{
-		Use:   "import-seed",
-		Short: "Import a 32-byte hex seed from SEED_HEX into an encrypted .sqwallet",
-		Long: `Reads the seed from the SEED_HEX environment variable (never from argv)
-and writes an encrypted .sqwallet. Same derivation as qkey / the faucet.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			hexSeed := os.Getenv("SEED_HEX")
-			if hexSeed == "" {
-				return fmt.Errorf("set SEED_HEX to the 64-char hex seed (do not pass it as a flag)")
-			}
-			seed, err := hex.DecodeString(hexSeed)
-			if err != nil {
-				return fmt.Errorf("SEED_HEX: %w", err)
-			}
-			pub, priv, err := qcrypto.KeypairFromSeed(seed)
-			if err != nil {
-				return err
-			}
-			addr := qcrypto.DeriveAddress(pub)
-			pass, err := readPassword("Enter wallet password: ")
-			if err != nil {
-				return fmt.Errorf("password read error: %w", err)
-			}
-			pass2, err := readPassword("Confirm password: ")
-			if err != nil {
-				return fmt.Errorf("password confirm error: %w", err)
-			}
-			if string(pass) != string(pass2) {
-				return fmt.Errorf("passwords do not match")
-			}
-			if err := qcrypto.SaveWallet(outPath, pub, priv, pass); err != nil {
-				return fmt.Errorf("failed to save wallet: %w", err)
-			}
-			fmt.Printf("Imported %s -> %s\n", addr.String(), outPath)
 			return nil
 		},
 	}
