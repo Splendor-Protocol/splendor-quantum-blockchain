@@ -54,6 +54,18 @@ type codegen struct {
 	// and its mapping-slot cache.
 	emitBase int64
 
+	// loopBreakLabel and loopContinueLabel are the targets for break/continue
+	// inside the innermost loop. Empty string when not inside a loop.
+	loopBreakLabel    string
+	loopContinueLabel string
+
+	// inlineRetSlot and inlineRetLabel are used when inlining an internal
+	// function call. When non-zero/non-empty, a `return expr` statement writes
+	// expr to the slot and jumps to the label rather than emitting RETURN.
+	inlineRetSlot  int
+	inlineRetLabel string
+	inlineActive   bool // true when we are inside an inlined call
+
 	// assigned names every variable this function ever writes, so a mapping
 	// keyed on one is never cached.
 	assigned map[string]bool
@@ -452,6 +464,24 @@ func (g *codegen) genStmt(s stmt) error {
 		return g.genFor(st)
 	case *whileStmt:
 		return g.genLoop(nil, st.cond, nil, st.body)
+	case *breakStmt:
+		if g.loopBreakLabel == "" {
+			return fmt.Errorf("break outside loop")
+		}
+		g.a.pushLabel(g.loopBreakLabel)
+		g.a.op(vm.OpJUMP)
+		return nil
+	case *continueStmt:
+		if g.loopContinueLabel == "" {
+			return fmt.Errorf("continue outside loop")
+		}
+		g.a.pushLabel(g.loopContinueLabel)
+		g.a.op(vm.OpJUMP)
+		return nil
+	case *callStmt:
+		// Internal function call as a statement: inline the callee, discard return.
+		_, err := g.genInlineCall(st.name, st.args, false)
+		return err
 	default:
 		return fmt.Errorf("unhandled statement")
 	}
@@ -502,6 +532,18 @@ func (g *codegen) genLoop(init stmt, cond expr, post stmt, body []stmt) error {
 
 	top := g.freshLabel("loop")
 	end := g.freshLabel("endloop")
+	postLabel := g.freshLabel("looppost") // continue jumps here (before post)
+
+	// Save and set break/continue targets for this loop.
+	outerBreak := g.loopBreakLabel
+	outerContinue := g.loopContinueLabel
+	g.loopBreakLabel = end
+	g.loopContinueLabel = postLabel
+	defer func() {
+		g.loopBreakLabel = outerBreak
+		g.loopContinueLabel = outerContinue
+	}()
+
 	g.a.label(top)
 	if cond != nil {
 		if err := g.genExpr(cond); err != nil {
@@ -521,6 +563,8 @@ func (g *codegen) genLoop(init stmt, cond expr, post stmt, body []stmt) error {
 		}
 	}
 	g.popScope()
+	// postLabel: continue jumps here; post runs before the next condition check.
+	g.a.label(postLabel)
 	if post != nil {
 		if err := g.genStmt(post); err != nil {
 			return err
@@ -636,10 +680,21 @@ func (g *codegen) genRequire(st *requireStmt) error {
 	return nil
 }
 
-// genReturn writes the value to memory[0:32] and returns that word.
-//
-//	RETURN pops size (top) then offset, so: <push offset>; <push size>; RETURN.
+// genReturn writes the return value. When inside an inlined call, stores the
+// value to the inline return slot and jumps to the inline return label instead
+// of emitting a real RETURN opcode.
 func (g *codegen) genReturn(st *returnStmt) error {
+	if g.inlineActive {
+		// Inlined context: write value to return slot and jump to exit label.
+		g.a.pushInt(localAddr(g.inlineRetSlot))
+		if err := g.genExpr(st.value); err != nil {
+			return err
+		}
+		g.a.op(vm.OpMSTORE)
+		g.a.pushLabel(g.inlineRetLabel)
+		g.a.op(vm.OpJUMP)
+		return nil
+	}
 	g.a.pushInt(0) // mem offset
 	if err := g.genExpr(st.value); err != nil {
 		return err
@@ -792,9 +847,97 @@ func (g *codegen) genExpr(e expr) error {
 		}
 		g.a.op(vm.OpISZERO) // logical not: 0 → 1, non-zero → 0
 		return nil
+	case *stringExpr:
+		// Encode as bytes32: left-aligned, right-zero-padded. Max 32 chars.
+		b := []byte(ex.value)
+		if len(b) > 32 {
+			b = b[:32]
+		}
+		padded := make([]byte, 32)
+		copy(padded[:len(b)], b)
+		g.a.pushBig(new(big.Int).SetBytes(padded))
+		return nil
+	case *callExpr:
+		// Internal function call in expression position: inline and load return.
+		retSlot, err := g.genInlineCall(ex.name, ex.args, true)
+		if err != nil {
+			return err
+		}
+		g.a.pushInt(localAddr(retSlot))
+		g.a.op(vm.OpMLOAD)
+		return nil
 	default:
 		return fmt.Errorf("unhandled expression")
 	}
+}
+
+// genInlineCall inlines an internal (private) function call at the call site.
+// Arguments are evaluated and written to fresh local slots, then the callee's
+// body is emitted with those slots substituted for its parameters. A return
+// inside the inlined body writes to inlineRetSlot and jumps to inlineRetLabel
+// rather than emitting a real RETURN. If wantReturn is true, a slot is
+// allocated for the return value and its index is returned.
+func (g *codegen) genInlineCall(name string, args []expr, wantReturn bool) (int, error) {
+	// Find the callee among internal functions.
+	var target *funcNode
+	for _, fn := range g.c.funcs {
+		if fn.name == name && fn.isInternal && len(fn.params) == len(args) {
+			target = fn
+			break
+		}
+	}
+	if target == nil {
+		return 0, fmt.Errorf("undefined internal function %q (wrong name, arg count, or not marked internal)", name)
+	}
+
+	// Allocate one local slot per argument; evaluate args before entering the
+	// callee's scope so they see the caller's bindings, not the callee's.
+	argSlots := make([]int, len(args))
+	for i := range args {
+		argSlots[i] = g.nextLocal
+		g.nextLocal++
+	}
+	for i, arg := range args {
+		g.a.pushInt(localAddr(argSlots[i]))
+		if err := g.genExpr(arg); err != nil {
+			return 0, fmt.Errorf("inline call %s arg %d: %w", name, i, err)
+		}
+		g.a.op(vm.OpMSTORE)
+	}
+
+	// Allocate a return-value slot if the callee has a return type.
+	retSlot := 0
+	if wantReturn && target.hasReturn {
+		retSlot = g.nextLocal
+		g.nextLocal++
+	}
+
+	// Enter a fresh scope with the callee's params bound to the arg slots.
+	g.pushScope()
+	for i, p := range target.params {
+		g.scopes[len(g.scopes)-1][p.name] = argSlots[i]
+	}
+
+	// Save and set inline context: return stmts write to retSlot/retLabel.
+	prevActive, prevSlot, prevLabel := g.inlineActive, g.inlineRetSlot, g.inlineRetLabel
+	retLabel := g.freshLabel("inlineret")
+	g.inlineActive, g.inlineRetSlot, g.inlineRetLabel = true, retSlot, retLabel
+
+	// Emit the callee body.
+	for _, s := range target.body {
+		if err := g.genStmt(s); err != nil {
+			g.popScope()
+			g.inlineActive, g.inlineRetSlot, g.inlineRetLabel = prevActive, prevSlot, prevLabel
+			return 0, fmt.Errorf("inline %s: %w", name, err)
+		}
+	}
+
+	// Return label: fall-through from the body lands here; explicit returns jump here.
+	g.a.label(retLabel)
+
+	g.popScope()
+	g.inlineActive, g.inlineRetSlot, g.inlineRetLabel = prevActive, prevSlot, prevLabel
+	return retSlot, nil
 }
 
 // genBinary evaluates left then right (left lower on the stack) and applies the
