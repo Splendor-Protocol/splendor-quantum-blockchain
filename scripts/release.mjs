@@ -6,6 +6,9 @@
  *   npm run deploy -- minor --env test
  *   npm run deploy v0.4.11 prod        # promote an existing version to another tier
  *
+ * A bump on a commit that is already released promotes that release instead of
+ * cutting a new one: the same commit never gets two versions (releasedVersionAt).
+ *
  * WHY THIS EXISTS
  *
  * Releasing the chain was three manual steps across two repositories, and the
@@ -19,11 +22,11 @@
  * None of them are hypothetical, and none should be removed without reading the
  * incident in the comment first.
  *
- * WHAT IT NEVER DOES
+ * WHAT DEPLOY NEVER DOES
  *
- * It never resets a chain. reset_chain is not exposed and is always sent false.
- * A reset destroys every balance not in the tier's genesis allocation list and
- * needs the deliberate procedure in splendor-infra/docs/chain-redeploy-runbook.md.
+ * `deploy` never resets a chain. reset_chain is always sent false from a
+ * rollout. A wipe is the separate `reset` / `wipe` command. See
+ * splendor-infra/docs/chain-redeploy-runbook.md.
  */
 import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
@@ -56,6 +59,8 @@ const TIERS = {
   test:   { env: 'test',   rpc: 'https://quantum-rpc-testnet.splendor.org' },
   prod:   { env: 'prod',   rpc: 'https://quantum-rpc.splendor.org' },
 };
+const HUMAN_TIER = { devnet: 'devnet', test: 'testnet', prod: 'mainnet' };
+const PROD_RESET_PHRASE = 'reset prod chain';
 
 /**
  * Files whose change means something downstream must ship too. The tool cannot
@@ -67,6 +72,7 @@ const WATCH = [
   { path: 'core/types/block.go',       ships: 'explorer — it re-derives block hashes in-browser' },
   { path: 'core/crypto/mldsa.go',      ships: 'explorer, wallet, WASM signer — signature scheme or sizes changed' },
   { path: 'genesis/genesis.go',        ships: 'infra entrypoint — the genesis document shape changed' },
+  { path: 'sdk/sqc-sdk/wasm/dist/sqc_signer.wasm', ships: 'wallet extension — it pins this exact digest; its sync workflow opens the PR on its next push to main, merge it before the wallet ships' },
 ];
 
 const sh = (cmd, args, opts = {}) =>
@@ -90,6 +96,11 @@ const die = (msg, ...extra) => {
   process.exit(1);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** vX.Y.Z as a sortable number, or null when the string is not a version. */
+const rank = (v) => {
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(v);
+  return m ? Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3]) : null;
+};
 
 // ── arguments ───────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -103,6 +114,10 @@ const assumeYes = flags.has('--yes');
 const allowNoOp = flags.has('--allow-no-op');
 
 if (positional[0] === 'status') { await printStatus(); process.exit(0); }
+if (positional[0] === 'reset' || positional[0] === 'wipe') {
+  await runReset(positional.slice(1));
+  process.exit(0);
+}
 
 const bumpOrVersion = positional[0];
 const rawTier = envFromFlag ?? positional.find((a) => a in TIERS || a in ALIASES);
@@ -118,10 +133,15 @@ if (!bumpOrVersion || !tierArg) {
   npm run deploy -- minor --env test cut a minor and roll it to testnet
   npm run deploy v0.4.11 prod        promote an existing version to prod (no rebuild)
   npm run deploy status              show what every tier is running
+  npm run reset <devnet|test|prod>   wipe a tier: snapshot balances, ask, reset_chain=true
 
   --dry-run       do everything except mutate anything
   --yes           skip the production confirmation prompt
-  --allow-no-op   release even though no Go source changed since the deployed build`);
+  --allow-no-op   release even though no Go source changed since the deployed build,
+                  or HEAD is already released (forces a fresh version and rebuild)
+
+  A bump on a commit that is already released promotes that release instead of
+  cutting a new one, so the same commit never gets two versions.`);
   process.exit(64);
 }
 if (!(tierArg in TIERS)) {
@@ -140,8 +160,19 @@ async function main() {
   preflight();
 
   const deployedNow = tierImage(tier.env);
-  const promoting = /^v\d+\.\d+\.\d+$/.test(bumpOrVersion);
-  const version = promoting ? bumpOrVersion : nextVersion(bumpOrVersion);
+  const explicit = /^v\d+\.\d+\.\d+$/.test(bumpOrVersion);
+  if (!explicit && !['patch', 'minor', 'major'].includes(bumpOrVersion)) {
+    die(`"${bumpOrVersion}" is not patch, minor, major, or a vX.Y.Z version`);
+  }
+
+  // A bump on a commit that is already released is a promotion in disguise.
+  const already = explicit || allowNoOp ? null : releasedVersionAt(git('rev-parse', 'HEAD'));
+  if (already) {
+    console.log(`\n  HEAD is already released as ${already}; promoting that image instead of`);
+    console.log('  cutting a new version. (--allow-no-op forces a fresh version and rebuild.)');
+  }
+  const promoting = explicit || Boolean(already);
+  const version = explicit ? bumpOrVersion : (already ?? nextVersion(bumpOrVersion));
 
   // Promotion reuses an existing image; a new version builds one. Both end with
   // the same variable write, rollout and verification.
@@ -231,9 +262,6 @@ function preflight() {
  * question the whole tool exists to answer.
  */
 function nextVersion(bump) {
-  if (!['patch', 'minor', 'major'].includes(bump)) {
-    die(`"${bump}" is not patch, minor, major, or a vX.Y.Z version`);
-  }
   const seen = [];
   for (const t of Object.values(TIERS)) {
     const img = tierImage(t.env);
@@ -259,6 +287,33 @@ function commitOfExistingTag(version) {
   if (local.ok && local.out) return local.out;
   die(`${version} is not a tag in this repository`,
       'Promotion reuses an existing release; cut one first with `npm run deploy patch <tier>`.');
+}
+
+/**
+ * The highest version tag on `commit` that has a published GitHub Release, or
+ * null when the commit has never been released.
+ *
+ * On 2 Sep, `deploy:test` run straight after `deploy:devnet` proposed v0.6.4 for
+ * the commit devnet had just verified as v0.6.3. `patch` always cut, and the
+ * "worth building" check diffs against the TARGET tier (still on v0.6.1), so
+ * nothing objected: the same commit would have been rebuilt — not provably
+ * identical, see checkWorthBuilding — under a second number, and testnet would
+ * not have run the image devnet had tested. A commit is released once; every
+ * tier after the first gets that image.
+ *
+ * A tag with no Release is ignored: it is the leftover of an interrupted cut
+ * (the tag is pushed before the build runs) and has no image behind it.
+ */
+function releasedVersionAt(commit) {
+  const tags = git('tag', '--list', 'v*', '--points-at', commit).split('\n')
+    .map((t) => t.trim())
+    .filter((t) => rank(t) != null)
+    .sort((a, b) => rank(b) - rank(a));
+  for (const t of tags) {
+    const rel = shOk('gh', ['release', 'view', t, '--repo', CHAIN, '--json', 'publishedAt', '-q', '.publishedAt']);
+    if (rel.ok && rel.out) return t;
+  }
+  return null;
 }
 
 /**
@@ -397,10 +452,6 @@ function checkRollback(deployedImage, version, commit, prevCommit) {
   if (current === version) {
     die(`this tier already runs ${version}`, 'Nothing to do.');
   }
-  const rank = (v) => {
-    const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(v);
-    return m ? Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3]) : null;
-  };
   const a = rank(version), b = rank(current);
   if (a == null || b == null || a >= b) return; // promotion forward, or unparseable
 
@@ -603,15 +654,12 @@ function publishRelease(version, commit) {
 }
 
 function previousVersionTag(version) {
-  const all = git('tag', '--list', 'v*').split('\n')
-    .map((t) => /^v(\d+)\.(\d+)\.(\d+)$/.exec(t.trim()))
-    .filter(Boolean)
-    .map((m) => ({ tag: m[0], rank: Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3]) }))
-    .sort((a, b) => b.rank - a.rank);
-  const mine = /^v(\d+)\.(\d+)\.(\d+)$/.exec(version);
-  if (!mine) return null;
-  const rank = Number(mine[1]) * 1e6 + Number(mine[2]) * 1e3 + Number(mine[3]);
-  return all.find((t) => t.rank < rank)?.tag ?? null;
+  const mine = rank(version);
+  if (mine == null) return null;
+  return git('tag', '--list', 'v*').split('\n')
+    .map((t) => t.trim())
+    .filter((t) => rank(t) != null && rank(t) < mine)
+    .sort((a, b) => rank(b) - rank(a))[0] ?? null;
 }
 
 /** Opens a Deployment on the chain repo. Returns its id, or null if unavailable. */
@@ -702,4 +750,302 @@ async function printStatus() {
     console.log(`  ${name.padEnd(9)} ${img.split('/').pop().padEnd(33)} ${c.padEnd(14)} ${s?.height ?? '—'}`);
   }
   console.log('');
+}
+
+// ── reset / wipe ────────────────────────────────────────────────────────────
+/**
+ * Erase a tier and mint a fresh genesis. Deploy cannot do this; reset_chain
+ * is always false on a rollout. This command is the only way out of the
+ * blockchain repo.
+ *
+ * Order: snapshot balances into SQC_GENESIS_ALLOC_ADDRESS (so known wallets
+ * survive), typed confirmation, dispatch, then verify height collapsed and
+ * started climbing. The validator address is stripped from the alloc list
+ * because the entrypoint already funds it via SQC_GENESIS_SUPPLY — leaving
+ * it in fails the boot after the wipe.
+ *
+ * This is a balance snapshot, not an EBS snapshot. Disk undo is still a
+ * manual AWS step; this tool has no AWS credentials on purpose.
+ *
+ * An optional vX.Y.Z means "come back up on that image". The wipe boots
+ * whatever SQC_NODE_IMAGE says, so resetting without it silently re-genesises
+ * the tier on the OLD build — the image is written only after the typed
+ * confirmation, so an abort leaves the tier pointing where it did.
+ */
+async function runReset(args) {
+  const wantAll = flags.has('--all');
+  const noSnapshot = flags.has('--no-snapshot');
+  const version = args.find((a) => /^v\d+\.\d+\.\d+$/.test(a));
+  const raw = envFromFlag ?? args.find((a) => a in TIERS || a in ALIASES);
+  const tierName = raw && (ALIASES[raw] ?? raw);
+  if (!tierName || !(tierName in TIERS)) {
+    console.error(`usage: npm run reset <devnet|test|prod> [vX.Y.Z] [--dry-run] [--all] [--no-snapshot]
+
+  npm run reset:devnet             snapshot curated wallets, ask, wipe devnet
+  npm run reset:test               …testnet
+  npm run reset:prod               …mainnet (must type "${PROD_RESET_PHRASE}")
+  npm run reset -- prod v1.0.1     …and come back up on that image
+  npm run reset -- prod v1.0.1 --no-snapshot
+                                   wipe using SQC_GENESIS_ALLOC_ADDRESS as already set
+  npm run reset -- test --all      snapshot every indexer-known account
+
+  Without a version the tier re-genesises on the image it already runs.
+  --yes is ignored. A reset always asks.`);
+    process.exit(64);
+  }
+  if (raw && ALIASES[raw]) {
+    console.log(`  (tier "${raw}" -> "${tierName}" — the GitHub environment name)`);
+  }
+
+  const t = TIERS[tierName];
+  const human = HUMAN_TIER[tierName];
+  const who = shOk('gh', ['api', 'user', '-q', '.login']);
+  if (!who.ok) die('gh is not authenticated', who.out);
+
+  const img = tierImage(t.env);
+  const live = await status(t.rpc);
+  const before = live?.height ?? null;
+  console.log(`
+  tier       ${human}  (GitHub environment "${t.env}")
+  rpc        ${t.rpc}
+  image      ${img ?? '(no SQC_NODE_IMAGE set)'}${version ? `  ->  ${IMAGE}:${version}` : '  (unchanged by this reset)'}
+  currently  height ${before ?? '—'}   chain ${live?.chain_id ?? '—'}
+`);
+  if (version) assertImageExists(version);
+
+  if (noSnapshot) {
+    const alloc = ghVar('SQC_GENESIS_ALLOC_ADDRESS', t.env);
+    if (!alloc) {
+      die('SQC_GENESIS_ALLOC_ADDRESS is empty',
+          '--no-snapshot means genesis uses whatever is already set. Set it first.');
+    }
+    console.log(`  using existing genesis alloc (${alloc.split(',').length} entr${alloc.includes(',') ? 'ies' : 'y'}) — not re-read from the live chain`);
+  } else {
+    console.log('  snapshotting balances that must survive the wipe…');
+    await snapshotBalances(t, wantAll);
+  }
+  if (dryRun) {
+    console.log('✓ --dry-run: snapshot printed, nothing was written or wiped.');
+    return;
+  }
+  await dropValidatorFromAlloc(t);
+
+  await confirmReset(tierName, human, before, live?.chain_id, version);
+  if (version) setTierImage(t.env, version, img);
+  const inputs = {
+    environment: t.env,
+    rollout_node: 'true',
+    apply_infrastructure: 'false',
+    reset_chain: 'true',
+  };
+  if (tierName === 'prod') inputs.reset_confirm = PROD_RESET_PHRASE;
+
+  const id = await dispatch('Deploy quantum infrastructure', inputs);
+  await watchRun(id, `resetting ${human}`);
+  await verifyReset(t, before, version);
+  console.log(`
+✓ ${human} was wiped and is sealing a new genesis${version ? ` on ${version}` : ''}
+  verified against ${t.rpc}/status — height collapsed, then climbed.
+  Redeploy that tier's explorer Worker (it caches the old genesis).
+  Re-fund the faucet if it was not in the snapshot.
+`);
+}
+
+async function snapshotBalances(t, wantAll) {
+  const pairs = wantAll ? await snapshotAllAccounts(t) : await snapshotCuratedAccounts(t);
+  if (!pairs.length) die('nothing to snapshot', 'no funded addresses on this tier.');
+  const out = pairs.join(',');
+  if (out.length > 48000) {
+    die(`allocation string is ${out.length} bytes; GitHub variables cap at 48 KB`,
+        'Re-run with the curated list (drop --all), or raise a dust floor by hand.');
+  }
+  if (dryRun) {
+    console.log(`  ${pairs.length} account(s) captured (${out.length} bytes) — not written (--dry-run)`);
+    return;
+  }
+  const r = shOk('gh', ['variable', 'set', 'SQC_GENESIS_ALLOC_ADDRESS', '--env', t.env, '--body', out, '--repo', INFRA]);
+  if (!r.ok) die('setting SQC_GENESIS_ALLOC_ADDRESS failed', r.out);
+  console.log(`  SQC_GENESIS_ALLOC_ADDRESS set for ${t.env} — ${pairs.length} account(s)`);
+}
+
+async function readBalance(rpc, addr) {
+  try {
+    const res = await fetch(`${rpc}/balance/${addr}`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const bal = body?.balance;
+    return typeof bal === 'string' && /^\d+$/.test(bal) ? bal : null;
+  } catch {
+    return null;
+  }
+}
+
+async function snapshotCuratedAccounts(t) {
+  const raw = shOk('gh', ['api', `repos/${INFRA}/contents/scripts/accounts.txt`, '-q', '.content']);
+  if (!raw.ok || !raw.out) die('could not read accounts.txt from splendor-infra', raw.out);
+  const text = Buffer.from(raw.out.replace(/\s/g, ''), 'base64').toString('utf8');
+  const pairs = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const [addr, ...rest] = trimmed.split(/\s+/);
+    if (!addr.startsWith('SQ:')) continue;
+    const label = rest.join(' ') || addr;
+    const bal = await readBalance(t.rpc, addr);
+    if (bal == null) {
+      die(`could not read balance for ${addr} (${label})`,
+          'Refusing a partial snapshot — that account would be wiped.');
+    }
+    if (bal === '0') {
+      console.log(`  · zero, skipped: ${label}`);
+      continue;
+    }
+    console.log(`  ✓ ${label} = ${bal}`);
+    pairs.push(`${addr}=${bal}`);
+  }
+  return pairs;
+}
+
+async function snapshotAllAccounts(t) {
+  let health;
+  try {
+    const res = await fetch(`${t.rpc}/idx/v1/health`, { signal: AbortSignal.timeout(20000) });
+    health = res.ok ? await res.json() : null;
+  } catch { health = null; }
+  const checkpoint = Number(health?.checkpoint);
+  if (!Number.isFinite(checkpoint)) {
+    die('indexer /idx/v1/health is unreachable',
+        '--all needs a healthy indexer. Omit --all to snapshot the curated list.');
+  }
+  const live = await status(t.rpc);
+  const head = live?.height;
+  if (head == null) die(`node ${t.rpc}/status is unreachable — cannot verify indexer lag`);
+  const lag = head - checkpoint;
+  if (lag > 25) {
+    die(`indexer is ${lag} blocks behind the node (checkpoint ${checkpoint}, head ${head})`,
+        'Wait for it to catch up, or omit --all.');
+  }
+  console.log(`  indexer healthy: checkpoint ${checkpoint}, node head ${head} (lag ${lag})`);
+
+  const pairs = [];
+  let cursor = '';
+  let pages = 0;
+  for (;;) {
+    const url = new URL(`${t.rpc}/idx/v1/accounts/alloc`);
+    url.searchParams.set('limit', '500');
+    url.searchParams.set('min_balance', '1');
+    if (cursor) url.searchParams.set('after', cursor);
+    let body;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+      if (!res.ok) die(`${url} failed (${res.status})`, 'A partial --all snapshot is refused.');
+      body = await res.json();
+    } catch (e) {
+      die(`${url} failed`, String(e.message ?? e));
+    }
+    const alloc = body.alloc ?? '';
+    if (alloc) pairs.push(...alloc.split(',').filter(Boolean));
+    pages += 1;
+    console.log(`  page ${pages}: ${body.scanned ?? '?'} scanned, ${body.accounts ?? '?'} with a balance (running total ${pairs.length})`);
+    if (body.has_more !== true) break;
+    if (!body.next_cursor) die('has_more=true but no next_cursor — refusing to loop');
+    cursor = body.next_cursor;
+  }
+  return pairs;
+}
+
+/**
+ * `validator_addr` is a qcrypto.Address, and Go marshals a [32]byte as a JSON
+ * ARRAY of numbers — not the "SQ:hex" string the rest of the surface uses. An
+ * address IS those 32 bytes, so the string form is a hex encode of them.
+ */
+function sqAddress(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && value.length === 32) {
+    return `SQ:${value.map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+  }
+  return '';
+}
+
+async function dropValidatorFromAlloc(t) {
+  let validator = '';
+  try {
+    const res = await fetch(`${t.rpc}/block/latest`, { signal: AbortSignal.timeout(20000) });
+    if (res.ok) {
+      const block = await res.json();
+      validator = sqAddress(block?.header?.validator_addr);
+    }
+  } catch { /* live node may already be down */ }
+  if (!validator) {
+    console.log('  ! could not read the validator address; not stripping it from the alloc list');
+    return;
+  }
+  const current = ghVar('SQC_GENESIS_ALLOC_ADDRESS', t.env);
+  if (!current) return;
+  const kept = current.split(',').filter((p) => !p.toLowerCase().startsWith(`${validator.toLowerCase()}=`));
+  if (kept.length === current.split(',').length) return;
+  console.log(`  · dropped validator ${validator} from genesis alloc (entrypoint already funds it)`);
+  if (dryRun) return;
+  const r = shOk('gh', ['variable', 'set', 'SQC_GENESIS_ALLOC_ADDRESS', '--env', t.env, '--body', kept.join(','), '--repo', INFRA]);
+  if (!r.ok) die('stripping the validator from SQC_GENESIS_ALLOC_ADDRESS failed', r.out);
+}
+
+async function confirmReset(tierName, human, height, chainId, version) {
+  if (!process.stdin.isTTY) {
+    die('refusing a non-interactive chain reset',
+        'A reset destroys every balance not in SQC_GENESIS_ALLOC_ADDRESS.');
+  }
+  console.log(`
+  This will ERASE ${human}.
+  Height now: ${height ?? '—'}   chain: ${chainId ?? '—'}
+  Comes back: ${version ? `${IMAGE}:${version}` : 'the image this tier already runs'}
+  Survives:   addresses just written to SQC_GENESIS_ALLOC_ADDRESS
+  Dies:       every other balance, all history, contracts, indexer, faucet float
+  Kept:       the validator key (the workflow does not rotate it)
+  Not taken:  an EBS volume snapshot — do that in AWS first if you may need to undo this.
+`);
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const typed = (await rl.question(`Type ${human} to continue: `)).trim();
+  if (typed !== human) {
+    rl.close();
+    console.log('Aborted. The balance snapshot was written; the chain was not wiped.');
+    process.exit(0);
+  }
+  if (tierName === 'prod') {
+    const phrase = (await rl.question(`Type exactly "${PROD_RESET_PHRASE}": `)).trim();
+    if (phrase !== PROD_RESET_PHRASE) {
+      rl.close();
+      console.log('Aborted. The chain was not wiped.');
+      process.exit(0);
+    }
+  }
+  rl.close();
+}
+
+async function verifyReset(t, before, version) {
+  let firstLow = null;
+  for (let i = 0; i < 24; i++) {
+    await sleep(5000);
+    const s = await status(t.rpc);
+    if (!s) continue;
+    const collapsed = before == null || s.height < before;
+    if (!collapsed) continue;
+    // A wipe that came back on the previous build is the failure this whole
+    // argument exists to prevent, and a low height alone cannot tell them apart.
+    if (version && s.image_tag && s.image_tag !== version) {
+      die(`${t.rpc} came back on ${s.image_tag}, not ${version}`,
+          'The chain was wiped but is running the wrong build.');
+    }
+    if (firstLow == null) {
+      firstLow = s.height;
+      continue;
+    }
+    if (s.height > firstLow) {
+      console.log(`  ✓ height ${before} -> ${s.height} (fresh genesis, sealing${version ? ` ${version}` : ''})`);
+      return;
+    }
+  }
+  die('reset did not produce a climbing new genesis',
+      before != null ? `last seen height before dispatch: ${before}` : 'could not read height before dispatch',
+      t.rpc);
 }

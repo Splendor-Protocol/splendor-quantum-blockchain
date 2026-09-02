@@ -10,3 +10,13 @@
 # Local state/data directories produced by running a node.
 /data/
 /chaindata/
+
+# Build outputs that were committed by accident: the macOS/Linux node, wallet
+# and deploy binaries, and `qc`, a captured `git log`. The image the tiers run
+# is built by CI from source (splendor-infra "Build sqc-node image").
+/sqc-node
+/sqc-wallet
+/sqc-deploy
+/node
+/wallet
+/qc

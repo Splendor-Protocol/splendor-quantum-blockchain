@@ -9,6 +9,10 @@
     "deploy:devnet": "node scripts/release.mjs patch devnet",
     "deploy:test": "node scripts/release.mjs patch test",
     "deploy:prod": "node scripts/release.mjs patch prod",
+    "reset": "node scripts/release.mjs reset",
+    "reset:devnet": "node scripts/release.mjs reset devnet",
+    "reset:test": "node scripts/release.mjs reset test",
+    "reset:prod": "node scripts/release.mjs reset prod",
     "release:status": "node scripts/release.mjs status"
   },
   "engines": {

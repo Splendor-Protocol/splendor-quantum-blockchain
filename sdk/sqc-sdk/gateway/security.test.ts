@@ -1,6 +1,6 @@
 /**
  * Gateway security table tests (Fastify inject — no listen).
- * Run from sdk/bridge: npm run test:gateway
+ * Run from sdk/sqc-sdk: npm run test:gateway
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildServer, safeEqualString, type BuiltGateway } from './server.ts';

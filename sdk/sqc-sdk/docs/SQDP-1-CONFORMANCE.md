@@ -2,7 +2,11 @@
 
 Use this when shipping a Splendor dApp or wallet. Normative rules: [SQDP-1.md](./SQDP-1.md).
 
+<<<<<<< HEAD
 Automated coverage (run from `sdk/sqc-sdk`): `npm test` (Vitest including `security-*.test.ts` + WASM golden vectors). Go signer: `go test ./sdk/sqc-sdk/signer -count=1`.
+=======
+Automated coverage (run from `sdk/sqc-sdk`): `npm run test:security` (Vitest `security-*.test.ts` + Go signer + gateway inject).
+>>>>>>> 0cfe34734150d754e18212c33093a189229d1991
 
 ## Identity and UI
 

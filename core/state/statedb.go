@@ -702,6 +702,79 @@ func (s *StateDB) StateRoot() ([32]byte, error) {
 	return merkleRoot(s.leaves), nil
 }
 
+// MerkleProof returns the Merkle inclusion proof for an account's leaf in the
+// committed state tree. The proof is the list of sibling hashes from the leaf
+// level up to (but not including) the root.
+//
+// A verifier reconstructs the root:
+//  1. Compute leafHash = leafDigest("acc:SQ:...", SHA3-256(account_bytes))
+//  2. For each sibling in order: node = internalHash(node, sibling) if node was
+//     the left child, or internalHash(sibling, node) if it was the right child.
+//     The caller can determine left/right from the original leaf index parity.
+//  3. The final node must equal the committed state root.
+//
+// Returns (leafHash, siblings, nil) when found, or (zero, nil, error) when the
+// account is not in committed state. Odd-count levels carry the unpaired node
+// up without a sibling (len(siblings) may be < tree depth).
+func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	targetKey := prefixAccount + addr.String()
+	if _, ok := s.leaves[targetKey]; !ok {
+		return [32]byte{}, nil, fmt.Errorf("account %s not in committed state", addr)
+	}
+
+	// Build sorted key list — same iteration order as merkleRoot.
+	keys := make([]string, 0, len(s.leaves))
+	for k := range s.leaves {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Compute leaf digests and find the index of the target.
+	level := make([][32]byte, len(keys))
+	targetIdx := -1
+	for i, k := range keys {
+		level[i] = leafDigest(k, s.leaves[k])
+		if k == targetKey {
+			targetIdx = i
+		}
+	}
+	if targetIdx < 0 {
+		return [32]byte{}, nil, fmt.Errorf("account %s vanished from leaves during proof generation", addr)
+	}
+
+	leafHash := level[targetIdx]
+	var siblings [][32]byte
+	idx := targetIdx
+
+	// Walk up the binary tree, collecting one sibling per level.
+	// Odd nodes at any level are carried up unchanged and have no sibling.
+	for len(level) > 1 {
+		next := make([][32]byte, 0, (len(level)+1)/2)
+		for i := 0; i < len(level); i += 2 {
+			if i+1 == len(level) {
+				// Odd node: carried up unchanged — matches merkleRoot behaviour.
+				next = append(next, level[i])
+				break
+			}
+			left, right := level[i], level[i+1]
+			next = append(next, internalHash(left, right))
+			// Collect the sibling for our proof path.
+			if idx == i {
+				siblings = append(siblings, right)
+			} else if idx == i+1 {
+				siblings = append(siblings, left)
+			}
+		}
+		idx /= 2
+		level = next
+	}
+
+	return leafHash, siblings, nil
+}
+
 // PendingStateRoot computes the state root that Commit() WOULD produce, without
 // persisting anything. It overlays the pending layer (dirty accounts, code cache,
 // raw storage/nonce writes) onto a copy of the committed leaf index and hashes it

@@ -607,17 +607,36 @@ func (g *codegen) genAssign(st *assignStmt) error {
 		g.a.op(vm.OpSSTORE)
 		return nil
 	}
-	if !sv.isMapping {
-		return fmt.Errorf("%q is not a mapping", sv.name)
+	if sv.isMapping {
+		if err := g.genMappingSlot(sv, st.target.key); err != nil {
+			return err
+		}
+		if err := g.genExpr(st.value); err != nil {
+			return err
+		}
+		g.a.op(vm.OpSSTORE)
+		return nil
 	}
-	if err := g.genMappingSlot(sv, st.target.key); err != nil { // pushes slot
-		return err
+	if sv.isArray {
+		// Array write: bounds check, compute slot, SSTORE.
+		if err := g.genExpr(st.target.key); err != nil { // index
+			return err
+		}
+		// Bounds check: require(index < arraySize, "array out of bounds")
+		g.a.op(vm.OpDUP1)
+		g.a.pushBig(new(big.Int).SetInt64(sv.arraySize))
+		g.a.op(vm.OpLT)
+		g.requireTop("array out of bounds")
+		// Slot = base + index.
+		g.a.pushInt(sv.slot)
+		g.a.op(vm.OpADD)
+		if err := g.genExpr(st.value); err != nil {
+			return err
+		}
+		g.a.op(vm.OpSSTORE)
+		return nil
 	}
-	if err := g.genExpr(st.value); err != nil { // pushes value on top
-		return err
-	}
-	g.a.op(vm.OpSSTORE)
-	return nil
+	return fmt.Errorf("%q is not a mapping or array", sv.name)
 }
 
 // genMappingSlot pushes SHA3-256( pad32(key) ‖ pad32(baseSlot) ) — a distinct,
@@ -831,14 +850,33 @@ func (g *codegen) genExpr(e expr) error {
 		return nil
 	case *indexExpr:
 		sv, ok := g.states[ex.name]
-		if !ok || !sv.isMapping {
-			return fmt.Errorf("%q is not a mapping", ex.name)
+		if !ok {
+			return fmt.Errorf("unknown state variable %q", ex.name)
 		}
-		if err := g.genMappingSlot(sv, ex.key); err != nil {
-			return err
+		if sv.isMapping {
+			if err := g.genMappingSlot(sv, ex.key); err != nil {
+				return err
+			}
+			g.a.op(vm.OpSLOAD)
+			return nil
 		}
-		g.a.op(vm.OpSLOAD)
-		return nil
+		if sv.isArray {
+			// Array read: bounds check, then slot = base + index.
+			if err := g.genExpr(ex.key); err != nil {
+				return err
+			}
+			// Bounds check: require(index < arraySize, "array out of bounds")
+			g.a.op(vm.OpDUP1)
+			g.a.pushBig(new(big.Int).SetInt64(sv.arraySize))
+			g.a.op(vm.OpLT)
+			g.requireTop("array out of bounds")
+			// Slot = base + index (index still on stack from DUP1).
+			g.a.pushInt(sv.slot)
+			g.a.op(vm.OpADD)
+			g.a.op(vm.OpSLOAD)
+			return nil
+		}
+		return fmt.Errorf("%q is not a mapping or array", ex.name)
 	case *binaryExpr:
 		return g.genBinary(ex)
 	case *unaryExpr:

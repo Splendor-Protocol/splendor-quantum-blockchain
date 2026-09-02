@@ -22,7 +22,7 @@ import (
 )
 
 // Domain message used for EVM personal_sign → PQ seed derivation.
-// Keep in sync with the TypeScript SDK (sdk/bridge/src/derive.ts).
+// Keep in sync with the TypeScript SDK (sdk/sqc-sdk/src/derive.ts).
 //
 // The trailing "chain: splendor-quantum-1" is PERMANENT. It names the
 // derivation scheme, not the network the signer talks to: every SQ: address

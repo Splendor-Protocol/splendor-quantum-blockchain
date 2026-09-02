@@ -185,24 +185,36 @@ func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.H
 			stateRoot, _ = stateDB.StateRoot()
 		}
 
-		// StateDB.MerkleProof() is not yet wired — the Merkle tree is built and
-		// committed, but the path-proof extraction API is a future work item.
-		// Return what we can: the canonical state root from the block header plus
-		// the account data. An external verifier can confirm the account is in the
-		// tree by requesting the full state dump and recomputing the root.
+		// Full Merkle path proof via StateDB.MerkleProof().
+		leafHash, siblings, proofErr := stateDB.MerkleProof(addr)
+
 		resp := map[string]interface{}{
-			"address":         addrStr,
-			"state_root":      hex.EncodeToString(stateRoot[:]),
-			"block_height":    blockHeight,
-			"block_hash":      blockHash,
-			"balance":         acc.Balance.String(),
-			"nonce":           acc.Nonce,
-			"proof_available": false,
-			"note": "Full Merkle path proof (sibling-hash list) is not yet " +
-				"exposed by this API. The state_root is the SHA3-256 binary Merkle " +
-				"commitment from the latest block header. The account data above is " +
-				"the current committed state. Path-proof extraction is planned as a " +
-				"follow-on to StateDB.MerkleProof().",
+			"address":      addrStr,
+			"state_root":   hex.EncodeToString(stateRoot[:]),
+			"block_height": blockHeight,
+			"block_hash":   blockHash,
+			"balance":      acc.Balance.String(),
+			"nonce":        acc.Nonce,
+		}
+
+		if proofErr == nil {
+			proofHex := make([]string, len(siblings))
+			for i, s := range siblings {
+				proofHex[i] = hex.EncodeToString(s[:])
+			}
+			resp["proof_available"] = true
+			resp["account_hash"] = hex.EncodeToString(leafHash[:])
+			resp["proof"] = proofHex
+			resp["proof_depth"] = len(proofHex)
+			resp["verify_instruction"] = fmt.Sprintf(
+				"1. leafHash = leafDigest(\"acc:%s\", SHA3-256(account_json)). "+
+					"2. For each sibling at index i: if (leafIndex >> i) & 1 == 0 "+
+					"then node = internalHash(node, sibling), else node = internalHash(sibling, node). "+
+					"3. Final node must equal state_root.",
+				addrStr)
+		} else {
+			resp["proof_available"] = false
+			resp["note"] = fmt.Sprintf("Proof generation failed: %s", proofErr.Error())
 		}
 
 		writeStateJSON(w, http.StatusOK, resp)

@@ -7,7 +7,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
-// Golden selector must stay aligned with sdk/bridge/src/abi.ts (SHA3-256 first 4 bytes).
+// Golden selector must stay aligned with sdk/sqc-sdk/src/abi.ts (SHA3-256 first 4 bytes).
 func TestQSolSelectorGolden(t *testing.T) {
 	sel := vm.SelectorFromSignature("transfer(sqaddress,uint256)")
 	got := hex.EncodeToString(sel[:])
