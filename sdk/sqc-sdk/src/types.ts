@@ -214,9 +214,13 @@ export type SignedOrder = {
 };
 
 export type SignedCancel = {
+  exchange: string;
+  order: SignedOrder;
+  cancel_signature: number[];
+  maker_pubkey: number[];
+  order_hash: string;
   digest_hex: string;
   chain_id: string;
-  order: SignedOrder;
 };
 
 export type IncrementNonceParams = {

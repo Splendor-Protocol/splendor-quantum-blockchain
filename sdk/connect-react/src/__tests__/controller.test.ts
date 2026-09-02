@@ -1,8 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { createConnectController, connectErrorMessage } from '../core/controller.js';
 import type { Connector } from '../connectors/types.js';
-import type { DeriveInfo } from '@splendor/pq-bridge';
-import { BridgeError } from '@splendor/pq-bridge';
+import type { DeriveInfo } from '@splendor/sqc-sdk';
+import { BridgeError } from '@splendor/sqc-sdk';
 
 const memoryStore = new Map<string, string>();
 vi.stubGlobal('localStorage', {
@@ -69,8 +69,8 @@ function mockWallet() {
 
 let lastWallet: MockWallet;
 
-vi.mock('@splendor/pq-bridge', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@splendor/pq-bridge')>();
+vi.mock('@splendor/sqc-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@splendor/sqc-sdk')>();
   return {
     ...actual,
     createSplendorClient: vi.fn(() => {

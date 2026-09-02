@@ -3,7 +3,7 @@ import {
   createStubConnectController,
   connectErrorMessage,
 } from '../core/controller.js';
-import { BridgeError } from '@splendor/pq-bridge';
+import { BridgeError } from '@splendor/sqc-sdk';
 
 describe('createStubConnectController', () => {
   it('reports disconnected and isStub', () => {

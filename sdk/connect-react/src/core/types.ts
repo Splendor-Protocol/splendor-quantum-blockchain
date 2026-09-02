@@ -1,4 +1,4 @@
-import type { DeriveInfo, NetworkConfig } from '@splendor/pq-bridge';
+import type { DeriveInfo, NetworkConfig } from '@splendor/sqc-sdk';
 import type { Connector } from '../connectors/types.js';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'locked' | 'error';

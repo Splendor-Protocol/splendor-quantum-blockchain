@@ -6,6 +6,18 @@ import type { Connection } from '../core/connection.js';
 import type { SplendorPQBridge } from '../splendor-wallet.js';
 import { qrc20Address } from '../addresses/index.js';
 import type { SignedPermit } from '../types.js';
+import { fromUnits } from '../units.js';
+
+const QRC20_WRITES = new Set([
+  'transfer',
+  'approve',
+  'mint',
+  'burn',
+  'transferFrom',
+  'submitPermit',
+  'transferHuman',
+  'approveHuman',
+]);
 
 export type QRC20DeployParams = {
   name: string;
@@ -40,9 +52,33 @@ export class QRC20 extends Program {
     return 'qrc20';
   }
 
+  protected writeMethodNames(): ReadonlySet<string> {
+    return QRC20_WRITES;
+  }
+
   /** Predict token address before deploy. */
   static predictAddress(deployer: string, nonce: number): string {
     return qrc20Address(deployer, nonce);
+  }
+
+  private async decimalsOrThrow(): Promise<number> {
+    const info = await this.tokenInfo();
+    if (typeof info.decimals !== 'number') {
+      throw new Error('tokenInfo().decimals unavailable');
+    }
+    return info.decimals;
+  }
+
+  /** Transfer using a human-readable amount (uses on-chain decimals). */
+  async transferHuman(wallet: SplendorPQBridge, to: string, amountHuman: string) {
+    const decimals = await this.decimalsOrThrow();
+    return this.transfer(wallet, to, fromUnits(amountHuman, decimals));
+  }
+
+  /** Approve using a human-readable amount (uses on-chain decimals). */
+  async approveHuman(wallet: SplendorPQBridge, spender: string, amountHuman: string) {
+    const decimals = await this.decimalsOrThrow();
+    return this.approve(wallet, spender, fromUnits(amountHuman, decimals));
   }
 
   async balanceOf(owner: string): Promise<string> {

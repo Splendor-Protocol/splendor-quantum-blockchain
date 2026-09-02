@@ -1,8 +1,9 @@
 /**
- * DeFi module clients (DEX, exchange on Splendor PQ chain).
- * Use wallet.signOrder / signCancel / signIncrementNonce for exchange auth,
- * then submit via sendModuleCall({ module: 'exchange', ... }).
+ * DeFi module clients (DEX AMM + Exchange settlement).
  */
+export { DEX, deployPool, getPool } from './dex.js';
+export { Exchange, deployExchange, getExchange } from './exchange.js';
+export type { ExchangeDeployParams } from './exchange.js';
 export type {
   OrderParams,
   SignedOrder,

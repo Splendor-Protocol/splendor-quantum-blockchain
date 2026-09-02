@@ -69,6 +69,18 @@ export {
   useQRC20,
   useDeployToken,
   usePayX402,
+  useModuleCall,
+  useQRC1155,
+  useDeployCollection,
+  useExchange,
+  useDeployExchange,
+  useDex,
+  useDeployPool,
+  useBridge,
+  useDeployBridge,
+  useContract,
+  useDeployBytecode,
+  useModules,
 } from './react/hooks.js';
 export type { TxHookStatus } from './react/hooks.js';
 

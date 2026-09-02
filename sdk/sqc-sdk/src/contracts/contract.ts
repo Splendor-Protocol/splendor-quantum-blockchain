@@ -12,6 +12,7 @@ import {
   type AbiArg,
 } from '../abi.js';
 import type { CallOpts, DeployOpts } from '../types.js';
+import { withSigner, type BoundClient, type WalletLike } from '../bound.js';
 
 export type ContractReadResult = {
   return_data?: string;
@@ -19,6 +20,8 @@ export type ContractReadResult = {
   reverted?: boolean;
   revert_reason?: string;
 };
+
+const CONTRACT_WRITES = new Set(['call']);
 
 export class Contract {
   constructor(
@@ -32,6 +35,10 @@ export class Contract {
 
   getAddress(): string {
     return this.address;
+  }
+
+  withSigner(wallet: WalletLike): BoundClient<this> {
+    return withSigner(this, wallet, CONTRACT_WRITES);
   }
 
   async read(functionSig: string, args: AbiArg[] = [], from?: string): Promise<ContractReadResult> {

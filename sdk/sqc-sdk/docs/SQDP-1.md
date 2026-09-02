@@ -2,12 +2,12 @@
 
 **Status:** Normative  
 **Version:** `1`  
-**Implements:** `@splendor/pq-bridge` ≥ 1.4.0  
+**Implements:** `@splendor/sqc-sdk` ≥ 2.0.0 (`@splendor/pq-bridge` ≥ 1.5.0 is a deprecated re-export shim)  
 **Keywords:** MUST / SHOULD / MAY (RFC 2119)
 
-This document is the **single source of truth** for how dApps, wallets, and gateways talk to Splendor Quantum Chain via the PQ bridge. Short how-to: [DAPP_INTEGRATION.md](./DAPP_INTEGRATION.md). Conformance checklist: [SQDP-1-CONFORMANCE.md](./SQDP-1-CONFORMANCE.md).
+This document is the **single source of truth** for how dApps, wallets, and gateways talk to Splendor Quantum Chain via the PQ SDK. Short how-to: [DAPP_INTEGRATION.md](./DAPP_INTEGRATION.md). Conformance checklist: [SQDP-1-CONFORMANCE.md](./SQDP-1-CONFORMANCE.md).
 
-Machine-readable constants are exported as `PROTOCOL` / `SQDP_VERSION` from `@splendor/pq-bridge`.
+Machine-readable constants are exported as `PROTOCOL` / `SQDP_VERSION` from `@splendor/sqc-sdk`.
 
 **Single config file:** network RPCs, gateway ports, WASM paths, min fee, and default network MUST be taken from `src/config/sqc.networks.json` (or the published `config/sqc.networks.json` mirror). dApps SHOULD use `createSplendorClient` / `connectSplendor({ network })` instead of hardcoding URLs.
 
@@ -69,9 +69,11 @@ Exported: `DERIVATION_DOMAIN_MESSAGE`, `CHAIN_ID`.
 
 ## 5. Contract call ABI
 
-Named "QSol ABI" in earlier drafts. There is no QSol compiler and no QSol
-source anywhere — this is the calling convention for SQC-VM bytecode and the
-node's native modules, and it is the only contract interface that exists.
+Named "QSol ABI" — this is the calling convention for SQC-VM bytecode and the
+node's native modules. A prototype QSol-subset compiler (`compiler/`,
+`cmd/sqc-solc`) exists in the monorepo and emits deployable SQC-VM bytecode;
+it is not a production-complete Solidity toolchain. The TypeScript SDK encodes
+and submits calls against this ABI; it does not embed a compile-from-source API.
 
 1. Function selector MUST be the first **4 bytes** of `SHA3-256(UTF-8 signature)` — **not** Keccak-256.
 2. Arguments MUST be packed as 32-byte big-endian words after the selector.
@@ -92,7 +94,7 @@ Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
 | Call | `0x03` | `callContract` |
 | X402 | `0x05` | `payX402` |
 
-1. dApps MUST submit transactions produced by the official WASM signer (`@splendor/pq-bridge`) or an implementation that emits **identical** Go `encoding/json` wire shapes.
+1. dApps MUST submit transactions produced by the official WASM signer (`@splendor/sqc-sdk`) or an implementation that emits **identical** Go `encoding/json` wire shapes.
 2. dApps MUST NOT hand-author signed tx JSON from human README examples. On the wire, `from` / `to` are JSON **arrays of 32 numbers**; `amount` / `fee` are JSON numbers; `public_key` / `signature` are base64.
 3. When `nonce == 0`, the signed tx MUST include `public_key` (first-account registration).
 4. Clients SHOULD prefer client-side WASM signing and `POST /tx/submit` (or gateway `/v1/tx/submit` with a pre-signed body) for end-user flows.
@@ -103,8 +105,8 @@ Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
 
 1. Preferred confirmation: poll `GET /tx/{hash}/receipt` until present (tx index on nodes with explorer routes — mounted by `cmd/node` via `RegisterExplorerRoutes`).
 2. Fallback: **nonce advancement** — wait until account nonce `>` the nonce used when signing (can race with other txs from the same account).
-3. `/ws` is mounted as an SSE/NDJSON stream (not a browser WebSocket). Clients MAY subscribe; `pq-bridge` does not expose a subscribe helper yet.
-4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, `@splendor/pq-bridge` **prefers the receipt path**, then falls back to nonce.
+3. `/ws` is mounted as an SSE/NDJSON stream (not a browser WebSocket). Clients MAY subscribe via `Connection.subscribe()` / `subscribe()` in `@splendor/sqc-sdk`.
+4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, `@splendor/sqc-sdk` **prefers the receipt path**, then falls back to nonce.
 
 Config field `PROTOCOL.confirmation === 'nonce'` names the **fallback** mechanism for older/minimal RPC mounts. Runtime clients SHOULD treat confirmation as **receipt-first, nonce-fallback**. Caveat string: `PROTOCOL.confirmationCaveat`.
 
@@ -112,7 +114,7 @@ Config field `PROTOCOL.confirmation === 'nonce'` names the **fallback** mechanis
 
 ## 8. Connection events
 
-Clients using `@splendor/pq-bridge` MUST use these event names and payloads:
+Clients using `@splendor/sqc-sdk` MUST use these event names and payloads:
 
 | Event | Payload |
 |-------|---------|
@@ -194,4 +196,4 @@ Wire `chain_id` remains `splendor-quantum-1` for all deployments until the node 
 
 | Version | Notes |
 |---------|--------|
-| SQDP-1 | Initial normative protocol aligned with `@splendor/pq-bridge` 1.2.x |
+| SQDP-1 | Initial normative protocol aligned with `@splendor/sqc-sdk` 2.x / legacy `@splendor/pq-bridge` |

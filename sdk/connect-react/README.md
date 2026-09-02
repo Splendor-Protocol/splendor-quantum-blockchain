@@ -1,10 +1,12 @@
 # `@splendor/connect-react`
 
-AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors unlock [`@splendor/pq-bridge`](../bridge) WASM ML-DSA-65 wallets — PQ crypto stays internal.
+AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors unlock [`@splendor/sqc-sdk`](../sqc-sdk) WASM ML-DSA-65 wallets — PQ crypto stays internal.
 
 The first action in the modal is a **native ML-DSA-65 wallet** — create one from browser CSPRNG entropy, or import a 32-byte seed. MetaMask and other injected wallets are still there, last, under a **Legacy** heading: they derive the ML-DSA key from an ECDSA signature, so those accounts are only as strong as secp256k1.
 
-## Production readiness (~9/10 after hardening)
+`@splendor/pq-bridge` remains a deprecated shim; new apps should depend on `@splendor/sqc-sdk`.
+
+## Production readiness
 
 | Capability | Status |
 |------------|--------|
@@ -15,15 +17,41 @@ The first action in the modal is a **native ML-DSA-65 wallet** — create one fr
 | Auto connectors (EIP-6963) | Yes — `connectors="auto"`, listed after native |
 | Soft network switch + reconnect | Yes |
 | Idle lock syncs UI | Yes — bridge `lock` event → `status: 'locked'` |
-| Inline / custom networks | Yes — sync `customNetworks` / `networkConfig` |
+| Inline / custom networks | Yes — `networks` / `networkConfig` / `registerNetwork` |
 | Tx hooks + receipt confirmation | Yes (receipt when node indexes) |
+| QRC-20 hooks (`useQRC20`, `useDeployToken`) | Yes |
+| Module hooks | Yes — see matrix below |
 
-**Out of scope:** WalletConnect v2, full EIP-1193 SQC provider for wagmi, CDN WASM.
+### Hook coverage matrix
+
+| Module / action | Hook |
+|-----------------|------|
+| Connect / account / balance / network | `useConnect`, `useAccount`, `useBalance`, `useNetwork` |
+| Native SPLD transfer | `useSendTransfer` |
+| QRC-20 read / transfer / approve | `useQRC20` |
+| Deploy QRC-20 | `useDeployToken` |
+| QRC-1155 | `useQRC1155`, `useDeployCollection` |
+| DEX swap / liquidity | `useDex`, `useDeployPool` |
+| Exchange | `useExchange`, `useDeployExchange` |
+| Bridge claim | `useBridge`, `useDeployBridge` |
+| Bytecode contract | `useContract`, `useDeployBytecode`, `useDeployContract` |
+| Bound module factory | `useModules()` |
+| Raw module router | `useModuleCall` (power user) |
+
+```tsx
+const { swap, status, hash } = useDex(poolAddress);
+await swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
+
+const { claim } = useBridge(bridgeAddress);
+await claim({ id, asset: 'spld', amount, recipient, evmTx, attestations });
+```
+
+**Out of scope:** WalletConnect v2, full EIP-1193 SQC provider for wagmi, CDN WASM, desktop/mobile wallet apps, browser extension (separate repo).
 
 ## 5-minute integrate
 
 ```bash
-npm install @splendor/connect-react @splendor/pq-bridge react react-dom
+npm install @splendor/connect-react @splendor/sqc-sdk react react-dom
 ```
 
 ```ts
@@ -48,7 +76,7 @@ by the user, so it is never persisted and never silently reconnected.
 
 ### Pin the signer
 
-`wasmSha256` is the SHA-256 of the `@splendor/pq-bridge` signer bundle. The
+`wasmSha256` is the SHA-256 of the `@splendor/sqc-sdk` signer bundle. The
 provider hashes what it loaded and refuses to run if the two differ.
 
 Pin it in anything you ship. The bundle is the code that touches private keys,
@@ -59,7 +87,9 @@ signer that exfiltrates seeds, and nothing in the page would look wrong.
 Read the digest straight from the file you are serving:
 
 ```bash
-shasum -a 256 node_modules/@splendor/pq-bridge/wasm/sqc_signer.wasm
+shasum -a 256 node_modules/@splendor/sqc-sdk/wasm/sqc_signer.wasm
+# or, if the package publishes under wasm/dist:
+shasum -a 256 node_modules/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm
 ```
 
 `allowUnpinnedWasm` skips the check. It is for local development against a

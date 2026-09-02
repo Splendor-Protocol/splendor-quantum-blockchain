@@ -1,4 +1,4 @@
-import { bytesToHex, type DeriveInfo } from '@splendor/pq-bridge';
+import { bytesToHex, type DeriveInfo } from '@splendor/sqc-sdk';
 import type { Connector, ConnectorContext } from './types.js';
 
 export type SeedConnectorOpts = {

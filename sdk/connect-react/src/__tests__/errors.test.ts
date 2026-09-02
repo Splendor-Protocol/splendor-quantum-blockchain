@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BridgeError } from '@splendor/pq-bridge';
+import { BridgeError } from '@splendor/sqc-sdk';
 import { connectErrorMessage } from '../core/controller.js';
 
 describe('connectErrorMessage', () => {

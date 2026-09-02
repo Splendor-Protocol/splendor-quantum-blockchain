@@ -60,7 +60,7 @@ export function copySqcWasmAssets(destDir: string, srcDir?: string | null): stri
   if (!src) {
     throw new Error(
       '@splendor/connect-react/vite: could not find sqc_signer.wasm. ' +
-        'Build @splendor/pq-bridge WASM (npm run build:wasm in sdk/bridge) and ensure the package is installed.',
+        'Build @splendor/sqc-sdk WASM (npm run build:wasm / wasm/build.ps1 in sdk/sqc-sdk) and ensure the package is installed.',
     );
   }
   mkdirSync(destDir, { recursive: true });
@@ -100,6 +100,19 @@ export function sqcWasmPlugin(options: SqcWasmPluginOptions = {}): Plugin {
 
   return {
     name: 'splendor-sqc-wasm',
+    resolveId(id) {
+      // Keep Node fs WASM loader out of browser bundles (Rollup follows both import branches).
+      if (id.includes('wasm-loader.node')) {
+        return '\0splendor-sqc-wasm-loader-node-stub';
+      }
+      return null;
+    },
+    load(id) {
+      if (id === '\0splendor-sqc-wasm-loader-node-stub') {
+        return 'export async function loadWasmInNode() { throw new Error("Node WASM loader is not available in the browser"); }';
+      }
+      return null;
+    },
     configResolved(config) {
       root = config.root;
       publicDir = config.publicDir || 'public';

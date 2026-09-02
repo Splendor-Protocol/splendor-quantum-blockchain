@@ -24,7 +24,10 @@ export async function loadWasmSigner(opts?: LoadWasmOpts): Promise<WasmSignerApi
   loadPromise = (async () => {
     try {
       if (isNode()) {
-        const { loadWasmInNode } = await import('./wasm-loader.node.js');
+        // Variable + @vite-ignore: keep Node fs loader out of browser bundles
+        // (Rollup otherwise statically follows both dynamic import branches).
+        const nodeLoader = './wasm-loader.node.js';
+        const { loadWasmInNode } = await import(/* @vite-ignore */ nodeLoader);
         return await loadWasmInNode(opts);
       }
       const { loadWasmInBrowser } = await import('./wasm-loader.browser.js');

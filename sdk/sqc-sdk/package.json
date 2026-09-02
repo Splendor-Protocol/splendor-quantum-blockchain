@@ -5,6 +5,9 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "browser": {
+    "./dist/wasm-loader.node.js": false
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -28,6 +31,10 @@
       "types": "./dist/tokens/qrc20.d.ts",
       "import": "./dist/tokens/qrc20.js"
     },
+    "./tokens/qrc1155": {
+      "types": "./dist/tokens/qrc1155.d.ts",
+      "import": "./dist/tokens/qrc1155.js"
+    },
     "./contracts": {
       "types": "./dist/contracts/index.d.ts",
       "import": "./dist/contracts/index.js"
@@ -35,6 +42,10 @@
     "./defi": {
       "types": "./dist/defi/index.d.ts",
       "import": "./dist/defi/index.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge/index.d.ts",
+      "import": "./dist/bridge/index.js"
     },
     "./x402": {
       "types": "./dist/x402/index.d.ts",
@@ -75,7 +86,7 @@
     "prepare": "npm run build:ts",
     "prepublishOnly": "node ./scripts/check-wasm-dist.mjs && npm run build:ts",
     "test": "vitest run",
-    "test:go": "go test github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer -count=1",
+    "test:go": "go test github.com/splendor-protocol/splendor-quantum-blockchain/sdk/sqc-sdk/signer -count=1",
     "test:gateway": "npm --prefix gateway test",
     "test:security": "vitest run security- && npm run test:go && npm run test:gateway",
     "test:e2e": "node examples/e2e-offline.mjs",
