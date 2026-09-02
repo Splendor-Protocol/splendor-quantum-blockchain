@@ -50,4 +50,4 @@ $shaExec = (Get-FileHash (Join-Path $Out "wasm_exec.js") -Algorithm SHA256).Hash
 Write-Host "Done: $Out\sqc_signer.wasm   sha256 $shaWasm"
 Write-Host "      $Out\wasm_exec.js      sha256 $shaExec"
 Write-Host ""
-Write-Host "Next: npm run sync:config, then refresh the wallet-extension copy and its pins."
+Write-Host "Next: npm run sync:config, then in splendor-quantum-wallet-extension: npm run sync:signer"

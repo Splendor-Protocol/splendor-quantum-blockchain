@@ -15,7 +15,7 @@ import (
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/sdk/sqc-sdk/signer"
 )
 
 const defaultSessionID = "default"

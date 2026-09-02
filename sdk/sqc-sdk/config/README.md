@@ -1,5 +1,5 @@
 # Generated mirror — edit the source of truth:
-#   sdk/bridge/src/config/sqc.networks.json
+#   sdk/sqc-sdk/src/config/sqc.networks.json
 #
 # Keep in sync with:
 #   npm run sync:config

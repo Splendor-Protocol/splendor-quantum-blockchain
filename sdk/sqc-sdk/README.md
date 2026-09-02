@@ -120,7 +120,7 @@ Same EVM account → same PQ wallet, every time. Non-custodial: the private ML-D
 - Go ≥ 1.21 (only to build the WASM signer once; the build script pins the exact release it compiles with)
 
 ```powershell
-cd sdk/bridge
+cd sdk/sqc-sdk
 npm install
 
 # Build WASM (requires Go)
@@ -226,7 +226,7 @@ the create/import UI and the legacy labelling. See `examples/demo.html`.
 Separate Node service (Docker-ready) that talks to chain RPC only.
 
 ```bash
-cd sdk/bridge/gateway
+cd sdk/sqc-sdk/gateway
 # Ensure wasm/dist exists (build from parent)
 docker compose up --build
 # listens on :3090
@@ -272,7 +272,7 @@ Env:
 ## Package layout
 
 ```
-sdk/bridge/
+sdk/sqc-sdk/
   signer/          Go derive + sign (reuses core/crypto, core/types)
   wasm/            Go→WASM binding + build scripts
   src/             TypeScript SDK
@@ -302,7 +302,7 @@ npm test               # vitest unit + WASM session + phase2
 npm run test:e2e       # offline smoke
 npm run test:live      # optional live node (skips if RPC down; LIVE_E2E=1 to require)
 # from repo root:
-go test ./sdk/bridge/signer -count=1
+go test ./sdk/sqc-sdk/signer -count=1
 ```
 
 

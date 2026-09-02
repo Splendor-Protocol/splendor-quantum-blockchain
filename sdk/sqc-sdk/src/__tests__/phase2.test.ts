@@ -15,7 +15,7 @@ import { bytesToHex } from '../encoding.js';
 
 describe('QSol ABI', () => {
   it('selector is SHA3-256 first 4 bytes', () => {
-    // Golden must match Go vm.SelectorFromSignature (sdk/bridge/signer TestQSolSelectorGolden)
+    // Golden must match Go vm.SelectorFromSignature (sdk/sqc-sdk/signer TestQSolSelectorGolden)
     expect(functionSelectorHex('transfer(sqaddress,uint256)')).toBe('14cde9ab');
     expect(functionSelectorHex('transfer(address,uint256)')).not.toBe('14cde9ab');
   });
