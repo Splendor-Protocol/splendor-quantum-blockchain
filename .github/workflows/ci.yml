@@ -78,33 +78,32 @@ jobs:
       # toolchain build.sh pins or it would report drift that does not exist.
       - name: Rebuild the signer from source
         run: |
-          cp sdk/bridge/wasm/dist/sqc_signer.wasm /tmp/committed.wasm
-          bash sdk/bridge/wasm/build.sh
+          cp sdk/sqc-sdk/wasm/dist/sqc_signer.wasm /tmp/committed.wasm
+          bash sdk/sqc-sdk/wasm/build.sh
 
       - name: Compare the rebuild against every committed copy and pin
         run: |
           set -euo pipefail
-          built="$(sha256sum sdk/bridge/wasm/dist/sqc_signer.wasm | cut -d' ' -f1)"
+          built="$(sha256sum sdk/sqc-sdk/wasm/dist/sqc_signer.wasm | cut -d' ' -f1)"
           committed="$(sha256sum /tmp/committed.wasm | cut -d' ' -f1)"
           echo "rebuilt from source : $built"
           echo "committed in repo   : $committed"
 
           fail=0
           if [ "$built" != "$committed" ]; then
-            echo "::error::sdk/bridge/wasm/dist/sqc_signer.wasm does not match its source."
+            echo "::error::sdk/sqc-sdk/wasm/dist/sqc_signer.wasm does not match its source."
             echo "The signer was changed without rebuilding. Anyone building from this tree"
             echo "gets a binary that does not do what main.go says it does."
-            echo "Fix: bash sdk/bridge/wasm/build.sh && (cd sdk/bridge && npm run sync:config)"
+            echo "Fix: bash sdk/sqc-sdk/wasm/build.sh && (cd sdk/sqc-sdk && npm run sync:config)"
             echo "Then re-pin the same digest in splendor-quantum-wallet-extension, which"
             echo "ships its own copy of this artifact."
             fail=1
           fi
 
-          # The extension's copy of this binary moved to
-          # splendor-quantum-wallet-extension in c61ab08. It still pins this digest,
-          # so it can still drift from this artifact — but it must be checked THERE,
-          # by that repo's own CI, against the digest published here. Asserting a
-          # path this repo no longer owns just fails every build.
+          # This is the only committed copy of the signer: sdk/bridge is a pure
+          # re-export shim and ships no artifact. The browser extension keeps its
+          # own copy (splendor-quantum-wallet-extension) and its own CI compares it
+          # against this file, so drift there is caught there.
 
           exit "$fail"
 
@@ -118,7 +117,7 @@ jobs:
         with:
           node-version: '22'
       - name: Every network pin names the rebuilt bytes
-        run: node sdk/bridge/scripts/check-wasm-dist.mjs
+        run: node sdk/sqc-sdk/scripts/check-wasm-dist.mjs
 
       - name: Golden vector still derives the published address
-        run: go test -count=1 ./sdk/bridge/signer/ -run 'Golden|Domain'
+        run: go test -count=1 ./sdk/sqc-sdk/signer/ -run 'Golden|Domain'

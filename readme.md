@@ -12,6 +12,149 @@
 
 ---
 
+## Start Here — The Stack in One Page
+
+This repository is the chain, and it is the entry point for everything built
+around the chain. If you only read one page, read this one; the detail is in
+[§19](#19-the-splendor-quantum-stack--every-repository) (every repository),
+[§20](#20-live-networks-and-endpoints) (live networks and endpoints),
+[§21](#21-how-a-release-reaches-a-tier) (deployment) and
+[§22](#22-repository-layout-and-developer-quick-start) (this repository's
+layout and quick start).
+
+### The repository map
+
+Eight repositories, all under `github.com/Splendor-Protocol`. In plain words:
+
+```
+Splendor-Protocol/
+│
+├── splendor-quantum-blockchain        ← YOU ARE HERE. The chain itself: the rulebook and
+│   │                                    the ledger, written in Go. Everything else is
+│   │                                    built around it.
+│   ├── cmd/                            the node, the command-line wallet, the QSol
+│   │                                   compiler, the contract deploy tool, the bridge
+│   ├── sdk/                            the JavaScript/TypeScript SDK and the WASM signer
+│   │                                   that websites and the browser wallet use
+│   └── scripts/release.mjs             the one command that ships a new node version
+│
+├── splendor-infra                     The building the chain runs in: the AWS servers,
+│                                      the deploy pipeline, backups. Nobody logs in by
+│                                      hand; GitHub Actions does it.
+│
+├── splendor-quantum-explorer          The public window: every block and transaction,
+│                                      with each block's signature re-checked before it
+│                                      is shown.
+│
+├── splendor-quantum-wallet-extension  The browser wallet (Chrome). Holds your keys and
+│                                      lets a website ask you to sign, like MetaMask.
+│
+├── wallet                             The phone app (iOS and Android). Holds your keys.
+│                                      Also hosts the QR-login service the explorer,
+│                                      faucet and dapps use ("Splendor Connect").
+│
+├── splendor-quantum-dapps             The front door at dapps.splendor.org: the portal
+│                                      and the bridge that moves old SPLD/SPLV onto the
+│                                      quantum chain.
+│
+├── splendor-quantum-faucet            Free test coins on testnet and devnet.
+│
+└── splendor-smartcard                 The NFC card that stores an encrypted backup of
+                                       your key. It stores; it does not sign.
+```
+
+Who holds keys: only the phone app and the browser extension hold *your* keys,
+on your device. The faucet holds its own test-coin key. The explorer, the
+portal, the bridge page and the login service hold no keys at all and can never
+move funds. The chain is the only place the ledger lives.
+
+If you want to…
+
+| …do this | go here |
+|---|---|
+| understand what the chain is and is not | the rest of this file, starting with [What Is and Is Not Post-Quantum](#what-is-and-is-not-post-quantum) |
+| run your own node or validator | [`DEPLOY.md`](DEPLOY.md) |
+| ship a new node version to devnet, testnet or mainnet | [§21](#21-how-a-release-reaches-a-tier) |
+| build a website or app that talks to the chain | [`sdk/sqc-sdk/README.md`](sdk/sqc-sdk/README.md), then [§19](#19-the-splendor-quantum-stack--every-repository) |
+| write a smart contract | [§8](#8-smart-contracts--sqc-vm-and-qsol-prototype) and [`compiler/README.md`](compiler/README.md) |
+| look at blocks and transactions | the explorers in [§20](#20-live-networks-and-endpoints) |
+| get test coins | `https://quantum-faucet.splendor.org` |
+| move old SPLD or SPLV to the quantum chain | `https://dapps.splendor.org/bridge` (testnet destination today) |
+| find every URL and endpoint that is live | [§20](#20-live-networks-and-endpoints) |
+| know what is built, tested, measured, deployed, or only planned | [§16](#16-what-is-built-vs-what-comes-next) |
+
+Related but separate: the original Splendor chain (`explorer.splendor.org`,
+`mainnet-rpc.splendor.org`, chain 2691) is a different network; the bridge is
+the only place the two touch. `quantum.splendor.org` is the marketing site.
+
+### How the pieces connect
+
+```
+     HOLD KEYS AND SIGN (on the user's device)         HOLD NO USER KEYS (read, relay, drip)
+   ┌──────────────────────┐ ┌──────────────────────┐   ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐
+   │ Mobile wallet        │ │ Browser extension    │   │ Explorer   │ │ Dapps +    │ │ Faucet     │ │ Connect    │
+   │ `wallet`             │ │ `…-wallet-extension` │   │`…-explorer`│ │ bridge     │ │ `…-faucet` │ │ gateway    │
+   │ iOS / Android        │ │ Chrome MV3           │   │ verifies   │ │ `…-dapps`  │ │ test SPLD  │ │ `wallet/   │
+   │ + `@splendor/sqc-sdk`│ │ Go WASM signer from  │   │ every      │ │ reads      │ │ from its   │ │ server`    │
+   │   (`sdk/` here)      │ │ `sdk/` here          │   │ block      │ │ only       │ │ own key    │ │ QR login   │
+   └──────────┬───────────┘ └──────────┬───────────┘   └─────┬──────┘ └─────┬──────┘ └─────┬──────┘ └────────────┘
+              └────────────┬───────────┘                     └─────────────┼─────────────┘
+                           │ signed transactions                           │ reads
+   ┌───────────────────────▼───────────────────────────────────────────────▼─────────────────────────────────────┐
+   │  SPLENDOR QUANTUM CHAIN — this repository — `sqc-node`, one ledger per tier                                 │
+   │  devnet · testnet · mainnet · an ML-DSA-65-signed block about every 2 s                                     │
+   └──────────────────────────────────────────────┬──────────────────────────────────────────────────────────────┘
+                                                  │ runs on
+   ┌──────────────────────────────────────────────▼──────────────────────────────────────────────────────────────┐
+   │  `splendor-infra` — one AWS Graviton host per tier: node + indexer + Postgres, behind a                     │
+   │  Cloudflare Tunnel · GitHub Actions + OIDC · shipped by `npm run deploy:<tier>` from this repo              │
+   └─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+### The repositories, in detail
+
+| Repository | What it is | Built with | Live at | Ships by |
+|---|---|---|---|---|
+| [`splendor-quantum-blockchain`](https://github.com/Splendor-Protocol/splendor-quantum-blockchain) — **this repo** | The chain: node, CLI wallet, SQC-VM and native modules, QSol compiler, X402, sealed P2P, bridge relayer, TypeScript SDK and WASM signer | Go 1.25, TypeScript | `quantum-rpc.splendor.org`, `-testnet`, `-devnet` | `npm run deploy:<tier>` (§21) |
+| [`splendor-infra`](https://github.com/Splendor-Protocol/splendor-infra) | Infrastructure as code and the release pipeline for the chain hosts and the indexer | OpenTofu, GitHub Actions (OIDC), docker compose, Cloudflare Tunnel | the three RPC hosts above | `Build sqc-node image` → `Deploy quantum infrastructure` workflows, driven by this repo's release script |
+| [`splendor-quantum-explorer`](https://github.com/Splendor-Protocol/splendor-quantum-explorer) | Block explorer for native `SQ:`/SHA3/ML-DSA-65 types; re-verifies every block signature in its Worker | React 19 on Vite (vinext), Cloudflare Workers | `quantum-explorer.splendor.org`, `quantum-testnet-explorer…`, `quantum-devnet-explorer…`, `splendor-quantum-simnet…` | git tag `vX.Y.Z-{prod,test,devnet,dev}` via `npm run deploy:<env>` |
+| [`splendor-quantum-wallet-extension`](https://github.com/Splendor-Protocol/splendor-quantum-wallet-extension) | Chrome MV3 wallet `v1.3.0`: ML-DSA-65 keys from a 32-byte seed, multi-account, `window.splendor` provider for dapps, QRC-20 | Vanilla JS + this repo's Go WASM signer | not on a store: load unpacked or `npm run zip` | `npm run build` (syncs the signer from this repo) |
+| [`wallet`](https://github.com/Splendor-Protocol/wallet) | Splendor mobile wallet `4.17.8` (legacy chain 2691) with a Quantum Chain section; also hosts the Splendor Connect gateway | React Native + `@noble/post-quantum`; Node/Hono server | gateway at `wallet-api.splendor.org`; app via TestFlight / Play Console | `npm run ios:testflight`; gateway via Coolify |
+| [`splendor-quantum-dapps`](https://github.com/Splendor-Protocol/splendor-quantum-dapps) | Dapps portal and the SPLD/SPLV → Quantum migration bridge UI and read-only API | TypeScript Cloudflare Worker | `dapps.splendor.org`, `…/bridge` | `npm run deploy` or the `Deploy` workflow |
+| [`splendor-quantum-faucet`](https://github.com/Splendor-Protocol/splendor-quantum-faucet) | Test-SPLD faucet for testnet and devnet; signs real ML-DSA-65 transfers in the Worker | TypeScript Cloudflare Worker, KV, Turnstile | `quantum-faucet.splendor.org` | `npm run deploy` (by hand) |
+| [`splendor-smartcard`](https://github.com/Splendor-Protocol/splendor-smartcard) | JavaCard applet and tooling for the NFC Splendor Card: encrypted seed backup, no on-card signing | JavaCard, Java, GlobalPlatform | hardware | `mvn package`, `./gp-card --install` |
+
+### The networks
+
+Three chains, three ledgers, one codebase. New releases land on devnet first,
+are promoted unchanged to testnet, then to mainnet (§21).
+
+| | Devnet | Testnet | Mainnet |
+|---|---|---|---|
+| Chain id | `splendor-quantum-devnet-1` | `splendor-quantum-testnet-1` | `splendor-quantum-1` |
+| RPC | `https://quantum-rpc-devnet.splendor.org` | `https://quantum-rpc-testnet.splendor.org` | `https://quantum-rpc.splendor.org` |
+| Explorer | `https://quantum-devnet-explorer.splendor.org` | `https://quantum-testnet-explorer.splendor.org` | `https://quantum-explorer.splendor.org` |
+| Faucet | yes | yes | none |
+| Migration bridge | — | live (`bridge_v1` at height 11,000) | not activated |
+| Node observed 2026-09-02 | `v0.6.2` | `v0.6.1` | `v0.6.1` |
+
+`curl -s <rpc>/status` answers with chain id, height, commit, image tag and
+fork schedule; §20 has the full endpoint list and the dated snapshot.
+
+### Shipping the node
+
+```bash
+npm run release:status       # what each tier runs, from the tier's own /status
+npm run deploy:devnet        # tag → build arm64 image → set the tier's image variable
+                             # → SSM rollout → verify /status reports the new commit
+npm run deploy v0.6.2 test   # promote that exact image to testnet, then prod
+```
+
+The release script never resets a chain and never applies infrastructure; it
+refuses a dirty tree, an unpushed commit, a no-op rebuild, and a
+non-interactive mainnet release. §21 walks through one real run.
+
+---
+
 ## What Is and Is Not Post-Quantum
 
 Read this before the rest of the document. The strongest defensible claim is
@@ -84,6 +227,10 @@ vectors" and "certified" are different claims, and only the first is made here.
 16. [What Is Built vs What Comes Next](#16-what-is-built-vs-what-comes-next)
 17. [Adaptive Scheduler](#17-adaptive-scheduler)
 18. [Banking, Settlement, and Compliance Boundary](#18-banking-settlement-and-compliance-boundary)
+19. [The Splendor Quantum Stack — Every Repository](#19-the-splendor-quantum-stack--every-repository)
+20. [Live Networks and Endpoints](#20-live-networks-and-endpoints)
+21. [How a Release Reaches a Tier](#21-how-a-release-reaches-a-tier)
+22. [Repository Layout and Developer Quick Start](#22-repository-layout-and-developer-quick-start)
 
 ---
 
@@ -1150,15 +1297,16 @@ require separately maintained evidence and owner review.
 
 ### Observed deployments, not inferred from source
 
-At `2026-09-02T08:47:25Z`, the public devnet, testnet, and mainnet status
-endpoints responded and their explorers returned HTTP 200. All three nodes
-reported commit `2982523195d00d04d45d0ddf829b4c0af13c4826`, which is older than
-this README commit, and `peer_count: 0`. Mainnet reported no optional fork
-schedule; testnet reported QRC-20 v2, QRC-1155, exchange, module-revert, and
-bridge forks; devnet reported those except bridge plus VM-revert. This is a
-dated observation, not a continuous-availability guarantee. URLs, genesis
-hashes, validator fingerprints, heights, and methods are recorded in the
-[claim–evidence matrix](docs/readme-claim-evidence.md).
+The public devnet, testnet and mainnet nodes, their indexers and their
+explorers were re-observed between `2026-09-02T13:03Z` and `13:06Z` while this
+revision was written. The tier table in [§20](#20-live-networks-and-endpoints)
+records the chain ids, heights, images, commits, fork schedules, genesis hashes
+and validator addresses seen, and
+[`docs/readme-claim-evidence.md`](docs/readme-claim-evidence.md) keeps every
+dated snapshot. Devnet was running `v0.6.2`, built from the README-audit commit
+`d2ed9cfa9f66`; testnet and mainnet were running `v0.6.1` from
+`2982523195d0`; every node reported `peer_count: 0`. This is a dated
+observation, not a continuous-availability guarantee.
 
 The separate
 [quantum explorer](https://github.com/Splendor-Protocol/splendor-quantum-explorer)
@@ -1178,10 +1326,7 @@ production-readiness claim.
 - Hybrid-only TLS where the node terminates TLS; proxy-fronted deployments have
   their own cryptographic boundary
 - Native-PQ-first wallet UX, signer artifact provenance, deployment
-  consistency, release reproducibility, and complete CI coverage. In the
-  reviewed checkout, the canonical SDK's committed `wasm_exec.js` digest is
-  stale and its prebuild step rewrites the config to the actual artifact hash;
-  that generated correction must be committed in a separate code PR
+  consistency, release reproducibility, and complete CI coverage
 
 ### Not built or not production-ready
 
@@ -1298,6 +1443,726 @@ An institutional evaluation must assess validator custody, host compromise,
 proxy-fronted TLS, peer identity policy, release provenance, disaster recovery,
 legal controls, operational staffing, audits, and certification in addition to
 the native cryptographic design.
+
+---
+
+## 19. The Splendor Quantum Stack — Every Repository
+
+Seven repositories make up the stack. This one holds the ledger; two hold
+keys on the user's device and sign; three hold no keys and only read or relay;
+one runs the servers. Every fact below was checked against the repository
+named, at the commits recorded in
+[`docs/readme-claim-evidence.md`](docs/readme-claim-evidence.md), on
+2026-09-02. All seven are private repositories in the `Splendor-Protocol`
+GitHub organisation.
+
+### `splendor-quantum-blockchain` — this repository
+
+The chain. Go 1.25. `sqc-node` (full node and validator), `sqc-wallet` (CLI),
+SQC-VM and the native modules, the QSol-subset compiler and `sqc-solc`, the
+X402 protocol, ML-KEM-sealed P2P, the migration-bridge relayer, the
+`QuantumMigrationBurn` Solidity contract for the legacy chain, and the
+JavaScript/TypeScript SDK with the Go WASM signer that the browser extension
+ships. Sections 1–18 describe what it does; §22 describes where each part
+lives. Releases are cut and rolled from here with `npm run deploy:<tier>`
+(§21), and CI (`go test`, signer-drift check) runs on every push to `main` and
+every pull request.
+
+### `splendor-infra` — where the chain runs
+
+Infrastructure as code and the release pipeline for the chain nodes and the
+indexer. OpenTofu 1.12 describes one AWS environment per tier (`devnet`,
+`testnet`, `production` under `environments/`, us-east-1): a VPC, one Graviton
+host (`t4g.small` for devnet and testnet, `t4g.medium` for mainnet), an
+encrypted EBS data volume with daily AWS Backup (7, 14 and 35 days), IMDSv2,
+SSM Session Manager for admin, and no SSH and no public ports.
+
+On each host `deploy/node/docker-compose.yml` runs five containers:
+
+| Container | Role |
+|---|---|
+| `sqc-node` | The validator, built from this repository's Dockerfile; REST on `:8080` inside the compose network only |
+| `cloudflared` | Outbound Cloudflare Tunnel that publishes the node as `quantum-rpc[-testnet\|-devnet].splendor.org` and path-routes `/idx/*` to the indexer |
+| `indexer` | `sqc-indexer` (Go, `deploy/indexer/`): ingests blocks into Postgres, serves `/idx/v1/*` (§20) and an SSE stream |
+| `postgres` | Postgres 17 for the indexer |
+| `heartbeat` | Sends a periodic demo transfer with `sqc-wallet send --chain-id <tier>` where `HEARTBEAT_ENABLED` is set. This is why devnet and testnet show steady transfer counts |
+
+`entrypoint-validator.sh` generates the validator wallet on first boot, writes
+`genesis.json` from the tier's variables (`SQC_CHAIN_ID`, supply, allocations,
+`SQC_GENESIS_FORKS`) and starts `sqc-node --validator`. A tier's identity is
+therefore that wallet file on that volume: losing it means a new chain.
+
+Five GitHub Actions workflows. The one that touches AWS,
+`Deploy quantum infrastructure`, assumes a per-tier role over OIDC; there are
+no long-lived cloud keys anywhere:
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `Build sqc-node image` | dispatch (`chain_ref`, `image_tag`) | Checks this repository out at the ref with a read-only deploy key, builds its Dockerfile for `linux/arm64`, stamps commit and tag, pushes to GHCR |
+| `Build sqc-indexer image` | dispatch (`image_tag`) | Same for `deploy/indexer` |
+| `Deploy quantum infrastructure` | dispatch (`environment`, `apply_infrastructure`, `rollout_node`, `allow_fork_extension`, `reset_chain`, `reset_confirm`) | `tofu apply`, then the SSM rollout described in §21 |
+| `Quantum explorer release policy` | `workflow_call` from the explorer | Maps `vX.Y.Z-<env>` tags to environments and enforces that an environment tag points at its base tag's commit |
+| `Infrastructure CI` | PR, push | `tofu fmt`, `tofu validate` and `tofu test` for testnet and production (devnet is not validated in CI), the release-contract script test, TFLint, Trivy config scan, actionlint |
+
+What runs on a tier is chosen by GitHub environment **variables**, not by
+anything in git: `SQC_NODE_IMAGE` and `SQC_INDEXER_IMAGE` select the images,
+and the genesis variables only take effect when a chain is first minted or
+deliberately reset. The runbooks are `docs/chain-redeploy-runbook.md` (build,
+set, roll, verify; the `reset_chain` decision rule) and
+`docs/bootstrap-and-release.md`. Scripts worth knowing:
+`scripts/verify-indexer.sh <rpc>`, `scripts/compare-parity.sh` (testnet vs
+mainnet surface diff), `scripts/snapshot-balances.sh` (every address with its
+balance, as a genesis allocation string, so a reset need not destroy
+balances), `scripts/release-indexer.sh`.
+
+Known gaps in that repository at the reviewed commit: its README still says
+two environments where there are three; CI validates only testnet and
+production; the Cloudflare Tunnel ingress and Access policy are managed by hand
+(`scripts/cf-add-idx-route.sh`), not by OpenTofu; GitHub environment protection
+rules are not in force on the current plan, so the mainnet reset guard is the
+`reset_confirm` phrase; and two build artefacts are committed as files.
+
+### `splendor-quantum-explorer` — the public window
+
+A block explorer written for this chain's native types: `SQ:` addresses,
+SHA3-256, ML-DSA-65. It is not Blockscout and speaks no Ethereum JSON-RPC.
+React 19 server components on Vite (vinext), deployed as one Cloudflare Worker
+per tier. Pages: home, blocks, block, transactions, transaction, address,
+tokens, token, contracts (with QSol source verification and a whitelisted
+read-only call panel), stats, search, API docs.
+
+**Verification.** For every block page on a live tier the Worker fetches the
+block from the node, hashes the header bytes exactly as received with
+SHA3-256, requires the digest to equal the reported block hash, fetches block 0
+to obtain the validator's 1,952-byte public key, requires that key to hash to
+the header's validator address, and verifies the 3,309-byte signature under
+the `SPLENDOR-QC-BLOCK-v1` context with `@noble/post-quantum`, which is
+byte-compatible with the CIRCL implementation the node signs with. Known-answer
+tests in `tests/pq-kat.test.mjs` use real captured testnet blocks. This runs
+**in the Worker, server-side**; nothing in the visitor's browser verifies
+anything, and the simnet tier reports `simulated` instead of a verdict.
+
+**Data.** Live reads of current state (`/status`, `/block/*`, `/tx/*`,
+`/balance`, `/nonce`, `/contract/*`, `POST /call`, `POST /contract/verify`) go
+to the node; history (per-address transactions, tokens, contracts,
+leaderboards, verified sources) comes from the indexer's `/idx/v1/*`. The
+footer shows the **node's** version, image and commit, not the explorer's
+release tag.
+
+**Sign-in.** The "Connect wallet" control is Splendor Connect, not
+WalletConnect: a QR session against `wallet-api.splendor.org` that the mobile
+wallet signs with its ML-DSA-65 key under the `SPLENDOR-QC-MSG-v1` context. The
+explorer checks that the returned public key hashes to the returned address and
+fails closed. It is sign-in only; the explorer can never move funds.
+
+**Deployment.** Git tags. `npm run version:patch` cuts `vX.Y.Z`;
+`npm run deploy:{dev,devnet,test,prod}` pushes `vX.Y.Z-<env>`; the
+`Release quantum explorer` workflow lints, runs the tests, validates the tag
+against `splendor-infra`'s release policy, builds with `CLOUDFLARE_ENV=<env>`
+and runs `wrangler deploy`. All four tiers ran `v0.0.31` at the snapshot. CI on
+`main` is green with 90 tests. Its README's tier table omits the devnet tier
+that its config, scripts and workflow all support.
+
+### `splendor-quantum-wallet-extension` — the browser wallet
+
+A Chrome Manifest V3 extension, `v1.3.0`, vanilla JavaScript. Keys are
+ML-DSA-65, derived from a 32-byte seed the extension generates, and can be
+backed up as a 24-word BIP-39 phrase or 64 hex characters. Up to 50 accounts
+live under one master password (AES-GCM, PBKDF2) with a per-account
+"backed up" flag. Signing happens in a byte-for-byte copy of this repository's
+Go WASM signer (`sdk/sqc-sdk/wasm/dist`), pinned at load time by SHA-256; a
+mismatch refuses to sign. Networks: mainnet, testnet, devnet and local, each
+with its chain id asserted against the node's `/status` before a transaction is
+signed.
+
+It injects `window.splendor`, an EIP-1193-style provider announced through
+EIP-6963, with `sqc_requestAccounts`, `sqc_accounts`, `sqc_getBalance`,
+`sqc_sendTransaction`, `sqc_sign` (raw ML-DSA-65 message signing with its own
+approval screen), `sqc_moduleCall` (QRC-20 deploy and transfer), `sqc_chainId`,
+`sqc_blockNumber`, `sqc_getBlock`, `sqc_getTransaction`, `sqc_nonce`, and
+per-origin `wallet_*` permission methods. Access control is derived from the
+Chrome `MessageSender`, never from message fields. `REVIEW.md` records the
+security fixes made while merging the multi-account and provider work.
+
+**Distribution.** There is no Chrome Web Store listing. `npm run build` copies
+the signer from a sibling checkout of this repository and re-pins it; the
+result is loaded unpacked in `chrome://extensions`, or packaged with
+`npm run zip`. CI checks that the shipped WASM matches its pins and matches
+what this repository publishes; a scheduled `Sync signer from chain` workflow
+opens a pull request, never a push, when the signer changes upstream.
+157 unit tests passed and one was skipped at the reviewed commit; the seven
+Playwright end-to-end tests in `e2e/extension.spec.js` are not run in CI.
+
+**Caveats.** The Tokens tab asks the node for `GET /tokens/{address}`, which
+no node serves, and shows an empty list. No HD derivation: each account is an
+independent seed. No hardware or external signer. The repository has no README,
+only `REVIEW.md`.
+
+### `wallet` — the mobile wallet, and the Splendor Connect gateway
+
+The Splendor mobile wallet is a React Native app (`4.17.8`, iOS and Android)
+for the legacy Splendor mainnet (EVM chain 2691) that carries a **Quantum
+Chain** section for this chain. The two halves are deliberately independent:
+the quantum account is an ML-DSA-65 key generated from fresh device entropy,
+never derived from the EVM phrase or key, and only *labelled* with the EVM
+address it sits beside. Signing is `@noble/post-quantum` in pure TypeScript
+under Hermes, with the Go wire JSON assembled by hand and locked by a Go golden
+vector; no WebView and no WASM.
+
+What the quantum section does, by file:
+
+| Capability | Where |
+|---|---|
+| Create, import and unlock an independent ML-DSA-65 account; several per device | `src/quantum/quantumChainAccount.ts`, `src/quantum/quantumAccounts.ts` |
+| Send and receive native SPLD, balance, nonce, history and tokens per tier | `src/quantum/quantumChain.ts`, `src/quantum/quantumNetworks.ts`, `src/screens/Quantum*.tsx` |
+| Splendor Connect QR sign-in (EVM and quantum) and approval of remote signing requests: `sq_signMessage`, `sq_signOrder`, `sq_signPermit` | `src/utils/splendorConnectService.ts`, `src/utils/connectRequestListener.ts` |
+| QRC-20 permits and exchange orders under `SPLENDOR-QC-PERMIT-v1` / `SPLENDOR-QC-ORDER-v1`, with the exchange address pinned per tier | `src/quantum/exchangeSigner.ts`, `src/quantum/pilotConfig.ts` |
+| Encrypted backup of the seed to the NFC Splendor Card, and to a portable armored file, share sheet, QR, iCloud Keychain or Android Auto Backup | `src/quantum/cardRecord.ts`, `src/quantum/quantumChainCard.ts`, `src/quantum/backupBlob.ts`, `src/quantum/quantumCloudBackup.ts` |
+
+Fresh installs default to **testnet**; quantum mainnet is a hidden override.
+Releases are `npm run ios:testflight` (EAS build and TestFlight submit) and a
+Play Console upload; no file in the repository states that the app is listed
+on either store, so this README does not either. The mobile app has no CI; the
+quantum, ML-DSA and Connect test subset (163 Jest tests; 182 with the Blockpeak
+Credits suite) passed at the reviewed commit.
+The app's own README still describes only the EVM wallet.
+
+The same repository's `server/` is **`wallet-api.splendor.org`**, the Splendor
+Connect gateway (Node 22, Hono, MongoDB, deployed with Coolify). It hosts
+`splendor://connect` sessions (`POST /connect/session`, `POST /connect/verify`,
+`GET /connect/me`, `POST /connect/logout`) and the remote signing-request
+channel the wallet polls. Quantum sign-ins are verified with `@noble/post-quantum`
+and the address is re-derived from the supplied public key. Browser origins are
+allow-listed: the three explorers and the faucet are built in, and any other
+origin (the dapps portal, for instance) must be added to
+`CONNECT_ALLOWED_ORIGINS`. `GET /health` returns `{"ok":true}`; everything else
+answers 401 without a session.
+
+### `splendor-quantum-dapps` — the portal and the migration bridge
+
+One TypeScript Cloudflare Worker at `dapps.splendor.org`: a landing page with
+Bridge, Explorer and Faucet cards, and the bridge dapp under `/bridge`. The
+bridge is the user-facing half of the one-way SPLD/SPLV migration designed in
+`docs/plans/2026-08-31-quantum-migration-bridge.md`: the holder burns on the
+legacy Splendor mainnet (chain 2691) through `QuantumMigrationBurn`
+(`contracts/legacy-burn/`, deployed at
+`0xe822e805dd83a6c0e6761cb3c743bb3ff272f1de`), naming an `SQ:` recipient; the
+relayer in `cmd/bridge-relayer` waits for 120 confirmations and submits a
+`bridge_v1` claim; the recipient is credited native SPLD 1:1. The relayer is an
+operator-run process with the bridge operator key: `cmd/bridge-relayer/deploy/`
+describes how to host it, and nothing in `splendor-infra` runs it today. The
+Worker holds no keys and signs nothing. It reads the legacy chain over JSON-RPC for
+confirmations and the quantum tier over `GET /bridge/{addr}` and
+`GET /bridge/{addr}/claim/{id}` for pool and claim state, and exposes that as
+`GET /bridge/api/info` and `GET /bridge/api/status/{txHash}`.
+
+The production destination is the quantum **testnet** (`bridge_v1` at height
+11,000; instance `SQ:643d2c15…aabee6`), and the page says so in a banner.
+Mainnet has no `bridge_v1` fork. At the snapshot the bridge was configured,
+unpaused, had credited nothing yet, and its pool held 5 SPLD; the production
+Worker has no KV binding, so the per-IP cooldown on status polling fails open.
+Deploys: `npm run deploy` or the `Deploy` workflow (`staging` or `production`),
+gated on `tsc` and 95 Vitest tests.
+
+### `splendor-quantum-faucet` — free test SPLD
+
+One TypeScript Cloudflare Worker at `quantum-faucet.splendor.org`. `POST
+/api/request {network, address, token}` validates the address shape, verifies
+a Cloudflare Turnstile token server-side and IP-bound, reserves a slot in KV
+(30-minute cooldown per address and per IP, 500 drips per network per UTC
+day), then signs a real ML-DSA-65 transfer of 10 SPLD with
+`@noble/post-quantum` over a hand-assembled Go-canonical body and posts it to
+the tier's `/tx/submit`. A slot is released only on an explicit refusal by the
+node, never on a timeout, so an induced timeout cannot buy a second drip.
+Testnet and devnet only; mainnet is not selectable. One faucet key per tier,
+and every drip is refused if the two seeds are identical. An optional
+Splendor Connect sign-in prefills the address and buys nothing else. Deploys
+are `npm run deploy` by a person with Cloudflare access; there is no CI. 151
+Vitest tests, including a Go golden vector for the encoder, passed at the
+reviewed commit. Its README still says 79 tests and a one-day cooldown; the
+deployed configuration is 30 minutes.
+
+### `splendor-smartcard` — the NFC Splendor Card
+
+The JavaCard applet, personalisation tools and producer kit for the physical
+card the mobile wallet backs a seed up to over NFC (NXP JCOP4 J3R150, contact
+and NFC). The card **stores** an encrypted 4,096-byte record; it does not sign.
+`docs/signing-card-feasibility.md` records why: the J3R150 has about 4 KB of
+transient memory and no SHA-3, while ML-DSA-65 signing needs tens of kilobytes
+and SHAKE, so on-card post-quantum signing waits for next-generation secure
+elements. The hardware-verified applet is the plain storage `Blob4KApplet`, removed
+from `main` in `a8287f7` and now found in git history and in the wallet's NFC
+code (read and write over NFC from Android and iOS, about 1.6 s per direction); the
+current `main` builds a passphrase-gated, retry-locked `VaultApplet` proven in
+a jCardSim simulation (61 checks) but not yet recorded as flashed to hardware,
+and the wallet still targets the older applet. The current card batch ships
+with publicly known GlobalPlatform keys that must be rotated before any
+production run. This is the "Option B" of §5, and it remains designed, not a
+signing device.
+
+### What is deliberately not in this list
+
+- `splendor-quantum` (the marketing site at `quantum.splendor.org`) and the
+  legacy Splendor mainnet stack (`explorer.splendor.org`,
+  `mainnet-rpc.splendor.org`, chain 2691) are separate products; the bridge is
+  the only place this chain touches them.
+- `blockpeak-credits` and the Blockpeak settlement plan in `docs/plans/` are
+  applications being built on the exchange module, not part of the chain.
+
+---
+
+## 20. Live Networks and Endpoints
+
+Three chains run today, each with its own genesis, validator key, chain id and
+fork schedule, and each with its own explorer and indexer. Everything in this
+section was observed from the public endpoints on **2026-09-02 between
+13:03 and 13:06 UTC**; heights climb, everything else should not change without
+a release. Reachability at that instant is not an availability guarantee, and
+an HTTP 200 does not establish correctness, freshness or production readiness.
+
+### The tiers
+
+| | Devnet | Testnet | Mainnet |
+|---|---|---|---|
+| Purpose | Sandbox; new releases land here first | Rehearsal; mainnet's base rules plus the four optional forks mainnet has not adopted, plus the bridge | Real balances; promoted images only |
+| Chain id | `splendor-quantum-devnet-1` | `splendor-quantum-testnet-1` | `splendor-quantum-1` |
+| Node RPC | `https://quantum-rpc-devnet.splendor.org` | `https://quantum-rpc-testnet.splendor.org` | `https://quantum-rpc.splendor.org` |
+| Indexer read API | `https://quantum-rpc-devnet.splendor.org/idx/v1` | `https://quantum-rpc-testnet.splendor.org/idx/v1` | `https://quantum-rpc.splendor.org/idx/v1` |
+| Explorer | `https://quantum-devnet-explorer.splendor.org` | `https://quantum-testnet-explorer.splendor.org` | `https://quantum-explorer.splendor.org` |
+| Faucet | `https://quantum-faucet.splendor.org` | `https://quantum-faucet.splendor.org` | none, by design |
+| Node image / commit observed | `sqc-node:v0.6.2` / `d2ed9cfa9f66` | `sqc-node:v0.6.1` / `2982523195d0` | `sqc-node:v0.6.1` / `2982523195d0` |
+| Indexer image | `sqc-indexer:v0.2.14` | `sqc-indexer:v0.2.12` | `sqc-indexer:v0.2.11` |
+| Height observed | 202,554 (13:05Z, after the `v0.6.2` rollout; 202,534 at 13:03Z still on `v0.6.1`) | 88,913 | 332,398 |
+| Fork schedule (`/status.forks`) | `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1` at 1; `vm_revert_v1` at 130,000 | `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1` at 1; `bridge_v1` at 11,000 | none reported (`exchange_v1` deliberately omitted) |
+| Genesis block hash | `fc83aa50c5eb011af9b72e7a61007b96af2034492020a0ae0b55bc865dc1e300` | `a52af7f86e77a50d3707452e7def8c7f4c46de9952597acaabfa8f1a5d76d775` | `80eb31e60b689f5dbb82ad3178b6f0bab9d768cb987dafc69607d05a25b083fc` |
+| Genesis validator | `SQ:4fd3394ce33d1e2e7787b74028126181a22b9e68ffd7ba5511bcc321a99d4b09` | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
+| Peers reported | 0 (single validator) | 0 (single validator) | 0 (single validator) |
+
+A fourth explorer, `https://splendor-quantum-simnet.splendor.org`, is a
+deterministic in-process simulator, visibly labelled as such. It has no chain
+behind it and nothing here can deploy to it.
+
+Two things the public `/status` cannot tell you, and this README therefore does
+not claim: the effective TLS key-exchange group (every tier is fronted by a
+Cloudflare Tunnel, so the client-facing TLS is Cloudflare's), and the node's
+plaintext-P2P and peer-pin flags. With a single validator per tier there is no
+second peer for either to apply to.
+
+Re-check any of it:
+
+```bash
+for base in https://quantum-rpc.splendor.org \
+            https://quantum-rpc-testnet.splendor.org \
+            https://quantum-rpc-devnet.splendor.org; do
+  curl -fsS "$base/healthz"
+  curl -fsS "$base/status" | jq '{chain_id,height,commit,image_tag,forks,peer_count}'
+  curl -fsS "$base/block/0" | jq '{hash, validator: .header.validator_addr}'
+  curl -fsS "$base/idx/v1/health"
+done
+npm run release:status        # the same, from the release tool's point of view
+```
+
+### The node's RPC surface
+
+One HTTP listener per node (`--rpc-addr`), REST plus one server-sent-event
+stream. There is no Ethereum JSON-RPC and no `eth_*` method. Full request and
+response shapes are in `rpc/` and the SDK; the wire gotchas at the end of this
+section matter for anyone not using the SDK.
+
+| Route | Purpose |
+|---|---|
+| **Chain and state (current only)** | |
+| `GET /status` | `chain_id`, `height`, `commit`, `image_tag`, `node_version`, `forks`, `mempool_size`, `peer_count` |
+| `GET /healthz`, `GET /readyz` | Liveness with build identity; readiness |
+| `GET /block/latest`, `GET /block/{height}`, `GET /block/hash/{hash}` | Signed block with header, hash, validator signature and transactions |
+| `GET /tx/{hash}`, `GET /tx/{hash}/receipt` | Transaction by SHA3-256 hash; execution receipt. Append `?amounts=string` for quoted big integers |
+| `GET /balance/{address}`, `GET /nonce/{address}` | Current state; no historical query exists |
+| `GET /logs` | Contract event logs for a block range (VM-executing route, separately rate-limited) |
+| `GET /ws` | Server-sent events: new heads, for wallets and the explorer |
+| `GET /peers`, `GET /ai/stats` | Known peers; the scheduler's batch size, moving averages and anomaly flag (§17) |
+| **Submitting** | |
+| `POST /tx/submit` | A signed transaction. Rate-limited per IP; stale nonces are refused with `400 nonce too low` |
+| `POST /x402/verify`, `POST /x402/settle` | X402 payment authorization check; settlement with the payer-signed `settlement_tx` (§11) |
+| **Contracts and the VM** | |
+| `POST /call` | Read-only call: a native-module envelope or SQC-VM bytecode, executed against current state |
+| `POST /estimate` | Gas and fee estimate for a call or deploy |
+| `GET /contract/{address}`, `…/code`, `…/storage/{slot}` | Contract record, bytecode, one storage slot |
+| `POST /contract/verify` | Compile a QSol source and compare byte-for-byte with deployed code |
+| `POST /vm/validate`, `POST /vm/disasm`, `POST /vm/estimate-gas`, `GET /vm/opcodes` | Bytecode inspection; 133 opcodes today |
+| **Native modules with a write path (fork-gated, §8)** | |
+| `GET /dex/pool/{t0}/{t1}`, `…/quote`, `…/lp/{addr}`, `GET /dex/price/{t0}/{t1}`, `GET /dex/amount-in`, `GET /dex/amount-out` | DEX pools, reserves and quotes |
+| `GET /exchange/{addr}`, `…/condition/{id}`, `…/order/{hash}`, `…/nonce/{maker}`, `…/position/{condition}/{holder}` | Exchange instance, conditions, orders, positions |
+| `GET /bridge/{addr}`, `GET /bridge/{addr}/claim/{id}` | Migration-bridge instance and claim status |
+| **Library-only reads** | |
+| `GET /gov/*`, `GET /staking/*`, `GET /lending/*` | These read module state that no transaction can currently write: the router does not expose governance, staking or lending (§8). They return empty or default values on every public tier |
+| **Node-to-node, not for clients** | |
+| `POST /block`, `POST /peers/announce`, `GET /sync`, `GET /p2p/identity` | The sealed write plane. `POST` routes require the `X-Node-Auth` shared token (401 without it); a node with no `--rpc-auth-token` answers 503; with plaintext P2P off, as on the public tiers, `POST /block` answers 410 and only the sealed transport is accepted |
+
+`/metrics` (Prometheus) is served by a separate listener, `--metrics-addr`,
+loopback by default. It is not exposed on the public hostnames, and asking for
+it there returns 404.
+
+### The indexer's read API
+
+Each tier's host also runs `sqc-indexer` (Go, in `splendor-infra/deploy/indexer`),
+which polls the node, writes every block, transaction, receipt and event log to
+Postgres, and serves the history the node itself cannot: per-address
+transaction lists, token and contract listings, search. The Cloudflare Tunnel
+path-routes `/idx/*` on the same hostname to the indexer, so explorer read
+traffic never touches the validator process.
+
+| Route (under `/idx/v1`) | Purpose |
+|---|---|
+| `/health` | `ok`, `checkpoint` (last indexed height), `version`, and on newer builds the indexer's own commit and image tag |
+| `/stats` | Head, totals, blocks per second, transactions by kind, daily and hourly counts, contract and token counts |
+| `/transactions?limit=`, `/tx/{hash}` | Recent transactions; one transaction with receipt |
+| `/address/{addr}?limit=` | Transaction history for one address |
+| `/search?q=` | Height, hash or address lookup |
+| `/tokens`, `/token/{addr}`, `/contracts`, `/contract/{addr}` | QRC-20 tokens, deployed contracts seen on chain, and one contract's interface descriptor with its verified source |
+| `/logs?address=&topic0=&from_block=&to_block=` | Event-log query |
+| `/top-addresses`, `/largest-transfers` | Leaderboards |
+| `/stream` | Server-sent events on every newly indexed head |
+| `/accounts?limit=&after=&balances=true`, `/accounts/alloc` | Every address ever seen, optionally with live balances from the node; the same list as a genesis allocation, used to make a chain reset non-destructive |
+
+The indexer stores no balances: address sets come from Postgres, every balance
+comes live from the node, because current state is authoritative there.
+
+### The other live services
+
+| Service | URL | What it is | Observed |
+|---|---|---|---|
+| Faucet | `https://quantum-faucet.splendor.org` | Test SPLD on testnet and devnet; Turnstile plus per-address, per-IP and per-day limits; signs a real ML-DSA-65 transaction inside a Cloudflare Worker. Mainnet is not selectable | 200 |
+| Dapps portal | `https://dapps.splendor.org` | Entry page linking Bridge, Explorer and Faucet; `GET /health` returns `{"ok":true,"service":"splendor-dapps"}` | 200 |
+| Migration bridge | `https://dapps.splendor.org/bridge` and `…/bridge/api/info`, `…/bridge/api/status/{txHash}` | Burn SPLD or SPLV on the legacy Splendor mainnet (chain 2691, burn contract `0xe822e805dd83a6c0e6761cb3c743bb3ff272f1de`), get native SPLD 1:1 on the quantum **testnet** (bridge instance `SQ:643d2c15cbc0cf922c2054243d0724afd0073d0c1169b981967d81b4c9aabee6`, 120 confirmations). The Worker holds no keys; the relayer in `cmd/bridge-relayer` makes the claim. The UI labels the destination as TESTNET; mainnet `bridge_v1` is not activated | 200, configured |
+| Splendor Connect gateway | `https://wallet-api.splendor.org` | QR sign-in and signing-request relay between the mobile wallet and the explorer, faucet and dapps (`/health` → `{"ok":true}`; everything else needs a session). Served from the `wallet` repository's `server/` | 200 |
+| Explorers | the four hostnames above | React app on Cloudflare Workers that re-verifies each block's ML-DSA-65 signature server-side in the Worker | 200 on all four |
+| Website | `https://quantum.splendor.org` | Marketing site (`splendor-quantum` repository, Coolify) | 200 |
+
+### Wire format gotchas
+
+The node hashes and signs `json.Marshal` output from Go, and the REST bodies
+are that same encoding. Anyone not using `@splendor/sqc-sdk` or the extension
+must reproduce it exactly:
+
+- `from`, `to`, `validator_addr`, hashes and roots are `[32]byte` and arrive
+  as **arrays of 32 numbers**, not `"SQ:…"` or hex strings.
+- `amount` and `fee` are `*big.Int` and arrive as **bare JSON numbers** above
+  2⁵³; parse with a big-integer-aware decoder or request `?amounts=string`.
+  On the way in, `/tx/submit` and the X402 routes accept decimal strings.
+- `data` is `[]byte`: base64, and absent entirely when empty.
+- Field order is struct order. Re-ordering or re-indenting the JSON changes the
+  hash and invalidates the signature.
+- Every signature carries a domain-separation context: `SPLENDOR-QC-TX-v1`
+  for transactions, `SPLENDOR-QC-BLOCK-v1` for blocks, `SPLENDOR-QC-MSG-v1`
+  for Splendor Connect sign-in messages, so a login signature can never be
+  replayed as a transfer.
+
+---
+
+## 21. How a Release Reaches a Tier
+
+One command ships the node. Everything else in this section explains what that
+command does, why each step exists, and what it refuses to do.
+
+```bash
+npm run deploy:devnet          # cut the next patch version and roll it to devnet
+npm run deploy:test            # …to testnet   (GitHub environment "test")
+npm run deploy:prod            # …to mainnet   (GitHub environment "prod", asks first)
+npm run deploy v0.6.2 prod     # promote an image that already exists — no rebuild
+npm run release:status         # what every tier is running right now
+```
+
+`npm run deploy:<tier>` is `node scripts/release.mjs patch <tier>`. The script
+lives in this repository, but the workflows it drives live in
+[`splendor-infra`](https://github.com/Splendor-Protocol/splendor-infra). It
+needs a clean checkout of `main` that matches `origin/main`, and a `gh` login
+that belongs to the `Splendor-Protocol` organisation with the `workflow` scope
+(`gh auth refresh -h github.com -s workflow`). Nothing else: no AWS keys, no SSH,
+no Docker on the laptop.
+
+### The names
+
+The GitHub environment names do not match the hostnames, and the script accepts
+the words people actually type:
+
+| You type | GitHub environment | Tier | RPC it verifies against |
+|---|---|---|---|
+| `devnet`, `dn` | `devnet` | devnet | `https://quantum-rpc-devnet.splendor.org` |
+| `test`, `testnet`, `tn` | `test` | **testnet** | `https://quantum-rpc-testnet.splendor.org` |
+| `prod`, `mainnet`, `main`, `production` | `prod` | **mainnet** | `https://quantum-rpc.splendor.org` |
+
+`dev`/simnet is deliberately not a target: it is a simulated explorer with no
+chain behind it, so there is nothing to roll.
+
+### What one run does, in order
+
+This is the run that produced devnet `v0.6.2` on 2026-09-02, as the script
+prints it. The build progress line is abridged, and the two heights are the
+ones recorded just before and just after the run:
+
+```
+$ npm run deploy:devnet
+
+  version    v0.6.2
+  commit     d2ed9cfa9f66b6c0151c0e204b0588e8372a10ef
+             Merge pull request #23 from Splendor-Protocol/docs/readme-evidence-a
+  tier       devnet  (GitHub environment "devnet")
+  rpc        https://quantum-rpc-devnet.splendor.org
+  currently  ghcr.io/splendor-protocol/sqc-node:v0.6.1
+
+  indexer    ghcr.io/splendor-protocol/sqc-indexer:v0.2.14  (applied by this rollout too)
+
+  ✓ tagged v0.6.2 -> d2ed9cfa9f66
+  … building v0.6.2
+    [04:00]  44%  Build image (linux/arm64)
+    done in 06:40
+  ✓ image ghcr.io/splendor-protocol/sqc-node:v0.6.2 built from d2ed9cfa9f66
+  ✓ published release v0.6.2
+  ✓ devnet -> v0.6.2   (was ghcr.io/splendor-protocol/sqc-node:v0.6.1)
+  … rolling out to devnet
+    done in 00:50
+  ✓ height 202534 -> 202554, chain splendor-quantum-devnet-1
+
+✓ devnet is running v0.6.2 (d2ed9cfa9f66)
+  verified against https://quantum-rpc-devnet.splendor.org/status — not merely dispatched.
+```
+
+Step by step:
+
+1. **Preflight.** The working tree must be clean, the branch must be `main`, and
+   `HEAD` must equal `origin/main` after a fetch. On 27 August 2026 `main` was
+   force-pushed backwards and the tiers kept serving code that no longer existed
+   in the repository; refusing to release an unpushed commit is what prevents
+   creating that state on purpose. `gh api user` must succeed.
+2. **Find out what the tier runs.** The script reads the `SQC_NODE_IMAGE`
+   variable from the tier's GitHub environment in `splendor-infra`. That
+   variable is the single source of truth for "which image is this tier on":
+   the deploy workflow reads nothing else.
+3. **Pick the version.** `patch`/`minor`/`major` bumps the highest version seen
+   across *both* the three tier variables and the local `v*` tags, because
+   the early image tags `v0.5.0` and `v0.5.1` were chosen by hand and have no
+   git tag (`v0.4.8`–`v0.4.12` were tagged retroactively on 27 August). A literal `vX.Y.Z` means *promote*: reuse that image and skip the build.
+4. **Resolve the deployed commit.** First by git tag; failing that, by asking
+   the tier's `/status`, which reports the commit stamped into the binary. If
+   neither works the change checks below are skipped, and the script says so.
+5. **Guards.**
+   - *Is there anything to ship?* If no `*.go`, `go.mod`, `go.sum` or
+     `Dockerfile` changed between the deployed commit and `HEAD`, the release is
+     refused. A rebuild is not provably a no-op — the Dockerfile runs
+     `go get ./... && go mod tidy` on a floating `golang:1.25-alpine` base — so
+     a pointless rebuild is the one way to change a consensus binary with no
+     source change behind it. `--allow-no-op` overrides.
+   - *Is this a rollback?* Promoting a lower version than the tier runs is
+     allowed but never silent: the script prints the Go files that differ (the
+     first twelve), because the older binary now has to read what the newer one
+     wrote.
+   - *Does something else have to ship?* Changes to
+     `core/types/transaction.go`, `core/types/block.go`,
+     `core/crypto/mldsa.go` or `genesis/genesis.go` are named with the
+     downstream owner (wallet signer, faucet, SDK, explorer, infra entrypoint).
+     The tool ships the node only.
+   - *Is the indexer variable set?* The rollout applies `SQC_INDEXER_IMAGE`
+     too, whether or not anyone meant it to, so it must exist.
+6. **Confirm production.** `prod` asks `Release vX.Y.Z to PRODUCTION? (y/N)`
+   on a TTY; `--yes` skips it; a non-interactive prod release without `--yes`
+   is refused. `--dry-run` stops here having mutated nothing.
+7. **Tag.** An annotated `vX.Y.Z` tag on `HEAD`, pushed as one ref. For a
+   promotion there is no tag and no build; instead the script requires that a
+   GitHub Release or another tier proves the image exists (`--dry-run` stops
+   before this check). An atomic
+   multi-ref push where one ref already existed produced *no* workflow run on
+   26 August while reporting success, so it is one ref per push.
+8. **Build.** Dispatches the `Build sqc-node image` workflow in
+   `splendor-infra` with `chain_ref=vX.Y.Z` and `image_tag=vX.Y.Z`. That
+   workflow checks this repository out at the tag (read-only deploy key),
+   cross-builds the Dockerfile for `linux/arm64` under QEMU (the hosts are
+   Graviton), stamps the full commit and tag into the binary via
+   `core/buildinfo` (which `/status` and `/healthz` report), checks the image
+   contains `sqc-node`, `sqc-wallet` and `wget`, and pushes
+   `ghcr.io/splendor-protocol/sqc-node:vX.Y.Z`. Seven to nine minutes (6:40 in
+   this run). The script
+   identifies its own run by snapshotting run ids before dispatch and taking the
+   difference, and then reads the build log to assert the full commit SHA
+   appears in it.
+9. **Publish a GitHub Release** on this repository with the commit, the image,
+   and the commit subjects since the previous version tag. A failure here is
+   reported and does not abort the release.
+10. **Record the height** the tier is at before anything changes.
+11. **Set `SQC_NODE_IMAGE`** in the tier's GitHub environment to the new image
+    and read it back. This is the step that used to be forgotten: build and
+    deploy without it is a successful-looking no-op that re-pulls the old image.
+12. **Open a GitHub Deployment** on this repository for the tier, so "which
+    version is on which tier" is answerable where the version lives.
+13. **Roll out.** Dispatches `Deploy quantum infrastructure` with
+    `environment=<env> rollout_node=true apply_infrastructure=false
+    reset_chain=false`. That workflow assumes the tier's AWS role over OIDC,
+    skips `tofu apply`, and runs `scripts/rollout-node.sh`: it writes the
+    runtime env (image tags, wallet passphrase, tunnel token, Postgres password,
+    genesis variables) to an SSM SecureString, ships `deploy/node/` to
+    `/srv/splendor` on the host with SSM Run Command, and runs
+    `bootstrap-host.sh`, which is `docker compose pull && up -d` over the whole
+    stack. Compose recreates whichever containers' image or environment
+    changed: normally just `sqc-node` and `heartbeat` (both run
+    `SQC_NODE_IMAGE`), plus `indexer` if `SQC_INDEXER_IMAGE` moved and
+    `cloudflared` if a newer `:latest` was pulled; `postgres` keeps running.
+    About one minute, with a few seconds of block-production pause during the
+    container swap.
+14. **Verify live.** Polls `/status` for up to 100 seconds until it reports the
+    released commit (a matching `image_tag` only shortens the wait), and
+    requires the height to be above the value recorded in step 10. A wrong
+    commit or a non-climbing height fails the release. A green workflow only
+    means the container was replaced; this is what means the tier is running
+    the release and still sealing blocks. The Deployment record is closed as
+    `success` only after this passes, `failure` otherwise.
+
+### What it never does
+
+- **It never resets a chain.** `reset_chain` is always sent `false`. A reset
+  wipes state, wallet and genesis, and destroys every balance not in the
+  tier's `SQC_GENESIS_ALLOC_ADDRESS` list. That is a separate, deliberate
+  procedure in `splendor-infra/docs/chain-redeploy-runbook.md`, and the deploy
+  workflow additionally refuses a prod reset unless `reset_confirm` is the
+  exact phrase `reset prod chain`.
+- **It never applies infrastructure.** `apply_infrastructure=false`. Changing
+  the AWS stack (`stacks/quantum`, `environments/<tier>/`) is done from
+  `splendor-infra` directly.
+- **It never adopts a fork.** Activating a new consensus rule on a running chain
+  (§8 of this README, and "Fork Schedule" under §6 of `DEPLOY.md`) is the deploy workflow's
+  `allow_fork_extension` input together with the tier's `SQC_GENESIS_FORKS`
+  variable. It is dispatched by hand, once, and turned off again.
+- **It never rolls the indexer on its own.** A new `sqc-indexer` is
+  `Build sqc-indexer image` plus `SQC_INDEXER_IMAGE`, and the next node rollout
+  carries it (`splendor-infra/scripts/release-indexer.sh`).
+
+### Promotion, rollback, and testing a branch
+
+The usual order is devnet, then testnet, then mainnet, promoting the same image
+rather than rebuilding:
+
+```bash
+npm run deploy:devnet            # builds v0.6.3, rolls devnet
+npm run deploy v0.6.3 test       # same image to testnet
+npm run deploy v0.6.3 prod       # same image to mainnet, after the prompt
+```
+
+A rollback is a promotion to a lower version and is printed as such. If no Go
+source differs between the two versions it is safe; if it does, the older
+binary must be able to read a chain the newer one has been writing, and the
+script lists up to twelve of the files to check. Storage-format, state-transition or header
+changes make a rollback unsafe without a reset.
+
+To prove a pull request on the live testnet chain *without* merging it, build a
+throwaway image straight from the branch and point testnet at it by hand
+(`splendor-infra` README, "Test a PR on testnet before merging"). Never run a
+branch image on mainnet.
+
+### The other deployables
+
+| What | How it ships | Where the truth lives |
+|---|---|---|
+| Explorer | `npm run version:patch` cuts `vX.Y.Z`; `npm run deploy:{dev,devnet,test,prod}` pushes `vX.Y.Z-<env>`; the `Release quantum explorer` workflow lints, tests, validates the tag against `splendor-infra`'s `release-policy.yml` (an environment tag must point at its base tag's commit), builds with `CLOUDFLARE_ENV=<env>` and runs `wrangler deploy` | `splendor-quantum-explorer/scripts/deploy.mjs`, `wrangler.jsonc` |
+| Indexer | `Build sqc-indexer image` workflow → set `SQC_INDEXER_IMAGE` → next node rollout | `splendor-infra/deploy/indexer`, `scripts/release-indexer.sh` |
+| Faucet | `npm run deploy` (`wrangler deploy --env production`), run by a person with Cloudflare access; secrets via `wrangler secret put` | `splendor-quantum-faucet/README.md`, "Deploy" |
+| Dapps portal + bridge UI | `npm run deploy`, or the `Deploy` workflow (`workflow_dispatch`, `staging`/`production`) | `splendor-quantum-dapps/.github/workflows/deploy.yml` |
+| Browser extension | `npm run build` copies the signer WASM from this repository's `sdk/sqc-sdk/wasm/dist` and re-pins its digest; load unpacked in `chrome://extensions`, or `npm run zip`. No store listing. A scheduled `Sync signer from chain` workflow opens a PR when this repository publishes a different signer | `splendor-quantum-wallet-extension/scripts/sync-signer.mjs` |
+| Mobile wallet | `npm run ios:testflight` (EAS build + TestFlight submit); `build-apk.sh` for Android | `wallet/README.md`, "Releasing iOS to TestFlight with EAS" |
+| Splendor Connect gateway | Coolify, from `wallet@main` (`server/` + `admin/` compose) | `splendor/infra/SERVICES.md` (internal) |
+
+### Fork activation on a running chain
+
+A tier's rules are its persisted fork schedule (`forks` in `/status`). Adding a
+rule to a running chain is an extension, never an edit: the new upgrade must
+activate above the current head, the deploy workflow must be dispatched with
+`allow_fork_extension=true` once, and the tier's `SQC_GENESIS_FORKS` variable
+must carry the full schedule. Testnet's `bridge_v1` at height 11,000 was
+activated this way. Mainnet reports no optional forks and, by decision, omits
+`exchange_v1`.
+
+---
+
+## 22. Repository Layout and Developer Quick Start
+
+### What lives where
+
+| Path | What it is |
+|---|---|
+| `cmd/node` | `sqc-node` — the full node and validator. Flags, not a config file; the reference is `DEPLOY.md` §5 |
+| `cmd/wallet` | `sqc-wallet` — CLI wallet: generate, address, balance, send (`--chain-id` per tier), encrypted `.sqwallet` files |
+| `cmd/sqc-solc` | QSol-subset compiler CLI: `.qsol` → SQC-VM v4 hex + ABI JSON |
+| `cmd/sqc-deploy` | Deploy, call, view and source-verify QSol contracts against a live node over RPC |
+| `cmd/bridge-relayer`, `cmd/bridge-admin` | The migration bridge: relayer that watches the legacy-chain burn contract and claims on the quantum tier; turnkey instance bring-up |
+| `cmd/loadtest`, `cmd/auditprobe` | Throughput and security probe harnesses; not shipped in the image |
+| `core/crypto` | ML-DSA-65, SHA3-256, addresses, ACVP vectors, `.sqwallet` store (Argon2id + AES-256-GCM) |
+| `core/types`, `core/block`, `core/state`, `core/mempool`, `core/forks`, `core/buildinfo` | Transactions and blocks, execution and receipts, whole-state Merkle commitment, fee-ordered mempool, fork schedule, the commit/tag stamp `/status` reports |
+| `consensus` | Single-validator block production; `bft.go` is explicitly incomplete and unwired |
+| `network` | ML-KEM-768 + AES-256-GCM sealed P2P, peer pins, announce signatures, SSRF guards |
+| `rpc` | The REST/SSE surface in §20, TLS with the `X25519MLKEM768` hybrid group, rate limits, metrics |
+| `vm` | SQC-VM interpreter and disassembler, plus the native Go modules (QRC-20, QRC-1155, DEX, exchange, bridge; lending/staking/governance/oracle/multisig/QRC-721/QRC-4626 as unrouted library code) |
+| `compiler` | The QSol-subset compiler (lexer, parser, codegen, assembler) and `examples/*.qsol` |
+| `x402` | X402 payment authorization and settlement binding |
+| `genesis` | Signed height-zero genesis builder and fork-schedule validation |
+| `ai` | The adaptive batch-size scheduler (§17) |
+| `sdk/sqc-sdk` | `@splendor/sqc-sdk` v2: Node/browser SDK, the Go signer package (`signer/`), the WASM build and its single committed artifact (`wasm/`), gateway, SQDP-1 protocol docs |
+| `sdk/connect-react` | `@splendor/connect-react`: React connect UI kit |
+| `sdk/bridge` | `@splendor/pq-bridge`: deprecated re-export shim, nothing else |
+| `sdk/sqc-sdk.js` | Legacy single-file SDK, deprecated; its X402 middleware omits `settlement_tx` (§11) |
+| `contracts/legacy-burn` | `QuantumMigrationBurn`, the Solidity burn gate on the legacy Splendor mainnet (chain 2691) |
+| `docs/modules` | Wire formats: `qrc20-permit.md`, `exchange.md`, `bridge.md` |
+| `docs/performance` | The dated TPS/GPU experiment behind every throughput number in this file |
+| `docs/plans` | Design documents: compiler, migration bridge, Blockpeak settlement module |
+| `docs/readme-claim-evidence.md` | The claim–evidence matrix and dated deployment snapshots behind this README |
+| `scripts/release.mjs` | The release tool described in §21 |
+| `DEPLOY.md` | Bare-metal operator guide: build, validator setup, every node flag, genesis and fork schedule, systemd, firewall |
+| `HARDENING-REPORT.md` | The 25 August 2026 hardening pass: what was asked, what was done, what was found |
+| `Dockerfile`, `install.sh`, `Makefile`, `sqc` | The image the tiers run; a fresh-Ubuntu installer; build/test targets; a node management wrapper (`sqc status\|logs\|console\|update`) |
+
+### Build, test, run
+
+```bash
+# toolchain: Go 1.25 (circl v1.6.5 requires it); Node 20+ for the release tool, Node 22.20+ for the SDK
+make build                      # ./sqc-node and ./sqc-wallet
+make test                       # go test -v -count=1 ./...
+make test-crypto                # only core/crypto (ML-DSA, ML-KEM, ACVP vectors, wallet store)
+
+# a local single-validator chain
+./sqc-wallet generate --out validator.sqwallet          # prompts for a password
+SQC_WALLET_PASS=… ./sqc-node --validator --wallet validator.sqwallet \
+    --genesis genesis.json --data-dir ./sqc-data        # DEPLOY.md §6 for genesis.json
+curl -s http://127.0.0.1:8080/status
+
+# contracts
+go run ./cmd/sqc-solc compiler/examples/token.qsol      # bytecode hex + ABI
+go run ./cmd/sqc-deploy -rpc https://quantum-rpc-devnet.splendor.org -seed seed.hex \
+    deploy compiler/examples/counter.qsol
+
+# SDK
+cd sdk/sqc-sdk && npm ci && npm test && npm run build   # 109 vitest tests at the reviewed commit
+```
+
+`DEPLOY.md` is the operator document for running a node outside the managed
+tiers: prerequisites, validator wallet, genesis, every flag, systemd units,
+firewall rules and troubleshooting.
+
+### Continuous integration
+
+Two workflows run on every push to `main` and every pull request
+(`.github/workflows/`):
+
+- **CI** — `go build`, `go vet`, `gofmt` on changed files, `go test -count=1
+  ./...`; then a **signer-drift** job that rebuilds the WASM signer from source
+  under the pinned Go toolchain and fails if the committed
+  `sdk/sqc-sdk/wasm/dist/sqc_signer.wasm`, any per-network digest pin, or the
+  golden address vector disagrees with the rebuild. That file is the only
+  committed copy of the signer; the browser extension syncs from it and checks
+  its own copy against it in its own CI. The signer has drifted from
+  its source twice before this job existed.
+- **Force-push alarm** — detects a non-fast-forward rewrite of `main`, the
+  failure that on 27 August 2026 left the tiers serving commits the repository
+  no longer contained.
+
+CI at the commit this README was written against
+(`d2ed9cfa9f66b6c0151c0e204b0588e8372a10ef`) is green. A green CI run is
+evidence for that commit only; it is not an external audit.
 
 ---
 

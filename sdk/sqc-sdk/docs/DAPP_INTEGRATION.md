@@ -191,7 +191,7 @@ Selector = `SHA3-256(signature)[0:4]` (same as Go `vm.SelectorFromSignature`).
 ## 6. Gateway (Docker one-pager)
 
 ```bash
-cd sdk/bridge
+cd sdk/sqc-sdk
 # build wasm first: ./wasm/build.ps1
 cd gateway
 SQC_NETWORK=local docker compose up --build

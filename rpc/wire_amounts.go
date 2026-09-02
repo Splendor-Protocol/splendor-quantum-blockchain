@@ -13,7 +13,7 @@ import (
 // amount it is about to submit; sending "12345678901234567891" is exact.
 //
 // The lenient decoding lives here, at the RPC ingress, and nowhere deeper:
-// core/types is compiled into the pinned signer WASM (sdk/bridge/wasm), so a
+// core/types is compiled into the pinned signer WASM (sdk/sqc-sdk/wasm), so a
 // method added there changes a binary that two other repos pin by digest. The
 // ingress rewrites quoted decimal strings under the keys below into the bare
 // numbers the core types already decode. The canonical body that is hashed and

@@ -1,7 +1,7 @@
 ﻿package main
 import (
   "fmt"
-  "github.com/splendor-protocol/splendor-quantum-blockchain/sdk/bridge/signer"
+  "github.com/splendor-protocol/splendor-quantum-blockchain/sdk/sqc-sdk/signer"
 )
 func main() {
   var seed [32]byte
