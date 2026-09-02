@@ -941,13 +941,26 @@ async function snapshotAllAccounts(t) {
   return pairs;
 }
 
+/**
+ * `validator_addr` is a qcrypto.Address, and Go marshals a [32]byte as a JSON
+ * ARRAY of numbers — not the "SQ:hex" string the rest of the surface uses. An
+ * address IS those 32 bytes, so the string form is a hex encode of them.
+ */
+function sqAddress(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && value.length === 32) {
+    return `SQ:${value.map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+  }
+  return '';
+}
+
 async function dropValidatorFromAlloc(t) {
   let validator = '';
   try {
     const res = await fetch(`${t.rpc}/block/latest`, { signal: AbortSignal.timeout(20000) });
     if (res.ok) {
       const block = await res.json();
-      validator = block?.header?.validator_addr ?? '';
+      validator = sqAddress(block?.header?.validator_addr);
     }
   } catch { /* live node may already be down */ }
   if (!validator) {
