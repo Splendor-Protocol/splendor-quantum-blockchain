@@ -1,4 +1,4 @@
-import type { EthereumProvider } from '@splendor/pq-bridge';
+import type { EthereumProvider } from '@splendor/sqc-sdk';
 import { injectedConnector } from './injected.js';
 import { metamaskConnector } from './metamask.js';
 import { seedConnector } from './seed.js';

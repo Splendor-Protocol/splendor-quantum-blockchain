@@ -1,6 +1,6 @@
 # Hosting WASM signer assets
 
-Browser dApps must serve `sqc_signer.wasm` and `wasm_exec.js` (from `sdk/bridge/wasm/dist` after `npm run build:wasm`) with correct MIME types and CORS.
+Browser dApps must serve `sqc_signer.wasm` and `wasm_exec.js` (from `sdk/sqc-sdk/wasm/dist` after `npm run build:wasm`) with correct MIME types and CORS.
 
 ## Recommended: Vite plugin
 

@@ -2,7 +2,7 @@
 
 Use this when shipping a Splendor dApp or wallet. Normative rules: [SQDP-1.md](./SQDP-1.md).
 
-Automated coverage (run from `sdk/bridge`): `npm run test:security` (Vitest `security-*.test.ts` + Go signer + gateway inject).
+Automated coverage (run from `sdk/sqc-sdk`): `npm test` (Vitest including `security-*.test.ts` + WASM golden vectors). Go signer: `go test ./sdk/sqc-sdk/signer -count=1`.
 
 ## Identity and UI
 
@@ -20,7 +20,7 @@ Automated coverage (run from `sdk/bridge`): `npm run test:security` (Vitest `sec
 
 ## SDK / signing
 
-- [x] Signs with `@splendor/pq-bridge` WASM **or** produces identical wire txs — `wasm-session.test.ts` / Go round-trip + `TestTamperedTransferFailsVerify`
+- [x] Signs with `@splendor/sqc-sdk` WASM **or** produces identical wire txs — `wasm-session.test.ts` / Go round-trip + `TestTamperedTransferFailsVerify`
 - [ ] Does not hand-author signed JSON from README examples *(integration practice)*
 - [x] Calls `assertChainId` (or equivalent) before submit — `security-rpc.test.ts` (fail-closed on missing/mismatch)
 - [x] Confirms inclusion via **nonce poll** (`waitForConfirmation`) — does not depend on `GET /tx/{hash}` or `/ws` — `security-errors.test.ts` (`TX_NOT_CONFIRMED`)
@@ -34,7 +34,7 @@ Automated coverage (run from `sdk/bridge`): `npm run test:security` (Vitest `sec
 ## Browser / WASM
 
 - [ ] Serves `sqc_signer.wasm` + `wasm_exec.js` with correct MIME and CORS *(ops)* — checklist: [`WASM_HOSTING.md`](./WASM_HOSTING.md)
-- [ ] Imports `@splendor/pq-bridge/browser` in browser builds *(bundler)*
+- [ ] Imports `@splendor/sqc-sdk/browser` in browser builds *(bundler)*
 - [x] Calls `lock()` or `disconnect()` on logout (zeroizes ML-DSA-65 key) — `security-wasm.test.ts` (re-derive Zeroize in WASM)
 - [x] Sets `wasmSha256` when known; fails closed on mismatch — `security-wasm.test.ts` / `security-networks.test.ts` (browser pin required)
 - [x] Pins `execSha256` for `wasm_exec.js` when configured — loaders + networks JSON / `sync:config`

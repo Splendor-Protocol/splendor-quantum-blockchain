@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { NetworkId } from '@splendor/pq-bridge';
+import type { NetworkId } from '@splendor/sqc-sdk';
 import { useNetwork } from '../react/hooks.js';
 
 export type NetworkBadgeProps = {

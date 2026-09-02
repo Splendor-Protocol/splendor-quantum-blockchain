@@ -6,7 +6,7 @@ import {
   type CreateClientOptions,
   type NetworkConfig,
   type NetworkId,
-} from '@splendor/pq-bridge';
+} from '@splendor/sqc-sdk';
 import type { Connector } from '../connectors/types.js';
 import { defaultBrowserConnectors } from '../connectors/eip6963.js';
 import {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { discoverInjectedConnectors } from '../connectors/eip6963.js';
-import type { EthereumProvider } from '@splendor/pq-bridge';
+import type { EthereumProvider } from '@splendor/sqc-sdk';
 
 describe('discoverInjectedConnectors', () => {
   beforeEach(() => {

@@ -107,9 +107,18 @@ export { buildModuleCall, encodeModuleCallHex, type ModuleCall } from './core/mo
 export { Program } from './core/program.js';
 export { RpcTransport } from './core/transport/rpc-transport.js';
 export type { Transport } from './core/transport/types.js';
-export { MODULE_ROUTER_ADDRESS, qrc20Address } from './addresses/index.js';
+export { MODULE_ROUTER_ADDRESS, qrc20Address, qrc1155Address, bytecodeContractAddress, exchangeAddress, bridgeAddress, bridgeSplvAddress, dexPoolAddress } from './addresses/index.js';
 export { QRC20, deployQRC20, getToken } from './tokens/qrc20.js';
+export { QRC1155, deployQRC1155, getCollection } from './tokens/qrc1155.js';
 export { Contract, deployBytecode, getContract } from './contracts/contract.js';
+export { Exchange, deployExchange, getExchange } from './defi/exchange.js';
+export { DEX, deployPool, getPool } from './defi/dex.js';
+export { BridgeModule, deployBridge, getBridge } from './bridge/module.js';
+export { modules, bindModules } from './modules.js';
+export type { Modules, BoundModules, SignedBoundModules } from './modules.js';
+export { withSigner } from './bound.js';
+export type { BoundClient, WalletLike } from './bound.js';
+export { fromUnits, toUnits } from './units.js';
 export { X402Client, createX402Middleware } from './x402/client.js';
 export type { PaymentRequirements, PaymentPayload } from './x402/client.js';
 export { subscribe } from './core/subscribe.js';
@@ -123,9 +132,10 @@ export type {
   Subscription,
   VerifyContractResponse,
 } from './core/explorer-types.js';
-export { bytecodeContractAddress } from './addresses/index.js';
 export { Keypair } from './wallet/keypair.js';
 export { connect } from './wallet/connect.js';
 export type { ConnectOptions, ConnectResult } from './wallet/connect.js';
+export { createSession } from './session.js';
+export type { Session } from './session.js';
 export { SplendorClient } from './client.js';
 export { loadWasmSigner, resetWasmLoader } from './wasm-loader.js';

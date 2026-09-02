@@ -5,7 +5,7 @@ Minimal Vite + React app using `@splendor/connect-react`.
 ## Run
 
 ```bash
-cd sdk/bridge && npm install && npm run build
+cd sdk/sqc-sdk && npm install && npm run build
 cd ../connect-react && npm install && npm run build
 cd examples/basic-dapp && npm install && npm run dev
 ```

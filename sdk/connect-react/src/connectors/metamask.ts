@@ -1,4 +1,4 @@
-import type { DeriveInfo, EthereumProvider } from '@splendor/pq-bridge';
+import type { DeriveInfo, EthereumProvider } from '@splendor/sqc-sdk';
 import type { Connector, ConnectorContext } from './types.js';
 
 function getWindowEthereum(): EthereumProvider | undefined {

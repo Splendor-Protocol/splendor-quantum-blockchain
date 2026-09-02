@@ -16,14 +16,16 @@ Connect → fund → transfer → wait. Use a read-only `Connection` / `SqcProvi
 |-----|-----|
 | Plug-and-play wallet UI (AppKit-style) | `@splendor/connect-react` — `SplendorConnectProvider` + `ConnectKit` / `ConnectButton` (`hostModals` default) |
 | Hide PQ crypto from dApp code | WASM signer only; UI shows `SQ:` identity |
-| One-touch / one config for all dApps | `sqc.networks.json` + `connectSplendor` / `createSplendorClient({ networkConfig })` |
-| Real testnet RPCs without forking package | `rpcUrls: [...]` (gateway optional for SqRpc) or `customNetworks` / `registerNetwork` |
+| One-touch / one config for all dApps | `sqc.networks.json` + `createSession` / `connect` / `connectSplendor` |
+| Working demo (connect + SPLD + QRC-20) | [`../examples/web-dapp`](../examples/web-dapp) |
+| Real testnet RPCs without forking package | `rpcUrls: [...]` (gateway optional for SqRpc) or `networks` / `networkConfig` / `registerNetwork` |
 | Host WASM without manual copy | Vite: `@splendor/connect-react/vite` `sqcWasmPlugin`; Next: `npx sqc-copy-wasm` / `@splendor/connect-react/next` |
 | Idle / tab lock must update UI | Bridge emits `lock`; connect-react sets `status: 'locked'` → Unlock CTA |
 | Soft network switch without losing last wallet | `useNetwork().switchNetwork` (keeps last connector; reconnects when previously connected) |
 | No bridge markup fee | Only chain `minFee` (`PROTOCOL.minFee`); under congestion node may require higher — handle reject and retry |
-| Deploy QRC-20 token | `deployQRC20(wallet, { name, symbol, decimals, totalSupply })` or `useDeployToken()` |
-| Token balance / transfer | `getToken(connection, addr)` or `useQRC20(addr)` |
+| Deploy QRC-20 token | `deployQRC20(wallet, …)` or `useDeployToken()` |
+| Token balance / transfer | `modules.qrc20(connection, addr)` / `useQRC20(addr)` |
+| QRC-1155 / DEX / Exchange / Bridge | `modules.qrc1155` / `modules.dex` / `modules.exchange` / `modules.bridge` |
 | Confirmation that is not fake | `waitForConfirmation` / `waitForConfirmation: true` — receipt-first, nonce fallback ([SQDP §7](./SQDP-1.md)) |
 
 **Out of scope (documented):** WalletConnect v2 protocol, full EIP-1193 SQC provider for wagmi, CDN-hosted WASM.
@@ -53,12 +55,30 @@ import {
 
 Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
 
-Lower-level (no UI): `connectSplendor` from `@splendor/pq-bridge`, or `useSplendorPQ` from `@splendor/pq-bridge/react`.
+**Runnable demo:** [`../examples/web-dapp`](../examples/web-dapp) — ConnectKit + balance + send SPLD + QRC-20 read/write.
+
+### Minimal React checklist
+
+1. `npm i @splendor/connect-react @splendor/sqc-sdk`
+2. Vite: `sqcWasmPlugin()` from `@splendor/connect-react/vite`
+3. Wrap app in `SplendorConnectProvider` + `ConnectButton`
+4. Use `useBalance`, `useSendTransfer`, `useQRC20` for panels (see web-dapp)
+
+Lower-level (no UI): `createSession` / `connect` from `@splendor/sqc-sdk`.
 
 ```ts
-import { PROTOCOL, SQDP_VERSION, connectSplendor, createSplendorClient } from '@splendor/pq-bridge';
+import { PROTOCOL, SQDP_VERSION, createSession, connectSplendor, createSplendorClient } from '@splendor/sqc-sdk';
+// createSession → bound sendSPLD / token / dex / bridge / modules (no wallet args on writes)
 // PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.confirmationCaveat
-// Networks: edit src/config/sqc.networks.json (single source)
+```
+
+### Bound session (preferred headless)
+
+```ts
+const s = await createSession({ network: 'local', mode: 'seed', seed });
+await s.sendSPLD(to, '0.01');
+await s.token(token).transfer(to, '100');
+await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
 ```
 
 ## One-touch connect (headless / agents)
@@ -99,7 +119,7 @@ Or create without connecting: `createSplendorClient({ network: 'local' })` then 
 Prefer one-touch (loads RPC from `sqc.networks.json`):
 
 ```ts
-import { createSplendorClient } from '@splendor/pq-bridge';
+import { createSplendorClient } from '@splendor/sqc-sdk';
 
 const { provider } = createSplendorClient({ network: 'local' });
 const status = await provider.getStatus();
@@ -108,7 +128,7 @@ const status = await provider.getStatus();
 Or construct manually:
 
 ```ts
-import { SqcProvider } from '@splendor/pq-bridge';
+import { SqcProvider } from '@splendor/sqc-sdk';
 
 const provider = new SqcProvider({
   rpcUrls: ['https://rpc-a.example', 'https://rpc-b.example'],
@@ -127,11 +147,12 @@ Prefer one-touch / Connect UI kit so WASM paths come from `sqc.networks.json` au
 You still must **host** the files at those URLs (see [`WASM_HOSTING.md`](./WASM_HOSTING.md)).
 
 ```ts
-import { SplendorPQBridge } from '@splendor/pq-bridge';
-// browser: import from '@splendor/pq-bridge/browser'
+import { Wallet, SplendorPQBridge } from '@splendor/sqc-sdk';
+// browser: import from '@splendor/sqc-sdk/browser'
+// SplendorPQBridge is an alias for Wallet
 
 // Manual path (overrides network defaults when needed):
-const wallet = SplendorPQBridge.fromProvider(provider, {
+const wallet = Wallet.fromProvider(provider, {
   wasmUrl: '/sqc_signer.wasm',
   execUrl: '/wasm_exec.js',
 });
@@ -170,11 +191,13 @@ const res = await wallet.sendTransfer({
 
 ## 5. Contract calls
 
-(The `sqaddress` type name is a QSol convention, but no QSol compiler exists —
-you are calling SQC-VM bytecode or a native module, not compiled QSol.)
+Use QSol ABI (`sqaddress`, SHA3-256 selectors). Deploy pre-built SQC-VM bytecode
+via `@splendor/sqc-sdk/contracts`, or compile offline with the monorepo
+`sqc-solc` prototype (not embedded in this SDK).
 
 ```ts
-import { encodeFunctionData, decodeArgUint256 } from '@splendor/pq-bridge';
+import { encodeFunctionData, decodeArgUint256 } from '@splendor/sqc-sdk';
+import { deployBytecode, getContract } from '@splendor/sqc-sdk/contracts';
 
 await wallet.callContract({
   contract: 'SQ:…',
@@ -191,7 +214,7 @@ Selector = `SHA3-256(signature)[0:4]` (same as Go `vm.SelectorFromSignature`).
 ## 6. Gateway (Docker one-pager)
 
 ```bash
-cd sdk/bridge
+cd sdk/sqc-sdk
 # build wasm first: ./wasm/build.ps1
 cd gateway
 SQC_NETWORK=local docker compose up --build

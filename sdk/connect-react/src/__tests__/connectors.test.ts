@@ -8,7 +8,7 @@ import {
   defaultBrowserConnectors,
   hasAuthorizedAccounts,
 } from '../connectors/index.js';
-import type { DeriveInfo, EthereumProvider } from '@splendor/pq-bridge';
+import type { DeriveInfo, EthereumProvider } from '@splendor/sqc-sdk';
 
 const mockInfo: DeriveInfo = {
   address: 'SQ:' + 'cd'.repeat(32),

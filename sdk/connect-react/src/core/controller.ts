@@ -9,7 +9,7 @@ import {
   type SplendorClient,
   type SplendorPQBridge,
   type SqcProvider,
-} from '@splendor/pq-bridge';
+} from '@splendor/sqc-sdk';
 import type { Connector } from '../connectors/types.js';
 import { broadcastConnectEvent, getLastConnectorId, setLastConnectorId, subscribeConnectBroadcast } from './storage.js';
 import type {

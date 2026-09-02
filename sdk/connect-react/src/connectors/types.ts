@@ -3,7 +3,7 @@ import type {
   NetworkConfig,
   SplendorPQBridge,
   SqcProvider,
-} from '@splendor/pq-bridge';
+} from '@splendor/sqc-sdk';
 
 export type ConnectorContext = {
   /** Constructed client wallet; WASM may not be unlocked yet. */
@@ -35,7 +35,7 @@ export type ConnectorKeyOrigin = 'native' | 'evm-derived';
 
 /**
  * Modular wallet connector (AppKit-style).
- * Implementations unlock the PQ WASM session via @splendor/pq-bridge.
+ * Implementations unlock the PQ WASM session via @splendor/sqc-sdk.
  */
 export type Connector = {
   id: string;

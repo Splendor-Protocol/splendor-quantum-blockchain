@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Copy sqc_signer.wasm + wasm_exec.js from @splendor/pq-bridge into a public dir.
+ * Copy sqc_signer.wasm + wasm_exec.js from @splendor/sqc-sdk into a public dir.
  *
  * Usage:
  *   node scripts/copy-wasm-assets.mjs [destDir]
@@ -17,21 +17,28 @@ const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 
 function findWasmDist() {
-  // Prefer sibling bridge package in monorepo
-  const sibling = resolve(here, '../../bridge/wasm/dist');
-  if (existsSync(join(sibling, 'sqc_signer.wasm'))) return sibling;
+  // Prefer sibling sqc-sdk package in monorepo (bridge shim has no wasm)
+  const siblings = [
+    resolve(here, '../../sqc-sdk/wasm/dist'),
+    resolve(here, '../../bridge/wasm/dist'),
+  ];
+  for (const sibling of siblings) {
+    if (existsSync(join(sibling, 'sqc_signer.wasm'))) return sibling;
+  }
 
-  try {
-    const pkgJson = require.resolve('@splendor/pq-bridge/package.json');
-    const candidates = [
-      join(dirname(pkgJson), 'wasm', 'dist'),
-      join(dirname(pkgJson), 'dist', '..', 'wasm', 'dist'),
-    ];
-    for (const c of candidates) {
-      if (existsSync(join(c, 'sqc_signer.wasm'))) return c;
+  for (const pkg of ['@splendor/sqc-sdk', '@splendor/pq-bridge']) {
+    try {
+      const pkgJson = require.resolve(`${pkg}/package.json`);
+      const candidates = [
+        join(dirname(pkgJson), 'wasm', 'dist'),
+        join(dirname(pkgJson), 'dist', '..', 'wasm', 'dist'),
+      ];
+      for (const c of candidates) {
+        if (existsSync(join(c, 'sqc_signer.wasm'))) return c;
+      }
+    } catch {
+      /* not installed */
     }
-  } catch {
-    /* not installed */
   }
   return null;
 }
@@ -42,7 +49,7 @@ const src = findWasmDist();
 
 if (!src) {
   console.error(
-    'copy-wasm-assets: could not find sqc_signer.wasm. Build @splendor/pq-bridge wasm first.',
+    'copy-wasm-assets: could not find sqc_signer.wasm. Build @splendor/sqc-sdk wasm first (sdk/sqc-sdk/wasm/build.ps1).',
   );
   process.exit(1);
 }

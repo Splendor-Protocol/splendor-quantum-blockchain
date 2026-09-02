@@ -1,7 +1,7 @@
 {
   "name": "@splendor/connect-react",
   "version": "1.3.0",
-  "description": "AppKit-style React connect UI kit for Splendor Quantum Chain. Modular connectors unlock @splendor/pq-bridge WASM ML-DSA-65 wallets.",
+  "description": "AppKit-style React connect UI kit for Splendor Quantum Chain. Modular connectors unlock @splendor/sqc-sdk WASM ML-DSA-65 wallets.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -54,7 +54,7 @@
     "node": ">=18"
   },
   "peerDependencies": {
-    "@splendor/pq-bridge": ">=1.4.0",
+    "@splendor/pq-bridge": ">=1.5.0",
     "@splendor/sqc-sdk": ">=2.0.0",
     "react": ">=18",
     "react-dom": ">=18",
@@ -63,14 +63,20 @@
   "peerDependenciesMeta": {
     "vite": {
       "optional": true
+    },
+    "@splendor/pq-bridge": {
+      "optional": true
     }
   },
   "devDependencies": {
-    "@splendor/sqc-sdk": "file:../sqc-sdk",
     "@splendor/pq-bridge": "file:../bridge",
+    "@splendor/sqc-sdk": "file:../sqc-sdk",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^26.2.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "jsdom": "^29.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.2",

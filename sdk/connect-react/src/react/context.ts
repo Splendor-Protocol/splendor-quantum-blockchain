@@ -4,7 +4,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import type { NetworkId } from '@splendor/pq-bridge';
+import type { NetworkId } from '@splendor/sqc-sdk';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState } from '../core/types.js';
 
