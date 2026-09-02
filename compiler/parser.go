@@ -78,6 +78,8 @@ func parseType(t token) (varType, bool) {
 		return typeAddress, true
 	case "bool":
 		return typeBool, true
+	case "string", "bytes32":
+		return typeString, true
 	}
 	return 0, false
 }
@@ -204,8 +206,27 @@ func (p *parser) parseFunc() (*funcNode, error) {
 	if err := p.expectPunct(")"); err != nil {
 		return nil, err
 	}
-	// Optional modifiers (any order, ignored), then optional `returns (T)`.
-	p.skipModifiers(fnModifiers...)
+	// Optional modifiers: consume and record visibility for isInternal.
+	for {
+		t := p.cur()
+		if t.kind != tKeyword {
+			break
+		}
+		matched := false
+		for _, n := range fnModifiers {
+			if t.text == n {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			break
+		}
+		if t.text == "internal" || t.text == "private" {
+			fn.isInternal = true
+		}
+		p.next()
+	}
 	if p.isKeyword("returns") {
 		p.next()
 		if err := p.expectPunct("("); err != nil {
@@ -325,6 +346,18 @@ func (p *parser) parseStmt() (stmt, error) {
 			return nil, err
 		}
 		return &whileStmt{cond: cond, body: body}, nil
+	case p.isKeyword("break"):
+		p.next()
+		if err := p.expectPunct(";"); err != nil {
+			return nil, err
+		}
+		return &breakStmt{}, nil
+	case p.isKeyword("continue"):
+		p.next()
+		if err := p.expectPunct(";"); err != nil {
+			return nil, err
+		}
+		return &continueStmt{}, nil
 	default:
 		s, err := p.parseSimpleStmt()
 		if err != nil {
@@ -369,6 +402,27 @@ func (p *parser) parseSimpleStmt() (stmt, error) {
 	if nameTok.kind != tIdent {
 		return nil, fmt.Errorf("line %d: expected a statement", nameTok.line)
 	}
+
+	// Internal function call as a statement: name(args) — discards the return value.
+	if p.isPunct("(") {
+		p.next()
+		var args []expr
+		for !p.isPunct(")") {
+			e, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, e)
+			if p.isPunct(",") {
+				p.next()
+			}
+		}
+		if err := p.expectPunct(")"); err != nil {
+			return nil, err
+		}
+		return &callStmt{name: nameTok.text, args: args}, nil
+	}
+
 	target := &indexExpr{name: nameTok.text}
 	if p.isPunct("[") {
 		p.next()
@@ -660,8 +714,31 @@ func (p *parser) parsePrimary() (expr, error) {
 			return nil, fmt.Errorf("line %d: only msg.sender and msg.value are supported", field.line)
 		}
 		return &msgExpr{field: field.text}, nil
+	case t.kind == tString:
+		// String literal — encoded as bytes32 in codegen.
+		p.next()
+		return &stringExpr{value: t.text}, nil
 	case t.kind == tIdent:
 		p.next()
+		if p.isPunct("(") {
+			// Function call expression: name(arg, ...) — inlined by codegen.
+			p.next()
+			var args []expr
+			for !p.isPunct(")") {
+				e, err := p.parseExpr()
+				if err != nil {
+					return nil, err
+				}
+				args = append(args, e)
+				if p.isPunct(",") {
+					p.next()
+				}
+			}
+			if err := p.expectPunct(")"); err != nil {
+				return nil, err
+			}
+			return &callExpr{name: t.text, args: args}, nil
+		}
 		if p.isPunct("[") {
 			p.next()
 			key, err := p.parseExpr()
