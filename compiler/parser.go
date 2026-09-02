@@ -160,10 +160,31 @@ func (p *parser) parseStateVar(nextSlot *int64) (*stateVar, error) {
 		*nextSlot++
 		return sv, nil
 	}
-	vt, ok := parseType(p.next())
+	typeTok := p.next()
+	vt, ok := parseType(typeTok)
 	if !ok {
-		return nil, fmt.Errorf("line %d: expected a type or 'function'", p.toks[p.pos-1].line)
+		return nil, fmt.Errorf("line %d: expected a type or 'function'", typeTok.line)
 	}
+
+	// Fixed-size array: uint256[N] name — reserves N consecutive storage slots.
+	isArr := false
+	var arrSize int64
+	if p.isPunct("[") {
+		p.next()
+		sizeTok := p.next()
+		if sizeTok.kind != tNumber || sizeTok.num == nil || !sizeTok.num.IsInt64() {
+			return nil, fmt.Errorf("line %d: expected integer array size", sizeTok.line)
+		}
+		arrSize = sizeTok.num.Int64()
+		if arrSize <= 0 || arrSize > 1024 {
+			return nil, fmt.Errorf("line %d: array size must be 1–1024 (got %d)", sizeTok.line, arrSize)
+		}
+		if err := p.expectPunct("]"); err != nil {
+			return nil, err
+		}
+		isArr = true
+	}
+
 	p.skipModifiers(varModifiers...)
 	nameTok := p.next()
 	if nameTok.kind != tIdent {
@@ -172,8 +193,15 @@ func (p *parser) parseStateVar(nextSlot *int64) (*stateVar, error) {
 	if err := p.expectPunct(";"); err != nil {
 		return nil, err
 	}
-	sv := &stateVar{name: nameTok.text, slot: *nextSlot, valType: vt}
-	*nextSlot++
+	sv := &stateVar{
+		name: nameTok.text, slot: *nextSlot, valType: vt,
+		isArray: isArr, arraySize: arrSize,
+	}
+	if isArr {
+		*nextSlot += arrSize // reserves N consecutive slots from sv.slot
+	} else {
+		*nextSlot++
+	}
 	return sv, nil
 }
 
