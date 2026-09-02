@@ -1,27 +1,34 @@
 # Splendor Quantum Chain
 
-### A blockchain where quantum resistance is not an add-on — it is the foundation.
+### Post-quantum account and validator cryptography from genesis.
 
-> **This is not a fork. This is not an upgrade. This is a new chain — designed from block zero so that everything the chain itself signs, hashes, and addresses is post-quantum. Every transaction signature, every address, every block hash, every validator message uses ML-DSA-65 and SHA-3-256. On-chain there is no ECDSA, no secp256k1, no SHA-256. Off-chain — browsers, proxied TLS, the optional MetaMask derivation path — is a different story, and the next section says exactly where that line falls.**
+> **Splendor Quantum Chain is a new Layer-1 whose native accounts,
+> transactions, blocks, and protocol authorizations use ML-DSA-65 with
+> purpose-specific signing contexts. Addresses and ledger commitments use
+> SHA3-256. Native peer traffic can be sealed using ML-KEM-768-established
+> secrets and AES-256-GCM. This is not an ECDSA-ledger migration, but it is also
+> not a guarantee against every future attack: security depends on the current
+> assumptions of those algorithms, this implementation, and its operation.**
 
 ---
 
 ## What Is and Is Not Post-Quantum
 
-Read this before the rest of the document. The line is narrower than the
-marketing instinct wants it to be, and it is still the strongest thing about
-this chain: everything the chain *commits to* is post-quantum, end to end,
-including the wire between nodes.
+Read this before the rest of the document. The strongest defensible claim is
+specific: every native on-chain public-key signature uses ML-DSA-65, native
+ledger commitments use SHA3-256, and the implemented peer protocol uses
+ML-KEM-768 plus AES-256-GCM. Deployment, frontend, identity-pinning, and
+certification boundaries are separate claims.
 
 ### Post-quantum today
 
 | Surface | Mechanism | Where in the code |
 |---|---|---|
-| Transaction, block, X402, vote, oracle, permit and multisig signatures | ML-DSA-65 (NIST FIPS 204) via CIRCL, each with its own domain-separation context | `core/crypto/mldsa.go` |
+| Transaction, block, X402, vote, oracle, permit and multisig signatures | ML-DSA-65 ([NIST FIPS 204](https://csrc.nist.gov/pubs/fips/204/final)) via CIRCL, each with its own domain-separation context | `core/crypto/mldsa.go` |
 | Addresses | `SQ:` + hex(SHA3-256(ML-DSA-65 public key)) | `core/crypto/` |
-| Transaction hashes, block hashes, Merkle nodes, contract storage slot keys | SHA-3-256 (NIST FIPS 202) | throughout |
-| Node-to-node block push, peer announce, **and catch-up sync** | ML-KEM-768 (NIST FIPS 203) + AES-256-GCM sealed channel; plaintext refused unless `--allow-plaintext-p2p` | `network/pqchannel.go`, `network/sync.go` |
-| RPC/WebSocket transport **on the hop the node terminates itself** | TLS 1.3 offering the `X25519MLKEM768` hybrid group | `rpc/tls.go`, `cmd/node/main.go` |
+| Transaction hashes, block hashes, Merkle nodes, contract storage slot keys | SHA3-256 ([NIST FIPS 202](https://csrc.nist.gov/pubs/fips/202/final)) | native ledger paths |
+| Node-to-node block push, peer announce, **and catch-up sync** | ML-KEM-768 ([NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)) + AES-256-GCM; plaintext refused unless `--allow-plaintext-p2p` | `network/pqchannel.go`, `network/sync.go` |
+| RPC/WebSocket transport **on the hop the node terminates itself** | TLS 1.3 can offer `X25519MLKEM768`; `--tls-require-hybrid` is required to refuse classical fallback | `rpc/tls.go`, `cmd/node/main.go` |
 | Wallet file at rest | AES-256-GCM with an Argon2id-derived key, minimum parameters enforced at startup | `core/crypto/wallet_store.go` |
 
 ### Not post-quantum
@@ -31,7 +38,11 @@ including the wire between nodes.
   the client, which today means classical ECDHE. The hybrid group applies only
   to a connection the node serves directly via `--tls-cert`. Every deployment
   that terminates TLS at a proxy has a classical key exchange in front of it.
-- **The browser SDK's MetaMask derivation path.** `sdk/bridge/src/derive.ts`
+- **An unpinned first P2P contact.** P2P payloads are sealed by default, but an
+  unpinned peer identity is initially accepted using trust on first use.
+  Authenticated production clusters should supply `--peer-pin` values and set
+  `--require-peer-pins`.
+- **The browser SDK's MetaMask derivation path.** `sdk/sqc-sdk/src/derive.ts`
   derives the PQ key from a secp256k1 signature. The key's *use* is
   post-quantum; its *origin* is not, because anyone who can break secp256k1 can
   reproduce it. The SDK says so at the call site. It is a convenience, not a
@@ -44,7 +55,7 @@ including the wire between nodes.
 
 ### Conformance, stated precisely
 
-`core/crypto/acvp_test.go` runs an unmodified subset of the NIST ACVP vectors
+`core/crypto/acvp_test.go` runs a subset of published NIST ACVP vectors
 for ML-DSA-65 and ML-KEM-768, so the implementation matches what NIST specified
 rather than merely matching its own past output. That is a conformance test, not
 a validation certificate: there is no CAVP/CMVP submission, no FIPS 140-3 module
@@ -56,95 +67,98 @@ vectors" and "certified" are different claims, and only the first is made here.
 ## Table of Contents
 
 1. [What We Are Building and Why](#1-what-we-are-building-and-why)
-2. [The Problem With Every Other Blockchain](#2-the-problem-with-every-other-blockchain)
+2. [Migration Tradeoffs for Existing Blockchains](#2-migration-tradeoffs-for-existing-blockchains)
 3. [The New Architecture — Quantum Native From Block Zero](#3-the-new-architecture--quantum-native-from-block-zero)
 4. [Addresses — How They Work in a Quantum Chain](#4-addresses--how-they-work-in-a-quantum-chain)
 5. [Wallets — Creating One, Using One, Securing One](#5-wallets--creating-one-using-one-securing-one)
 6. [Full User Journey — From Zero to Sending Funds](#6-full-user-journey--from-zero-to-sending-funds)
 7. [Transactions — How They Are Created, Signed, Broadcast, Recorded](#7-transactions--how-they-are-created-signed-broadcast-recorded)
-8. [Smart Contracts — Fully Quantum-Native](#8-smart-contracts--fully-quantum-native)
-9. [Consensus — One Validator, Built to Scale](#9-consensus--one-validator-built-to-scale)
+8. [Smart Contracts — SQC-VM and QSol Prototype](#8-smart-contracts--sqc-vm-and-qsol-prototype)
+9. [Consensus — Phase 1 Single-Authority Finality](#9-consensus--phase-1-single-authority-finality)
 10. [Record Keeping — The Quantum Ledger](#10-record-keeping--the-quantum-ledger)
 11. [X402 — Native Payment Protocol](#11-x402--native-payment-protocol)
 12. [The Ecosystem — DApps, DeFi, NFTs, AI Agents](#12-the-ecosystem--dapps-defi-nfts-ai-agents)
 13. [Cryptographic Primitives Used (Technical Reference)](#13-cryptographic-primitives-used-technical-reference)
-14. [What Makes This Different — Comparison Table](#14-what-makes-this-different--comparison-table)
-15. [The Business Case for Investors](#15-the-business-case-for-investors)
+14. [Architecture Comparison — Not a Finality Benchmark](#14-architecture-comparison--not-a-finality-benchmark)
+15. [Business Claims and Evidence Boundary](#15-business-claims-and-evidence-boundary)
 16. [What Is Built vs What Comes Next](#16-what-is-built-vs-what-comes-next)
-17. [AI at the Core — The Intelligent Node](#17-ai-at-the-core--the-intelligent-node)
-18. [Banking and Financial Institutions](#18-banking-and-financial-institutions--the-perfect-fit)
+17. [Adaptive Scheduler](#17-adaptive-scheduler)
+18. [Banking, Settlement, and Compliance Boundary](#18-banking-settlement-and-compliance-boundary)
 
 ---
 
 ## 1. What We Are Building and Why
 
-Splendor Quantum Chain is a new Layer-1 blockchain built from scratch with one rule: **no conventional cryptography in anything the chain commits to or sends between nodes**. Where that rule stops — proxied TLS, the browser's MetaMask derivation path — is set out above and not glossed over below.
+Splendor Quantum Chain is a new Layer-1 built around post-quantum account and
+validator keys from genesis. It avoids the legacy-account migration problem of
+an ECDSA-ledger retrofit, while retaining conventional symmetric cryptography
+where it is appropriate.
 
-Every existing blockchain — Ethereum, Bitcoin, Solana, Binance Smart Chain, Cardano, Avalanche — uses the same underlying cryptographic primitives that quantum computers will eventually break. These chains were built in an era when quantum computers were theoretical. That era is ending.
-
-IBM's quantum computers already have over 1,000 qubits. Estimates from NIST, the NSA, and leading academic institutions put cryptographically relevant quantum computers — machines capable of breaking ECDSA and RSA — at 5–10 years away. The financial industry is already spending billions preparing. Governments have issued mandates.
-
-**The blockchain industry is not ready.**
-
-Splendor Quantum Chain is the answer. Not a patch on an existing chain. Not a compatibility layer. A fresh start — where:
+The native design uses:
 
 - **Accounts** are derived from post-quantum keys, not ECDSA
 - **Signatures** use ML-DSA-65 (NIST FIPS 204), not ECDSA
 - **Hashing** uses SHA-3-256 (SHA3-256), not SHA-256, SHAKE-256, or Keccak-256
-- **Key exchange** uses ML-KEM-768 (NIST FIPS 203), not ECDH
-- **Smart contracts** are signed, deployed, and called using quantum-safe operations only
-- **Validator messages** are signed with ML-DSA-65
+- **Native P2P session establishment** uses ML-KEM-768 (NIST FIPS 203)
+- **Contract deploy and call transactions** use native ML-DSA-65 account
+  signatures, while contract code and storage participate in SHA3-256 state
+  commitments
+- **Implemented validator protocol messages** use purpose-specific ML-DSA-65
+  signatures
 - **Block headers** are hashed with SHA-3
-- **Node-to-node block push, peer announce, and catch-up sync** are all sealed with ML-KEM-768 + AES-256-GCM. A node that falls behind does not drop back to cleartext for the bulk of its traffic: plaintext is refused unless the operator passes `--allow-plaintext-p2p`. Encryption authenticates the channel; the ML-DSA-65 signature on each block is what authenticates the chain
+- **Node-to-node block push, peer announce, and catch-up sync** are sealed with
+  ML-KEM-768 + AES-256-GCM by default. Plaintext requires
+  `--allow-plaintext-p2p`; configured pins plus `--require-peer-pins` are needed
+  to replace first-contact trust with operator-supplied peer identity
 
-The result is a chain that will still be cryptographically secure the day a quantum computer tries to attack it.
-
-We are not the first post-quantum chain and do not claim to be: QRL has run a post-quantum mainnet for years, and QRL 2.0 uses ML-DSA-87. What is distinctive here is that the post-quantum guarantee extends past signatures to the state commitment and the peer-to-peer channel — including catch-up sync — rather than stopping at the ledger.
+The chain is designed to resist cryptographically relevant quantum attacks
+under the current security assumptions of ML-DSA, ML-KEM, SHA3-256, AES-256,
+and the implementation surrounding them. No claim is made that Splendor is the
+first post-quantum blockchain.
 
 ---
 
-## 2. The Problem With Every Other Blockchain
+## 2. Migration Tradeoffs for Existing Blockchains
 
-### Why quantum resistance cannot be "bolted on" to Ethereum
+### Why retrofitting a mature ledger is difficult
 
 People often ask: "Can't Ethereum just upgrade to quantum-safe cryptography?"
 
-The answer is: not without breaking everything.
-
-Here's why:
+It can, but the migration is a large protocol, custody, application, and
+governance project.
 
 **Every Ethereum address is derived like this:**
 ```
 address = last_20_bytes(keccak256(ecdsa_public_key))
 ```
 
-The address is mathematically bound to the ECDSA public key. Every wallet, every smart contract, every DeFi position, every NFT is owned by an address that was created this way. To change the underlying cryptography, you'd have to:
-
-1. Assign everyone a new address (impossible — the old address is already in millions of contracts)
-2. Or add a "shim" layer on top (which means the security is only as strong as the old ECDSA layer underneath it)
-
-Neither option actually solves the problem. The moment a quantum computer can break ECDSA, it can steal any funds sitting in any Ethereum wallet where a transaction has ever been sent — because sending a transaction reveals the public key.
-
-**The only real solution is a new chain where the quantum-safe algorithm is the base layer.**
-
-That is Splendor Quantum Chain.
+Mature chains can introduce new signature schemes, account abstraction,
+migration contracts, or protocol upgrades. They still have to coordinate users,
+custodians, applications, and assets that depend on existing keys and account
+semantics. Splendor makes a different tradeoff: post-quantum account keys are
+native, so it has no legacy ECDSA account base to migrate. Splendor is not
+EVM-compatible, and avoiding that migration cost also means giving up Ethereum
+compatibility.
 
 ---
 
 ## 3. The New Architecture — Quantum Native From Block Zero
 
-The chain is structured in four layers. Every layer uses exclusively post-quantum algorithms.
+The chain is structured in four layers. Native public-key operations use the
+post-quantum mechanisms described below; symmetric encryption, password KDFs,
+TLS certificates, browser integrity hashes, and optional compatibility routes
+remain within their stated boundaries.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  APPLICATION LAYER                                                │
 │  DApps · DeFi · NFTs · AI Agents · X402 Payments                │
-│  (all interact via quantum-safe RPC and quantum-signed txns)     │
+│  (native transactions use ML-DSA-65 signatures)                 │
 └─────────────────────────────┬────────────────────────────────────┘
-                              │ Quantum-Safe JSON-RPC
+                              │ JSON-RPC (transport depends on deployment)
 ┌─────────────────────────────▼────────────────────────────────────┐
 │  EXECUTION LAYER                                                  │
-│  Smart Contract VM (quantum-native bytecode execution)           │
+│  SQC-VM bytecode execution                                       │
 │  Quantum Transaction Processor                                    │
 │  All state reads/writes hashed with SHA-3                        │
 │  All signatures verified with ML-DSA-65                          │
@@ -152,9 +166,9 @@ The chain is structured in four layers. Every layer uses exclusively post-quantu
                               │
 ┌─────────────────────────────▼────────────────────────────────────┐
 │  CONSENSUS LAYER                                                  │
-│  Single Validator (Phase 1) → Scalable later                     │
-│  All consensus messages signed with ML-DSA-65                    │
-│  Block finality in < 2 seconds                                   │
+│  Single authorized validator (Phase 1)                           │
+│  Blocks signed with ML-DSA-65                                    │
+│  Approximately 2-second configured block interval                │
 └─────────────────────────────┬────────────────────────────────────┘
                               │
 ┌─────────────────────────────▼────────────────────────────────────┐
@@ -172,7 +186,10 @@ The genesis block — block 0, the very first block — is:
 - Signed by the genesis validator using ML-DSA-65, not ECDSA
 - Contains the first account entries whose addresses are derived from ML-DSA-65 public keys
 
-There is no moment in this chain's history where conventional cryptography was used. A quantum computer attacking the chain 10 years from now would find no weak link, because there never was one.
+The native ledger did not begin with ECDSA accounts and later receive a
+post-quantum upgrade. That narrower statement does not make browsers, TLS
+frontends, build systems, operator hosts, or future cryptanalysis disappear;
+those boundaries must be assessed separately.
 
 ---
 
@@ -205,8 +222,9 @@ ML-DSA-65 private key (4032 bytes, random)
 ```
 
 **Key differences:**
-- **32-byte address** instead of 20-byte — more collision-resistant, more future-proof
-- **SHA-3** instead of Keccak-256 — SHA-3 is NIST-standardised and has no known quantum weakness in this context
+- **32-byte address** instead of 20-byte — the full SHA3-256 output is retained
+- **SHA-3** instead of Keccak-256 — SHA3-256 is standardized in FIPS 202 and
+  is used under its current collision- and preimage-resistance assumptions
 - **ML-DSA-65 public key** as the root — the key pair is post-quantum from the start
 
 **What an address looks like:**
@@ -214,7 +232,8 @@ ML-DSA-65 private key (4032 bytes, random)
 SQ:a7f3c9d2e1b48f6a3c7d9e2f1b48a6c3d7e9f2a1b3c8d4e7f6a2c9d3e8f1b4
 ```
 
-The `SQ:` prefix immediately identifies this as a Splendor Quantum Chain address. It cannot be confused with an Ethereum address. It is not compatible with MetaMask by default (intentional — this is a quantum-native chain, not an Ethereum clone).
+The `SQ:` prefix and 32-byte payload distinguish this format from an Ethereum
+address. It is not EVM-compatible and is not a native MetaMask account format.
 
 ### Address generation is completely offline
 
@@ -266,13 +285,22 @@ After this point, all future transactions from this address are verified against
 
 ### The key size challenge and how we solve it
 
-A ML-DSA-65 private key is 4,032 bytes — 126 times larger than an Ethereum private key (32 bytes). You cannot just write it on a piece of paper like a seed phrase. One storage option ships today; the two hardware options below it are designs:
+An expanded ML-DSA-65 private key is 4,032 bytes — 126 times larger than an
+Ethereum private key (32 bytes). The CLI stores that expanded key in an
+encrypted file. The separate browser extension instead derives the key from a
+32-byte seed that can be represented by a 24-word BIP-39 mnemonic. One CLI
+storage option ships in this repository; the two hardware options below it are
+designs:
 
 ---
 
 **Option A: Encrypted File Storage** (for everyday users)
 
-The private key is stored in an encrypted file on the user's device. The file is encrypted using a password that the user sets. The encryption algorithm used is AES-256-GCM — a symmetric cipher that is quantum-resistant for key storage purposes (Grover's algorithm halves AES-256's effective key length, but 128-bit security is still considered safe).
+The private key is stored in an encrypted file on the user's device. The file
+is encrypted using a password that the user sets. The implementation uses
+AES-256-GCM after Argon2id derivation; an idealized Grover search would reduce
+the symmetric brute-force margin, while password strength, KDF parameters,
+device security, and implementation quality remain practical boundaries.
 
 ```
 wallet.sqwallet — fields exactly as core/crypto/wallet_store.go writes them:
@@ -308,7 +336,8 @@ stored per file so they can be raised later, and floored on load (time ≥ 1,
 memory ≥ 32 MB, salt ≥ 16 bytes) so nobody can weaken a file into an easy
 offline guess.
 
-The password is never stored. Only the user knows it. To open the wallet, the user enters their password, which decrypts the private key in memory.
+The password is not stored in the wallet file. To open the wallet, the user
+enters it and the software decrypts the private key in memory.
 
 ---
 
@@ -317,7 +346,8 @@ integration exists in this repository; what follows is the intended flow.
 
 The ML-DSA-65 private key would be written to the secure element of a physical NFC card — a dedicated chip that:
 - Stores the key in hardware-protected non-extractable memory
-- Performs signing operations internally (the key never leaves the chip)
+- Would perform signing operations internally so the intended flow does not
+  export the key
 - Requires a PIN to authorise each signing operation
 
 **How signing works with the NFC card:**
@@ -330,7 +360,8 @@ The ML-DSA-65 private key would be written to the secure element of a physical N
 6. The card sends back: `{ signature: "3309_bytes_of_mldsa_sig" }` via NFC
 7. The app attaches the signature to the transaction and broadcasts it
 
-**The private key never touches the internet. Ever.**
+The intended security boundary is that the private key remains inside the
+card. No card integration exists here, so that property has not been tested.
 
 A 3,309-byte signature is small enough to cross NFC in a fraction of a second, which is what makes the flow plausible. No timing is quoted here, because no card exists yet to measure.
 
@@ -342,12 +373,15 @@ repository implements it.
 For maximum security — where not even an NFC communication channel is trusted:
 
 1. Wallet app on the online device builds the transaction and encodes the hash as a QR code
-2. An offline device (a phone that has NEVER connected to the internet) scans the QR
+2. A deliberately offline device scans the QR
 3. The offline device has the ML-DSA-65 private key stored locally
-4. The offline device signs the hash and encodes the signature as a series of QR codes (2 QR codes needed for 3,309-byte signature)
+4. The offline device signs the hash and encodes the signature as multiple QR
+   frames; the framing format and frame count are not implemented yet
 5. The online device scans the QR codes, reconstructs the signature, and broadcasts the transaction
 
-**Zero data ever travels over a network to or from the signing device.** Air-gap maintained throughout.
+The intended flow transfers data optically and keeps the signing device
+offline. That boundary cannot be claimed as tested until an application and
+operational procedure exist.
 
 ---
 
@@ -359,7 +393,12 @@ If a user loses their device:
 - **For NFC card:** They need the physical card and their PIN. The card IS the wallet.
 - **For airgapped:** They need the offline device (or a backup of the private key file on another offline device)
 
-**There is no 12-word seed phrase.** The key is too large for seed phrases. This is a different model from Ethereum wallets — and it is more secure.
+The CLI `.sqwallet` flow backs up the encrypted wallet file and password; it
+does not expose a mnemonic. A separate prototype
+[browser-extension wallet](https://github.com/Splendor-Protocol/splendor-quantum-wallet-extension)
+derives ML-DSA-65 keys from 32 bytes of entropy and can encode that entropy as a
+24-word BIP39 recovery phrase. A recovery representation is a custody choice,
+not evidence that one wallet is inherently more secure than another.
 
 ---
 
@@ -372,12 +411,15 @@ If a user loses their device:
 **Step 1: Alice gets a Splendor QC wallet**
 
 Available today:
-- CLI wallet (`sqc-wallet`, encrypted `.sqwallet` file) — Windows, Mac, Linux
-- Browser Connect flow via the JavaScript SDK, with keys held in WASM memory
+- CLI wallet source (`sqc-wallet`, encrypted `.sqwallet` file)
+- Canonical JavaScript/TypeScript SDK and browser Connect flow, with signing in
+  WASM memory
+- A prototype Chrome-compatible wallet extension in the separate repository
+  linked above; verify its release and audit status before production use
 
-Designed but not built: packaged desktop and mobile (iOS, Android) apps. The
-walkthrough below describes the wallet flow generally; today it is the CLI and
-the browser SDK that implement it.
+Packaged desktop and mobile (iOS, Android) apps are not built. The walkthrough
+below describes the CLI file-wallet flow; the extension uses a seed-derived
+encrypted browser vault instead of the `.sqwallet` format.
 
 ---
 
@@ -395,15 +437,17 @@ The app also shows:
 - (Designed, not built) an option to write the private key to an NFC card
 - Her current balance: 0 SPLD
 
-This takes about 5 seconds total. No signup. No KYC. No email. No connection to any server needed.
+Key generation and address derivation are local operations. Access to tokens,
+exchanges, faucets, or regulated applications is outside this repository and
+may impose its own account or compliance requirements.
 
 ---
 
 **Step 3: Alice gets some SPLD tokens**
 
 She can:
-- Buy SPLD from a supported exchange and withdraw to her SQ address
 - Receive SPLD from someone who already has it
+- Use a faucet on a network where an operator provides one
 - Not today: earn SPLD by running a validator node. Phase 1 has one validator, whose key is pinned in genesis, and no path exists for a second one to join
 
 ---
@@ -476,7 +520,7 @@ bytes that actually get hashed come from `json.Marshal` of `TransactionBody`
 - `data` is `[]byte`, so it is base64, and it is omitted entirely when empty
 
 Do not hand-author a signed transaction from this document. Use the WASM signer
-in `@splendor/pq-bridge`, or an implementation that reproduces Go's
+in `@splendor/sqc-sdk`, or an implementation that reproduces Go's
 `encoding/json` output byte for byte — anything else hashes differently and the
 node rejects the signature.
 
@@ -500,7 +544,10 @@ The signed transaction is:
 }
 ```
 
-Total signed transaction size: ~8–10 KB (large compared to Ethereum's ~200 bytes, but completely manageable for a modern network).
+Total signed transaction size depends on payload size; an otherwise small
+transaction is several kilobytes because it carries a 1,952-byte public key and
+a 3,309-byte signature. Capacity implications should be evaluated against the
+actual workload and network limits.
 
 ---
 
@@ -531,9 +578,11 @@ In Phase 1, there is one validator. The validator:
 3. Executes them: deducts from Alice's balance, adds to Bob's balance
 4. Builds a new block containing the transactions
 5. Signs the block with its own ML-DSA-65 validator key
-6. Broadcasts the signed block to all nodes
+6. Broadcasts the signed block to connected peers
 
-Block time: under 2 seconds.
+The configured production interval is approximately two seconds by default.
+Load, execution time, failures, and deployment conditions can affect when a
+particular transaction is included.
 
 ---
 
@@ -598,7 +647,7 @@ Node validates: signature, nonce, balance
                 Block signed by validator (ML-DSA-65)
                         │
                         ▼
-                Block broadcast to all nodes
+                Block broadcast to connected peers
                         │
                         ▼
                 Nodes verify block signature (ML-DSA-65)
@@ -607,7 +656,8 @@ Node validates: signature, nonce, balance
                 Block appended to chain
                         │
                         ▼
-                Transaction FINAL ✅
+                Committed by the authorized validator
+                (single-authority finality)
 ```
 
 ### Transaction fees
@@ -626,13 +676,15 @@ This means even if someone intercepts your signed transaction, they cannot reuse
 
 ---
 
-## 8. Smart Contracts — Fully Quantum-Native
+## 8. Smart Contracts — SQC-VM and QSol Prototype
 
 Smart contracts on Splendor Quantum Chain work similarly to Ethereum's, but with quantum-safe foundations.
 
 ### What a smart contract is (plain English)
 
-A smart contract is a program that lives on the blockchain. Once deployed, it runs automatically when called. It follows rules coded by the developer — no human can change those rules after deployment.
+A smart contract is bytecode stored on the blockchain and executed when called.
+Its behavior follows that bytecode and the chain rules active at the block that
+executes it.
 
 **Example:** A simple token contract. The rules say: "If you call `transfer(to, amount)` and you have enough tokens, deduct from your balance and add to theirs." This executes automatically. No bank. No intermediary. The code runs.
 
@@ -640,7 +692,8 @@ A smart contract is a program that lives on the blockchain. Once deployed, it ru
 
 **Deploying a contract:**
 
-1. Developer produces SQC-VM bytecode (by hand or with their own tooling — there is no compiler here; see below)
+1. Developer produces SQC-VM bytecode, directly or with the prototype
+   `sqc-solc` compiler described below
 2. Bytecode is checked with `POST /vm/validate`, read back with `POST /vm/disasm`, and costed with `POST /vm/estimate-gas`
 3. Developer creates a Deploy transaction containing the bytecode
 4. Signs it with their ML-DSA-65 key
@@ -663,25 +716,41 @@ A smart contract is a program that lives on the blockchain. Once deployed, it ru
    - Emit events (logged permanently)
 5. Results recorded in the block
 
-### What language are contracts written in? — nothing, yet
+### QSol-subset compiler
 
-There is **no contract compiler in this repository**, and no high-level contract
-language you can write and compile today. Anyone telling you otherwise has read
-a roadmap, not the code. What exists is two layers below that:
+A prototype QSol-subset compiler is built and working. `compiler/` parses a
+Solidity-flavored subset, emits deployable SQC-VM v4 bytecode, and produces ABI
+metadata containing function selectors and event topics. `cmd/sqc-solc` exposes
+it as a CLI. Compiler tests compile, deploy, and call generated bytecode against
+the real VM.
+
+The implemented subset supports scalar `uint256`, `address`, and `bool` state;
+mappings; functions and parameters; local variables; checked arithmetic;
+conditions; gas-bounded `for` and `while` loops; events; `msg.sender`;
+`msg.value`; and common control flow. It does **not** yet provide constructors,
+internal function calls, arrays, structs, strings, inheritance, package
+management, source-verification integration, IDE tooling, audits, or full
+Solidity compatibility. Use a guarded `init()` in place of a constructor.
+
+One integration mismatch remains before this can be called a complete
+toolchain: the compiler currently emits selectors using the Solidity type name
+`address`, while the canonical SDK's QSol ABI guard expects `sqaddress`.
+
+The execution surface has two layers:
 
 **1. SQC-VM bytecode (`vm/`).** A stack VM with SHA-3-256 storage slots, `SQ:`
 addresses, gas metering, and a disassembler. A Deploy transaction carries raw
 SQC-VM bytecode in its `data` field. `POST /vm/disasm`, `POST /vm/validate`,
 `POST /vm/estimate-gas` and `GET /vm/opcodes` let you inspect and check that
-bytecode; nothing generates it from source.
+bytecode.
 
 **2. Native Go modules (`vm/`).** Token standards, a DEX, lending, staking,
 multisig and an oracle are implemented in Go inside the node rather than
-compiled from user source. This is how tokens and DeFi ship on this chain
-today, and it is why the absence of a compiler has not blocked anything so far.
+compiled from user source. This is how the fork-gated token, exchange, and
+bridge actions are implemented.
 
 Be precise about which of them a transaction can actually drive.
-`DispatchModuleCall` (`vm/module_router.go`) routes four modules; the
+`DispatchModuleCall` (`vm/module_router.go`) routes five modules; the
 authoritative action list is `vm.KnownModuleActions`
 (`vm/module_router_read.go`), and every write that arrived after a module
 first shipped is gated by a fork the genesis document schedules (`forks` in
@@ -710,43 +779,44 @@ and their `/lending/*`, `/staking/*` and `/gov/*` RPC routes read their state,
 but no transaction reaches them: until the router learns those module names,
 they are library code, not a live surface.
 
-**Roadmap, not shipped: Quantum Solidity (QSol).** The intended language is a
-Solidity dialect — `sqaddress` for 32-byte addresses, `sha3()` in place of
-`keccak256()`, a built-in `verify_mldsa(...)`, and no `ecrecover()`. It is a
-specification and an intention. No parser, no compiler, no toolchain exists in
-this repository, so no QSol source has ever been deployed. The illustrative
-sample that used to sit here has been removed rather than left where a reader
-could mistake it for something they can compile.
+The source tree proves that these modules are implemented and reachable when
+their fork gates are active; it does not prove that every live tier has
+activated them. The dated deployment snapshot in
+[`docs/readme-claim-evidence.md`](docs/readme-claim-evidence.md) records the
+fork schedules observed on the public tiers.
 
-### Contract state is quantum-safe
+### Contract state commitment
 
-State is committed with a binary Merkle root over the **entire** state — account records, contract code, contract storage slots, and X402 nonces — and that root is included in every block header. Leaves are length-prefixed and domain-separated before hashing, so no two different states can collide by concatenation ambiguity.
+State is committed with a binary SHA3-256 Merkle root over the **entire** state
+— account records, contract code, contract storage slots, and X402 nonces — and
+that root is included in every block header. Leaves are length-prefixed and
+domain-separated to avoid concatenation ambiguity.
 
 Committing storage and code (not just balances) is what stops a silent fork: if the root covered accounts only, two nodes with byte-different token balances or DEX reserves could hash to the same root and "agree" while diverging.
 
 A full Sparse Merkle Tree, adding per-account inclusion proofs so a light client can verify one account without the whole state, is planned but not yet implemented.
 
-There is no SHA-256. No Keccak. SHA-3 everywhere.
+The native ledger commitment path uses SHA3-256. Browser integrity pins and
+other off-chain surfaces may use SHA-256 as described at the top of this file.
 
 ---
 
-## 9. Consensus — One Validator, Built to Scale
+## 9. Consensus — Phase 1 Single-Authority Finality
 
 ### Phase 1: Single Validator
 
-In Phase 1, the network runs with a single validator. This is intentional.
-
-**Why start with one validator?**
-
-- **Security.** A single trusted validator eliminates the attack surface of multi-party consensus before the ecosystem is mature. There's no "51% attack" if there's one validator you control.
-- **Speed.** No time spent on voting, leader election, or Byzantine fault tolerance overhead. A block costs one signature, not a round of messages.
-- **Simplicity.** Every component can be tested, audited, and hardened before adding complexity.
-- **Precedent.** Ethereum ran with a very small validator set for years before decentralising. Bitcoin had one miner initially.
+Phase 1 runs with one authorized validator. This provides deterministic
+single-authority block production, not decentralized economic or Byzantine
+finality. Compromise of the validator key or host is therefore a critical risk;
+the absence of a 51% voting threshold does not make the network impossible to
+attack.
 
 **What the single validator does:**
 1. Receives transactions from the mempool
 2. Orders and executes them
-3. Builds a block on a fixed timer — `--block-interval`, 2 seconds by default. A full mempool does not trigger an early block; it only makes the next one larger
+3. Builds a block on a fixed timer — `--block-interval`, approximately 2 seconds
+   by default. A full mempool does not trigger an early block; it only makes the
+   next one larger
 4. Signs the block with its ML-DSA-65 key
 5. Broadcasts to all full nodes
 
@@ -773,17 +843,24 @@ Every full node verifies:
 ML_DSA_65.Verify(validator_public_key, block_hash, "SPLENDOR-QC-BLOCK-v1", block_sig) == true
 ```
 
-If any node receives a block with an invalid ML-DSA-65 signature, it rejects it. This makes it impossible for anyone — quantum computer or not — to forge a block.
+If a node receives a block with an invalid ML-DSA-65 signature, it rejects it.
+Under the current assumptions of ML-DSA and this implementation, a party
+without the authorized validator key should not be able to forge that
+signature. A party controlling the authorized key can sign blocks, which is why
+validator custody remains a central security boundary.
 
 ### Phase 2 and Beyond: Expanding Validators
 
-When the ecosystem is ready, additional validators join:
+The intended future design would add:
 
 - New validators register by staking SPLD and registering their ML-DSA-65 public key
 - Consensus upgrades to a BFT protocol (all signatures still ML-DSA-65)
 - Governance is handled by token holders (voting via ML-DSA-65-signed transactions)
 
-None of that exists yet. There is no BFT protocol, no path for a second validator to join, and no way for a passed proposal to change consensus: `Execute` in `vm/governance.go` marks a proposal Executed and applies nothing else. The block format would not have to change, which is why this is an upgrade rather than a new chain — but it is unwritten code, not a vote away.
+None of that is wired into the running node. `consensus/bft.go` is explicitly
+incomplete, there is no production path for a second independent validator to
+join, and a passed governance proposal cannot change consensus: `Execute` in
+`vm/governance.go` marks a proposal Executed and applies nothing else.
 
 ---
 
@@ -819,15 +896,21 @@ Splendor QC uses SHA-3 because:
 - It is NIST FIPS 202 standardised — the same authority that standardised ML-DSA-65
 - It provides 256-bit output → 128-bit quantum security (Grover's algorithm)
 - It is consistent with NIST's overall post-quantum migration framework
-- Using the same standards body across all primitives simplifies compliance and auditing
+- Using the same standards family makes the implementation boundary easier to
+  document; it does not itself establish compliance or audit approval
 
 **State storage — binary SHA-3-256 Merkle commitment over the whole state:**
 
-Accounts, contract code, contract storage slots, and X402 nonces are all hashed into a binary Merkle tree whose root is in every block header. Leaves are length-prefixed and domain-separated (leaf tag `0x00`, internal tag `0x01`) so distinct states cannot collide. This means:
+Accounts, contract code, contract storage slots, and X402 nonces are all hashed
+into a binary Merkle tree whose root is in every block header. Leaves are
+length-prefixed and domain-separated (leaf tag `0x00`, internal tag `0x01`) to
+avoid structural ambiguity. Subject to SHA3-256's collision-resistance
+assumption, this means:
 
 - Two nodes that disagree on any balance, storage slot, or contract byte produce different roots, so divergence is detected instead of silently tolerated
 - The commitment chain: state leaf → SHA-3 leaf hash → SHA-3 parent hashes → state root in block header → block signed with ML-DSA-65
-- Every step is quantum-safe
+- Every native signature and commitment step uses the algorithms and security
+  assumptions stated at the top of this file
 - Blocks and receipts are queryable at any height; **state is not**. `/balance`, `/nonce` and the contract routes read current state only, and no endpoint accepts a height, so “the balance at block N” cannot be asked of a node today
 
 Not yet built: a **proof API**. The tree would support per-account inclusion proofs, but no endpoint serves them, so a light client cannot today verify one account without trusting a full node. That is what the planned Sparse Merkle Tree work is for.
@@ -840,39 +923,48 @@ All transactions in a block are hashed into a Merkle tree (SHA-3) whose root sit
 
 ## 11. X402 — Native Payment Protocol
 
-X402 is built into the Splendor QC node at the RPC layer. It lets any HTTP server charge per API call, with no payment processor and no subscription. Access is granted the moment the signed payment verifies; the money moves when the settlement transaction lands in the next block.
+Splendor implements a dedicated `TxX402` authorization and settlement path.
+The node verifies an ML-DSA-65 payment authorization, binds it to a
+payer-signed settlement transaction, applies validity-window, receiver, amount,
+balance, chain-ID, and nonce checks, and admits the settlement through the
+normal mempool and block-execution pipeline.
 
 ### How it works end-to-end
 
-**Server side (API operator):**
+**Server-side access gate:**
 
-The API operator adds one middleware to their server. The helper is
-`x402Middleware`, exported from `sdk/sqc-sdk.js`, and it takes an initialised
-SDK instance as its first argument:
+The canonical package exports a framework-agnostic access middleware:
 ```javascript
-const { SplendorQC, x402Middleware } = require('./sdk/sqc-sdk.js');
+import { Connection, createX402Middleware } from '@splendor/sqc-sdk';
 
-const sdk = new SplendorQC('https://quantum-rpc.splendor.org');
+const connection = new Connection({
+  rpcUrl: 'https://quantum-rpc.splendor.org',
+  chainId: 'splendor-quantum-1',
+});
 
-app.use('/api/data', x402Middleware(sdk, {
+app.use('/api/data', createX402Middleware({
+  connection,
   payTo: 'SQ:operator_address...',
-  price: '0.001',   // SPLD per request, or a route-pattern map
+  price: '0.001',
 }));
 ```
 
-Every request to `/api/data` now returns `402` with signed payment requirements
-until a valid `X-Payment` header arrives.
+This middleware issues requirements and verifies the `X-Payment` authorization,
+but it does **not** itself submit a settlement transaction. Applications that
+must enforce payment before access should require the payer-side settlement
+result or add an application-level confirmation policy rather than treating a
+reusable verification result as proof of settlement.
 
 **Client side (user or AI agent):**
 
 ```
-1. Client sends:    GET /api/data
-2. Server responds: HTTP 402 { "pay_to": "SQ:...", "amount": "0.001" }
-3. Client signs payment with their ML-DSA-65 key
-4. Client sends:    GET /api/data
-                    X-Payment: { signed_payment_payload }
-5. Server verifies payment with Splendor QC node
-6. Server responds: 200 OK { data }
+1. Client requests the resource and receives HTTP 402 requirements
+2. Client signs the X402 authorization with ML-DSA-65
+3. Client signs a `TxX402` settlement using the same payment nonce
+4. Client submits requirements, authorization, and `settlement_tx` to
+   `POST /x402/settle`
+5. Node validates and admits the transaction to the mempool
+6. Application applies its own access and confirmation policy
 ```
 
 **Payment on chain:**
@@ -885,7 +977,7 @@ and a `settlement_tx` — a `TxX402` signed by the *payer*. The node:
 3. Puts the settlement transaction into the mempool, where the payer's
    signature, nonce, fee floor, and balance are checked like any other
    transaction
-4. Executes it in the next block, where the X402 replay registry is re-checked
+4. Re-checks the X402 replay registry during block execution
 
 The server cannot debit the payer on its own; only the payer can produce the
 settlement transaction, because it consumes the payer's nonce. That is
@@ -893,266 +985,222 @@ deliberate — an earlier design settled inside the HTTP handler, which meant th
 transfer existed on the node that received the call and nowhere else. Settlement
 goes through consensus now, so it lands in a block and in the state root.
 
-⚠️ The `x402Middleware` in `sdk/sqc-sdk.js` calls `sdk.x402Settle(requirements,
-payload)` **without** a `settlement_tx`, so its settlement leg currently gets a
-`400` and only logs. The middleware still gates access correctly; to actually
-settle, use `payX402` from `@splendor/pq-bridge`, which signs the settlement
-transaction on the payer side.
+Use `payX402` from `@splendor/sqc-sdk` for the current payer-side
+authorization-and-settlement flow. The deprecated top-level `sdk/sqc-sdk.js`
+calls settlement without the required `settlement_tx` and is unsafe for current
+production submit flows. The current TypeScript middleware verifies access but
+also deliberately leaves settlement to the payer/application.
 
-Settlement lands in the next block. No payment processor takes a cut.
+A valid admitted transaction is expected in the next produced block under
+normal operation, not guaranteed within two seconds. The normal chain
+transaction fee is required. The reviewed code imposes no mandatory payment-
+processor percentage.
 
-### What makes X402 different from existing payment systems
+### X402 implementation status
 
-| Feature | Stripe/PayPal | Lightning Network | Splendor X402 |
-|---------|--------------|-------------------|---------------|
-| Works for AI agents | ❌ (needs human) | ❌ (complex setup) | ✅ |
-| Sub-cent payments | ❌ (fees too high) | ✅ | ✅ |
-| Quantum-safe payment | ❌ | ❌ | ✅ |
-| Settlement time | 1–3 days | instant | < 2 seconds |
-| Intermediary cut | 2.9% + 30¢ | routing fees | 0% |
-| One-line integration | ❌ | ❌ | ✅ |
-| Works without account | ❌ | ❌ | ✅ |
+| Capability | Status |
+|---|---|
+| Dedicated native transaction type | Built in code |
+| ML-DSA-65 payment authorization | Built and tested |
+| Payer-signed settlement transaction | Built and tested |
+| On-chain nonce replay protection | Built and tested |
+| AI-agent-compatible wallet automation | Supported by the protocol; application integration and key custody are required |
+| Mandatory processor percentage | None in the reviewed code |
+| Chain transaction fee | Required |
+| Expected settlement | Next produced block under normal operation; not a latency or inclusion guarantee |
+| Deprecated `sdk/sqc-sdk.js` automatic settlement | Incomplete; omits `settlement_tx` |
+| Current `createX402Middleware` automatic settlement | Not implemented; verification/access gate only |
 
 ---
 
 ## 12. The Ecosystem — DApps, DeFi, NFTs, AI Agents
 
-### What gets built on this chain
+This section separates reachable code from product direction.
 
-The Splendor Quantum Chain is general-purpose infrastructure. Anything that can be built on Ethereum can be built here — with quantum resistance baked in. This section describes what the chain is *for*, not what is deployed on it: of the modules below, only tokens and the DEX can be driven by a transaction today (section 8).
+### Reachable application surfaces in the source tree
 
----
+- SQC-VM deployment and calls
+- QRC-20 and DEX actions available from the launch rules
+- Fork-gated QRC-1155, exchange, and migration-bridge actions
+- X402 authorization and payer-signed settlement
+- Contract events and current-state reads
 
-### DeFi (Decentralised Finance)
+The live availability of a fork-gated action depends on the tier's persisted
+fork schedule. Lending, staking, governance, oracle, multisig, QRC-721, and
+QRC-4626 files exist, but the transaction router does not expose them. They are
+not product features merely because library code and read routes exist.
 
-**Decentralised Exchanges (DEX):**
-Users trade tokens directly with each other through smart contracts. No central exchange. No withdrawal limits. No KYC. All transactions signed with ML-DSA-65.
+### Product directions, not current deployments
 
-**Lending and Borrowing:**
-Users deposit SPLD or other tokens as collateral, borrow other assets. Interest rates are set algorithmically. Liquidations are automatic. No bank involved.
+Tokens, marketplaces, games, machine payments, credentials, regulated-asset
+workflows, and financial applications are possible uses of the VM and native
+modules. The repository does not establish that such applications are deployed,
+audited, legally compliant, liquid, or suitable for production.
 
-**Yield Farming / Staking:**
-Users lock tokens in smart contracts to earn rewards. All automated. All quantum-safe.
+The planned AI layer is a decentralized model, storage, inference, licensing,
+and creator-payment network. Model weights and computation would remain
+off-chain while Splendor records post-quantum identities, model manifests,
+usage receipts, licenses, and settlement. That product is **not implemented** by
+the current adaptive node scheduler. Today, an application can automate the
+`payX402` flow, but it must still provide secure key custody, funding, error
+handling, access policy, and settlement confirmation.
 
-**Why DeFi on Splendor QC specifically?**
-DeFi manages billions of dollars. Today's DeFi on Ethereum will be vulnerable to quantum attacks within the decade. Users and institutions who move their DeFi positions to Splendor QC now get the same financial tools with a 10-year security advantage. That is a powerful pitch to institutional DeFi users.
-
----
-
-### NFTs (Non-Fungible Tokens)
-
-NFTs on Splendor QC work the same as on Ethereum — unique digital assets representing art, music, game items, real-world assets.
-
-The key difference: **the ownership signature is ML-DSA-65, not ECDSA**. An NFT on Ethereum proves ownership with ECDSA. A quantum computer could forge that proof. An NFT on Splendor QC proves ownership with ML-DSA-65 — which no known quantum algorithm can forge.
-
-For high-value digital art and real-world asset tokenization, this distinction matters enormously.
-
----
-
-### Gaming and GameFi
-
-Games with in-game economies — where items, characters, and land are owned by players as tokens — require fast, cheap transactions. Splendor QC's sub-2-second block time and near-zero fees make it suitable for high-frequency game transactions.
-
-Game developers deploy SQC-VM bytecode, or use the native token modules already in the node. Players create wallets. In-game items are tokens. Trades happen on-chain, instantly, quantum-safely.
-
----
-
-### AI Agents
-
-This is the most forward-looking use case and arguably the most important.
-
-**The problem AI agents have today:**
-An autonomous AI agent — a software program that acts on behalf of a user, making decisions and taking actions — needs to pay for things: compute time, data, API calls, storage, other AI services. Currently, this requires:
-- A credit card (requires a human to set up)
-- A bank account (requires a human and a legal entity)
-- API keys pre-purchased by a human
-- Manual top-ups when the balance runs low
-
-This is a fundamental bottleneck for autonomous AI. The AI can decide, reason, and act — but it can't pay.
-
-**What Splendor QC enables:**
-An AI agent has a Splendor QC wallet. Its ML-DSA-65 private key is stored securely in the agent's environment. When it needs to pay for something, it signs a payment transaction automatically. No human in the loop.
-
-The flow an agent runs is the X402 flow from section 11, with no human at any
-step:
-
-```
-1. Agent calls the paid endpoint, gets 402 + signed requirements
-2. Agent signs an X402 payload with its ML-DSA-65 key
-3. Agent signs the settlement TxX402 for the same pinned nonce
-4. Agent retries with X-Payment; the server verifies and serves
-5. The settlement transaction lands in the next block
-```
-
-`payX402` in `@splendor/pq-bridge` (`sdk/bridge/src/wallet.ts`) does steps 2–4
-in one call. There is no Python SDK — only the JavaScript/TypeScript one is
-published — so an agent in another language speaks the HTTP protocol directly.
-
-AI agents can also:
-- Pay other AI agents for sub-tasks
-- Receive payment for services they provide
-- Hold and manage SPLD balances autonomously
-- Participate in DeFi to earn yield on idle funds
-
-This creates the foundation for a true **AI economy** — autonomous economic agents that can earn, spend, and save without human intervention, all secured by quantum-safe cryptography.
-
----
-
-### Identity and Credentials
-
-Since every Splendor QC account is anchored to an ML-DSA-65 key pair, accounts can be used as cryptographic identities.
-
-These are use cases the primitives would support. The first two are **not
-implemented in this repository**: there is no attestation registry and no
-credential contract. The third partly is — `vm/governance.go` holds proposals,
-votes, quorum and timelock, and `/gov/*` serves them read-only. What it lacks
-is a way in and a way out: the module router dispatches `qrc20`, `qrc1155`,
-`dex` and `exchange` (see the table under "Native Go modules"), not
-`governance`, so no transaction can submit or vote today, and `Execute` marks a proposal
-Executed without changing any chain parameter. Read the rest as what the key
-material makes possible, not as a feature list:
-
-- **Verifiable credentials:** A university issues a degree as a smart contract attestation, signed with the university's ML-DSA-65 key, recorded on-chain. The graduate proves their credential by showing the on-chain record — no third-party verification service needed.
-- **KYC attestation:** A KYC provider attests that a user has been verified. The attestation is on-chain. The user's identity remains private (only the attestation is public). Any DApp could check whether the user is KYC-verified without seeing personal data.
-- **DAO voting:** Decentralised Autonomous Organisations use ML-DSA-65-signed votes recorded on-chain. Quantum computers cannot forge votes.
-
----
-
-### Supply Chain and Real-World Assets
-
-Physical goods, property, and financial instruments can be tokenized on Splendor QC. The quantum-safe security guarantees are particularly important here because:
-- Real estate title records may need to remain valid for 30+ years (well within the quantum threat window)
-- Supply chain provenance records need to be unforgeable for regulatory and insurance purposes
-- Financial instrument records require the highest level of cryptographic assurance
+No KYC attestation registry, sanctions-screening system, credential contract,
+or regulatory-reporting product exists. `vm/governance.go` is not routed for
+writes, and executing a proposal changes no consensus parameter.
 
 ---
 
 ## 13. Cryptographic Primitives Used (Technical Reference)
 
-This section lists every cryptographic operation in the chain and what algorithm is used.
+This section summarizes native ledger and node operations. It does not classify
+the browser, reverse proxies, CI, operator access, or third-party applications.
 
-| Operation | Algorithm | Standard | Quantum Safety |
+| Operation | Algorithm | Standard | Security characterization |
 |-----------|-----------|----------|----------------|
-| Account key generation | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
-| Transaction signing | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
-| Signature verification | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
-| Block signing (validator) | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
-| Address derivation hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
-| Block header hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
-| Transaction hash | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
-| Merkle tree hashing | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
-| State root hashing | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
-| Private key encryption at rest | AES-256-GCM | NIST FIPS 197 | ✅ Quantum-safe (128-bit security) |
-| Key derivation (from password) | Argon2id | RFC 9106 | ✅ Memory-hard, quantum-safe |
-| Encrypted P2P communication | ML-KEM-768 + AES-256-GCM | NIST FIPS 203 | ✅ Post-quantum (block push, peer announce, and catch-up sync) |
-| RPC / WebSocket transport, node-terminated TLS | X25519MLKEM768 hybrid | TLS 1.3 hybrid key exchange | ✅ Post-quantum (a TLS-terminating proxy in front of the node is not — see the top of this document) |
-| Smart contract hash (keccak replacement) | SHA-3-256 | NIST FIPS 202 | ✅ Quantum-safe |
-| Payment signing (X402) | ML-DSA-65 | ML-DSA-65 (NIST FIPS 204) | ✅ Post-quantum |
+| Account, transaction, block, and X402 signing | ML-DSA-65 | [NIST FIPS 204](https://csrc.nist.gov/pubs/fips/204/final) | Designed to resist known classical and quantum attacks under current assumptions |
+| Address derivation, block/transaction hashes, Merkle and state roots | SHA3-256 | [NIST FIPS 202](https://csrc.nist.gov/pubs/fips/202/final) | 256-bit hash; Grover-style search is accounted for in the security assessment |
+| CLI wallet private-key encryption | AES-256-GCM | NIST FIPS 197 | Symmetric authenticated encryption; password strength and implementation remain security boundaries |
+| CLI wallet password KDF | Argon2id | RFC 9106 | Memory-hard password derivation, not a post-quantum public-key algorithm |
+| Native P2P session and traffic | ML-KEM-768 + AES-256-GCM | [NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) | Sealed by default; explicit pins plus `--require-peer-pins` are needed for preconfigured peer identity |
+| Node-terminated RPC / WebSocket TLS | X25519MLKEM768 hybrid | TLS 1.3 hybrid key exchange | Offered when configured; `--tls-require-hybrid` is needed to refuse classical X25519 fallback |
+| Smart-contract storage slots and selectors | SHA3-256 | [NIST FIPS 202](https://csrc.nist.gov/pubs/fips/202/final) | Native SQC-VM convention |
 
-**What is NOT used:**
-- ❌ ECDSA (secp256k1 or any curve) — no quantum safety
-- ❌ RSA — no quantum safety
-- ❌ SHA-256 — not NIST post-quantum suite (though generally safe, replaced with SHA-3 for consistency)
-- ❌ Keccak-256 — not NIST-standardised (SHA-3 is used instead)
-- ❌ ECDH — replaced by ML-KEM-768 for key exchange (TLS uses the X25519MLKEM768 hybrid, which is never weaker than X25519 alone)
-- ❌ AES-128 — replaced with AES-256 (Grover halves security; 256-bit gives 128-bit quantum security)
+**Native-ledger boundary:** ECDSA, RSA, SHA-256, and Keccak-256 are not used for
+native account signatures or ledger commitments. This is not a repository-wide
+ban: the optional MetaMask derivation route uses secp256k1, browser WASM pins use
+SHA-256, TLS certificates and frontends have their own algorithms, and the
+hybrid TLS group contains X25519 alongside ML-KEM-768.
 
 ---
 
-## 14. What Makes This Different — Comparison Table
+## 14. Architecture Comparison — Not a Finality Benchmark
 
-| Feature | Ethereum | Solana | Splendor Quantum Chain |
-|---------|----------|--------|------------------------|
-| Quantum-safe signatures | ❌ | ❌ | ✅ (ML-DSA-65, from block 0) |
-| Quantum-safe hashing | ✅ | ✅ | ✅ (SHA-3 everywhere) |
-| Quantum-safe addresses | ❌ | ❌ | ✅ (derived from ML-DSA-65 pubkey) |
-| Quantum-safe P2P layer | ❌ | ❌ | ✅ (ML-KEM-768 seals block push, peer announce, and catch-up sync; plaintext refused by default) |
-| Native micropayment protocol | ❌ | ❌ | ✅ (X402, built in) |
-| Smart contracts | ✅ | ✅ | ✅ (SQC-VM bytecode; QSol compiler not built) |
-| Block finality | ~12 min | ~400ms | < 2 seconds |
-| Uses NIST post-quantum algorithms | ❌ | ❌ | ✅ (FIPS 202, 203, 204; not independently validated) |
-| AI agent payment support | ❌ | ❌ | ✅ |
-| Backward compat with Ethereum | ✅ | ❌ | ❌ (intentional — clean break) |
-| Single validator Phase 1 | ❌ | ❌ | ✅ (by design) |
+| Feature | Ethereum | Solana | Splendor Phase 1 |
+|---|---|---|---|
+| Native account signature | Classical elliptic-curve key | Ed25519 | ML-DSA-65 |
+| Smart-contract/program execution | EVM | sBPF/SVM | SQC-VM plus native Go modules |
+| High-level compiler/tooling | Mature Solidity toolchain | Mature Rust/LLVM and Anchor tooling | Prototype QSol-subset compiler and `sqc-solc` |
+| Consensus authority | Distributed proof of stake | Distributed proof of stake | One authorized validator |
+| Configured block/slot interval | 12-second slots | Approximately 400–600 ms slots | Approximately 2-second block interval |
+| Decentralized Byzantine/economic finality | Yes | Yes | No |
+| EVM compatibility | Native | Not native | No |
+
+The interval row compares production cadence, not finality. Ethereum references:
+[account and validator keys](https://ethereum.org/developers/docs/consensus-mechanisms/pos/keys/),
+[proof of stake and 12-second slots](https://ethereum.org/developers/docs/consensus-mechanisms/pos/),
+and the [Solidity compiler](https://docs.soliditylang.org/en/latest/using-the-compiler.html).
+Solana references: [transaction-signature fees](https://solana.com/docs/core/fees/fee-structure),
+[slot duration](https://solana.com/developers/cookbook/transactions/confirmation),
+and [program execution](https://solana.com/docs/core/programs/program-execution).
+This table does not claim that Ethereum or Solana cannot support automated
+wallets, AI agents, or micropayments.
 
 ---
 
-## 15. The Business Case for Investors
+## 15. Business Claims and Evidence Boundary
 
-### The market timing is perfect
+The code implements transaction fees, and Phase 1 credits those fees to the
+authorized validator. That is a protocol behavior, not a revenue forecast.
 
-**Quantum computers are no longer theoretical.**
+Future X402 protocol charges, validator-marketplace revenue, enterprise
+licensing, patent licensing, market share, and adoption timing are business
+hypotheses or plans; this repository does not verify them. No patent statement
+should be published without a filing or application number, jurisdiction,
+filing date, applicant/owner, status, and the exact scope being referenced.
 
-- IBM's 1,121-qubit quantum computer: operational today
-- NIST post-quantum standards: finalised 2024
-- US government mandate to migrate federal systems: deadline 2030
-- Global financial institutions: beginning PQC migration assessments now
-- Academic consensus on "harvest now, decrypt later" attacks: already happening (adversaries collect encrypted data today to decrypt when quantum computers are ready)
-
-**The window to be first is 3–5 years.**
-
-The blockchain industry has not acted. The first quantum-native chain that attracts developers, users, and institutional deposits wins a multi-trillion-dollar market.
-
-### Revenue model
-
-**Transaction fees:** Every transaction pays a fee in SPLD. As transaction volume grows, validator revenue grows. In Phase 1, all fees go to Splendor Protocol.
-
-**X402 protocol fees:** Option to take a small protocol fee from X402 settlements (configurable — could be 0% to start, introduced later).
-
-**Validator marketplace (Phase 2+):** When multi-validator consensus is activated, SPLD staking generates yield. The network earns from securing other parties' stake.
-
-**Enterprise licensing:** Institutions that want private/permissioned deployments of the Splendor QC stack pay licensing fees.
-
-**Patent licensing:** The hybrid quantum wallet system is the subject of a filed patent application, intended to generate licensing revenue from other blockchains implementing similar systems. Filing numbers are not published in this repository; treat this as a stated intention rather than a granted patent.
-
-### Why this wins
-
-1. **Early in a small category.** Post-quantum chains exist — QRL has run one for years (see section 1) — but the category is small and no incumbent has taken it. The bet is on being early and complete, not on being first.
-
-2. **No migration risk.** Every other chain will eventually need to migrate to post-quantum cryptography. That migration will be painful, contentious, and may cause community splits. Splendor QC has nothing to migrate — it started there.
-
-3. **Regulatory tailwinds.** Every government mandate for post-quantum cryptography is a headwind for existing blockchains and a tailwind for Splendor QC. More regulation → more users who need a compliant chain.
-
-4. **AI agent economy.** The emergence of autonomous AI agents creates an entire new class of economic actors who need financial infrastructure. Splendor QC and X402 are that infrastructure.
-
-5. **Patent protection.** A filed application covers the core wallet innovations. Note that filed is not granted, and no filing numbers are published here, so this is not yet enforceable protection.
+No CRQC arrival date, market-size estimate, institutional-spending estimate, or
+claim that every regulation benefits Splendor is asserted here. Those claims
+require separately maintained evidence and owner review.
 
 ---
 
 ## 16. What Is Built vs What Comes Next
 
-### Built and working
+### Built in code
 
-✅ Full node — Go implementation. Three tiers are live (devnet, testnet, mainnet), each a single self-genesis validator that is also its own RPC node, with no follower nodes attached today  
-✅ ML-DSA-65 key generation and signing — FIPS 204, via CIRCL  
-✅ SHA-3-256 hashing throughout — implemented  
-✅ Blocks and transactions signed with domain-separated ML-DSA-65  
-✅ Whole-state Merkle commitment — accounts, code, storage, X402 nonces  
-✅ Smart contract VM — SQC-VM bytecode interpreter with native Go modules  
-✅ X402 payment protocol — settled through the mempool like any transaction  
-✅ ML-KEM-768 sealed block push, peer announce, and catch-up sync + hybrid X25519MLKEM768 TLS when the node terminates it  
-✅ Genesis and CLI wallet (`.sqwallet`, AES-256-GCM + Argon2id)  
-✅ JavaScript SDK and WASM signer (`@splendor/pq-bridge`, Connect UI)  
-✅ JSON RPC for balances, blocks, receipts, DEX, staking, governance, lending  
+- Go full node; mempool; block production; execution; receipts; chain storage;
+  and current-state RPC
+- ML-DSA-65 account, transaction, block, and protocol signing with separate
+  contexts
+- SHA3-256 transaction, block, Merkle, storage-slot, and whole-state commitments
+- Signed height-zero genesis builder
+- ML-KEM-768 + AES-256-GCM sealed native P2P push, announce, and catch-up paths
+- Optional node-terminated hybrid TLS and hybrid-only policy
+- AES-256-GCM + Argon2id `.sqwallet` CLI wallet format
+- SQC-VM bytecode interpreter
+- Reachable QRC-20, QRC-1155, DEX, exchange, and bridge router paths, subject to
+  fork activation
+- X402 payment authorization and payer-signed settlement transaction
+- Canonical `@splendor/sqc-sdk`, WASM signer, and browser Connect components
+- Prototype QSol-subset compiler and `sqc-solc` CLI
+- Adaptive mempool-depth scheduler
 
-### In active development
+### Tested or measured, with a narrower claim
 
-🔧 Block explorer — JSON APIs exist; no web interface yet  
-🔧 Multi-validator consensus — `consensus/bft.go` written, not yet wired in  
-🔧 Performance — ~2,600–2,900 TPS block pipeline measured on one AWS host  
+- Repository tests cover compiler compile/deploy/call behavior; P2P sealing,
+  downgrade refusal, and peer pins; X402 verify/bind/settle/replay behavior;
+  genesis signing; and state-root coverage
+- ACVP subset tests provide conformance evidence, not a certificate
+- A dated single-host experiment measured approximately 2,605–2,901
+  transactions per second through the tested block-production pipeline,
+  depending on batch size. It is not a sustained public-network or
+  multi-validator benchmark; see
+  [`docs/performance/2026-08-25-tps-gpu-experiment.md`](docs/performance/2026-08-25-tps-gpu-experiment.md)
 
-### Designed, not built
+### Observed deployments, not inferred from source
 
-📋 QSol compiler — the language is sketched, but there is no parser, compiler, or toolchain; contracts are deployed as SQC-VM bytecode today  
-📋 Sparse Merkle Tree proof API — the state root is a Merkle tree, but no endpoint serves inclusion proofs  
-📋 Wallet apps — desktop and mobile UIs are designed only; today there is a CLI wallet and a browser Connect flow  
-📋 NFC card and QR airgapped signing — flows are designed; no hardware integration in this repo  
-📋 Python and Go SDKs — only the JavaScript/TypeScript SDK is published  
-🔄 Migration bridge — the one-way legacy→quantum burn-and-claim rail is implemented (`bridge_v1` module, `cmd/bridge-relayer`, `contracts/legacy-burn/`, `docs/modules/bridge.md`); awaiting per-tier fork scheduling and deploys. A general two-way bridge protocol remains unplanned  
+At `2026-09-02T08:47:25Z`, the public devnet, testnet, and mainnet status
+endpoints responded and their explorers returned HTTP 200. All three nodes
+reported commit `2982523195d00d04d45d0ddf829b4c0af13c4826`, which is older than
+this README commit, and `peer_count: 0`. Mainnet reported no optional fork
+schedule; testnet reported QRC-20 v2, QRC-1155, exchange, module-revert, and
+bridge forks; devnet reported those except bridge plus VM-revert. This is a
+dated observation, not a continuous-availability guarantee. URLs, genesis
+hashes, validator fingerprints, heights, and methods are recorded in the
+[claim–evidence matrix](docs/readme-claim-evidence.md).
+
+The separate
+[quantum explorer](https://github.com/Splendor-Protocol/splendor-quantum-explorer)
+has a deployed web UI. The separate
+[browser wallet extension](https://github.com/Splendor-Protocol/splendor-quantum-wallet-extension)
+is a prototype; repository existence is not a store release, security audit, or
+production-readiness claim.
+
+### Built but requiring integration or hardening
+
+- X402 middleware settlement policy and confirmation; the deprecated JS path
+  omits `settlement_tx`, while the current middleware verifies but does not
+  automatically settle
+- QSol language completeness and `address`/`sqaddress` ABI alignment
+- Per-tier fork activation and migration-bridge deployment
+- Explicit peer pinning where peers are deployed
+- Hybrid-only TLS where the node terminates TLS; proxy-fronted deployments have
+  their own cryptographic boundary
+- Native-PQ-first wallet UX, signer artifact provenance, deployment
+  consistency, release reproducibility, and complete CI coverage. In the
+  reviewed checkout, the canonical SDK's committed `wasm_exec.js` digest is
+  stale and its prebuild step rewrites the config to the actual artifact hash;
+  that generated correction must be committed in a separate code PR
+
+### Not built or not production-ready
+
+- Multi-validator consensus in the running node, permissionless validator
+  onboarding, or decentralized Byzantine/economic finality
+- Historical-state queries or a Merkle inclusion-proof API
+- Sanctions screening, KYC attestation, AML monitoring, or regulator dashboards
+- Packaged desktop or mobile wallet applications, NFC hardware signing, or a QR
+  air-gapped signing application
+- HSM or remote validator signer
+- Published Python or Go application SDK
+- Independent security or cryptographic audit
+- CAVP/CMVP validation or a FIPS 140-3 module certificate
+- Production RTGS/CBDC deployment or national-scale validation
+- Decentralized AI model storage or inference network
 
 ---
 
-## 17. AI at the Core — The Intelligent Node
+## 17. Adaptive Scheduler
 
 Every node runs a small adaptive scheduler in-process, with no outbound API calls, no cloud dependency, and no data leaving the machine.
 
@@ -1176,7 +1224,7 @@ The validator asks the scheduler for a batch size each round, and the scheduler 
 
 Not implemented, despite appearing in earlier drafts of this document: grouping transactions by contract state, re-prioritising the queue by fee, and reading CPU, memory, or I/O load. The only signal currently fed to the scheduler is mempool depth.
 
-**On throughput:** an earlier version of this section claimed a measured 40–60% improvement over static scheduling. That figure is not substantiated by any benchmark in this repository and has been withdrawn. What has been measured, on a single AWS host, is roughly 2,600–2,900 TPS through the block-production pipeline, with ML-DSA-65 verification well above that; see `docs/performance/`.
+**On throughput:** an earlier version of this section claimed a measured 40–60% improvement over static scheduling. That figure is not substantiated by any benchmark in this repository and has been withdrawn. What has been measured, on a single AWS host, is roughly 2,600–2,900 TPS through the block-production pipeline, with ML-DSA-65 verification well above that; see [`docs/performance/2026-08-25-tps-gpu-experiment.md`](docs/performance/2026-08-25-tps-gpu-experiment.md).
 
 **The anomaly flag, precisely.** `ai/scheduler.go` raises one boolean when the
 mempool grows by 5× or more between observation windows *and* holds more than
@@ -1211,81 +1259,51 @@ connection carrying operational data. There is no such connection here.
 
 ---
 
-## 18. Banking and Financial Institutions — The Perfect Fit
+## 18. Banking, Settlement, and Compliance Boundary
 
-Splendor Quantum Chain is not just a "crypto project". It is infrastructure-grade financial technology designed to meet the needs of regulated financial institutions.
+Splendor's architecture may be evaluated for future real-time settlement,
+tokenization, or institutional use cases. The current Phase 1 network is not a
+production RTGS, CBDC, interbank, or national-payment system.
 
-### Why banks and financial institutions need this now
+NIST standardized ML-KEM, ML-DSA, and SHA3 in the publications linked above.
+Those standards do not certify this implementation and do not create a
+universal legal deadline for every bank or blockchain. Any jurisdictional or
+regulatory statement published elsewhere should cite the primary source and
+preserve its exact scope.
 
-**The regulatory timeline is not optional.**
+X402 provides a native payer-authorized settlement transaction. It does not
+eliminate chain fees, operational intermediaries, counterparty risk, legal
+obligations, application integration, or confirmation policy. Under Phase 1,
+the sole authorized validator remains a central operator and security boundary;
+an independent bank cannot join the validator set through a production path.
 
-- The US government's NIST post-quantum migration mandate: 2030 deadline for federal systems
-- The NSA's Commercial National Security Algorithm Suite 2.0 (CNSA 2.0): mandates ML-DSA and ML-KEM (standardised from CRYSTALS-Dilithium and CRYSTALS-Kyber) for all classified systems by 2030
-- The Bank for International Settlements (BIS): has published quantum risk guidance for central banks
-- The European Union: has included post-quantum cryptography in its digital finance strategy
-- Financial regulators in Singapore, UK, and India: actively issuing PQC guidance
+### Compliance and institutional capabilities
 
-**Banks that hold customer assets secured by ECDSA are sitting on a ticking clock.** Splendor Quantum Chain is one of a small number of chains whose signatures should still be sound in 2035 — QRL is the other established one — and it is the one where the peer-to-peer layer and the whole-state commitment are post-quantum too, not just the ledger.
+| Capability | Current status |
+|---|---|
+| ML-DSA-65, ML-KEM-768, and SHA3-256 implementation | Built and covered by ACVP-subset tests; no CAVP/CMVP validation, FIPS 140-3 module certificate, or independent audit |
+| Transaction and state commitments | Built; blocks carry SHA3-256 transaction and whole-state roots and ML-DSA-65 signatures |
+| Historical audit queries | Blocks and receipts are queryable; node state APIs return current state only. The separate indexer stores additional history, but is a distinct deployment component |
+| Contract events | Built as ledger data that future reporting tools may consume; not a regulatory-reporting product |
+| Sanctions screening / AML monitoring | Not built |
+| KYC attestation registry | Not built |
+| Regulator dashboards and formal reports | Not built |
+| Historical-state API | Not built |
+| Merkle inclusion-proof API | Not built |
+| HSM or remote validator signer | Not built |
+| Multi-validator fault tolerance | Not built in the running node |
+| Institutional scale and resilience | Not established by the single-host benchmark or the current single-validator deployments |
 
-### What X402 means for financial institutions
-
-The X402 payment protocol on Splendor QC is essentially a **quantum-safe, programmable payment rail** built into the blockchain itself. For financial institutions, this enables:
-
-**Real-Time Gross Settlement (RTGS) equivalent:**
-An X402 settlement is a transaction in the next block, so it is final within a block interval (2 seconds by default). Traditional RTGS systems (SWIFT, Fedwire, CHAPS) have settlement windows measured in hours. X402 on Splendor QC provides equivalent settlement finality with quantum-safe security guarantees.
-
-**Programmable compliance — none of it written yet:**
-The VM and the event log would carry compliance rules, but no such rules exist
-in this repository and there is no language to express them in (see section 8).
-An institution would be commissioning all of the following, not adopting it:
-- KYC attestation checks before a transaction is processed
-- Sanctions screening against a blocklist
-- Transaction limits enforced on-chain
-- Regulatory reporting built on contract events
-
-**Interbank settlement:**
-Banks can operate validator nodes on Splendor QC. Interbank transactions settle directly on-chain, in real time, with ML-DSA-65 signatures replacing the correspondent banking system's trust model. No counterparty risk. No settlement lag. No intermediary.
-
-**Trade finance:**
-Letters of credit, bills of lading, and trade finance instruments tokenized on Splendor QC:
-- Immutable records, quantum-safe signatures
-- Automatic execution when conditions are met (smart contracts)
-- Real-time visibility to all parties
-- No paper, no fax, no 5-day settlement
-
-**Central Bank Digital Currencies (CBDCs):**
-A central bank operating a CBDC needs:
-- Full control over the validator set ✅ (Phase 1 single-validator model — the central bank IS the validator)
-- Quantum-safe cryptography ✅
-- Smart contract programmability for policy rules ✅
-- Native payment settlement protocol ✅
-- Scalability to national payment volumes ❌ — measured throughput is roughly 2,600–2,900 TPS on a single host, which is nowhere near national retail payment volume
-
-Splendor QC's Phase 1 single-validator model maps structurally onto how a CBDC would be operated by a central bank: one trusted issuer, full ledger control, quantum-safe from day one. To be clear about maturity, this is a Phase-1 prototype with a single validator, not a production real-time gross settlement system, and it should be evaluated as an architectural fit rather than a deployable one.
-
-### Compliance features — what exists, and what does not
-
-| Requirement | Status |
-|-------------|--------|
-| Post-quantum algorithms | **Built.** ML-DSA-65 (FIPS 204), ML-KEM-768 (FIPS 203), SHA-3-256 (FIPS 202), checked against the published NIST ACVP vectors. No CAVP/CMVP validation, no FIPS 140-3 module boundary, no external audit |
-| Transaction immutability | **Built.** SHA-3-256 Merkle roots over transactions and over whole state, blocks signed with ML-DSA-65 |
-| Auditability | **Built.** Full on-chain history, queryable at any block height |
-| Regulatory reporting | **Built,** in the sense that contract events are permanent and queryable. No reporting tooling exists on top of them |
-| Sanctions screening | **Not built.** There is no blocklist, no screening hook, and no contract layer enforcing one anywhere in this repository |
-| KYC attestation | **Not built.** No attestation registry, no contract, no verifier. The design in section 12 is a described possibility, not shipped code |
-| Merkle inclusion proofs for auditors | **Not built.** The state root is a Merkle tree, but no endpoint serves proofs, so a verifier must trust a full node |
-| Data sovereignty | Nothing in the node makes an outbound call to a third-party service. That is a property of the current code, not a compliance control |
-
-An institution evaluating this should read the "Not built" rows as work it would
-have to fund or build, and read the whole table alongside the maturity note
-above: one validator, no HSM or remote signer, no second validator to bound the
-damage if the signing host is compromised.
+An institutional evaluation must assess validator custody, host compromise,
+proxy-fronted TLS, peer identity policy, release provenance, disaster recovery,
+legal controls, operational staffing, audits, and certification in addition to
+the native cryptographic design.
 
 ---
 
-*Splendor Quantum Chain — a Layer-1 that is post-quantum where it commits and
-where it talks to its peers, and honest about where it is not.*
-
-*Every signature. Every hash. Every block. Post-quantum from block zero. The
-browser, the proxy, and the world outside this repository are still catching up
-— see "What Is and Is Not Post-Quantum" at the top.*
+*Splendor Quantum Chain is a new Layer-1 with native ML-DSA-65 ledger
+identities, SHA3-256 commitments, ML-KEM-sealed peer transport, SQC-VM, a
+prototype QSol compiler, and an ML-DSA-authorized X402 settlement path. It is
+also an early-stage, single-validator system requiring decentralization,
+hardening, audits, tooling, and certification before institutional production
+use.*
