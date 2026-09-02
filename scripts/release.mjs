@@ -72,6 +72,7 @@ const WATCH = [
   { path: 'core/types/block.go',       ships: 'explorer — it re-derives block hashes in-browser' },
   { path: 'core/crypto/mldsa.go',      ships: 'explorer, wallet, WASM signer — signature scheme or sizes changed' },
   { path: 'genesis/genesis.go',        ships: 'infra entrypoint — the genesis document shape changed' },
+  { path: 'sdk/sqc-sdk/wasm/dist/sqc_signer.wasm', ships: 'wallet extension — it pins this exact digest; its sync workflow opens the PR on its next push to main, merge it before the wallet ships' },
 ];
 
 const sh = (cmd, args, opts = {}) =>
