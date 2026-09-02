@@ -108,7 +108,7 @@ func makeReceiptHandler(txIndex *state.TxIndexStore) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, receipt)
+		writeJSON(w, http.StatusOK, receiptResponse(r, receipt))
 	}
 }
 
@@ -135,7 +135,7 @@ func makeTxHandler(txIndex *state.TxIndexStore) http.HandlerFunc {
 			"tx_index":     loc.TxIndex,
 		}
 		if receipt, rerr := txIndex.GetReceipt(hashBytes); rerr == nil && receipt != nil {
-			out["receipt"] = receipt
+			out["receipt"] = receiptResponse(r, receipt)
 			out["status"] = receipt.Status
 		}
 		writeJSON(w, http.StatusOK, out)
