@@ -262,10 +262,13 @@ func checkExpr(e expr, states map[string]*stateVar, locals map[string]bool) erro
 		return nil
 	case *indexExpr:
 		sv := states[ex.name]
-		if sv == nil || !sv.isMapping {
-			return fmt.Errorf("%q is not a mapping", ex.name)
+		if sv == nil {
+			return fmt.Errorf("unknown state variable %q", ex.name)
 		}
-		return checkExpr(ex.key, states, locals)
+		if sv.isMapping || sv.isArray {
+			return checkExpr(ex.key, states, locals)
+		}
+		return fmt.Errorf("%q is not a mapping or array", ex.name)
 	case *binaryExpr:
 		if err := checkExpr(ex.left, states, locals); err != nil {
 			return err
