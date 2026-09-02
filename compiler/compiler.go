@@ -273,6 +273,17 @@ func checkExpr(e expr, states map[string]*stateVar, locals map[string]bool) erro
 		return checkExpr(ex.right, states, locals)
 	case *unaryExpr:
 		return checkExpr(ex.operand, states, locals)
+	case *stringExpr:
+		return nil // string literal always valid
+	case *callExpr:
+		// We can't fully resolve internal calls at check-time without a
+		// function-map pass; genInlineCall does the resolution. Just check args.
+		for _, a := range ex.args {
+			if err := checkExpr(a, states, locals); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return fmt.Errorf("unhandled expression in checker")
 }
