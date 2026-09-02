@@ -114,7 +114,7 @@ const allowNoOp = flags.has('--allow-no-op');
 
 if (positional[0] === 'status') { await printStatus(); process.exit(0); }
 if (positional[0] === 'reset' || positional[0] === 'wipe') {
-  await runReset(positional[1] ?? envFromFlag);
+  await runReset(positional.slice(1));
   process.exit(0);
 }
 
@@ -765,18 +765,27 @@ async function printStatus() {
  *
  * This is a balance snapshot, not an EBS snapshot. Disk undo is still a
  * manual AWS step; this tool has no AWS credentials on purpose.
+ *
+ * An optional vX.Y.Z means "come back up on that image". The wipe boots
+ * whatever SQC_NODE_IMAGE says, so resetting without it silently re-genesises
+ * the tier on the OLD build — the image is written only after the typed
+ * confirmation, so an abort leaves the tier pointing where it did.
  */
-async function runReset(raw) {
+async function runReset(args) {
   const wantAll = flags.has('--all');
+  const version = args.find((a) => /^v\d+\.\d+\.\d+$/.test(a));
+  const raw = envFromFlag ?? args.find((a) => a in TIERS || a in ALIASES);
   const tierName = raw && (ALIASES[raw] ?? raw);
   if (!tierName || !(tierName in TIERS)) {
-    console.error(`usage: npm run reset <devnet|test|prod> [--dry-run] [--all]
+    console.error(`usage: npm run reset <devnet|test|prod> [vX.Y.Z] [--dry-run] [--all]
 
-  npm run reset:devnet          snapshot curated wallets, ask, wipe devnet
-  npm run reset:test            …testnet
-  npm run reset:prod            …mainnet (must type "${PROD_RESET_PHRASE}")
-  npm run reset -- test --all   snapshot every indexer-known account
+  npm run reset:devnet             snapshot curated wallets, ask, wipe devnet
+  npm run reset:test               …testnet
+  npm run reset:prod               …mainnet (must type "${PROD_RESET_PHRASE}")
+  npm run reset -- prod v1.0.1     …and come back up on that image
+  npm run reset -- test --all      snapshot every indexer-known account
 
+  Without a version the tier re-genesises on the image it already runs.
   --yes is ignored. A reset always asks.`);
     process.exit(64);
   }
@@ -795,9 +804,10 @@ async function runReset(raw) {
   console.log(`
   tier       ${human}  (GitHub environment "${t.env}")
   rpc        ${t.rpc}
-  image      ${img ?? '(no SQC_NODE_IMAGE set)'}
+  image      ${img ?? '(no SQC_NODE_IMAGE set)'}${version ? `  ->  ${IMAGE}:${version}` : '  (unchanged by this reset)'}
   currently  height ${before ?? '—'}   chain ${live?.chain_id ?? '—'}
 `);
+  if (version) assertImageExists(version);
 
   console.log('  snapshotting balances that must survive the wipe…');
   await snapshotBalances(t, wantAll);
@@ -807,7 +817,8 @@ async function runReset(raw) {
   }
   await dropValidatorFromAlloc(t);
 
-  await confirmReset(tierName, human, before, live?.chain_id);
+  await confirmReset(tierName, human, before, live?.chain_id, version);
+  if (version) setTierImage(t.env, version, img);
   const inputs = {
     environment: t.env,
     rollout_node: 'true',
@@ -818,9 +829,9 @@ async function runReset(raw) {
 
   const id = await dispatch('Deploy quantum infrastructure', inputs);
   await watchRun(id, `resetting ${human}`);
-  await verifyReset(t, before);
+  await verifyReset(t, before, version);
   console.log(`
-✓ ${human} was wiped and is sealing a new genesis
+✓ ${human} was wiped and is sealing a new genesis${version ? ` on ${version}` : ''}
   verified against ${t.rpc}/status — height collapsed, then climbed.
   Redeploy that tier's explorer Worker (it caches the old genesis).
   Re-fund the faucet if it was not in the snapshot.
@@ -953,7 +964,7 @@ async function dropValidatorFromAlloc(t) {
   if (!r.ok) die('stripping the validator from SQC_GENESIS_ALLOC_ADDRESS failed', r.out);
 }
 
-async function confirmReset(tierName, human, height, chainId) {
+async function confirmReset(tierName, human, height, chainId, version) {
   if (!process.stdin.isTTY) {
     die('refusing a non-interactive chain reset',
         'A reset destroys every balance not in SQC_GENESIS_ALLOC_ADDRESS.');
@@ -961,6 +972,7 @@ async function confirmReset(tierName, human, height, chainId) {
   console.log(`
   This will ERASE ${human}.
   Height now: ${height ?? '—'}   chain: ${chainId ?? '—'}
+  Comes back: ${version ? `${IMAGE}:${version}` : 'the image this tier already runs'}
   Survives:   addresses just written to SQC_GENESIS_ALLOC_ADDRESS
   Dies:       every other balance, all history, contracts, indexer, faucet float
   Kept:       the validator key (the workflow does not rotate it)
@@ -984,7 +996,7 @@ async function confirmReset(tierName, human, height, chainId) {
   rl.close();
 }
 
-async function verifyReset(t, before) {
+async function verifyReset(t, before, version) {
   let firstLow = null;
   for (let i = 0; i < 24; i++) {
     await sleep(5000);
@@ -992,12 +1004,18 @@ async function verifyReset(t, before) {
     if (!s) continue;
     const collapsed = before == null || s.height < before;
     if (!collapsed) continue;
+    // A wipe that came back on the previous build is the failure this whole
+    // argument exists to prevent, and a low height alone cannot tell them apart.
+    if (version && s.image_tag && s.image_tag !== version) {
+      die(`${t.rpc} came back on ${s.image_tag}, not ${version}`,
+          'The chain was wiped but is running the wrong build.');
+    }
     if (firstLow == null) {
       firstLow = s.height;
       continue;
     }
     if (s.height > firstLow) {
-      console.log(`  ✓ height ${before} -> ${s.height} (fresh genesis, sealing)`);
+      console.log(`  ✓ height ${before} -> ${s.height} (fresh genesis, sealing${version ? ` ${version}` : ''})`);
       return;
     }
   }
