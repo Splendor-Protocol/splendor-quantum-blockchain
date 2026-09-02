@@ -32,13 +32,13 @@ function resolveDistDir(): string {
   } catch {
     /* ignore */
   }
-  candidates.push(path.resolve(process.cwd(), 'sdk/bridge/wasm/dist'));
+  candidates.push(path.resolve(process.cwd(), 'sdk/sqc-sdk/wasm/dist'));
   candidates.push(path.resolve(process.cwd(), 'wasm/dist'));
   for (const c of candidates) {
     if (fs.existsSync(path.join(c, 'sqc_signer.wasm'))) return c;
   }
   throw BridgeError.wasm(
-    'sqc_signer.wasm not found. Run sdk/bridge/wasm/build.ps1 (or build.sh) first.',
+    'sqc_signer.wasm not found. Run sdk/sqc-sdk/wasm/build.ps1 (or build.sh) first.',
   );
 }
 

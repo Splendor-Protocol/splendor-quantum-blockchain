@@ -1,4 +1,4 @@
-# Build context: sdk/bridge (run: npm run build && cd gateway && npm ci)
+# Build context: sdk/sqc-sdk (run: npm run build && cd gateway && npm ci)
 #
 # Node 24 for OpenSSL 3.5, which is where X25519MLKEM768 comes from. Node 22
 # only picked it up in 22.20 (backport); the floating node:22 tag spent most of
