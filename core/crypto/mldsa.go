@@ -85,6 +85,11 @@ const (
 	// SQ addresses are 32 bytes derived from SHA3-256(public_key)
 	AddressSize = 32
 
+	// SeedSize is the 32-byte ML-DSA-65 seed the extension and CLI share.
+	// Address body and seed hex are the same length; the seed is secret entropy,
+	// the address is SHA3-256(pubkey). They are not interchangeable.
+	SeedSize = mldsa65.SeedSize // 32
+
 	// AddressPrefix identifies Splendor Quantum Chain addresses
 	AddressPrefix = "SQ:"
 )
@@ -109,6 +114,24 @@ func GenerateKeypair() (*PublicKey, *PrivateKey, error) {
 		return nil, nil, fmt.Errorf("ml-dsa-65 keygen: %w", err)
 	}
 	return &PublicKey{k: pub}, &PrivateKey{k: priv}, nil
+}
+
+// GenerateSeed returns 32 bytes of CSPRNG entropy. This is the same seed
+// format the browser extension imports (64 hex characters, no 0x required).
+func GenerateSeed() ([SeedSize]byte, error) {
+	var seed [SeedSize]byte
+	if _, err := rand.Read(seed[:]); err != nil {
+		return seed, fmt.Errorf("seed: %w", err)
+	}
+	return seed, nil
+}
+
+// KeypairFromSeed derives ML-DSA-65 keys the same way the extension does
+// (circl mldsa65.NewKeyFromSeed). The same 32-byte seed always yields the
+// same SQ: address in the CLI and in the wallet extension.
+func KeypairFromSeed(seed [SeedSize]byte) (*PublicKey, *PrivateKey) {
+	pub, priv := mldsa65.NewKeyFromSeed(&seed)
+	return &PublicKey{k: pub}, &PrivateKey{k: priv}
 }
 
 // PublicKeyFromBytes deserialises 1952 bytes into a public key.
