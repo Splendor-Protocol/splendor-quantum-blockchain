@@ -773,16 +773,19 @@ async function printStatus() {
  */
 async function runReset(args) {
   const wantAll = flags.has('--all');
+  const noSnapshot = flags.has('--no-snapshot');
   const version = args.find((a) => /^v\d+\.\d+\.\d+$/.test(a));
   const raw = envFromFlag ?? args.find((a) => a in TIERS || a in ALIASES);
   const tierName = raw && (ALIASES[raw] ?? raw);
   if (!tierName || !(tierName in TIERS)) {
-    console.error(`usage: npm run reset <devnet|test|prod> [vX.Y.Z] [--dry-run] [--all]
+    console.error(`usage: npm run reset <devnet|test|prod> [vX.Y.Z] [--dry-run] [--all] [--no-snapshot]
 
   npm run reset:devnet             snapshot curated wallets, ask, wipe devnet
   npm run reset:test               …testnet
   npm run reset:prod               …mainnet (must type "${PROD_RESET_PHRASE}")
   npm run reset -- prod v1.0.1     …and come back up on that image
+  npm run reset -- prod v1.0.1 --no-snapshot
+                                   wipe using SQC_GENESIS_ALLOC_ADDRESS as already set
   npm run reset -- test --all      snapshot every indexer-known account
 
   Without a version the tier re-genesises on the image it already runs.
@@ -809,8 +812,17 @@ async function runReset(args) {
 `);
   if (version) assertImageExists(version);
 
-  console.log('  snapshotting balances that must survive the wipe…');
-  await snapshotBalances(t, wantAll);
+  if (noSnapshot) {
+    const alloc = ghVar('SQC_GENESIS_ALLOC_ADDRESS', t.env);
+    if (!alloc) {
+      die('SQC_GENESIS_ALLOC_ADDRESS is empty',
+          '--no-snapshot means genesis uses whatever is already set. Set it first.');
+    }
+    console.log(`  using existing genesis alloc (${alloc.split(',').length} entr${alloc.includes(',') ? 'ies' : 'y'}) — not re-read from the live chain`);
+  } else {
+    console.log('  snapshotting balances that must survive the wipe…');
+    await snapshotBalances(t, wantAll);
+  }
   if (dryRun) {
     console.log('✓ --dry-run: snapshot printed, nothing was written or wiped.');
     return;
