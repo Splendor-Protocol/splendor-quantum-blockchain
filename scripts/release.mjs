@@ -34,6 +34,8 @@ import { createInterface } from 'node:readline/promises';
 const INFRA = 'Splendor-Protocol/splendor-infra';
 const CHAIN = 'Splendor-Protocol/splendor-quantum-blockchain';
 const IMAGE = 'ghcr.io/splendor-protocol/sqc-node';
+/** Mainnet's native supply in base units: 26 billion SPLD, 18 decimals. */
+const MAINNET_SUPPLY = 26_000_000_000n * 10n ** 18n;
 
 /**
  * The tiers, defined once. `env` is the GitHub environment name and does not
@@ -788,6 +790,8 @@ async function runReset(args) {
   npm run reset -- prod v1.0.1 --no-snapshot
                                    wipe using SQC_GENESIS_ALLOC_ADDRESS as already set
   npm run reset -- test --all      snapshot every indexer-known account
+  --allow-supply-mismatch          prod only: wipe even though genesis would not be
+                                   exactly 26B on the treasury with the validator at 0
 
   Without a version the tier re-genesises on the image it already runs.
   --yes is ignored. A reset always asks.`);
@@ -814,12 +818,8 @@ async function runReset(args) {
   if (version) assertImageExists(version);
 
   if (noSnapshot) {
-    const alloc = ghVar('SQC_GENESIS_ALLOC_ADDRESS', t.env);
-    if (!alloc) {
-      die('SQC_GENESIS_ALLOC_ADDRESS is empty',
-          '--no-snapshot means genesis uses whatever is already set. Set it first.');
-    }
-    console.log(`  using existing genesis alloc (${alloc.split(',').length} entr${alloc.includes(',') ? 'ies' : 'y'}) — not re-read from the live chain`);
+    console.log('  using SQC_GENESIS_ALLOC_ADDRESS as already set — not re-read from the live chain');
+    guardSupply(tierName, printGenesisTotal(t.env));
   } else {
     console.log('  snapshotting balances that must survive the wipe…');
     await snapshotBalances(t, wantAll);
@@ -829,6 +829,9 @@ async function runReset(args) {
     return;
   }
   await dropValidatorFromAlloc(t);
+  // The alloc list is final now (snapshot taken, validator stripped): this is
+  // the genesis the wipe will mint, so this is where its total is checked.
+  if (!noSnapshot) guardSupply(tierName, printGenesisTotal(t.env));
 
   await confirmReset(tierName, human, before, live?.chain_id, version);
   if (version) setTierImage(t.env, version, img);
@@ -849,6 +852,45 @@ async function runReset(args) {
   Redeploy that tier's explorer Worker (it caches the old genesis).
   Re-fund the faucet if it was not in the snapshot.
 `);
+}
+
+/**
+ * What the entrypoint will mint: SQC_GENESIS_SUPPLY to the validator (0 means
+ * no validator line at all) plus every SQC_GENESIS_ALLOC_ADDRESS entry, and
+ * total supply is their sum -- the node derives it, nothing declares it.
+ */
+function printGenesisTotal(env) {
+  const supply = ghVar('SQC_GENESIS_SUPPLY', env);
+  if (supply == null || !/^\d+$/.test(supply)) die(`SQC_GENESIS_SUPPLY is not a number for environment "${env}"`, `reads as ${supply ?? '(unset)'}`);
+  const entries = (ghVar('SQC_GENESIS_ALLOC_ADDRESS', env) ?? '').split(',').map((e) => e.trim()).filter(Boolean);
+  const extra = entries.reduce((sum, e) => sum + BigInt((e.split('=')[1] ?? '').trim() || '0'), 0n);
+  const total = BigInt(supply) + extra;
+  const validator = supply === '0' ? 'validator 0 (no validator allocation)' : `validator ${supply}`;
+  console.log(`  genesis    ${validator}${entries.length ? ` + ${entries.length} configured allocation(s)` : ' and no configured allocations'}`);
+  console.log(`             total ${total} base units = ${total / 10n ** 18n} SPLD`);
+  return { supply: BigInt(supply), entries, total };
+}
+
+/**
+ * Mainnet mints exactly 26B, once. Two prod resets on 2 Sep 2026 carried a
+ * stray 1B entry on top of the 26B validator line and minted 27B; nothing
+ * looked at the sum. The model since is a validator that holds 0 and one
+ * treasury allocation carrying the whole 26B, and any other total is a
+ * misconfiguration until someone says otherwise on the command line.
+ */
+function guardSupply(tierName, g) {
+  if (tierName !== 'prod') return;
+  if (g.total === MAINNET_SUPPLY && g.supply === 0n) return;
+  const why = g.total !== MAINNET_SUPPLY
+    ? `mainnet genesis would mint ${g.total / 10n ** 18n} SPLD, not ${MAINNET_SUPPLY / 10n ** 18n}`
+    : `mainnet genesis would credit the validator ${g.supply / 10n ** 18n} SPLD; the validator signs and holds 0`;
+  if (flags.has('--allow-supply-mismatch')) {
+    console.log(`  ! --allow-supply-mismatch: ${why}. Proceeding anyway.`);
+    return;
+  }
+  die(why,
+      'SQC_GENESIS_SUPPLY must be 0 and SQC_GENESIS_ALLOC_ADDRESS must sum to exactly 26e27 for prod.',
+      'Fix the variables in splendor-infra, or pass --allow-supply-mismatch if you really mean it.');
 }
 
 async function snapshotBalances(t, wantAll) {

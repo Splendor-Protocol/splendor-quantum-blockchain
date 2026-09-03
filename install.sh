@@ -34,6 +34,12 @@ for arg in "$@"; do
       echo "Usage: $0 --validator | --rpc"
       echo "  --validator   Set up as a block-producing validator node"
       echo "  --rpc         Set up as an RPC (sync) node"
+      echo ""
+      echo "Validator genesis:"
+      echo "  SQC_GENESIS_ADDR    Optional. Override the one SQ: address that"
+      echo "                      receives the entire 26B supply. Default is pinned"
+      echo "                      in this script. The validator signs blocks only"
+      echo "                      and receives 0 SPLD."
       exit 0 ;;
   esac
 done
@@ -76,6 +82,53 @@ generate_token() {
   else
     head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
   fi
+}
+
+# Native supply is 26 billion SPLD, minted once, to exactly one genesis
+# address. The validator key is a block signer. Crediting it (or adding a
+# second allocation) is how mainnet ended up at 27B against a 26B label.
+GENESIS_SUPPLY="26000000000000000000000000000"
+GENESIS_ADDR_DEFAULT="SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc"
+
+require_sq_address() {
+  local addr="$1"
+  local name="$2"
+  if [[ ! "$addr" =~ ^SQ:[0-9a-fA-F]{64}$ ]]; then
+    err "$name must be an SQ: address (SQ: + 64 hex chars), got: ${addr:-<empty>}"
+  fi
+}
+
+# Refuse a genesis document that would mint to the validator or split supply.
+# Called after write and against any pre-existing /var/sqc/genesis.json.
+validate_genesis_allocation() {
+  local genesis_path="$1"
+  local genesis_addr="$2"
+  local validator="$3"
+  python3 -c "
+import json, sys, re
+path, genesis_addr, validator = sys.argv[1], sys.argv[2], sys.argv[3]
+want = '$GENESIS_SUPPLY'
+g = json.load(open(path))
+allocs = g.get('allocations') or []
+if len(allocs) != 1:
+    sys.stderr.write('genesis must have exactly one allocation (26B genesis address), found %d\n' % len(allocs))
+    sys.exit(1)
+addr = allocs[0].get('address', '')
+bal = str(allocs[0].get('balance', ''))
+supply = str(g.get('total_supply', ''))
+if not re.fullmatch(r'SQ:[0-9a-fA-F]{64}', addr):
+    sys.stderr.write('genesis allocation address is not a valid SQ: address: %s\n' % addr)
+    sys.exit(1)
+if bal != want or supply != want:
+    sys.stderr.write('genesis must mint exactly 26B (total_supply and the one allocation must both be %s)\n' % want)
+    sys.exit(1)
+if addr.lower() == validator.lower():
+    sys.stderr.write('genesis must not mint to the validator (%s). The 26B goes to the genesis address.\n' % validator)
+    sys.exit(1)
+if addr.lower() != genesis_addr.lower():
+    sys.stderr.write('genesis address is %s but expected %s\n' % (addr, genesis_addr))
+    sys.exit(1)
+" "$genesis_path" "$genesis_addr" "$validator" || err "genesis.json rejected: one genesis address, 26B supply required"
 }
 
 # peer_node_pubkey_hex fetches a peer's ML-DSA-65 node identity, which is the
@@ -207,16 +260,21 @@ setup_validator() {
     warn "Wallet already exists at /var/sqc/validator.sqwallet — skipping generation"
   fi
 
-  # Get address and pubkey
   echo ""
-  log "Your validator address:"
-  ./sqc-wallet address --wallet /var/sqc/validator.sqwallet
+  log "Your validator address (signer only — receives 0 SPLD):"
+  VALIDATOR_ADDR=$(./sqc-wallet address --wallet /var/sqc/validator.sqwallet)
+  echo "  $VALIDATOR_ADDR"
   echo ""
+
+  GENESIS_ADDR="${SQC_GENESIS_ADDR:-$GENESIS_ADDR_DEFAULT}"
+  require_sq_address "$GENESIS_ADDR" "genesis address"
+  if [ "${GENESIS_ADDR,,}" = "${VALIDATOR_ADDR,,}" ]; then
+    err "genesis address must not be the validator. The 26B goes to $GENESIS_ADDR_DEFAULT (or SQC_GENESIS_ADDR)."
+  fi
 
   # Create genesis.json if not exists
   if [ ! -f /var/sqc/genesis.json ]; then
-    log "Creating genesis.json..."
-    VALIDATOR_ADDR=$(./sqc-wallet address --wallet /var/sqc/validator.sqwallet)
+    log "Creating genesis.json (26B to genesis address, 0 to validator)..."
     VALIDATOR_PUBKEY=$(./sqc-wallet pubkey --wallet /var/sqc/validator.sqwallet)
     TIMESTAMP=$(date +%s)
 
@@ -228,28 +286,33 @@ setup_validator() {
   "validator_pubkey_hex": "$VALIDATOR_PUBKEY",
   "allocations": [
     {
-      "address": "$VALIDATOR_ADDR",
-      "balance": "26000000000000000000000000000",
-      "comment": "Genesis validator — 26 billion SPLD"
+      "address": "$GENESIS_ADDR",
+      "balance": "$GENESIS_SUPPLY",
+      "comment": "Genesis address — 26 billion SPLD"
     }
   ],
-  "total_supply": "26000000000000000000000000000"
+  "total_supply": "$GENESIS_SUPPLY"
 }
 GENESIS
     log "genesis.json written to /var/sqc/genesis.json"
-    echo ""
-    echo -e "${ORANGE}IMPORTANT: Share your validator_pubkey_hex with other nodes${NC}"
-    echo -e "${ORANGE}so they can verify your blocks. Your genesis.json:${NC}"
-    cat /var/sqc/genesis.json | python3 -c "
+  else
+    warn "genesis.json already exists at /var/sqc/genesis.json — not overwriting"
+  fi
+
+  validate_genesis_allocation /var/sqc/genesis.json "$GENESIS_ADDR" "$VALIDATOR_ADDR"
+
+  echo ""
+  echo -e "${ORANGE}IMPORTANT: Share your validator_pubkey_hex with other nodes${NC}"
+  echo -e "${ORANGE}so they can verify your blocks. Your genesis.json:${NC}"
+  cat /var/sqc/genesis.json | python3 -c "
 import json,sys
 g=json.load(sys.stdin)
 pk=g['validator_pubkey_hex']
 print(f'  validator_pubkey_hex: {pk[:32]}...(truncated)')
-print(f'  validator_address: {g[\"allocations\"][0][\"address\"]}')
+print(f'  validator_address: $VALIDATOR_ADDR  (0 SPLD)')
+print(f'  genesis_address:   {g[\"allocations\"][0][\"address\"]}  (26B SPLD)')
+print(f'  total_supply:      {g[\"total_supply\"]}')
 "
-  else
-    warn "genesis.json already exists at /var/sqc/genesis.json"
-  fi
 
   # A node's RPC surface carries a write plane (POST /block, /peers/announce) and
   # reveals everything the node knows. Binding it to every interface with no token

@@ -343,9 +343,9 @@ Create `/var/sqc/genesis.json`:
   "validator_pubkey_hex": "YOUR_VALIDATOR_PUBKEY_HEX_HERE",
   "allocations": [
     {
-      "address": "SQ:YOUR_VALIDATOR_ADDRESS_HERE",
+      "address": "SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc",
       "balance": "26000000000000000000000000000",
-      "comment": "Genesis validator allocation — 26 billion SPLD"
+      "comment": "Genesis address — 26 billion SPLD"
     }
   ],
   "total_supply": "26000000000000000000000000000"
@@ -353,8 +353,16 @@ Create `/var/sqc/genesis.json`:
 ```
 
 Replace:
-- `YOUR_VALIDATOR_PUBKEY_HEX_HERE` with the hex from the step above
-- `YOUR_VALIDATOR_ADDRESS_HERE` with your validator SQ: address
+- `YOUR_VALIDATOR_PUBKEY_HEX_HERE` with the hex from the validator wallet (signer only)
+
+The 26B goes to the **genesis address**
+`SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc` — not the validator.
+
+Native supply is **26 billion SPLD**, minted once, to **one** allocation. The validator
+wallet signs blocks and must receive **0**. A second allocation is how a chain
+ends up with more than 26B. `install.sh --validator` defaults to that genesis
+address (`SQC_GENESIS_ADDR` overrides) and refuses a genesis that credits the
+validator or splits supply.
 
 ### Run Validator Node
 
@@ -514,21 +522,22 @@ The genesis block (block 0) is the first block on the chain. It:
 # Step 1: Generate validator wallet
 ./sqc-wallet generate --out /var/sqc/validator.sqwallet
 
-# Step 2: Get validator address
+# Step 2: Validator is the block signer only. Do not allocate to this address.
 VALIDATOR_ADDR=$(./sqc-wallet address --wallet /var/sqc/validator.sqwallet)
-echo "Validator address: $VALIDATOR_ADDR"
+echo "Validator address (must stay at 0): $VALIDATOR_ADDR"
 
-# Step 3: Get validator public key in hex
-VALIDATOR_PUBKEY=$(cat /var/sqc/validator.sqwallet | python3 -c "
-import json, sys, base64
-w = json.load(sys.stdin)
-pk_b64 = w.get('public_key', '')
-if pk_b64:
-    print(base64.b64decode(pk_b64 + '==').hex())
-" 2>/dev/null)
+# Step 3: Genesis address — the one address that receives 26B.
+GENESIS_ADDR="${SQC_GENESIS_ADDR:-SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc}"
+if [ "${GENESIS_ADDR,,}" = "${VALIDATOR_ADDR,,}" ]; then
+  echo "refusing: genesis address must not be the validator" >&2
+  exit 1
+fi
+
+# Step 4: Get validator public key in hex (needed so the node can verify blocks)
+VALIDATOR_PUBKEY=$(./sqc-wallet pubkey --wallet /var/sqc/validator.sqwallet)
 echo "Validator pubkey (hex): ${VALIDATOR_PUBKEY:0:32}..."
 
-# Step 4: Create genesis.json
+# Step 5: Create genesis.json — one allocation, 26B, genesis address only
 cat > /var/sqc/genesis.json << EOF
 {
   "chain_id": "splendor-quantum-1",
@@ -537,9 +546,9 @@ cat > /var/sqc/genesis.json << EOF
   "validator_pubkey_hex": "$VALIDATOR_PUBKEY",
   "allocations": [
     {
-      "address": "$VALIDATOR_ADDR",
+      "address": "$GENESIS_ADDR",
       "balance": "26000000000000000000000000000",
-      "comment": "Genesis: 26 billion SPLD"
+      "comment": "Genesis address — 26 billion SPLD"
     }
   ],
   "total_supply": "26000000000000000000000000000"
@@ -549,7 +558,7 @@ EOF
 echo "Genesis file created: /var/sqc/genesis.json"
 cat /var/sqc/genesis.json
 
-# Step 5: Start validator. --genesis is NOT optional here.
+# Step 6: Start validator. --genesis is NOT optional here.
 export SQC_WALLET_PASS="your-password"
 ./sqc-node \
   --data-dir /var/sqc/data \
@@ -557,10 +566,11 @@ export SQC_WALLET_PASS="your-password"
   --validator \
   --wallet /var/sqc/validator.sqwallet
 
-# Step 6: Verify genesis block AND that the allocation actually landed
+# Step 7: Verify: genesis address has 26B, validator has 0
 sleep 3
 curl http://localhost:8080/block/0
-curl "http://localhost:8080/balance/$VALIDATOR_ADDR"    # must not be 0
+curl "http://localhost:8080/balance/$GENESIS_ADDR"      # must be 26e27
+curl "http://localhost:8080/balance/$VALIDATOR_ADDR"    # must be 0
 ```
 
 ⚠️ **Omitting `--genesis` produces a chain with no money in it.** Allocations are

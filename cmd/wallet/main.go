@@ -3,6 +3,7 @@
 //
 // Commands:
 //   sqc-wallet generate  --out wallet.sqwallet
+//   sqc-wallet generate  --out wallet.sqwallet --seed "24 words or 64 hex"
 //   sqc-wallet address   --wallet wallet.sqwallet
 //   sqc-wallet balance   --wallet wallet.sqwallet --node http://localhost:8080
 //   sqc-wallet send      --wallet wallet.sqwallet --to SQ:... --amount 10 --node http://localhost:8080
@@ -16,6 +17,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,21 +60,41 @@ Addresses are derived as SHA3-256(ml_dsa_65_public_key) — no ECDSA.`,
 // ── generate ──────────────────────────────────────────────────────────────
 
 func cmdGenerate() *cobra.Command {
-	var outPath string
+	var outPath, seedIn string
 	cmd := &cobra.Command{
 		Use:   "generate",
-		Short: "Generate a new ML-DSA-65 quantum wallet",
+		Short: "Generate a new ML-DSA-65 wallet (prints 24-word phrase + 64-hex seed)",
+		Long: `Creates an ML-DSA-65 key from a 32-byte seed — the same derivation
+the browser extension uses. You get a 64-character seed hex and a 24-word
+BIP39 phrase that import into the extension as the same SQ: address.
+
+Pass --seed to restore an existing phrase or hex instead of creating a new one.
+Wallets created before this (raw GenerateKeypair) have no seed and cannot
+gain one.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Generate keypair
-			fmt.Fprintln(os.Stderr, "Generating ML-DSA-65 (FIPS-204) keypair...")
-			pub, priv, err := qcrypto.GenerateKeypair()
-			if err != nil {
-				return fmt.Errorf("key generation failed: %w", err)
+			var seed [qcrypto.SeedSize]byte
+			var err error
+			if strings.TrimSpace(seedIn) != "" {
+				seed, err = parseSeedInput(seedIn)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "Restoring ML-DSA-65 key from seed...")
+			} else {
+				fmt.Fprintln(os.Stderr, "Generating ML-DSA-65 seed and keypair...")
+				seed, err = qcrypto.GenerateSeed()
+				if err != nil {
+					return fmt.Errorf("key generation failed: %w", err)
+				}
 			}
 
+			pub, priv := qcrypto.KeypairFromSeed(seed)
 			addr := qcrypto.DeriveAddress(pub)
+			phrase, err := seedToMnemonic(seed)
+			if err != nil {
+				return fmt.Errorf("mnemonic: %w", err)
+			}
 
-			// Get password
 			pass, err := readPassword("Enter wallet password: ")
 			if err != nil {
 				return fmt.Errorf("password read error: %w", err)
@@ -85,7 +107,6 @@ func cmdGenerate() *cobra.Command {
 				return fmt.Errorf("passwords do not match")
 			}
 
-			// Save encrypted wallet
 			if err := qcrypto.SaveWallet(outPath, pub, priv, pass); err != nil {
 				return fmt.Errorf("failed to save wallet: %w", err)
 			}
@@ -93,14 +114,17 @@ func cmdGenerate() *cobra.Command {
 			fmt.Printf("\n✅ Wallet created successfully\n")
 			fmt.Printf("   Address:  %s\n", addr.String())
 			fmt.Printf("   Saved to: %s\n", outPath)
-			fmt.Printf("\n⚠️  IMPORTANT: Back up %s securely.\n", outPath)
-			fmt.Printf("   There is no seed phrase. The wallet file IS the key.\n")
-			fmt.Printf("   Private key size: %d bytes (ML-DSA-65)\n", qcrypto.PrivateKeySize)
+			fmt.Printf("\n   Seed hex (64 chars, no 0x):\n   %x\n", seed[:])
+			fmt.Printf("\n   24-word recovery phrase:\n   %s\n", phrase)
+			fmt.Printf("\n⚠️  Save the phrase or seed hex. Anyone with either controls this address.\n")
+			fmt.Printf("   The .sqwallet file is an encrypted copy of the same key.\n")
+			fmt.Printf("   Paste the phrase or hex into the extension to import this account.\n")
 
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&outPath, "out", "o", "wallet.sqwallet", "Output wallet file path")
+	cmd.Flags().StringVar(&seedIn, "seed", "", "Restore from 24-word phrase or 64-char seed hex")
 	return cmd
 }
 
