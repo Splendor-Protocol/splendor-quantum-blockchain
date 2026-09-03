@@ -48,6 +48,7 @@ func main() {
 	js.Global().Set("sqSignOrder", js.FuncOf(sqSignOrder))
 	js.Global().Set("sqSignCancel", js.FuncOf(sqSignCancel))
 	js.Global().Set("sqSignIncrementNonce", js.FuncOf(sqSignIncrementNonce))
+	js.Global().Set("sqSignBridgeClaim", js.FuncOf(sqSignBridgeClaim))
 	js.Global().Set("sqGetModuleRouterAddress", js.FuncOf(sqGetModuleRouterAddress))
 
 	select {}
@@ -478,6 +479,30 @@ func sqSignIncrementNonce(this js.Value, args []js.Value) interface{} {
 		return errVal("invalid params: " + e.Error())
 	}
 	wire, e := w.SignIncrementNonce(p)
+	if e != nil {
+		return errVal(e.Error())
+	}
+	return okJSON(wire)
+}
+
+// sqSignBridgeClaim signs a migration-bridge claim attestation
+// (signer.BridgeClaimParams) under CtxBridge → {pubkey, signature, …}.
+func sqSignBridgeClaim(this js.Value, args []js.Value) interface{} {
+	id, paramsJSON, err := parseSessionAndString(args, "params JSON")
+	if err != "" {
+		return errVal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	var p signer.BridgeClaimParams
+	if e := json.Unmarshal([]byte(paramsJSON), &p); e != nil {
+		return errVal("invalid params: " + e.Error())
+	}
+	wire, e := w.SignBridgeClaim(p)
 	if e != nil {
 		return errVal(e.Error())
 	}

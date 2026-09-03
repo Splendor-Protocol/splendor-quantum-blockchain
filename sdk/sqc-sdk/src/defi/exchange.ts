@@ -39,6 +39,8 @@ const EXCHANGE_WRITES = new Set([
   'unpause',
   'setOperator',
   'transferOwnership',
+  'setRedeemFeeBps',
+  'setFeeRecipient',
 ]);
 
 export class Exchange extends Program {
@@ -59,7 +61,7 @@ export class Exchange extends Program {
   }
 
   async info(): Promise<Record<string, unknown>> {
-    return this.read<Record<string, unknown>>('info', {});
+    return this.read<Record<string, unknown>>('exchange_info', {});
   }
 
   async nonce(maker: string): Promise<number> {
@@ -72,7 +74,34 @@ export class Exchange extends Program {
   }
 
   async condition(id: number): Promise<Record<string, unknown>> {
-    return this.read<Record<string, unknown>>('condition', { condition: id });
+    return this.read<Record<string, unknown>>('condition_info', { condition: id });
+  }
+
+  async orderRemaining(hash: string): Promise<Record<string, unknown>> {
+    return this.read<Record<string, unknown>>('order_remaining', { hash });
+  }
+
+  async isOperator(address: string): Promise<boolean> {
+    const res = await this.read<{ is_operator: boolean }>('is_operator', { address });
+    return !!res.is_operator;
+  }
+
+  async position(holder: string, condition: number): Promise<Record<string, unknown>> {
+    return this.read<Record<string, unknown>>('position', { holder, condition });
+  }
+
+  async simulateMatch(params: {
+    caller: string;
+    takerOrder: SignedOrder | Record<string, unknown>;
+    makerOrders: Array<SignedOrder | Record<string, unknown>>;
+    fillShares: string[];
+  }): Promise<Record<string, unknown>> {
+    return this.read<Record<string, unknown>>('simulate_match', {
+      caller: params.caller,
+      taker_order: params.takerOrder,
+      maker_orders: params.makerOrders,
+      fill_shares: params.fillShares,
+    });
   }
 
   async createCondition(
@@ -169,6 +198,14 @@ export class Exchange extends Program {
 
   async setOperator(wallet: SplendorPQBridge, operator: string, active: boolean) {
     return this.write(wallet, 'set_operator', { operator, active });
+  }
+
+  async setRedeemFeeBps(wallet: SplendorPQBridge, redeemFeeBps: number) {
+    return this.write(wallet, 'set_redeem_fee_bps', { redeem_fee_bps: redeemFeeBps });
+  }
+
+  async setFeeRecipient(wallet: SplendorPQBridge, feeRecipient: string) {
+    return this.write(wallet, 'set_fee_recipient', { fee_recipient: feeRecipient });
   }
 
   async transferOwnership(wallet: SplendorPQBridge, newOwner: string) {

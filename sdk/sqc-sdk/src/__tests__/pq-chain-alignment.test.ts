@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { SplendorPQBridge } from '../index.js';
 import { MODULE_ROUTER_ADDRESS } from '../addresses/index.js';
 import {
@@ -10,8 +10,27 @@ import golden from '../../testdata/golden-vectors.json' with { type: 'json' };
 
 const GOLDEN_SEED = golden.seedHex;
 const bridges: SplendorPQBridge[] = [];
+let originalFetch: typeof fetch;
+let mockRemoteChainId = golden.chainId;
+
+beforeEach(() => {
+  originalFetch = globalThis.fetch;
+  mockRemoteChainId = golden.chainId;
+  // Off-chain sign paths now assert remote chain_id — stub /status for unit tests.
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/status')) {
+      return new Response(JSON.stringify({ chain_id: mockRemoteChainId }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ error: 'unexpected' }), { status: 500 });
+  }) as typeof fetch;
+});
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
   for (const b of bridges) {
     try {
       b.disconnect();
@@ -37,6 +56,7 @@ describe('PQ chain alignment', () => {
 
   it('syncs WASM chain_id with RPC options', async () => {
     const devnetId = 'splendor-quantum-devnet-1';
+    mockRemoteChainId = devnetId;
     const b = track(new SplendorPQBridge({ chainId: devnetId }));
     await b.connectFromSeed(GOLDEN_SEED);
     const signed = await b.signPermit({

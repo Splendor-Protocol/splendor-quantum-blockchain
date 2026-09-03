@@ -88,12 +88,12 @@ describe('module clients functional', () => {
     const { address } = await deployPool(wallet, A, B);
     expect(address).toBe(DEX.predictPoolAddress(A, B));
     const pool = new DEX({ moduleCall: vi.fn() } as unknown as Connection, address);
-    await pool.swap(wallet, { tokenIn: A, amountIn: '100', minAmountOut: '1' });
+    await pool.swap(wallet, { tokenIn: 0, amountIn: '100', minAmountOut: '1' });
     const send = wallet.sendModuleCall as ReturnType<typeof vi.fn>;
     expect(send.mock.calls[1][0]).toMatchObject({
       module: 'dex',
       action: 'swap',
-      params: { pool: address, token_in: A, amount_in: '100', min_amount_out: '1' },
+      params: { pool: address, token_in: 0, amount_in: '100', min_amount_out: '1' },
     });
   });
 

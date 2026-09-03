@@ -329,6 +329,7 @@ export function useCallContract(): {
   return { callContract, status, hash, explorerUrl, error, reset };
 }
 
+/** @deprecated Prefer `useDeployBytecode` — same underlying deployBytecode helper. */
 export function useDeployContract(): {
   deployContract: (
     opts: DeployOpts,
@@ -439,6 +440,18 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   refresh: () => Promise<void>;
   transfer: (to: string, amount: string) => Promise<{ hash?: string }>;
   approve: (spender: string, amount: string) => Promise<{ hash?: string }>;
+  mint: (to: string, amount: string) => Promise<{ hash?: string }>;
+  pause: () => Promise<{ hash?: string }>;
+  unpause: () => Promise<{ hash?: string }>;
+  submitPermit: (signed: {
+    token: string;
+    owner: string;
+    spender: string;
+    amount: string;
+    deadline: number;
+    signature: number[];
+    owner_pubkey: number[];
+  }) => Promise<{ hash?: string }>;
   loading: boolean;
   /** @deprecated use `status` */
   txStatus: TxHookStatus;
@@ -513,12 +526,67 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     [ready, wallet, tokenAddress, tx],
   );
 
+  const mint = useCallback(
+    async (to: string, amount: string) => {
+      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      const res = await tx.run(async () => {
+        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        return new QRC20(wallet.connection, tokenAddress).mint(wallet, to, amount);
+      });
+      await refresh();
+      return { hash: res.hash };
+    },
+    [ready, wallet, tokenAddress, tx, refresh],
+  );
+
+  const pause = useCallback(async () => {
+    if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+    const res = await tx.run(async () => {
+      const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+      return new QRC20(wallet.connection, tokenAddress).pause(wallet);
+    });
+    return { hash: res.hash };
+  }, [ready, wallet, tokenAddress, tx]);
+
+  const unpause = useCallback(async () => {
+    if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+    const res = await tx.run(async () => {
+      const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+      return new QRC20(wallet.connection, tokenAddress).unpause(wallet);
+    });
+    return { hash: res.hash };
+  }, [ready, wallet, tokenAddress, tx]);
+
+  const submitPermit = useCallback(
+    async (signed: {
+      token: string;
+      owner: string;
+      spender: string;
+      amount: string;
+      deadline: number;
+      signature: number[];
+      owner_pubkey: number[];
+    }) => {
+      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      const res = await tx.run(async () => {
+        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        return new QRC20(wallet.connection, tokenAddress).submitPermit(wallet, signed as never);
+      });
+      return { hash: res.hash };
+    },
+    [ready, wallet, tokenAddress, tx],
+  );
+
   return {
     balance,
     tokenInfo,
     refresh,
     transfer,
     approve,
+    mint,
+    pause,
+    unpause,
+    submitPermit,
     loading,
     txStatus: tx.status,
     status: tx.status,
@@ -896,6 +964,8 @@ export function useExchange(exchangeAddress: string | null): {
     makerOrders: Array<Record<string, unknown>>;
     fillShares: string[];
   }) => Promise<{ hash?: string }>;
+  resolve: (condition: number, outcome: number) => Promise<{ hash?: string }>;
+  redeem: (condition: number) => Promise<{ hash?: string }>;
   /** @deprecated use `status` */
   txStatus: TxHookStatus;
   status: TxHookStatus;
@@ -1015,6 +1085,30 @@ export function useExchange(exchangeAddress: string | null): {
     [exchangeAddress, ready, wallet, tx],
   );
 
+  const resolve = useCallback(
+    async (condition: number, outcome: number) => {
+      if (!exchangeAddress || !ready || !wallet) throw new Error('Exchange not ready');
+      const res = await tx.run(async () => {
+        const { Exchange } = await import('@splendor/sqc-sdk/defi');
+        return new Exchange(wallet.connection, exchangeAddress).resolve(wallet, condition, outcome);
+      });
+      return { hash: res.hash };
+    },
+    [exchangeAddress, ready, wallet, tx],
+  );
+
+  const redeem = useCallback(
+    async (condition: number) => {
+      if (!exchangeAddress || !ready || !wallet) throw new Error('Exchange not ready');
+      const res = await tx.run(async () => {
+        const { Exchange } = await import('@splendor/sqc-sdk/defi');
+        return new Exchange(wallet.connection, exchangeAddress).redeem(wallet, condition);
+      });
+      return { hash: res.hash };
+    },
+    [exchangeAddress, ready, wallet, tx],
+  );
+
   return {
     info,
     signOrder,
@@ -1023,6 +1117,8 @@ export function useExchange(exchangeAddress: string | null): {
     split,
     merge,
     match: matchOrders,
+    resolve,
+    redeem,
     txStatus: tx.status,
     status: tx.status,
     hash: tx.hash,
@@ -1098,7 +1194,7 @@ export function useDeployExchange(): {
 export function useDex(poolAddress: string | null): {
   reserves: () => Promise<Record<string, unknown>>;
   swap: (params: {
-    tokenIn: string;
+    tokenIn: 0 | 1;
     amountIn: string;
     minAmountOut?: string;
   }) => Promise<{ hash?: string }>;
@@ -1125,7 +1221,7 @@ export function useDex(poolAddress: string | null): {
   }, [poolAddress, ready, wallet]);
 
   const swap = useCallback(
-    async (params: { tokenIn: string; amountIn: string; minAmountOut?: string }) => {
+    async (params: { tokenIn: 0 | 1; amountIn: string; minAmountOut?: string }) => {
       if (!poolAddress || !ready || !wallet) throw new Error('Pool not ready');
       const res = await tx.run(async () => {
         const { DEX } = await import('@splendor/sqc-sdk/defi');

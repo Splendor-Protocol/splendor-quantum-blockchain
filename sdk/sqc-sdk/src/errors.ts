@@ -12,6 +12,7 @@ export type BridgeErrorCode =
   | 'INVALID_FEE'
   | 'TIMEOUT'
   | 'TX_NOT_CONFIRMED'
+  | 'TX_FAILED'
   | 'CHAIN_MISMATCH'
   | 'UNKNOWN';
 
@@ -60,6 +61,10 @@ export class BridgeError extends Error {
 
   static txNotConfirmed(msg: string): BridgeError {
     return new BridgeError('TX_NOT_CONFIRMED', msg);
+  }
+
+  static txFailed(msg: string, details?: unknown): BridgeError {
+    return new BridgeError('TX_FAILED', msg, details);
   }
 
   static chainMismatch(got: string, want: string): BridgeError {

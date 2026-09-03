@@ -34,6 +34,7 @@ export type WasmSignerApi = {
   sqSignOrder: (sessionId: string, paramsJson: string) => string | { error: string };
   sqSignCancel: (sessionId: string, paramsJson: string) => string | { error: string };
   sqSignIncrementNonce: (sessionId: string, paramsJson: string) => string | { error: string };
+  sqSignBridgeClaim: (sessionId: string, paramsJson: string) => string | { error: string };
   sqGetModuleRouterAddress: () => string | { error: string };
   sqSetChainID: (chainId: string) => { ok: boolean } | { error: string };
 };
@@ -90,6 +91,7 @@ export function bindWasmApi(g: Record<string, unknown>): WasmSignerApi {
     sqSignOrder: (id, j) => x.sqSignOrder(id, j),
     sqSignCancel: (id, j) => x.sqSignCancel(id, j),
     sqSignIncrementNonce: (id, j) => x.sqSignIncrementNonce(id, j),
+    sqSignBridgeClaim: (id, j) => x.sqSignBridgeClaim(id, j),
     sqGetModuleRouterAddress: () => x.sqGetModuleRouterAddress(),
     sqSetChainID: (c) => x.sqSetChainID(c),
   };

@@ -10,6 +10,7 @@ import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import type { ModuleCall } from './core/module-call.js';
 import { encodeModuleCallHex } from './core/module-call.js';
 import { subscribe } from './core/subscribe.js';
+import { fromUnits, toUnits } from './units.js';
 import type {
   EstimateGasRequest,
   EstimateGasResponse,
@@ -217,7 +218,21 @@ export class SqRpc {
       to: MODULE_ROUTER_ADDRESS,
       data: encodeModuleCallHex(envelope),
     });
-    return res.decoded as T;
+    if (res && typeof res === 'object' && (res as { reverted?: boolean }).reverted === true) {
+      const err =
+        (res as { error?: string }).error ||
+        (res as { revert_reason?: string }).revert_reason ||
+        'module call reverted';
+      throw BridgeError.rpc(`moduleCall reverted: ${err}`, res);
+    }
+    if (res == null || typeof res !== 'object' || !('decoded' in (res as object))) {
+      throw BridgeError.rpc('moduleCall: missing decoded result', res);
+    }
+    const decoded = (res as { decoded: unknown }).decoded;
+    if (decoded === undefined || decoded === null) {
+      throw BridgeError.rpc('moduleCall: decoded result is empty', res);
+    }
+    return decoded as T;
   }
 
   async estimateGas(opts: EstimateGasRequest): Promise<EstimateGasResponse> {
@@ -287,7 +302,9 @@ export class SqRpc {
 
   /**
    * Confirmation: prefer receipt index when `hash` is set; fall back to nonce advance.
-   * Caveat (nonce path): another tx from the same account can advance the nonce.
+   * Receipt path requires status === 1 (success); status === 0 throws TX_FAILED.
+   * Caveat (nonce-only path, no hash): another tx from the same account can advance the
+   * nonce — weaker confirmation, use hash when available.
    */
   async waitForConfirmation(opts: {
     from: string;
@@ -307,15 +324,35 @@ export class SqRpc {
       if (hash) {
         try {
           const receipt = await this.getTxReceipt(hash);
-          const { nonce } = await this.getNonce(from);
-          return { confirmed: true, nonce, receipt };
-        } catch {
+          const statusRaw = receipt.status;
+          const status =
+            typeof statusRaw === 'number'
+              ? statusRaw
+              : typeof statusRaw === 'string' && statusRaw !== ''
+                ? Number(statusRaw)
+                : undefined;
+
+          if (status === 0) {
+            const errMsg =
+              typeof receipt.error === 'string' && receipt.error
+                ? receipt.error
+                : 'transaction execution failed';
+            throw BridgeError.txFailed(errMsg, receipt);
+          }
+          if (status === 1) {
+            const { nonce } = await this.getNonce(from);
+            return { confirmed: true, nonce, receipt };
+          }
+          // Receipt without a usable status — keep polling.
+        } catch (e) {
+          if (e instanceof BridgeError && e.code === 'TX_FAILED') throw e;
           /* not indexed yet — keep polling */
         }
-      }
-      const { nonce } = await this.getNonce(from);
-      if (nonce > opts.nonceBefore) {
-        return { confirmed: true, nonce };
+      } else {
+        const { nonce } = await this.getNonce(from);
+        if (nonce > opts.nonceBefore) {
+          return { confirmed: true, nonce };
+        }
       }
       await new Promise((r) => setTimeout(r, pollMs));
     }
@@ -424,30 +461,17 @@ export class SqRpc {
   }
 }
 
-const SPLD_DIVISOR = 10n ** 18n;
-
 export function toSPLD(units: string | number | bigint): string {
-  try {
-    const u = BigInt(units);
-    const whole = u / SPLD_DIVISOR;
-    const frac = u % SPLD_DIVISOR;
-    const fracStr = frac.toString().padStart(18, '0').replace(/0+$/, '') || '0';
-    return `${whole}.${fracStr.slice(0, 6)}`;
-  } catch {
-    return '0.000000';
-  }
+  // Display helper: up to 6 fraction digits (same trimming rules as pre-harden).
+  const full = toUnits(units, 18);
+  const [whole, frac = '0'] = full.split('.');
+  const frac18 = frac.padEnd(18, '0').slice(0, 18);
+  const fracStr = frac18.replace(/0+$/, '') || '0';
+  return `${whole}.${fracStr.slice(0, 6)}`;
 }
 
 export function fromSPLD(spld: string | number): string {
-  try {
-    const parts = String(spld).split('.');
-    const whole = BigInt(parts[0] || '0');
-    const fracStr = (parts[1] || '').padEnd(18, '0').slice(0, 18);
-    const frac = BigInt(fracStr);
-    return String(whole * SPLD_DIVISOR + frac);
-  } catch {
-    return '0';
-  }
+  return fromUnits(spld, 18);
 }
 
 function sleep(ms: number): Promise<void> {

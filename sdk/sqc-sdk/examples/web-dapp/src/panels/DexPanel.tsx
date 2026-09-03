@@ -5,7 +5,7 @@ export function DexPanel() {
   const { isConnected } = useAccount();
   const [poolInput, setPoolInput] = useState('');
   const [pool, setPool] = useState<string | null>(null);
-  const [tokenIn, setTokenIn] = useState('');
+  const [tokenInSide, setTokenInSide] = useState<'0' | '1'>('0');
   const [amountIn, setAmountIn] = useState('100');
   const [minOut, setMinOut] = useState('1');
   const [reservesText, setReservesText] = useState<string | null>(null);
@@ -39,7 +39,7 @@ export function DexPanel() {
   const onSwap = async () => {
     try {
       await swap({
-        tokenIn: tokenIn.trim(),
+        tokenIn: tokenInSide === '1' ? 1 : 0,
         amountIn: amountIn.trim(),
         minAmountOut: minOut.trim() || undefined,
       });
@@ -71,13 +71,15 @@ export function DexPanel() {
       {pool ? (
         <>
           <div className="divider" />
-          <label htmlFor="dex-token-in">Token in (SQ:…)</label>
-          <input
+          <label htmlFor="dex-token-in">Token in side (0 = token0, 1 = token1)</label>
+          <select
             id="dex-token-in"
-            value={tokenIn}
-            onChange={(e) => setTokenIn(e.target.value)}
-            placeholder="SQ:…"
-          />
+            value={tokenInSide}
+            onChange={(e) => setTokenInSide(e.target.value === '1' ? '1' : '0')}
+          >
+            <option value="0">0 — token0</option>
+            <option value="1">1 — token1</option>
+          </select>
           <label htmlFor="dex-amt">Amount in (raw units)</label>
           <input
             id="dex-amt"
@@ -92,11 +94,7 @@ export function DexPanel() {
             onChange={(e) => setMinOut(e.target.value)}
             inputMode="numeric"
           />
-          <button
-            type="button"
-            disabled={status === 'pending' || !tokenIn.trim()}
-            onClick={() => void onSwap()}
-          >
+          <button type="button" disabled={status === 'pending'} onClick={() => void onSwap()}>
             {status === 'pending' ? 'Swapping…' : 'Swap'}
           </button>
         </>

@@ -29,15 +29,24 @@ export class Connection {
   constructor(options: ConnectionOptions = {}) {
     if (options.existingRpc) {
       this.rpc = options.existingRpc;
-      this.transport = RpcTransport.fromSqRpc(options.existingRpc);
+      this.transport = options.transport ?? RpcTransport.fromSqRpc(options.existingRpc);
       return;
     }
     if (options.transport) {
       this.transport = options.transport;
-      this.rpc =
-        options.transport instanceof RpcTransport
-          ? options.transport.toSqRpc()
-          : new SqRpc(options);
+      if (options.transport instanceof RpcTransport) {
+        this.rpc = options.transport.toSqRpc();
+      } else {
+        // Non-RPC transports (e.g. MockTransport): keep a SqRpc aligned to the
+        // transport's chain/urls for wallet helpers that still need rpc.*;
+        // moduleCall always goes through this.transport.
+        this.rpc = new SqRpc({
+          ...options,
+          chainId: options.transport.chainId,
+          rpcUrl: options.transport.rpcUrl,
+          rpcUrls: options.transport.rpcUrls,
+        });
+      }
     } else {
       const rt = new RpcTransport(options);
       this.transport = rt;

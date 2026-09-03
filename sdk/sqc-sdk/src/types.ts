@@ -237,3 +237,27 @@ export type SignedIncrementNonce = {
   chain_id: string;
   digest_hex: string;
 };
+
+/** Bridge claim attestation (off-chain ML-DSA under CtxBridge). */
+export type BridgeClaimSignParams = {
+  bridge: string;
+  id: number;
+  asset: 'spld' | 'splv';
+  amount: string;
+  recipient: string;
+  /** 0x + 64 hex chars (legacy burn tx hash). */
+  evm_tx: string;
+};
+
+export type SignedBridgeClaim = {
+  pubkey: number[];
+  signature: number[];
+  chain_id: string;
+  digest_hex: string;
+  bridge: string;
+  id: number;
+  asset: string;
+  amount: string;
+  recipient: string;
+  evm_tx: string;
+};

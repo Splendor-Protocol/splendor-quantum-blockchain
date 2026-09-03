@@ -166,7 +166,7 @@ Same EVM account → same PQ wallet, every time. Non-custodial: the private ML-D
 
 ### Prerequisites
 
-- Node.js ≥ 18
+- Node.js ≥ 22.20 (see `package.json` `engines`)
 - Go ≥ 1.21 (only to build the WASM signer once; the build script pins the exact release it compiles with)
 
 ```powershell

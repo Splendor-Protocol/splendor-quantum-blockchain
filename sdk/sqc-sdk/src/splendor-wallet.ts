@@ -1,5 +1,6 @@
 /**
  * SplendorPQBridge — signing wallet (WASM ML-DSA-65 sessions).
+ * @deprecated Prefer importing `Wallet` — SplendorPQBridge remains an alias.
  */
 import {
   assertSignatureMatchesAddress,
@@ -49,6 +50,8 @@ import type {
   SignedCancel,
   IncrementNonceParams,
   SignedIncrementNonce,
+  BridgeClaimSignParams,
+  SignedBridgeClaim,
 } from './types.js';
 
 export type {
@@ -68,6 +71,8 @@ export type {
   SignedCancel,
   IncrementNonceParams,
   SignedIncrementNonce,
+  BridgeClaimSignParams,
+  SignedBridgeClaim,
 };
 
 export class SplendorPQBridge {
@@ -770,7 +775,7 @@ export class SplendorPQBridge {
   async signPermit(params: PermitParams): Promise<SignedPermit> {
     return this.withSignLock(async () => {
       await this.init();
-      this.syncWasmChainId();
+      await this.beforeSignAndSubmit();
       assertAddress(params.token);
       assertAddress(params.spender);
       this.opts.onRequest?.({ method: 'signPermit' });
@@ -794,7 +799,7 @@ export class SplendorPQBridge {
   async signOrder(params: OrderParams): Promise<SignedOrder> {
     return this.withSignLock(async () => {
       await this.init();
-      this.syncWasmChainId();
+      await this.beforeSignAndSubmit();
       assertAddress(params.exchange);
       if (params.recipient) assertAddress(params.recipient);
       this.opts.onRequest?.({ method: 'signOrder' });
@@ -807,7 +812,7 @@ export class SplendorPQBridge {
   async signCancel(params: OrderParams): Promise<SignedCancel> {
     return this.withSignLock(async () => {
       await this.init();
-      this.syncWasmChainId();
+      await this.beforeSignAndSubmit();
       assertAddress(params.exchange);
       if (!params.salt) {
         throw BridgeError.rpc('signCancel requires the exact order salt');
@@ -822,13 +827,31 @@ export class SplendorPQBridge {
   async signIncrementNonce(params: IncrementNonceParams): Promise<SignedIncrementNonce> {
     return this.withSignLock(async () => {
       await this.init();
-      this.syncWasmChainId();
+      await this.beforeSignAndSubmit();
       assertAddress(params.exchange);
       this.opts.onRequest?.({ method: 'signIncrementNonce' });
       const wireStr = unwrap(
         this.api().sqSignIncrementNonce(this.sid(), JSON.stringify(params)),
       ) as string;
       return JSON.parse(wireStr) as SignedIncrementNonce;
+    });
+  }
+
+  /**
+   * Sign a bridge claim attestation (CtxBridge). Returns pubkey + signature
+   * for inclusion in bridge.claim attestations[].
+   */
+  async signBridgeClaim(params: BridgeClaimSignParams): Promise<SignedBridgeClaim> {
+    return this.withSignLock(async () => {
+      await this.init();
+      await this.beforeSignAndSubmit();
+      assertAddress(params.bridge);
+      assertAddress(params.recipient);
+      this.opts.onRequest?.({ method: 'signBridgeClaim' });
+      const wireStr = unwrap(
+        this.api().sqSignBridgeClaim(this.sid(), JSON.stringify(params)),
+      ) as string;
+      return JSON.parse(wireStr) as SignedBridgeClaim;
     });
   }
 

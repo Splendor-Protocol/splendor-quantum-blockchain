@@ -92,7 +92,7 @@ export type Session = ConnectResult & {
  * const s = await createSession({ network: 'local', mode: 'seed', seed });
  * await s.sendSPLD(to, '0.01');
  * await s.token(tokenAddr).transfer(to, '100');
- * await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
+ * await s.modules.dex(pool).swap({ tokenIn: 0, amountIn: '100', minAmountOut: '1' });
  * ```
  */
 export async function createSession(opts: ConnectOptions = {}): Promise<Session> {

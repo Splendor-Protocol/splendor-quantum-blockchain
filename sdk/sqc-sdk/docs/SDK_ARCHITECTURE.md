@@ -36,9 +36,9 @@ Prefer `createSession` / `modules.bind(connection, wallet)` so writes omit the w
 
 ## Layers
 
-1. **Transport** — `RpcTransport` wraps HTTP RPC (`SqRpc`) with failover and `POST /call` for module reads.
-2. **Connection** — read-only chain client (`getBalance`, `moduleCall`, `subscribe`).
-3. **Wallet** (`Wallet` / `SplendorPQBridge`) — WASM ML-DSA-65 signing + submit.
+1. **Transport** — `RpcTransport` wraps HTTP RPC (`SqRpc`) with failover and `POST /call` for module reads. `MockTransport` is for unit tests. There is no `GatewayTransport` class; the gateway remains the HTTP service under `gateway/`.
+2. **Connection** — read-only chain client (`getBalance`, `moduleCall`, `subscribe`). Injected `Transport` is used for `moduleCall`.
+3. **Signer / Wallet** — submit surface (`sendModuleCall` / `callContract`); `MockSigner` for tests; `Wallet` / `SplendorPQBridge` hold WASM ML-DSA-65.
 4. **Program** — typed native module clients (`QRC20`, `QRC1155`, `DEX`, `Exchange`, `BridgeModule`).
 5. **Recipes** — `connect()`, `modules.*`, `deployQRC20()`, `deployExchange()`, etc.
 

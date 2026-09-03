@@ -1,5 +1,12 @@
 # Changelog
 
+## @splendor/sqc-sdk 2.x harden (modular)
+
+- Fail-closed amount parsing (`fromUnits` / `fromSPLD`); honest `waitForConfirmation` (receipt `status === 1`)
+- DEX `swap.token_in` is `0|1` (chain uint8); fixed module read action names; X402 middleware requires settlement
+- QRC-20 v2 surface; `signBridgeClaim`; `MockTransport` / `MockSigner`
+- Prefer `Wallet` / `Connection` / `createSession`; `SplendorPQBridge` remains an alias
+
 ## Docs closeout (client raise status)
 
 - SQDP-1: receipt-first confirmation; congested minFee note; `lock` / `error` events

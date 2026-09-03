@@ -26,6 +26,8 @@ export type PaymentPayload = {
   valid_before: number;
   nonce: string;
   signature?: string | number[];
+  /** Payer-signed TxX402 object required for middleware settlement. */
+  settlement_tx?: object;
   [key: string]: unknown;
 };
 
@@ -98,6 +100,12 @@ export type X402MiddlewareConfig = {
   price: string | Record<string, string>;
   connection: Connection;
   description?: string;
+  /**
+   * When true (default), verify-only payments are rejected; the X-Payment
+   * payload must include `settlement_tx` and settle must succeed before next().
+   * Prefer wallet.payX402 on the client to produce a settled payment.
+   */
+  requireSettlement?: boolean;
 };
 
 type ReqLike = { path: string; headers: Record<string, string | string[] | undefined> };
@@ -112,15 +120,23 @@ function resolvePrice(price: string | Record<string, string>, path: string): str
   for (const [pattern, p] of Object.entries(price)) {
     if (path.startsWith(pattern) || path.includes(pattern)) return p;
   }
-  return Object.values(price)[0] ?? '0';
+  const values = Object.values(price);
+  if (values.length === 0) {
+    throw new Error('createX402Middleware: price map is empty');
+  }
+  return values[0]!;
 }
 
 /**
  * Framework-agnostic X402 middleware factory (works with Express-style handlers).
+ *
+ * Default behaviour requires on-chain settlement (`settlement_tx` in the payment
+ * payload). Verify-only access is not granted — use `wallet.payX402` to pay.
  */
 export function createX402Middleware(config: X402MiddlewareConfig) {
   if (!config.payTo) throw new Error('createX402Middleware: payTo is required');
   const client = X402Client.fromConnection(config.connection);
+  const requireSettlement = config.requireSettlement !== false;
 
   return async function x402Middleware(req: ReqLike, res: ResLike, next: NextFn) {
     const header = req.headers['x-payment'];
@@ -143,8 +159,26 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
           reason: verifyResult.reason,
         });
       }
-      // Verified — grant access. On-chain settlement is the payer's responsibility
-      // (use wallet.payX402 or X402Client.settle with a signed settlement tx).
+
+      if (requireSettlement) {
+        const settlementTx = payload.settlement_tx;
+        if (!settlementTx || typeof settlementTx !== 'object') {
+          return res.status(402).json({
+            error: 'Settlement Required',
+            reason:
+              'X-Payment must include settlement_tx after verify; use wallet.payX402 to settle on-chain',
+            requirements,
+          });
+        }
+        const settleResult = await client.settle(requirements, payload, settlementTx);
+        if (settleResult.error || settleResult.success === false) {
+          return res.status(402).json({
+            error: 'Settlement Failed',
+            reason: settleResult.error || 'settle returned unsuccessful',
+          });
+        }
+      }
+
       next();
     } catch {
       return res.status(400).json({ error: 'Malformed X-Payment header' });

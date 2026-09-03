@@ -34,13 +34,14 @@ The first action in the modal is a **native ML-DSA-65 wallet** — create one fr
 | DEX swap / liquidity | `useDex`, `useDeployPool` |
 | Exchange | `useExchange`, `useDeployExchange` |
 | Bridge claim | `useBridge`, `useDeployBridge` |
-| Bytecode contract | `useContract`, `useDeployBytecode`, `useDeployContract` |
+| Bytecode contract | `useContract`, `useDeployBytecode` (`useDeployContract` deprecated alias) |
 | Bound module factory | `useModules()` |
 | Raw module router | `useModuleCall` (power user) |
+| X402 micropayment | `usePayX402` |
 
 ```tsx
 const { swap, status, hash } = useDex(poolAddress);
-await swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
+await swap({ tokenIn: 0, amountIn: '100', minAmountOut: '1' });
 
 const { claim } = useBridge(bridgeAddress);
 await claim({ id, asset: 'spld', amount, recipient, evmTx, attestations });

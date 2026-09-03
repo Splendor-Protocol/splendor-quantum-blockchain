@@ -101,11 +101,15 @@ export type {
   SignedCancel,
   IncrementNonceParams,
   SignedIncrementNonce,
+  BridgeClaimSignParams,
+  SignedBridgeClaim,
 } from './types.js';
 export { Connection } from './core/connection.js';
 export { buildModuleCall, encodeModuleCallHex, type ModuleCall } from './core/module-call.js';
 export { Program } from './core/program.js';
 export { RpcTransport } from './core/transport/rpc-transport.js';
+export { MockTransport } from './core/transport/mock-transport.js';
+export { MockSigner, type Signer } from './core/signer.js';
 export type { Transport } from './core/transport/types.js';
 export { MODULE_ROUTER_ADDRESS, qrc20Address, qrc1155Address, bytecodeContractAddress, exchangeAddress, bridgeAddress, bridgeSplvAddress, dexPoolAddress } from './addresses/index.js';
 export { QRC20, deployQRC20, getToken } from './tokens/qrc20.js';
