@@ -7,6 +7,8 @@ import type { SplendorPQBridge } from '../splendor-wallet.js';
 import { qrc20Address } from '../addresses/index.js';
 import type { SignedPermit } from '../types.js';
 import { fromUnits } from '../units.js';
+import { assertAddress } from '../address.js';
+import { BridgeError } from '../errors.js';
 
 const QRC20_WRITES = new Set([
   'transfer',
@@ -17,6 +19,12 @@ const QRC20_WRITES = new Set([
   'submitPermit',
   'transferHuman',
   'approveHuman',
+  'increaseAllowance',
+  'decreaseAllowance',
+  'burnFrom',
+  'pause',
+  'unpause',
+  'transferOwnership',
 ]);
 
 export type QRC20DeployParams = {
@@ -36,6 +44,7 @@ export type QRC20TokenInfo = {
   decimals?: number;
   total_supply?: string;
   exists?: boolean;
+  owner?: string;
 };
 
 export type QRC20Balance = {
@@ -46,6 +55,14 @@ export type QRC20Balance = {
   balance: string;
   exists?: boolean;
 };
+
+function assertAmount(amount: string, label = 'amount'): string {
+  const s = String(amount).trim();
+  if (!/^(0|[1-9]\d*)$/.test(s)) {
+    throw BridgeError.invalidAmount(`${label}: expected non-negative integer string`);
+  }
+  return s;
+}
 
 export class QRC20 extends Program {
   protected moduleName(): string {
@@ -82,7 +99,7 @@ export class QRC20 extends Program {
   }
 
   async balanceOf(owner: string): Promise<string> {
-    const res = await this.read<QRC20Balance>('balance_of', { owner });
+    const res = await this.read<QRC20Balance>('balance_of', { owner: assertAddress(owner) });
     return res.balance;
   }
 
@@ -92,7 +109,10 @@ export class QRC20 extends Program {
   }
 
   async allowance(owner: string, spender: string): Promise<string> {
-    const res = await this.read<{ allowance: string }>('allowance', { owner, spender });
+    const res = await this.read<{ allowance: string }>('allowance', {
+      owner: assertAddress(owner),
+      spender: assertAddress(spender),
+    });
     return res.allowance;
   }
 
@@ -101,24 +121,48 @@ export class QRC20 extends Program {
   }
 
   async permitNonce(owner: string): Promise<number> {
-    const res = await this.read<{ nonce: number }>('permit_nonce', { owner });
-    return res.nonce;
+    const res = await this.read<{ permit_nonce: string | number }>('permit_nonce', {
+      owner: assertAddress(owner),
+    });
+    const n = res.permit_nonce;
+    if (typeof n === 'number') return n;
+    if (typeof n === 'string' && /^(0|[1-9]\d*)$/.test(n)) return Number(n);
+    throw new Error(`permit_nonce: unexpected value ${JSON.stringify(n)}`);
+  }
+
+  async paused(): Promise<boolean> {
+    const res = await this.read<{ paused: boolean }>('paused', {});
+    return !!res.paused;
+  }
+
+  async owner(): Promise<string> {
+    const res = await this.read<{ owner: string }>('owner', {});
+    return res.owner;
   }
 
   async transfer(wallet: SplendorPQBridge, to: string, amount: string) {
-    return this.write(wallet, 'transfer', { to, amount });
+    return this.write(wallet, 'transfer', {
+      to: assertAddress(to),
+      amount: assertAmount(amount),
+    });
   }
 
   async approve(wallet: SplendorPQBridge, spender: string, amount: string) {
-    return this.write(wallet, 'approve', { spender, amount });
+    return this.write(wallet, 'approve', {
+      spender: assertAddress(spender),
+      amount: assertAmount(amount),
+    });
   }
 
   async mint(wallet: SplendorPQBridge, to: string, amount: string) {
-    return this.write(wallet, 'mint', { to, amount });
+    return this.write(wallet, 'mint', {
+      to: assertAddress(to),
+      amount: assertAmount(amount),
+    });
   }
 
   async burn(wallet: SplendorPQBridge, amount: string) {
-    return this.write(wallet, 'burn', { amount });
+    return this.write(wallet, 'burn', { amount: assertAmount(amount) });
   }
 
   async transferFrom(
@@ -127,7 +171,44 @@ export class QRC20 extends Program {
     to: string,
     amount: string,
   ) {
-    return this.write(wallet, 'transfer_from', { from, to, amount });
+    return this.write(wallet, 'transfer_from', {
+      from: assertAddress(from),
+      to: assertAddress(to),
+      amount: assertAmount(amount),
+    });
+  }
+
+  async increaseAllowance(wallet: SplendorPQBridge, spender: string, amount: string) {
+    return this.write(wallet, 'increase_allowance', {
+      spender: assertAddress(spender),
+      amount: assertAmount(amount),
+    });
+  }
+
+  async decreaseAllowance(wallet: SplendorPQBridge, spender: string, amount: string) {
+    return this.write(wallet, 'decrease_allowance', {
+      spender: assertAddress(spender),
+      amount: assertAmount(amount),
+    });
+  }
+
+  async burnFrom(wallet: SplendorPQBridge, from: string, amount: string) {
+    return this.write(wallet, 'burn_from', {
+      from: assertAddress(from),
+      amount: assertAmount(amount),
+    });
+  }
+
+  async pause(wallet: SplendorPQBridge) {
+    return this.write(wallet, 'pause', {});
+  }
+
+  async unpause(wallet: SplendorPQBridge) {
+    return this.write(wallet, 'unpause', {});
+  }
+
+  async transferOwnership(wallet: SplendorPQBridge, newOwner: string) {
+    return this.write(wallet, 'transfer_ownership', { new_owner: assertAddress(newOwner) });
   }
 
   /** Submit on-chain permit (params from wallet.signPermit). */

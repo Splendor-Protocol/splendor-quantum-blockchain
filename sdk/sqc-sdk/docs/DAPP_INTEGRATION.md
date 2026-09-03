@@ -17,7 +17,7 @@ Connect → fund → transfer → wait. Use a read-only `Connection` / `SqcProvi
 | Plug-and-play wallet UI (AppKit-style) | `@splendor/connect-react` — `SplendorConnectProvider` + `ConnectKit` / `ConnectButton` (`hostModals` default) |
 | Hide PQ crypto from dApp code | WASM signer only; UI shows `SQ:` identity |
 | One-touch / one config for all dApps | `sqc.networks.json` + `createSession` / `connect` / `connectSplendor` |
-| Working demo (connect + SPLD + QRC-20) | [`../examples/web-dapp`](../examples/web-dapp) |
+| Working demo (connect + SPLD + modules) | [`../examples/web-dapp`](../examples/web-dapp) |
 | Real testnet RPCs without forking package | `rpcUrls: [...]` (gateway optional for SqRpc) or `networks` / `networkConfig` / `registerNetwork` |
 | Host WASM without manual copy | Vite: `@splendor/connect-react/vite` `sqcWasmPlugin`; Next: `npx sqc-copy-wasm` / `@splendor/connect-react/next` |
 | Idle / tab lock must update UI | Bridge emits `lock`; connect-react sets `status: 'locked'` → Unlock CTA |
@@ -55,7 +55,7 @@ import {
 
 Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
 
-**Runnable demo:** [`../examples/web-dapp`](../examples/web-dapp) — ConnectKit + balance + send SPLD + QRC-20 read/write.
+**Runnable demo:** [`../examples/web-dapp`](../examples/web-dapp) — ConnectKit + balance + send SPLD + QRC-20 / 1155 + DEX + Exchange + Bridge + Contract.
 
 ### Minimal React checklist
 

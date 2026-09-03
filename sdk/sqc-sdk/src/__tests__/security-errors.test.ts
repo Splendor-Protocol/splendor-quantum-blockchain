@@ -88,6 +88,38 @@ describe('security-errors SQDP-1 codes', () => {
     }
   });
 
+  it('TX_FAILED when receipt status is 0', async () => {
+    const original = globalThis.fetch;
+    const from = 'SQ:' + 'ab'.repeat(32);
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/receipt')) {
+        return new Response(JSON.stringify({ status: 0, error: 'module reverted' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ address: from, nonce: 1 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      const rpc = new SqRpc({ rpcUrl: 'http://x.test', chainId: CHAIN_ID, retries: 0 });
+      await expect(
+        rpc.waitForConfirmation({
+          from,
+          nonceBefore: 0,
+          hash: 'aa'.repeat(32),
+          timeoutMs: 200,
+          pollMs: 10,
+        }),
+      ).rejects.toMatchObject({ code: 'TX_FAILED' });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it('TIMEOUT from aborted RPC', async () => {
     const original = globalThis.fetch;
     globalThis.fetch = (async (_url, init) => {

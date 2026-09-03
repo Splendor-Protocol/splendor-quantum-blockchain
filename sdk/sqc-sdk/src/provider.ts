@@ -1,6 +1,7 @@
 /**
  * Read-only SQC provider — no WASM / signing.
- * Share across UI components; create SplendorPQBridge only when the user connects.
+ * @deprecated Prefer `Connection` from `@splendor/sqc-sdk/core`.
+ * Share across UI components; create Wallet only when the user connects.
  */
 import { SqRpc, fromSPLD, toSPLD, type RpcOptions } from './rpc.js';
 

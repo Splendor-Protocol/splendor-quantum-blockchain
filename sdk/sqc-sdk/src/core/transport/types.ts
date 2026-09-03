@@ -1,5 +1,10 @@
 /**
- * Transport adapter — how the SDK talks to the chain (RPC, gateway, mock).
+ * Transport adapter — how the SDK talks to the chain.
+ *
+ * Shipped implementations: RpcTransport, MockTransport.
+ * Gateway HTTP service lives under sdk/sqc-sdk/gateway/ — there is no
+ * GatewayTransport class in this SDK pass; talk to the gateway via its HTTP API
+ * or use RpcTransport against a node RPC.
  */
 import type { ModuleCall } from '../module-call.js';
 

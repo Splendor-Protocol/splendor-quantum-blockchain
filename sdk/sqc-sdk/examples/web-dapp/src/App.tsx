@@ -8,6 +8,9 @@ import { SendPanel } from './panels/SendPanel';
 import { TokenPanel } from './panels/TokenPanel';
 import { DexPanel } from './panels/DexPanel';
 import { BridgePanel } from './panels/BridgePanel';
+import { CollectionPanel } from './panels/CollectionPanel';
+import { ExchangePanel } from './panels/ExchangePanel';
+import { ContractPanel } from './panels/ContractPanel';
 
 const network = (import.meta.env.VITE_SQC_NETWORK as NetworkId | undefined) || 'local';
 
@@ -27,15 +30,18 @@ export function App() {
         <section className="hero">
           <h1>SDK demo — connect, SPLD, modules</h1>
           <p>
-            Native ML-DSA-65 wallet via ConnectKit. Balance, send SPLD, QRC-20, DEX swap, and Bridge
-            claim using <code className="mono">@splendor/connect-react</code> hooks.
+            Native ML-DSA-65 wallet via ConnectKit. Balance, send SPLD, QRC-20 / 1155, DEX, Exchange,
+            Bridge, and Contract using <code className="mono">@splendor/connect-react</code> hooks.
           </p>
         </section>
         <BalancePanel />
         <SendPanel />
         <TokenPanel />
+        <CollectionPanel />
         <DexPanel />
+        <ExchangePanel />
         <BridgePanel />
+        <ContractPanel />
       </div>
     </SplendorConnectProvider>
   );

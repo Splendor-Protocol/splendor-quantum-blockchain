@@ -66,11 +66,11 @@ export class BridgeModule extends Program {
   }
 
   async info(): Promise<Record<string, unknown>> {
-    return this.read<Record<string, unknown>>('info', {});
+    return this.read<Record<string, unknown>>('bridge_info', {});
   }
 
   async claimed(id: number): Promise<Record<string, unknown>> {
-    return this.read<Record<string, unknown>>('claimed', { id });
+    return this.read<Record<string, unknown>>('claim_status', { id });
   }
 
   async claim(wallet: SplendorPQBridge, params: BridgeClaimParams) {

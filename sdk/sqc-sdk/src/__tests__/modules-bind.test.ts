@@ -40,7 +40,7 @@ describe('modules.bind / bindModules', () => {
     };
     const signed = bindModules(connection, wallet);
     await signed.dex(POOL).swap({
-      tokenIn: ADDR,
+      tokenIn: 0,
       amountIn: '100',
       minAmountOut: '1',
     });
@@ -50,7 +50,7 @@ describe('modules.bind / bindModules', () => {
         action: 'swap',
         params: expect.objectContaining({
           pool: POOL,
-          token_in: ADDR,
+          token_in: 0,
           amount_in: '100',
           min_amount_out: '1',
         }),
@@ -107,7 +107,7 @@ describe('QRC20 withSigner + transferHuman', () => {
       sendModuleCall: vi.fn(async () => ({ status: 'ok', hash: '0xp', signedTx: {} })),
     };
     await getPool(connection, POOL).withSigner(wallet).swap({
-      tokenIn: ADDR,
+      tokenIn: 1,
       amountIn: '9',
     });
     expect(wallet.sendModuleCall).toHaveBeenCalledOnce();

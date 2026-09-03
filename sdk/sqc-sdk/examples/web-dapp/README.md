@@ -50,7 +50,7 @@ import { createSession } from '@splendor/sqc-sdk';
 const s = await createSession({ network: 'local', mode: 'seed', seed: process.env.SEED });
 await s.sendSPLD('SQ:…', '0.01');
 await s.token('SQ:…token').transfer('SQ:…', '100');
-await s.modules.dex('SQ:…pool').swap({ tokenIn: 'SQ:…', amountIn: '100', minAmountOut: '1' });
+await s.modules.dex('SQ:…pool').swap({ tokenIn: 0, amountIn: '100', minAmountOut: '1' });
 ```
 
 ## Notes

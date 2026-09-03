@@ -55,7 +55,20 @@ export class QRC1155 extends Program {
   }
 
   async collectionInfo(): Promise<Record<string, unknown>> {
-    return this.read<Record<string, unknown>>('collection_info', {});
+    return this.read<Record<string, unknown>>('token_info', {});
+  }
+
+  async isApprovedForAll(owner: string, operator: string): Promise<boolean> {
+    const res = await this.read<{ approved: boolean }>('is_approved_for_all', {
+      owner,
+      operator,
+    });
+    return !!res.approved;
+  }
+
+  async totalSupply(id: string): Promise<string> {
+    const res = await this.read<{ total_supply: string }>('total_supply', { id });
+    return res.total_supply;
   }
 
   async mint(
@@ -73,8 +86,14 @@ export class QRC1155 extends Program {
     to: string,
     ids: string[],
     amounts: string[],
+    uris?: string[],
   ) {
-    return this.write(wallet, 'mint_batch', { to, ids, amounts });
+    return this.write(wallet, 'mint_batch', {
+      to,
+      ids,
+      amounts,
+      ...(uris ? { uris } : {}),
+    });
   }
 
   async transfer(

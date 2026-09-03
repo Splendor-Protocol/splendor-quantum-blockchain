@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	mldsa65 "github.com/cloudflare/circl/sign/mldsa/mldsa65"
@@ -632,6 +633,95 @@ func (w *DerivedWallet) SignIncrementNonce(p IncrementNonceParams) ([]byte, erro
 		MakerPubKey:   w.PublicKey,
 		ChainID:       types.ChainID,
 		DigestHex:     hex.EncodeToString(digest[:]),
+	})
+}
+
+// BridgeClaimParams are inputs for SignBridgeClaim: attest a legacy→quantum
+// burn for the bridge module's claim action (M-of-N attestor signatures).
+type BridgeClaimParams struct {
+	Bridge    string `json:"bridge"`
+	ID        uint64 `json:"id"`
+	Asset     string `json:"asset"` // "spld" | "splv"
+	Amount    string `json:"amount"`
+	Recipient string `json:"recipient"`
+	EvmTx     string `json:"evm_tx"` // 0x + 64 lowercase hex
+}
+
+// SignedBridgeClaim is what SignBridgeClaim returns: pubkey + signature over
+// types.BridgeClaimDigest under CtxBridge, plus digest_hex / chain_id for clients.
+type SignedBridgeClaim struct {
+	PubKey    []byte `json:"pubkey"`
+	Signature []byte `json:"signature"`
+	ChainID   string `json:"chain_id"`
+	DigestHex string `json:"digest_hex"`
+	Bridge    string `json:"bridge"`
+	ID        uint64 `json:"id"`
+	Asset     string `json:"asset"`
+	Amount    string `json:"amount"`
+	Recipient string `json:"recipient"`
+	EvmTx     string `json:"evm_tx"`
+}
+
+// SignBridgeClaim signs types.BridgeClaimDigest(types.ChainID, …) under
+// CtxBridge. The caller (operator/attestor) must be registered on-chain; this
+// only produces the attestation bytes for bridge.claim.
+func (w *DerivedWallet) SignBridgeClaim(p BridgeClaimParams) ([]byte, error) {
+	bridge, err := parseAddress(p.Bridge)
+	if err != nil {
+		return nil, fmt.Errorf("bridge claim: bridge: %w", err)
+	}
+	if bridge.IsZero() {
+		return nil, fmt.Errorf("bridge claim: bridge is the zero address")
+	}
+	recipient, err := parseAddress(p.Recipient)
+	if err != nil {
+		return nil, fmt.Errorf("bridge claim: recipient: %w", err)
+	}
+	amount, err := parseUint256(p.Amount, "amount")
+	if err != nil {
+		return nil, fmt.Errorf("bridge claim: %w", err)
+	}
+	var assetWord uint8
+	switch p.Asset {
+	case "spld":
+		assetWord = 0
+	case "splv":
+		assetWord = 1
+	default:
+		return nil, fmt.Errorf("bridge claim: asset must be %q or %q", "spld", "splv")
+	}
+	if p.ID == 0 {
+		return nil, fmt.Errorf("bridge claim: id must be positive (burn ids start at 1)")
+	}
+	evmRaw := strings.TrimPrefix(strings.ToLower(p.EvmTx), "0x")
+	if len(evmRaw) != 64 {
+		return nil, fmt.Errorf("bridge claim: evm_tx must be 0x + 64 hex chars")
+	}
+	evmBytes, err := hex.DecodeString(evmRaw)
+	if err != nil {
+		return nil, fmt.Errorf("bridge claim: evm_tx: %w", err)
+	}
+	var evmTx [32]byte
+	copy(evmTx[:], evmBytes)
+	digest, err := types.BridgeClaimDigest(types.ChainID, bridge, p.ID, assetWord, amount, recipient, evmTx)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := qcrypto.Sign(w.Private, digest[:], qcrypto.CtxBridge)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(SignedBridgeClaim{
+		PubKey:    w.PublicKey,
+		Signature: sig,
+		ChainID:   types.ChainID,
+		DigestHex: hex.EncodeToString(digest[:]),
+		Bridge:    bridge.String(),
+		ID:        p.ID,
+		Asset:     p.Asset,
+		Amount:    amount.String(),
+		Recipient: recipient.String(),
+		EvmTx:     "0x" + evmRaw,
 	})
 }
 

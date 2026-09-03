@@ -6,7 +6,7 @@
  */
 import type { SplendorPQBridge } from './splendor-wallet.js';
 
-export type WalletLike = Pick<SplendorPQBridge, 'sendModuleCall'>;
+export type WalletLike = Pick<SplendorPQBridge, 'sendModuleCall' | 'callContract'> | import('./core/signer.js').Signer;
 
 function isWalletLike(v: unknown): v is WalletLike {
   return (

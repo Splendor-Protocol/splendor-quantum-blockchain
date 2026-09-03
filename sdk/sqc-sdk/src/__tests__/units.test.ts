@@ -32,6 +32,13 @@ describe('units', () => {
     expect(fromSPLD('0.5')).toBe('500000000000000000');
     expect(fromSPLD('1.25')).toBe('1250000000000000000');
   });
+
+  it('throws on invalid amounts (fail-closed)', () => {
+    expect(() => fromSPLD('1e21')).toThrow(/INVALID_AMOUNT|scientific|decimal/i);
+    expect(() => fromSPLD('')).toThrow();
+    expect(() => fromSPLD('not-a-number')).toThrow();
+    expect(() => toSPLD('1e+21' as unknown as string)).toThrow();
+  });
 });
 
 describe('address', () => {

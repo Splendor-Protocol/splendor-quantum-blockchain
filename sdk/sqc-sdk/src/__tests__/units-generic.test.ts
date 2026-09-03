@@ -17,4 +17,12 @@ describe('fromUnits / toUnits', () => {
     expect(fromUnits('42', 0)).toBe('42');
     expect(toUnits('42', 0)).toBe('42');
   });
+
+  it('throws on invalid input', () => {
+    expect(() => fromUnits('1e18', 18)).toThrow();
+    expect(() => fromUnits('', 18)).toThrow();
+    expect(() => fromUnits('-1', 18)).toThrow();
+    expect(() => toUnits('abc', 18)).toThrow();
+    expect(() => fromUnits(1e21, 18)).toThrow();
+  });
 });
