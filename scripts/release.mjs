@@ -814,12 +814,20 @@ async function runReset(args) {
   if (version) assertImageExists(version);
 
   if (noSnapshot) {
-    const alloc = ghVar('SQC_GENESIS_ALLOC_ADDRESS', t.env);
-    if (!alloc) {
-      die('SQC_GENESIS_ALLOC_ADDRESS is empty',
-          '--no-snapshot means genesis uses whatever is already set. Set it first.');
-    }
-    console.log(`  using existing genesis alloc (${alloc.split(',').length} entr${alloc.includes(',') ? 'ies' : 'y'}) — not re-read from the live chain`);
+    // Genesis is SQC_GENESIS_SUPPLY to the validator plus every entry in
+    // SQC_GENESIS_ALLOC_ADDRESS, and total supply is the sum. Mainnet's supply
+    // is 26B and ALL of it is the validator's line: prod carries no extra
+    // allocation, so an empty variable here is the intended mainnet genesis,
+    // not a mistake. Two prod resets on 2 Sep 2026 carried a stray 1B entry on
+    // top of the 26B and minted 27B; say the sum out loud so that is visible.
+    const alloc = ghVar('SQC_GENESIS_ALLOC_ADDRESS', t.env) ?? '';
+    const supply = ghVar('SQC_GENESIS_SUPPLY', t.env);
+    if (!supply) die(`SQC_GENESIS_SUPPLY is not set for environment "${t.env}"`);
+    const entries = alloc.split(',').filter(Boolean);
+    const extra = entries.reduce((sum, e) => sum + BigInt((e.split('=')[1] ?? '').trim() || '0'), 0n);
+    const total = BigInt(supply) + extra;
+    console.log(`  genesis    validator ${supply}${entries.length ? ` + ${entries.length} extra allocation(s) = ${total}` : ' and no extra allocations'}`);
+    console.log(`             total ${total} base units = ${total / 10n ** 18n} SPLD  (not re-read from the live chain)`);
   } else {
     console.log('  snapshotting balances that must survive the wipe…');
     await snapshotBalances(t, wantAll);
