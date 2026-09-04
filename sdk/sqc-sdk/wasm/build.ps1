@@ -14,6 +14,10 @@ $env:GOTOOLCHAIN = $env:SQC_GO_TOOLCHAIN
 $env:GOOS = "js"
 $env:GOARCH = "wasm"
 
+# go build resolves the module from the working directory, not from the path of
+# the file it is handed. Keep in step with wasm/build.sh.
+Set-Location (Join-Path $Root "..\..\..")
+
 Write-Host "Building sqc_signer.wasm..."
 # -trimpath drops the filesystem path; -ldflags=-buildid= drops Go's build ID,
 # whose action-ID half hashes the build environment rather than the source and
