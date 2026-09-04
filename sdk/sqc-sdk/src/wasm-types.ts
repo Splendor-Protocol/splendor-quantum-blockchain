@@ -63,12 +63,59 @@ export type LoadWasmOpts = {
   execSha256?: string;
 };
 
+/**
+ * Every global the signer registers — the single source of truth for what a
+ * loaded binary must provide. The binder below checked exactly one of these,
+ * sqCreateSession, and wrapped the other twenty-two blind, so a binary built
+ * before an export existed loaded happily and threw "not a function" at the
+ * call site instead of at load. That is how a signer with no sqSignBridgeClaim
+ * reached main while every test passed.
+ */
+export const WASM_EXPORTS = [
+  'sqCreateSession',
+  'sqDestroySession',
+  'sqDeriveFromSeedHex',
+  'sqDeriveFromSigHex',
+  'sqGetAddress',
+  'sqGetPublicKeyB64',
+  'sqSignTransfer',
+  'sqSignCall',
+  'sqSignDeploy',
+  'sqSignX402',
+  'sqSignX402Settlement',
+  'sqSignMessage',
+  'sqVerifyMessage',
+  'sqLock',
+  'sqIsUnlocked',
+  'sqDomainMessage',
+  'sqSignPermit',
+  'sqSignOrder',
+  'sqSignCancel',
+  'sqSignIncrementNonce',
+  'sqSignBridgeClaim',
+  'sqGetModuleRouterAddress',
+  'sqSetChainID',
+] as const satisfies readonly (keyof WasmSignerApi)[];
+
+// Adding a method to WasmSignerApi without listing it above fails to compile,
+// so the list cannot fall behind the interface the way the binary fell behind
+// the source.
+type UnlistedExport = Exclude<keyof WasmSignerApi, (typeof WASM_EXPORTS)[number]>;
+const _everyExportIsListed: UnlistedExport extends never ? true : never = true;
+void _everyExportIsListed;
+
 /** Bind session-aware wrappers from global Go exports. */
 export function bindWasmApi(g: Record<string, unknown>): WasmSignerApi {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const x = g as any;
-  if (typeof x.sqCreateSession !== 'function') {
-    throw BridgeError.wasm('WASM signer not ready (sqCreateSession missing)');
+  const missing = WASM_EXPORTS.filter((name) => typeof x[name] !== 'function');
+  if (missing.length > 0) {
+    throw BridgeError.wasm(
+      `WASM signer is missing ${missing.length} of ${WASM_EXPORTS.length} exports ` +
+        `(${missing.join(', ')}). The binary does not match the source it claims to ` +
+        'be built from: rebuild it with sdk/sqc-sdk/wasm/build.sh and re-pin with ' +
+        'npm run sync:config.',
+    );
   }
   return {
     sqCreateSession: () => x.sqCreateSession(),

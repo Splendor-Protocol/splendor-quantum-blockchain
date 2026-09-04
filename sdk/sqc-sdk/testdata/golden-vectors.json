@@ -48,5 +48,17 @@
       "cancelDigestHex": "d522ac82cd411c0dcd1d74ac07deaa995552827354369f3f0a00ad9fc856aa2b",
       "incrementNonceDigestHex": "b826de39093a19d4f7b1cd7af8a061ff9f94a21626dd9f65c014111b8f420270"
     }
+  },
+  "bridge": {
+    "description": "bridge.claim attestation digest = core/types BridgeClaimDigest(chainId, bridge, id, assetWord, amount, recipient, evmTx[32]); assetWord is 0 for \"spld\" and 1 for \"splv\". Signed under context. The digest takes no signer input, so sqSignBridgeClaim reports this same digest_hex from any session. Go: signer.TestSignBridgeClaimDigestAndContext.",
+    "context": "SPLENDOR-QC-BRIDGE-v1",
+    "chainId": "splendor-quantum-1",
+    "bridge": "SQ:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "id": 42,
+    "asset": "spld",
+    "amount": "1000000000000000000",
+    "recipient": "SQ:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "evmTx": "0xabababababababababababababababababababababababababababababababab",
+    "digest": "87d5f6caae8775174809ad6da4dbb06869e9797dca4bd42dd48917382b69baa0"
   }
 }
