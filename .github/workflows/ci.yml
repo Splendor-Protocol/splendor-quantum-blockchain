@@ -74,6 +74,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Nothing enforced that "one signer" claim until now, and a second copy
+      # had already appeared: examples/basic-dapp/public/sqc_signer.wasm sat
+      # three rebuilds stale, checked by nothing, and the example loads it with
+      # allowUnpinnedWasm. sqcWasmPlugin copies that file from wasm/dist on every
+      # build, so it never needed committing in the first place.
+      - name: No second signer is tracked
+        run: |
+          set -euo pipefail
+          extra="$(git ls-files '*.wasm' | grep -v '^sdk/sqc-sdk/wasm/dist/sqc_signer.wasm$' || true)"
+          if [ -z "$extra" ]; then echo "one tracked signer, as intended"; exit 0; fi
+          echo "::error::a second signer binary is committed and nothing checks it:"
+          echo "$extra"
+          echo "Delete it. If a build needs the bytes somewhere, copy them there at"
+          echo "build time from sdk/sqc-sdk/wasm/dist — do not commit a second copy."
+          exit 1
+
       # The digest is Go-release-sensitive, so this has to build under the same
       # toolchain build.sh pins or it would report drift that does not exist.
       - name: Rebuild the signer from source
@@ -100,7 +116,8 @@ jobs:
             fail=1
           fi
 
-          # This is the only committed copy of the signer: sdk/bridge is a pure
+          # This is the only committed copy of the signer, and the step above
+          # now enforces that rather than asserting it: sdk/bridge is a pure
           # re-export shim and ships no artifact. The browser extension keeps its
           # own copy (splendor-quantum-wallet-extension) and its own CI compares it
           # against this file, so drift there is caught there.
@@ -121,3 +138,41 @@ jobs:
 
       - name: Golden vector still derives the published address
         run: go test -count=1 ./sdk/sqc-sdk/signer/ -run 'Golden|Domain'
+
+  js:
+    name: SDK typechecks and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # There was no TypeScript or JS job here, only Go and the WASM digest, and
+    # three separate breakages rode into main through one merge because of it:
+    # literal conflict markers left in connect-react/src/vite.ts, an import in
+    # sqc-sdk/src/core/signer.ts one directory too deep, and a signer export the
+    # binary did not have. The first two are pure compile errors — two days on
+    # main, in packages every dApp builds against, and nothing looked.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # connect-react resolves @splendor/sqc-sdk through a file: link to the
+      # sibling package and typechecks against its BUILT dist/, so the SDK has to
+      # compile first. Locally that dist is whatever someone last built, which is
+      # how a stale one made connect-react look broken when the fault was in
+      # sqc-sdk itself. On a runner it is always freshly built.
+      - name: Build the SDK
+        working-directory: sdk/sqc-sdk
+        run: |
+          npm ci
+          npm run build:ts
+
+      - name: Test the SDK
+        working-directory: sdk/sqc-sdk
+        run: npm test
+
+      - name: Typecheck and test connect-react
+        working-directory: sdk/connect-react
+        run: |
+          npm ci
+          npx tsc --noEmit -p tsconfig.json
+          npm test
