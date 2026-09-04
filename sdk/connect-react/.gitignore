@@ -5,3 +5,10 @@ dist/
 .env
 examples/basic-dapp/node_modules/
 examples/basic-dapp/dist/
+
+# The signer is copied into examples' public/ by sqcWasmPlugin (src/vite.ts) on
+# every dev/build, from sdk/sqc-sdk/wasm/dist. Committing the copy pins a second,
+# unchecked signer: the one that was here went three rebuilds stale, and the
+# example loads it with allowUnpinnedWasm, so nothing would have noticed.
+examples/*/public/sqc_signer.wasm
+examples/*/public/wasm_exec.js
