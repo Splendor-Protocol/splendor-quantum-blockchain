@@ -2,7 +2,7 @@
  * Thin Signer interface for Program/Contract writes (wallet or mocks).
  * WASM signing stays inside Wallet; this is the submit surface Programs need.
  */
-import type { ModuleCallOpts, CallOpts } from '../../types.js';
+import type { ModuleCallOpts, CallOpts } from '../types.js';
 
 export type SignerAddress = { getAddress(): string };
 

@@ -60,11 +60,7 @@ export function copySqcWasmAssets(destDir: string, srcDir?: string | null): stri
   if (!src) {
     throw new Error(
       '@splendor/connect-react/vite: could not find sqc_signer.wasm. ' +
-<<<<<<< HEAD
-        'Build @splendor/sqc-sdk WASM (npm run build:wasm / wasm/build.ps1 in sdk/sqc-sdk) and ensure the package is installed.',
-=======
-        'Build @splendor/pq-bridge WASM (npm run build:wasm in sdk/sqc-sdk) and ensure the package is installed.',
->>>>>>> 0cfe34734150d754e18212c33093a189229d1991
+        'Build the signer in sdk/sqc-sdk (npm run build:wasm:sh, or build:wasm on Windows) and ensure the package is installed.',
     );
   }
   mkdirSync(destDir, { recursive: true });
