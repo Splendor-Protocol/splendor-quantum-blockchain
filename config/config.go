@@ -1,5 +1,10 @@
 // Package config provides the Splendor Quantum Chain node configuration.
-// Config can be loaded from a JSON file, environment variables, or CLI flags.
+//
+// NOT YET WIRED: nothing imports this package. cmd/node takes its entire runtime
+// configuration from CLI flags, so a JSON file written against these structs is
+// read by no one and its defaults below are inert. Where a flag is the live
+// control, the field says so. Wire this into cmd/node or drop it — leaving it as
+// it stands invites operators to tune a file the node never opens.
 package config
 
 import (
@@ -76,6 +81,11 @@ type ValidatorConfig struct {
 	WalletPassEnv string `json:"wallet_pass_env"`
 
 	// BlockInterval is how often blocks are produced.
+	//
+	// Inert (see the package note): the validator's cadence comes from
+	// `sqc-node --block-interval` in cmd/node, and the deployed tiers do not all
+	// run the same value. `consensus.Config.BlockInterval` is the field that
+	// actually reaches the block-production ticker.
 	BlockInterval Duration `json:"block_interval"`
 
 	// MaxBlockGas is the maximum gas allowed per block (future use).
