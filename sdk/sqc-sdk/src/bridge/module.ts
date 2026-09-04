@@ -4,7 +4,8 @@
  */
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
-import type { SplendorPQBridge } from '../splendor-wallet.js';
+import type { Signer } from '../core/signer.js';
+import { requireCapability, signerAccountNonce } from '../core/signer.js';
 import { bridgeAddress, bridgeSplvAddress } from '../addresses/index.js';
 
 export type BridgeDeployParams = {
@@ -73,7 +74,7 @@ export class BridgeModule extends Program {
     return this.read<Record<string, unknown>>('claim_status', { id });
   }
 
-  async claim(wallet: SplendorPQBridge, params: BridgeClaimParams) {
+  async claim(wallet: Signer, params: BridgeClaimParams) {
     return this.write(wallet, 'claim', {
       id: params.id,
       asset: params.asset,
@@ -84,41 +85,42 @@ export class BridgeModule extends Program {
     });
   }
 
-  async setOperator(wallet: SplendorPQBridge, operator: string, active: boolean) {
+  async setOperator(wallet: Signer, operator: string, active: boolean) {
     return this.write(wallet, 'set_operator', { operator, active });
   }
 
-  async setThreshold(wallet: SplendorPQBridge, threshold: number) {
+  async setThreshold(wallet: Signer, threshold: number) {
     return this.write(wallet, 'set_threshold', { threshold });
   }
 
-  async pause(wallet: SplendorPQBridge) {
+  async pause(wallet: Signer) {
     return this.write(wallet, 'pause', {});
   }
 
-  async unpause(wallet: SplendorPQBridge) {
+  async unpause(wallet: Signer) {
     return this.write(wallet, 'unpause', {});
   }
 
-  async transferOwnership(wallet: SplendorPQBridge, newOwner: string) {
+  async transferOwnership(wallet: Signer, newOwner: string) {
     return this.write(wallet, 'transfer_ownership', { new_owner: newOwner });
   }
 }
 
 export async function deployBridge(
-  wallet: SplendorPQBridge,
+  wallet: Signer,
   params: BridgeDeployParams,
   opts?: { fee?: string; waitForConfirmation?: boolean; height?: number },
 ): Promise<{
   address: string;
   splvAddress: string;
   height: number;
-  result: Awaited<ReturnType<SplendorPQBridge['sendModuleCall']>>;
+  result: Awaited<ReturnType<Signer['sendModuleCall']>>;
 }> {
-  const { nonce } = await wallet.getNonce();
+  const nonce = await signerAccountNonce(wallet);
   let height = opts?.height;
   if (height == null) {
-    const latest = await wallet.connection.getLatestBlock();
+    const getLatestBlock = requireCapability(wallet, 'getLatestBlock');
+    const latest = await getLatestBlock.call(wallet);
     height = blockHeight(latest) + 1;
   }
   const predicted = BridgeModule.predictAddress(wallet.getAddress(), nonce, height);

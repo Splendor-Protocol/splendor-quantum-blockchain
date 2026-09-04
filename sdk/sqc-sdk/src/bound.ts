@@ -1,12 +1,12 @@
 /**
- * Bind a wallet to a Program / Contract client so write methods omit the wallet arg.
+ * Bind a wallet/Signer to a Program / Contract client so write methods omit the wallet arg.
  *
  * Unbound APIs stay intact: `token.transfer(wallet, to, amount)`.
  * Bound: `token.withSigner(wallet).transfer(to, amount)`.
  */
-import type { SplendorPQBridge } from './splendor-wallet.js';
+import type { Signer } from './core/signer.js';
 
-export type WalletLike = Pick<SplendorPQBridge, 'sendModuleCall' | 'callContract'> | import('./core/signer.js').Signer;
+export type WalletLike = Signer;
 
 function isWalletLike(v: unknown): v is WalletLike {
   return (

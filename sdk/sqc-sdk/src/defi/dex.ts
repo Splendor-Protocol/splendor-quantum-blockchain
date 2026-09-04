@@ -3,12 +3,10 @@
  */
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
-import type { SplendorPQBridge } from '../splendor-wallet.js';
+import type { Signer } from '../core/signer.js';
 import { dexPoolAddress } from '../addresses/index.js';
 import { BridgeError } from '../errors.js';
 import { assertAddress } from '../address.js';
-
-const DEX_WRITES = new Set(['addLiquidity', 'swap']);
 
 /** On-chain `token_in` is uint8: 0 = token0, 1 = token1. */
 export type DexTokenInSide = 0 | 1;
@@ -18,8 +16,12 @@ export class DEX extends Program {
     return 'dex';
   }
 
-  protected writeMethodNames(): ReadonlySet<string> {
-    return DEX_WRITES;
+  protected writeMethods(): readonly string[] {
+    return ['addLiquidity', 'swap'];
+  }
+
+  protected isDeployAction(action: string): boolean {
+    return action === 'deploy' || action === 'deploy_pool';
   }
 
   protected instanceParamKey(): string {
@@ -32,6 +34,11 @@ export class DEX extends Program {
 
   async reserves(): Promise<Record<string, unknown>> {
     return this.read<Record<string, unknown>>('reserves', {});
+  }
+
+  /** Alias of reserves (on-chain `pool_info`). */
+  async poolInfo(): Promise<Record<string, unknown>> {
+    return this.read<Record<string, unknown>>('pool_info', {});
   }
 
   /**
@@ -50,7 +57,7 @@ export class DEX extends Program {
   }
 
   async addLiquidity(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     params: {
       amount0Desired: string;
       amount1Desired: string;
@@ -71,7 +78,7 @@ export class DEX extends Program {
    * matching on-chain `dexSwapParams.token_in` (uint8).
    */
   async swap(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     params: { tokenIn: DexTokenInSide; amountIn: string; minAmountOut?: string },
   ) {
     const side = params.tokenIn;
@@ -87,11 +94,11 @@ export class DEX extends Program {
 }
 
 export async function deployPool(
-  wallet: SplendorPQBridge,
+  wallet: Signer,
   token0: string,
   token1: string,
   opts?: { fee?: string; waitForConfirmation?: boolean },
-): Promise<{ address: string; result: Awaited<ReturnType<SplendorPQBridge['sendModuleCall']>> }> {
+): Promise<{ address: string; result: Awaited<ReturnType<Signer['sendModuleCall']>> }> {
   const predicted = DEX.predictPoolAddress(token0, token1);
   const result = await wallet.sendModuleCall({
     module: 'dex',

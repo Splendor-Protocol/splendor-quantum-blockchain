@@ -40,6 +40,8 @@ export type BridgeOptions = RpcOptions & {
   watchMetaMaskAccounts?: boolean;
   /** Optional shared read provider; RPC options are taken from it when provided. */
   provider?: SqcProvider;
+  /** Prefer over provider — Transport-backed chain client. */
+  connection?: import('./core/connection.js').Connection;
   /** Injected EIP-1193 provider (defaults to window.ethereum). */
   ethereumProvider?: EthereumProvider;
   /** Derivation scheme: eip191-v1 (default) or eip712-v1. */

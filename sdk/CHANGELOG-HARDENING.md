@@ -1,5 +1,19 @@
 # Changelog
 
+## @splendor/sqc-sdk architecture top-10
+
+- Transport owns chain IO; Connection no longer spawns a hidden `SqRpc` for MockTransport
+- Wallet submits/confirms via Connection; Programs type writes as `Signer` (+ capabilities)
+- Module registry (`registerModule` / `defineModule`); declarative Program writes
+- DEX `poolInfo`, Exchange `positionId` / `orderHash`; KnownModuleActions drift test
+- Canonical recipes: `createSession` + ConnectKit; deprecate `connectSplendor` / `createSplendorClient` / `useSplendorPQ` / prefer `Connection` over `SqcProvider`
+- Shared unlock connector types (`WalletUnlockConnector`); connect-react keeps UI metadata
+
+## @splendor/connect-react architecture top-10
+
+- Hooks split per module (`react/hooks/{qrc20,dex,exchange,…}`); `useModules` exposes registry ids
+- Connectors document SDK unlock contract adaptation
+
 ## @splendor/sqc-sdk 2.x harden (modular)
 
 - Fail-closed amount parsing (`fromUnits` / `fromSPLD`); honest `waitForConfirmation` (receipt `status === 1`)

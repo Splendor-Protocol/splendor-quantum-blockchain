@@ -118,8 +118,16 @@ export { Contract, deployBytecode, getContract } from './contracts/contract.js';
 export { Exchange, deployExchange, getExchange } from './defi/exchange.js';
 export { DEX, deployPool, getPool } from './defi/dex.js';
 export { BridgeModule, deployBridge, getBridge } from './bridge/module.js';
-export { modules, bindModules } from './modules.js';
+export { modules, bindModules, ensureBuiltInModulesRegistered } from './modules.js';
 export type { Modules, BoundModules, SignedBoundModules } from './modules.js';
+export {
+  registerModule,
+  defineModule,
+  getModule,
+  listModules,
+  createModuleClient,
+  bindRegisteredModules,
+} from './modules.js';
 export { withSigner } from './bound.js';
 export type { BoundClient, WalletLike } from './bound.js';
 export { fromUnits, toUnits } from './units.js';
@@ -139,6 +147,13 @@ export type {
 export { Keypair } from './wallet/keypair.js';
 export { connect } from './wallet/connect.js';
 export type { ConnectOptions, ConnectResult } from './wallet/connect.js';
+export type {
+  Connector,
+  ConnectorConnectOptions,
+  WalletUnlockConnector,
+  WalletUnlockContext,
+} from './wallet/connectors/index.js';
+export { seedConnector, metamaskConnector, evmKeyConnector } from './wallet/connectors/index.js';
 export { createSession } from './session.js';
 export type { Session } from './session.js';
 export { SplendorClient } from './client.js';

@@ -3,11 +3,15 @@ import type {
   NetworkConfig,
   SplendorPQBridge,
   SqcProvider,
+  WalletUnlockContext,
 } from '@splendor/sqc-sdk';
 
-export type ConnectorContext = {
-  /** Constructed client wallet; WASM may not be unlocked yet. */
-  wallet: SplendorPQBridge;
+/**
+ * Connect-react connector context — unlocks a prebuilt wallet.
+ * Extends the SDK {@link WalletUnlockContext} with UI-facing provider/network.
+ */
+export type ConnectorContext = WalletUnlockContext & {
+  /** @deprecated Prefer `connection` (same RPC). Kept for existing connectors. */
   provider: SqcProvider;
   network: NetworkConfig;
 };
@@ -35,7 +39,8 @@ export type ConnectorKeyOrigin = 'native' | 'evm-derived';
 
 /**
  * Modular wallet connector (AppKit-style).
- * Implementations unlock the PQ WASM session via @splendor/sqc-sdk.
+ * Adapts SDK `WalletUnlockConnector`: `connect(ctx)` unlocks WASM on `ctx.wallet`.
+ * UI fields (`name`, `icon`, `keyOrigin`) stay in connect-react.
  */
 export type Connector = {
   id: string;
@@ -66,3 +71,7 @@ export type Connector = {
   disconnect?: () => Promise<void>;
   onAccountsChanged?: (cb: (evmAddress: string) => void) => () => void;
 };
+
+// Re-export SDK unlock types for addon authors.
+export type { WalletUnlockContext };
+export type { WalletUnlockConnector } from '@splendor/sqc-sdk';

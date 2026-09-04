@@ -76,7 +76,6 @@ export type {
 };
 
 export class SplendorPQBridge {
-  readonly rpc: SqRpc;
   readonly provider: SqcProvider;
   readonly connection: Connection;
   private wasm: WasmSignerApi | null = null;
@@ -94,19 +93,38 @@ export class SplendorPQBridge {
   /** Last chain_id stamped into WASM digests (sqSetChainID). */
   private wasmChainId: string | null = null;
 
+  /**
+   * @deprecated Prefer `connection` (Transport-backed). Only available when
+   * Connection uses RpcTransport.
+   */
+  get rpc(): SqRpc {
+    return this.connection.rpc;
+  }
+
   constructor(options: BridgeOptions = {}) {
     this.opts = options;
     this.metaMaskWatchEnabled = options.watchMetaMaskAccounts !== false;
     this.ethereumProvider = options.ethereumProvider;
     this.derivation = options.derivation || 'eip191-v1';
-    if (options.provider) {
+    if (options.connection) {
+      this.connection = options.connection;
+      if (options.provider) {
+        this.provider = options.provider;
+      } else {
+        try {
+          this.provider = new SqcProvider(options, this.connection.rpc);
+        } catch {
+          // Non-RpcTransport: provider is deprecated and gets a detached SqRpc.
+          this.provider = new SqcProvider(this.connection.toRpcOptions());
+        }
+      }
+    } else if (options.provider) {
       this.provider = options.provider;
-      this.rpc = options.provider.rpc;
+      this.connection = Connection.fromSqRpc(options.provider.rpc);
     } else {
-      this.rpc = new SqRpc(options);
-      this.provider = new SqcProvider(options, this.rpc);
+      this.connection = new Connection(options);
+      this.provider = new SqcProvider(options, this.connection.rpc);
     }
-    this.connection = Connection.fromSqRpc(this.rpc);
   }
 
   static fromProvider(provider: SqcProvider, extra?: Omit<BridgeOptions, 'provider'>): SplendorPQBridge {
@@ -163,9 +181,9 @@ export class SplendorPQBridge {
 
   /** Bind WASM signer to the RPC network chain_id (permits, orders, txs). */
   private syncWasmChainId(): void {
-    if (!this.wasm || this.wasmChainId === this.rpc.chainId) return;
-    unwrap(this.wasm.sqSetChainID(this.rpc.chainId));
-    this.wasmChainId = this.rpc.chainId;
+    if (!this.wasm || this.wasmChainId === this.connection.chainId) return;
+    unwrap(this.wasm.sqSetChainID(this.connection.chainId));
+    this.wasmChainId = this.connection.chainId;
   }
 
   private api(): WasmSignerApi {
@@ -184,7 +202,7 @@ export class SplendorPQBridge {
   private async beforeSignAndSubmit(): Promise<void> {
     this.syncWasmChainId();
     this.opts.onRequest?.({ method: 'assertChainId' });
-    await this.rpc.assertChainId();
+    await this.connection.assertChainId();
   }
 
   private clearIdleLock(): void {
@@ -410,27 +428,27 @@ export class SplendorPQBridge {
   }
 
   async getBalance(address?: string) {
-    return this.rpc.getBalance(address || this.getAddress());
+    return this.connection.getBalance(address || this.getAddress());
   }
 
   async getNonce(address?: string) {
-    return this.rpc.getNonce(address || this.getAddress());
+    return this.connection.getNonce(address || this.getAddress());
   }
 
   async getStatus() {
-    return this.rpc.getStatus();
+    return this.connection.getStatus();
   }
 
   async getLatestBlock() {
-    return this.rpc.getLatestBlock();
+    return this.connection.getLatestBlock();
   }
 
   async getBlockByHeight(height: number | string) {
-    return this.rpc.getBlockByHeight(height);
+    return this.connection.getBlockByHeight(height);
   }
 
   async getBlockByHash(hash: string) {
-    return this.rpc.getBlockByHash(hash);
+    return this.connection.getBlockByHash(hash);
   }
 
   /**
@@ -444,9 +462,9 @@ export class SplendorPQBridge {
     address?: string;
   }): Promise<PreflightResult> {
     const from = opts.address || this.getAddress();
-    await this.rpc.assertChainId();
-    const bal = await this.rpc.getBalance(from);
-    const { nonce } = await this.rpc.getNonce(from);
+    await this.connection.assertChainId();
+    const bal = await this.connection.getBalance(from);
+    const { nonce } = await this.connection.getNonce(from);
     const fee = assertFeeAtLeastMin(opts.fee);
     const amount =
       opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount || '0';
@@ -458,7 +476,7 @@ export class SplendorPQBridge {
       balance_spld: bal.balance_spld,
       nonce,
       fee,
-      chainId: this.rpc.chainId,
+      chainId: this.connection.chainId,
       sufficient: have >= need,
     };
   }
@@ -470,7 +488,7 @@ export class SplendorPQBridge {
     timeoutMs?: number;
     pollMs?: number;
   }) {
-    return this.rpc.waitForConfirmation({
+    return this.connection.waitForConfirmation({
       from: opts.from || this.getAddress(),
       nonceBefore: opts.nonceBefore,
       hash: opts.hash,
@@ -511,7 +529,7 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signTransfer' });
       const wireStr = unwrap(this.api().sqSignTransfer(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
-      const result = await this.rpc.submitTransaction(signedTx);
+      const result = await this.connection.submitTransaction(signedTx);
 
       let confirmation: { confirmed: true; nonce: number } | undefined;
       if (opts.waitForConfirmation) {
@@ -565,7 +583,7 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signCall' });
       const wireStr = unwrap(this.api().sqSignCall(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
-      const result = await this.rpc.submitTransaction(signedTx);
+      const result = await this.connection.submitTransaction(signedTx);
       let confirmation: { confirmed: true; nonce: number } | undefined;
       if (opts.waitForConfirmation) {
         confirmation = await this.waitForConfirmation({
@@ -603,7 +621,7 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signDeploy' });
       const wireStr = unwrap(this.api().sqSignDeploy(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
-      const result = await this.rpc.submitTransaction(signedTx);
+      const result = await this.connection.submitTransaction(signedTx);
       let confirmation: { confirmed: true; nonce: number } | undefined;
       if (opts.waitForConfirmation) {
         confirmation = await this.waitForConfirmation({
@@ -651,7 +669,7 @@ export class SplendorPQBridge {
       } = { payload };
 
       if (opts.requirements) {
-        out.verify = await this.rpc.x402Verify(opts.requirements, payload);
+        out.verify = await this.connection.x402Verify(opts.requirements, payload);
         if (opts.settle !== false && out.verify.valid) {
           // Settlement runs through consensus: the payer signs a TxX402 that the
           // node admits to the mempool. The node cannot sign this on our behalf,
@@ -670,7 +688,7 @@ export class SplendorPQBridge {
               }),
             ),
           ) as string;
-          out.settle = await this.rpc.x402Settle(
+          out.settle = await this.connection.x402Settle(
             opts.requirements,
             payload,
             JSON.parse(settlementStr),

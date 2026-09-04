@@ -254,6 +254,7 @@ export function createConnectController(
           const info = await connector.connect(
             {
               wallet: client.wallet,
+              connection: client.wallet.connection,
               provider: client.provider,
               network: client.network,
             },

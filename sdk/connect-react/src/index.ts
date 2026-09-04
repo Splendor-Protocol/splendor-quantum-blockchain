@@ -22,7 +22,10 @@ export type {
   MetamaskConnectorOpts,
   InjectedConnectorOpts,
   SeedConnectorOpts,
+  WalletUnlockContext,
+  WalletUnlockConnector,
 } from './connectors/index.js';
+export type { NetworkId } from '@splendor/sqc-sdk';
 
 export {
   createConnectController,

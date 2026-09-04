@@ -1,4 +1,10 @@
-export type { Connector, ConnectorContext, ConnectorField } from './types.js';
+export type {
+  Connector,
+  ConnectorContext,
+  ConnectorField,
+  WalletUnlockContext,
+  WalletUnlockConnector,
+} from './types.js';
 export { metamaskConnector, hasAuthorizedAccounts } from './metamask.js';
 export type { MetamaskConnectorOpts } from './metamask.js';
 export { injectedConnector } from './injected.js';

@@ -3,8 +3,16 @@
  *
  * Unbound (advanced): `modules.qrc20(connection, addr).transfer(wallet, to, amt)`
  * Bound (beginner):   `modules.bind(connection, wallet).qrc20(addr).transfer(to, amt)`
+ *
+ * Addons: `registerModule({ id, create })` then use `createModuleClient` / `bindRegisteredModules`.
  */
 import type { Connection } from './core/connection.js';
+import {
+  registerModule,
+  defineModule,
+  bindRegisteredModules,
+  listModules,
+} from './core/module-registry.js';
 import { getToken } from './tokens/qrc20.js';
 import type { QRC20 } from './tokens/qrc20.js';
 import { getCollection } from './tokens/qrc1155.js';
@@ -19,6 +27,22 @@ import { getContract } from './contracts/contract.js';
 import type { Contract } from './contracts/contract.js';
 import type { BoundClient, WalletLike } from './bound.js';
 
+let builtInsRegistered = false;
+
+/** Idempotent registration of first-party Programs. */
+export function ensureBuiltInModulesRegistered(): void {
+  if (builtInsRegistered) return;
+  registerModule(defineModule({ id: 'qrc20', create: getToken, label: 'QRC-20' }));
+  registerModule(defineModule({ id: 'qrc1155', create: getCollection, label: 'QRC-1155' }));
+  registerModule(defineModule({ id: 'exchange', create: getExchange, label: 'Exchange' }));
+  registerModule(defineModule({ id: 'dex', create: getPool, label: 'DEX' }));
+  registerModule(defineModule({ id: 'bridge', create: getBridge, label: 'Bridge' }));
+  registerModule(defineModule({ id: 'contract', create: getContract, label: 'Contract' }));
+  builtInsRegistered = true;
+}
+
+ensureBuiltInModulesRegistered();
+
 export const modules = {
   qrc20: (connection: Connection, address: string): QRC20 => getToken(connection, address),
   qrc1155: (connection: Connection, address: string): QRC1155 => getCollection(connection, address),
@@ -29,6 +53,7 @@ export const modules = {
 
   /**
    * Connection-bound (and optionally wallet-bound) factories — address-only lookup.
+   * Built-ins stay typed; registered addons are available via `registered`.
    */
   bind(connection: Connection, wallet?: WalletLike | null): BoundModules {
     const maybeSign = <T extends { withSigner(w: WalletLike): BoundClient<T> }>(
@@ -42,9 +67,14 @@ export const modules = {
       dex: (address: string) => maybeSign(getPool(connection, address)),
       bridge: (address: string) => maybeSign(getBridge(connection, address)),
       contract: (address: string) => maybeSign(getContract(connection, address)),
+      /** All registered modules (built-ins + addons). */
+      registered: bindRegisteredModules(connection, wallet),
+      list: () => listModules().map((m) => m.id),
     };
   },
 };
+
+export type Modules = typeof modules;
 
 export type BoundModules = {
   qrc20: (address: string) => QRC20 | BoundClient<QRC20>;
@@ -53,6 +83,8 @@ export type BoundModules = {
   dex: (address: string) => DEX | BoundClient<DEX>;
   bridge: (address: string) => BridgeModule | BoundClient<BridgeModule>;
   contract: (address: string) => Contract | BoundClient<Contract>;
+  registered: Record<string, (address: string) => unknown>;
+  list: () => string[];
 };
 
 /** Session-bound modules always include a signer. */
@@ -63,6 +95,8 @@ export type SignedBoundModules = {
   dex: (address: string) => BoundClient<DEX>;
   bridge: (address: string) => BoundClient<BridgeModule>;
   contract: (address: string) => BoundClient<Contract>;
+  registered: Record<string, (address: string) => unknown>;
+  list: () => string[];
 };
 
 export function bindModules(
@@ -76,7 +110,16 @@ export function bindModules(
     dex: (address) => getPool(connection, address).withSigner(wallet),
     bridge: (address) => getBridge(connection, address).withSigner(wallet),
     contract: (address) => getContract(connection, address).withSigner(wallet),
+    registered: bindRegisteredModules(connection, wallet),
+    list: () => listModules().map((m) => m.id),
   };
 }
 
-export type Modules = typeof modules;
+export {
+  registerModule,
+  defineModule,
+  getModule,
+  listModules,
+  createModuleClient,
+  bindRegisteredModules,
+} from './core/module-registry.js';

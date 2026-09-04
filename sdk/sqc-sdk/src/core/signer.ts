@@ -1,32 +1,74 @@
 /**
- * Thin Signer interface for Program/Contract writes (wallet or mocks).
- * WASM signing stays inside Wallet; this is the submit surface Programs need.
+ * Signer — Program/Contract write surface (+ optional domain-signing capabilities).
+ * WASM stays inside Wallet; Programs depend on this interface, not SplendorPQBridge.
  */
-import type { ModuleCallOpts, CallOpts } from '../types.js';
+import type {
+  ModuleCallOpts,
+  CallOpts,
+  DeployOpts,
+  PermitParams,
+  SignedPermit,
+  OrderParams,
+  SignedOrder,
+  SignedCancel,
+  IncrementNonceParams,
+  SignedIncrementNonce,
+  BridgeClaimSignParams,
+  SignedBridgeClaim,
+  X402PayOpts,
+} from '../types.js';
+import { BridgeError } from '../errors.js';
 
 export type SignerAddress = { getAddress(): string };
 
-export type Signer = SignerAddress & {
-  sendModuleCall(opts: ModuleCallOpts): Promise<{
-    status: string;
-    hash: string;
-    signedTx: object;
-    confirmation?: { confirmed: true; nonce: number; receipt?: Record<string, unknown> };
-  }>;
-  callContract(opts: CallOpts): Promise<{
-    status: string;
-    hash: string;
-    signedTx: object;
-    confirmation?: { confirmed: true; nonce: number; receipt?: Record<string, unknown> };
-  }>;
+export type TxResult = {
+  status: string;
+  hash: string;
+  signedTx: object;
+  confirmation?: { confirmed: true; nonce: number; receipt?: Record<string, unknown> };
 };
+
+/** Core submit surface required for Program.write / Contract.call. */
+export type Signer = SignerAddress & {
+  sendModuleCall(opts: ModuleCallOpts): Promise<TxResult>;
+  callContract(opts: CallOpts): Promise<TxResult>;
+  /** Optional domain capabilities — present on full Wallet. */
+  signPermit?(params: PermitParams): Promise<SignedPermit>;
+  signOrder?(params: OrderParams): Promise<SignedOrder>;
+  signCancel?(params: OrderParams): Promise<SignedCancel>;
+  signIncrementNonce?(params: IncrementNonceParams): Promise<SignedIncrementNonce>;
+  signBridgeClaim?(params: BridgeClaimSignParams): Promise<SignedBridgeClaim>;
+  payX402?(opts: X402PayOpts): Promise<unknown>;
+  getNonce?(address?: string): Promise<{ address: string; nonce: number }>;
+  getLatestBlock?(): Promise<unknown>;
+  deployContract?(opts: DeployOpts): Promise<TxResult>;
+};
+
+export function requireCapability<K extends keyof Signer>(
+  signer: Signer,
+  name: K,
+): NonNullable<Signer[K]> {
+  const fn = signer[name];
+  if (typeof fn !== 'function') {
+    throw BridgeError.notConnected(
+      `Signer is missing capability "${String(name)}" (need a full Wallet / WASM session)`,
+    );
+  }
+  return fn as NonNullable<Signer[K]>;
+}
+
+export async function signerAccountNonce(wallet: Signer): Promise<number> {
+  const getNonce = requireCapability(wallet, 'getNonce');
+  const { nonce } = await getNonce.call(wallet);
+  return nonce;
+}
 
 export type MockSignerHandlers = {
   sendModuleCall?: Signer['sendModuleCall'];
   callContract?: Signer['callContract'];
 };
 
-/** In-memory Signer for Program unit tests. */
+/** In-memory Signer for Program unit tests (submit-only). */
 export class MockSigner implements Signer {
   readonly address: string;
   private handlers: MockSignerHandlers;
