@@ -34,6 +34,14 @@ export GOOS=js
 export GOARCH=wasm
 export GO111MODULE=on
 
+# go build resolves the module from the WORKING DIRECTORY, not from the path of
+# the file it is handed, so this only ever worked when run from the repo root.
+# The wallet extension's CI builds this signer from its own checkout to check its
+# copy against source rather than against the chain's committed binary, and got
+# "go.mod file not found" for it. Build from the module root instead; -trimpath
+# means the bytes do not depend on where that root is.
+cd "$ROOT/../../.."
+
 echo "Building sqc_signer.wasm..."
 # Use the resolved $GO binary (robust when go is not on PATH).
 #
