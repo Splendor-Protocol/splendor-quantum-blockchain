@@ -3,7 +3,8 @@
  */
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
-import type { SplendorPQBridge } from '../splendor-wallet.js';
+import type { Signer } from '../core/signer.js';
+import { signerAccountNonce } from '../core/signer.js';
 import { qrc1155Address } from '../addresses/index.js';
 
 export type QRC1155DeployParams = {
@@ -72,7 +73,7 @@ export class QRC1155 extends Program {
   }
 
   async mint(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     to: string,
     id: string,
     amount: string,
@@ -82,7 +83,7 @@ export class QRC1155 extends Program {
   }
 
   async mintBatch(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     to: string,
     ids: string[],
     amounts: string[],
@@ -97,7 +98,7 @@ export class QRC1155 extends Program {
   }
 
   async transfer(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     to: string,
     id: string,
     amount: string,
@@ -112,7 +113,7 @@ export class QRC1155 extends Program {
   }
 
   async batchTransfer(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     to: string,
     ids: string[],
     amounts: string[],
@@ -126,29 +127,29 @@ export class QRC1155 extends Program {
     });
   }
 
-  async setApprovalForAll(wallet: SplendorPQBridge, operator: string, approved: boolean) {
+  async setApprovalForAll(wallet: Signer, operator: string, approved: boolean) {
     return this.write(wallet, 'set_approval_for_all', { operator, approved });
   }
 
-  async burn(wallet: SplendorPQBridge, id: string, amount: string) {
+  async burn(wallet: Signer, id: string, amount: string) {
     return this.write(wallet, 'burn', { id, amount });
   }
 
-  async burnBatch(wallet: SplendorPQBridge, ids: string[], amounts: string[]) {
+  async burnBatch(wallet: Signer, ids: string[], amounts: string[]) {
     return this.write(wallet, 'burn_batch', { ids, amounts });
   }
 
-  async transferOwnership(wallet: SplendorPQBridge, newOwner: string) {
+  async transferOwnership(wallet: Signer, newOwner: string) {
     return this.write(wallet, 'transfer_ownership', { new_owner: newOwner });
   }
 }
 
 export async function deployQRC1155(
-  wallet: SplendorPQBridge,
+  wallet: Signer,
   params: QRC1155DeployParams,
   opts?: { fee?: string; waitForConfirmation?: boolean },
-): Promise<{ address: string; result: Awaited<ReturnType<SplendorPQBridge['sendModuleCall']>> }> {
-  const { nonce } = await wallet.getNonce();
+): Promise<{ address: string; result: Awaited<ReturnType<Signer['sendModuleCall']>> }> {
+  const nonce = await signerAccountNonce(wallet);
   const predicted = QRC1155.predictAddress(wallet.getAddress(), nonce);
   const result = await wallet.sendModuleCall({
     module: 'qrc1155',

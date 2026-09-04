@@ -5,7 +5,13 @@ export { Connection } from './connection.js';
 export type { ConnectionOptions } from './connection.js';
 export { Program } from './program.js';
 export type { TxSubmitResult } from './program.js';
-export { MockSigner, type Signer, type MockSignerHandlers } from './signer.js';
+export {
+  MockSigner,
+  requireCapability,
+  signerAccountNonce,
+  type Signer,
+  type MockSignerHandlers,
+} from './signer.js';
 export {
   buildModuleCall,
   encodeModuleCall,

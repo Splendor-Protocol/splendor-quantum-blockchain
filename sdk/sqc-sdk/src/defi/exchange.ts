@@ -3,7 +3,8 @@
  */
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
-import type { SplendorPQBridge } from '../splendor-wallet.js';
+import type { Signer } from '../core/signer.js';
+import { requireCapability, signerAccountNonce } from '../core/signer.js';
 import { exchangeAddress } from '../addresses/index.js';
 import type { OrderParams, SignedOrder, SignedCancel, SignedIncrementNonce } from '../types.js';
 
@@ -90,6 +91,20 @@ export class Exchange extends Program {
     return this.read<Record<string, unknown>>('position', { holder, condition });
   }
 
+  /** Pure read — no exchange instance required on-chain. */
+  async positionId(condition: number, outcome: number): Promise<Record<string, unknown>> {
+    return this.connection.moduleCall<Record<string, unknown>>({
+      module: 'exchange',
+      action: 'position_id',
+      params: { condition, outcome },
+    });
+  }
+
+  async orderHash(order: SignedOrder | Record<string, unknown>): Promise<string> {
+    const res = await this.read<{ hash: string }>('order_hash', { order });
+    return res.hash;
+  }
+
   async simulateMatch(params: {
     caller: string;
     takerOrder: SignedOrder | Record<string, unknown>;
@@ -105,7 +120,7 @@ export class Exchange extends Program {
   }
 
   async createCondition(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     params: {
       collateral: string;
       resolver: string;
@@ -123,16 +138,16 @@ export class Exchange extends Program {
     });
   }
 
-  async split(wallet: SplendorPQBridge, condition: number, amount: string) {
+  async split(wallet: Signer, condition: number, amount: string) {
     return this.write(wallet, 'split', { condition, amount });
   }
 
-  async merge(wallet: SplendorPQBridge, condition: number, amount: string) {
+  async merge(wallet: Signer, condition: number, amount: string) {
     return this.write(wallet, 'merge', { condition, amount });
   }
 
   async match(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     params: {
       takerOrder: SignedOrder | Record<string, unknown>;
       makerOrders: Array<SignedOrder | Record<string, unknown>>;
@@ -146,7 +161,7 @@ export class Exchange extends Program {
     });
   }
 
-  async cancelOrder(wallet: SplendorPQBridge, signedCancel: SignedCancel) {
+  async cancelOrder(wallet: Signer, signedCancel: SignedCancel) {
     return this.write(wallet, 'cancel_order', {
       order: signedCancel.order,
       cancel_signature: signedCancel.cancel_signature,
@@ -155,16 +170,19 @@ export class Exchange extends Program {
   }
 
   /** Sign an order for this exchange instance (fills exchange address). */
-  async signOrder(wallet: SplendorPQBridge, params: Omit<OrderParams, 'exchange'>): Promise<SignedOrder> {
-    return wallet.signOrder({ ...params, exchange: this.address });
+  async signOrder(wallet: Signer, params: Omit<OrderParams, 'exchange'>): Promise<SignedOrder> {
+    const sign = requireCapability(wallet, 'signOrder');
+    return sign.call(wallet, { ...params, exchange: this.address });
   }
 
-  async signCancel(wallet: SplendorPQBridge, params: Omit<OrderParams, 'exchange'>): Promise<SignedCancel> {
-    return wallet.signCancel({ ...params, exchange: this.address });
+  async signCancel(wallet: Signer, params: Omit<OrderParams, 'exchange'>): Promise<SignedCancel> {
+    const sign = requireCapability(wallet, 'signCancel');
+    return sign.call(wallet, { ...params, exchange: this.address });
   }
 
-  async signAndSubmitIncrementNonce(wallet: SplendorPQBridge, expectedNonce: number) {
-    const signed: SignedIncrementNonce = await wallet.signIncrementNonce({
+  async signAndSubmitIncrementNonce(wallet: Signer, expectedNonce: number) {
+    const sign = requireCapability(wallet, 'signIncrementNonce');
+    const signed: SignedIncrementNonce = await sign.call(wallet, {
       exchange: this.address,
       expected_nonce: expectedNonce,
     });
@@ -176,52 +194,53 @@ export class Exchange extends Program {
     });
   }
 
-  async resolve(wallet: SplendorPQBridge, condition: number, outcome: number) {
+  async resolve(wallet: Signer, condition: number, outcome: number) {
     return this.write(wallet, 'resolve', { condition, outcome });
   }
 
-  async redeem(wallet: SplendorPQBridge, condition: number) {
+  async redeem(wallet: Signer, condition: number) {
     return this.write(wallet, 'redeem', { condition });
   }
 
-  async redeemFor(wallet: SplendorPQBridge, condition: number, holder: string) {
+  async redeemFor(wallet: Signer, condition: number, holder: string) {
     return this.write(wallet, 'redeem_for', { condition, holder });
   }
 
-  async pause(wallet: SplendorPQBridge) {
+  async pause(wallet: Signer) {
     return this.write(wallet, 'pause', {});
   }
 
-  async unpause(wallet: SplendorPQBridge) {
+  async unpause(wallet: Signer) {
     return this.write(wallet, 'unpause', {});
   }
 
-  async setOperator(wallet: SplendorPQBridge, operator: string, active: boolean) {
+  async setOperator(wallet: Signer, operator: string, active: boolean) {
     return this.write(wallet, 'set_operator', { operator, active });
   }
 
-  async setRedeemFeeBps(wallet: SplendorPQBridge, redeemFeeBps: number) {
+  async setRedeemFeeBps(wallet: Signer, redeemFeeBps: number) {
     return this.write(wallet, 'set_redeem_fee_bps', { redeem_fee_bps: redeemFeeBps });
   }
 
-  async setFeeRecipient(wallet: SplendorPQBridge, feeRecipient: string) {
+  async setFeeRecipient(wallet: Signer, feeRecipient: string) {
     return this.write(wallet, 'set_fee_recipient', { fee_recipient: feeRecipient });
   }
 
-  async transferOwnership(wallet: SplendorPQBridge, newOwner: string) {
+  async transferOwnership(wallet: Signer, newOwner: string) {
     return this.write(wallet, 'transfer_ownership', { new_owner: newOwner });
   }
 }
 
 export async function deployExchange(
-  wallet: SplendorPQBridge,
+  wallet: Signer,
   params: ExchangeDeployParams,
   opts?: { fee?: string; waitForConfirmation?: boolean; height?: number },
-): Promise<{ address: string; height: number; result: Awaited<ReturnType<SplendorPQBridge['sendModuleCall']>> }> {
-  const { nonce } = await wallet.getNonce();
+): Promise<{ address: string; height: number; result: Awaited<ReturnType<Signer['sendModuleCall']>> }> {
+  const nonce = await signerAccountNonce(wallet);
   let height = opts?.height;
   if (height == null) {
-    const latest = await wallet.connection.getLatestBlock();
+    const getLatestBlock = requireCapability(wallet, 'getLatestBlock');
+    const latest = await getLatestBlock.call(wallet);
     height = blockHeight(latest) + 1;
   }
   const predicted = Exchange.predictAddress(wallet.getAddress(), nonce, height);

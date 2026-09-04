@@ -111,6 +111,7 @@ describe('metamaskConnector', () => {
     const c = metamaskConnector();
     const info = await c.connect({
       wallet: { connectFromMetaMask } as never,
+      connection: {} as never,
       provider: {} as never,
       network: {} as never,
     });
@@ -128,6 +129,7 @@ describe('injectedConnector', () => {
     expect(c.name).toBe('Rabby');
     await c.connect({
       wallet: { connectFromMetaMask } as never,
+      connection: {} as never,
       provider: {} as never,
       network: {} as never,
     });
@@ -143,6 +145,7 @@ describe('seedConnector', () => {
       c.connect(
         {
           wallet: { connectFromSeed } as never,
+          connection: {} as never,
           provider: {} as never,
           network: {} as never,
         },
@@ -160,6 +163,7 @@ describe('seedConnector', () => {
     await c.connect(
       {
         wallet: { connectFromSeed } as never,
+        connection: {} as never,
         provider: {} as never,
         network: {} as never,
       },

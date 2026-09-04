@@ -73,6 +73,17 @@ Set RPC URLs, gateway port, WASM paths, min fee, default network — SDK, gatewa
 
 **React UI kit (recommended for browsers):** [`@splendor/connect-react`](../connect-react) — `ConnectKit` + modular connectors (native ML-DSA first; MetaMask under Legacy).
 
+**Headless (recommended):** `createSession` — bound modules, no wallet args on writes.
+
+```js
+import { createSession } from '@splendor/sqc-sdk';
+
+const s = await createSession({ network: 'local', mode: 'seed', seed: process.env.SEED });
+await s.sendSPLD(recipient, '0.01');
+```
+
+Legacy (deprecated — prefer `createSession` / ConnectKit):
+
 ```js
 import { connectSplendor, createSplendorClient } from '@splendor/sqc-sdk';
 
@@ -343,14 +354,15 @@ sdk/sqc-sdk/
 ## dApp helpers
 
 - **`sqc.networks.json`** — single source for RPC / gateway / fees / WASM paths / `networkId` / optional `wasmSha256`
-- **`connect` / `createSession` / `connectSplendor` / `createSplendorClient`** — one-touch dApp entry (`createSession` binds `sendSPLD` / all modules via `withSigner`)
-- **`@splendor/sqc-sdk/react`** — published `useSplendorPQ` hook
+- **`createSession` / `connect`** — preferred one-touch dApp entry (`createSession` binds modules via `withSigner`)
+- **`connectSplendor` / `createSplendorClient`** — deprecated aliases; prefer `createSession`
+- **`@splendor/sqc-sdk/react`** — `useSplendorPQ` (deprecated; prefer `@splendor/connect-react`)
 - **`@splendor/connect-react`** — AppKit-style Connect UI (native PQ first)
 - **Browser demo** — [`examples/web-dapp`](examples/web-dapp) (balance, send, QRC-20 read/write)
 - **`preflight()`** — balance / nonce / fee dry-run before send
 - **SQDP-1** — normative protocol + `PROTOCOL` / `SQDP_VERSION` exports
-- **`Connection` / `SqcProvider`** — read-only RPC (no WASM until connect)
-- **`Wallet` / `SplendorPQBridge`** — signing wallet sharing RPC
+- **`Connection`** — preferred read client (Transport-backed); `SqcProvider` deprecated alias
+- **`Wallet` / `SplendorPQBridge`** — signing wallet (`Wallet` preferred name)
 - **QSol ABI** — `encodeFunctionData` / decode helpers (SHA3-256 selectors, `sqaddress`)
 - **Events** — `connect` / `disconnect` / `accountsChanged` / `error` / `lock`
 - **`rpcUrls` + retries** — failover; sticky submit URL

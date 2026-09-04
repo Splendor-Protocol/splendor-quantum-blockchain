@@ -2,7 +2,8 @@
  * Bytecode contract client (SQC-VM deploy/call).
  */
 import type { Connection } from '../core/connection.js';
-import type { SplendorPQBridge } from '../splendor-wallet.js';
+import type { Signer, TxResult } from '../core/signer.js';
+import { requireCapability, signerAccountNonce } from '../core/signer.js';
 import { bytecodeContractAddress } from '../addresses/index.js';
 import {
   encodeFunctionData,
@@ -43,11 +44,11 @@ export class Contract {
 
   async read(functionSig: string, args: AbiArg[] = [], from?: string): Promise<ContractReadResult> {
     const data = encodeFunctionDataHex(functionSig, args);
-    return this.connection.rpc.call({
+    return this.connection.call({
       to: this.address,
       data,
       from,
-    });
+    }) as Promise<ContractReadResult>;
   }
 
   async readUint256(functionSig: string, args: AbiArg[] = [], from?: string): Promise<bigint> {
@@ -69,7 +70,7 @@ export class Contract {
   }
 
   async call(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     functionSig: string,
     args: AbiArg[] = [],
     opts?: Omit<CallOpts, 'contract' | 'function' | 'args'>,
@@ -93,16 +94,17 @@ export class Contract {
 
 /** Deploy bytecode and return predicted address + tx result. */
 export async function deployBytecode(
-  wallet: SplendorPQBridge,
+  wallet: Signer,
   bytecode: Uint8Array | string,
   opts?: Omit<DeployOpts, 'bytecode'>,
 ): Promise<{
   address: string;
-  result: Awaited<ReturnType<SplendorPQBridge['deployContract']>>;
+  result: TxResult;
 }> {
-  const { nonce } = await wallet.getNonce();
+  const nonce = await signerAccountNonce(wallet);
   const predicted = Contract.predictAddress(wallet.getAddress(), nonce);
-  const result = await wallet.deployContract({ bytecode, ...opts });
+  const deployContract = requireCapability(wallet, 'deployContract');
+  const result = await deployContract.call(wallet, { bytecode, ...opts });
   return { address: predicted, result };
 }
 

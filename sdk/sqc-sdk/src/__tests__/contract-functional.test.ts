@@ -11,14 +11,14 @@ const ADDR = golden.address;
 const CONTRACT = 'SQ:' + 'cc'.repeat(32);
 
 describe('Contract functional', () => {
-  it('read encodes ABI and calls rpc.call', async () => {
+  it('read encodes ABI and calls connection.call', async () => {
     const call = vi.fn(async (opts: { to: string; data: string }) => {
       expect(opts.to).toBe(CONTRACT);
       expect(opts.data.startsWith('0x')).toBe(true);
       return { return_data: '0x' + '00'.repeat(31) + '2a' };
     });
     const connection = {
-      rpc: { call },
+      call,
       getContractInfo: vi.fn(),
       verifyContract: vi.fn(),
     } as unknown as Connection;

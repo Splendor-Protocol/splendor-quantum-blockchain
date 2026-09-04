@@ -144,6 +144,9 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
 
 /**
  * Create provider + wallet wired to the standard network config (no connect yet).
+ *
+ * @deprecated Prefer {@link createSession} from `@splendor/sqc-sdk` for headless apps,
+ * or `@splendor/connect-react` ConnectKit for UI.
  */
 export function createSplendorClient(opts: CreateClientOptions = {}): ClientSession {
   const { network, bridgeOpts } = buildBridgeOptions(opts);
@@ -154,6 +157,9 @@ export function createSplendorClient(opts: CreateClientOptions = {}): ClientSess
 
 /**
  * One-touch: create client and optionally connect a signing session.
+ *
+ * @deprecated Prefer {@link createSession} (bound modules) or `connect()` from
+ * `@splendor/sqc-sdk`. For React UI use `@splendor/connect-react` ConnectKit.
  */
 export async function connectSplendor(opts: ConnectSplendorOptions = {}): Promise<ClientSession> {
   const client = createSplendorClient(opts);

@@ -3,14 +3,14 @@
  */
 import type { Connection } from './connection.js';
 import { buildModuleCall, type ModuleCall } from './module-call.js';
-import type { SplendorPQBridge } from '../splendor-wallet.js';
+import type { Signer } from './signer.js';
 import { withSigner, type BoundClient, type WalletLike } from '../bound.js';
 
 export type TxSubmitResult = {
   status: string;
   hash: string;
   signedTx: object;
-  confirmation?: { confirmed: true; nonce: number };
+  confirmation?: { confirmed: true; nonce: number; receipt?: Record<string, unknown> };
 };
 
 export abstract class Program {
@@ -23,9 +23,17 @@ export abstract class Program {
     return this.address;
   }
 
+  /**
+   * Declarative write method names for withSigner binding.
+   * Prefer overriding this single list rather than maintaining a separate Set.
+   */
+  protected writeMethods(): readonly string[] {
+    return [];
+  }
+
   /** Names of methods that take `wallet` as the first argument (for withSigner). */
   protected writeMethodNames(): ReadonlySet<string> {
-    return new Set();
+    return new Set(this.writeMethods());
   }
 
   /**
@@ -45,6 +53,11 @@ export abstract class Program {
     return { [this.instanceParamKey()]: this.address, ...extra };
   }
 
+  /** Override for module-specific deploy actions that omit the instance address. */
+  protected isDeployAction(action: string): boolean {
+    return action === 'deploy';
+  }
+
   protected async read<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
     const module = this.moduleName();
     const envelope = buildModuleCall(module, action, this.instanceParams(params));
@@ -52,14 +65,13 @@ export abstract class Program {
   }
 
   protected async write(
-    wallet: SplendorPQBridge,
+    wallet: Signer,
     action: string,
     params: Record<string, unknown>,
     opts?: { fee?: string; waitForConfirmation?: boolean; confirmTimeoutMs?: number },
   ): Promise<TxSubmitResult> {
     const module = this.moduleName();
-    const fullParams =
-      action === 'deploy' || action === 'deploy_pool' ? params : this.instanceParams(params);
+    const fullParams = this.isDeployAction(action) ? params : this.instanceParams(params);
     return wallet.sendModuleCall({
       module,
       action,
