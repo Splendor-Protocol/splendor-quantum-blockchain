@@ -1108,6 +1108,17 @@ type goldenFile struct {
 			IncrementNonceDigestHex string `json:"incrementNonceDigestHex"`
 		} `json:"fromGoldenSeed"`
 	} `json:"order"`
+	Bridge struct {
+		Context   string `json:"context"`
+		ChainID   string `json:"chainId"`
+		Bridge    string `json:"bridge"`
+		ID        uint64 `json:"id"`
+		Asset     string `json:"asset"`
+		Amount    string `json:"amount"`
+		Recipient string `json:"recipient"`
+		EvmTx     string `json:"evmTx"`
+		Digest    string `json:"digest"`
+	} `json:"bridge"`
 }
 
 func loadGolden(t *testing.T) goldenFile {
@@ -1127,10 +1138,11 @@ func TestGoldenVectorsFilePinsDigests(t *testing.T) {
 	if err := types.SetClientChainID(g.ChainID); err != nil {
 		t.Fatal(err)
 	}
-	if g.Permit.Context != string(qcrypto.CtxPermit) || g.Order.Context != string(qcrypto.CtxOrder) {
-		t.Fatalf("context strings drifted: permit %q order %q", g.Permit.Context, g.Order.Context)
+	if g.Permit.Context != string(qcrypto.CtxPermit) || g.Order.Context != string(qcrypto.CtxOrder) ||
+		g.Bridge.Context != string(qcrypto.CtxBridge) {
+		t.Fatalf("context strings drifted: permit %q order %q bridge %q", g.Permit.Context, g.Order.Context, g.Bridge.Context)
 	}
-	if g.Permit.ChainID != g.ChainID || g.Order.ChainID != g.ChainID {
+	if g.Permit.ChainID != g.ChainID || g.Order.ChainID != g.ChainID || g.Bridge.ChainID != g.ChainID {
 		t.Fatal("vector chain ids disagree with the file's chainId")
 	}
 
@@ -1178,6 +1190,22 @@ func TestGoldenVectorsFilePinsDigests(t *testing.T) {
 		t.Fatalf("order.incrementNonceDigest %s != IncrementNonceDigest %x", g.Order.IncrementNonceDigest, nd)
 	}
 
+	bridgeAmount, _ := new(big.Int).SetString(g.Bridge.Amount, 10)
+	evmBytes, err := hex.DecodeString(strings.TrimPrefix(g.Bridge.EvmTx, "0x"))
+	if err != nil || len(evmBytes) != 32 {
+		t.Fatalf("bridge.evmTx is not 32 hex bytes: %v", err)
+	}
+	var evmTx [32]byte
+	copy(evmTx[:], evmBytes)
+	assetWord := map[string]uint8{"spld": 0, "splv": 1}[g.Bridge.Asset]
+	bd, err := types.BridgeClaimDigest(g.Bridge.ChainID, addr(g.Bridge.Bridge), g.Bridge.ID, assetWord, bridgeAmount, addr(g.Bridge.Recipient), evmTx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(bd[:]) != g.Bridge.Digest {
+		t.Fatalf("bridge.digest %s != BridgeClaimDigest %x", g.Bridge.Digest, bd)
+	}
+
 	// Signer-level: the golden seed as owner/maker with the same inputs.
 	w := goldenWallet(t)
 	if w.Address.String() != g.Address {
@@ -1222,5 +1250,83 @@ func TestGoldenVectorsFilePinsDigests(t *testing.T) {
 	mustUnmarshal(t, out, &sn)
 	if sn.DigestHex != g.Order.FromGoldenSeed.IncrementNonceDigestHex {
 		t.Errorf("order.fromGoldenSeed.incrementNonceDigestHex moved:\n got %s\nwant %s", sn.DigestHex, g.Order.FromGoldenSeed.IncrementNonceDigestHex)
+	}
+}
+
+// The bridge-claim path had no test in either language, which is how a signer
+// binary that never exported sqSignBridgeClaim reached main with the whole Go
+// suite and 154 Vitest cases green. This pins the digest and its domain
+// separation; wasm-bridge-claim.test.ts asserts the WASM build agrees.
+func TestSignBridgeClaimDigestAndContext(t *testing.T) {
+	w := goldenWallet(t)
+	bridge, recipient := bytesAddr(0xbb), bytesAddr(0xdd)
+	evmTxHex := strings.Repeat("ab", 32)
+
+	out, err := w.SignBridgeClaim(BridgeClaimParams{
+		Bridge: bridge.String(), ID: 42, Asset: "spld",
+		Amount: "1000000000000000000", Recipient: recipient.String(),
+		EvmTx: "0x" + evmTxHex,
+	})
+	if err != nil {
+		t.Fatalf("SignBridgeClaim: %v", err)
+	}
+	var sc SignedBridgeClaim
+	mustUnmarshal(t, out, &sc)
+	t.Logf("bridge claim digest_hex = %s (chain %s)", sc.DigestHex, sc.ChainID)
+
+	amount, _ := new(big.Int).SetString("1000000000000000000", 10)
+	evmBytes, _ := hex.DecodeString(evmTxHex)
+	var evmTx [32]byte
+	copy(evmTx[:], evmBytes)
+	want, err := types.BridgeClaimDigest(types.ChainID, bridge, 42, 0, amount, recipient, evmTx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.DigestHex != hex.EncodeToString(want[:]) {
+		t.Fatalf("digest_hex %s != BridgeClaimDigest %x", sc.DigestHex, want)
+	}
+	if sc.Bridge != bridge.String() || sc.Recipient != recipient.String() {
+		t.Fatalf("addresses not echoed: %+v", sc)
+	}
+	if sc.ID != 42 || sc.Asset != "spld" || sc.Amount != "1000000000000000000" ||
+		sc.EvmTx != "0x"+evmTxHex || sc.ChainID != types.ChainID {
+		t.Fatalf("fields not echoed: %+v", sc)
+	}
+	if !bytes.Equal(sc.PubKey, w.PublicKey) {
+		t.Fatal("pubkey is not the wallet's key")
+	}
+	if !qcrypto.Verify(w.Public, want[:], qcrypto.CtxBridge, sc.Signature) {
+		t.Fatal("signature does not verify under CtxBridge")
+	}
+	// An attestation must not be replayable as any other authorisation.
+	for _, ctx := range [][]byte{qcrypto.CtxMessage, qcrypto.CtxPermit, qcrypto.CtxOrder} {
+		if qcrypto.Verify(w.Public, want[:], ctx, sc.Signature) {
+			t.Fatalf("signature must not verify under %s", ctx)
+		}
+	}
+}
+
+// "splv" is the other asset word, and the id/evm_tx guards are what stop a
+// malformed attestation being signed at all.
+func TestSignBridgeClaimRejectsBadInputs(t *testing.T) {
+	w := goldenWallet(t)
+	ok := BridgeClaimParams{
+		Bridge: bytesAddr(0xbb).String(), ID: 1, Asset: "splv", Amount: "1",
+		Recipient: bytesAddr(0xdd).String(), EvmTx: "0x" + strings.Repeat("cd", 32),
+	}
+	if _, err := w.SignBridgeClaim(ok); err != nil {
+		t.Fatalf("splv claim should sign: %v", err)
+	}
+	for name, mutate := range map[string]func(p *BridgeClaimParams){
+		"zero id":       func(p *BridgeClaimParams) { p.ID = 0 },
+		"unknown asset": func(p *BridgeClaimParams) { p.Asset = "eth" },
+		"short evm_tx":  func(p *BridgeClaimParams) { p.EvmTx = "0xdeadbeef" },
+		"zero bridge":   func(p *BridgeClaimParams) { p.Bridge = qcrypto.Address{}.String() },
+	} {
+		p := ok
+		mutate(&p)
+		if _, err := w.SignBridgeClaim(p); err == nil {
+			t.Errorf("%s: signed when it should have been rejected", name)
+		}
 	}
 }
