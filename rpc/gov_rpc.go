@@ -37,7 +37,7 @@ import (
 // RegisterGovRoutes adds governance and staking endpoints to the router.
 func RegisterGovRoutes(r *mux.Router, stateDB *state.StateDB) {
 	govAddr := vm.DeployGovernance(stateDB)
-	stakingAddr := vm.DeployStaking(stateDB)
+	stakingAddr := vm.StakingAddress
 
 	gov := vm.NewGovernanceContract(stateDB, govAddr)
 	staking := vm.NewStakingContract(stateDB, stakingAddr)

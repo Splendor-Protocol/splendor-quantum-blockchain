@@ -370,6 +370,67 @@ func ValidatorSlashedEvent(contract, validator qcrypto.Address, slashAmount, rem
 		Build()
 }
 
+// ValidatorStakeAddedEvent builds a staking ValidatorStakeAdded event: the
+// amount bonded now, and the bond after it.
+func ValidatorStakeAddedEvent(contract, validator qcrypto.Address, added, total *big.Int) *types.Log {
+	return NewEvent(contract, "ValidatorStakeAdded(sqaddress,uint256,uint256)").
+		IndexAddr(validator).
+		DataUint256(added).
+		DataUint256(total).
+		Build()
+}
+
+// ValidatorUnstakedEvent builds a staking ValidatorUnstaked event: the amount
+// moved into unbonding, and the height it may be withdrawn at.
+func ValidatorUnstakedEvent(contract, validator qcrypto.Address, amount *big.Int, releaseHeight uint64) *types.Log {
+	return NewEvent(contract, "ValidatorUnstaked(sqaddress,uint256,uint64)").
+		IndexAddr(validator).
+		DataUint256(amount).
+		DataUint256(new(big.Int).SetUint64(releaseHeight)).
+		Build()
+}
+
+// ValidatorWithdrawnEvent builds a staking ValidatorWithdrawn event.
+func ValidatorWithdrawnEvent(contract, validator qcrypto.Address, amount *big.Int) *types.Log {
+	return NewEvent(contract, "ValidatorWithdrawn(sqaddress,uint256)").
+		IndexAddr(validator).
+		DataUint256(amount).
+		Build()
+}
+
+// ValidatorUnjailedEvent builds a staking ValidatorUnjailed event.
+func ValidatorUnjailedEvent(contract, validator qcrypto.Address, stake *big.Int) *types.Log {
+	return NewEvent(contract, "ValidatorUnjailed(sqaddress,uint256)").
+		IndexAddr(validator).
+		DataUint256(stake).
+		Build()
+}
+
+// ValidatorPassSetEvent builds a staking ValidatorPassSet event: the admission
+// decision for one consensus key, and whether it carries the bond exemption.
+func ValidatorPassSetEvent(contract, validator qcrypto.Address, passed, bondExempt bool) *types.Log {
+	return NewEvent(contract, "ValidatorPassSet(sqaddress,bool,bool)").
+		IndexAddr(validator).
+		IndexBool(passed).
+		DataUint256(boolWord(bondExempt)).
+		Build()
+}
+
+// StakingAdminChangedEvent builds a staking StakingAdminChanged event.
+func StakingAdminChangedEvent(contract, previous, next qcrypto.Address) *types.Log {
+	return NewEvent(contract, "StakingAdminChanged(sqaddress,sqaddress)").
+		IndexAddr(previous).
+		IndexAddr(next).
+		Build()
+}
+
+func boolWord(v bool) *big.Int {
+	if v {
+		return big.NewInt(1)
+	}
+	return big.NewInt(0)
+}
+
 // ProposalSubmittedEvent builds a governance ProposalSubmitted event.
 func ProposalSubmittedEvent(contract qcrypto.Address, proposalID uint64, proposer qcrypto.Address) *types.Log {
 	return NewEvent(contract, "ProposalSubmitted(uint256,sqaddress)").
