@@ -110,6 +110,22 @@ revoked pass is contradictory and refused.
 Every action runs under a StateDB snapshot, so a half-applied one (escrow
 moved, record not written) cannot survive its own failure.
 
+### The last producer cannot be removed
+
+`set_pass` (revoking), `slash` and `unstake` each check, *after* their own
+mutation and inside their own snapshot, that at least one key can still
+produce. If none can, the action is refused.
+
+This is not theoretical. Revoking the only producer's pass stops block
+production, and the transaction that would undo the mistake can never be mined
+— mining it needs a producer. The chain would be recoverable only by
+re-genesis. So an exclusion has to be preceded by admitting a replacement:
+grant the successor a pass (and let it bond, or grant it `bond_exempt`) first,
+then revoke.
+
+The check walks the bounded pass list, so it costs at most
+`MaxValidatorPasses + 1` eligibility evaluations.
+
 ## Unbonding
 
 `UnbondingBlocks = 302,400` — about 7 days at the 2-second interval. A bond

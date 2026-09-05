@@ -3,6 +3,7 @@ package vm
 import (
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -186,7 +187,7 @@ func TestStakeUnstakeWithdrawLifecycle(t *testing.T) {
 	}
 
 	// Unstaking below the floor moves the validator out of Active.
-	if err := f.s.Unstake(f.addr, spld(3_000), 100, &types.Receipt{}); err != nil {
+	if err := f.s.Unstake(f.addr, f.genesis, spld(3_000), 100, &types.Receipt{}); err != nil {
 		t.Fatalf("unstake: %v", err)
 	}
 	rec, _ = f.s.GetValidator(f.addr)
@@ -236,10 +237,10 @@ func TestUnstakeRestartsTheUnbondingClock(t *testing.T) {
 	if err := f.register(t, spld(10_000), 1); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if err := f.s.Unstake(f.addr, spld(1_000), 10, &types.Receipt{}); err != nil {
+	if err := f.s.Unstake(f.addr, f.genesis, spld(1_000), 10, &types.Receipt{}); err != nil {
 		t.Fatalf("first unstake: %v", err)
 	}
-	if err := f.s.Unstake(f.addr, spld(1_000), 500, &types.Receipt{}); err != nil {
+	if err := f.s.Unstake(f.addr, f.genesis, spld(1_000), 500, &types.Receipt{}); err != nil {
 		t.Fatalf("second unstake: %v", err)
 	}
 	rec, _ := f.s.GetValidator(f.addr)
@@ -260,7 +261,7 @@ func TestUnstakeMoreThanStakedIsRefused(t *testing.T) {
 	if err := f.register(t, spld(5_000), 1); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if err := f.s.Unstake(f.addr, spld(5_001), 1, &types.Receipt{}); err == nil {
+	if err := f.s.Unstake(f.addr, f.genesis, spld(5_001), 1, &types.Receipt{}); err == nil {
 		t.Fatal("unstaking more than the bond must be refused")
 	}
 	rec, _ := f.s.GetValidator(f.addr)
@@ -398,12 +399,15 @@ func TestGenesisValidatorIsPassedImplicitly(t *testing.T) {
 }
 
 // The implicit entry is a default, not a privilege: an explicit revocation
-// overrides it.
+// overrides it — once somebody else can take over.
 func TestGenesisPassCanBeRevoked(t *testing.T) {
 	f := newStakingFixture(t)
 	genesisPub, genesisAddr := validatorKey(t, 0xAA)
 	if genesisAddr != f.genesis {
 		t.Fatalf("fixture genesis address drifted")
+	}
+	if err := f.s.SetPass(f.genesis, f.genesis, f.pub, true, true, 8, &types.Receipt{}); err != nil {
+		t.Fatalf("admit a successor: %v", err)
 	}
 	if err := f.s.SetPass(f.genesis, f.genesis, genesisPub, false, false, 9, &types.Receipt{}); err != nil {
 		t.Fatalf("revoke: %v", err)
@@ -415,6 +419,70 @@ func TestGenesisPassCanBeRevoked(t *testing.T) {
 	if entry == nil || entry.Genesis {
 		t.Fatalf("an explicit entry must replace the implicit one: %+v", entry)
 	}
+}
+
+// Removing the last eligible producer stops block production, and the
+// transaction that would undo it can never be mined — the chain would only be
+// recoverable by re-genesis. Every path that could do it is refused instead.
+func TestTheLastProducerCannotBeRemoved(t *testing.T) {
+	genesisPub, _ := validatorKey(t, 0xAA)
+
+	t.Run("revoke", func(t *testing.T) {
+		f := newStakingFixture(t)
+		err := f.s.SetPass(f.genesis, f.genesis, genesisPub, false, false, 1, &types.Receipt{})
+		if err == nil {
+			t.Fatal("revoking the only producer must be refused")
+		}
+		if !strings.Contains(err.Error(), "no validator able to produce") {
+			t.Fatalf("refusal = %v", err)
+		}
+		// And the refusal left nothing behind: the key still produces.
+		if err := f.s.CanProduce(f.genesis, f.genesis); err != nil {
+			t.Fatalf("the refused revocation took effect anyway: %v", err)
+		}
+	})
+
+	t.Run("slash", func(t *testing.T) {
+		f := newStakingFixture(t)
+		// Hand production to a bonded key, then revoke the genesis default, so
+		// the bonded key is the only thing keeping the chain alive.
+		if err := f.register(t, spld(5_000), 1); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		if err := f.s.SetPass(f.genesis, f.genesis, f.pub, true, false, 1, &types.Receipt{}); err != nil {
+			t.Fatalf("admit: %v", err)
+		}
+		if err := f.s.SetPass(f.genesis, f.genesis, genesisPub, false, false, 1, &types.Receipt{}); err != nil {
+			t.Fatalf("revoke genesis: %v", err)
+		}
+		if err := f.s.Slash(f.genesis, f.genesis, f.addr, spld(1), 2, &types.Receipt{}); err == nil {
+			t.Fatal("slashing the only producer must be refused")
+		}
+		if err := f.s.CanProduce(f.genesis, f.addr); err != nil {
+			t.Fatalf("the refused slash jailed it anyway: %v", err)
+		}
+		if err := f.s.Unstake(f.addr, f.genesis, spld(2_000), 2, &types.Receipt{}); err == nil {
+			t.Fatal("the only producer must not be able to unstake below the floor either")
+		}
+		if err := f.s.CanProduce(f.genesis, f.addr); err != nil {
+			t.Fatalf("the refused unstake took effect anyway: %v", err)
+		}
+		// Unstaking an amount that keeps it above the floor is still fine.
+		if err := f.s.Unstake(f.addr, f.genesis, spld(500), 2, &types.Receipt{}); err != nil {
+			t.Fatalf("a safe unstake must still work: %v", err)
+		}
+	})
+
+	t.Run("with a successor admitted", func(t *testing.T) {
+		f := newStakingFixture(t)
+		successorPub, _ := validatorKey(t, 0xC3)
+		if err := f.s.SetPass(f.genesis, f.genesis, successorPub, true, true, 1, &types.Receipt{}); err != nil {
+			t.Fatalf("admit a successor: %v", err)
+		}
+		if err := f.s.SetPass(f.genesis, f.genesis, genesisPub, false, false, 2, &types.Receipt{}); err != nil {
+			t.Fatalf("with a successor in place the revocation must be allowed: %v", err)
+		}
+	})
 }
 
 // Both gates, independently: a pass without a bond and a bond without a pass
@@ -442,7 +510,7 @@ func TestCanProduceNeedsPassAndBond(t *testing.T) {
 	}
 
 	// Bond drops below the floor: the pass survives, eligibility does not.
-	if err := f.s.Unstake(f.addr, spld(2_000), 3, &types.Receipt{}); err != nil {
+	if err := f.s.Unstake(f.addr, f.genesis, spld(2_000), 3, &types.Receipt{}); err != nil {
 		t.Fatalf("unstake: %v", err)
 	}
 	if err := f.s.CanProduce(f.genesis, f.addr); !errors.Is(err, ErrNotBonded) {
@@ -600,7 +668,7 @@ func TestWithdrawIsAtomicOnAFailedPayout(t *testing.T) {
 	if err := f.register(t, spld(5_000), 1); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if err := f.s.Unstake(f.addr, spld(1_000), 1, &types.Receipt{}); err != nil {
+	if err := f.s.Unstake(f.addr, f.genesis, spld(1_000), 1, &types.Receipt{}); err != nil {
 		t.Fatalf("unstake: %v", err)
 	}
 	// Drain the escrow behind the module's back, so the payout cannot settle.

@@ -1367,7 +1367,7 @@ func dispatchStaking(stateDB *state.StateDB, ctx ModuleContext, action string, r
 		if err != nil {
 			return err
 		}
-		return s.Unstake(ctx.Caller, amount, ctx.Height, receipt)
+		return s.Unstake(ctx.Caller, ctx.GenesisValidator, amount, ctx.Height, receipt)
 
 	case "withdraw":
 		return s.Withdraw(ctx.Caller, ctx.Height, receipt)

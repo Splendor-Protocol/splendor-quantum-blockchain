@@ -347,6 +347,15 @@ func (s *StakingContract) SetPass(
 		if err := s.setPassEntry(entry); err != nil {
 			return err
 		}
+		// The registry may be written by a grant before anyone has staked, so
+		// the marker is set here too — an explorer should not have to wait for
+		// the first bond to recognise the account.
+		markContract(s.stateDB, s.contract)
+		if !passed {
+			if err := s.requireProducerRemains(what, genesisValidator); err != nil {
+				return err
+			}
+		}
 		s.log(receipt, ValidatorPassSetEvent(s.contract, addr, passed, bondExempt))
 		return nil
 	})
@@ -375,6 +384,57 @@ func (s *StakingContract) SetAdmin(caller, genesisValidator, next qcrypto.Addres
 		s.log(receipt, StakingAdminChangedEvent(s.contract, current, next))
 		return nil
 	})
+}
+
+// EligibleProducerExists reports whether at least one key may still produce.
+//
+// The walk is bounded by MaxValidatorPasses, plus the implicit genesis entry,
+// and stops at the first eligible key.
+func (s *StakingContract) EligibleProducerExists(genesisValidator qcrypto.Address) (bool, error) {
+	if !genesisValidator.IsZero() && s.CanProduce(genesisValidator, genesisValidator) == nil {
+		return true, nil
+	}
+	entries, err := s.Passes()
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if s.CanProduce(genesisValidator, e.Address) == nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// requireProducerRemains refuses a mutation that would leave the chain with
+// nobody able to seal a block.
+//
+// This is not a theoretical concern. Revoking the only producer's pass — or
+// slashing it, or letting it unstake — stops block production, and the
+// transaction that would undo the mistake can never be mined, because mining it
+// requires a producer. The chain is then only recoverable by re-genesis.
+//
+// So the last eligible key cannot be removed: the exclusion has to be
+// preceded by admitting a replacement. It runs inside the action's own
+// snapshot, AFTER the mutation, so what it judges is the state the action
+// would actually leave behind.
+//
+// Skipped when the caller has no genesis anchor. Such a node cannot reason
+// about who is eligible at all, and it refuses to start on a gated chain
+// (cmd/node), so this is unreachable rather than lenient.
+func (s *StakingContract) requireProducerRemains(what string, genesisValidator qcrypto.Address) error {
+	if genesisValidator.IsZero() {
+		return nil
+	}
+	ok, err := s.EligibleProducerExists(genesisValidator)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%swould leave the chain with no validator able to produce a block, "+
+			"and the transaction undoing that could never be mined — admit a replacement first", what)
+	}
+	return nil
 }
 
 // requireAdmin refuses a caller that is not the admission authority.
@@ -577,7 +637,7 @@ func (s *StakingContract) AddStake(caller qcrypto.Address, amount *big.Int, rece
 // timer would make the delay a function of when you first unstaked rather than
 // of when you last did, which is a bond that can be released early by anyone
 // who plans one unbonding period ahead.
-func (s *StakingContract) Unstake(caller qcrypto.Address, amount *big.Int, height uint64, receipt *types.Receipt) error {
+func (s *StakingContract) Unstake(caller, genesisValidator qcrypto.Address, amount *big.Int, height uint64, receipt *types.Receipt) error {
 	const what = "staking unstake: "
 	rec, err := s.requireValidator(what, caller)
 	if err != nil {
@@ -601,6 +661,12 @@ func (s *StakingContract) Unstake(caller qcrypto.Address, amount *big.Int, heigh
 			return err
 		}
 		if err := s.subTotalStaked(amount); err != nil {
+			return err
+		}
+		// A validator withdrawing its own bond can halt the chain exactly as a
+		// revocation can, so the last producer cannot unstake its way out
+		// either. It is refused with the same explanation.
+		if err := s.requireProducerRemains(what, genesisValidator); err != nil {
 			return err
 		}
 		s.log(receipt, ValidatorUnstakedEvent(s.contract, caller, amount, rec.UnbondingHeight))
@@ -725,6 +791,9 @@ func (s *StakingContract) Slash(
 			return err
 		}
 		if err := s.setBigInt(slotStakingSlashedTotal, new(big.Int).Add(slashed, burn)); err != nil {
+			return err
+		}
+		if err := s.requireProducerRemains(what, genesisValidator); err != nil {
 			return err
 		}
 		s.log(receipt, ValidatorSlashedEvent(s.contract, validator, burn, rec.Stake))

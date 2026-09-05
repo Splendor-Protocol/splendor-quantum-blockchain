@@ -17,8 +17,6 @@
 package block
 
 import (
-	"fmt"
-
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
@@ -68,23 +66,13 @@ func (e *Executor) GenesisValidator() qcrypto.Address {
 // nil meaning yes. It is what the consensus loop asks before building: a
 // validator that is not eligible should stay quiet, not produce a block every
 // one of its peers will reject.
+// The key is enough: its address is that key's SHA3-256, so the gate derives
+// what it needs. Nothing is decoded before the gate decides it applies — an
+// ungated chain must behave exactly as it did, whatever it is handed.
 func (e *Executor) EligibleToProduce(pubKey []byte, height uint64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	addr, err := producerAddress(pubKey)
-	if err != nil {
-		return err
-	}
-	return e.requireEligibleProducer(pubKey, addr, height)
-}
-
-// producerAddress derives the address of a producer's public key.
-func producerAddress(pubKey []byte) (qcrypto.Address, error) {
-	pub, err := qcrypto.PublicKeyFromBytes(pubKey)
-	if err != nil {
-		return qcrypto.Address{}, fmt.Errorf("producer public key: %w", err)
-	}
-	return qcrypto.DeriveAddress(pub), nil
+	return e.requireEligibleProducer(pubKey, qcrypto.Address{}, height)
 }
 
 // requireEligibleProducer is the gate itself. Callers hold e.mu.
