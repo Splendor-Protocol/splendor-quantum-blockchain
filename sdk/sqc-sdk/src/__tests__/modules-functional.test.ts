@@ -23,6 +23,10 @@ function mockWallet(extra: Partial<SplendorPQBridge> = {}): SplendorPQBridge {
   return {
     getAddress: () => OWNER,
     getNonce: async () => ({ nonce: 2 }),
+    // On the wallet itself, not only inside connection: deployBridge and
+    // deployExchange ask for it as a Signer capability now, so a double that
+    // hides it behind connection no longer stands in for a wallet.
+    getLatestBlock: async () => ({ height: 100 }),
     connection: {
       getLatestBlock: async () => ({ height: 100 }),
       moduleCall: vi.fn(),
