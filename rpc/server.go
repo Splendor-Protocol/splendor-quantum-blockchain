@@ -471,6 +471,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if schedule := s.executor.Forks(); len(schedule) > 0 {
 		status["forks"] = schedule
 	}
+	// The genesis validator anchor, for the same reason: under
+	// validator_gates_v1 it is what admission decisions are judged against, and
+	// a node missing it would judge them differently from its peers. Reported
+	// only when known, so the response shape is unchanged where it is not.
+	if anchor := s.executor.GenesisValidator(); !anchor.IsZero() {
+		status["genesis_validator"] = anchor.String()
+	}
 	writeJSON(w, http.StatusOK, status)
 }
 
