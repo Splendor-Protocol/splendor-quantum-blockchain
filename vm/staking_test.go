@@ -737,3 +737,67 @@ func TestStakingAddressIsStable(t *testing.T) {
 		t.Fatalf("StakingAddress = %s", StakingAddress)
 	}
 }
+
+// A pass update that keeps passed=true can still remove the last producer. On
+// a fresh gated chain the genesis key produces on its IMPLICIT entry, which is
+// bond-exempt; an explicit entry for it without the exemption makes its
+// eligibility depend on a bond it has never posted. The safety check runs
+// after every update, not only a revocation.
+func TestReaffirmingTheSoleProducerPassWithoutExemptionIsRefused(t *testing.T) {
+	f := newStakingFixture(t)
+	genesisPub, _ := validatorKey(t, 0xAA)
+
+	err := f.s.SetPass(f.genesis, f.genesis, genesisPub, true, false, 1, &types.Receipt{})
+	if err == nil {
+		t.Fatal("re-granting the sole producer's pass without bond_exempt must be refused")
+	}
+	if !strings.Contains(err.Error(), "no validator able to produce") {
+		t.Fatalf("refusal = %v", err)
+	}
+	// The refusal left nothing behind: the implicit entry still stands.
+	if err := f.s.CanProduce(f.genesis, f.genesis); err != nil {
+		t.Fatalf("the refused update took effect anyway: %v", err)
+	}
+	entry, _ := f.s.GetPass(f.genesis, f.genesis)
+	if entry == nil || !entry.Genesis {
+		t.Fatalf("entry = %+v, want the implicit genesis entry", entry)
+	}
+	if n, _ := f.s.PassCount(); n != 0 {
+		t.Fatalf("pass count = %d after a refused grant, want 0", n)
+	}
+
+	// Reaffirming WITH the exemption is allowed: the explicit entry keeps it
+	// producing, and it is now a listed entry.
+	if err := f.s.SetPass(f.genesis, f.genesis, genesisPub, true, true, 2, &types.Receipt{}); err != nil {
+		t.Fatalf("reaffirming with bond_exempt: %v", err)
+	}
+	if err := f.s.CanProduce(f.genesis, f.genesis); err != nil {
+		t.Fatalf("after reaffirming: %v", err)
+	}
+	entry, _ = f.s.GetPass(f.genesis, f.genesis)
+	if entry == nil || entry.Genesis || !entry.BondExempt || !entry.Passed {
+		t.Fatalf("entry = %+v, want an explicit, exempt, passed entry", entry)
+	}
+
+	// Dropping the exemption later is refused for the same reason, and the
+	// exempt entry survives the refusal.
+	if err := f.s.SetPass(f.genesis, f.genesis, genesisPub, true, false, 3, &types.Receipt{}); err == nil {
+		t.Fatal("removing the exemption from the sole unbonded producer must be refused")
+	}
+	if err := f.s.CanProduce(f.genesis, f.genesis); err != nil {
+		t.Fatalf("the refused downgrade took effect anyway: %v", err)
+	}
+
+	// Once the key has bonded above the floor, the exemption can go: the
+	// bond now carries its eligibility.
+	fund(t, f.sdb, f.genesis, spld(10_000))
+	if err := f.s.Register(f.genesis, genesisPub, spld(5_000), 4, &types.Receipt{}); err != nil {
+		t.Fatalf("register the genesis key: %v", err)
+	}
+	if err := f.s.SetPass(f.genesis, f.genesis, genesisPub, true, false, 5, &types.Receipt{}); err != nil {
+		t.Fatalf("dropping the exemption from a bonded producer must be allowed: %v", err)
+	}
+	if err := f.s.CanProduce(f.genesis, f.genesis); err != nil {
+		t.Fatalf("bonded and passed: %v", err)
+	}
+}

@@ -18,8 +18,8 @@ import (
 
 	"github.com/gorilla/mux"
 
-	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 )
 
@@ -154,6 +154,10 @@ func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 //	  "proof_available": false,
 //	  "note":            "..."
 //	}
+//
+// With a proof, `proof_path` lists one {sibling, position} per level, where
+// position is the side the SIBLING sits on, plus `leaf_index` and
+// `leaf_count`; `proof` is the same siblings without sides.
 func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		addrStr := mux.Vars(r)["address"]
@@ -173,20 +177,29 @@ func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.H
 			return
 		}
 
-		// Get the state root committed in the latest block header.
+		// Get the state root committed in the latest block header. A node
+		// without an executor (tests, tools) falls back to the live root.
 		var stateRoot [32]byte
 		var blockHeight uint64
 		var blockHash string
-		if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
-			stateRoot = latest.Header.StateRoot
-			blockHeight = latest.Header.Height
-			blockHash = hex.EncodeToString(latest.Hash[:])
-		} else {
+		haveHeader := false
+		if executor != nil {
+			if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
+				stateRoot = latest.Header.StateRoot
+				blockHeight = latest.Header.Height
+				blockHash = hex.EncodeToString(latest.Hash[:])
+				haveHeader = true
+			}
+		}
+		if !haveHeader {
 			stateRoot, _ = stateDB.StateRoot()
 		}
 
-		// Full Merkle path proof via StateDB.MerkleProof().
-		leafHash, siblings, proofErr := stateDB.MerkleProof(addr)
+		// Full Merkle path proof, with the side of every sibling. The side is
+		// NOT a function of the leaf index: an odd node is carried up with no
+		// sibling, so the path can be shorter than the depth and index parity
+		// stops describing it (see StateDB.MerkleProofPath).
+		leafHash, path, leafIndex, leafCount, proofErr := stateDB.MerkleProofPath(addr)
 
 		resp := map[string]interface{}{
 			"address":      addrStr,
@@ -198,19 +211,30 @@ func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.H
 		}
 
 		if proofErr == nil {
-			proofHex := make([]string, len(siblings))
-			for i, s := range siblings {
-				proofHex[i] = hex.EncodeToString(s[:])
+			proofHex := make([]string, len(path))
+			steps := make([]map[string]interface{}, len(path))
+			for i, st := range path {
+				proofHex[i] = hex.EncodeToString(st.Sibling[:])
+				position := "right"
+				if st.SiblingOnLeft {
+					position = "left"
+				}
+				steps[i] = map[string]interface{}{"sibling": proofHex[i], "position": position}
 			}
 			resp["proof_available"] = true
 			resp["account_hash"] = hex.EncodeToString(leafHash[:])
-			resp["proof"] = proofHex
-			resp["proof_depth"] = len(proofHex)
+			resp["proof"] = proofHex // sibling digests only, kept for older clients
+			resp["proof_path"] = steps
+			resp["proof_depth"] = len(path)
+			resp["leaf_index"] = leafIndex
+			resp["leaf_count"] = leafCount
 			resp["verify_instruction"] = fmt.Sprintf(
-				"1. leafHash = leafDigest(\"acc:%s\", SHA3-256(account_json)). "+
-					"2. For each sibling at index i: if (leafIndex >> i) & 1 == 0 "+
-					"then node = internalHash(node, sibling), else node = internalHash(sibling, node). "+
-					"3. Final node must equal state_root.",
+				"1. node = leafDigest(\"acc:%s\", SHA3-256(account_json)); it must equal account_hash. "+
+					"2. For each step of proof_path in order: node = internalHash(sibling, node) when position is \"left\", "+
+					"node = internalHash(node, sibling) when it is \"right\". "+
+					"3. node must equal state_root. "+
+					"proof_path can be shorter than the tree depth (an odd node is carried up without a sibling), "+
+					"so the parity of leaf_index does not give the sides — use position.",
 				addrStr)
 		} else {
 			resp["proof_available"] = false

@@ -112,9 +112,16 @@ moved, record not written) cannot survive its own failure.
 
 ### The last producer cannot be removed
 
-`set_pass` (revoking), `slash` and `unstake` each check, *after* their own
-mutation and inside their own snapshot, that at least one key can still
-produce. If none can, the action is refused.
+`set_pass` (every update, not only a revocation), `slash` and `unstake` each
+check, *after* their own mutation and inside their own snapshot, that at least
+one key can still produce. If none can, the action is refused.
+
+A grant can remove the last producer too. On a chain whose genesis key has
+never bonded, that key produces on its implicit, bond-exempt entry; an explicit
+`set_pass` for it with `passed = true` but `bond_exempt = false` makes its
+eligibility depend on a bond it does not have. That update is refused until
+the key is bonded (or a replacement is admitted), and reaffirming it with
+`bond_exempt = true` is allowed.
 
 This is not theoretical. Revoking the only producer's pass stops block
 production, and the transaction that would undo the mistake can never be mined

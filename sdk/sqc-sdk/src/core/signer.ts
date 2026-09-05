@@ -18,6 +18,7 @@ import type {
   X402PayOpts,
 } from '../types.js';
 import { BridgeError } from '../errors.js';
+import { canonicalizeAddress } from '../address.js';
 
 export type SignerAddress = { getAddress(): string };
 
@@ -61,6 +62,37 @@ export async function signerAccountNonce(wallet: Signer): Promise<number> {
   const getNonce = requireCapability(wallet, 'getNonce');
   const { nonce } = await getNonce.call(wallet);
   return nonce;
+}
+
+/**
+ * The address a confirmed deploy actually created, read from the receipt the
+ * confirmation carried. The node serialises `contract_address` as a 32-byte
+ * array; a canonical `SQ:` string is accepted too. Undefined when the result
+ * is unconfirmed or the receipt names no contract — a caller then only has a
+ * prediction, and should say so.
+ */
+export function confirmedContractAddress(
+  result: Pick<TxResult, 'confirmation'>,
+): string | undefined {
+  const raw = result.confirmation?.receipt?.contract_address;
+  if (typeof raw === 'string') {
+    return canonicalizeAddress(raw) ?? undefined;
+  }
+  if (
+    Array.isArray(raw) &&
+    raw.length === 32 &&
+    raw.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)
+  ) {
+    const hex = (raw as number[]).map((b) => b.toString(16).padStart(2, '0')).join('');
+    return canonicalizeAddress('SQ:' + hex) ?? undefined;
+  }
+  return undefined;
+}
+
+/** The block height a confirmation's receipt reports, when it reports one. */
+export function confirmedBlockHeight(result: Pick<TxResult, 'confirmation'>): number | undefined {
+  const raw = result.confirmation?.receipt?.block_height;
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : undefined;
 }
 
 export type MockSignerHandlers = {

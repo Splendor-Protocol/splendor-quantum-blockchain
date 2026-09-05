@@ -351,10 +351,13 @@ func (s *StakingContract) SetPass(
 		// the marker is set here too — an explorer should not have to wait for
 		// the first bond to recognise the account.
 		markContract(s.stateDB, s.contract)
-		if !passed {
-			if err := s.requireProducerRemains(what, genesisValidator); err != nil {
-				return err
-			}
+		// After EVERY update, not only a revocation. A grant can remove the
+		// last producer too: on a chain whose genesis key has never bonded,
+		// that key produces on its implicit, bond-exempt entry, and an
+		// explicit entry for it without the exemption — passed, but now
+		// judged on a bond it does not have — leaves nobody able to seal.
+		if err := s.requireProducerRemains(what, genesisValidator); err != nil {
+			return err
 		}
 		s.log(receipt, ValidatorPassSetEvent(s.contract, addr, passed, bondExempt))
 		return nil

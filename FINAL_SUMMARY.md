@@ -1,7 +1,9 @@
 # SQC dual-gate validators — implementation summary
 
-Branch: `feat/validator-pass-stake-gates` (8 commits, local only — nothing
-pushed). Spec: `docs-sqc-implement-pass-stake.md`.
+Branch: `feat/validator-pass-stake-gates`, pushed to `origin`. The validator
+work is the commits from `769a9ec` (forks) to the review-fix commit at the
+tip; the branch also carries earlier SDK/signer work merged from `main`.
+Spec: `docs-sqc-implement-pass-stake.md`.
 
 Anyone can sync the chain and stake. Only a key that is **admission-passed**
 and **bonded above the minimum** may seal a block. Both gates are on-chain,
@@ -249,13 +251,44 @@ be configured afterwards, at leisure, from that account.
 
 ## Files
 
-24 files, +4,177 / −218. Core: `vm/staking.go` (rewritten), `vm/module_router.go`,
+40 files, +5,548 / −304 over `36fbfe8..HEAD` (the validator commits plus the
+review fixes below). Core: `vm/staking.go` (rewritten), `vm/module_router.go`,
 `vm/module_router_read.go`, `vm/events.go`, `core/forks/forks.go`,
 `core/block/validator_gate.go` (new), `core/block/executor.go`,
 `consensus/validator.go`, `cmd/node/genesis_validator.go` (new),
 `cmd/node/main.go`, `rpc/call_rpc.go`, `rpc/server.go`, `rpc/gov_rpc.go`.
 Docs: `docs/modules/staking.md` (new), `readme.md` §8/§9/§20/§22, `DEPLOY.md`
 "Fork Schedule".
+
+## Review fixes (2026-09-05)
+
+Codex review findings, each confirmed by a failing regression test before the
+fix:
+
+- `vm/staking.go`: the last-producer check now runs after **every** `set_pass`
+  update. A grant that overwrote the genesis key's implicit, bond-exempt entry
+  with a non-exempt one removed the only producer on a chain where that key
+  had never bonded. (`TestReaffirmingTheSoleProducerPassWithoutExemptionIsRefused`)
+- `compiler/codegen.go`: a returning internal function called as a statement
+  wrote its discarded return value into the caller's local slot 0; inlined
+  calls (arguments, return word, callee locals) were not counted in the frame,
+  so they overlapped the mapping-slot cache and the emit region. Frames now
+  count inlined calls, callees get their own return word and see only their
+  own bindings, the cache is bypassed inside inlined bodies and invalidated by
+  callee writes, and recursion is refused instead of looping.
+  (`compiler/inline_calls_test.go`)
+- `compiler/lexer.go`: `break`, `continue`, `string`, `bytes32` are keywords.
+  `compiler/codegen.go`: `string`/`bytes32` render as `bytes32` in signatures
+  and the ABI, so `f(bytes32)` and `f(uint256)` are distinct and hash the right
+  selector. (`compiler/lexer_keywords_test.go`)
+- `core/state/statedb.go` + `rpc/state_rpc.go`: `GET /state/proof/{address}`
+  now serves `proof_path` with the side of every sibling, plus `leaf_index`
+  and `leaf_count`; the old instruction to derive sides from index parity was
+  wrong for odd leaf counts. `state.VerifyMerkleProof` is the verifier's half.
+  The handler no longer dereferences a nil executor.
+- `sdk/sqc-sdk`: `deployExchange` / `deployBridge` return the receipt's
+  `contract_address` when the call was confirmed, and label the next-height
+  prediction as unconfirmed otherwise (`confirmed`, `predictedAddress`).
 
 ## Follow-ups, not done here
 
