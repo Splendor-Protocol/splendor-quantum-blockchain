@@ -39,7 +39,7 @@ func deriveModuleRouterAddress() qcrypto.Address {
 
 // ModuleCall is the JSON envelope in a module TxCall's Data field.
 type ModuleCall struct {
-	Module string          `json:"module"` // "qrc20" | "qrc1155" | "dex" | "exchange" | "bridge"
+	Module string          `json:"module"` // "qrc20" | "qrc1155" | "dex" | "exchange" | "bridge" | "staking"
 	Action string          `json:"action"` // e.g. "deploy", "mint", "transfer"
 	Params json.RawMessage `json:"params"`
 }
@@ -59,12 +59,20 @@ type ModuleCall struct {
 //	         ctx.Forks.Active(name, ctx.Height), which is nil-safe and reads
 //	         "never" for an unscheduled name, so a chain without a schedule
 //	         runs the legacy rules unchanged
+//
+//	GenesisValidator — the address of the key that sealed block 0. It is the
+//	         staking module's bootstrap authority: the initial admission admin,
+//	         and the one key passed without an entry having been written (see
+//	         vm/staking.go). Zero on a node that does not know it and on a bare
+//	         StateDB in a test, which the module reads as "no anchor" rather
+//	         than as an address.
 type ModuleContext struct {
-	Caller qcrypto.Address
-	Nonce  uint64
-	Height uint64
-	Time   int64
-	Forks  forks.Schedule
+	Caller           qcrypto.Address
+	Nonce            uint64
+	Height           uint64
+	Time             int64
+	Forks            forks.Schedule
+	GenesisValidator qcrypto.Address
 }
 
 // DispatchModuleCall decodes and executes a native-module call against stateDB.
@@ -96,6 +104,8 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 		return dispatchExchange(stateDB, ctx, mc.Action, mc.Params, receipt)
 	case "bridge":
 		return dispatchBridge(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "staking":
+		return dispatchStaking(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
 		return hard(fmt.Errorf("module call: unknown module %q", mc.Module))
 	}
@@ -1259,6 +1269,148 @@ func dispatchBridge(stateDB *state.StateDB, ctx ModuleContext, action string, ra
 
 	default:
 		return hard(fmt.Errorf("bridge: unknown action %q", action))
+	}
+}
+
+// ── Staking ─────────────────────────────────────────────────────────────────
+
+// stakingActionParams is the wire shape of every staking write.
+//
+// There is no deploy: the registry is a singleton at StakingAddress, because a
+// chain has exactly one validator set and a second instance would be a second
+// answer to the only question consensus asks here.
+//
+// pubkey is Go []byte, so standard base64 on the wire — the same rule as a
+// transaction's public_key. Amounts are decimal strings through parseUint256.
+type stakingActionParams struct {
+	// register, set_pass: the 1952-byte ML-DSA-65 consensus key. register
+	// requires it to be the CALLER's own key; set_pass names the key being
+	// admitted or revoked.
+	PubKey []byte `json:"pubkey,omitempty"`
+
+	// register, add_stake, unstake: the amount, in smallest SPLD units.
+	// unjail: an optional top-up ("" or absent = none). slash: the penalty.
+	Amount string `json:"amount,omitempty"`
+
+	// slash: whose bond to take from.
+	Validator string `json:"validator,omitempty"`
+
+	// set_pass: required, and a pointer on purpose — a missing flag must not
+	// silently revoke an admission that a typo left out.
+	Passed *bool `json:"passed,omitempty"`
+
+	// set_pass: let the key produce without meeting the minimum stake. Only
+	// meaningful together with passed=true.
+	BondExempt bool `json:"bond_exempt,omitempty"`
+
+	// set_admin: the address the admission authority moves to.
+	Admin string `json:"admin,omitempty"`
+}
+
+// parseStakingParams gates the action (HARD before validator_gates_v1) and
+// then decodes it (SOFT).
+func parseStakingParams(ctx ModuleContext, action string, raw json.RawMessage, p *stakingActionParams) error {
+	if err := requireFork(ctx, forks.ValidatorGatesV1); err != nil {
+		return err
+	}
+	// withdraw takes no parameters, so an omitted params field is legitimate
+	// here in a way it is not for the other modules.
+	if len(raw) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(raw, p); err != nil {
+		return fmt.Errorf("staking %s: bad params: %w", action, err)
+	}
+	return nil
+}
+
+// stakingAmount decodes a required amount field.
+func stakingAmount(action, s string) (*big.Int, error) {
+	v, err := parseUint256(s)
+	if err != nil {
+		return nil, fmt.Errorf("staking %s: amount: %w", action, err)
+	}
+	return v, nil
+}
+
+// dispatchStaking routes the staking module's writes (validator_gates_v1).
+//
+// Registering and bonding are OPEN — anyone who syncs the chain may stake
+// behind their own key. set_pass, set_admin and slash are admin-only, checked
+// inside the module against the admission authority. Every action is gated
+// first; everything after the gate is SOFT, so a stake that cannot be paid or
+// a pass a non-admin asked for is a failed receipt, never a jammed nonce.
+func dispatchStaking(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
+	var p stakingActionParams
+	if err := parseStakingParams(ctx, action, raw, &p); err != nil {
+		return err
+	}
+	s := Staking(stateDB)
+
+	switch action {
+	case "register":
+		amount, err := stakingAmount(action, p.Amount)
+		if err != nil {
+			return err
+		}
+		return s.Register(ctx.Caller, p.PubKey, amount, ctx.Height, receipt)
+
+	case "add_stake":
+		amount, err := stakingAmount(action, p.Amount)
+		if err != nil {
+			return err
+		}
+		return s.AddStake(ctx.Caller, amount, receipt)
+
+	case "unstake":
+		amount, err := stakingAmount(action, p.Amount)
+		if err != nil {
+			return err
+		}
+		return s.Unstake(ctx.Caller, amount, ctx.Height, receipt)
+
+	case "withdraw":
+		return s.Withdraw(ctx.Caller, ctx.Height, receipt)
+
+	case "unjail":
+		// The top-up is optional: a validator whose bond already clears the
+		// floor returns with nothing added.
+		top := big.NewInt(0)
+		if p.Amount != "" {
+			var err error
+			if top, err = stakingAmount(action, p.Amount); err != nil {
+				return err
+			}
+		}
+		return s.Unjail(ctx.Caller, top, receipt)
+
+	case "slash":
+		validator, err := qcrypto.AddressFromString(p.Validator)
+		if err != nil {
+			return fmt.Errorf("staking slash: validator: %w", err)
+		}
+		amount, err := stakingAmount(action, p.Amount)
+		if err != nil {
+			return err
+		}
+		return s.Slash(ctx.Caller, ctx.GenesisValidator, validator, amount, ctx.Height, receipt)
+
+	case "set_pass":
+		if p.Passed == nil {
+			// Explicit on purpose: a missing flag must not silently revoke.
+			return fmt.Errorf("staking set_pass: passed is required (true admits, false revokes)")
+		}
+		return s.SetPass(ctx.Caller, ctx.GenesisValidator, p.PubKey, *p.Passed, p.BondExempt, ctx.Height, receipt)
+
+	case "set_admin":
+		next, err := qcrypto.AddressFromString(p.Admin)
+		if err != nil {
+			return fmt.Errorf("staking set_admin: admin: %w", err)
+		}
+		return s.SetAdmin(ctx.Caller, ctx.GenesisValidator, next, receipt)
+
+	default:
+		return hard(fmt.Errorf("staking: unknown action %q", action))
 	}
 }
 
