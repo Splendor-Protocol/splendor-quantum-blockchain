@@ -43,6 +43,11 @@ type Validator struct {
 
 	// Subscribers receive newly produced blocks (e.g. P2P broadcaster, RPC).
 	subscribers []chan<- *types.Block
+
+	// ineligible is true while this validator is not admitted to produce, so
+	// the reason is logged when it starts and when it changes rather than on
+	// every tick. Touched only from the single Run goroutine.
+	ineligible bool
 }
 
 // New creates a new single-validator consensus engine.
@@ -96,6 +101,22 @@ func (v *Validator) Run(ctx context.Context) error {
 	}
 }
 
+// reportIneligible says once why this validator is not producing, and stays
+// quiet until something changes. A validator waiting for its admission pass
+// could otherwise fill the log with the same line every block interval, which
+// is how a real reason gets missed.
+func (v *Validator) reportIneligible(height uint64, err error) {
+	if v.ineligible {
+		log.Debug().Err(err).Uint64("height", height).Msg("still not admitted to produce")
+		return
+	}
+	v.ineligible = true
+	log.Warn().Err(err).
+		Uint64("height", height).
+		Str("validator", v.cfg.Address.String()).
+		Msg("not producing: this validator is not admitted by the chain's validator gates")
+}
+
 // produceBlock pulls transactions from the mempool and produces a signed block.
 func (v *Validator) produceBlock() error {
 	// Ask AI scheduler for recommended batch size
@@ -118,6 +139,18 @@ func (v *Validator) produceBlock() error {
 		prevHash = latest.Hash
 		height = latest.Header.Height + 1
 	}
+
+	// Under validator_gates_v1 a producer must hold an admission pass and a
+	// bond (core/block/validator_gate.go). Asking here, rather than letting
+	// ProduceBlock refuse, is the difference between a validator that waits
+	// quietly for its pass and one that logs a production failure every two
+	// seconds. The rule is the same either way — this is not a second check,
+	// it is the same predicate asked earlier.
+	if err := v.executor.EligibleToProduce(v.cfg.PublicKey, height); err != nil {
+		v.reportIneligible(height, err)
+		return nil
+	}
+	v.ineligible = false
 
 	// Produce and sign block
 	b, err := v.executor.ProduceBlock(
