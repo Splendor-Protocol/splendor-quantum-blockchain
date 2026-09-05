@@ -92,7 +92,7 @@ func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
 	// The routed modules are known too; their dependency rule refuses each
 	// alone (a SOFT failure would drop the tx and pin the nonce), so each is
 	// tried with module_revert_v1 — what is on trial here is the name.
-	for _, name := range []string{QRC20V2, QRC1155V1, ExchangeV1} {
+	for _, name := range []string{QRC20V2, QRC1155V1, ExchangeV1, ValidatorGatesV1} {
 		if !isKnown(name) {
 			t.Fatalf("%s has a gate in this build but is not listed as known", name)
 		}
