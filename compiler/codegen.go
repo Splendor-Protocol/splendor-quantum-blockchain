@@ -17,13 +17,14 @@ var (
 //
 //	[0x00,0x20) — mapping key / return value
 //	[0x20,0x40) — mapping base slot
-//	[0x40,0x40+32n) — the function's n locals, one word each
-//	[0x40+32n, …)   — the data words an `emit` lays out
+//	[0x40,0x40+32n) — the function's n frame words, one each
+//	[0x40+32n, …)   — the mapping-slot cache, then the data words an `emit` lays out
 //
 // Locals sit above the mapping scratch so a mapping computation inside a loop
 // cannot clobber the loop counter, and emit data sits above the locals so
-// logging cannot clobber them either. n is the function's total declaration
-// count (counted before emitting), so the emit region is fixed per function.
+// logging cannot clobber them either. n is the function's frame size — its own
+// declarations plus every word an inlined call allocates (see frameLocals),
+// counted before emitting — so the cache and emit regions are fixed per function.
 const (
 	memKey     = 0x00
 	memBase    = 0x20
@@ -65,6 +66,10 @@ type codegen struct {
 	inlineRetSlot  int
 	inlineRetLabel string
 	inlineActive   bool // true when we are inside an inlined call
+	// inlineStack names the function being compiled and every internal call
+	// currently being inlined inside it. A name already on it is a recursive
+	// call, which has no finite expansion.
+	inlineStack []string
 
 	// assigned names every variable this function ever writes, so a mapping
 	// keyed on one is never cached.
@@ -283,6 +288,141 @@ func planSlotCache(fn *funcNode, assigned map[string]bool) map[string]int {
 	return idx
 }
 
+// walkCalls visits every internal call in a statement tree — call statements
+// and call expressions alike, including one nested in another's argument or in
+// a mapping key.
+func walkCalls(body []stmt, visit func(name string, args []expr)) {
+	var expr_ func(expr)
+	expr_ = func(e expr) {
+		switch ex := e.(type) {
+		case *callExpr:
+			visit(ex.name, ex.args)
+			for _, a := range ex.args {
+				expr_(a)
+			}
+		case *indexExpr:
+			if ex.key != nil {
+				expr_(ex.key)
+			}
+		case *binaryExpr:
+			expr_(ex.left)
+			expr_(ex.right)
+		case *unaryExpr:
+			expr_(ex.operand)
+		}
+	}
+	var stmts func([]stmt)
+	stmts = func(ss []stmt) {
+		for _, s := range ss {
+			switch st := s.(type) {
+			case *callStmt:
+				visit(st.name, st.args)
+				for _, a := range st.args {
+					expr_(a)
+				}
+			case *assignStmt:
+				if st.target.key != nil {
+					expr_(st.target.key)
+				}
+				expr_(st.value)
+			case *varDeclStmt:
+				expr_(st.value)
+			case *requireStmt:
+				expr_(st.cond)
+			case *returnStmt:
+				expr_(st.value)
+			case *emitStmt:
+				for _, a := range st.args {
+					expr_(a)
+				}
+			case *ifStmt:
+				expr_(st.cond)
+				stmts(st.body)
+				stmts(st.elseBody)
+			case *forStmt:
+				if st.init != nil {
+					stmts([]stmt{st.init})
+				}
+				if st.cond != nil {
+					expr_(st.cond)
+				}
+				if st.post != nil {
+					stmts([]stmt{st.post})
+				}
+				stmts(st.body)
+			case *whileStmt:
+				expr_(st.cond)
+				stmts(st.body)
+			}
+		}
+	}
+	stmts(body)
+}
+
+// findInternal resolves an internal call by name and arity.
+func (c *contractNode) findInternal(name string, argc int) *funcNode {
+	for _, fn := range c.funcs {
+		if fn.name == name && fn.isInternal && len(fn.params) == argc {
+			return fn
+		}
+	}
+	return nil
+}
+
+// onStack reports whether name is in stack.
+func onStack(stack []string, name string) bool {
+	for _, s := range stack {
+		if s == name {
+			return true
+		}
+	}
+	return false
+}
+
+// frameAssignedNames is assignedNames over a function AND every internal
+// function it inlines, transitively. A callee runs inside the caller's frame,
+// so a name it writes — a state variable, or a parameter of its own that
+// happens to match a caller's key — is not stable across the call, and a
+// mapping the caller keys on it must not be cached over it.
+//
+// Recursion is not followed: codegen refuses it, so what it would count is
+// never emitted.
+func frameAssignedNames(fn *funcNode, c *contractNode, stack []string, into map[string]bool) {
+	assignedNames(fn.body, into)
+	stack = append(stack, fn.name)
+	walkCalls(fn.body, func(name string, args []expr) {
+		target := c.findInternal(name, len(args))
+		if target == nil || onStack(stack, name) {
+			return
+		}
+		frameAssignedNames(target, c, stack, into)
+	})
+}
+
+// frameLocals is the number of memory words a function's frame needs: its own
+// declarations, plus everything each inlined call allocates — one word per
+// argument, one for the return value, and the callee's own frame in turn.
+// Slots are never reused, so this is exact, and it fixes where the mapping-slot
+// cache and the emit region start: both sit above it. Before inline calls were
+// counted, a callee's argument word landed on the cache word, and an emit
+// inside a callee landed on the callee's arguments.
+func frameLocals(fn *funcNode, c *contractNode, stack []string) int {
+	n := countLocals(fn.body)
+	stack = append(stack, fn.name)
+	walkCalls(fn.body, func(name string, args []expr) {
+		target := c.findInternal(name, len(args))
+		if target == nil || onStack(stack, name) {
+			return // codegen reports both
+		}
+		n += len(args)
+		if target.hasReturn {
+			n++
+		}
+		n += frameLocals(target, c, stack)
+	})
+	return n
+}
+
 // countLocals totals the declarations in a statement tree, including nested
 // blocks. Slots are never reused, so this is exactly how many a function needs.
 func countLocals(body []stmt) int {
@@ -343,6 +483,12 @@ func typeName(t varType) string {
 		return "address"
 	case typeBool:
 		return "bool"
+	case typeString:
+		// One 32-byte word, left-aligned (see stringExpr). `string` in the
+		// source is the same representation, so both render as bytes32:
+		// rendering them as uint256 made f(bytes32) and f(uint256) a
+		// "duplicate function" and hashed the wrong selector.
+		return "bytes32"
 	default:
 		return "uint256"
 	}
@@ -407,7 +553,8 @@ func (g *codegen) genFunc(fn *funcNode) error {
 	g.nextLocal = 0
 
 	g.assigned = map[string]bool{}
-	assignedNames(fn.body, g.assigned)
+	frameAssignedNames(fn, g.c, nil, g.assigned)
+	g.inlineStack = []string{fn.name}
 
 	// The selector left on the stack by the dispatcher is dead here.
 	g.a.op(vm.OpPOP)
@@ -433,7 +580,7 @@ func (g *codegen) genFunc(fn *funcNode) error {
 	// emit region sits above both.
 	g.slotIdx = planSlotCache(fn, g.assigned)
 	g.slotLive = map[string]bool{}
-	g.slotBase = localAddr(g.nextLocal + countLocals(fn.body))
+	g.slotBase = localAddr(g.nextLocal + frameLocals(fn, g.c, nil))
 	g.emitBase = g.slotBase + int64(len(g.slotIdx))*32
 
 	for _, s := range fn.body {
@@ -646,6 +793,12 @@ func (g *codegen) genAssign(st *assignStmt) error {
 //	SHA3_MEM pops size (top) then offset, so: <push offset>; <push size>; SHA3_MEM.
 //	MSTORE pops value (top) then offset, so: <push offset>; <push value>; MSTORE.
 func (g *codegen) genMappingSlot(sv *stateVar, key expr) error {
+	if g.inlineActive {
+		// The cache is planned over the caller's body and keyed on names. An
+		// inlined callee's `m[x]` is a different binding of x, so it neither
+		// reads the caller's cached slot nor writes one.
+		return g.emitMappingSlot(sv, key)
+	}
 	ck := mappingCacheKey(sv.name, key, g.assigned)
 	idx, cached := g.slotIdx[ck]
 	if ck != "" && cached && g.slotLive[ck] {
@@ -913,19 +1066,19 @@ func (g *codegen) genExpr(e expr) error {
 // Arguments are evaluated and written to fresh local slots, then the callee's
 // body is emitted with those slots substituted for its parameters. A return
 // inside the inlined body writes to inlineRetSlot and jumps to inlineRetLabel
-// rather than emitting a real RETURN. If wantReturn is true, a slot is
-// allocated for the return value and its index is returned.
+// rather than emitting a real RETURN. A returning callee always gets a return
+// slot, whose index is returned; wantReturn says whether the caller will read
+// it, and is refused for a callee that has nothing to return.
 func (g *codegen) genInlineCall(name string, args []expr, wantReturn bool) (int, error) {
-	// Find the callee among internal functions.
-	var target *funcNode
-	for _, fn := range g.c.funcs {
-		if fn.name == name && fn.isInternal && len(fn.params) == len(args) {
-			target = fn
-			break
-		}
-	}
+	target := g.c.findInternal(name, len(args))
 	if target == nil {
 		return 0, fmt.Errorf("undefined internal function %q (wrong name, arg count, or not marked internal)", name)
+	}
+	if onStack(g.inlineStack, name) {
+		return 0, fmt.Errorf("recursive internal call to %q: functions are inlined, so recursion has no finite expansion", name)
+	}
+	if wantReturn && !target.hasReturn {
+		return 0, fmt.Errorf("internal function %q returns nothing and cannot be used as a value", name)
 	}
 
 	// Allocate one local slot per argument; evaluate args before entering the
@@ -943,29 +1096,42 @@ func (g *codegen) genInlineCall(name string, args []expr, wantReturn bool) (int,
 		g.a.op(vm.OpMSTORE)
 	}
 
-	// Allocate a return-value slot if the callee has a return type.
+	// A returning callee always gets a return word of its own, even when the
+	// call is a statement and the value is dropped: the callee's `return`
+	// stores to that slot, and without one it stored to slot 0 — the
+	// caller's first local.
 	retSlot := 0
-	if wantReturn && target.hasReturn {
+	if target.hasReturn {
 		retSlot = g.nextLocal
 		g.nextLocal++
 	}
 
-	// Enter a fresh scope with the callee's params bound to the arg slots.
-	g.pushScope()
+	// The callee sees ONLY its own bindings: its params on the arg slots, the
+	// locals it declares, and state. The caller's scopes and calldata params
+	// are put aside so a name the callee did not declare cannot resolve to
+	// the caller's binding of it.
+	prevScopes, prevParams := g.scopes, g.params
+	g.scopes = []map[string]int{{}}
+	g.params = map[string]int{}
 	for i, p := range target.params {
-		g.scopes[len(g.scopes)-1][p.name] = argSlots[i]
+		g.scopes[0][p.name] = argSlots[i]
 	}
 
 	// Save and set inline context: return stmts write to retSlot/retLabel.
 	prevActive, prevSlot, prevLabel := g.inlineActive, g.inlineRetSlot, g.inlineRetLabel
 	retLabel := g.freshLabel("inlineret")
 	g.inlineActive, g.inlineRetSlot, g.inlineRetLabel = true, retSlot, retLabel
+	g.inlineStack = append(g.inlineStack, name)
+	restore := func() {
+		g.inlineStack = g.inlineStack[:len(g.inlineStack)-1]
+		g.inlineActive, g.inlineRetSlot, g.inlineRetLabel = prevActive, prevSlot, prevLabel
+		g.scopes, g.params = prevScopes, prevParams
+	}
 
 	// Emit the callee body.
 	for _, s := range target.body {
 		if err := g.genStmt(s); err != nil {
-			g.popScope()
-			g.inlineActive, g.inlineRetSlot, g.inlineRetLabel = prevActive, prevSlot, prevLabel
+			restore()
 			return 0, fmt.Errorf("inline %s: %w", name, err)
 		}
 	}
@@ -973,8 +1139,7 @@ func (g *codegen) genInlineCall(name string, args []expr, wantReturn bool) (int,
 	// Return label: fall-through from the body lands here; explicit returns jump here.
 	g.a.label(retLabel)
 
-	g.popScope()
-	g.inlineActive, g.inlineRetSlot, g.inlineRetLabel = prevActive, prevSlot, prevLabel
+	restore()
 	return retSlot, nil
 }
 

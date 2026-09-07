@@ -100,6 +100,16 @@ type Executor struct {
 	// the pointer cannot change while a block is in flight: every in-block
 	// read (execCall) sees the schedule installed when the block began.
 	forks atomic.Pointer[forks.Schedule]
+
+	// genesisValidator is the address of the key that sealed block 0 — the
+	// staking module's bootstrap authority and the anchor of the producer
+	// gate (see validator_gate.go). nil = this node was never told, which the
+	// gate reads as "no anchor" rather than as the zero address.
+	//
+	// Behind an atomic pointer for the same reason as forks: it is read on
+	// every module call and every block, and taking the block lock to read it
+	// would stall every RPC goroutine behind a whole block transition.
+	genesisValidator atomic.Pointer[qcrypto.Address]
 }
 
 // receiptStorer is satisfied by *state.TxIndexStore.
@@ -237,6 +247,14 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 	// Chain-continuity checks before any state mutation.
 	if err := e.verifyBlockLinkage(b); err != nil {
 		return fmt.Errorf("block linkage rejected: %w", err)
+	}
+
+	// Who sealed it, judged against the state as it stands at height-1 — the
+	// same predicate, on the same state, that the producer applied to itself
+	// before building (see validator_gate.go). Inert until
+	// validator_gates_v1.
+	if err := e.requireEligibleProducer(b.ValidatorPubKey, b.Header.ValidatorAddr, b.Header.Height); err != nil {
+		return fmt.Errorf("block %d was sealed by a validator this chain does not admit: %w", b.Header.Height, err)
 	}
 
 	// Run pre-block hooks
@@ -657,6 +675,11 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 			Height: blockHeight,
 			Time:   blockTime,
 			Forks:  schedule,
+			// The chain's bootstrap authority: the staking module's initial
+			// admission admin and its implicitly-passed key. Read once per
+			// call like the schedule, and for the same reason — SetGenesis-
+			// Validator cannot land while this block holds e.mu.
+			GenesisValidator: e.GenesisValidator(),
 		}
 
 		// Legacy rules: any module error makes the tx unappliable — the
@@ -837,6 +860,14 @@ func (e *Executor) ProduceBlock(
 ) (*types.Block, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Judge ourselves by the rule every follower will apply to this block, and
+	// refuse to build one they would all reject. The consensus loop asks the
+	// same question first (EligibleToProduce) and stays quiet instead; this is
+	// the backstop for any other caller.
+	if err := e.requireEligibleProducer(validatorPubKey, validatorAddr, height); err != nil {
+		return nil, fmt.Errorf("refusing to produce block %d: %w", height, err)
+	}
 
 	if len(txs) > MaxTxPerBlock {
 		txs = txs[:MaxTxPerBlock]

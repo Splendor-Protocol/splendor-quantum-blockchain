@@ -5,7 +5,12 @@
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
 import type { Signer } from '../core/signer.js';
-import { requireCapability, signerAccountNonce } from '../core/signer.js';
+import {
+  confirmedBlockHeight,
+  confirmedContractAddress,
+  requireCapability,
+  signerAccountNonce,
+} from '../core/signer.js';
 import { bridgeAddress, bridgeSplvAddress } from '../addresses/index.js';
 
 export type BridgeDeployParams = {
@@ -106,13 +111,28 @@ export class BridgeModule extends Program {
   }
 }
 
+/**
+ * Deploy a bridge instance (and its SPLV token).
+ *
+ * Both addresses depend on the height the deploy executes at. Before sending
+ * they can only be predicted (next height); once confirmed, the receipt says
+ * where the bridge really landed, and `address` / `splvAddress` are derived
+ * from that. `confirmed` tells the two apart.
+ */
 export async function deployBridge(
   wallet: Signer,
   params: BridgeDeployParams,
   opts?: { fee?: string; waitForConfirmation?: boolean; height?: number },
 ): Promise<{
+  /** The deployed bridge: from the receipt when confirmed, else predicted. */
   address: string;
+  /** Its SPLV token, derived from `address`. */
   splvAddress: string;
+  /** The next-height prediction made before sending. */
+  predictedAddress: string;
+  /** True when `address` came from the confirmed receipt. */
+  confirmed: boolean;
+  /** The height the deploy executed at (from the receipt), else the assumed one. */
   height: number;
   result: Awaited<ReturnType<Signer['sendModuleCall']>>;
 }> {
@@ -139,10 +159,14 @@ export async function deployBridge(
     fee: opts?.fee,
     waitForConfirmation: opts?.waitForConfirmation,
   });
+  const confirmedAddress = confirmedContractAddress(result);
+  const address = confirmedAddress ?? predicted;
   return {
-    address: predicted,
-    splvAddress: BridgeModule.splvAddress(predicted),
-    height,
+    address,
+    splvAddress: BridgeModule.splvAddress(address),
+    predictedAddress: predicted,
+    confirmed: confirmedAddress != null,
+    height: confirmedBlockHeight(result) ?? height,
     result,
   };
 }

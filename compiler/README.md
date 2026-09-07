@@ -61,8 +61,11 @@ unimplemented, the compiler defines the calling convention itself:
 
 ## Known limits
 
-No internal function calls, arrays/structs/strings, constructor (use a guarded
-`init()`), or `break`/`continue`.
+Internal (`internal`/`private`) functions are inlined at each call site: a
+call costs no frame, and recursion is refused at compile time. `string` and
+`bytes32` are one 32-byte word (≤32 chars, left-aligned, zero-padded) and
+render as `bytes32` in the ABI. Arrays are fixed-size `uint256[N]` only. No
+structs, dynamic arrays, or external calls.
 
 Two optimisation passes. **Parameter-copy elision**: a parameter is copied into
 memory only when the function assigns to it, since a calldata read costs the
@@ -70,8 +73,8 @@ same 3 gas as a memory read. **Mapping-slot caching**: a slot is
 `SHA3-256(pad32(key) ‖ pad32(baseSlot))`, which the engine charges 414 gas to
 derive, so codegen derives it once per straight-line region and reuses it from
 memory. Only keys that cannot change qualify (`msg.sender`, `msg.value`, a
-literal, or a name never assigned in that function), and reuse never crosses a
-branch or loop body. Everything else is naive: redundant `PUSH`/`POP`, no
+literal, or a name never assigned in that function or in anything it inlines),
+and reuse never crosses a branch or loop body, nor enters an inlined body. Everything else is naive: redundant `PUSH`/`POP`, no
 constant folding. A loop is bounded only by the gas
 ceiling, which ends an unbounded one with a revert rather than a hang.
 `require` before any storage write (checks-effects) remains the compiler's

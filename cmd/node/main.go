@@ -481,6 +481,20 @@ func runNode(cmd *cobra.Command, args []string) error {
 		log.Info().Str("upgrade", name).Uint64("at_height", at).Msg("Scheduled consensus rule change")
 	}
 
+	// The genesis validator anchor travels with the schedule, for the same
+	// reason: it is a fact about the network that this node must agree with
+	// everyone else on, and validator_gates_v1 judges admission changes
+	// against it. Refuses to start a gated chain it cannot determine — see
+	// genesis_validator.go.
+	pinnedGenesisPK, err := pinnedGenesisValidatorKey(flagValidatorPKHex)
+	if err != nil {
+		return err
+	}
+	if err := installGenesisValidator(stateDB, executor, flagGenesisPath, pinnedGenesisPK,
+		forkSchedule, headBlock == nil); err != nil {
+		return err
+	}
+
 	// Chain id assertion (env fallback), so a container can be told which network
 	// it is on without editing its command line.
 	if flagChainID == "" {
@@ -709,6 +723,13 @@ func runNode(cmd *cobra.Command, args []string) error {
 				if signErr := genesisBlock.SignBlock(validatorPriv); signErr == nil {
 					if execErr := executor.ExecuteBlock(genesisBlock); execErr == nil {
 						log.Info().Str("hash", fmt.Sprintf("%x", genesisBlock.Hash[:8])).Msg("Genesis block committed")
+						// This key just became the chain's genesis validator.
+						// With --genesis the document already said so; without
+						// one, sealing block 0 is what makes it true, and the
+						// producer gate needs it recorded either way.
+						if err := persistGenesisValidator(stateDB, executor, validatorAddr); err != nil {
+							return err
+						}
 					} else {
 						log.Warn().Err(execErr).Msg("Genesis block execution failed")
 					}
@@ -1538,6 +1559,15 @@ func applyLocalGenesis(path string, stateDB *state.StateDB, executor *block.Exec
 	if err := persistForkSchedule(stateDB, executor, g.Forks); err != nil {
 		return nil, err
 	}
+	// The document names the key that will seal block 0; record it now, so a
+	// later restart without this file still knows the chain's authority.
+	addr, err := g.ValidatorAddress()
+	if err != nil {
+		return nil, fmt.Errorf("genesis %q has an unusable validator_pubkey_hex: %w", path, err)
+	}
+	if err := persistGenesisValidator(stateDB, executor, addr); err != nil {
+		return nil, err
+	}
 	if _, err := g.ApplyToState(stateDB); err != nil {
 		return nil, fmt.Errorf("apply genesis allocations: %w", err)
 	}
@@ -1684,6 +1714,15 @@ func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *
 	// on this node, and the first block it applies must be gated by the
 	// schedule the validator applied it under, never by a nil one.
 	if err := persistForkSchedule(stateDB, executor, g.Forks); err != nil {
+		return err
+	}
+	// Same document, same moment as the schedule: a follower that learns its
+	// rules from a peer learns the authority they are judged against too.
+	addr, err := g.ValidatorAddress()
+	if err != nil {
+		return fmt.Errorf("peer %s serves a genesis with an unusable validator_pubkey_hex: %w", peerURL, err)
+	}
+	if err := persistGenesisValidator(stateDB, executor, addr); err != nil {
 		return err
 	}
 	if _, err := g.ApplyToState(stateDB); err != nil {

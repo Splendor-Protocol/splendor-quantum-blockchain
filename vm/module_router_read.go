@@ -116,6 +116,21 @@ var KnownModuleActions = map[string]ModuleActions{
 			"bridge_info": true, "claim_status": true,
 		},
 	},
+	"staking": {
+		// validator_gates_v1: validator bonding and the admission registry,
+		// routed whole. register/add_stake/unstake/withdraw/unjail are open to
+		// anyone; slash/set_pass/set_admin are admin-only inside the module.
+		Writes: map[string]string{
+			"register": forks.ValidatorGatesV1, "add_stake": forks.ValidatorGatesV1,
+			"unstake": forks.ValidatorGatesV1, "withdraw": forks.ValidatorGatesV1,
+			"unjail": forks.ValidatorGatesV1, "slash": forks.ValidatorGatesV1,
+			"set_pass": forks.ValidatorGatesV1, "set_admin": forks.ValidatorGatesV1,
+		},
+		Reads: map[string]bool{
+			"validator": true, "pass": true, "can_produce": true,
+			"staking_info": true, "validator_set": true,
+		},
+	},
 }
 
 // qrc20ReadParams / dexReadParams are the parameter shapes for read actions.
@@ -154,6 +169,15 @@ type qrc1155ReadParams struct {
 type ReadContext struct {
 	Height uint64
 	Time   int64
+
+	// GenesisValidator is the address of the key that sealed block 0, the
+	// staking module's bootstrap authority (see ModuleContext). It is the one
+	// read-side field that is not merely advisory: staking.can_produce and
+	// staking.pass answer differently without it, because the genesis key's
+	// implicit admission is defined relative to it. Zero means "this node does
+	// not know it", and the reads say so rather than reporting a refusal they
+	// cannot stand behind.
+	GenesisValidator qcrypto.Address
 }
 
 // DispatchModuleReadCall decodes a ModuleCall envelope and executes a read-only
@@ -191,9 +215,246 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 		return dispatchExchangeRead(stateDB, rctx, mc.Action, mc.Params)
 	case "bridge":
 		return dispatchBridgeRead(stateDB, mc.Action, mc.Params)
+	case "staking":
+		return dispatchStakingRead(stateDB, rctx, mc.Action, mc.Params)
 	default:
 		return nil, fmt.Errorf("module call: unknown module %q", mc.Module)
 	}
+}
+
+// stakingReadParams is the parameter shape for staking reads. A validator may
+// be named either way: by address (what a follower has, from a block header)
+// or by public key (what an operator has, from their wallet). The key wins
+// when both are given, since it is the thing an admission is really about.
+type stakingReadParams struct {
+	Address string `json:"address,omitempty"`
+	PubKey  []byte `json:"pubkey,omitempty"` // std base64 on the wire
+}
+
+// resolve returns the validator address a read is about.
+func (p stakingReadParams) resolve() (qcrypto.Address, error) {
+	if len(p.PubKey) > 0 {
+		a, err := validatorAddressOf(p.PubKey)
+		if err != nil {
+			return qcrypto.Address{}, fmt.Errorf("pubkey: %w", err)
+		}
+		if p.Address != "" {
+			named, err := qcrypto.AddressFromString(p.Address)
+			if err != nil {
+				return qcrypto.Address{}, fmt.Errorf("address: %w", err)
+			}
+			if named != a {
+				return qcrypto.Address{}, fmt.Errorf("pubkey derives to %s, not to the address given (%s)", a, named)
+			}
+		}
+		return a, nil
+	}
+	a, err := qcrypto.AddressFromString(p.Address)
+	if err != nil {
+		return qcrypto.Address{}, fmt.Errorf("address: %w", err)
+	}
+	return a, nil
+}
+
+// dispatchStakingRead serves the staking views: what one key's bond and
+// admission are, whether it may produce, and the chain-wide totals.
+//
+// can_produce answers the exact question consensus asks (StakingContract.
+// CanProduce), so an operator can find out why their validator is silent
+// without reading the node's logs — and gets the same answer the chain would
+// give, not a re-derivation of it.
+func dispatchStakingRead(stateDB *state.StateDB, rctx ReadContext, action string, raw json.RawMessage) (interface{}, error) {
+	var p stakingReadParams
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, fmt.Errorf("staking read: bad params: %w", err)
+		}
+	}
+	s := Staking(stateDB)
+	out := map[string]interface{}{"module": "staking", "action": action}
+
+	switch action {
+	case "validator":
+		addr, err := p.resolve()
+		if err != nil {
+			return nil, fmt.Errorf("staking validator: %w", err)
+		}
+		rec, err := s.GetValidator(addr)
+		if err != nil {
+			return nil, err
+		}
+		out["address"] = addr.String()
+		if rec == nil {
+			out["registered"] = false
+			return out, nil
+		}
+		out["registered"] = true
+		out["stake"] = rec.Stake.String()
+		out["unbonding"] = rec.Unbonding.String()
+		out["unbonding_height"] = rec.UnbondingHeight
+		out["status"] = ValidatorStatusName(rec.Status)
+		out["tier"] = GetTierName(rec.Stake)
+		out["rewards"] = rec.Rewards.String()
+		out["joined_height"] = rec.JoinedHeight
+		out["last_slashed"] = rec.LastSlashed
+		out["uptime_score"] = rec.UptimeScore
+		return out, nil
+
+	case "pass":
+		addr, err := p.resolve()
+		if err != nil {
+			return nil, fmt.Errorf("staking pass: %w", err)
+		}
+		entry, err := s.GetPass(rctx.GenesisValidator, addr)
+		if err != nil {
+			return nil, err
+		}
+		out["address"] = addr.String()
+		out["genesis_anchor_known"] = !rctx.GenesisValidator.IsZero()
+		if entry == nil {
+			out["listed"] = false
+			out["passed"] = false
+			return out, nil
+		}
+		out["listed"] = !entry.Genesis
+		out["passed"] = entry.Passed
+		out["bond_exempt"] = entry.BondExempt
+		out["source"] = passSource(entry)
+		out["height"] = entry.Height
+		if len(entry.PublicKey) > 0 {
+			out["pubkey"] = hex.EncodeToString(entry.PublicKey)
+		}
+		return out, nil
+
+	case "can_produce":
+		addr, err := p.resolve()
+		if err != nil {
+			return nil, fmt.Errorf("staking can_produce: %w", err)
+		}
+		out["address"] = addr.String()
+		out["genesis_anchor_known"] = !rctx.GenesisValidator.IsZero()
+		if err := s.CanProduce(rctx.GenesisValidator, addr); err != nil {
+			out["eligible"] = false
+			out["reason"] = err.Error()
+			return out, nil
+		}
+		out["eligible"] = true
+		return out, nil
+
+	case "staking_info":
+		total, err := s.TotalStaked()
+		if err != nil {
+			return nil, err
+		}
+		slashed, err := s.SlashedTotal()
+		if err != nil {
+			return nil, err
+		}
+		escrow, err := s.EscrowBalance()
+		if err != nil {
+			return nil, err
+		}
+		count, err := s.ValidatorCount()
+		if err != nil {
+			return nil, err
+		}
+		passes, err := s.PassCount()
+		if err != nil {
+			return nil, err
+		}
+		admin, err := s.Admin(rctx.GenesisValidator)
+		if err != nil {
+			return nil, err
+		}
+		initialised, err := s.Initialised()
+		if err != nil {
+			return nil, err
+		}
+		out["contract"] = s.Address().String()
+		out["total_staked"] = total.String()
+		out["slashed_total"] = slashed.String()
+		out["escrow_balance"] = escrow.String()
+		out["validator_count"] = count
+		out["pass_count"] = passes
+		out["initialised"] = initialised
+		out["admin"] = admin.String()
+		out["genesis_anchor_known"] = !rctx.GenesisValidator.IsZero()
+		out["min_stake"] = MinValidatorStake.String()
+		out["unbonding_blocks"] = UnbondingBlocks
+		out["max_passes"] = MaxValidatorPasses
+		out["tiers"] = map[string]string{
+			"bronze":   StakeBronze.String(),
+			"silver":   StakeSilver.String(),
+			"gold":     StakeGold.String(),
+			"platinum": StakePlatinum.String(),
+		}
+		return out, nil
+
+	case "validator_set":
+		entries, err := s.Passes()
+		if err != nil {
+			return nil, err
+		}
+		// The genesis validator has no stored entry until someone writes one,
+		// and it is the only key that can produce on a fresh chain — leaving it
+		// out would make the set read as empty on exactly the chain everyone
+		// is running.
+		if !rctx.GenesisValidator.IsZero() {
+			listed := false
+			for _, e := range entries {
+				if e.Address == rctx.GenesisValidator {
+					listed = true
+					break
+				}
+			}
+			if !listed {
+				implicit, err := s.GetPass(rctx.GenesisValidator, rctx.GenesisValidator)
+				if err != nil {
+					return nil, err
+				}
+				if implicit != nil {
+					entries = append([]*PassEntry{implicit}, entries...)
+				}
+			}
+		}
+		set := make([]map[string]interface{}, 0, len(entries))
+		for _, e := range entries {
+			row := map[string]interface{}{
+				"address":     e.Address.String(),
+				"passed":      e.Passed,
+				"bond_exempt": e.BondExempt,
+				"source":      passSource(e),
+				"stake":       "0",
+				"status":      ValidatorStatusName(ValidatorInactive),
+				"eligible":    s.CanProduce(rctx.GenesisValidator, e.Address) == nil,
+			}
+			rec, err := s.GetValidator(e.Address)
+			if err != nil {
+				return nil, err
+			}
+			if rec != nil {
+				row["stake"] = rec.Stake.String()
+				row["status"] = ValidatorStatusName(rec.Status)
+				row["tier"] = GetTierName(rec.Stake)
+			}
+			set = append(set, row)
+		}
+		out["genesis_anchor_known"] = !rctx.GenesisValidator.IsZero()
+		out["validators"] = set
+		return out, nil
+
+	default:
+		return nil, fmt.Errorf("staking: unknown read action %q", action)
+	}
+}
+
+// passSource says where an admission came from, so a reader can tell the
+// chain's bootstrap default from a decision somebody made.
+func passSource(e *PassEntry) string {
+	if e.Genesis {
+		return "genesis"
+	}
+	return "admin"
 }
 
 // bridgeReadParams is the parameter shape for bridge reads.

@@ -5,16 +5,18 @@
 // and governance frontends without needing to interact with raw contract ABI.
 //
 // Governance endpoints:
-//   GET  /gov/proposals                     — list proposals (paginated)
-//   GET  /gov/proposals/{id}                — get a single proposal
-//   GET  /gov/proposals/{id}/votes/{addr}   — get a voter's vote
-//   POST /gov/proposals/{id}/tally          — manually trigger tally (node only)
+//
+//	GET  /gov/proposals                     — list proposals (paginated)
+//	GET  /gov/proposals/{id}                — get a single proposal
+//	GET  /gov/proposals/{id}/votes/{addr}   — get a voter's vote
+//	POST /gov/proposals/{id}/tally          — manually trigger tally (node only)
 //
 // Staking endpoints:
-//   GET  /staking/validators                — list all active validators
-//   GET  /staking/validators/{addr}         — get a validator's record
-//   GET  /staking/total-staked              — total SPLD staked
-//   GET  /staking/tiers                     — staking tier info
+//
+//	GET  /staking/validators                — list all active validators
+//	GET  /staking/validators/{addr}         — get a validator's record
+//	GET  /staking/total-staked              — total SPLD staked
+//	GET  /staking/tiers                     — staking tier info
 //
 // All responses: JSON. All addresses: SQ: format.
 package rpc
@@ -37,7 +39,7 @@ import (
 // RegisterGovRoutes adds governance and staking endpoints to the router.
 func RegisterGovRoutes(r *mux.Router, stateDB *state.StateDB) {
 	govAddr := vm.DeployGovernance(stateDB)
-	stakingAddr := vm.DeployStaking(stateDB)
+	stakingAddr := vm.StakingAddress
 
 	gov := vm.NewGovernanceContract(stateDB, govAddr)
 	staking := vm.NewStakingContract(stateDB, stakingAddr)

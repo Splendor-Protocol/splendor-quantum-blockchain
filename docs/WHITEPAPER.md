@@ -260,20 +260,27 @@ A light client that knows the state root `R` (from a trusted block header) can v
    ```json
    {
      "state_root": "R",
-     "account": {"balance": "1000000...", "nonce": 5, ...},
-     "proof": ["sibling1_hash", "sibling2_hash", ...]
+     "account_hash": "leaf_digest",
+     "balance": "1000000...", "nonce": 5,
+     "leaf_index": 2, "leaf_count": 3,
+     "proof_path": [{"sibling": "sibling1_hash", "position": "left"}, ...],
+     "proof": ["sibling1_hash", ...]
    }
    ```
 3. **Verify**:
    ```
-   node = leafDigest("acc:SQ:a1b2c3...", SHA3-256(account_json))
-   for each sibling in proof:
-       if we were the left child:
-           node = internalHash(node, sibling)
+   node = leafDigest("acc:SQ:a1b2c3...", SHA3-256(account_json))   // == account_hash
+   for each step in proof_path:
+       if step.position == "left":
+           node = internalHash(step.sibling, node)
        else:
-           node = internalHash(sibling, node)
+           node = internalHash(node, step.sibling)
    assert node == R
    ```
+   `position` is the side the *sibling* sits on. It is served explicitly
+   because it cannot be derived from `leaf_index`: an unpaired node at any
+   level is carried up without a sibling, so `proof_path` can be shorter than
+   the tree depth and index parity stops describing it.
 
 If the proof passes, the account data is authentic. If it fails, the RPC provider lied.
 

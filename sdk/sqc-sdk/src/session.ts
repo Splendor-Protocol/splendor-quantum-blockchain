@@ -69,7 +69,14 @@ export type Session = ConnectResult & {
   deployExchange: (
     params: ExchangeDeployParams,
     opts?: { fee?: string; waitForConfirmation?: boolean; height?: number },
-  ) => Promise<{ address: string; exchange: BoundClient<Exchange>; hash?: string; height: number }>;
+  ) => Promise<{
+    address: string;
+    exchange: BoundClient<Exchange>;
+    hash?: string;
+    height: number;
+    /** False means `address` is the next-height prediction, not the receipt's. */
+    confirmed: boolean;
+  }>;
   deployBridge: (
     params: BridgeDeployParams,
     opts?: { fee?: string; waitForConfirmation?: boolean; height?: number },
@@ -78,6 +85,8 @@ export type Session = ConnectResult & {
     bridge: BoundClient<BridgeModule>;
     splvAddress: string;
     hash?: string;
+    /** False means `address` is the next-height prediction, not the receipt's. */
+    confirmed: boolean;
   }>;
   deployBytecode: (
     bytecode: Uint8Array | string,
@@ -151,19 +160,29 @@ export async function createSession(opts: ConnectOptions = {}): Promise<Session>
       };
     },
     async deployExchange(params, deployOpts) {
-      const { address, height, result } = await deployExchange(s.wallet, params, deployOpts);
+      const { address, height, confirmed, result } = await deployExchange(
+        s.wallet,
+        params,
+        deployOpts,
+      );
       return {
         address,
         height,
+        confirmed,
         exchange: getExchange(s.connection, address).withSigner(s.wallet),
         hash: result.hash,
       };
     },
     async deployBridge(params, deployOpts) {
-      const { address, splvAddress, result } = await deployBridge(s.wallet, params, deployOpts);
+      const { address, splvAddress, confirmed, result } = await deployBridge(
+        s.wallet,
+        params,
+        deployOpts,
+      );
       return {
         address,
         splvAddress,
+        confirmed,
         bridge: getBridge(s.connection, address).withSigner(s.wallet),
         hash: result.hash,
       };

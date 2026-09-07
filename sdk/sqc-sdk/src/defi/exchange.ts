@@ -4,7 +4,12 @@
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
 import type { Signer } from '../core/signer.js';
-import { requireCapability, signerAccountNonce } from '../core/signer.js';
+import {
+  confirmedBlockHeight,
+  confirmedContractAddress,
+  requireCapability,
+  signerAccountNonce,
+} from '../core/signer.js';
 import { exchangeAddress } from '../addresses/index.js';
 import type { OrderParams, SignedOrder, SignedCancel, SignedIncrementNonce } from '../types.js';
 
@@ -231,11 +236,30 @@ export class Exchange extends Program {
   }
 }
 
+/**
+ * Deploy an exchange instance.
+ *
+ * The instance address depends on the height the deploy executes at. Before
+ * sending, that can only be predicted (next height); once the call is
+ * confirmed the receipt says where it really landed, and `address` is taken
+ * from there. `confirmed` tells the two apart: when false, `address` is the
+ * prediction and is only right if the transaction lands in the very next block.
+ */
 export async function deployExchange(
   wallet: Signer,
   params: ExchangeDeployParams,
   opts?: { fee?: string; waitForConfirmation?: boolean; height?: number },
-): Promise<{ address: string; height: number; result: Awaited<ReturnType<Signer['sendModuleCall']>> }> {
+): Promise<{
+  /** The deployed instance: from the receipt when confirmed, else predicted. */
+  address: string;
+  /** The next-height prediction made before sending. */
+  predictedAddress: string;
+  /** True when `address` came from the confirmed receipt. */
+  confirmed: boolean;
+  /** The height the deploy executed at (from the receipt), else the assumed one. */
+  height: number;
+  result: Awaited<ReturnType<Signer['sendModuleCall']>>;
+}> {
   const nonce = await signerAccountNonce(wallet);
   let height = opts?.height;
   if (height == null) {
@@ -256,7 +280,14 @@ export async function deployExchange(
     fee: opts?.fee,
     waitForConfirmation: opts?.waitForConfirmation,
   });
-  return { address: predicted, height, result };
+  const confirmedAddress = confirmedContractAddress(result);
+  return {
+    address: confirmedAddress ?? predicted,
+    predictedAddress: predicted,
+    confirmed: confirmedAddress != null,
+    height: confirmedBlockHeight(result) ?? height,
+    result,
+  };
 }
 
 export function getExchange(connection: Connection, address: string): Exchange {

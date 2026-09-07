@@ -71,9 +71,14 @@ describe('module clients functional', () => {
 
   it('deployExchange + signOrder uses instance address', async () => {
     const wallet = mockWallet();
-    const { address, height } = await deployExchange(wallet, { name: 'Book' });
+    const { address, height, confirmed, predictedAddress } = await deployExchange(wallet, {
+      name: 'Book',
+    });
     expect(height).toBe(101);
+    // Unconfirmed: the prediction is all there is, and it is labelled as such.
     expect(address).toBe(Exchange.predictAddress(OWNER, 2, 101));
+    expect(predictedAddress).toBe(address);
+    expect(confirmed).toBe(false);
     const ex = new Exchange({ moduleCall: vi.fn() } as unknown as Connection, address);
     await ex.signOrder(wallet, {
       condition: 1,
@@ -134,5 +139,78 @@ describe('module clients functional', () => {
     expect(modules.dex(conn, A).getAddress()).toBe(A);
     expect(modules.bridge(conn, A).getAddress()).toBe(A);
     expect(modules.qrc1155(conn, A).getAddress()).toBe(A);
+  });
+});
+
+// A deploy's address depends on the height it executes at. The prediction made
+// before sending assumes the very next block; once confirmed, the receipt's
+// contract_address is the truth and must win over the prediction.
+describe('deploy helpers prefer the confirmed receipt address', () => {
+  const CONFIRMED = 'SQ:' + 'cd'.repeat(32);
+  const confirmedBytes = Array.from({ length: 32 }, () => 0xcd);
+  const bridgeParams = {
+    evmChainId: 2691,
+    evmContract: '0x' + 'ab'.repeat(20),
+    splvName: 'SPLV',
+    splvSymbol: 'SPLV',
+    splvMaxSupply: '1000',
+    maxClaimAmount: '100',
+    threshold: 1,
+  };
+
+  function confirmingWallet(receipt: Record<string, unknown>) {
+    return mockWallet({
+      sendModuleCall: vi.fn(async (opts) => ({
+        status: 'ok',
+        hash: '0xh',
+        signedTx: opts,
+        confirmation: { confirmed: true, nonce: 3, receipt },
+      })),
+    });
+  }
+
+  it('deployExchange reports the receipt address, not the next-height prediction', async () => {
+    // The node serialises contract_address as a 32-byte array; the deploy
+    // landed two blocks later than assumed.
+    const wallet = confirmingWallet({ status: 1, contract_address: confirmedBytes, block_height: 103 });
+    const r = await deployExchange(wallet, { name: 'Book' }, { waitForConfirmation: true });
+    expect(r.predictedAddress).toBe(Exchange.predictAddress(OWNER, 2, 101));
+    expect(r.address).toBe(CONFIRMED);
+    expect(r.address).not.toBe(r.predictedAddress);
+    expect(r.confirmed).toBe(true);
+    expect(r.height).toBe(103);
+  });
+
+  it('deployBridge derives the SPLV address from the confirmed bridge address', async () => {
+    const wallet = confirmingWallet({ status: 1, contract_address: confirmedBytes, block_height: 103 });
+    const r = await deployBridge(wallet, bridgeParams, { waitForConfirmation: true });
+    expect(r.address).toBe(CONFIRMED);
+    expect(r.splvAddress).toBe(BridgeModule.splvAddress(CONFIRMED));
+    expect(r.splvAddress).not.toBe(BridgeModule.splvAddress(r.predictedAddress));
+    expect(r.confirmed).toBe(true);
+    expect(r.height).toBe(103);
+  });
+
+  it('accepts a string-form contract_address and canonicalises it', async () => {
+    const wallet = confirmingWallet({ status: 1, contract_address: 'SQ:' + 'CD'.repeat(32) });
+    const r = await deployExchange(wallet, { name: 'Book' }, { waitForConfirmation: true });
+    expect(r.address).toBe(CONFIRMED);
+    expect(r.confirmed).toBe(true);
+    expect(r.height).toBe(101); // no block_height in the receipt: the assumption stands
+  });
+
+  it('keeps the prediction, labelled unconfirmed, when the receipt names no contract', async () => {
+    const wallet = confirmingWallet({ status: 1 });
+    const r = await deployBridge(wallet, bridgeParams, { waitForConfirmation: true });
+    expect(r.address).toBe(r.predictedAddress);
+    expect(r.splvAddress).toBe(BridgeModule.splvAddress(r.predictedAddress));
+    expect(r.confirmed).toBe(false);
+  });
+
+  it('rejects a malformed contract_address rather than trusting it', async () => {
+    const wallet = confirmingWallet({ status: 1, contract_address: [1, 2, 3] });
+    const r = await deployExchange(wallet, { name: 'Book' }, { waitForConfirmation: true });
+    expect(r.address).toBe(r.predictedAddress);
+    expect(r.confirmed).toBe(false);
   });
 });

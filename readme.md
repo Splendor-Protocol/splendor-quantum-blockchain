@@ -897,7 +897,7 @@ compiled from user source. This is how the fork-gated token, exchange, and
 bridge actions are implemented.
 
 Be precise about which of them a transaction can actually drive.
-`DispatchModuleCall` (`vm/module_router.go`) routes five modules; the
+`DispatchModuleCall` (`vm/module_router.go`) routes six modules; the
 authoritative action list is `vm.KnownModuleActions`
 (`vm/module_router_read.go`), and every write that arrived after a module
 first shipped is gated by a fork the genesis document schedules (`forks` in
@@ -913,18 +913,21 @@ unappliable in a block.
 | `dex` | `deploy_pool`, `add_liquidity`, `swap` | — (since launch) | `reserves`, `pool_info` (also `GET /dex/pool/...`) |
 | `exchange` | `deploy`, `create_condition`, `split`, `merge`, `match`, `cancel_order`, `increment_nonce`, `resolve`, `redeem`, `redeem_for`, `pause`, `unpause`, `set_redeem_fee_bps`, `set_fee_recipient`, `set_operator`, `transfer_ownership` | `exchange_v1` (requires `module_revert_v1`) | `exchange_info`, `condition_info`, `order_status`, `order_remaining`, `order_hash`, `nonce`, `is_operator`, `position`, `position_id`, `simulate_match` (also `GET /exchange/...`) |
 | `bridge` | `deploy`, `claim` (M-of-N attested), `set_operator`, `set_threshold`, `pause`, `unpause`, `transfer_ownership` | `bridge_v1` (requires `module_revert_v1`) | `bridge_info`, `claim_status` (also `GET /bridge/...`) — see `docs/modules/bridge.md` |
+| `staking` | `register`, `add_stake`, `unstake`, `withdraw`, `unjail` (open to anyone); `slash`, `set_pass`, `set_admin` (admin only) | `validator_gates_v1` (requires `module_revert_v1`) | `validator`, `pass`, `can_produce`, `staking_info`, `validator_set` (also `GET /staking/...`) — see `docs/modules/staking.md` |
 
-A fifth name, `module_revert_v1`, is not a module but the failure rule: under
+One more name, `module_revert_v1`, is not a module but the failure rule: under
 it a module call that errors is included with a failed receipt (fee kept,
 nonce consumed) instead of being dropped, so a relayer whose call fails cannot
 jam its own account. The wire formats are in `docs/modules/qrc20-permit.md`
 and `docs/modules/exchange.md`.
 
-`vm/lending.go`, `vm/staking.go`, `vm/governance.go`, `vm/oracle.go`,
-`vm/multisig.go`, `vm/qrc721.go` and `vm/qrc4626.go` are written and tested,
-and their `/lending/*`, `/staking/*` and `/gov/*` RPC routes read their state,
-but no transaction reaches them: until the router learns those module names,
-they are library code, not a live surface.
+`vm/lending.go`, `vm/governance.go`, `vm/oracle.go`, `vm/multisig.go`,
+`vm/qrc721.go` and `vm/qrc4626.go` are written and tested, and their
+`/lending/*` and `/gov/*` RPC routes read their state, but no transaction
+reaches them: until the router learns those module names, they are library
+code, not a live surface. (`vm/staking.go` was in that list until
+`validator_gates_v1`; it is routed now, and `/staking/*` reads the module's
+real singleton rather than an address nothing ever wrote to.)
 
 The source tree proves that these modules are implemented and reachable when
 their fork gates are active; it does not prove that every live tier has
@@ -996,18 +999,47 @@ without the authorized validator key should not be able to forge that
 signature. A party controlling the authorized key can sign blocks, which is why
 validator custody remains a central security boundary.
 
+### Who may produce: the validator gates (`validator_gates_v1`)
+
+Syncing is open to anyone, and so is staking. Producing is not.
+
+On a chain that schedules `validator_gates_v1`, a key may seal a block only if
+it passes both gates:
+
+1. **Admission** — an entry in the on-chain pass registry, held against that
+   key's ML-DSA-65 public key. An admin grants and revokes it; the genesis
+   validator is admitted implicitly, because it has to seal block 1 before
+   anything can be staked.
+2. **Bond** — a registered stake at or above the Bronze floor (3,947 SPLD),
+   status `active`. The SPLD really moves: into the staking module's escrow
+   account on `register`, out again only through `unstake` + `withdraw` after
+   a ~7-day unbonding delay.
+
+One predicate (`vm.StakingContract.CanProduce`) answers this for both block
+production and block acceptance, so a producer cannot build a block its own
+followers refuse. `POST /call` with
+`{"module":"staking","action":"can_produce",…}` asks it directly.
+
+Anyone can register a key and stake behind it today — `docs/modules/staking.md`
+has the full action surface. Before the upgrade activates, the staking module
+is unreachable and any key the chain accepts signatures from may produce, which
+is what Phase 1 has always been.
+
 ### Phase 2 and Beyond: Expanding Validators
 
 The intended future design would add:
 
-- New validators register by staking SPLD and registering their ML-DSA-65 public key
 - Consensus upgrades to a BFT protocol (all signatures still ML-DSA-65)
 - Governance is handled by token holders (voting via ML-DSA-65-signed transactions)
 
-None of that is wired into the running node. `consensus/bft.go` is explicitly
-incomplete, there is no production path for a second independent validator to
-join, and a passed governance proposal cannot change consensus: `Execute` in
-`vm/governance.go` marks a proposal Executed and applies nothing else.
+**Multi-validator consensus is still not built.** `validator_gates_v1` decides
+who is *allowed* to produce; it does not give a second eligible validator a
+turn. `consensus/bft.go` is explicitly incomplete — vote gossip, equivocation
+handling, timeouts and fork choice are not written, `qc_root` stays nil, and
+the `multi_validator` upgrade remains reserved and unimplemented. There is no
+production path for a second independent validator to join, and a passed
+governance proposal cannot change consensus: `Execute` in `vm/governance.go`
+marks a proposal Executed and applies nothing else.
 
 ---
 
@@ -1168,14 +1200,14 @@ This section separates reachable code from product direction.
 
 - SQC-VM deployment and calls
 - QRC-20 and DEX actions available from the launch rules
-- Fork-gated QRC-1155, exchange, and migration-bridge actions
+- Fork-gated QRC-1155, exchange, migration-bridge, and validator-staking actions
 - X402 authorization and payer-signed settlement
 - Contract events and current-state reads
 
 The live availability of a fork-gated action depends on the tier's persisted
-fork schedule. Lending, staking, governance, oracle, multisig, QRC-721, and
-QRC-4626 files exist, but the transaction router does not expose them. They are
-not product features merely because library code and read routes exist.
+fork schedule. Lending, governance, oracle, multisig, QRC-721, and QRC-4626
+files exist, but the transaction router does not expose them. They are not
+product features merely because library code and read routes exist.
 
 ### Product directions, not current deployments
 
@@ -1794,7 +1826,8 @@ section matter for anyone not using the SDK.
 | `GET /exchange/{addr}`, `…/condition/{id}`, `…/order/{hash}`, `…/nonce/{maker}`, `…/position/{condition}/{holder}` | Exchange instance, conditions, orders, positions |
 | `GET /bridge/{addr}`, `GET /bridge/{addr}/claim/{id}` | Migration-bridge instance and claim status |
 | **Library-only reads** | |
-| `GET /gov/*`, `GET /staking/*`, `GET /lending/*` | These read module state that no transaction can currently write: the router does not expose governance, staking or lending (§8). They return empty or default values on every public tier |
+| `GET /gov/*`, `GET /lending/*` | These read module state that no transaction can currently write: the router does not expose governance or lending (§8). They return empty or default values on every public tier |
+| `GET /staking/validators/{addr}`, `…/total-staked`, `…/count`, `…/tiers` | Validator bonds. Writable only on a tier that schedules `validator_gates_v1`; before that they read a registry nothing can write. The richer views (`pass`, `can_produce`, `validator_set`) are `POST /call` module reads |
 | **Node-to-node, not for clients** | |
 | `POST /block`, `POST /peers/announce`, `GET /sync`, `GET /p2p/identity` | The sealed write plane. `POST` routes require the `X-Node-Auth` shared token (401 without it); a node with no `--rpc-auth-token` answers 503; with plaintext P2P off, as on the public tiers, `POST /block` answers 410 and only the sealed transport is accepted |
 
@@ -2094,10 +2127,10 @@ activated this way. Mainnet reports no optional forks and, by decision, omits
 | `cmd/loadtest`, `cmd/auditprobe` | Throughput and security probe harnesses; not shipped in the image |
 | `core/crypto` | ML-DSA-65, SHA3-256, addresses, ACVP vectors, `.sqwallet` store (Argon2id + AES-256-GCM) |
 | `core/types`, `core/block`, `core/state`, `core/mempool`, `core/forks`, `core/buildinfo` | Transactions and blocks, execution and receipts, whole-state Merkle commitment, fee-ordered mempool, fork schedule, the commit/tag stamp `/status` reports |
-| `consensus` | Single-validator block production; `bft.go` is explicitly incomplete and unwired |
+| `consensus` | Single-validator block production, gated on the producer's admission pass and bond under `validator_gates_v1`; `bft.go` is explicitly incomplete and unwired |
 | `network` | ML-KEM-768 + AES-256-GCM sealed P2P, peer pins, announce signatures, SSRF guards |
 | `rpc` | The REST/SSE surface in §20, TLS with the `X25519MLKEM768` hybrid group, rate limits, metrics |
-| `vm` | SQC-VM interpreter and disassembler, plus the native Go modules (QRC-20, QRC-1155, DEX, exchange, bridge; lending/staking/governance/oracle/multisig/QRC-721/QRC-4626 as unrouted library code) |
+| `vm` | SQC-VM interpreter and disassembler, plus the native Go modules (QRC-20, QRC-1155, DEX, exchange, bridge, staking; lending/governance/oracle/multisig/QRC-721/QRC-4626 as unrouted library code) |
 | `compiler` | The QSol-subset compiler (lexer, parser, codegen, assembler) and `examples/*.qsol` |
 | `x402` | X402 payment authorization and settlement binding |
 | `genesis` | Signed height-zero genesis builder and fork-schedule validation |

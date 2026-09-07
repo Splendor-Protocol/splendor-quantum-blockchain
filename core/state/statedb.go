@@ -702,27 +702,36 @@ func (s *StateDB) StateRoot() ([32]byte, error) {
 	return merkleRoot(s.leaves), nil
 }
 
-// MerkleProof returns the Merkle inclusion proof for an account's leaf in the
-// committed state tree. The proof is the list of sibling hashes from the leaf
-// level up to (but not including) the root.
+// ProofStep is one level of a Merkle inclusion proof: the sibling digest and
+// which side of the parent it sits on.
+type ProofStep struct {
+	Sibling [32]byte
+	// SiblingOnLeft is true when the parent is internalHash(sibling, node) —
+	// the node being proven was the right child at this level — and false
+	// when the parent is internalHash(node, sibling).
+	SiblingOnLeft bool
+}
+
+// MerkleProofPath returns the Merkle inclusion proof for an account's leaf in
+// the committed state tree, with the side of every sibling made explicit, plus
+// the leaf's index and the leaf count of the tree it was proven in.
 //
-// A verifier reconstructs the root:
-//  1. Compute leafHash = leafDigest("acc:SQ:...", SHA3-256(account_bytes))
-//  2. For each sibling in order: node = internalHash(node, sibling) if node was
-//     the left child, or internalHash(sibling, node) if it was the right child.
-//     The caller can determine left/right from the original leaf index parity.
-//  3. The final node must equal the committed state root.
+// The sides cannot be recovered from the leaf index alone. An odd node at any
+// level is carried up unchanged with no sibling (matching merkleRoot), so the
+// path can be shorter than the tree depth, and once a level has been skipped
+// the parity of (leafIndex >> i) says nothing about step i: in a three-leaf
+// tree the third leaf (index 2, even) has exactly one step, and its sibling is
+// on the LEFT.
 //
-// Returns (leafHash, siblings, nil) when found, or (zero, nil, error) when the
-// account is not in committed state. Odd-count levels carry the unpaired node
-// up without a sibling (len(siblings) may be < tree depth).
-func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error) {
+// A verifier folds the steps in order from leafHash with VerifyMerkleProof and
+// compares the result to the committed state root.
+func (s *StateDB) MerkleProofPath(addr qcrypto.Address) (leafHash [32]byte, path []ProofStep, leafIndex, leafCount int, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	targetKey := prefixAccount + addr.String()
 	if _, ok := s.leaves[targetKey]; !ok {
-		return [32]byte{}, nil, fmt.Errorf("account %s not in committed state", addr)
+		return [32]byte{}, nil, 0, 0, fmt.Errorf("account %s not in committed state", addr)
 	}
 
 	// Build sorted key list — same iteration order as merkleRoot.
@@ -742,11 +751,10 @@ func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error
 		}
 	}
 	if targetIdx < 0 {
-		return [32]byte{}, nil, fmt.Errorf("account %s vanished from leaves during proof generation", addr)
+		return [32]byte{}, nil, 0, 0, fmt.Errorf("account %s vanished from leaves during proof generation", addr)
 	}
 
-	leafHash := level[targetIdx]
-	var siblings [][32]byte
+	leafHash = level[targetIdx]
 	idx := targetIdx
 
 	// Walk up the binary tree, collecting one sibling per level.
@@ -761,18 +769,48 @@ func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error
 			}
 			left, right := level[i], level[i+1]
 			next = append(next, internalHash(left, right))
-			// Collect the sibling for our proof path.
+			// Collect the sibling for our proof path, and its side.
 			if idx == i {
-				siblings = append(siblings, right)
+				path = append(path, ProofStep{Sibling: right, SiblingOnLeft: false})
 			} else if idx == i+1 {
-				siblings = append(siblings, left)
+				path = append(path, ProofStep{Sibling: left, SiblingOnLeft: true})
 			}
 		}
 		idx /= 2
 		level = next
 	}
 
+	return leafHash, path, targetIdx, len(keys), nil
+}
+
+// MerkleProof is MerkleProofPath reduced to the sibling digests, in order,
+// from the leaf level up to (but not including) the root. Prefer
+// MerkleProofPath: without the sides a verifier has to guess them, and the
+// leaf index does not determine them (see there).
+func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error) {
+	leafHash, path, _, _, err := s.MerkleProofPath(addr)
+	if err != nil {
+		return [32]byte{}, nil, err
+	}
+	siblings := make([][32]byte, len(path))
+	for i, st := range path {
+		siblings[i] = st.Sibling
+	}
 	return leafHash, siblings, nil
+}
+
+// VerifyMerkleProof folds a proof path from a leaf digest and reports whether
+// it reaches root. It is the verifier's half of MerkleProofPath.
+func VerifyMerkleProof(root, leafHash [32]byte, path []ProofStep) bool {
+	node := leafHash
+	for _, st := range path {
+		if st.SiblingOnLeft {
+			node = internalHash(st.Sibling, node)
+		} else {
+			node = internalHash(node, st.Sibling)
+		}
+	}
+	return node == root
 }
 
 // PendingStateRoot computes the state root that Commit() WOULD produce, without

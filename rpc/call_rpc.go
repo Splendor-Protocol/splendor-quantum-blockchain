@@ -286,17 +286,25 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 
 // headReadContext describes the chain head for a native-module read. It is
 // zero when there is no executor to ask or the chain has no block yet; module
-// reads treat it as advisory, so a zero context is a valid answer, not an
-// error (rpc/call_rpc_test.go runs the read path with a nil executor).
+// reads treat the head as advisory, so a zero context is a valid answer, not
+// an error (rpc/call_rpc_test.go runs the read path with a nil executor).
+//
+// The genesis validator anchor is carried whether or not the chain has a
+// block, because it is not about the head: staking.can_produce and
+// staking.pass answer differently without it, and a node that has the anchor
+// should give the answer the chain would give even before block 1.
 func headReadContext(executor *block.Executor) vm.ReadContext {
 	if executor == nil {
 		return vm.ReadContext{}
 	}
+	ctx := vm.ReadContext{GenesisValidator: executor.GenesisValidator()}
 	head, err := executor.LatestBlock()
 	if err != nil || head == nil {
-		return vm.ReadContext{}
+		return ctx
 	}
-	return vm.ReadContext{Height: head.Header.Height, Time: head.Header.Timestamp}
+	ctx.Height = head.Header.Height
+	ctx.Time = head.Header.Timestamp
+	return ctx
 }
 
 // HeadFunc is headReadContext as a closure, read at request time, for route

@@ -28,8 +28,11 @@ type token struct {
 var keywords = map[string]bool{
 	"contract": true, "function": true, "returns": true, "return": true,
 	"require": true, "emit": true, "mapping": true, "if": true, "else": true,
-	"for": true, "while": true,
+	"for": true, "while": true, "break": true, "continue": true,
 	"uint256": true, "address": true, "bool": true, "view": true,
+	// One 32-byte word each, like every other type; as keywords they can
+	// open a local declaration the way uint256 does.
+	"string": true, "bytes32": true,
 	"msg": true, "true": true, "false": true,
 	// Visibility / mutability modifiers: parsed and ignored — they gate
 	// nothing in the subset, but real-world sources are full of them.

@@ -109,11 +109,15 @@ func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
 		{forks.QRC20V2, true},        // PR-4
 		{forks.QRC1155V1, true},      // PR-5
 		{forks.ExchangeV1, true},     // PR-6
+		{forks.BridgeV1, true},
+		{forks.VMRevertV1, true},
+		{forks.ValidatorGatesV1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := baseGenesis()
 			g.Forks = forks.Schedule{tc.name: 1}
-			if tc.name == forks.ExchangeV1 || tc.name == forks.QRC20V2 || tc.name == forks.QRC1155V1 {
+			if tc.name == forks.ExchangeV1 || tc.name == forks.QRC20V2 || tc.name == forks.QRC1155V1 ||
+				tc.name == forks.BridgeV1 || tc.name == forks.ValidatorGatesV1 {
 				// Its own dependency rule; what is on trial here is the name.
 				g.Forks[forks.ModuleRevertV1] = 1
 			}
@@ -148,6 +152,8 @@ func TestGenesisRefusesExchangeWithoutModuleRevert(t *testing.T) {
 		"revert one block late":    {forks.Schedule{forks.ExchangeV1: 5, forks.ModuleRevertV1: 6}, false},
 		"qrc20_v2 alone":           {forks.Schedule{forks.QRC20V2: 1}, false},
 		"qrc1155_v1 before revert": {forks.Schedule{forks.QRC1155V1: 5, forks.ModuleRevertV1: 6}, false},
+		"validator_gates alone":    {forks.Schedule{forks.ValidatorGatesV1: 1}, false},
+		"validator_gates ok":       {forks.Schedule{forks.ValidatorGatesV1: 5, forks.ModuleRevertV1: 5}, true},
 		"all four at 1": {forks.Schedule{
 			forks.ExchangeV1: 1, forks.QRC20V2: 1, forks.QRC1155V1: 1, forks.ModuleRevertV1: 1,
 		}, true},

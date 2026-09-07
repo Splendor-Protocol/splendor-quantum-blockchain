@@ -605,16 +605,28 @@ before the field existed.
   The convention for a fresh chain is to schedule every rule it starts with at
   height **1**.
 - **Names.** `multi_validator` is reserved today. The settlement upgrades are
-  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`, and the
-  legacy-migration bridge is `bridge_v1` (`docs/modules/bridge.md`); each
-  becomes schedulable only in the release that implements it. `qrc20_v2`,
-  `qrc1155_v1`, `exchange_v1` and `bridge_v1` each require `module_revert_v1`
-  at the same or an earlier height (a failed module call must be a failed
-  receipt, not a dropped transaction that pins the sender's nonce). Devnet and
-  testnet schedule the settlement four at 1; `bridge_v1` goes either in the
+  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`; the
+  legacy-migration bridge is `bridge_v1` (`docs/modules/bridge.md`); and the
+  validator admission + bond gates are `validator_gates_v1`
+  (`docs/modules/staking.md`). Each becomes schedulable only in the release
+  that implements it. `qrc20_v2`, `qrc1155_v1`, `exchange_v1`, `bridge_v1` and
+  `validator_gates_v1` each require `module_revert_v1` at the same or an
+  earlier height (a failed module call must be a failed receipt, not a dropped
+  transaction that pins the sender's nonce). Devnet and testnet schedule the
+  settlement four at 1; `bridge_v1` and `validator_gates_v1` go either in the
   genesis document of the chain's next start, or — on a chain already running —
   at a future height via the extension path below. **Mainnet omits
   `exchange_v1`** (the real-money gate stays closed).
+- **`validator_gates_v1` needs the genesis validator anchor.** From its
+  activation height, only a key holding an admission pass and a bond may seal a
+  block, and the pass registry's bootstrap authority is the key that sealed
+  block 0. A node that cannot determine that address **refuses to start** on a
+  chain scheduling this upgrade, because it would otherwise apply admission
+  changes differently from its peers. It is recorded automatically by both
+  genesis apply paths; a node that missed it needs `--genesis <path>` or
+  `--validator-pubkey-hex <hex>` once. Extending a running chain's schedule with
+  it is safe — the genesis validator is admitted implicitly, so the chain's own
+  producer keeps producing while you configure the registry.
 - **A running chain's schedule can be EXTENDED, never edited.**
   `loadForkSchedule` (`cmd/node/main.go`) persists the genesis schedule to
   `meta:forks` at block 0 and treats that stored copy as authoritative on every
@@ -653,8 +665,9 @@ before the field existed.
   unreadable, or schedules something different **refuses to boot** rather than
   run under rules the rest of the network does not.
 - **Check it before the height arrives:** `curl http://localhost:8080/status`
-  reports `forks` on every node that has one. Nodes disagreeing about an
-  activation height do not fail at startup — they split at the height.
+  reports `forks` on every node that has one, and `genesis_validator` on every
+  node that knows the anchor. Nodes disagreeing about an activation height do
+  not fail at startup — they split at the height.
 
 ---
 
