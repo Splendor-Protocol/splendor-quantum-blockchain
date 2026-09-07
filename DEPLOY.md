@@ -608,11 +608,14 @@ before the field existed.
   `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`; the
   legacy-migration bridge is `bridge_v1` (`docs/modules/bridge.md`); the
   validator admission + bond gates are `validator_gates_v1`
-  (`docs/modules/staking.md`); and the SQVL dual-signed verify / settlement
-  module is `verify_v1` (`docs/modules/verify.md`). Each becomes schedulable
-  only in the release that implements it. `qrc20_v2`, `qrc1155_v1`,
-  `exchange_v1`, `bridge_v1`, `validator_gates_v1` and `verify_v1` each
-  require `module_revert_v1` at the same or an earlier height (a failed module call must be a failed receipt, not a dropped
+  (`docs/modules/staking.md`); the SQVL dual-signed verify / settlement
+  module is `verify_v1` (`docs/modules/verify.md`); the NFT module is
+  `qrc721_v1` (`docs/modules/qrc721.md`); and `min_fee_v1` raises the fee
+  floor to 0.001 SPLD (admission-only, needs no module). Each becomes
+  schedulable only in the release that implements it. `qrc20_v2`,
+  `qrc1155_v1`, `exchange_v1`, `bridge_v1`, `validator_gates_v1`, `verify_v1`
+  and `qrc721_v1` each require `module_revert_v1` at the same or an earlier
+  height (a failed module call must be a failed receipt, not a dropped
   transaction that pins the sender's nonce). Devnet and testnet schedule the
   settlement four at 1; `bridge_v1` and `validator_gates_v1` go either in the
   genesis document of the chain's next start, or — on a chain already running —

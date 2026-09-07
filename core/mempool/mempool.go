@@ -23,8 +23,12 @@ const (
 	// DefaultMaxSize is the maximum number of pending transactions.
 	DefaultMaxSize = 50_000
 
-	// MinFee is the minimum accepted transaction fee (1000 units).
+	// MinFee is the launch fee floor (1000 units), in force until a chain
+	// schedules min_fee_v1.
 	MinFee = 1000
+
+	// MinFeeV1Amount is the floor under min_fee_v1: 0.001 SPLD (10^15 units).
+	MinFeeV1Amount int64 = 1_000_000_000_000_000
 
 	// MaxPerAddr caps how many pending transactions a single sender may occupy.
 	// The global cap alone lets one funded address fill the entire pool with
@@ -66,6 +70,9 @@ type Mempool struct {
 	byAddr  map[qcrypto.Address][]*txEntry // addr → sorted by nonce
 	maxSize int
 	state   *state.StateDB
+	// baseFee is the uncongested floor: MinFee, or MinFeeV1Amount once
+	// min_fee_v1 is active (the node keeps it aligned with the head).
+	baseFee int64
 }
 
 type txEntry struct {
@@ -83,7 +90,33 @@ func New(maxSize int, stateDB *state.StateDB) *Mempool {
 		byAddr:  make(map[qcrypto.Address][]*txEntry),
 		maxSize: maxSize,
 		state:   stateDB,
+		baseFee: MinFee,
 	}
+}
+
+// SetBaseFee sets the uncongested floor. Anything at or below zero means the
+// launch floor. The congestion multipliers apply on top of it.
+func (m *Mempool) SetBaseFee(v int64) {
+	if v <= 0 {
+		v = MinFee
+	}
+	m.mu.Lock()
+	m.baseFee = v
+	m.mu.Unlock()
+}
+
+// BaseFee reports the uncongested floor currently in force.
+func (m *Mempool) BaseFee() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.baseFeeLocked()
+}
+
+func (m *Mempool) baseFeeLocked() int64 {
+	if m.baseFee <= 0 {
+		return MinFee
+	}
+	return m.baseFee
 }
 
 // ValidateEnvelope is the cheap, stateless part of admission: the structural
@@ -298,16 +331,17 @@ func (m *Mempool) Pending(n int) []*types.Transaction {
 // minFeeLocked returns the fee floor for the pool's current occupancy. The
 // caller must already hold m.mu.
 func (m *Mempool) minFeeLocked() int64 {
+	base := m.baseFeeLocked()
 	if m.maxSize <= 0 {
-		return MinFee
+		return base
 	}
 	load := len(m.txs) * 100 / m.maxSize
 	for _, tier := range congestionTiers {
 		if load >= tier.loadPercent {
-			return MinFee * tier.multiplier
+			return base * tier.multiplier
 		}
 	}
-	return MinFee
+	return base
 }
 
 // MinFeeNow reports the fee a transaction must pay to be accepted right now, so

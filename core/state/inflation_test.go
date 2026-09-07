@@ -102,3 +102,31 @@ func TestTransferConservesSupply(t *testing.T) {
 		t.Fatalf("supply = %s, want 1000", total)
 	}
 }
+
+// The supply check judges the block about to be committed, so the sum must
+// see the pending writes as well as the committed leaves — and each address
+// once.
+func TestSumNativeBalancesIncludesDirtyWrites(t *testing.T) {
+	sdb, err := NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatalf("open statedb: %v", err)
+	}
+	defer sdb.Close()
+
+	a, b := addr(0x11), addr(0x22)
+	sdb.SetAccount(newFundedAccount(a, 700))
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	sdb.SetAccount(newFundedAccount(b, 300))
+	// A pending rewrite of a committed account counts once, at its new value.
+	sdb.SetAccount(newFundedAccount(a, 650))
+
+	got, err := sdb.SumNativeBalances()
+	if err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	if got.Cmp(big.NewInt(950)) != 0 {
+		t.Fatalf("sum = %s, want 950 (dirty 650 replacing committed 700, plus dirty 300)", got)
+	}
+}

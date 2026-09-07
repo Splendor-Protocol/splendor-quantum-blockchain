@@ -246,3 +246,4 @@ Serve WASM with correct MIME/CORS: [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 - [ ] Confirm via `waitForConfirmation` (receipt-first; nonce fallback on minimal RPC)
 - [ ] Host WASM at network `wasmUrl` / `execUrl` from `sqc.networks.json` (one-touch already resolves these; you still must serve the files)
 - [ ] Remember: under congestion node fee floor may exceed `PROTOCOL.minFee` (`1000`)
+- [ ] On a network whose `/status.forks` lists `min_fee_v1`, the floor is `MIN_FEE_V1` (`0.001 SPLD` / `1000000000000000`): pass it as `fee`, or the node answers "fee too low". `PROTOCOL.minFee` keeps the launch value until a coordinated SDK release flips it

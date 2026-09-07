@@ -29,6 +29,8 @@ export const PROTOCOL = {
   addressPrefix: ADDRESS_PREFIX,
   addressHexLen: ADDRESS_HEX_LEN,
   minFee: proto.minFee,
+  /** Floor once `min_fee_v1` is active on the network (see MIN_FEE_V1). */
+  minFeeV1: proto.minFeeV1 ?? '1000000000000000',
   derivationDomainVersion: proto.derivationDomainVersion,
   derivationDomainMessage: DERIVATION_DOMAIN_MESSAGE,
   confirmation: proto.confirmation,

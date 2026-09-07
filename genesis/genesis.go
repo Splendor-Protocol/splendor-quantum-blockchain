@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -20,6 +21,29 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
+
+// NativeSupplyCapDecimal is 26 billion SPLD in the smallest unit (18
+// decimals): the most native SPLD a genesis document may mint. Nothing after
+// genesis mints native SPLD — fees are transfers, the bridge releases
+// pre-minted escrow, slashed stake stays in escrow — so it is also the most
+// that can ever exist on a chain started under this rule.
+const NativeSupplyCapDecimal = "26000000000000000000000000000"
+
+// MetaNativeMinted is the StateDB meta key under which ApplyToState records
+// how much native SPLD this chain minted at genesis. It lives beside the fork
+// schedule and the genesis-validator anchor: outside the state root, so
+// recording it changes no chain identity. CheckNativeSupply holds every block
+// to it.
+const MetaNativeMinted = "native_minted"
+
+// NativeSupplyCap returns a fresh *big.Int of the 26 billion SPLD cap.
+func NativeSupplyCap() *big.Int {
+	v, ok := new(big.Int).SetString(NativeSupplyCapDecimal, 10)
+	if !ok {
+		panic("genesis: NativeSupplyCapDecimal is not a valid integer")
+	}
+	return v
+}
 
 // Allocation defines an initial account balance in the genesis state.
 type Allocation struct {
@@ -160,6 +184,20 @@ func (g *Genesis) ApplyToState(stateDB *state.StateDB) ([32]byte, error) {
 		acc := types.NewAccount(addr)
 		acc.AddBalance(balance)
 		stateDB.SetAccount(acc)
+	}
+
+	// The cap is enforced here, where minting happens, and not in Validate:
+	// Validate re-reads the pinned document on every start of a running chain,
+	// and a chain that minted more before this rule existed must keep running
+	// under the rules it was started with. Record the figure so every later
+	// block can be held to it (CheckNativeSupply).
+	minted := g.SumAllocations()
+	if minted.Cmp(NativeSupplyCap()) > 0 {
+		return [32]byte{}, fmt.Errorf("genesis: allocations sum to %s, above the 26 billion SPLD hard cap (%s)",
+			minted, NativeSupplyCapDecimal)
+	}
+	if err := stateDB.PutMeta(MetaNativeMinted, []byte(minted.String())); err != nil && !errors.Is(err, state.ErrSandboxCommit) {
+		return [32]byte{}, fmt.Errorf("genesis: record minted supply: %w", err)
 	}
 
 	// Register validator public key
@@ -385,4 +423,38 @@ func (g *Genesis) Hash() [32]byte {
 func (g *Genesis) HashHex() string {
 	h := g.Hash()
 	return hex.EncodeToString(h[:])
+}
+
+// CheckNativeSupply refuses a circulating native balance above what this
+// chain minted at genesis. Call it after a block's writes are staged and
+// before its state root is computed: the sum overlays the pending writes on
+// committed state, so it judges the block about to be committed.
+//
+// A chain with no minted record — one whose genesis was applied by a build
+// before this rule — passes: there is nothing on record to hold it to, and
+// holding it to the constant cap instead could halt a live tier that minted
+// differently. The check is a safety net for a protocol bug, not a rule the
+// honest path ever trips, and it costs one pass over every account per
+// block; an incremental counter is the follow-up before mainnet scale.
+func CheckNativeSupply(sdb *state.StateDB) error {
+	raw, ok, err := sdb.GetMeta(MetaNativeMinted)
+	if err != nil {
+		return fmt.Errorf("native supply: read minted record: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+	minted, ok := new(big.Int).SetString(string(raw), 10)
+	if !ok || minted.Sign() < 0 {
+		return fmt.Errorf("native supply: corrupt minted record %q", raw)
+	}
+	sum, err := sdb.SumNativeBalances()
+	if err != nil {
+		return fmt.Errorf("native supply: %w", err)
+	}
+	if sum.Cmp(minted) > 0 {
+		return fmt.Errorf("native SPLD supply %s exceeds the %s minted at genesis by %s: extra issuance is refused",
+			sum, minted, new(big.Int).Sub(sum, minted))
+	}
+	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
@@ -316,6 +317,13 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		e.state.SetAccount(va)
 	}
 
+	// Nothing above may have created native SPLD. Judged on the staged
+	// writes, before the root that would commit them.
+	if err := genesis.CheckNativeSupply(e.state); err != nil {
+		e.state.DiscardPending()
+		return err
+	}
+
 	// Verify the declared state root BEFORE persisting.
 	stateRoot, err := e.state.PendingStateRoot()
 	if err != nil {
@@ -432,6 +440,11 @@ func (e *Executor) reapplyBlock(b *types.Block) error {
 		}
 		va.AddBalance(totalFees)
 		e.state.SetAccount(va)
+	}
+
+	if err := genesis.CheckNativeSupply(e.state); err != nil {
+		e.state.DiscardPending()
+		return fmt.Errorf("reapply: %w", err)
 	}
 
 	root, err := e.state.PendingStateRoot()
@@ -959,6 +972,13 @@ func (e *Executor) ProduceBlock(
 		}
 		va.AddBalance(totalFees)
 		e.state.SetAccount(va)
+	}
+
+	// A producer must not build a block the chain would refuse (same check as
+	// ExecuteBlock, same point).
+	if err := genesis.CheckNativeSupply(e.state); err != nil {
+		e.state.DiscardPending()
+		return nil, err
 	}
 
 	// Compute the root the pending writes WOULD commit to (for the header), but do

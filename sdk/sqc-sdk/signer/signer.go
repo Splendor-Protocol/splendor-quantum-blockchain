@@ -911,7 +911,11 @@ func parseBigDefault(s, def string) (*big.Int, error) {
 	return parseBig(s, "value")
 }
 
-// MinFee matches SQDP-1 / TS PROTOCOL.minFee (1000 base units).
+// MinFee matches SQDP-1 / TS PROTOCOL.minFee (1000 base units): the signer's
+// lower bound. A chain that schedules min_fee_v1 refuses anything under
+// 0.001 SPLD (10^15 units, TS MIN_FEE_V1) at admission; the signer keeps the
+// launch floor so pre-fork chains and the golden fixtures keep working, and
+// the caller passes the higher fee where the network needs it.
 const MinFee int64 = 1000
 
 func assertMinFee(fee *big.Int) error {

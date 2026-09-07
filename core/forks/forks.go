@@ -85,6 +85,15 @@ const (
 	// ML-DSA-65 + SLH-DSA instructions). Requires ModuleRevertV1 no later
 	// than itself (see Validate).
 	VerifyV1 = "verify_v1"
+	// MinFeeV1 raises the transaction fee floor from the launch value of
+	// 1,000 units to 0.001 SPLD (10^15 units): the mempool refuses cheaper
+	// transactions and the producer's pre-tx hook refuses to include them.
+	// Admission-only — a block sealed before the height is judged by the old
+	// floor. Standalone: it needs no module and no module_revert_v1.
+	MinFeeV1 = "min_fee_v1"
+	// QRC721V1 routes the QRC-721 NFT module (owner-only mint). Requires
+	// ModuleRevertV1 no later than itself (see Validate).
+	QRC721V1 = "qrc721_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -93,7 +102,7 @@ const (
 // fork name is otherwise invisible: the node reports a healthy schedule, the
 // rule never activates, and nobody finds out until the height passes without
 // anything happening.
-var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1, ValidatorGatesV1, VerifyV1}
+var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1, ValidatorGatesV1, VerifyV1, MinFeeV1, QRC721V1}
 
 // Schedule maps an upgrade name to the height at which it takes effect.
 type Schedule map[string]uint64
@@ -145,7 +154,7 @@ func (s Schedule) Validate() error {
 	// before (or without) that rule describes a chain that cannot run it
 	// safely, so the document is refused rather than honoured in part. The
 	// dependents are checked in sorted order for a stable report.
-	for _, name := range []string{BridgeV1, ExchangeV1, QRC1155V1, QRC20V2, ValidatorGatesV1, VerifyV1} {
+	for _, name := range []string{BridgeV1, ExchangeV1, QRC1155V1, QRC20V2, QRC721V1, ValidatorGatesV1, VerifyV1} {
 		at, ok := s.At(name)
 		if !ok {
 			continue

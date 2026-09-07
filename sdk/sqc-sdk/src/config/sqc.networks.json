@@ -3,6 +3,7 @@
   "defaultNetwork": "local",
   "protocol": {
     "minFee": "1000",
+    "minFeeV1": "1000000000000000",
     "addressPrefix": "SQ:",
     "addressHexLen": 64,
     "confirmation": "nonce",

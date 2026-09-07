@@ -1,5 +1,15 @@
 # Changelog
 
+## @splendor/sqc-sdk — `min_fee_v1` and `qrc721_v1` notes
+
+- `MIN_FEE_V1` / `PROTOCOL.minFeeV1` (`1000000000000000` = 0.001 SPLD): the floor on a network
+  whose `/status.forks` lists `min_fee_v1`. **`MIN_FEE` / `PROTOCOL.minFee` are unchanged**
+  (1,000): flipping the default is a coordinated release with the wallet extension and every
+  dApp pinning the constant, and no tier has scheduled the upgrade yet. Pass `fee: MIN_FEE_V1`
+  explicitly where the network needs it.
+- `qrc721_v1` is routed on-chain (owner-only mint, ERC-721 transfers/approvals/burn). No SDK
+  Program yet: `known-module-actions.json` lists it with every action as a declared gap.
+
 ## @splendor/sqc-sdk — SQVL verify module (`verify_v1`)
 
 - **Signer WASM rebuilt** (go1.25.0, `wasm/build.sh`): new exports `sqGetSLHPublicKeyHex`,

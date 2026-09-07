@@ -4,6 +4,15 @@ import { getProtocolConfig } from './networks.js';
 
 export const MIN_FEE = getProtocolConfig().minFee;
 
+/**
+ * The floor under `min_fee_v1` (0.001 SPLD). The chain's `/status` lists the
+ * active forks; on a network that schedules it, send `fee: MIN_FEE_V1` (or
+ * more) or the node refuses the transaction as "fee too low". `MIN_FEE` stays
+ * the launch value so wallets pinned to it keep working on the tiers that
+ * have not scheduled the upgrade.
+ */
+export const MIN_FEE_V1 = getProtocolConfig().minFeeV1 ?? '1000000000000000';
+
 export function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, '0'))

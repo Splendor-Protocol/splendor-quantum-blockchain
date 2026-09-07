@@ -29,7 +29,7 @@ export type { EthereumProvider, SignDerivationOpts } from './metamask.js';
 export { BridgeError, isBridgeError } from './errors.js';
 export type { BridgeErrorCode } from './errors.js';
 export { isValidAddress, assertAddress, canonicalizeAddress } from './address.js';
-export { MIN_FEE, bytesToHex, hexToBytes, isHexString } from './encoding.js';
+export { MIN_FEE, MIN_FEE_V1, bytesToHex, hexToBytes, isHexString } from './encoding.js';
 export {
   encodeFunctionData,
   encodeFunctionDataHex,

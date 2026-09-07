@@ -200,6 +200,38 @@ func (s *StateDB) loadLeaves() error {
 	return iter.Error()
 }
 
+// SumNativeBalances totals every account's native SPLD balance, overlaying
+// the uncommitted dirty writes on committed state — the circulating supply of
+// the block about to be committed, which genesis.CheckNativeSupply holds to
+// the amount minted at genesis. One pass over every account; see that
+// function for the cost note.
+func (s *StateDB) SumNativeBalances() (*big.Int, error) {
+	sum := new(big.Int)
+	seen := make(map[qcrypto.Address]struct{})
+
+	s.mu.RLock()
+	for addr, acc := range s.dirty {
+		seen[addr] = struct{}{}
+		if acc != nil && acc.Balance != nil {
+			sum.Add(sum, acc.Balance)
+		}
+	}
+	s.mu.RUnlock()
+
+	if err := s.ForEachAccount(func(a *types.Account) error {
+		if _, ok := seen[a.Address]; ok {
+			return nil
+		}
+		if a.Balance != nil {
+			sum.Add(sum, a.Balance)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return sum, nil
+}
+
 // Close closes the underlying LevelDB.
 func (s *StateDB) Close() error {
 	return s.db.Close()

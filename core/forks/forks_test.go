@@ -92,7 +92,7 @@ func TestReservedNamesAreRefusedUntilImplemented(t *testing.T) {
 	// The routed modules are known too; their dependency rule refuses each
 	// alone (a SOFT failure would drop the tx and pin the nonce), so each is
 	// tried with module_revert_v1 — what is on trial here is the name.
-	for _, name := range []string{QRC20V2, QRC1155V1, ExchangeV1, ValidatorGatesV1} {
+	for _, name := range []string{QRC20V2, QRC1155V1, ExchangeV1, ValidatorGatesV1, VerifyV1, QRC721V1} {
 		if !isKnown(name) {
 			t.Fatalf("%s has a gate in this build but is not listed as known", name)
 		}
@@ -146,5 +146,16 @@ func TestValidateReportsUnknownNamesDeterministically(t *testing.T) {
 		if got := s.Validate(); got.Error() != first.Error() {
 			t.Fatalf("error text varies across runs: %q vs %q", got, first)
 		}
+	}
+}
+
+// min_fee_v1 is a fee rule, not a module: it is schedulable on its own,
+// without module_revert_v1.
+func TestMinFeeV1IsKnownAndStandalone(t *testing.T) {
+	if !isKnown(MinFeeV1) {
+		t.Fatalf("%s has a gate in this build but is not listed as known", MinFeeV1)
+	}
+	if err := (Schedule{MinFeeV1: 1}).Validate(); err != nil {
+		t.Fatalf("scheduling %s alone must be accepted: %v", MinFeeV1, err)
 	}
 }

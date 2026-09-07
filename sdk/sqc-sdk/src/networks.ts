@@ -34,7 +34,14 @@ export type NetworkConfig = {
 };
 
 export type ProtocolConfig = {
+  /** Launch fee floor (1,000 units). What `MIN_FEE` and `PROTOCOL.minFee` report. */
   minFee: string;
+  /**
+   * Fee floor once a network schedules `min_fee_v1` (0.001 SPLD = 10^15 units).
+   * Not the default: pass `fee: MIN_FEE_V1` on such a network until a
+   * coordinated SDK release flips `minFee`.
+   */
+  minFeeV1?: string;
   addressPrefix: string;
   addressHexLen: number;
   confirmation: string;

@@ -360,7 +360,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// ── Hook registry ──────────────────────────────────────────────────────
 	hooks := block.NewHookRegistry()
-	hooks.OnPreTx("min_fee", block.MinFeeHook(1000))
+	// The fee floor follows the fork schedule (min_fee_v1), judged at the
+	// height of the block being built or applied.
+	hooks.OnPreTx("min_fee", func(tx *types.Transaction, height uint64) error {
+		return block.MinFeeHook(minFeeAt(executor.Forks(), height))(tx, height)
+	})
 	hooks.OnPreBlock("block_size", block.BlockSizeHook(block.MaxTxPerBlock))
 	hooks.OnPostBlock("logging", block.LoggingHook())
 	executor.WithHooks(hooks)
@@ -621,6 +625,12 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// ── Context + signal handling ──────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// The mempool's floor tracks the same schedule as the pre-tx hook above,
+	// for the next block, on every node.
+	keepPoolFloorAligned(ctx, pool, executor.Forks,
+		func() uint64 { h, _ := executor.LatestHeight(); return h },
+		time.Duration(flagBlockInterval)*time.Second)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
