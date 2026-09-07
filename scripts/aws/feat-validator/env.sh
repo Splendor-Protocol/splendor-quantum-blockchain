@@ -37,6 +37,12 @@ export SQC_KEY_NAME="${SQC_KEY_NAME:-sqc-feat-validator}"
 export SQC_KEY_FILE="$SQC_TEST_DIR/$SQC_KEY_NAME.pem"
 export SQC_SG_NAME="${SQC_SG_NAME:-sqc-feat-validator}"
 
+# No default VPC in LatamDX 640. Prefer the shared latamdx-vpc public subnet
+# (IGW route). Override before sourcing if needed. Do NOT use the tofu-managed
+# testnet/production/devnet VPCs for this throwaway test.
+export SQC_VPC_ID="${SQC_VPC_ID:-vpc-08714636a62c98085}"
+export SQC_SUBNET_ID="${SQC_SUBNET_ID:-subnet-01f54642490ebd1f9}"
+
 # Repo root (this file lives in scripts/aws/feat-validator/).
 export SQC_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 

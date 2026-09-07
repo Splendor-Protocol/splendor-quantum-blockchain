@@ -34,7 +34,14 @@ sqc_log "credentials live: $arn"
 
 ami="$(aws ssm get-parameter --name "$SQC_AMI_PARAM" --query 'Parameter.Value' --output text)"
 sqc_log "ubuntu 24.04 arm64 AMI in $AWS_REGION: $ami"
-vpc="$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)"
-[ "$vpc" != "None" ] || sqc_die "no default VPC in $AWS_REGION; set SQC_VPC_ID / SQC_SUBNET_ID in env.sh"
-sqc_log "default VPC: $vpc"
+if [ -n "${SQC_VPC_ID:-}" ] && [ -n "${SQC_SUBNET_ID:-}" ]; then
+  vpc="$SQC_VPC_ID"
+  aws ec2 describe-vpcs --vpc-ids "$vpc" --query 'Vpcs[0].VpcId' --output text >/dev/null     || sqc_die "SQC_VPC_ID=$vpc not found in $AWS_REGION"
+  aws ec2 describe-subnets --subnet-ids "$SQC_SUBNET_ID" --query 'Subnets[0].SubnetId' --output text >/dev/null     || sqc_die "SQC_SUBNET_ID=$SQC_SUBNET_ID not found in $AWS_REGION"
+  sqc_log "VPC: $vpc (override) subnet: $SQC_SUBNET_ID"
+else
+  vpc="$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)"
+  [ "$vpc" != "None" ] || sqc_die "no default VPC in $AWS_REGION; set SQC_VPC_ID / SQC_SUBNET_ID in env.sh"
+  sqc_log "default VPC: $vpc"
+fi
 sqc_log "READY: run 10-launch.sh"

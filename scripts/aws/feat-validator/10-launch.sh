@@ -83,8 +83,19 @@ if [ ! -f "$SQC_KEY_FILE" ]; then
     --query KeyMaterial --output text > "$SQC_KEY_FILE"
   chmod 600 "$SQC_KEY_FILE"
 fi
-VPC="$(run aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)"
+if [ -n "${SQC_VPC_ID:-}" ]; then
+  VPC="$SQC_VPC_ID"
+else
+  VPC="$(run aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)"
+fi
+[ -n "$VPC" ] && [ "$VPC" != "None" ] || sqc_die "no VPC; set SQC_VPC_ID"
 VPC_CIDR="$(run aws ec2 describe-vpcs --vpc-ids "$VPC" --query 'Vpcs[0].CidrBlock' --output text)"
+SUBNET="${SQC_SUBNET_ID:-}"
+if [ -z "$SUBNET" ] || [ "$SUBNET" = "None" ]; then
+  SUBNET="$(run aws ec2 describe-subnets --filters Name=vpc-id,Values="$VPC" Name=default-for-az,Values=true --query 'Subnets[0].SubnetId' --output text)"
+fi
+[ -n "$SUBNET" ] && [ "$SUBNET" != "None" ] || sqc_die "no subnet; set SQC_SUBNET_ID"
+sqc_log "using VPC=$VPC subnet=$SUBNET"
 SG="$(run aws ec2 describe-security-groups --filters Name=group-name,Values="$SQC_SG_NAME" Name=vpc-id,Values="$VPC" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo None)"
 if [ "$SG" = "None" ] || [ -z "$SG" ]; then
   SG="$(run aws ec2 create-security-group --group-name "$SQC_SG_NAME" --description "feat/validator throwaway test" --vpc-id "$VPC" \
@@ -110,7 +121,8 @@ CLOUD
 for i in $(seq 0 $((NODES-1))); do
   role=node; itype="$SQC_NODE_INSTANCE_TYPE"; [ "$i" = 0 ] && { role=validator; itype="$SQC_VALIDATOR_INSTANCE_TYPE"; }
   id="$(run aws ec2 run-instances --image-id "$AMI" --instance-type "$itype" --key-name "$SQC_KEY_NAME" \
-    --security-group-ids "$SG" --user-data "$USERDATA" --metadata-options HttpTokens=required \
+    --network-interfaces "DeviceIndex=0,SubnetId=$SUBNET,Groups=$SG,AssociatePublicIpAddress=true" \
+    --user-data "$USERDATA" --metadata-options HttpTokens=required \
     --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=40,VolumeType=gp3,Encrypted=true}' \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$SQC_TEST_TAG-$role-$i},{Key=Project,Value=$SQC_TEST_TAG},{Key=Role,Value=$role},{Key=Owner,Value=$SQC_TEST_OWNER}]" \
     --query 'Instances[0].InstanceId' --output text)"
@@ -121,12 +133,16 @@ done
 
 sqc_log "waiting for the instances to run"
 aws ec2 wait instance-running --instance-ids $(awk '{print $3}' "$SQC_TEST_DIR/instances.txt")
-declare -A PUB PRIV
+: > "$SQC_TEST_DIR/instances.full.txt"
 while read -r i role id; do
-  PUB[$i]="$(aws ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)"
-  PRIV[$i]="$(aws ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)"
-  echo "$i $role $id ${PUB[$i]} ${PRIV[$i]}" >> "$SQC_TEST_DIR/instances.full.txt"
+  pub="$(aws ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)"
+  priv="$(aws ec2 describe-instances --instance-ids "$id" --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)"
+  echo "$i $role $id $pub $priv" >> "$SQC_TEST_DIR/instances.full.txt"
 done < "$SQC_TEST_DIR/instances.txt"
+
+# bash 3.2-safe IP lookup helpers (macOS /bin/bash has no declare -A)
+sqc_pub()  { awk -v i="$1" '$1==i{print $4; exit}' "$SQC_TEST_DIR/instances.full.txt"; }
+sqc_priv() { awk -v i="$1" '$1==i{print $5; exit}' "$SQC_TEST_DIR/instances.full.txt"; }
 
 SSH=(ssh -i "$SQC_KEY_FILE" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes)
 wait_ssh() { for _ in $(seq 1 40); do "${SSH[@]}" "ubuntu@$1" 'test -d /opt/sqc && test -x /usr/bin/jq' 2>/dev/null && return 0; sleep 6; done; sqc_die "ssh to $1 never came up"; }
@@ -141,9 +157,9 @@ while read -r i role id ip priv; do
   if [ "$role" = validator ]; then
     scp -i "$SQC_KEY_FILE" "$SQC_TEST_DIR/chain/validator.sqwallet" "$SQC_TEST_DIR/chain/wallet.pass" "ubuntu@$ip:/tmp/"
     EXEC="/opt/sqc/sqc-node --data-dir /var/sqc/data --rpc-addr 0.0.0.0:8080 --genesis /var/sqc/genesis.json --chain-id $SQC_TEST_CHAIN_ID --validator --wallet /var/sqc/validator.sqwallet --wallet-pass-file /var/sqc/wallet.pass --block-interval $SQC_BLOCK_INTERVAL --allow-private-peers --log-level info"
-    for j in $(seq 1 $((NODES-1))); do EXEC="$EXEC --peer http://${PRIV[$j]}:8080"; done
+    for j in $(seq 1 $((NODES-1))); do EXEC="$EXEC --peer http://$(sqc_priv "$j"):8080"; done
   else
-    EXEC="/opt/sqc/sqc-node --data-dir /var/sqc/data --rpc-addr 0.0.0.0:8080 --genesis /var/sqc/genesis.json --chain-id $SQC_TEST_CHAIN_ID --validator-pubkey-hex $PUBHEX --peer http://${PRIV[0]}:8080 --allow-private-peers --log-level info"
+    EXEC="/opt/sqc/sqc-node --data-dir /var/sqc/data --rpc-addr 0.0.0.0:8080 --genesis /var/sqc/genesis.json --chain-id $SQC_TEST_CHAIN_ID --validator-pubkey-hex $PUBHEX --peer http://$(sqc_priv 0):8080 --allow-private-peers --log-level info"
   fi
   "${SSH[@]}" "ubuntu@$ip" "sudo bash -s" <<REMOTE
 set -e
@@ -178,5 +194,5 @@ sleep 3 && systemctl --no-pager --lines=5 status sqc-node || true
 REMOTE
 done < "$SQC_TEST_DIR/instances.full.txt"
 
-sqc_log "launched. Validator RPC: http://${PUB[0]}:8080"
+sqc_log "launched. Validator RPC: http://$(sqc_pub 0):8080"
 sqc_log "next: bash scripts/aws/feat-validator/20-smoke.sh"
