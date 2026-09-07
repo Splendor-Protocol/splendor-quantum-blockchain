@@ -1,9 +1,16 @@
 /**
- * @deprecated LEGACY — unsafe for production submit against current Go wire JSON.
+ * =============================================================================
+ * DO NOT USE FOR PRODUCTION SUBMIT
+ * =============================================================================
+ * LEGACY — unsafe for production submit against current Go wire JSON.
  *
  * Transaction builders here emit string `from`/`to`/`amount`/`fee`, but the node
- * expects byte-array addresses and numeric amount/fee. Use `@splendor/sqc-sdk`
- * (or deprecated `@splendor/pq-bridge` shim) for all signing and submit flows.
+ * expects byte-array addresses and numeric amount/fee.
+ *
+ * Use `@splendor/sqc-sdk` (Wallet / createSession / createWalletClient) or
+ * `@splendor/connect-react` for all signing and submit flows.
+ * The deprecated `@splendor/pq-bridge` package is only a re-export shim.
+ * =============================================================================
  *
  * Splendor Quantum Chain — JavaScript SDK (legacy read helpers only)
  * 

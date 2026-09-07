@@ -4,6 +4,7 @@
  */
 import { DERIVATION_DOMAIN_MESSAGE, CHAIN_ID } from './derive.js';
 import { getProtocolConfig, getNetworksFile } from './networks.js';
+import { SIGN_MESSAGE_DOMAIN } from './message-domain.js';
 
 const proto = getProtocolConfig();
 const file = getNetworksFile();
@@ -31,6 +32,8 @@ export const PROTOCOL = {
   minFee: proto.minFee,
   derivationDomainVersion: proto.derivationDomainVersion,
   derivationDomainMessage: DERIVATION_DOMAIN_MESSAGE,
+  /** Domain prefix for unstructured wallet.signMessage payloads. */
+  signMessageDomain: SIGN_MESSAGE_DOMAIN,
   confirmation: proto.confirmation,
   bridgeClientHeader: BRIDGE_CLIENT_VERSION,
   abiHash: proto.abiHash,

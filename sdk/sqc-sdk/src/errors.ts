@@ -86,6 +86,12 @@ export function isBridgeError(e: unknown): e is BridgeError {
   return e instanceof BridgeError;
 }
 
+/** Canonical alias — prefer over BridgeError in new code. */
+export const WalletError = BridgeError;
+export type WalletError = BridgeError;
+export type WalletErrorCode = BridgeErrorCode;
+export const isWalletError = isBridgeError;
+
 export function wrapUnknown(e: unknown, fallback: BridgeErrorCode = 'UNKNOWN'): BridgeError {
   if (e instanceof BridgeError) return e;
   const msg = e instanceof Error ? e.message : String(e);

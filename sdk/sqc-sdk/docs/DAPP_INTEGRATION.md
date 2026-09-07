@@ -14,25 +14,30 @@ Connect → fund → transfer → wait. Use a read-only `Connection` / `SqcProvi
 
 | Ask | Use |
 |-----|-----|
-| Plug-and-play wallet UI (AppKit-style) | `@splendor/connect-react` — `SplendorConnectProvider` + `ConnectKit` / `ConnectButton` (`hostModals` default) |
+| Scaffold a new dApp | `npm exec create-splendor-dapp my-dapp` |
+| Plug-and-play wallet UI (AppKit-style) | `@splendor/connect-react` — `SplendorConnectProvider` + `ConnectKit` / widgets |
+| Drop-in transfer / token / account panels | `TransferWidget`, `TokenPanel`, `DeployTokenWidget`, `AccountCard` |
 | Hide PQ crypto from dApp code | WASM signer only; UI shows `SQ:` identity |
-| One-touch / one config for all dApps | `sqc.networks.json` + `createSession` / `connect` / `connectSplendor` |
+| One-touch / one config for all dApps | `sqc.networks.json` + `createSession` / `createWalletClient` / `connect` |
+| WalletClient / PublicClient (viem-style) | `createWalletClient` / `createPublicClient` |
+| Page script ↔ connected wallet | `exposeInjectedProvider` or `installSplendorProvider` → `window.splendor` |
 | Working demo (connect + SPLD + modules) | [`../examples/web-dapp`](../examples/web-dapp) |
 | Real testnet RPCs without forking package | `rpcUrls: [...]` (gateway optional for SqRpc) or `networks` / `networkConfig` / `registerNetwork` |
 | Host WASM without manual copy | Vite: `@splendor/connect-react/vite` `sqcWasmPlugin`; Next: `npx sqc-copy-wasm` / `@splendor/connect-react/next` |
-| Idle / tab lock must update UI | Bridge emits `lock`; connect-react sets `status: 'locked'` → Unlock CTA |
-| Soft network switch without losing last wallet | `useNetwork().switchNetwork` (keeps last connector; reconnects when previously connected) |
+| Idle / tab lock must update UI | Wallet emits `lock`; connect-react sets `status: 'locked'` → Unlock CTA |
+| Soft network switch without losing last wallet | `useNetwork().switchNetwork` (emits `chainChanged`) |
 | No bridge markup fee | Only chain `minFee` (`PROTOCOL.minFee`); under congestion node may require higher — handle reject and retry |
-| Deploy QRC-20 token | `deployQRC20(wallet, …)` or `useDeployToken()` |
-| Token balance / transfer | `modules.qrc20(connection, addr)` / `useQRC20(addr)` |
+| Deploy QRC-20 token | `deployQRC20(wallet, …)` or `useDeployToken()` / `DeployTokenWidget` |
+| Token balance / transfer | `modules.qrc20(connection, addr)` / `useQRC20(addr)` / `TokenPanel` |
 | QRC-1155 / DEX / Exchange / Bridge | `modules.qrc1155` / `modules.dex` / `modules.exchange` / `modules.bridge` |
 | Confirmation that is not fake | `waitForConfirmation` / `waitForConfirmation: true` — receipt-first, nonce fallback ([SQDP §7](./SQDP-1.md)) |
 
-**Out of scope (documented):** WalletConnect v2 protocol, full EIP-1193 SQC provider for wagmi, CDN-hosted WASM.
+**Out of scope (documented):** WalletConnect v2, Ethereum `eth_*` / wagmi EIP-1193 adapters, CDN-hosted WASM.
+**Supported interop:** SQC injected provider `window.splendor` with `splendor_*` methods (not MetaMask-compatible).
 
 ## Recommended: Connect UI kit (React)
 
-For browser dApps, use **`@splendor/connect-react`** — AppKit-style modal + connectors. PQ ML-DSA-65 stays inside WASM; your UI only shows `SQ:` identity.
+For browser dApps, use **`@splendor/connect-react`** — AppKit-style modal + connectors + widgets. PQ ML-DSA-65 stays inside WASM; your UI only shows `SQ:` identity.
 
 ```tsx
 import '@splendor/connect-react/style.css';
@@ -40,11 +45,13 @@ import { sqcWasmPlugin } from '@splendor/connect-react/vite'; // vite.config.ts
 import {
   SplendorConnectProvider,
   ConnectKit,
+  TransferWidget,
   useSendTransfer,
 } from '@splendor/connect-react';
 
 <SplendorConnectProvider network="local" autoReconnect allowUnpinnedWasm>
   <ConnectKit />
+  <TransferWidget />
 </SplendorConnectProvider>
 ```
 
@@ -59,17 +66,18 @@ Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
 
 ### Minimal React checklist
 
-1. `npm i @splendor/connect-react @splendor/sqc-sdk`
+1. `npm i @splendor/connect-react @splendor/sqc-sdk` (or `npm exec create-splendor-dapp my-dapp`)
 2. Vite: `sqcWasmPlugin()` from `@splendor/connect-react/vite`
-3. Wrap app in `SplendorConnectProvider` + `ConnectButton`
-4. Use `useBalance`, `useSendTransfer`, `useQRC20` for panels (see web-dapp)
+3. Wrap app in `SplendorConnectProvider` + `ConnectKit` / widgets
+4. Use `TransferWidget`, `useBalance`, `useSendTransfer`, `useQRC20` for panels (see web-dapp)
 
-Lower-level (no UI): `createSession` / `connect` from `@splendor/sqc-sdk`.
+Lower-level (no UI): `createSession` / `createWalletClient` / `connect` from `@splendor/sqc-sdk`.
 
 ```ts
-import { PROTOCOL, SQDP_VERSION, createSession, connectSplendor, createSplendorClient } from '@splendor/sqc-sdk';
+import { PROTOCOL, SQDP_VERSION, createSession, createWalletClient, createPublicClient } from '@splendor/sqc-sdk';
 // createSession → bound sendSPLD / token / dex / bridge / modules (no wallet args on writes)
-// PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.confirmationCaveat
+// createWalletClient → wallet.connect({ mode: 'seed', seed }) / signAndSendTransaction
+// PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.signMessageDomain, PROTOCOL.confirmationCaveat
 ```
 
 ### Bound session (preferred headless)
@@ -81,6 +89,15 @@ await s.token(token).transfer(to, '100');
 await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
 ```
 
+### WalletClient (alternative headless)
+
+```ts
+const wallet = createWalletClient({ network: 'local', allowUnpinnedWasm: true });
+await wallet.connect({ mode: 'seed', seed });
+await wallet.signAndSendTransaction({ type: 'transfer', to, amountSPLD: '0.01' });
+```
+
+Legacy aliases (`connectSplendor`, `createSplendorClient`, `SqcProvider`) still work but are deprecated.
 ## One-touch connect (headless / agents)
 
 ```ts
@@ -244,4 +261,4 @@ Serve WASM with correct MIME/CORS: [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 - [ ] Use `rpcUrls` failover in production (`https://` for non-local)
 - [ ] Confirm via `waitForConfirmation` (receipt-first; nonce fallback on minimal RPC)
 - [ ] Host WASM at network `wasmUrl` / `execUrl` from `sqc.networks.json` (one-touch already resolves these; you still must serve the files)
-- [ ] Remember: under congestion node fee floor may exceed `PROTOCOL.minFee` (`0.001 SPLD` / `1000000000000000`)
+- [ ] Remember: under congestion node fee floor may exceed `PROTOCOL.minFee` (`1000`)

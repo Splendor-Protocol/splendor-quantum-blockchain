@@ -114,7 +114,7 @@ Config field `PROTOCOL.confirmation === 'nonce'` names the **fallback** mechanis
 
 ## 8. Connection events
 
-Clients using `@splendor/sqc-sdk` MUST use these event names and payloads:
+Clients using `@splendor/sqc-sdk` MUST use these event names and payloads (`WalletEventMap` / `BridgeEventMap`):
 
 | Event | Payload |
 |-------|---------|
@@ -122,18 +122,34 @@ Clients using `@splendor/sqc-sdk` MUST use these event names and payloads:
 | `disconnect` | `{}` |
 | `lock` | `{}` |
 | `accountsChanged` | `{ address: string, evmAddress?: string }` |
+| `chainChanged` | `{ chainId: number, networkId: string }` |
 | `error` | `{ code: string, message: string }` |
 
 1. After MetaMask `accountsChanged`, wallets SHOULD re-`personal_sign` and re-derive (SDK default). Empty accounts SHOULD lock and emit `disconnect`.
 2. `lock()` MUST clear the ML-DSA-65 key from WASM memory and emit a `lock` event. `disconnect()` MUST destroy the session and emit `disconnect`.
+3. Soft network switches (ConnectKit) SHOULD emit `chainChanged` via `wallet.notifyChainChanged`.
+
+### 8.1 Injected SQC provider (`window.splendor`)
+
+dApps MAY install an in-page provider with `installSplendorProvider({ wallet })` or ConnectKit `exposeInjectedProvider`. Methods use the **`splendor_*`** prefix (NOT Ethereum `eth_*`):
+
+| Method | Purpose |
+|--------|---------|
+| `splendor_connect` / `splendor_disconnect` / `splendor_accounts` | Session |
+| `splendor_signMessage` / `splendor_signTransaction` / `splendor_sendTransaction` | Signing |
+| `splendor_chainId` / `splendor_switchNetwork` | Network |
+
+Unstructured `signMessage` payloads MUST be domain-separated with `PROTOCOL.signMessageDomain` (`SPLENDOR-QC-MSG-v1`) unless the message already starts with a known protocol prefix (e.g. Splendor Connect v2) or `raw: true` is set.
+
+WalletConnect v2 and Ethereum EIP-1193/`eth_*` for wagmi remain **out of scope**.
 
 ---
 
 ## 9. Errors
 
-Clients MUST handle these `BridgeError` codes (string `code` field):
+Clients MUST handle these `WalletError` / `BridgeError` codes (string `code` field):
 
-`NOT_CONNECTED`, `USER_REJECTED`, `NO_PROVIDER`, `RPC`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`, `UNKNOWN`.
+`NOT_CONNECTED`, `USER_REJECTED`, `NO_PROVIDER`, `RPC`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `TX_FAILED`, `CHAIN_MISMATCH`, `UNKNOWN`.
 
 Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` using the same code strings when applicable.
 

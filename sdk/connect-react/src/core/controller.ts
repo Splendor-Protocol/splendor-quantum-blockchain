@@ -62,6 +62,7 @@ function errorFromWalletPayload(payload: { code: string; message: string }): Err
     'INVALID_FEE',
     'TIMEOUT',
     'TX_NOT_CONFIRMED',
+    'TX_FAILED',
     'CHAIN_MISMATCH',
     'UNKNOWN',
   ];

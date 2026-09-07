@@ -6,7 +6,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "sqc-copy-wasm": "./scripts/copy-wasm-assets.mjs"
+    "sqc-copy-wasm": "./scripts/copy-wasm-assets.mjs",
+    "create-splendor-dapp": "./scripts/create-splendor-dapp.mjs"
   },
   "exports": {
     ".": {
@@ -33,6 +34,10 @@
       "types": "./dist/next.d.ts",
       "import": "./dist/next.js"
     },
+    "./widgets": {
+      "types": "./dist/widgets.d.ts",
+      "import": "./dist/widgets.js"
+    },
     "./style.css": "./dist/theme/tokens.css"
   },
   "sideEffects": [
@@ -42,6 +47,7 @@
   "files": [
     "dist",
     "scripts",
+    "create-template",
     "README.md"
   ],
   "scripts": {

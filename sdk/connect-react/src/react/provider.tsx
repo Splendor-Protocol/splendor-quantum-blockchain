@@ -3,6 +3,8 @@ import {
   getNetwork,
   isPlaceholderNetwork,
   registerNetwork,
+  installSplendorProvider,
+  uninstallSplendorProvider,
   type CreateClientOptions,
   type NetworkConfig,
   type NetworkId,
@@ -51,6 +53,12 @@ export type SplendorConnectProviderProps = Omit<CreateClientOptions, 'network'> 
    * Set false if you mount modals yourself or use ConnectButton includeModals.
    */
   hostModals?: boolean;
+  /**
+   * When true, install `window.splendor` bound to the ConnectKit wallet session
+   * so other page scripts can call splendor_* methods. Default false.
+   * Skips install if an extension provider is already present.
+   */
+  exposeInjectedProvider?: boolean;
 };
 
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
@@ -100,6 +108,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     network: networkProp,
     sessionIdleMs,
     hostModals = true,
+    exposeInjectedProvider = false,
     ...clientOpts
   } = props;
 
@@ -313,6 +322,40 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       }, 0);
     };
   }, []);
+
+  // Opt-in window.splendor for page scripts; emit chainChanged after soft switch.
+  const chainAnnounceSkipRef = useRef(true);
+  useEffect(() => {
+    if (controller.isStub) return;
+    let wallet: ReturnType<ConnectController['getWallet']>;
+    try {
+      wallet = controller.getWallet();
+    } catch {
+      return;
+    }
+    const net = controller.getNetwork();
+    if (exposeInjectedProvider) {
+      installSplendorProvider({
+        wallet,
+        connection: wallet.connection,
+        networkId: net.id,
+        onSwitchNetwork: async (id) => {
+          await softSwitchTo(id as NetworkId);
+        },
+      });
+    }
+    if (chainAnnounceSkipRef.current) {
+      chainAnnounceSkipRef.current = false;
+    } else {
+      wallet.notifyChainChanged({
+        chainId: net.chainId,
+        networkId: net.id,
+      });
+    }
+    return () => {
+      if (exposeInjectedProvider) uninstallSplendorProvider();
+    };
+  }, [controller, exposeInjectedProvider, softSwitchTo, networkId]);
 
   const switchNetwork = softSwitchTo;
 

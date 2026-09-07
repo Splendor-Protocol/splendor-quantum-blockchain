@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { generateSeedHex } from '../connectors/seed.js';
 import type { Connector } from '../connectors/types.js';
 import { useConnect, useNetwork } from '../react/hooks.js';
+import { sanitizeIconUrl } from '../widgets/utils.js';
 import { groupConnectors, isNativeConnector } from './connectorGroups.js';
 import { connectorIcon } from './icons.js';
 import { ModalShell } from './ModalShell.js';
@@ -99,8 +100,9 @@ export function ConnectModal() {
   };
 
   const renderIcon = (c: { id: string; icon?: string }) => {
-    if (c.icon) {
-      return <img src={c.icon} alt="" width={18} height={18} />;
+    const safe = sanitizeIconUrl(c.icon);
+    if (safe) {
+      return <img src={safe} alt="" width={18} height={18} referrerPolicy="no-referrer" />;
     }
     return connectorIcon(c.id);
   };
