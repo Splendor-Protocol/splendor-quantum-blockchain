@@ -13,15 +13,17 @@
 //   - A minimum of minFeeders must agree before the price is considered valid
 //
 // Price format:
-//   All prices are stored as uint256 in "price units" where:
-//   1 price unit = 1 smallest SPLD / 1 smallest token unit
-//   i.e. how many smallest-SPLD you need to buy 1 smallest-token
+//
+//	All prices are stored as uint256 in "price units" where:
+//	1 price unit = 1 smallest SPLD / 1 smallest token unit
+//	i.e. how many smallest-SPLD you need to buy 1 smallest-token
 //
 // All storage: SHA3-256 slots. All signatures: ML-DSA-65.
 // No ECDSA. No keccak. No Ethereum address format.
 package vm
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -54,6 +56,13 @@ func oraclePriceSlot(asset qcrypto.Address, feeder qcrypto.Address) [32]byte {
 	key := append([]byte("oracle:price:"), asset[:]...)
 	key = append(key, feeder[:]...)
 	return qcrypto.Hash32(key)
+}
+
+// oracleFeederAtSlot is the i-th entry of the feeder index (see ListFeeders).
+func oracleFeederAtSlot(i uint64) [32]byte {
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], i)
+	return qcrypto.Hash32(append([]byte("oracle:feeder_at:"), n[:]...))
 }
 
 // ── Data structures ────────────────────────────────────────────────────────────
@@ -140,6 +149,14 @@ func (o *PriceOracle) RegisterFeeder(caller qcrypto.Address, feeder qcrypto.Addr
 		Name:      name,
 		Active:    true,
 	}
+	// First registration takes an index slot; re-registering (a key rotation
+	// or a reactivation) keeps the one it has.
+	existing, _ := o.GetFeeder(feeder)
+	if existing == nil {
+		if err := o.appendFeeder(feeder); err != nil {
+			return err
+		}
+	}
 	return o.setFeeder(feeder, info)
 }
 
@@ -223,8 +240,13 @@ func (o *PriceOracle) GetPrice(asset qcrypto.Address, currentBlock uint64) (*big
 // Pass nil for feeders to auto-discover from all registered feeders.
 func (o *PriceOracle) GetPriceFromFeeders(asset qcrypto.Address, currentBlock uint64, feeders []qcrypto.Address) (*big.Int, error) {
 	if feeders == nil {
-		// If no feeder list provided, caller must pass known feeders
-		return nil, fmt.Errorf("oracle: feeder list required")
+		// No list given: every feeder ever registered. Deactivated ones are
+		// skipped below like any other.
+		listed, err := o.ListFeeders()
+		if err != nil {
+			return nil, err
+		}
+		feeders = listed
 	}
 
 	var validPrices []*big.Int
@@ -335,6 +357,51 @@ func (o *PriceOracle) requireOwner(caller qcrypto.Address) error {
 }
 
 // ── Storage helpers ────────────────────────────────────────────────────────────
+
+func (o *PriceOracle) feederCount() (uint64, error) {
+	b, err := o.stateDB.GetStorageValue(o.contract, slotOracleFeederCount)
+	if err != nil || len(b) == 0 {
+		return 0, nil
+	}
+	if len(b) >= 8 {
+		return binary.BigEndian.Uint64(b[:8]), nil
+	}
+	return new(big.Int).SetBytes(b).Uint64(), nil
+}
+
+func (o *PriceOracle) appendFeeder(feeder qcrypto.Address) error {
+	n, err := o.feederCount()
+	if err != nil {
+		return err
+	}
+	if err := o.stateDB.SetStorageValue(o.contract, oracleFeederAtSlot(n), feeder[:]); err != nil {
+		return err
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], n+1)
+	return o.stateDB.SetStorageValue(o.contract, slotOracleFeederCount, buf[:])
+}
+
+// ListFeeders returns every feeder address ever registered, in registration
+// order. Without it GetPrice had no way to discover feeders and every caller
+// had to carry the list.
+func (o *PriceOracle) ListFeeders() ([]qcrypto.Address, error) {
+	n, err := o.feederCount()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]qcrypto.Address, 0, n)
+	for i := uint64(0); i < n; i++ {
+		b, err := o.stateDB.GetStorageValue(o.contract, oracleFeederAtSlot(i))
+		if err != nil || len(b) < qcrypto.AddressSize {
+			continue
+		}
+		var a qcrypto.Address
+		copy(a[:], b)
+		out = append(out, a)
+	}
+	return out, nil
+}
 
 func (o *PriceOracle) setFeeder(feeder qcrypto.Address, info *FeederInfo) error {
 	data, err := json.Marshal(info)

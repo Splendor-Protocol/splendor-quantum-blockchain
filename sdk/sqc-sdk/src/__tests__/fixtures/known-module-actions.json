@@ -22,5 +22,9 @@
   "verify": {
     "writes": ["deploy","register","attest","finalize","spend","set_operator","set_threshold","pause","unpause"],
     "reads": ["proof","instance"]
+  },
+  "qrc721": {
+    "writes": ["deploy","mint","transfer","transfer_from","approve","set_approval_for_all","burn"],
+    "reads": ["owner_of","balance_of","token_uri","get_approved","is_approved_for_all","token_info"]
   }
 }

@@ -7,18 +7,19 @@
 // No ECDSA. No keccak. No Ethereum address format.
 //
 // Interface:
-//   balanceOf(owner sqaddress) → uint256
-//   ownerOf(tokenId uint256) → sqaddress
-//   transfer(to sqaddress, tokenId uint256) → bool
-//   approve(to sqaddress, tokenId uint256) → bool
-//   getApproved(tokenId uint256) → sqaddress
-//   setApprovalForAll(operator sqaddress, approved bool) → bool
-//   isApprovedForAll(owner sqaddress, operator sqaddress) → bool
-//   transferFrom(from sqaddress, to sqaddress, tokenId uint256) → bool
-//   mint(to sqaddress, tokenId uint256, uri string) → bool
-//   burn(tokenId uint256) → bool
-//   tokenURI(tokenId uint256) → string
-//   totalSupply() → uint256
+//
+//	balanceOf(owner sqaddress) → uint256
+//	ownerOf(tokenId uint256) → sqaddress
+//	transfer(to sqaddress, tokenId uint256) → bool
+//	approve(to sqaddress, tokenId uint256) → bool
+//	getApproved(tokenId uint256) → sqaddress
+//	setApprovalForAll(operator sqaddress, approved bool) → bool
+//	isApprovedForAll(owner sqaddress, operator sqaddress) → bool
+//	transferFrom(from sqaddress, to sqaddress, tokenId uint256) → bool
+//	mint(to sqaddress, tokenId uint256, uri string) → bool
+//	burn(tokenId uint256) → bool
+//	tokenURI(tokenId uint256) → string
+//	totalSupply() → uint256
 package vm
 
 import (
@@ -47,6 +48,7 @@ var (
 	slotNFTTotalSupply = qcrypto.Hash32([]byte("qrc721:total_supply"))
 	slotNFTName        = qcrypto.Hash32([]byte("qrc721:name"))
 	slotNFTSymbol      = qcrypto.Hash32([]byte("qrc721:symbol"))
+	slotNFTOwner       = qcrypto.Hash32([]byte("qrc721:owner"))
 )
 
 func nftBalanceSlot(addr qcrypto.Address) [32]byte {
@@ -119,7 +121,35 @@ func DeployQRC721(
 	if err := nft.setBigInt(slotNFTTotalSupply, big.NewInt(0)); err != nil {
 		return qcrypto.Address{}, fmt.Errorf("QRC721 deploy supply: %w", err)
 	}
+	if err := stateDB.SetStorageValue(contractAddr, slotNFTOwner, deployer[:]); err != nil {
+		return qcrypto.Address{}, fmt.Errorf("QRC721 deploy owner: %w", err)
+	}
 	return contractAddr, nil
+}
+
+// Owner returns the collection owner (its deployer). Zero if never deployed.
+func (t *QRC721Token) Owner() (qcrypto.Address, error) {
+	b, err := t.stateDB.GetStorageValue(t.contract, slotNFTOwner)
+	if err != nil {
+		return qcrypto.Address{}, err
+	}
+	if len(b) < qcrypto.AddressSize {
+		return qcrypto.Address{}, nil
+	}
+	var owner qcrypto.Address
+	copy(owner[:], b)
+	return owner, nil
+}
+
+func (t *QRC721Token) requireOwner(caller qcrypto.Address) error {
+	owner, err := t.Owner()
+	if err != nil {
+		return err
+	}
+	if owner.IsZero() || caller != owner {
+		return fmt.Errorf("QRC721: caller %s is not owner", caller)
+	}
+	return nil
 }
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
@@ -312,9 +342,14 @@ func (t *QRC721Token) doTransfer(from, to qcrypto.Address, tokenId *big.Int) err
 
 // ── Minting & Burning ─────────────────────────────────────────────────────────
 
-// Mint creates a new token with `tokenId` owned by `to`.
+// Mint creates a new token with `tokenId` owned by `to`. Only the collection
+// owner may mint: Alice's collection stays Alice's supply, the same rule
+// ERC-721 collections and this chain's QRC-20 / QRC-1155 follow.
 // tokenURI is the metadata URI (e.g. ipfs://Qm...).
-func (t *QRC721Token) Mint(to qcrypto.Address, tokenId *big.Int, uri string) error {
+func (t *QRC721Token) Mint(caller, to qcrypto.Address, tokenId *big.Int, uri string) error {
+	if err := t.requireOwner(caller); err != nil {
+		return err
+	}
 	if to.IsZero() {
 		return fmt.Errorf("QRC721 mint: cannot mint to zero address")
 	}

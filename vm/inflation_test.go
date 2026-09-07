@@ -138,7 +138,7 @@ func TestQRC721SelfTransferKeepsBalance(t *testing.T) {
 	tok := NewQRC721Token(sdb, contract)
 
 	id := big.NewInt(1)
-	if err := tok.Mint(holder, id, "ipfs://probe"); err != nil {
+	if err := tok.Mint(holder, holder, id, "ipfs://probe"); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 

@@ -116,6 +116,28 @@ const SDK_COVERAGE: Record<string, { writes: string[]; reads: string[]; allowlis
     ],
     reads: ['proof', 'instance'],
   },
+  // qrc721_v1 is routed on-chain; the SDK has no QRC721 Program yet, so every
+  // action is a declared gap rather than a silent one. Remove entries here as
+  // the client grows.
+  qrc721: {
+    writes: [],
+    reads: [],
+    allowlistGaps: [
+      'w:deploy',
+      'w:mint',
+      'w:transfer',
+      'w:transfer_from',
+      'w:approve',
+      'w:set_approval_for_all',
+      'w:burn',
+      'r:owner_of',
+      'r:balance_of',
+      'r:token_uri',
+      'r:get_approved',
+      'r:is_approved_for_all',
+      'r:token_info',
+    ],
+  },
 };
 
 describe('KnownModuleActions sync', () => {

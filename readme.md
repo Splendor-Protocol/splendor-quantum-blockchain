@@ -915,6 +915,7 @@ unappliable in a block.
 | `bridge` | `deploy`, `claim` (M-of-N attested), `set_operator`, `set_threshold`, `pause`, `unpause`, `transfer_ownership` | `bridge_v1` (requires `module_revert_v1`) | `bridge_info`, `claim_status` (also `GET /bridge/...`) — see `docs/modules/bridge.md` |
 | `staking` | `register`, `add_stake`, `unstake`, `withdraw`, `unjail` (open to anyone); `slash`, `set_pass`, `set_admin` (admin only) | `validator_gates_v1` (requires `module_revert_v1`) | `validator`, `pass`, `can_produce`, `staking_info`, `validator_set` (also `GET /staking/...`) — see `docs/modules/staking.md` |
 | `verify` | `deploy`, `register` (dual-signed ML-DSA-65 + SLH-DSA instruction), `attest`, `finalize`, `spend`, `set_operator`, `set_threshold`, `pause`, `unpause` | `verify_v1` (requires `module_revert_v1`) | `proof`, `instance` (also `POST /verify/check`, `GET /verify/proof/...`) — see `docs/modules/verify.md` |
+| `qrc721` | `deploy`, `mint` (collection owner only), `transfer`, `transfer_from`, `approve`, `set_approval_for_all`, `burn` | `qrc721_v1` (requires `module_revert_v1`) | `owner_of`, `balance_of`, `token_uri`, `get_approved`, `is_approved_for_all`, `token_info` — see `docs/modules/qrc721.md` |
 
 One more name, `module_revert_v1`, is not a module but the failure rule: under
 it a module call that errors is included with a failed receipt (fee kept,
@@ -922,13 +923,17 @@ nonce consumed) instead of being dropped, so a relayer whose call fails cannot
 jam its own account. The wire formats are in `docs/modules/qrc20-permit.md`
 and `docs/modules/exchange.md`.
 
-`vm/lending.go`, `vm/governance.go`, `vm/oracle.go`, `vm/multisig.go`,
-`vm/qrc721.go` and `vm/qrc4626.go` are written and tested, and their
-`/lending/*` and `/gov/*` RPC routes read their state, but no transaction
-reaches them: until the router learns those module names, they are library
-code, not a live surface. (`vm/staking.go` was in that list until
-`validator_gates_v1`; it is routed now, and `/staking/*` reads the module's
-real singleton rather than an address nothing ever wrote to.)
+`vm/lending.go`, `vm/governance.go`, `vm/oracle.go`, `vm/multisig.go` and
+`vm/qrc4626.go` are written and tested, and their `/lending/*` and `/gov/*`
+RPC routes read their state, but no transaction reaches them: until the
+router learns those module names, they are library code, not a live surface.
+(`vm/staking.go` was in that list until `validator_gates_v1` and
+`vm/qrc721.go` until `qrc721_v1`; both are routed now, and `/staking/*` reads
+the module's real singleton rather than an address nothing ever wrote to.)
+Two of the unrouted ones were hardened ahead of routing: the lending market
+binds a price oracle (`SetOracle` / `BorrowFromOracle`) so a routed borrow
+can never quote its own collateral, and the oracle keeps a feeder index so
+`GetPrice` discovers its feeders.
 
 The source tree proves that these modules are implemented and reachable when
 their fork gates are active; it does not prove that every live tier has

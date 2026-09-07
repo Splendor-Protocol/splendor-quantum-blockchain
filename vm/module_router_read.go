@@ -126,6 +126,19 @@ var KnownModuleActions = map[string]ModuleActions{
 		},
 		Reads: map[string]bool{"proof": true, "instance": true},
 	},
+	"qrc721": {
+		// qrc721_v1: the NFT module, routed whole. Mint is the collection
+		// owner's; everything else is ERC-721 semantics.
+		Writes: map[string]string{
+			"deploy": forks.QRC721V1, "mint": forks.QRC721V1, "transfer": forks.QRC721V1,
+			"transfer_from": forks.QRC721V1, "approve": forks.QRC721V1,
+			"set_approval_for_all": forks.QRC721V1, "burn": forks.QRC721V1,
+		},
+		Reads: map[string]bool{
+			"owner_of": true, "balance_of": true, "token_uri": true, "get_approved": true,
+			"is_approved_for_all": true, "token_info": true,
+		},
+	},
 	"staking": {
 		// validator_gates_v1: validator bonding and the admission registry,
 		// routed whole. register/add_stake/unstake/withdraw/unjail are open to
@@ -229,6 +242,8 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 		return dispatchStakingRead(stateDB, rctx, mc.Action, mc.Params)
 	case "verify":
 		return dispatchVerifyRead(stateDB, mc.Action, mc.Params)
+	case "qrc721":
+		return dispatchQRC721Read(stateDB, mc.Action, mc.Params)
 	default:
 		return nil, fmt.Errorf("module call: unknown module %q", mc.Module)
 	}
@@ -1140,5 +1155,120 @@ func dispatchVerifyRead(stateDB *state.StateDB, action string, raw json.RawMessa
 		return verifyInstanceRead(stateDB, raw)
 	default:
 		return nil, fmt.Errorf("verify read: unknown action %q", action)
+	}
+}
+
+// ── QRC-721 reads ───────────────────────────────────────────────────────────
+
+type qrc721ReadParams struct {
+	Collection string `json:"collection"`
+	Owner      string `json:"owner,omitempty"`
+	Operator   string `json:"operator,omitempty"`
+	ID         string `json:"id,omitempty"`
+}
+
+func dispatchQRC721Read(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
+	var p qrc721ReadParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("qrc721 read: bad params: %w", err)
+	}
+	collection, err := qcrypto.AddressFromString(p.Collection)
+	if err != nil {
+		return nil, fmt.Errorf("qrc721 read: collection: %w", err)
+	}
+	nft := NewQRC721Token(stateDB, collection)
+	out := map[string]interface{}{"module": "qrc721", "action": action, "collection": collection.String()}
+	tokenID := func() (*big.Int, error) {
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return nil, fmt.Errorf("qrc721 %s: id: %w", action, err)
+		}
+		out["id"] = id.String()
+		return id, nil
+	}
+
+	switch action {
+	case "owner_of":
+		id, err := tokenID()
+		if err != nil {
+			return nil, err
+		}
+		owner, err := nft.OwnerOf(id)
+		if err != nil {
+			return nil, err
+		}
+		out["exists"] = !owner.IsZero()
+		out["owner"] = owner.String()
+		return out, nil
+
+	case "balance_of":
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, fmt.Errorf("qrc721 balance_of: owner: %w", err)
+		}
+		bal, err := nft.BalanceOf(owner)
+		if err != nil {
+			return nil, err
+		}
+		out["owner"] = owner.String()
+		out["balance"] = bal.String()
+		return out, nil
+
+	case "token_uri":
+		id, err := tokenID()
+		if err != nil {
+			return nil, err
+		}
+		uri, err := nft.TokenURI(id)
+		if err != nil {
+			return nil, err
+		}
+		out["uri"] = uri
+		return out, nil
+
+	case "get_approved":
+		id, err := tokenID()
+		if err != nil {
+			return nil, err
+		}
+		approved, err := nft.GetApproved(id)
+		if err != nil {
+			return nil, err
+		}
+		out["approved"] = approved.String()
+		return out, nil
+
+	case "is_approved_for_all":
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, fmt.Errorf("qrc721 is_approved_for_all: owner: %w", err)
+		}
+		operator, err := qcrypto.AddressFromString(p.Operator)
+		if err != nil {
+			return nil, fmt.Errorf("qrc721 is_approved_for_all: operator: %w", err)
+		}
+		ok, err := nft.IsApprovedForAll(owner, operator)
+		if err != nil {
+			return nil, err
+		}
+		out["owner"] = owner.String()
+		out["operator"] = operator.String()
+		out["approved"] = ok
+		return out, nil
+
+	case "token_info":
+		name, _ := nft.Name()
+		symbol, _ := nft.Symbol()
+		owner, _ := nft.Owner()
+		supply, _ := nft.TotalSupply()
+		out["name"] = name
+		out["symbol"] = symbol
+		out["owner"] = owner.String()
+		out["exists"] = !owner.IsZero()
+		out["total_supply"] = supply.String()
+		return out, nil
+
+	default:
+		return nil, fmt.Errorf("qrc721: unknown read action %q", action)
 	}
 }

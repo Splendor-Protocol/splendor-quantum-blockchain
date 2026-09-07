@@ -108,6 +108,8 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 		return dispatchStaking(stateDB, ctx, mc.Action, mc.Params, receipt)
 	case "verify":
 		return dispatchVerify(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "qrc721":
+		return dispatchQRC721(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
 		return hard(fmt.Errorf("module call: unknown module %q", mc.Module))
 	}
@@ -1557,4 +1559,199 @@ func dispatchVerify(stateDB *state.StateDB, ctx ModuleContext, action string, ra
 			return hard(fmt.Errorf("module call: unknown action %q", action))
 		}
 	})
+}
+
+// ── QRC-721 ──────────────────────────────────────────────────────────────────
+
+// qrc721ActionParams is the parameter shape of every QRC-721 instance action.
+type qrc721ActionParams struct {
+	Collection string `json:"collection"`
+	To         string `json:"to,omitempty"`       // mint, transfer, transfer_from, approve
+	From       string `json:"from,omitempty"`     // transfer_from
+	ID         string `json:"id,omitempty"`       // token id, decimal string
+	URI        string `json:"uri,omitempty"`      // mint
+	Operator   string `json:"operator,omitempty"` // set_approval_for_all
+	Approved   *bool  `json:"approved,omitempty"` // set_approval_for_all (required)
+}
+
+type qrc721DeployParams struct {
+	Name   string `json:"name"`
+	Symbol string `json:"symbol"`
+}
+
+// dispatchQRC721 routes the QRC-721 NFT module whole behind qrc721_v1
+// (docs/modules/qrc721.md). Deploy is open; mint is the collection owner's;
+// transfers, approvals and burns follow ERC-721 semantics. Events are the
+// standard Transfer / Approval / ApprovalForAll with the token id in the
+// value slot.
+func dispatchQRC721(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
+	if err := requireFork(ctx, forks.QRC721V1); err != nil {
+		return err
+	}
+	caller := ctx.Caller
+	var zero qcrypto.Address
+
+	switch action {
+	case "deploy":
+		var p qrc721DeployParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return fmt.Errorf("qrc721 deploy: bad params: %w", err)
+		}
+		if err := capString("qrc721 deploy", "name", p.Name, MaxModuleNameBytes); err != nil {
+			return err
+		}
+		if err := capString("qrc721 deploy", "symbol", p.Symbol, MaxModuleNameBytes); err != nil {
+			return err
+		}
+		addr, err := DeployQRC721(stateDB, caller, p.Name, p.Symbol, ctx.Nonce)
+		if err != nil {
+			return err
+		}
+		markContract(stateDB, addr)
+		receipt.ContractAddress = &addr
+		return nil
+
+	case "mint":
+		p, nft, collection, err := qrc721Instance(stateDB, action, raw)
+		if err != nil {
+			return err
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc721 mint: to: %w", err)
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return fmt.Errorf("qrc721 mint: id: %w", err)
+		}
+		if err := capString("qrc721 mint", "uri", p.URI, MaxModuleURIBytes); err != nil {
+			return err
+		}
+		if err := nft.Mint(caller, to, id, p.URI); err != nil {
+			return err
+		}
+		receipt.AddLog(TransferEvent(collection, zero, to, id))
+		return nil
+
+	case "transfer":
+		p, nft, collection, err := qrc721Instance(stateDB, action, raw)
+		if err != nil {
+			return err
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc721 transfer: to: %w", err)
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return fmt.Errorf("qrc721 transfer: id: %w", err)
+		}
+		from, _ := nft.OwnerOf(id)
+		if err := nft.Transfer(caller, to, id); err != nil {
+			return err
+		}
+		receipt.AddLog(TransferEvent(collection, from, to, id))
+		return nil
+
+	case "transfer_from":
+		p, nft, collection, err := qrc721Instance(stateDB, action, raw)
+		if err != nil {
+			return err
+		}
+		from, err := qcrypto.AddressFromString(p.From)
+		if err != nil {
+			return fmt.Errorf("qrc721 transfer_from: from: %w", err)
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc721 transfer_from: to: %w", err)
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return fmt.Errorf("qrc721 transfer_from: id: %w", err)
+		}
+		if err := nft.TransferFrom(caller, from, to, id); err != nil {
+			return err
+		}
+		receipt.AddLog(TransferEvent(collection, from, to, id))
+		return nil
+
+	case "approve":
+		p, nft, collection, err := qrc721Instance(stateDB, action, raw)
+		if err != nil {
+			return err
+		}
+		to, err := qcrypto.AddressFromString(p.To)
+		if err != nil {
+			return fmt.Errorf("qrc721 approve: to: %w", err)
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return fmt.Errorf("qrc721 approve: id: %w", err)
+		}
+		if err := nft.Approve(caller, to, id); err != nil {
+			return err
+		}
+		owner, _ := nft.OwnerOf(id)
+		receipt.AddLog(ApprovalEvent(collection, owner, to, id))
+		return nil
+
+	case "set_approval_for_all":
+		p, nft, collection, err := qrc721Instance(stateDB, action, raw)
+		if err != nil {
+			return err
+		}
+		operator, err := qcrypto.AddressFromString(p.Operator)
+		if err != nil {
+			return fmt.Errorf("qrc721 set_approval_for_all: operator: %w", err)
+		}
+		if p.Approved == nil {
+			return fmt.Errorf("qrc721 set_approval_for_all: approved is required (true grants, false revokes)")
+		}
+		if operator == caller {
+			return fmt.Errorf("qrc721 set_approval_for_all: operator is the caller")
+		}
+		if err := nft.SetApprovalForAll(caller, operator, *p.Approved); err != nil {
+			return err
+		}
+		receipt.AddLog(ApprovalForAllEvent(collection, caller, operator, *p.Approved))
+		return nil
+
+	case "burn":
+		p, nft, collection, err := qrc721Instance(stateDB, action, raw)
+		if err != nil {
+			return err
+		}
+		id, err := parseUint256(p.ID)
+		if err != nil {
+			return fmt.Errorf("qrc721 burn: id: %w", err)
+		}
+		from, _ := nft.OwnerOf(id)
+		if err := nft.Burn(caller, id); err != nil {
+			return err
+		}
+		receipt.AddLog(TransferEvent(collection, from, zero, id))
+		return nil
+
+	default:
+		return hard(fmt.Errorf("module call: unknown action %q", action))
+	}
+}
+
+// qrc721Instance decodes the instance params of a QRC-721 action and refuses
+// a collection that was never deployed, before any action runs on it.
+func qrc721Instance(stateDB *state.StateDB, action string, raw json.RawMessage) (*qrc721ActionParams, *QRC721Token, qcrypto.Address, error) {
+	var p qrc721ActionParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, nil, qcrypto.Address{}, fmt.Errorf("qrc721 %s: bad params: %w", action, err)
+	}
+	collection, err := qcrypto.AddressFromString(p.Collection)
+	if err != nil {
+		return nil, nil, qcrypto.Address{}, fmt.Errorf("qrc721 %s: collection: %w", action, err)
+	}
+	nft := NewQRC721Token(stateDB, collection)
+	if owner, err := nft.Owner(); err != nil || owner.IsZero() {
+		return nil, nil, qcrypto.Address{}, fmt.Errorf("qrc721 %s: %s is not a QRC-721 collection", action, collection)
+	}
+	return &p, nft, collection, nil
 }
