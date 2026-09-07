@@ -185,3 +185,10 @@ addendum. Module rows in `readme.md`, `DEPLOY.md`.
   were not live on this machine.
 - Wallet extension re-pin of the signer WASM.
 - Everything under "Open decisions".
+
+## Where to read next
+
+- Shareable FAQ: [`docs/VALIDATOR_FAQ.md`](VALIDATOR_FAQ.md)
+- Staking / CanProduce: [`docs/modules/staking.md`](modules/staking.md)
+- SQVL verify module: [`docs/modules/verify.md`](modules/verify.md)
+- Lab deploy steps (infra): `docs/lab-validator-deploy.md` on `splendor-infra` @ `feat/validator`
