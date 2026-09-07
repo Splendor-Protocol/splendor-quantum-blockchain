@@ -397,19 +397,52 @@ func (r *runner) feeNow() *big.Int {
 }
 
 func (r *runner) nextNonce() uint64 {
+	// Always re-read the confirmed nonce when we have no local cursor yet, and
+	// keep a local cursor afterward. Concurrent faucet top-ups (sustainload)
+	// can still race; submit paths bump on "duplicate pending nonce".
 	if !r.nonceOK {
-		code, body := r.get("/nonce/" + r.w.Address.String())
-		var n struct {
-			Nonce uint64 `json:"nonce"`
-		}
-		if code != 200 || json.Unmarshal([]byte(body), &n) != nil {
-			fatal("nonce: %d %s", code, trim(body))
-		}
-		r.nonce, r.nonceOK = n.Nonce, true
+		r.refreshNonce()
 	}
 	n := r.nonce
 	r.nonce++
 	return n
+}
+
+func (r *runner) refreshNonce() {
+	code, body := r.get("/nonce/" + r.w.Address.String())
+	var n struct {
+		Nonce uint64 `json:"nonce"`
+	}
+	if code != 200 || json.Unmarshal([]byte(body), &n) != nil {
+		fatal("nonce: %d %s", code, trim(body))
+	}
+	if !r.nonceOK || n.Nonce > r.nonce {
+		r.nonce = n.Nonce
+	}
+	r.nonceOK = true
+}
+
+// bumpNonceFromDup parses "duplicate pending nonce N for …" and advances the
+// local cursor past N. Returns whether it recognized the refusal.
+func (r *runner) bumpNonceFromDup(resp string) bool {
+	const marker = "duplicate pending nonce "
+	i := strings.Index(resp, marker)
+	if i < 0 {
+		return false
+	}
+	rest := resp[i+len(marker):]
+	var n uint64
+	for _, ch := range rest {
+		if ch < '0' || ch > '9' {
+			break
+		}
+		n = n*10 + uint64(ch-'0')
+	}
+	if n+1 > r.nonce {
+		r.nonce = n + 1
+		r.nonceOK = true
+	}
+	return true
 }
 
 // moduleTx signs and submits a module TxCall via /tx/submit, then waits for its receipt.
@@ -428,29 +461,7 @@ func (r *runner) moduleDoor(door, module, action string, params any) (receipt, e
 	if err != nil {
 		return receipt{}, err
 	}
-	b, _ := json.Marshal(map[string]any{"tx": tx})
-	code, resp := r.post(door, b)
-	if code/100 != 2 {
-		r.nonce = tx.Nonce // not admitted
-		return receipt{}, fmt.Errorf("%s refused: %d %s", door, code, trim(resp))
-	}
-	var sub struct {
-		Hash string `json:"hash"`
-	}
-	if err := json.Unmarshal([]byte(resp), &sub); err != nil || sub.Hash == "" {
-		return receipt{}, fmt.Errorf("%s response: %s", door, trim(resp))
-	}
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		code, body := r.get("/tx/" + strings.TrimPrefix(sub.Hash, "0x") + "/receipt")
-		if code == 200 {
-			return parseReceipt(body), nil
-		}
-		if time.Now().After(deadline) {
-			return receipt{}, fmt.Errorf("no receipt for %s within 60s (last %d %s)", sub.Hash, code, trim(body))
-		}
-		time.Sleep(1 * time.Second)
-	}
+	return r.submitAndWaitPath(door, tx, true)
 }
 
 func (r *runner) signedModuleCall(module, action string, params any) (*types.Transaction, error) {
@@ -494,29 +505,51 @@ func (r *runner) submitTransfer(to qcrypto.Address, amount, fee *big.Int) (int, 
 }
 
 func (r *runner) submitAndWait(tx *types.Transaction) (receipt, error) {
-	b, _ := json.Marshal(tx)
-	code, resp := r.post("/tx/submit", b)
-	if code/100 != 2 { // the node answers 202 "accepted"
-		r.nonce = tx.Nonce // not admitted: the nonce is still free
-		return receipt{}, fmt.Errorf("submit refused: %d %s", code, trim(resp))
-	}
-	var sub struct {
-		Hash string `json:"hash"`
-	}
-	if err := json.Unmarshal([]byte(resp), &sub); err != nil || sub.Hash == "" {
-		return receipt{}, fmt.Errorf("submit response: %s", trim(resp))
-	}
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		code, body := r.get("/tx/" + strings.TrimPrefix(sub.Hash, "0x") + "/receipt")
-		if code == 200 {
-			return parseReceipt(body), nil
+	return r.submitAndWaitPath("/tx/submit", tx, false)
+}
+
+func (r *runner) submitAndWaitPath(path string, tx *types.Transaction, wrap bool) (receipt, error) {
+	for attempt := 0; attempt < 8; attempt++ {
+		var body []byte
+		if wrap {
+			body, _ = json.Marshal(map[string]any{"tx": tx})
+		} else {
+			body, _ = json.Marshal(tx)
 		}
-		if time.Now().After(deadline) {
-			return receipt{}, fmt.Errorf("no receipt for %s within 60s (last %d %s)", sub.Hash, code, trim(body))
+		code, resp := r.post(path, body)
+		if code/100 != 2 {
+			if r.bumpNonceFromDup(resp) {
+				// rebuild with a fresh nonce/signature
+				tx.Nonce = r.nextNonce()
+				tx.Timestamp = time.Now().Unix()
+				if err := tx.Sign(r.w.Private, true); err != nil {
+					return receipt{}, err
+				}
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			r.nonce = tx.Nonce // not admitted: the nonce is still free
+			return receipt{}, fmt.Errorf("%s refused: %d %s", path, code, trim(resp))
 		}
-		time.Sleep(1 * time.Second)
+		var sub struct {
+			Hash string `json:"hash"`
+		}
+		if err := json.Unmarshal([]byte(resp), &sub); err != nil || sub.Hash == "" {
+			return receipt{}, fmt.Errorf("%s response: %s", path, trim(resp))
+		}
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			code, body := r.get("/tx/" + strings.TrimPrefix(sub.Hash, "0x") + "/receipt")
+			if code == 200 {
+				return parseReceipt(body), nil
+			}
+			if time.Now().After(deadline) {
+				return receipt{}, fmt.Errorf("no receipt for %s within 60s (last %d %s)", sub.Hash, code, trim(body))
+			}
+			time.Sleep(1 * time.Second)
+		}
 	}
+	return receipt{}, fmt.Errorf("%s: exhausted nonce retries under load", path)
 }
 
 func parseReceipt(body string) receipt {
