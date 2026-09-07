@@ -3,7 +3,7 @@
   "sigScheme": "ML-DSA-65 (FIPS-204)",
   "domainMessage": "Splendor Quantum Chain\nKey derivation v1\nchain: splendor-quantum-1",
   "chainId": "splendor-quantum-1",
-  "minFee": "1000",
+  "minFee": "1000000000000000",
   "seedHex": "0101010101010101010101010101010101010101010101010101010101010101",
   "address": "SQ:307f4559431e680933fc1c62503f050140e5740068248d7374461e0311a2728e",
   "moduleRouterAddress": "SQ:b07043f4ef749951893985d66494d0f4e44c8812053361c07ea24bc70a444dcd",

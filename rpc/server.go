@@ -30,6 +30,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/ai"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -195,6 +196,10 @@ func (s *Server) buildRouter() *mux.Router {
 	r.Handle("/tx/submit", s.limited(s.handleSubmitTx)).Methods(http.MethodPost)
 	r.Handle("/x402/verify", s.limited(s.handleX402Verify)).Methods(http.MethodPost)
 	r.Handle("/x402/settle", s.limited(s.handleX402Settle)).Methods(http.MethodPost)
+	r.Handle("/verify/check", s.limited(s.handleVerifyCheck)).Methods(http.MethodPost)
+	r.Handle("/verify/attest", s.limited(s.handleVerifyAttest)).Methods(http.MethodPost)
+	r.Handle("/verify/settle", s.limited(s.handleVerifySettle)).Methods(http.MethodPost)
+	r.HandleFunc("/verify/proof/{id}", s.handleVerifyProof).Methods(http.MethodGet)
 
 	// ── Write plane: authenticated. POST /block applies a block to local
 	// state, so it must never be reachable by an anonymous caller. ───────
@@ -279,22 +284,14 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction JSON: %v", err))
 		return
 	}
+	s.admitTx(w, &tx)
+}
 
-	// The pool's cheap structural checks and Data cap come FIRST: the module
-	// preflight below parses tx.Data (twice for an exchange match), so an
-	// unauthenticated 512 KiB body must be refused on size before any of that
-	// work is done on it. Same check, same wording as pool.Add.
-	if err := mempool.ValidateEnvelope(&tx); err != nil {
+func (s *Server) admitTx(w http.ResponseWriter, tx *types.Transaction) {
+	if err := mempool.ValidateEnvelope(tx); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 		return
 	}
-
-	// Admission preflight for native-module calls: the HARD failure classes
-	// (bad envelope, unknown module, non-write action, fork not active) can
-	// never apply, and a tx that can never apply is dropped by the producer
-	// while pinning the sender's nonce in the pool. Checked against the
-	// executor's live schedule at the height the tx would earliest land in,
-	// head+1. Local and non-consensus: the executor re-judges every call.
 	if tx.Type == types.TxCall && tx.To == vm.ModuleRouterAddress {
 		head, _ := s.executor.LatestHeight()
 		mc, err := preflightModuleCall(tx.Data, s.executor.Forks(), head+1)
@@ -302,20 +299,15 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 			return
 		}
-		// An exchange.match from anyone but an operator of the instance can
-		// only ever be a failed receipt; refusing it here keeps mempool and
-		// block space for settlements that can settle. Local, like the rest.
 		if err := vm.PreflightExchangeMatch(s.stateDB, mc, tx.From); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 			return
 		}
 	}
-
-	if err := s.pool.Add(&tx); err != nil {
+	if err := s.pool.Add(tx); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 		return
 	}
-
 	hash, _ := tx.FullHash()
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status": "accepted",
@@ -468,8 +460,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// arrives with the peer-served genesis, minutes after boot) is visible
 	// without a restart. Only present on a chain that schedules one, so the
 	// response shape is unchanged for chains that do not.
-	if schedule := s.executor.Forks(); len(schedule) > 0 {
+	schedule := s.executor.Forks()
+	if len(schedule) > 0 {
 		status["forks"] = schedule
+	}
+	status["min_fee"] = s.pool.MinFeeNow()
+	status["multi_validator"] = schedule.Active(forks.MultiValidator, height)
+	reg := vm.NewStakingContract(s.stateDB, vm.DeployStaking(nil))
+	if list, err := reg.ListActive(); err == nil {
+		status["validator_set_size"] = len(list)
+	}
+	if len(s.validatorPK) > 0 {
+		if pub, err := qcrypto.PublicKeyFromBytes(s.validatorPK); err == nil {
+			status["local_validator"] = qcrypto.DeriveAddress(pub).String()
+		}
 	}
 	writeJSON(w, http.StatusOK, status)
 }

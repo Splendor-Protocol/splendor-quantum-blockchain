@@ -95,9 +95,46 @@ func sortedKeys[V any](m map[string]V) []string {
 // refused at /tx/submit, and an action listed on the wrong side is either
 // served by /call without a signature or lets a read into a TxCall where the
 // dispatch treats it as HARD and jams the sender.
+func uniqueSorted(in []string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	cp := append([]string{}, in...)
+	sort.Strings(cp)
+	out := cp[:0]
+	var prev string
+	for i, s := range cp {
+		if i == 0 || s != prev {
+			out = append(out, s)
+		}
+		prev = s
+	}
+	return out
+}
+
+func mergeActionCases(dst map[string][]string, extra map[string][]string) {
+	for k, v := range extra {
+		dst[k] = append(dst[k], v...)
+	}
+}
+
 func TestKnownModuleActionsCoverEveryDispatchCase(t *testing.T) {
 	writeModules, writeCases := dispatchCases(t, "module_router.go")
 	readModules, readCases := dispatchCases(t, "module_router_read.go")
+	_, extraWrite := dispatchCases(t, "extra_dispatch.go")
+	_, extraRead := dispatchCases(t, "extra_dispatch.go")
+	_, verifyWrite := dispatchCases(t, "verify.go")
+	_, verifyRead := dispatchCases(t, "verify.go")
+	mergeActionCases(writeCases, extraWrite)
+	mergeActionCases(writeCases, verifyWrite)
+	mergeActionCases(readCases, extraRead)
+	mergeActionCases(readCases, verifyRead)
+	for k, v := range writeCases {
+		writeCases[k] = uniqueSorted(v)
+	}
+	for k, v := range readCases {
+		readCases[k] = uniqueSorted(v)
+	}
 
 	if got, want := sortedKeys(writeModules), sortedKeys(KnownModuleActions); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("DispatchModuleCall routes modules %v, KnownModuleActions lists %v", got, want)

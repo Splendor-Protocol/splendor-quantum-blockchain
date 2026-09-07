@@ -23,6 +23,7 @@ const defaultSessionID = "default"
 var (
 	mu       sync.Mutex
 	wallets  = map[string]*signer.DerivedWallet{}
+	slhKeys  = map[string]*qcrypto.SLHPrivateKey{}
 	nextSess uint64
 )
 
@@ -50,6 +51,8 @@ func main() {
 	js.Global().Set("sqSignIncrementNonce", js.FuncOf(sqSignIncrementNonce))
 	js.Global().Set("sqSignBridgeClaim", js.FuncOf(sqSignBridgeClaim))
 	js.Global().Set("sqGetModuleRouterAddress", js.FuncOf(sqGetModuleRouterAddress))
+	js.Global().Set("sqGenerateSLH", js.FuncOf(sqGenerateSLH))
+	js.Global().Set("sqSignVerifyInstruction", js.FuncOf(sqSignVerifyInstruction))
 
 	select {}
 }
@@ -93,6 +96,7 @@ func sqDestroySession(this js.Value, args []js.Value) interface{} {
 		w.Zeroize()
 	}
 	delete(wallets, id)
+	delete(slhKeys, id)
 	mu.Unlock()
 	return map[string]interface{}{"ok": true}
 }
@@ -561,6 +565,54 @@ func num(m map[string]interface{}, k string) float64 {
 		return v
 	}
 	return 0
+}
+
+func sqGenerateSLH(this js.Value, args []js.Value) interface{} {
+	id := sessionID(args, 0)
+	pub, priv, err := qcrypto.GenerateSLHKeypair()
+	if err != nil {
+		return errVal(err.Error())
+	}
+	mu.Lock()
+	slhKeys[id] = priv
+	mu.Unlock()
+	return map[string]interface{}{
+		"pubkey_hex": hex.EncodeToString(pub.Bytes()),
+	}
+}
+
+func sqSignVerifyInstruction(this js.Value, args []js.Value) interface{} {
+	if len(args) < 1 {
+		return errVal("instruction JSON required")
+	}
+	id := defaultSessionID
+	raw := args[0].String()
+	if len(args) >= 2 {
+		id = args[0].String()
+		raw = args[1].String()
+	}
+	var ins types.VerifyInstruction
+	if err := json.Unmarshal([]byte(raw), &ins); err != nil {
+		return errVal(err.Error())
+	}
+	mu.Lock()
+	w, ok := getWallet(id)
+	slh := slhKeys[id]
+	mu.Unlock()
+	if !ok || w == nil {
+		return errVal("wallet locked")
+	}
+	if slh == nil {
+		return errVal("call sqGenerateSLH first")
+	}
+	if err := types.SignVerifyInstruction(types.ChainID, &ins, w.Private, slh); err != nil {
+		return errVal(err.Error())
+	}
+	b, err := json.Marshal(&ins)
+	if err != nil {
+		return errVal(err.Error())
+	}
+	return okJSON(b)
 }
 
 func strip0x(s string) string {

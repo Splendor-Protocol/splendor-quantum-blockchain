@@ -96,6 +96,22 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 		return dispatchExchange(stateDB, ctx, mc.Action, mc.Params, receipt)
 	case "bridge":
 		return dispatchBridge(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "verify":
+		return dispatchVerify(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "validators":
+		return dispatchValidators(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "lending":
+		return dispatchLending(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "oracle":
+		return dispatchOracle(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "multisig":
+		return dispatchMultisig(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "governance":
+		return dispatchGovernance(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "qrc721":
+		return dispatchQRC721(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "qrc4626":
+		return dispatchQRC4626(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
 		return hard(fmt.Errorf("module call: unknown module %q", mc.Module))
 	}

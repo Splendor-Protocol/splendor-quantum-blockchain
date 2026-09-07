@@ -6,9 +6,13 @@
 > transactions, blocks, and protocol authorizations use ML-DSA-65 with
 > purpose-specific signing contexts. Addresses and ledger commitments use
 > SHA3-256. Native peer traffic can be sealed using ML-KEM-768-established
-> secrets and AES-256-GCM. This is not an ECDSA-ledger migration, but it is also
-> not a guarantee against every future attack: security depends on the current
-> assumptions of those algorithms, this implementation, and its operation.**
+> secrets and AES-256-GCM. Native SPLD is minted once at genesis — 26 billion,
+> never more. SQVL (Splendor Quantum Verification Layer) is a native module
+> for dual-signed instructions (ML-DSA-65 + SLH-DSA). Validators register
+> permissionlessly with a 2,500 SPLD bond. This is not an ECDSA-ledger
+> migration, but it is also not a guarantee against every future attack:
+> security depends on the current assumptions of those algorithms, this
+> implementation, and its operation.**
 
 ---
 
@@ -68,6 +72,17 @@ on your device. The faucet holds its own test-coin key. The explorer, the
 portal, the bridge page and the login service hold no keys at all and can never
 move funds. The chain is the only place the ledger lives.
 
+### This deploy — supply, products, how to run
+
+| | |
+|---|---|
+| **Native supply** | 26 billion SPLD, minted once at genesis, to one treasury allocation. The node refuses a larger genesis and refuses any later circulating supply above the minted amount. QRC-20/721/1155 mints are separate tokens, owner-gated. Validator bonds lock existing SPLD; they do not mint. |
+| **Products** | **Splendor QC** — the L1. **SPLD** — the native asset and fee token. **SQVL** — native verification and settlement layer (dual-sig ML-DSA-65 + SLH-DSA). See [§9a](#9a-sqvl--settlement-layer) and [`docs/modules/verify.md`](docs/modules/verify.md). |
+| **Validators** | Permissionless. One bond: **2,500 SPLD**. No tiers. BFT quorum after `multi_validator`. |
+| **Fees** | Floor **0.001 SPLD** after `min_fee_v1`, plus the existing mempool congestion multiplier. |
+| **Run a node** | [`DEPLOY.md`](DEPLOY.md). Local multi-validator: [`docs/multi-validator-local.md`](docs/multi-validator-local.md). Fresh genesis template: `genesis-production.json`. |
+| **Ship a release** | `npm run deploy:devnet` then promote (§21). A running chain adds new forks with `--allow-fork-extension`; a reset uses the full schedule in genesis. |
+
 If you want to…
 
 | …do this | go here |
@@ -76,7 +91,9 @@ If you want to…
 | run your own node or validator | [`DEPLOY.md`](DEPLOY.md) |
 | ship a new node version to devnet, testnet or mainnet | [§21](#21-how-a-release-reaches-a-tier) |
 | build a website or app that talks to the chain | [`sdk/sqc-sdk/README.md`](sdk/sqc-sdk/README.md), then [§19](#19-the-splendor-quantum-stack--every-repository) |
-| write a smart contract | [§8](#8-smart-contracts--sqc-vm-and-qsol-prototype) and [`compiler/README.md`](compiler/README.md) |
+| write a smart contract | [§8](#8-smart-contracts--sqc-vm-and-qsol-prototype), [`docs/modules/standards.md`](docs/modules/standards.md), [`compiler/README.md`](compiler/README.md) |
+| verify / settle an instruction (SQVL) | [§9a](#9a-sqvl--settlement-layer) and [`docs/modules/verify.md`](docs/modules/verify.md) |
+| register as a validator | [`docs/modules/validators.md`](docs/modules/validators.md), [`docs/multi-validator-local.md`](docs/multi-validator-local.md) |
 | look at blocks and transactions | the explorers in [§20](#20-live-networks-and-endpoints) |
 | get test coins | `https://quantum-faucet.splendor.org` |
 | move old SPLD or SPLV to the quantum chain | `https://dapps.splendor.org/bridge` (testnet destination today) |
@@ -217,7 +234,8 @@ vectors" and "certified" are different claims, and only the first is made here.
 6. [Full User Journey — From Zero to Sending Funds](#6-full-user-journey--from-zero-to-sending-funds)
 7. [Transactions — How They Are Created, Signed, Broadcast, Recorded](#7-transactions--how-they-are-created-signed-broadcast-recorded)
 8. [Smart Contracts — SQC-VM and QSol Prototype](#8-smart-contracts--sqc-vm-and-qsol-prototype)
-9. [Consensus — Phase 1 Single-Authority Finality](#9-consensus--phase-1-single-authority-finality)
+9. [Consensus — BFT Multi-Validator](#9-consensus--bft-multi-validator)
+9a. [SQVL — Settlement Layer](#9a-sqvl--settlement-layer)
 10. [Record Keeping — The Quantum Ledger](#10-record-keeping--the-quantum-ledger)
 11. [X402 — Native Payment Protocol](#11-x402--native-payment-protocol)
 12. [The Ecosystem — DApps, DeFi, NFTs, AI Agents](#12-the-ecosystem--dapps-defi-nfts-ai-agents)
@@ -313,9 +331,10 @@ remain within their stated boundaries.
                               │
 ┌─────────────────────────────▼────────────────────────────────────┐
 │  CONSENSUS LAYER                                                  │
-│  Single authorized validator (Phase 1)                           │
-│  Blocks signed with ML-DSA-65                                    │
+│  BFT multi-validator: 2,500 SPLD bond, QC, leader rotation       │
+│  Blocks and votes signed with ML-DSA-65                          │
 │  Approximately 2-second configured block interval                │
+│  Native supply hard-capped at 26 billion SPLD                    │
 └─────────────────────────────┬────────────────────────────────────┘
                               │
 ┌─────────────────────────────▼────────────────────────────────────┐
@@ -488,29 +507,10 @@ enters it and the software decrypts the private key in memory.
 
 ---
 
-**Option B: Physical NFC Smart Card** — designed, not built. No hardware
-integration exists in this repository; what follows is the intended flow.
-
-The ML-DSA-65 private key would be written to the secure element of a physical NFC card — a dedicated chip that:
-- Stores the key in hardware-protected non-extractable memory
-- Would perform signing operations internally so the intended flow does not
-  export the key
-- Requires a PIN to authorise each signing operation
-
-**How signing works with the NFC card:**
-
-1. User opens the wallet app on their phone and creates a transaction
-2. The app computes the transaction hash (SHA-3 of the transaction data)
-3. The app sends: `SIGN_REQUEST { hash: "sha3_hash_bytes" }` to the card via NFC
-4. The card asks the user to enter their PIN (on a card with a small keypad, or via the phone with secure PIN entry)
-5. The card's secure element runs `sig = ML_DSA_65.Sign(private_key, hash, ctx)` internally
-6. The card sends back: `{ signature: "3309_bytes_of_mldsa_sig" }` via NFC
-7. The app attaches the signature to the transaction and broadcasts it
-
-The intended security boundary is that the private key remains inside the
-card. No card integration exists here, so that property has not been tested.
-
-A 3,309-byte signature is small enough to cross NFC in a fraction of a second, which is what makes the flow plausible. No timing is quoted here, because no card exists yet to measure.
+**Option B: Physical NFC Smart Card** — **backup only**. The card stores an
+encrypted copy of the seed / key material. It does **not** sign
+transactions, blocks, or SQVL instructions. Signing stays on the phone app
+or the browser extension. See `splendor-smartcard`.
 
 ---
 
@@ -537,7 +537,8 @@ operational procedure exist.
 If a user loses their device:
 
 - **For file storage:** They need their `.sqwallet` file (which should be backed up to a secure location like an encrypted USB drive) and their password
-- **For NFC card:** They need the physical card and their PIN. The card IS the wallet.
+- **For NFC card:** They restore the encrypted backup from the card onto a
+  wallet app. The card is not the signer.
 - **For airgapped:** They need the offline device (or a backup of the private key file on another offline device)
 
 The CLI `.sqwallet` flow backs up the encrypted wallet file and password; it
@@ -595,7 +596,7 @@ may impose its own account or compliance requirements.
 She can:
 - Receive SPLD from someone who already has it
 - Use a faucet on a network where an operator provides one
-- Not today: earn SPLD by running a validator node. Phase 1 has one validator, whose key is pinned in genesis, and no path exists for a second one to join
+- Register as a validator by bonding 2,500 SPLD (existing supply; not a mint). The genesis validator is still pinned in the genesis document; further validators join through the `validators` module after `validators_v1`
 
 ---
 
@@ -719,13 +720,13 @@ The node:
 
 **Step 9: The validator picks it up**
 
-In Phase 1, there is one validator. The validator:
+The current leader (or the genesis validator before `multi_validator`) does this:
 1. Collects transactions from the mempool
 2. Orders them (by fee, timestamp)
 3. Executes them: deducts from Alice's balance, adds to Bob's balance
 4. Builds a new block containing the transactions
-5. Signs the block with its own ML-DSA-65 validator key
-6. Broadcasts the signed block to connected peers
+5. Signs the block with its ML-DSA-65 validator key; other validators vote
+6. Broadcasts the signed block (and QC) to connected peers
 
 The configured production interval is approximately two seconds by default.
 Load, execution time, failures, and deployment conditions can affect when a
@@ -803,8 +804,7 @@ Node validates: signature, nonce, balance
                 Block appended to chain
                         │
                         ▼
-                Committed by the authorized validator
-                (single-authority finality)
+                Committed by BFT quorum (or the genesis validator before multi_validator)
 ```
 
 ### Transaction fees
@@ -948,28 +948,28 @@ other off-chain surfaces may use SHA-256 as described at the top of this file.
 
 ---
 
-## 9. Consensus — Phase 1 Single-Authority Finality
+## 9. Consensus — BFT Multi-Validator
 
-### Phase 1: Single Validator
+Consensus is native BFT in `sqc-node`. A single genesis validator still
+produces block 0. After `validators_v1` and `multi_validator` activate, anyone
+can register by bonding **2,500 SPLD** (one fixed bond, no tiers). The bond is
+a lock of existing supply — it does not mint SPLD. Unbonding waits out the
+configured exit period, then `finalize_exit` returns the bond.
 
-Phase 1 runs with one authorized validator. This provides deterministic
-single-authority block production, not decentralized economic or Byzantine
-finality. Compromise of the validator key or host is therefore a critical risk;
-the absence of a 51% voting threshold does not make the network impossible to
-attack.
+**What the validator set does:**
+1. The current leader pulls transactions from the mempool
+2. Orders and executes them into a proposal
+3. Other validators vote with ML-DSA-65 (`SPLENDOR-QC-VOTE-v1`)
+4. A quorum certificate (2/3+1 of the set) commits the block
+5. Timeout triggers a view change and the next leader
+6. Equivocation (two signed votes for the same height/round) is dropped
 
-**What the single validator does:**
-1. Receives transactions from the mempool
-2. Orders and executes them
-3. Builds a block on a fixed timer — `--block-interval`, approximately 2 seconds
-   by default. A full mempool does not trigger an early block; it only makes the
-   next one larger
-4. Signs the block with its ML-DSA-65 key
-5. Broadcasts to all full nodes
+**Who may operate a validator?** Anyone who can fund the 2,500 SPLD bond and
+keep a node online. The genesis validator public key remains in the genesis
+document so every node can verify block 0. Later producers are the registered
+set, checked on every block via the quorum certificate.
 
-**Who operates it?** Splendor Protocol operates the genesis validator. The validator's ML-DSA-65 public key is hardcoded in the genesis block, so every node in the network knows exactly whose signatures to accept.
-
-### How blocks are signed
+**How blocks are signed**
 
 ```
 block_header = {
@@ -977,37 +977,85 @@ block_header = {
   timestamp: 1753147200,
   previous_hash: SHA3-256(previous_block_header),
   tx_merkle_root: SHA3-256_merkle_root(transactions),
-  state_root: SHA3-256_merkle_root(state),        // binary tree — see section 10
-  validator: "SQ:validator_address..."
+  state_root: SHA3-256_merkle_root(state),
+  validator: "SQ:leader_address...",
+  qc_root: SHA3-256 of the quorum certificate
 }
 
-block_hash   = SHA3-256(JSON_encode(block_header))   // Go json.Marshal of the header
-block_sig    = ML_DSA_65.Sign(validator_private_key, block_hash, "SPLENDOR-QC-BLOCK-v1")
+block_hash   = SHA3-256(JSON_encode(block_header))
+block_sig    = ML_DSA_65.Sign(leader_private_key, block_hash, "SPLENDOR-QC-BLOCK-v1")
 ```
 
-Every full node verifies:
-```
-ML_DSA_65.Verify(validator_public_key, block_hash, "SPLENDOR-QC-BLOCK-v1", block_sig) == true
-```
+Followers verify the leader signature **and** the QC votes. A block without a
+valid quorum is refused. Compromise of one validator key is no longer enough
+to rewrite the chain once the set is larger than one.
 
-If a node receives a block with an invalid ML-DSA-65 signature, it rejects it.
-Under the current assumptions of ML-DSA and this implementation, a party
-without the authorized validator key should not be able to forge that
-signature. A party controlling the authorized key can sign blocks, which is why
-validator custody remains a central security boundary.
+Local multi-validator setup: [`docs/multi-validator-local.md`](docs/multi-validator-local.md).
+SQVL settlement proofs sit on this same ledger: [`docs/modules/verify.md`](docs/modules/verify.md).
 
-### Phase 2 and Beyond: Expanding Validators
+On-chain governance can mark a proposal executed; it still cannot rewrite
+consensus rules by itself. Rule changes remain a genesis schedule or an
+operator `--allow-fork-extension`.
 
-The intended future design would add:
+---
 
-- New validators register by staking SPLD and registering their ML-DSA-65 public key
-- Consensus upgrades to a BFT protocol (all signatures still ML-DSA-65)
-- Governance is handled by token holders (voting via ML-DSA-65-signed transactions)
+## 9a. SQVL — Settlement Layer
 
-None of that is wired into the running node. `consensus/bft.go` is explicitly
-incomplete, there is no production path for a second independent validator to
-join, and a passed governance proposal cannot change consensus: `Execute` in
-`vm/governance.go` marks a proposal Executed and applies nothing else.
+**SQVL** (Splendor Quantum Verification Layer) is a **native module inside
+`sqc-node`**. It is the settlement layer for this chain: dual-signed
+instructions, operator attestations, an on-chain spend/nullifier, and a
+proof other books can read. It is not a sidecar process. HTTP and the SDK
+only expose committed state. A bank or another chain that wants to settle
+elsewhere **calls this RPC**; they do not run inside consensus.
+
+Full wire format and rules: [`docs/modules/verify.md`](docs/modules/verify.md).
+Example: [`examples/sqvl-external-app.mjs`](examples/sqvl-external-app.mjs).
+SDK: `getVerify()` in `@splendor/sqc-sdk`.
+
+### Products next to it
+
+| Name | Role |
+|---|---|
+| **Splendor QC** | The L1. Accounts, blocks, fees, modules. |
+| **SPLD** | Native asset. 26 billion, minted once. Fees and the 2,500 SPLD validator bond. |
+| **SQVL** | Verify + settle. ML-DSA-65 **and** SLH-DSA on every instruction. |
+
+There is no SilentLedger, no ClearNode KYC product, and no NFC card-as-signer.
+The NFC card in this stack is an encrypted **key backup** only.
+
+### What a settlement is
+
+1. An app builds a `VerifyInstruction` (who pays, who receives, amount,
+   `origin`, `settlement_hint`, `settlement_action`).
+2. The payer signs it twice: ML-DSA-65 and SLH-DSA-SHA2-128s
+   (`SPLENDOR-QC-VERIFY-v1`).
+3. Operators attest until the instance threshold.
+4. Either:
+   - **Settle here:** `settlement_hint` is `splendor-qc` and the action is
+     `native_transfer` or `qrc20_transfer`. The spend moves **existing**
+     funds from `from`. The TxCall caller must be `from`. SQVL cannot mint
+     SPLD and cannot pull someone else’s balance.
+   - **Prove here, settle elsewhere:** `finalize_only`. `GET /verify/proof/{id}`
+     is the committed record for Bitcoin, Ethereum, Solana, or a bank book.
+
+The same `instruction_id` cannot settle twice.
+
+### RPC
+
+| Route | What |
+|---|---|
+| `POST /verify/check` | Dual-sig check. No state. |
+| `POST /verify/attest` | Admit a signed attestation TxCall. |
+| `POST /verify/settle` | Admit spend / finalize. |
+| `GET /verify/proof/{id}` | On-chain proof. |
+
+### Native standards vs your own contracts
+
+Anyone can deploy QRC-20 / QRC-721 / QRC-1155 / QRC-4626. Mint on **that**
+contract is owner-only (the deployer), same idea as a normal token
+collection. QSol bytecode you write is your contract; these modules are the
+chain’s standard. Details: [`docs/modules/standards.md`](docs/modules/standards.md).
+Validators: [`docs/modules/validators.md`](docs/modules/validators.md).
 
 ---
 
@@ -1223,7 +1271,7 @@ hybrid TLS group contains X25519 alongside ML-KEM-768.
 
 ## 14. Architecture Comparison — Not a Finality Benchmark
 
-| Feature | Ethereum | Solana | Splendor Phase 1 |
+| Feature | Ethereum | Solana | Splendor QC |
 |---|---|---|---|
 | Native account signature | Classical elliptic-curve key | Ed25519 | ML-DSA-65 |
 | Smart-contract/program execution | EVM | sBPF/SVM | SQC-VM plus native Go modules |
@@ -1247,8 +1295,9 @@ wallets, AI agents, or micropayments.
 
 ## 15. Business Claims and Evidence Boundary
 
-The code implements transaction fees, and Phase 1 credits those fees to the
-authorized validator. That is a protocol behavior, not a revenue forecast.
+The code implements transaction fees, and credits those fees to the block
+producer. That is a protocol behavior, not a revenue forecast. Fees move
+existing SPLD; they do not mint.
 
 Future X402 protocol charges, validator-marketplace revenue, enterprise
 licensing, patent licensing, market share, and adoption timing are business
@@ -1276,12 +1325,20 @@ require separately maintained evidence and owner review.
 - Optional node-terminated hybrid TLS and hybrid-only policy
 - AES-256-GCM + Argon2id `.sqwallet` CLI wallet format
 - SQC-VM bytecode interpreter
-- Reachable QRC-20, QRC-1155, DEX, exchange, and bridge router paths, subject to
-  fork activation
+- Reachable QRC-20, QRC-1155, QRC-721, QRC-4626, DEX, exchange, bridge,
+  lending, oracle, multisig, governance, SQVL (`verify`), and validators
+  router paths, subject to fork activation
+- Native 26 billion SPLD hard cap: genesis refuses a larger allocation;
+  every block apply refuses a circulating supply above the minted amount
+- Permissionless validator register (2,500 SPLD bond) and BFT quorum
+  certificates after `validators_v1` / `multi_validator`
+- SQVL dual-signed instructions (ML-DSA-65 + SLH-DSA) with attest/settle
 - X402 payment authorization and payer-signed settlement transaction
-- Canonical `@splendor/sqc-sdk`, WASM signer, and browser Connect components
+- Canonical `@splendor/sqc-sdk`, WASM signer (including SLH-DSA), and browser
+  Connect components
 - Prototype QSol-subset compiler and `sqc-solc` CLI
 - Adaptive mempool-depth scheduler
+- 0.001 SPLD minimum fee after `min_fee_v1`
 
 ### Tested or measured, with a narrower claim
 
@@ -1330,8 +1387,7 @@ production-readiness claim.
 
 ### Not built or not production-ready
 
-- Multi-validator consensus in the running node, permissionless validator
-  onboarding, or decentralized Byzantine/economic finality
+- Decentralized economic finality at global scale, or an HSM/remote signer
 - Historical-state queries or a Merkle inclusion-proof API
 - Sanctions screening, KYC attestation, AML monitoring, or regulator dashboards
 - Packaged desktop or mobile wallet applications, NFC hardware signing, or a QR
@@ -1407,7 +1463,7 @@ connection carrying operational data. There is no such connection here.
 ## 18. Banking, Settlement, and Compliance Boundary
 
 Splendor's architecture may be evaluated for future real-time settlement,
-tokenization, or institutional use cases. The current Phase 1 network is not a
+tokenization, or institutional use cases. The current network is not a
 production RTGS, CBDC, interbank, or national-payment system.
 
 NIST standardized ML-KEM, ML-DSA, and SHA3 in the publications linked above.
@@ -1418,9 +1474,10 @@ preserve its exact scope.
 
 X402 provides a native payer-authorized settlement transaction. It does not
 eliminate chain fees, operational intermediaries, counterparty risk, legal
-obligations, application integration, or confirmation policy. Under Phase 1,
-the sole authorized validator remains a central operator and security boundary;
-an independent bank cannot join the validator set through a production path.
+obligations, application integration, or confirmation policy. After
+`validators_v1`, an independent operator can join by bonding 2,500 SPLD.
+SQVL can attest an instruction and produce a proof for settlement here or
+elsewhere; it is not a banking license, KYC product, or sanctions screen.
 
 ### Compliance and institutional capabilities
 
@@ -1772,7 +1829,7 @@ section matter for anyone not using the SDK.
 | Route | Purpose |
 |---|---|
 | **Chain and state (current only)** | |
-| `GET /status` | `chain_id`, `height`, `commit`, `image_tag`, `node_version`, `forks`, `mempool_size`, `peer_count` |
+| `GET /status` | `chain_id`, `height`, `commit`, `image_tag`, `node_version`, `forks`, `mempool_size`, `peer_count`, `min_fee`, `multi_validator`, `validator_set_size` |
 | `GET /healthz`, `GET /readyz` | Liveness with build identity; readiness |
 | `GET /block/latest`, `GET /block/{height}`, `GET /block/hash/{hash}` | Signed block with header, hash, validator signature and transactions |
 | `GET /tx/{hash}`, `GET /tx/{hash}/receipt` | Transaction by SHA3-256 hash; execution receipt. Append `?amounts=string` for quoted big integers |
@@ -1793,8 +1850,10 @@ section matter for anyone not using the SDK.
 | `GET /dex/pool/{t0}/{t1}`, `…/quote`, `…/lp/{addr}`, `GET /dex/price/{t0}/{t1}`, `GET /dex/amount-in`, `GET /dex/amount-out` | DEX pools, reserves and quotes |
 | `GET /exchange/{addr}`, `…/condition/{id}`, `…/order/{hash}`, `…/nonce/{maker}`, `…/position/{condition}/{holder}` | Exchange instance, conditions, orders, positions |
 | `GET /bridge/{addr}`, `GET /bridge/{addr}/claim/{id}` | Migration-bridge instance and claim status |
-| **Library-only reads** | |
-| `GET /gov/*`, `GET /staking/*`, `GET /lending/*` | These read module state that no transaction can currently write: the router does not expose governance, staking or lending (§8). They return empty or default values on every public tier |
+| `GET /validators`, `GET /validators/{addr}` | Active validator set (2,500 SPLD bond) |
+| `POST /verify/check`, `POST /verify/attest`, `POST /verify/settle`, `GET /verify/proof/{id}` | SQVL dual-sig check, attestation, settlement, on-chain proof |
+| **Module reads** | |
+| `GET /gov/*`, `GET /lending/*` | Governance and lending state after their forks activate |
 | **Node-to-node, not for clients** | |
 | `POST /block`, `POST /peers/announce`, `GET /sync`, `GET /p2p/identity` | The sealed write plane. `POST` routes require the `X-Node-Auth` shared token (401 without it); a node with no `--rpc-auth-token` answers 503; with plaintext P2P off, as on the public tiers, `POST /block` answers 410 and only the sealed transport is accepted |
 
@@ -2094,10 +2153,10 @@ activated this way. Mainnet reports no optional forks and, by decision, omits
 | `cmd/loadtest`, `cmd/auditprobe` | Throughput and security probe harnesses; not shipped in the image |
 | `core/crypto` | ML-DSA-65, SHA3-256, addresses, ACVP vectors, `.sqwallet` store (Argon2id + AES-256-GCM) |
 | `core/types`, `core/block`, `core/state`, `core/mempool`, `core/forks`, `core/buildinfo` | Transactions and blocks, execution and receipts, whole-state Merkle commitment, fee-ordered mempool, fork schedule, the commit/tag stamp `/status` reports |
-| `consensus` | Single-validator block production; `bft.go` is explicitly incomplete and unwired |
-| `network` | ML-KEM-768 + AES-256-GCM sealed P2P, peer pins, announce signatures, SSRF guards |
-| `rpc` | The REST/SSE surface in §20, TLS with the `X25519MLKEM768` hybrid group, rate limits, metrics |
-| `vm` | SQC-VM interpreter and disassembler, plus the native Go modules (QRC-20, QRC-1155, DEX, exchange, bridge; lending/staking/governance/oracle/multisig/QRC-721/QRC-4626 as unrouted library code) |
+| `consensus` | BFT multi-validator: leader rotation, QC votes, view-change; `multivalidator.go` drives production |
+| `network` | ML-KEM-768 + AES-256-GCM sealed P2P, peer pins, announce signatures, SSRF guards, sealed vote/proposal kinds |
+| `rpc` | The REST/SSE surface in §20, TLS with the `X25519MLKEM768` hybrid group, rate limits, metrics, `/verify/*`, `/validators` |
+| `vm` | SQC-VM interpreter plus routed native modules: QRC-20/1155/721/4626, DEX, exchange, bridge, SQVL (`verify`), validators, lending (oracle-priced), oracle, multisig, governance |
 | `compiler` | The QSol-subset compiler (lexer, parser, codegen, assembler) and `examples/*.qsol` |
 | `x402` | X402 payment authorization and settlement binding |
 | `genesis` | Signed height-zero genesis builder and fork-schedule validation |
@@ -2107,13 +2166,13 @@ activated this way. Mainnet reports no optional forks and, by decision, omits
 | `sdk/bridge` | `@splendor/pq-bridge`: deprecated re-export shim, nothing else |
 | `sdk/sqc-sdk.js` | Legacy single-file SDK, deprecated; its X402 middleware omits `settlement_tx` (§11) |
 | `contracts/legacy-burn` | `QuantumMigrationBurn`, the Solidity burn gate on the legacy Splendor mainnet (chain 2691) |
-| `docs/modules` | Wire formats: `qrc20-permit.md`, `exchange.md`, `bridge.md` |
+| `docs/modules` | Wire formats: `verify.md` (SQVL), `validators.md`, `standards.md`, `qrc20-permit.md`, `exchange.md`, `bridge.md` |
 | `docs/performance` | The dated TPS/GPU experiment behind every throughput number in this file |
 | `docs/plans` | Design documents: compiler, migration bridge, Blockpeak settlement module |
 | `docs/readme-claim-evidence.md` | The claim–evidence matrix and dated deployment snapshots behind this README |
 | `scripts/release.mjs` | The release tool described in §21 |
 | `DEPLOY.md` | Bare-metal operator guide: build, validator setup, every node flag, genesis and fork schedule, systemd, firewall |
-| `HARDENING-REPORT.md` | The 25 August 2026 hardening pass: what was asked, what was done, what was found |
+| `CICD_DEPLOYMENT.md` | Reset / treasury genesis checklist for a new 26B chain |
 | `Dockerfile`, `install.sh`, `Makefile`, `sqc` | The image the tiers run; a fresh-Ubuntu installer; build/test targets; a node management wrapper (`sqc status\|logs\|console\|update`) |
 
 ### Build, test, run

@@ -244,4 +244,4 @@ Serve WASM with correct MIME/CORS: [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 - [ ] Use `rpcUrls` failover in production (`https://` for non-local)
 - [ ] Confirm via `waitForConfirmation` (receipt-first; nonce fallback on minimal RPC)
 - [ ] Host WASM at network `wasmUrl` / `execUrl` from `sqc.networks.json` (one-touch already resolves these; you still must serve the files)
-- [ ] Remember: under congestion node fee floor may exceed `PROTOCOL.minFee` (`1000`)
+- [ ] Remember: under congestion node fee floor may exceed `PROTOCOL.minFee` (`0.001 SPLD` / `1000000000000000`)

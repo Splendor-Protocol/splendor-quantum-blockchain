@@ -10,11 +10,12 @@
 //   GET  /gov/proposals/{id}/votes/{addr}   — get a voter's vote
 //   POST /gov/proposals/{id}/tally          — manually trigger tally (node only)
 //
-// Staking endpoints:
-//   GET  /staking/validators                — list all active validators
-//   GET  /staking/validators/{addr}         — get a validator's record
-//   GET  /staking/total-staked              — total SPLD staked
-//   GET  /staking/tiers                     — staking tier info
+// Validator endpoints:
+//   GET  /validators                        — list active validators
+//   GET  /validators/{addr}                 — one validator record
+//   GET  /staking/validators/{addr}         — alias of /validators/{addr}
+//   GET  /staking/total-staked              — total bonded SPLD
+//   GET  /staking/count                     — active validator count
 //
 // All responses: JSON. All addresses: SQ: format.
 package rpc
@@ -24,7 +25,6 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
@@ -50,9 +50,10 @@ func RegisterGovRoutes(r *mux.Router, stateDB *state.StateDB) {
 	r.HandleFunc("/gov/total-power", makeTotalPowerHandler(gov)).Methods(http.MethodGet)
 
 	// Staking
+	r.HandleFunc("/validators", makeListValidatorsHandler(staking)).Methods(http.MethodGet)
+	r.HandleFunc("/validators/{addr}", makeGetValidatorHandler(staking)).Methods(http.MethodGet)
 	r.HandleFunc("/staking/validators/{addr}", makeGetValidatorHandler(staking)).Methods(http.MethodGet)
 	r.HandleFunc("/staking/total-staked", makeTotalStakedHandler(staking)).Methods(http.MethodGet)
-	r.HandleFunc("/staking/tiers", makeStakingTiersHandler()).Methods(http.MethodGet)
 	r.HandleFunc("/staking/count", makeValidatorCountHandler(staking)).Methods(http.MethodGet)
 
 	log.Debug().
@@ -267,19 +268,19 @@ func makeGetValidatorHandler(staking *vm.StakingContract) http.HandlerFunc {
 		statusNames := map[vm.ValidatorStatus]string{
 			vm.ValidatorInactive: "inactive",
 			vm.ValidatorActive:   "active",
-			vm.ValidatorJailed:   "jailed",
 			vm.ValidatorExiting:  "exiting",
 		}
-
+		bond := rec.Bond
+		if bond == nil {
+			bond = big.NewInt(0)
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"address":       rec.Address.String(),
-			"stake":         rec.Stake.String(),
+			"bond":          bond.String(),
+			"bond_spld":     vm.ValidatorBondSPLD,
 			"status":        statusNames[rec.Status],
-			"tier":          vm.GetTierName(rec.Stake),
-			"rewards":       rec.Rewards.String(),
 			"joined_height": rec.JoinedHeight,
-			"last_slashed":  rec.LastSlashed,
-			"uptime_score":  rec.UptimeScore,
+			"exit_height":   rec.ExitHeight,
 		})
 	}
 }
@@ -310,46 +311,30 @@ func makeValidatorCountHandler(staking *vm.StakingContract) http.HandlerFunc {
 	}
 }
 
-func makeStakingTiersHandler() http.HandlerFunc {
+func makeListValidatorsHandler(staking *vm.StakingContract) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		spldUnit := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
-
-		toSPLD := func(units *big.Int) string {
-			spld := new(big.Float).Quo(
-				new(big.Float).SetInt(units),
-				new(big.Float).SetInt(spldUnit),
-			)
-			return spld.Text('f', 0)
+		list, err := staking.ListActive()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
-
+		out := make([]map[string]interface{}, 0, len(list))
+		for _, rec := range list {
+			bond := rec.Bond
+			if bond == nil {
+				bond = big.NewInt(0)
+			}
+			out = append(out, map[string]interface{}{
+				"address":       rec.Address.String(),
+				"bond":          bond.String(),
+				"status":        "active",
+				"joined_height": rec.JoinedHeight,
+			})
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"tiers": []map[string]interface{}{
-				{
-					"name":        "Bronze",
-					"min_stake":   vm.StakeBronze.String(),
-					"min_spld":    toSPLD(vm.StakeBronze),
-					"description": "Entry-level validation",
-				},
-				{
-					"name":        "Silver",
-					"min_stake":   vm.StakeSilver.String(),
-					"min_spld":    toSPLD(vm.StakeSilver),
-					"description": "Enhanced rewards + governance weight",
-				},
-				{
-					"name":        "Gold",
-					"min_stake":   vm.StakeGold.String(),
-					"min_spld":    toSPLD(vm.StakeGold),
-					"description": "Premium rewards + committee seats",
-				},
-				{
-					"name":        "Platinum",
-					"min_stake":   vm.StakePlatinum.String(),
-					"min_spld":    toSPLD(vm.StakePlatinum),
-					"description": "Elite tier + maximum governance power",
-				},
-			},
-			"updated_at": time.Now().Unix(),
+			"validators": out,
+			"count":      len(out),
+			"bond_spld":  vm.ValidatorBondSPLD,
 		})
 	}
 }

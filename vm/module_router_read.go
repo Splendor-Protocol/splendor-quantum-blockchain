@@ -116,6 +116,60 @@ var KnownModuleActions = map[string]ModuleActions{
 			"bridge_info": true, "claim_status": true,
 		},
 	},
+	"verify": {
+		Writes: map[string]string{
+			"deploy": forks.VerifyV1, "register": forks.VerifyV1, "attest": forks.VerifyV1,
+			"finalize": forks.VerifyV1, "spend": forks.VerifyV1,
+			"set_operator": forks.VerifyV1, "set_threshold": forks.VerifyV1,
+			"pause": forks.VerifyV1, "unpause": forks.VerifyV1,
+		},
+		Reads: map[string]bool{"proof": true, "instance": true},
+	},
+	"validators": {
+		Writes: map[string]string{
+			"register": forks.ValidatorsV1, "unregister": forks.ValidatorsV1, "finalize_exit": forks.ValidatorsV1,
+		},
+		Reads: map[string]bool{"validator": true, "list": true, "count": true, "bond": true},
+	},
+	"lending": {
+		Writes: map[string]string{
+			"deploy": forks.LendingV1, "enable_asset": forks.LendingV1,
+			"set_oracle": forks.LendingV1,
+			"deposit": forks.LendingV1, "withdraw": forks.LendingV1,
+			"borrow": forks.LendingV1, "repay": forks.LendingV1,
+		},
+		Reads: map[string]bool{"pool": true, "deposit_balance": true},
+	},
+	"oracle": {
+		Writes: map[string]string{
+			"deploy": forks.OracleV1, "register_feeder": forks.OracleV1, "submit_price": forks.OracleV1,
+		},
+		Reads: map[string]bool{"price": true, "feeder": true},
+	},
+	"multisig": {
+		Writes: map[string]string{
+			"deploy": forks.MultisigV1, "submit": forks.MultisigV1,
+		},
+		Reads: map[string]bool{"threshold": true, "proposal": true},
+	},
+	"governance": {
+		Writes: map[string]string{
+			"submit": forks.GovernanceV1, "vote": forks.GovernanceV1,
+		},
+		Reads: map[string]bool{"proposal": true, "count": true},
+	},
+	"qrc721": {
+		Writes: map[string]string{
+			"deploy": forks.QRC721V1, "mint": forks.QRC721V1, "transfer": forks.QRC721V1, "burn": forks.QRC721V1,
+		},
+		Reads: map[string]bool{"owner_of": true, "balance_of": true, "token_info": true},
+	},
+	"qrc4626": {
+		Writes: map[string]string{
+			"deploy": forks.QRC4626V1, "deposit": forks.QRC4626V1,
+		},
+		Reads: map[string]bool{"total_assets": true, "name": true},
+	},
 }
 
 // qrc20ReadParams / dexReadParams are the parameter shapes for read actions.
@@ -191,6 +245,22 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 		return dispatchExchangeRead(stateDB, rctx, mc.Action, mc.Params)
 	case "bridge":
 		return dispatchBridgeRead(stateDB, mc.Action, mc.Params)
+	case "verify":
+		return dispatchVerifyRead(stateDB, mc.Action, mc.Params)
+	case "validators":
+		return dispatchValidatorsRead(stateDB, mc.Action, mc.Params)
+	case "lending":
+		return dispatchLendingRead(stateDB, mc.Action, mc.Params)
+	case "oracle":
+		return dispatchOracleRead(stateDB, mc.Action, mc.Params)
+	case "multisig":
+		return dispatchMultisigRead(stateDB, mc.Action, mc.Params)
+	case "governance":
+		return dispatchGovernanceRead(stateDB, mc.Action, mc.Params)
+	case "qrc721":
+		return dispatchQRC721Read(stateDB, mc.Action, mc.Params)
+	case "qrc4626":
+		return dispatchQRC4626Read(stateDB, mc.Action, mc.Params)
 	default:
 		return nil, fmt.Errorf("module call: unknown module %q", mc.Module)
 	}

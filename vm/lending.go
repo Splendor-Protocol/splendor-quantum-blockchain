@@ -48,6 +48,7 @@ const (
 var (
 	slotLendingTreasury = qcrypto.Hash32([]byte("lending:treasury"))
 	slotLendingOwner    = qcrypto.Hash32([]byte("lending:owner"))
+	slotLendingOracle   = qcrypto.Hash32([]byte("lending:oracle"))
 )
 
 func lendingPoolSlot(asset qcrypto.Address) [32]byte {
@@ -74,7 +75,7 @@ func lendingInterestSlot(asset qcrypto.Address) [32]byte {
 
 // AssetPool tracks the state of a lending market for one asset.
 type AssetPool struct {
-	Asset           string   `json:"asset"`   // hex address
+	Asset           string   `json:"asset"` // hex address
 	TotalDeposits   *big.Int `json:"total_deposits"`
 	TotalBorrows    *big.Int `json:"total_borrows"`
 	ReserveBalance  *big.Int `json:"reserve_balance"`
@@ -99,8 +100,8 @@ type UserPosition struct {
 
 // UserBorrow tracks one user's outstanding borrow of one asset.
 type UserBorrow struct {
-	Asset          string   `json:"asset"`
-	BorrowBalance  *big.Int `json:"borrow_balance"`
+	Asset         string   `json:"asset"`
+	BorrowBalance *big.Int `json:"borrow_balance"`
 	// InterestIndexAtBorrow: interest index when user last borrowed/repaid
 	InterestIndexAtBorrow *big.Int `json:"interest_index_at_borrow"`
 }
@@ -149,6 +150,62 @@ func DeployLending(stateDB *state.StateDB, deployer qcrypto.Address, nonce uint6
 }
 
 // ── Asset management ──────────────────────────────────────────────────────────
+
+// SetOracle binds this market to a price oracle. Borrow and liquidate
+// refuse caller-supplied prices; they read this oracle only.
+func (l *LendingProtocol) SetOracle(caller, oracle qcrypto.Address) error {
+	if err := l.requireOwner(caller); err != nil {
+		return err
+	}
+	if oracle.IsZero() {
+		return fmt.Errorf("lending: oracle is zero address")
+	}
+	return l.stateDB.SetStorageValue(l.contract, slotLendingOracle, oracle[:])
+}
+
+// Oracle returns the bound price-oracle address (zero if unset).
+func (l *LendingProtocol) Oracle() (qcrypto.Address, error) {
+	b, err := l.stateDB.GetStorageValue(l.contract, slotLendingOracle)
+	if err != nil || len(b) < qcrypto.AddressSize {
+		return qcrypto.Address{}, err
+	}
+	var a qcrypto.Address
+	copy(a[:], b)
+	return a, nil
+}
+
+func (l *LendingProtocol) oraclePrices(collateral, borrow qcrypto.Address, height uint64) (colPrice, borrowPrice *big.Int, err error) {
+	oa, err := l.Oracle()
+	if err != nil {
+		return nil, nil, err
+	}
+	if oa.IsZero() {
+		return nil, nil, fmt.Errorf("lending: oracle not set")
+	}
+	o := NewPriceOracle(l.stateDB, oa)
+	colPrice, err = o.GetPrice(collateral, height)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lending: collateral price: %w", err)
+	}
+	borrowPrice, err = o.GetPrice(borrow, height)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lending: borrow price: %w", err)
+	}
+	if colPrice == nil || colPrice.Sign() <= 0 || borrowPrice == nil || borrowPrice.Sign() <= 0 {
+		return nil, nil, fmt.Errorf("lending: oracle returned a non-positive price")
+	}
+	return colPrice, borrowPrice, nil
+}
+
+// BorrowFromOracle borrows using on-chain oracle prices. The public router
+// must use this — never a caller-supplied price.
+func (l *LendingProtocol) BorrowFromOracle(caller, borrowAsset, collateralAsset qcrypto.Address, amount *big.Int, height uint64) error {
+	cp, bp, err := l.oraclePrices(collateralAsset, borrowAsset, height)
+	if err != nil {
+		return err
+	}
+	return l.Borrow(caller, borrowAsset, collateralAsset, amount, cp, bp, height)
+}
 
 // EnableAsset registers a new asset for lending/borrowing.
 func (l *LendingProtocol) EnableAsset(caller, asset qcrypto.Address, cfBPS, ltBPS int64) error {
@@ -618,9 +675,15 @@ func (l *LendingProtocol) GetPool(asset qcrypto.Address) (*AssetPool, error) {
 	if err := json.Unmarshal(b, &pool); err != nil {
 		return nil, err
 	}
-	if pool.TotalDeposits == nil { pool.TotalDeposits = big.NewInt(0) }
-	if pool.TotalBorrows == nil { pool.TotalBorrows = big.NewInt(0) }
-	if pool.ReserveBalance == nil { pool.ReserveBalance = big.NewInt(0) }
+	if pool.TotalDeposits == nil {
+		pool.TotalDeposits = big.NewInt(0)
+	}
+	if pool.TotalBorrows == nil {
+		pool.TotalBorrows = big.NewInt(0)
+	}
+	if pool.ReserveBalance == nil {
+		pool.ReserveBalance = big.NewInt(0)
+	}
 	if pool.AccruedInterestIndex == nil {
 		pool.AccruedInterestIndex = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	}
@@ -708,7 +771,9 @@ func (l *LendingProtocol) getUserPosition(user, asset qcrypto.Address) (*UserPos
 	if err := json.Unmarshal(b, &pos); err != nil {
 		return nil, err
 	}
-	if pos.DepositBalance == nil { pos.DepositBalance = big.NewInt(0) }
+	if pos.DepositBalance == nil {
+		pos.DepositBalance = big.NewInt(0)
+	}
 	if pos.InterestIndexAtDeposit == nil {
 		pos.InterestIndexAtDeposit = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	}
@@ -737,7 +802,9 @@ func (l *LendingProtocol) getUserBorrow(user, asset qcrypto.Address) (*UserBorro
 	if err := json.Unmarshal(b, &borrow); err != nil {
 		return nil, err
 	}
-	if borrow.BorrowBalance == nil { borrow.BorrowBalance = big.NewInt(0) }
+	if borrow.BorrowBalance == nil {
+		borrow.BorrowBalance = big.NewInt(0)
+	}
 	if borrow.InterestIndexAtBorrow == nil {
 		borrow.InterestIndexAtBorrow = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	}

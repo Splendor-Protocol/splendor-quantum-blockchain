@@ -34,8 +34,12 @@ import (
 // block. Recorded on-chain so a future scheme (e.g. SLH-DSA) can coexist without
 // a silent mix-up: verifiers reject anything whose alg_id they do not implement.
 const (
-	// AlgMLDSA65 is ML-DSA-65 (NIST FIPS 204) — the only scheme accepted today.
+	// AlgMLDSA65 is ML-DSA-65 (NIST FIPS 204) — the only scheme accepted today
+	// for native transactions and blocks.
 	AlgMLDSA65 = "ML-DSA-65"
+	// AlgSLHDSA is SLH-DSA-SHA2-128s (NIST FIPS 205). Required alongside
+	// ML-DSA-65 on SQVL instructions and attestations.
+	AlgSLHDSA = "SLH-DSA-SHA2-128s"
 )
 
 // Domain separation context strings (FIPS 204 ctx parameter, max 255 bytes).
@@ -71,6 +75,8 @@ var (
 	// authorise crediting it. Appended after CtxOrder: the block is
 	// append-only.
 	CtxBridge = []byte("SPLENDOR-QC-BRIDGE-v1")
+	// CtxVerify domain-separates SQVL instructions and operator attestations.
+	CtxVerify = []byte("SPLENDOR-QC-VERIFY-v1")
 )
 
 // maxContextSize is the FIPS 204 limit on the signing context string.

@@ -70,6 +70,25 @@ const (
 	// BridgeV1 activates the one-way legacy-mainnet migration bridge module.
 	// Requires ModuleRevertV1 no later than itself (see Validate).
 	BridgeV1 = "bridge_v1"
+	// VerifyV1 routes the native SQVL verify/settlement module.
+	VerifyV1 = "verify_v1"
+	// ValidatorsV1 routes permissionless validator register (2,500 SPLD bond).
+	ValidatorsV1 = "validators_v1"
+	// LendingV1 routes the over-collateralised lending module.
+	LendingV1 = "lending_v1"
+	// OracleV1 routes the price-feed module.
+	OracleV1 = "oracle_v1"
+	// MultisigV1 routes the N-of-M wallet module.
+	MultisigV1 = "multisig_v1"
+	// GovernanceV1 routes on-chain proposals and votes.
+	GovernanceV1 = "governance_v1"
+	// QRC721V1 routes the NFT module.
+	QRC721V1 = "qrc721_v1"
+	// QRC4626V1 routes the vault module.
+	QRC4626V1 = "qrc4626_v1"
+	// MinFeeV1 raises the mempool floor to 0.001 SPLD. Admission-only; already
+	// applied blocks are not re-judged.
+	MinFeeV1 = "min_fee_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -78,7 +97,10 @@ const (
 // fork name is otherwise invisible: the node reports a healthy schedule, the
 // rule never activates, and nobody finds out until the height passes without
 // anything happening.
-var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1}
+var Known = []string{
+	MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1,
+	VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1, MinFeeV1,
+}
 
 // Schedule maps an upgrade name to the height at which it takes effect.
 type Schedule map[string]uint64
@@ -130,7 +152,10 @@ func (s Schedule) Validate() error {
 	// before (or without) that rule describes a chain that cannot run it
 	// safely, so the document is refused rather than honoured in part. The
 	// dependents are checked in sorted order for a stable report.
-	for _, name := range []string{BridgeV1, ExchangeV1, QRC1155V1, QRC20V2} {
+	for _, name := range []string{
+		BridgeV1, ExchangeV1, QRC1155V1, QRC20V2,
+		VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1,
+	} {
 		at, ok := s.At(name)
 		if !ok {
 			continue

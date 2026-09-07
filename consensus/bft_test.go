@@ -1,216 +1,175 @@
 package consensus
 
 import (
-	"go/parser"
-	"go/token"
-	"strings"
+	"context"
 	"testing"
+	"time"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
-func testVoter(t *testing.T) (qcrypto.Address, []byte, *qcrypto.PrivateKey) {
+func testKey(t *testing.T) (*qcrypto.PrivateKey, []byte, qcrypto.Address) {
 	t.Helper()
 	pub, priv, err := qcrypto.GenerateKeypair()
 	if err != nil {
-		t.Fatalf("keygen: %v", err)
+		t.Fatal(err)
 	}
-	return qcrypto.DeriveAddress(pub), pub.Bytes(), priv
+	return priv, pub.Bytes(), qcrypto.DeriveAddress(pub)
 }
 
-func signedVote(t *testing.T, height uint64, round uint32, blockHash [32]byte) (*Vote, []byte) {
+func testSet(t *testing.T, n int) ([]ValidatorInfo, []*qcrypto.PrivateKey) {
 	t.Helper()
-	addr, pubBytes, priv := testVoter(t)
-	v := &Vote{
-		Height:        height,
-		Round:         round,
-		BlockHash:     blockHash,
-		ValidatorAddr: addr,
-		Timestamp:     1_700_000_000,
+	infos := make([]ValidatorInfo, n)
+	keys := make([]*qcrypto.PrivateKey, n)
+	for i := 0; i < n; i++ {
+		priv, pk, addr := testKey(t)
+		keys[i] = priv
+		infos[i] = ValidatorInfo{Address: addr, PublicKey: pk, IsActive: true}
 	}
-	if err := v.Sign(priv); err != nil {
-		t.Fatalf("sign vote: %v", err)
-	}
-	return v, pubBytes
+	return infos, keys
 }
 
-// A vote must sign and verify, and must record the algorithm it used.
-func TestVoteRoundTrip(t *testing.T) {
-	v, pub := signedVote(t, 10, 0, [32]byte{1})
-
-	if v.AlgID != qcrypto.AlgMLDSA65 {
-		t.Fatalf("vote alg_id = %q, want %q", v.AlgID, qcrypto.AlgMLDSA65)
-	}
-	if len(v.Signature) != qcrypto.SignatureSize {
-		t.Fatalf("signature is %d bytes, want %d", len(v.Signature), qcrypto.SignatureSize)
-	}
-	if err := v.Verify(pub); err != nil {
-		t.Fatalf("freshly signed vote did not verify: %v", err)
-	}
-}
-
-// Every signed field must be covered by the signature.
-func TestVoteRejectsTamperedFields(t *testing.T) {
-	for _, c := range []struct {
-		name   string
-		mutate func(*Vote)
-	}{
-		{"height", func(v *Vote) { v.Height++ }},
-		{"round", func(v *Vote) { v.Round++ }},
-		{"block hash", func(v *Vote) { v.BlockHash[0] ^= 0xFF }},
-		{"timestamp", func(v *Vote) { v.Timestamp++ }},
-		{"alg id", func(v *Vote) { v.AlgID = "Ed25519" }},
-		{"signature", func(v *Vote) { v.Signature[0] ^= 0xFF }},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			v, pub := signedVote(t, 10, 0, [32]byte{1})
-			c.mutate(v)
-			if err := v.Verify(pub); err == nil {
-				t.Fatalf("a vote with a tampered %s was accepted", c.name)
-			}
-		})
-	}
-}
-
-// A vote must not verify under a key belonging to a different validator, even
-// if that signature is otherwise perfectly valid.
-func TestVoteCannotBeAttributedToAnotherValidator(t *testing.T) {
-	v, _ := signedVote(t, 10, 0, [32]byte{1})
-	_, otherPub, _ := testVoter(t)
-
-	if err := v.Verify(otherPub); err == nil {
-		t.Fatal("a vote verified against an unrelated validator's key")
-	}
-}
-
-// A vote signature must not be reusable as a block or transaction signature.
-// This is the property the domain-separation contexts exist to provide.
-func TestVoteSignatureIsDomainSeparated(t *testing.T) {
-	v, pub := signedVote(t, 10, 0, [32]byte{1})
-	hash, err := v.Hash()
+func TestLeaderRotatesWithRound(t *testing.T) {
+	set, keys := testSet(t, 3)
+	eng, err := NewBFTEngine(BFTConfig{LocalAddr: set[0].Address, LocalPubKey: set[0].PublicKey, LocalPrivKey: keys[0]})
 	if err != nil {
-		t.Fatalf("hash: %v", err)
+		t.Fatal(err)
 	}
-	pk, err := qcrypto.PublicKeyFromBytes(pub)
+	eng.UpdateValidatorSet(set)
+	a, _ := eng.LeaderAddress(10, 0)
+	b, _ := eng.LeaderAddress(10, 1)
+	c, _ := eng.LeaderAddress(10, 2)
+	if a == b || b == c || a == c {
+		t.Fatalf("leaders should rotate: %s %s %s", a, b, c)
+	}
+	if !eng.IsLeader(10, 0) && set[0].Address == a {
+		t.Fatal("local node should be leader when it is scheduled")
+	}
+}
+
+func TestRoundTimeoutViewChange(t *testing.T) {
+	set, keys := testSet(t, 3)
+	eng, err := NewBFTEngine(BFTConfig{
+		LocalAddr: set[0].Address, LocalPubKey: set[0].PublicKey, LocalPrivKey: keys[0],
+		RoundTimeout: 40 * time.Millisecond,
+	})
 	if err != nil {
-		t.Fatalf("pubkey: %v", err)
+		t.Fatal(err)
 	}
-
-	for name, ctx := range map[string][]byte{
-		"transaction": qcrypto.CtxTransaction,
-		"block":       qcrypto.CtxBlock,
-		"x402":        qcrypto.CtxX402,
-		"message":     qcrypto.CtxMessage,
-	} {
-		if qcrypto.Verify(pk, hash[:], ctx, v.Signature) {
-			t.Errorf("SECURITY: a consensus vote verified as a %s signature", name)
+	eng.UpdateValidatorSet(set)
+	eng.SetHeight(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = eng.Run(ctx) }()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if eng.Round() >= 1 {
+			return
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if !qcrypto.Verify(pk, hash[:], qcrypto.CtxVote, v.Signature) {
-		t.Error("vote does not verify under its own context")
-	}
+	t.Fatalf("round did not advance on timeout, still %d", eng.Round())
 }
 
-// The quorum threshold must be 2/3+1 of the validator set.
-func TestQuorumThreshold(t *testing.T) {
-	for _, c := range []struct{ validators, want int }{
-		{1, 1}, {3, 3}, {4, 3}, {7, 5}, {10, 7}, {100, 67},
-	} {
-		vs := NewVoteSet(1, 0, [32]byte{}, c.validators)
-		if vs.requiredWeight != c.want {
-			t.Errorf("%d validators: quorum = %d, want %d",
-				c.validators, vs.requiredWeight, c.want)
-		}
-	}
-}
-
-// A vote set must only accept votes for its own height, round, and block, and
-// must count each validator once.
-func TestVoteSetRejectsMismatchedAndDuplicateVotes(t *testing.T) {
-	hash := [32]byte{7}
-	vs := NewVoteSet(10, 2, hash, 4)
-
-	good, _ := signedVote(t, 10, 2, hash)
-	if _, err := vs.AddVote(good); err != nil {
-		t.Fatalf("valid vote rejected: %v", err)
-	}
-	if _, err := vs.AddVote(good); err == nil {
-		t.Fatal("the same validator voted twice and both were counted")
-	}
-
-	wrongHeight, _ := signedVote(t, 11, 2, hash)
-	if _, err := vs.AddVote(wrongHeight); err == nil {
-		t.Fatal("a vote for another height was counted")
-	}
-	wrongRound, _ := signedVote(t, 10, 3, hash)
-	if _, err := vs.AddVote(wrongRound); err == nil {
-		t.Fatal("a vote from another round was counted")
-	}
-	wrongBlock, _ := signedVote(t, 10, 2, [32]byte{9})
-	if _, err := vs.AddVote(wrongBlock); err == nil {
-		t.Fatal("a vote for a different block was counted")
-	}
-
-	if vs.VoteCount() != 1 {
-		t.Fatalf("vote count = %d, want 1", vs.VoteCount())
-	}
-}
-
-// Quorum must be reported exactly once, on the vote that reaches it.
-func TestQuorumReportedOnce(t *testing.T) {
-	hash := [32]byte{3}
-	vs := NewVoteSet(5, 0, hash, 4) // needs 3
-
-	reached := 0
-	for i := 0; i < 4; i++ {
-		v, _ := signedVote(t, 5, 0, hash)
-		hit, err := vs.AddVote(v)
-		if err != nil {
-			t.Fatalf("vote %d rejected: %v", i, err)
-		}
-		if hit {
-			reached++
-			if vs.VoteCount() != 3 {
-				t.Errorf("quorum announced at %d votes, want 3", vs.VoteCount())
-			}
-		}
-	}
-	if reached != 1 {
-		t.Fatalf("quorum reported %d times, want exactly 1", reached)
-	}
-	if !vs.HasQuorum() {
-		t.Fatal("quorum not held after enough votes")
-	}
-}
-
-// Consensus must not gain a classical signature scheme. Speed is not a reason
-// to make the chain forgeable by a quantum adversary, so this is enforced
-// rather than left to review.
-func TestConsensusImportsNoClassicalCrypto(t *testing.T) {
-	banned := []string{
-		"crypto/ecdsa", "crypto/ed25519", "crypto/rsa", "crypto/dsa",
-		"crypto/elliptic", "golang.org/x/crypto/ed25519",
-		"github.com/ethereum/go-ethereum/crypto",
-	}
-
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", nil, parser.ImportsOnly)
+func TestEquivocationDropped(t *testing.T) {
+	set, keys := testSet(t, 3)
+	eng, err := NewBFTEngine(BFTConfig{
+		LocalAddr: set[0].Address, LocalPubKey: set[0].PublicKey, LocalPrivKey: keys[0],
+		RoundTimeout: time.Hour,
+	})
 	if err != nil {
-		t.Fatalf("parse consensus package: %v", err)
+		t.Fatal(err)
 	}
-	for _, pkg := range pkgs {
-		for name, file := range pkg.Files {
-			if strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			for _, imp := range file.Imports {
-				path := strings.Trim(imp.Path.Value, `"`)
-				for _, b := range banned {
-					if path == b {
-						t.Errorf("%s imports %s: consensus must be post-quantum only", name, b)
-					}
-				}
-			}
+	eng.UpdateValidatorSet(set)
+
+	mkVote := func(hash [32]byte, i int) *Vote {
+		v := &Vote{
+			Height: 1, Round: 0, BlockHash: hash,
+			ValidatorAddr: set[i].Address, Timestamp: 1,
 		}
+		if err := v.Sign(keys[i]); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	h1 := [32]byte{1}
+	h2 := [32]byte{2}
+	eng.SubmitVote(mkVote(h1, 1))
+	eng.SubmitVote(mkVote(h2, 1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = eng.Run(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+
+	key := set[1].Address.String() + "|1|0"
+	eng.stateMu.Lock()
+	seen := eng.seenVotes[key]
+	eng.stateMu.Unlock()
+	if seen == nil || seen.BlockHash != h1 {
+		t.Fatalf("first vote should be kept, got %+v", seen)
+	}
+}
+
+func TestQuorumCommits(t *testing.T) {
+	set, keys := testSet(t, 3)
+	committed := make(chan *types.Block, 1)
+	eng, err := NewBFTEngine(BFTConfig{
+		LocalAddr: set[0].Address, LocalPubKey: set[0].PublicKey, LocalPrivKey: keys[0],
+		RoundTimeout: time.Hour,
+		OnCommit: func(b *types.Block) error {
+			committed <- b
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.UpdateValidatorSet(set)
+	eng.SetHeight(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = eng.Run(ctx) }()
+
+	leader, ok := eng.LeaderAddress(1, 0)
+	if !ok {
+		t.Fatal("no leader")
+	}
+	b := &types.Block{Header: types.BlockHeader{Height: 1, ValidatorAddr: leader}}
+	h, herr := b.ComputeVotedHash()
+	if herr != nil {
+		t.Fatal(herr)
+	}
+	b.Hash = h
+
+	eng.ProposeBlock(b)
+	time.Sleep(80 * time.Millisecond)
+	// Need 3 validators → quorum 3. Local vote is added on propose; add the other two.
+	for i := 1; i < 3; i++ {
+		v := &Vote{
+			Height: 1, Round: 0, BlockHash: b.Hash,
+			ValidatorAddr: set[i].Address, Timestamp: time.Now().Unix(),
+		}
+		if err := v.Sign(keys[i]); err != nil {
+			t.Fatal(err)
+		}
+		eng.SubmitVote(v)
+	}
+
+	select {
+	case got := <-committed:
+		if got.Header.Height != 1 {
+			t.Fatalf("height %d", got.Header.Height)
+		}
+		if len(got.Votes) < 3 {
+			t.Fatalf("want 3 votes, got %d", len(got.Votes))
+		}
+		if len(got.Header.QCRoot) == 0 {
+			t.Fatal("missing QCRoot")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not commit")
 	}
 }

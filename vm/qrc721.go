@@ -47,6 +47,7 @@ var (
 	slotNFTTotalSupply = qcrypto.Hash32([]byte("qrc721:total_supply"))
 	slotNFTName        = qcrypto.Hash32([]byte("qrc721:name"))
 	slotNFTSymbol      = qcrypto.Hash32([]byte("qrc721:symbol"))
+	slotNFTOwner       = qcrypto.Hash32([]byte("qrc721:owner"))
 )
 
 func nftBalanceSlot(addr qcrypto.Address) [32]byte {
@@ -119,7 +120,35 @@ func DeployQRC721(
 	if err := nft.setBigInt(slotNFTTotalSupply, big.NewInt(0)); err != nil {
 		return qcrypto.Address{}, fmt.Errorf("QRC721 deploy supply: %w", err)
 	}
+	if err := stateDB.SetStorageValue(contractAddr, slotNFTOwner, deployer[:]); err != nil {
+		return qcrypto.Address{}, fmt.Errorf("QRC721 deploy owner: %w", err)
+	}
 	return contractAddr, nil
+}
+
+// Owner returns the collection owner (the deployer). Zero if never deployed.
+func (t *QRC721Token) Owner() (qcrypto.Address, error) {
+	b, err := t.stateDB.GetStorageValue(t.contract, slotNFTOwner)
+	if err != nil {
+		return qcrypto.Address{}, err
+	}
+	if len(b) < qcrypto.AddressSize {
+		return qcrypto.Address{}, nil
+	}
+	var owner qcrypto.Address
+	copy(owner[:], b)
+	return owner, nil
+}
+
+func (t *QRC721Token) requireOwner(caller qcrypto.Address) error {
+	owner, err := t.Owner()
+	if err != nil {
+		return err
+	}
+	if owner.IsZero() || caller != owner {
+		return fmt.Errorf("QRC721: caller %s is not owner", caller)
+	}
+	return nil
 }
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
@@ -312,9 +341,11 @@ func (t *QRC721Token) doTransfer(from, to qcrypto.Address, tokenId *big.Int) err
 
 // ── Minting & Burning ─────────────────────────────────────────────────────────
 
-// Mint creates a new token with `tokenId` owned by `to`.
-// tokenURI is the metadata URI (e.g. ipfs://Qm...).
-func (t *QRC721Token) Mint(to qcrypto.Address, tokenId *big.Int, uri string) error {
+// Mint creates a new token with `tokenId` owned by `to`. Only the collection owner may mint.
+func (t *QRC721Token) Mint(caller, to qcrypto.Address, tokenId *big.Int, uri string) error {
+	if err := t.requireOwner(caller); err != nil {
+		return err
+	}
 	if to.IsZero() {
 		return fmt.Errorf("QRC721 mint: cannot mint to zero address")
 	}

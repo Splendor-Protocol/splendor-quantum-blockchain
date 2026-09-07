@@ -16,6 +16,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
@@ -238,6 +239,9 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 	if err := e.verifyBlockLinkage(b); err != nil {
 		return fmt.Errorf("block linkage rejected: %w", err)
 	}
+	if err := e.verifyProducerAndQC(b); err != nil {
+		return fmt.Errorf("block certificate rejected: %w", err)
+	}
 
 	// Run pre-block hooks
 	if e.hooks != nil {
@@ -296,6 +300,11 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		}
 		va.AddBalance(totalFees)
 		e.state.SetAccount(va)
+	}
+
+	if err := genesis.CheckNativeSupply(e.state); err != nil {
+		e.state.DiscardPending()
+		return err
 	}
 
 	// Verify the declared state root BEFORE persisting.
@@ -414,6 +423,11 @@ func (e *Executor) reapplyBlock(b *types.Block) error {
 		}
 		va.AddBalance(totalFees)
 		e.state.SetAccount(va)
+	}
+
+	if err := genesis.CheckNativeSupply(e.state); err != nil {
+		e.state.DiscardPending()
+		return err
 	}
 
 	root, err := e.state.PendingStateRoot()
@@ -835,6 +849,31 @@ func (e *Executor) ProduceBlock(
 	prevHash [32]byte,
 	height uint64,
 ) (*types.Block, error) {
+	return e.assembleBlock(txs, validatorAddr, validatorPubKey, validatorPrivKey, prevHash, height, true)
+}
+
+// BuildProposal assembles and signs a block without committing it. The leader
+// proposes this; followers re-execute via ExecuteBlock after a quorum.
+func (e *Executor) BuildProposal(
+	txs []*types.Transaction,
+	validatorAddr qcrypto.Address,
+	validatorPubKey []byte,
+	validatorPrivKey *qcrypto.PrivateKey,
+	prevHash [32]byte,
+	height uint64,
+) (*types.Block, error) {
+	return e.assembleBlock(txs, validatorAddr, validatorPubKey, validatorPrivKey, prevHash, height, false)
+}
+
+func (e *Executor) assembleBlock(
+	txs []*types.Transaction,
+	validatorAddr qcrypto.Address,
+	validatorPubKey []byte,
+	validatorPrivKey *qcrypto.PrivateKey,
+	prevHash [32]byte,
+	height uint64,
+	persist bool,
+) (*types.Block, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -930,6 +969,11 @@ func (e *Executor) ProduceBlock(
 		e.state.SetAccount(va)
 	}
 
+	if err := genesis.CheckNativeSupply(e.state); err != nil {
+		e.state.DiscardPending()
+		return nil, err
+	}
+
 	// Compute the root the pending writes WOULD commit to (for the header), but do
 	// not persist state yet — the block body + head must be stored first so a
 	// crash leaves the head ahead of state (replayable), never the reverse.
@@ -965,6 +1009,14 @@ func (e *Executor) ProduceBlock(
 
 	if err := b.SignBlock(validatorPrivKey); err != nil {
 		return nil, fmt.Errorf("block sign: %w", err)
+	}
+	if len(validatorPubKey) > 0 {
+		b.ValidatorPubKey = validatorPubKey
+	}
+
+	if !persist {
+		e.state.DiscardPending()
+		return b, nil
 	}
 
 	if err := e.storeBlock(b); err != nil {
@@ -1030,6 +1082,63 @@ func (e *Executor) latestHeightRaw() (uint64, bool) {
 		return 0, false
 	}
 	return info.Height, true
+}
+
+func (e *Executor) verifyProducerAndQC(b *types.Block) error {
+	if b.Header.Height == 0 {
+		return nil
+	}
+	sched := e.schedule()
+	if !sched.Active(forks.MultiValidator, b.Header.Height) {
+		return nil
+	}
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	reg := vm.NewStakingContract(e.state, vm.DeployStaking(nil))
+	active, err := reg.ListActive()
+	if err != nil {
+		return fmt.Errorf("validator set: %w", err)
+	}
+	byAddr := make(map[qcrypto.Address][]byte, len(active))
+	for _, rec := range active {
+		byAddr[rec.Address] = rec.PublicKey
+	}
+	pub := byAddr[b.Header.ValidatorAddr]
+	if len(pub) == 0 {
+		pub = b.ValidatorPubKey
+	}
+	if len(pub) == 0 {
+		return fmt.Errorf("producer %s is not in the active validator set", b.Header.ValidatorAddr)
+	}
+	if err := b.VerifySignature(pub); err != nil {
+		return err
+	}
+	if len(active) < 2 {
+		return nil
+	}
+	if len(b.Header.QCRoot) == 0 || len(b.Votes) == 0 {
+		return fmt.Errorf("multi_validator requires a quorum certificate at height %d", b.Header.Height)
+	}
+	need := (len(active)*2)/3 + 1
+	if len(b.Votes) < need {
+		return fmt.Errorf("qc has %d votes, need %d", len(b.Votes), need)
+	}
+	seen := make(map[qcrypto.Address]struct{})
+	for _, v := range b.Votes {
+		pk, ok := byAddr[v.ValidatorAddr]
+		if !ok {
+			return fmt.Errorf("vote from unknown validator %s", v.ValidatorAddr)
+		}
+		if _, dup := seen[v.ValidatorAddr]; dup {
+			return fmt.Errorf("duplicate vote from %s", v.ValidatorAddr)
+		}
+		seen[v.ValidatorAddr] = struct{}{}
+		if err := v.Verify(pk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *Executor) verifyBlockLinkage(b *types.Block) error {
