@@ -3,6 +3,7 @@ package genesis
 import (
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -336,5 +337,54 @@ func TestDuplicateAllocationIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already allocated") {
 		t.Fatalf("error should name the duplication, got: %v", err)
+	}
+}
+
+func TestRefuseSupplyAboveTwentySixBillion(t *testing.T) {
+	g := liveTierGenesis(t)
+	over := new(big.Int).Add(NativeSupplyCap(), big.NewInt(1))
+	g.Allocations = []Allocation{{
+		Address: g.Allocations[0].Address,
+		Balance: over.String(),
+		Comment: "one wei over the cap",
+	}}
+	g.TotalSupply = over.String()
+
+	err := g.Validate()
+	if err == nil {
+		t.Fatal("a genesis that mints more than 26 billion SPLD must be refused")
+	}
+	if !strings.Contains(err.Error(), "26 billion") {
+		t.Fatalf("error should name the cap, got: %v", err)
+	}
+}
+
+func TestDefaultGenesisMatchesTheCap(t *testing.T) {
+	pub, _, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	g := DefaultGenesis(hex.EncodeToString(pub.Bytes()))
+	if err := g.Validate(); err != nil {
+		t.Fatalf("DefaultGenesis must be a valid 26B document: %v", err)
+	}
+	if g.TotalSupply != NativeSupplyCapDecimal {
+		t.Fatalf("total_supply = %s, want the 26B cap", g.TotalSupply)
+	}
+	if g.SumAllocations().Cmp(NativeSupplyCap()) != 0 {
+		t.Fatalf("allocations sum = %s, want the 26B cap", g.SumAllocations())
+	}
+}
+
+func TestCapExactlyTwentySixBillionIsAccepted(t *testing.T) {
+	g := liveTierGenesis(t)
+	g.Allocations = []Allocation{{
+		Address: g.Allocations[0].Address,
+		Balance: NativeSupplyCapDecimal,
+		Comment: "treasury",
+	}}
+	g.TotalSupply = NativeSupplyCapDecimal
+	if err := g.Validate(); err != nil {
+		t.Fatalf("exactly 26B must be accepted: %v", err)
 	}
 }

@@ -360,7 +360,13 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// ── Hook registry ──────────────────────────────────────────────────────
 	hooks := block.NewHookRegistry()
-	hooks.OnPreTx("min_fee", block.MinFeeHook(1000))
+	hooks.OnPreTx("min_fee", func(tx *types.Transaction, height uint64) error {
+		min := int64(mempool.MinFee)
+		if executor.Forks().Active(forks.MinFeeV1, height) {
+			min = mempool.MinFeeV1Amount
+		}
+		return block.MinFeeHook(min)(tx, height)
+	})
 	hooks.OnPreBlock("block_size", block.BlockSizeHook(block.MaxTxPerBlock))
 	hooks.OnPostBlock("logging", block.LoggingHook())
 	executor.WithHooks(hooks)
@@ -718,6 +724,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Validator consensus ────────────────────────────────────────────────
+	var bftEngine *consensus.BFTEngine
 	if flagIsValidator && validatorPriv != nil {
 		vCfg := consensus.Config{
 			BlockInterval: time.Duration(flagBlockInterval) * time.Second,
@@ -726,29 +733,86 @@ func runNode(cmd *cobra.Command, args []string) error {
 			PublicKey:     validatorPKBytes,
 			PrivateKey:    validatorPriv,
 		}
-		v := consensus.New(vCfg, executor, pool, scheduler)
-
-		// Validator: subscribe to block channel to push blocks to peers immediately.
-		// This provides realtime push-based sync (like geth's block propagation).
-		// The channel fan-out: blockCh → wsHub + broadcaster.
 		broadcastCh := make(chan *types.Block, 64)
-		v.Subscribe(broadcastCh)
-
 		go func() {
 			for b := range broadcastCh {
-				// Send to WebSocket hub
 				select {
 				case blockCh <- b:
 				default:
 				}
-				// Push to all registered RPC peers immediately
 				broadcaster.Broadcast(b)
 			}
 		}()
 
+		head, _ := executor.LatestHeight()
+		useBFT := executor.Forks().Active(forks.MultiValidator, head)
+		if useBFT {
+			eng, bftErr := consensus.NewBFTEngine(consensus.BFTConfig{
+				LocalAddr:    validatorAddr,
+				LocalPubKey:  validatorPKBytes,
+				LocalPrivKey: validatorPriv,
+				OnCommit: func(b *types.Block) error {
+					if err := executor.ExecuteBlock(b); err != nil {
+						return err
+					}
+					return nil
+				},
+				Broadcast: func(vote *consensus.Vote) {
+					data, err := json.Marshal(vote)
+					if err == nil {
+						broadcaster.BroadcastSealed(network.KindVote, data)
+					}
+				},
+				BroadcastProposal: func(b *types.Block) {
+					data, err := json.Marshal(b)
+					if err == nil {
+						broadcaster.BroadcastSealed(network.KindProposal, data)
+					}
+				},
+			})
+			if bftErr != nil {
+				return fmt.Errorf("bft engine: %w", bftErr)
+			}
+			bftEngine = eng
+			mv := consensus.NewMultiValidator(vCfg, eng, executor, pool, scheduler, stateDB)
+			mv.Subscribe(broadcastCh)
+			go func() {
+				for b := range eng.CommitCh() {
+					mv.NotifyCommit(b)
+				}
+			}()
+			go func() {
+				if err := mv.Run(ctx); err != nil && ctx.Err() == nil {
+					log.Error().Err(err).Msg("BFT validator exited with error")
+				}
+			}()
+			log.Info().Msg("multi_validator BFT producer started")
+		} else {
+			v := consensus.New(vCfg, executor, pool, scheduler)
+			v.Subscribe(broadcastCh)
+			go func() {
+				if err := v.Run(ctx); err != nil && ctx.Err() == nil {
+					log.Error().Err(err).Msg("Validator exited with error")
+				}
+			}()
+		}
+
+		// Keep the mempool floor aligned with the live fork.
 		go func() {
-			if err := v.Run(ctx); err != nil && ctx.Err() == nil {
-				log.Error().Err(err).Msg("Validator exited with error")
+			t := time.NewTicker(2 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					h, _ := executor.LatestHeight()
+					if executor.Forks().Active(forks.MinFeeV1, h) {
+						pool.SetBaseFee(mempool.MinFeeV1Amount)
+					} else {
+						pool.SetBaseFee(mempool.MinFee)
+					}
+				}
 			}
 		}()
 	}
@@ -881,6 +945,28 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Token:    authToken,
 		HandleBlock: func(body []byte) error {
 			return network.HandleIncomingBlock(body, validatorPKBytes, executor.ExecuteBlock)
+		},
+		HandleVote: func(body []byte) error {
+			if bftEngine == nil {
+				return fmt.Errorf("this node is not running BFT")
+			}
+			var vote consensus.Vote
+			if err := json.Unmarshal(body, &vote); err != nil {
+				return fmt.Errorf("invalid vote: %w", err)
+			}
+			bftEngine.SubmitVote(&vote)
+			return nil
+		},
+		HandleProposal: func(body []byte) error {
+			if bftEngine == nil {
+				return fmt.Errorf("this node is not running BFT")
+			}
+			var prop types.Block
+			if err := json.Unmarshal(body, &prop); err != nil {
+				return fmt.Errorf("invalid proposal: %w", err)
+			}
+			bftEngine.ProposeBlock(&prop)
+			return nil
 		},
 		HandleAnnounce: func(body []byte) error {
 			var peer network.PeerInfo

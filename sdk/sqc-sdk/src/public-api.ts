@@ -118,6 +118,9 @@ export { Contract, deployBytecode, getContract } from './contracts/contract.js';
 export { Exchange, deployExchange, getExchange } from './defi/exchange.js';
 export { DEX, deployPool, getPool } from './defi/dex.js';
 export { BridgeModule, deployBridge, getBridge } from './bridge/module.js';
+export { VerifyClient, getVerify } from './verify.js';
+export type { VerifyInstruction } from './verify.js';
+export { ValidatorsClient, getValidators, VALIDATOR_BOND_SPLD } from './validators.js';
 export { modules, bindModules, ensureBuiltInModulesRegistered } from './modules.js';
 export type { Modules, BoundModules, SignedBoundModules } from './modules.js';
 export {

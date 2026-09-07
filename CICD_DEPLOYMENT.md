@@ -88,7 +88,18 @@ In `splendor-infra/.github/workflows/deploy.yml`, add this step:
         "module_revert_v1": 1,
         "qrc20_v2": 1,
         "qrc1155_v1": 1,
-        "exchange_v1": 1
+        "exchange_v1": 1,
+        "bridge_v1": 1,
+        "verify_v1": 1,
+        "validators_v1": 1,
+        "lending_v1": 1,
+        "oracle_v1": 1,
+        "multisig_v1": 1,
+        "governance_v1": 1,
+        "qrc721_v1": 1,
+        "qrc4626_v1": 1,
+        "min_fee_v1": 1,
+        "multi_validator": 1
       }
     }
     EOF
@@ -254,7 +265,7 @@ After deployment:
     {
       "address": "SQ:665f89b60e3ebb95eac3ac6c6ed89f14caa74947d64bc9300cd4609f0075fc4c",
       "balance": "26000000000000000000000000000",
-      "comment": "Treasury - ALL 26 billion SPLD"
+      "comment": "Treasury - ALL 26 billion SPLD. Nothing else is ever minted."
     }
   ],
   "total_supply": "26000000000000000000000000000",
@@ -262,7 +273,18 @@ After deployment:
     "module_revert_v1": 1,
     "qrc20_v2": 1,
     "qrc1155_v1": 1,
-    "exchange_v1": 1
+    "exchange_v1": 1,
+    "bridge_v1": 1,
+    "verify_v1": 1,
+    "validators_v1": 1,
+    "lending_v1": 1,
+    "oracle_v1": 1,
+    "multisig_v1": 1,
+    "governance_v1": 1,
+    "qrc721_v1": 1,
+    "qrc4626_v1": 1,
+    "min_fee_v1": 1,
+    "multi_validator": 1
   }
 }
 ```

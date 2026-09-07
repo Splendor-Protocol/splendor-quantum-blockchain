@@ -911,7 +911,9 @@ func parseBigDefault(s, def string) (*big.Int, error) {
 	return parseBig(s, "value")
 }
 
-// MinFee matches SQDP-1 / TS PROTOCOL.minFee (1000 base units).
+// MinFee is the signer-side floor. The product quote is 0.001 SPLD (10^15)
+// after min_fee_v1; this lower bound still accepts the legacy 1000-unit fee
+// so pre-fork chains and existing WASM fixtures keep working.
 const MinFee int64 = 1000
 
 func assertMinFee(fee *big.Int) error {

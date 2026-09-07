@@ -32,6 +32,8 @@ const (
 const (
 	KindBlock    = "block"
 	KindAnnounce = "announce"
+	KindVote     = "vote"
+	KindProposal = "proposal"
 
 	KindGetBlock  = "get_block"
 	KindGetLatest = "get_latest"

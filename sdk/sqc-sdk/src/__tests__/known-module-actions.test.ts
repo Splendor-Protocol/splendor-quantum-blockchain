@@ -102,6 +102,38 @@ const SDK_COVERAGE: Record<string, { writes: string[]; reads: string[]; allowlis
     ],
     reads: ['bridge_info', 'claim_status'],
   },
+  verify: {
+    writes: ['deploy', 'register', 'attest', 'finalize', 'spend', 'set_operator', 'set_threshold', 'pause', 'unpause'],
+    reads: ['proof', 'instance'],
+  },
+  validators: {
+    writes: ['register', 'unregister', 'finalize_exit'],
+    reads: ['validator', 'list', 'count', 'bond'],
+  },
+  lending: {
+    writes: ['deploy', 'enable_asset', 'set_oracle', 'deposit', 'withdraw', 'borrow', 'repay'],
+    reads: ['pool', 'deposit_balance'],
+  },
+  oracle: {
+    writes: ['deploy', 'register_feeder', 'submit_price'],
+    reads: ['price', 'feeder'],
+  },
+  multisig: {
+    writes: ['deploy', 'submit'],
+    reads: ['threshold', 'proposal'],
+  },
+  governance: {
+    writes: ['submit', 'vote'],
+    reads: ['proposal', 'count'],
+  },
+  qrc721: {
+    writes: ['deploy', 'mint', 'transfer', 'burn'],
+    reads: ['owner_of', 'balance_of', 'token_info'],
+  },
+  qrc4626: {
+    writes: ['deploy', 'deposit'],
+    reads: ['total_assets', 'name'],
+  },
 };
 
 describe('KnownModuleActions sync', () => {

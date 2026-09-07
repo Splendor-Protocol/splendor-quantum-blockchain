@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -20,6 +21,25 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
+
+// NativeSupplyCapDecimal is 26 billion SPLD in the smallest unit (18 decimals).
+// This is the hard maximum of native SPLD that may ever exist: genesis cannot
+// allocate more, and no execution path after genesis mints native SPLD.
+const NativeSupplyCapDecimal = "26000000000000000000000000000"
+
+// MetaNativeMinted is the StateDB meta key that records how much native SPLD
+// this chain minted at genesis. Block apply refuses a circulating supply
+// above that figure (and, independently, above NativeSupplyCap).
+const MetaNativeMinted = "native_minted"
+
+// NativeSupplyCap returns a fresh *big.Int of the 26 billion SPLD hard cap.
+func NativeSupplyCap() *big.Int {
+	v, ok := new(big.Int).SetString(NativeSupplyCapDecimal, 10)
+	if !ok {
+		panic("genesis: NativeSupplyCapDecimal is not a valid integer")
+	}
+	return v
+}
 
 // Allocation defines an initial account balance in the genesis state.
 type Allocation struct {
@@ -78,11 +98,11 @@ func DefaultGenesis(validatorPubKeyHex string) *Genesis {
 		Allocations: []Allocation{
 			{
 				Address: "SQ:0000000000000000000000000000000000000000000000000000000000000001",
-				Balance: "1000000000000000000000000000", // 1 billion SPLD
-				Comment: "Development faucet — replace on mainnet",
+				Balance: NativeSupplyCapDecimal,
+				Comment: "Treasury — ALL 26 billion SPLD. Nothing else is ever minted.",
 			},
 		},
-		TotalSupply: "26000000000000000000000000000", // 26 billion SPLD
+		TotalSupply: NativeSupplyCapDecimal,
 	}
 }
 
@@ -160,6 +180,16 @@ func (g *Genesis) ApplyToState(stateDB *state.StateDB) ([32]byte, error) {
 		acc := types.NewAccount(addr)
 		acc.AddBalance(balance)
 		stateDB.SetAccount(acc)
+	}
+
+	// Persist the minted figure so later blocks can refuse any circulating
+	// supply above it. Extra native SPLD after genesis is a protocol bug.
+	minted := g.SumAllocations()
+	if minted.Cmp(NativeSupplyCap()) > 0 {
+		return [32]byte{}, fmt.Errorf("genesis: allocations sum to %s which exceeds the 26 billion SPLD hard cap", minted)
+	}
+	if err := stateDB.PutMeta(MetaNativeMinted, []byte(minted.String())); err != nil && !errors.Is(err, state.ErrSandboxCommit) {
+		return [32]byte{}, fmt.Errorf("persist native minted supply: %w", err)
 	}
 
 	// Register validator public key
@@ -265,6 +295,10 @@ func (g *Genesis) Validate() error {
 	// cannot get it wrong, and the alpine image has neither python nor bc nor
 	// integers wide enough to add these numbers anyway.
 	sum := g.SumAllocations()
+	if sum.Cmp(NativeSupplyCap()) > 0 {
+		return fmt.Errorf("genesis: allocations sum to %s which exceeds the 26 billion SPLD hard cap %s",
+			sum, NativeSupplyCap())
+	}
 	if g.TotalSupply == "" {
 		g.TotalSupply = sum.String()
 		return nil
@@ -277,6 +311,32 @@ func (g *Genesis) Validate() error {
 		return fmt.Errorf("genesis: total_supply is %s but the allocations sum to %s — "+
 			"the document would mint %s more than it declares",
 			declared, sum, new(big.Int).Sub(sum, declared))
+	}
+	if sum.Cmp(NativeSupplyCap()) > 0 {
+		return fmt.Errorf("genesis: allocations sum to %s which exceeds the 26 billion SPLD hard cap %s",
+			sum, NativeSupplyCap())
+	}
+	return nil
+}
+
+// CheckNativeSupply refuses a circulating native balance above this chain's
+// minted amount (when recorded) and, always, above the 26 billion SPLD cap.
+// Call after applying a block's writes and before committing them.
+func CheckNativeSupply(sdb *state.StateDB) error {
+	sum, err := sdb.SumNativeBalances()
+	if err != nil {
+		return fmt.Errorf("native supply: %w", err)
+	}
+	capAmt := NativeSupplyCap()
+	if raw, ok, err := sdb.GetMeta(MetaNativeMinted); err != nil {
+		return fmt.Errorf("native supply: read minted: %w", err)
+	} else if ok {
+		if minted, ok := new(big.Int).SetString(string(raw), 10); ok && minted.Sign() > 0 && minted.Cmp(capAmt) <= 0 {
+			capAmt = minted
+		}
+	}
+	if sum.Cmp(capAmt) > 0 {
+		return fmt.Errorf("native SPLD supply %s exceeds cap %s — extra issuance is refused", sum, capAmt)
 	}
 	return nil
 }

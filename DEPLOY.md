@@ -54,16 +54,12 @@
    ┌──────▼────────────────▼───────────────────────────────────────────┐
    │                    CONSENSUS LAYER                                 │
    │                                                                    │
-   │  Phase 1:  Single Validator                                        │
-   │    - Pulls pending txs from mempool every 2s                      │
-   │    - Asks AI scheduler for batch size recommendation              │
-   │    - Executes transactions → generates receipts                   │
-   │    - Signs block with ML-DSA-65 key                        │
-   │    - Broadcasts block to all peers via P2P                        │
-   │                                                                    │
-   │  Phase 2:  BFT Multi-Validator (future)                           │
-   │    - All validators sign votes with ML-DSA-65                     │
-   │    - 2/3+1 quorum required to commit                             │
+   │  BFT multi-validator (native)                                      │
+   │    - Permissionless register: 2,500 SPLD bond, no tiers            │
+   │    - Leader rotation, QC votes, view-change on timeout             │
+   │    - Quorum (2/3+1) required to commit a block                     │
+   │    - All votes and blocks signed with ML-DSA-65                    │
+   │    - Native supply hard-capped at 26 billion SPLD                  │
    └───────────────────────────────────────────────────────────────────┘
           │
    ┌──────▼───────────────────────────────────────────────────────────┐
@@ -345,10 +341,27 @@ Create `/var/sqc/genesis.json`:
     {
       "address": "SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc",
       "balance": "26000000000000000000000000000",
-      "comment": "Genesis address — 26 billion SPLD"
+      "comment": "Genesis address — ALL 26 billion SPLD. Nothing else is ever minted."
     }
   ],
-  "total_supply": "26000000000000000000000000000"
+  "total_supply": "26000000000000000000000000000",
+  "forks": {
+    "module_revert_v1": 1,
+    "qrc20_v2": 1,
+    "qrc1155_v1": 1,
+    "exchange_v1": 1,
+    "bridge_v1": 1,
+    "verify_v1": 1,
+    "validators_v1": 1,
+    "lending_v1": 1,
+    "oracle_v1": 1,
+    "multisig_v1": 1,
+    "governance_v1": 1,
+    "qrc721_v1": 1,
+    "qrc4626_v1": 1,
+    "min_fee_v1": 1,
+    "multi_validator": 1
+  }
 }
 ```
 
@@ -358,11 +371,14 @@ Replace:
 The 26B goes to the **genesis address**
 `SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc` — not the validator.
 
-Native supply is **26 billion SPLD**, minted once, to **one** allocation. The validator
-wallet signs blocks and must receive **0**. A second allocation is how a chain
+Native supply is **26 billion SPLD**, minted once, to **one** allocation. The
+protocol refuses a genesis that sums above that figure, and every block apply
+refuses a circulating supply above the minted amount. The validator wallet
+signs blocks and must receive **0**. A second allocation is how a chain
 ends up with more than 26B. `install.sh --validator` defaults to that genesis
 address (`SQC_GENESIS_ADDR` overrides) and refuses a genesis that credits the
-validator or splits supply.
+validator or splits supply. Permissionless validators later bond 2,500 SPLD
+from existing supply — that is a lock, not a mint.
 
 ### Run Validator Node
 
@@ -548,10 +564,27 @@ cat > /var/sqc/genesis.json << EOF
     {
       "address": "$GENESIS_ADDR",
       "balance": "26000000000000000000000000000",
-      "comment": "Genesis address — 26 billion SPLD"
+      "comment": "Genesis address — ALL 26 billion SPLD. Nothing else is ever minted."
     }
   ],
-  "total_supply": "26000000000000000000000000000"
+  "total_supply": "26000000000000000000000000000",
+  "forks": {
+    "module_revert_v1": 1,
+    "qrc20_v2": 1,
+    "qrc1155_v1": 1,
+    "exchange_v1": 1,
+    "bridge_v1": 1,
+    "verify_v1": 1,
+    "validators_v1": 1,
+    "lending_v1": 1,
+    "oracle_v1": 1,
+    "multisig_v1": 1,
+    "governance_v1": 1,
+    "qrc721_v1": 1,
+    "qrc4626_v1": 1,
+    "min_fee_v1": 1,
+    "multi_validator": 1
+  }
 }
 EOF
 
@@ -577,7 +610,8 @@ curl "http://localhost:8080/balance/$VALIDATOR_ADDR"    # must be 0
 applied by `Genesis.ApplyToState`, which the node calls only when `--genesis` is
 set *and* the chain is empty. Start the validator without it and block 0 is
 signed over an empty state: `total_supply` is never minted, every balance is
-zero, and no transaction can meet the 1,000-unit minimum fee. The node logs
+zero, and no transaction can meet the minimum fee. After `min_fee_v1` that
+floor is 0.001 SPLD (`10^15` units). The node logs
 `Applied genesis allocations` when it works — if that line is absent from the
 first startup, stop, delete `/var/sqc/data`, and start again with the flag.
 There is no way to apply allocations to a chain that has already produced
@@ -596,7 +630,18 @@ before the field existed.
   "module_revert_v1": 1,
   "qrc20_v2": 1,
   "qrc1155_v1": 1,
-  "exchange_v1": 1
+  "exchange_v1": 1,
+  "bridge_v1": 1,
+  "verify_v1": 1,
+  "validators_v1": 1,
+  "lending_v1": 1,
+  "oracle_v1": 1,
+  "multisig_v1": 1,
+  "governance_v1": 1,
+  "qrc721_v1": 1,
+  "qrc4626_v1": 1,
+  "min_fee_v1": 1,
+  "multi_validator": 1
 }
 ```
 
@@ -604,17 +649,15 @@ before the field existed.
   name means *never* — genesis is block 0, so `0` cannot mean "from genesis".
   The convention for a fresh chain is to schedule every rule it starts with at
   height **1**.
-- **Names.** `multi_validator` is reserved today. The settlement upgrades are
-  `module_revert_v1`, `qrc20_v2`, `qrc1155_v1` and `exchange_v1`, and the
-  legacy-migration bridge is `bridge_v1` (`docs/modules/bridge.md`); each
-  becomes schedulable only in the release that implements it. `qrc20_v2`,
-  `qrc1155_v1`, `exchange_v1` and `bridge_v1` each require `module_revert_v1`
-  at the same or an earlier height (a failed module call must be a failed
-  receipt, not a dropped transaction that pins the sender's nonce). Devnet and
-  testnet schedule the settlement four at 1; `bridge_v1` goes either in the
-  genesis document of the chain's next start, or — on a chain already running —
-  at a future height via the extension path below. **Mainnet omits
-  `exchange_v1`** (the real-money gate stays closed).
+- **Names.** A new deploy (`genesis-production.json`, `genesis-local.json`)
+  schedules every implemented rule at height 1: settlement (`module_revert_v1`,
+  `qrc20_v2`, `qrc1155_v1`, `exchange_v1`), `bridge_v1`, SQVL (`verify_v1`),
+  permissionless validators (`validators_v1`, 2,500 SPLD bond), lending,
+  oracle, multisig, governance, QRC-721, QRC-4626, the 0.001 SPLD fee floor
+  (`min_fee_v1`), and BFT (`multi_validator`). Routed modules require
+  `module_revert_v1` at the same or an earlier height. A chain already running
+  keeps its stored schedule and adds missing names with
+  `--allow-fork-extension` at a height above the current head.
 - **A running chain's schedule can be EXTENDED, never edited.**
   `loadForkSchedule` (`cmd/node/main.go`) persists the genesis schedule to
   `meta:forks` at block 0 and treats that stored copy as authoritative on every
@@ -1166,8 +1209,12 @@ Save as `diagnostics.sh`, `chmod +x diagnostics.sh`, run with `./diagnostics.sh`
 | `/vm/estimate-gas` | POST | Estimate gas |
 | `/vm/opcodes` | GET | All SQC-VM opcodes |
 | `/gov/proposals` | GET | List proposals |
-| `/staking/validators/{addr}` | GET | Validator info |
-| `/staking/tiers` | GET | Staking tier info |
+| `/validators` | GET | Active validators (2,500 SPLD bond) |
+| `/validators/{addr}` | GET | One validator record |
+| `/verify/check` | POST | SQVL dual-sig check (no state) |
+| `/verify/attest` | POST | Submit dual-signed attestation |
+| `/verify/settle` | POST | Settle a verified instruction |
+| `/verify/proof/{id}` | GET | On-chain SQVL proof |
 | `/dex/pool/{t0}/{t1}` | GET | Pool info |
 | `/dex/pool/{t0}/{t1}/quote` | GET | Swap quote |
 | `/call` | POST | Module read (`{"module","action","params"}`) or bytecode view call, at the head block |

@@ -130,6 +130,42 @@ export class SqRpc {
     return this.post('/tx/submit', body, true);
   }
 
+  async verifyCheck(instruction: object): Promise<{
+    valid: boolean;
+    reason?: string;
+    digest?: string;
+    signer?: string;
+    instruction_id?: string;
+    origin?: string;
+    settlement_hint?: string;
+    action?: string;
+  }> {
+    return this.post('/verify/check', instruction, false);
+  }
+
+  async verifyProof(instructionId: string, instance: string): Promise<Record<string, unknown>> {
+    const id = String(instructionId).replace(/^0x/i, '');
+    return this.get(
+      `/verify/proof/${encodeURIComponent(id)}?instance=${encodeURIComponent(instance)}`,
+    );
+  }
+
+  async verifyAttest(signedTx: object): Promise<{ status: string; hash: string }> {
+    return this.post('/verify/attest', { tx: signedTx }, true);
+  }
+
+  async verifySettle(signedTx: object): Promise<{ status: string; hash: string }> {
+    return this.post('/verify/settle', { tx: signedTx }, true);
+  }
+
+  async listValidators(): Promise<{ validators: unknown[]; count: number; bond_spld: number }> {
+    return this.get('/validators');
+  }
+
+  async getValidator(address: string): Promise<Record<string, unknown>> {
+    return this.get(`/validators/${encodeURIComponent(address)}`);
+  }
+
   async x402Verify(requirements: object, payload: object): Promise<{ valid: boolean; reason?: string }> {
     return this.post('/x402/verify', { requirements, payload }, false);
   }

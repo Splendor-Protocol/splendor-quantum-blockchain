@@ -28,6 +28,10 @@ type P2PConfig struct {
 	HandleBlock func(body []byte) error
 	// HandleAnnounce processes a peer announcement body (raw JSON).
 	HandleAnnounce func(body []byte) error
+	// HandleVote processes a sealed BFT vote body (raw JSON).
+	HandleVote func(body []byte) error
+	// HandleProposal processes a sealed block proposal (raw JSON).
+	HandleProposal func(body []byte) error
 	// ServeBlock returns a block's JSON by height, for sealed catch-up sync.
 	ServeBlock func(height uint64) ([]byte, error)
 	// ServeLatestBlock returns the head block's JSON, for sealed catch-up sync.
@@ -120,6 +124,18 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 				return
 			}
 			handleErr = cfg.HandleAnnounce(req.Body)
+		case network.KindVote:
+			if cfg.HandleVote == nil {
+				writeError(w, http.StatusNotImplemented, "vote ingest not available")
+				return
+			}
+			handleErr = cfg.HandleVote(req.Body)
+		case network.KindProposal:
+			if cfg.HandleProposal == nil {
+				writeError(w, http.StatusNotImplemented, "proposal ingest not available")
+				return
+			}
+			handleErr = cfg.HandleProposal(req.Body)
 		default:
 			writeError(w, http.StatusBadRequest, "unknown sealed request kind")
 			return

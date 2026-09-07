@@ -102,3 +102,26 @@ func TestTransferConservesSupply(t *testing.T) {
 		t.Fatalf("supply = %s, want 1000", total)
 	}
 }
+
+func TestSumNativeBalancesIncludesDirtyWrites(t *testing.T) {
+	sdb, err := NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatalf("open statedb: %v", err)
+	}
+	defer sdb.Close()
+
+	a, b := addr(0x11), addr(0x22)
+	sdb.SetAccount(newFundedAccount(a, 700))
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	sdb.SetAccount(newFundedAccount(b, 300))
+
+	got, err := sdb.SumNativeBalances()
+	if err != nil {
+		t.Fatalf("sum: %v", err)
+	}
+	if got.Cmp(big.NewInt(1_000)) != 0 {
+		t.Fatalf("sum = %s, want 1000 (committed 700 + dirty 300)", got)
+	}
+}

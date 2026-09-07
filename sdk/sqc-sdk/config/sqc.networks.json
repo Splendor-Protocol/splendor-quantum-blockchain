@@ -2,7 +2,7 @@
   "sqdpVersion": "1",
   "defaultNetwork": "local",
   "protocol": {
-    "minFee": "1000",
+    "minFee": "1000000000000000",
     "addressPrefix": "SQ:",
     "addressHexLen": 64,
     "confirmation": "nonce",

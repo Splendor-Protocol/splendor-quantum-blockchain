@@ -221,7 +221,7 @@ func TimestampValidationHook(maxDriftSeconds int64) PreTxHook {
 }
 
 // MinFeeHook rejects transactions that pay less than the minimum fee.
-// Register with: registry.OnPreTx("min_fee", MinFeeHook(big.NewInt(1000)))
+// Register with: registry.OnPreTx("min_fee", MinFeeHook(1000))
 func MinFeeHook(minFee int64) PreTxHook {
 	// Compared as a big.Int. Fee is arbitrary precision and big.Int.Int64() is
 	// UNDEFINED above MaxInt64 — it returns the low 64 bits — so a fee of exactly

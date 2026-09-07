@@ -65,7 +65,7 @@ func TestNilQCRootDoesNotChangeBlockHash(t *testing.T) {
 	}
 }
 
-func TestPopulatedQCRootChangesHashAndIsRejected(t *testing.T) {
+func TestPopulatedQCRootChangesHashAndNeedsVotes(t *testing.T) {
 	h := fixedHeader()
 	h.QCRoot = []byte{0xaa, 0xbb}
 	b := &Block{Header: h}
@@ -74,17 +74,22 @@ func TestPopulatedQCRootChangesHashAndIsRejected(t *testing.T) {
 		t.Fatalf("compute: %v", err)
 	}
 	if hash == qcrypto.Hash32([]byte(headerJSONBeforeQCRoot)) {
-		t.Fatal("a populated QCRoot must be covered by the block hash")
+		t.Fatal("a populated QCRoot must be covered by ComputeHash")
 	}
 
-	// Fail closed: a certificate this build cannot verify must stop the block,
-	// not be waved through while the block is reported as validated.
-	b.Hash = hash
+	// The voted hash ignores QCRoot; Validate uses that identity and refuses
+	// a qc_root that is not backed by votes.
+	voted, err := b.ComputeVotedHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Hash = voted
+	b.ValidatorSignature = make([]byte, qcrypto.SignatureSize)
 	err = b.Validate()
 	if err == nil {
-		t.Fatal("a block carrying a qc_root must be rejected until multi_validator ships")
+		t.Fatal("a qc_root without votes must be rejected")
 	}
-	if !strings.Contains(err.Error(), "quorum certificate") {
-		t.Fatalf("want a quorum-certificate refusal, got %v", err)
+	if !strings.Contains(err.Error(), "qc_root") {
+		t.Fatalf("want a qc_root refusal, got %v", err)
 	}
 }

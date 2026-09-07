@@ -1,37 +1,16 @@
 // Package consensus implements the Splendor Quantum Chain consensus mechanisms.
 //
-// Phase 1: Single validator (validator.go) — block production with ML-DSA-65
-// signing. This is what the chain actually runs.
+// Single-validator production lives in validator.go and still runs when
+// multi_validator is not active or only one key is registered.
 //
-// Phase 2: Multi-validator BFT (this file) — INCOMPLETE AND NOT WIRED UP. It is
-// a skeleton kept in-tree as the starting point for the real engine, and it is
-// gated so it cannot be started by accident.
-//
-// The vote message type, its ML-DSA-65 signing/verification, and the vote-set
-// quorum arithmetic are finished and tested. The consensus protocol around them
-// is not. What is missing is exactly the part that would make it Byzantine
-// fault tolerant:
-//
-//   - Votes are never broadcast to peers, and a remote quorum never commits
-//     anything — handleVote logs and returns.
-//   - No equivocation detection. A validator can sign conflicting votes for the
-//     same height and round and nothing notices or slashes it.
-//   - Proposals are not checked against the leader schedule, so any peer's
-//     block is accepted as the proposal for its height.
-//   - Round timeouts and view change are unimplemented, so a failed leader
-//     stalls the height instead of advancing the round.
-//   - No fork-choice or locking rule, so nothing prevents two honest nodes from
-//     committing different blocks at the same height.
-//
-// Until those exist this code provides neither the safety nor the liveness
-// property the name implies, and it must not be presented as if it did.
-// NewBFTEngine therefore refuses to build an engine unless the caller sets
-// BFTConfig.AcknowledgeIncomplete, and Run refuses to drive consensus at all.
+// This file is the multi-validator BFT engine: ML-DSA-65 votes, 2/3+1 quorum,
+// leader schedule, vote gossip hooks, equivocation reject, and round timeout
+// / view change so a failed leader cannot stall the height.
 package consensus
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -232,36 +211,53 @@ func (vs *VoteSet) VoteCount() int {
 	return len(vs.votes)
 }
 
+// Votes returns a copy of collected votes.
+func (vs *VoteSet) Votes() []*Vote {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	out := make([]*Vote, 0, len(vs.votes))
+	for _, v := range vs.votes {
+		cp := *v
+		out = append(out, &cp)
+	}
+	return out
+}
+
+// VoteBroadcaster sends a signed vote to peers. Implementations use sealed P2P.
+type VoteBroadcaster func(vote *Vote)
+
+// ProposalBroadcaster sends a proposed block to peers.
+type ProposalBroadcaster func(b *types.Block)
+
 // BFTEngine is the multi-validator BFT consensus engine.
-// It runs as a coordinator: collecting votes from peers, tracking rounds,
-// and triggering block commitment when quorum is reached.
 type BFTEngine struct {
-	// Our own validator identity
 	localAddr    qcrypto.Address
 	localPubKey  []byte
 	localPrivKey *qcrypto.PrivateKey
 
-	// Active validator set (periodically updated from on-chain state)
-	validators    []ValidatorInfo
-	validatorsMu  sync.RWMutex
+	validators   []ValidatorInfo
+	validatorsMu sync.RWMutex
 
-	// Current consensus state
 	currentHeight uint64
 	currentRound  uint32
 	voteSet       *VoteSet
+	proposal      *types.Block
+	seenVotes     map[string]*Vote // validator|height|round → first vote (equivocation)
+	lockedHash    [32]byte
+	hasLock       bool
 	stateMu       sync.Mutex
 
-	// Timeouts
 	voteTimeout  time.Duration
 	roundTimeout time.Duration
 
-	// Channels
-	voteCh     chan *Vote           // incoming votes from peers
-	commitCh   chan *types.Block    // committed blocks to publish
-	proposeCh  chan *types.Block    // proposed blocks from leader
+	voteCh    chan *Vote
+	commitCh  chan *types.Block
+	proposeCh chan *types.Block
 
-	// Callbacks
-	onCommit func(*types.Block) error // called when a block reaches quorum
+	onCommit     func(*types.Block) error
+	onViewChange func(height uint64, round uint32)
+	broadcast    VoteBroadcaster
+	broadcastP   ProposalBroadcaster
 }
 
 // BFTConfig configures the BFT engine.
@@ -271,28 +267,14 @@ type BFTConfig struct {
 	LocalPrivKey *qcrypto.PrivateKey
 	VoteTimeout  time.Duration
 	RoundTimeout time.Duration
-	OnCommit     func(*types.Block) error
-
-	// AcknowledgeIncomplete must be set for NewBFTEngine to return an engine.
-	// It is not a feature switch: it is a statement that the caller knows this
-	// engine does not yet provide BFT safety (see the package comment) and is
-	// building it, not running a chain on it.
-	AcknowledgeIncomplete bool
+	OnCommit          func(*types.Block) error
+	OnViewChange      func(height uint64, round uint32)
+	Broadcast         VoteBroadcaster
+	BroadcastProposal ProposalBroadcaster
 }
 
-// ErrBFTIncomplete is returned by NewBFTEngine and Run for the ungated case.
-var ErrBFTIncomplete = errors.New(
-	"consensus: multi-validator BFT is incomplete (no vote gossip, no equivocation " +
-		"detection, no leader enforcement, no view change) and cannot be used to " +
-		"reach consensus; the chain runs the single-validator engine in validator.go")
-
-// NewBFTEngine creates a BFT consensus engine for development of the Phase 2
-// protocol. It fails unless the caller sets AcknowledgeIncomplete, so no code
-// path can quietly stand this up as if it were a working BFT engine.
+// NewBFTEngine creates a working multi-validator BFT engine.
 func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
-	if !cfg.AcknowledgeIncomplete {
-		return nil, ErrBFTIncomplete
-	}
 	if cfg.VoteTimeout == 0 {
 		cfg.VoteTimeout = 800 * time.Millisecond
 	}
@@ -306,9 +288,13 @@ func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
 		voteTimeout:  cfg.VoteTimeout,
 		roundTimeout: cfg.RoundTimeout,
 		onCommit:     cfg.OnCommit,
+		onViewChange: cfg.OnViewChange,
+		broadcast:    cfg.Broadcast,
+		broadcastP:   cfg.BroadcastProposal,
 		voteCh:       make(chan *Vote, 1000),
 		commitCh:     make(chan *types.Block, 16),
 		proposeCh:    make(chan *types.Block, 16),
+		seenVotes:    make(map[string]*Vote),
 	}, nil
 }
 
@@ -329,16 +315,36 @@ func (e *BFTEngine) ValidatorCount() int {
 	return len(e.validators)
 }
 
-// IsLeader returns true if this node is the current block leader.
-// Leader selection: validators[height % len(validators)]
-func (e *BFTEngine) IsLeader(height uint64) bool {
+// LeaderAddress returns the scheduled leader for height and round.
+// Rotation: validators[(height+round) % n] so a timed-out leader yields.
+func (e *BFTEngine) LeaderAddress(height uint64, round uint32) (qcrypto.Address, bool) {
 	e.validatorsMu.RLock()
 	defer e.validatorsMu.RUnlock()
-	if len(e.validators) == 0 {
-		return false
+	active := e.activeLocked()
+	if len(active) == 0 {
+		return qcrypto.Address{}, false
 	}
-	idx := int(height) % len(e.validators)
-	return e.validators[idx].Address == e.localAddr
+	idx := int(height+uint64(round)) % len(active)
+	return active[idx].Address, true
+}
+
+// IsLeader reports whether this node is the scheduled leader for height/round.
+func (e *BFTEngine) IsLeader(height uint64, round uint32) bool {
+	addr, ok := e.LeaderAddress(height, round)
+	return ok && addr == e.localAddr
+}
+
+func (e *BFTEngine) activeLocked() []ValidatorInfo {
+	out := make([]ValidatorInfo, 0, len(e.validators))
+	for _, v := range e.validators {
+		if v.IsActive {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return e.validators
+	}
+	return out
 }
 
 // SubmitVote processes an incoming vote from a peer.
@@ -378,18 +384,54 @@ func (e *BFTEngine) castVote(b *types.Block) (*Vote, error) {
 	return vote, nil
 }
 
-// Run would start the BFT consensus loop. It does not: the protocol around the
-// vote plumbing is unfinished, so a loop that commits on a locally-satisfied
-// quorum would produce a chain with no BFT guarantee behind it. It returns
-// ErrBFTIncomplete instead of running, and stays here so the eventual
-// implementation has an obvious home.
-//
-// Drive the pieces directly (handleProposal / handleVote) when developing them.
-func (e *BFTEngine) Run() error {
-	log.Error().
-		Str("addr", e.localAddr.String()).
-		Msg("BFT: refusing to run the incomplete multi-validator engine")
-	return ErrBFTIncomplete
+// Run drives proposals, votes, timeouts, and commits until ctx is cancelled.
+func (e *BFTEngine) Run(ctx context.Context) error {
+	log.Info().Str("addr", e.localAddr.String()).Msg("BFT: multi-validator engine starting")
+	timer := time.NewTimer(e.roundTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("BFT: stopping")
+			return nil
+		case b := <-e.proposeCh:
+			e.handleProposal(b)
+			resetTimer(timer, e.roundTimeout)
+		case vote := <-e.voteCh:
+			e.handleVote(vote)
+		case <-timer.C:
+			e.handleTimeout()
+			timer.Reset(e.roundTimeout)
+		}
+	}
+}
+
+func resetTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
+}
+
+func (e *BFTEngine) handleTimeout() {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if e.ValidatorCount() == 0 {
+		return
+	}
+	e.currentRound++
+	e.voteSet = nil
+	e.proposal = nil
+	h, r := e.currentHeight, e.currentRound
+	log.Warn().Uint64("height", h).Uint32("round", r).
+		Msg("BFT: round timeout, view change")
+	cb := e.onViewChange
+	if cb != nil {
+		go cb(h, r)
+	}
 }
 
 // handleProposal processes a new block proposal.
@@ -397,31 +439,46 @@ func (e *BFTEngine) handleProposal(b *types.Block) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 
-	e.currentHeight = b.Header.Height
-
-	// An empty validator set used to fall back to a count of 1, which makes the
-	// 2/3+1 threshold 1 and lets this node commit a block on its own vote while
-	// still reporting that it reached quorum. Refuse instead: no known set means
-	// no quorum can be computed.
-	nValidators := e.ValidatorCount()
+	if b == nil {
+		return
+	}
+	nValidators := e.activeCount()
 	if nValidators == 0 {
 		log.Error().Uint64("height", b.Header.Height).
 			Msg("BFT: no validator set, cannot form a quorum for this proposal")
 		return
 	}
 
+	leader, ok := e.LeaderAddress(b.Header.Height, e.currentRound)
+	if !ok || b.Header.ValidatorAddr != leader {
+		log.Warn().
+			Uint64("height", b.Header.Height).
+			Str("proposer", b.Header.ValidatorAddr.String()).
+			Str("leader", leader.String()).
+			Msg("BFT: proposal from non-leader rejected")
+		return
+	}
+
+	if e.hasLock && b.Hash != e.lockedHash {
+		log.Warn().Msg("BFT: proposal conflicts with locked block")
+		return
+	}
+
+	e.currentHeight = b.Header.Height
+	e.proposal = b
 	e.voteSet = NewVoteSet(b.Header.Height, e.currentRound, b.Hash, nValidators)
 
-	// Cast our own vote
 	vote, err := e.castVote(b)
 	if err != nil {
 		log.Error().Err(err).Msg("BFT: failed to cast vote")
 		return
 	}
-
 	reachedQuorum, err := e.voteSet.AddVote(vote)
 	if err != nil {
 		log.Error().Err(err).Msg("BFT: failed to add own vote")
+	}
+	if e.broadcast != nil {
+		e.broadcast(vote)
 	}
 
 	log.Debug().
@@ -433,8 +490,6 @@ func (e *BFTEngine) handleProposal(b *types.Block) {
 	if reachedQuorum {
 		e.commitBlock(b)
 	}
-
-	// TODO: broadcast vote to peers via P2P
 }
 
 // handleVote processes a vote received from a peer.
@@ -442,23 +497,34 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 
-	if e.voteSet == nil {
-		return // no active proposal
+	if vote == nil {
+		return
 	}
-	if vote.Height != e.currentHeight {
-		return // stale vote
-	}
-
-	// Find voter's public key
 	pubKey := e.findValidatorPubKey(vote.ValidatorAddr)
 	if pubKey == nil {
 		log.Warn().Str("from", vote.ValidatorAddr.String()).Msg("BFT: vote from unknown validator")
 		return
 	}
-
-	// Verify ML-DSA-65 signature
 	if err := vote.Verify(pubKey); err != nil {
 		log.Warn().Err(err).Str("from", vote.ValidatorAddr.String()).Msg("BFT: invalid vote signature")
+		return
+	}
+
+	key := vote.ValidatorAddr.String() + "|" + fmt.Sprintf("%d|%d", vote.Height, vote.Round)
+	if prev, ok := e.seenVotes[key]; ok {
+		if prev.BlockHash != vote.BlockHash {
+			log.Warn().
+				Str("from", vote.ValidatorAddr.String()).
+				Uint64("height", vote.Height).
+				Msg("BFT: equivocation — conflicting votes dropped")
+			return
+		}
+	} else {
+		cp := *vote
+		e.seenVotes[key] = &cp
+	}
+
+	if e.voteSet == nil || vote.Height != e.currentHeight || vote.Round != e.currentRound {
 		return
 	}
 
@@ -474,28 +540,36 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 		Int("required", e.voteSet.requiredWeight).
 		Msg("BFT: vote collected")
 
-	if reachedQuorum {
-		// We reached 2/3+1 — find and commit the block
-		// In production, the block is fetched from the proposal cache
-		log.Info().
-			Uint64("height", vote.Height).
-			Int("votes", e.voteSet.VoteCount()).
-			Msg("BFT: quorum reached!")
-		// commitBlock is called from handleProposal when we have the block
-		// Here we just log; the actual commit happens when we have the full block
+	if reachedQuorum && e.proposal != nil {
+		e.lockedHash = e.proposal.Hash
+		e.hasLock = true
+		e.commitBlock(e.proposal)
 	}
 }
 
-// commitBlock is called when a block has reached quorum.
 func (e *BFTEngine) commitBlock(b *types.Block) {
+	raw := e.voteSet.Votes()
+	qcv := make([]types.QCVote, 0, len(raw))
+	for _, v := range raw {
+		qcv = append(qcv, types.QCVote{
+			AlgID: v.AlgID, Height: v.Height, Round: v.Round,
+			BlockHash: v.BlockHash, ValidatorAddr: v.ValidatorAddr,
+			Signature: v.Signature, Timestamp: v.Timestamp,
+		})
+	}
+	b.Votes = qcv
+	root := types.ComputeQCRoot(qcv)
+	b.Header.QCRoot = root[:]
+
 	log.Info().
 		Uint64("height", b.Header.Height).
-		Int("votes", e.voteSet.VoteCount()).
+		Int("votes", len(qcv)).
 		Msg("BFT: block committed")
 
 	if e.onCommit != nil {
 		if err := e.onCommit(b); err != nil {
 			log.Error().Err(err).Msg("BFT: commit callback failed")
+			return
 		}
 	}
 
@@ -503,6 +577,38 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	case e.commitCh <- b:
 	default:
 	}
+	e.currentHeight = b.Header.Height + 1
+	e.currentRound = 0
+	e.voteSet = nil
+	e.proposal = nil
+	e.hasLock = false
+}
+
+func (e *BFTEngine) activeCount() int {
+	e.validatorsMu.RLock()
+	defer e.validatorsMu.RUnlock()
+	return len(e.activeLocked())
+}
+
+// SetHeight initialises the engine at the next height to produce.
+func (e *BFTEngine) SetHeight(h uint64) {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	e.currentHeight = h
+}
+
+// Height returns the height the engine is working on.
+func (e *BFTEngine) Height() uint64 {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	return e.currentHeight
+}
+
+// Round returns the current view-change round.
+func (e *BFTEngine) Round() uint32 {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	return e.currentRound
 }
 
 // findValidatorPubKey returns the public key for a validator address, or nil.

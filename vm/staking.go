@@ -1,20 +1,7 @@
-// Package vm — On-chain Staking for Splendor Quantum Chain.
+// Package vm — permissionless validator registry.
 //
-// The Staking contract manages validator registration and SPLD staking.
-// It is the source of truth for:
-//   - Who is a registered validator
-//   - How much SPLD each validator has staked
-//   - Which validators are active vs. jailed
-//   - Reward accumulation and claiming
-//
-// All operations use SHA3-256 storage slots and SQ: addresses.
-// No ECDSA. No keccak. No Ethereum address format.
-//
-// Staking tiers:
-//   Bronze  ≥ 3,947 SPLD    (3947 * 10^18 units)
-//   Silver  ≥ 39,474 SPLD
-//   Gold    ≥ 394,737 SPLD
-//   Platinum ≥ 3,947,368 SPLD
+// One bond: 2,500 SPLD. No Bronze / Silver / Gold / Platinum.
+// Register locks the bond; unregister returns it after UnbondingBlocks.
 package vm
 
 import (
@@ -26,273 +13,182 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 )
 
-// Staking tiers (in smallest SPLD units — multiply by 10^18 for SPLD)
-var (
-	StakeBronze   = new(big.Int).Mul(big.NewInt(3_947), spldUnit())
-	StakeSilver   = new(big.Int).Mul(big.NewInt(39_474), spldUnit())
-	StakeGold     = new(big.Int).Mul(big.NewInt(394_737), spldUnit())
-	StakePlatinum = new(big.Int).Mul(big.NewInt(3_947_368), spldUnit())
-)
+// ValidatorBondSPLD is the single flat bond (2,500 SPLD).
+const ValidatorBondSPLD int64 = 2_500
+
+// UnbondingBlocks is the delay before a bond is returned.
+const UnbondingBlocks uint64 = 32
 
 func spldUnit() *big.Int {
 	return new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+}
+
+// ValidatorBond is 2,500 SPLD in smallest units.
+func ValidatorBond() *big.Int {
+	return new(big.Int).Mul(big.NewInt(ValidatorBondSPLD), spldUnit())
 }
 
 // ValidatorStatus represents a validator's current state.
 type ValidatorStatus uint8
 
 const (
-	ValidatorInactive ValidatorStatus = 0 // not registered or removed
-	ValidatorActive   ValidatorStatus = 1 // participating in consensus
-	ValidatorJailed   ValidatorStatus = 2 // slashed, temporarily excluded
-	ValidatorExiting  ValidatorStatus = 3 // requested exit, waiting unbonding
-)
-
-// StakingTier represents a validator's tier based on stake.
-type StakingTier uint8
-
-const (
-	TierNone     StakingTier = 0
-	TierBronze   StakingTier = 1
-	TierSilver   StakingTier = 2
-	TierGold     StakingTier = 3
-	TierPlatinum StakingTier = 4
+	ValidatorInactive ValidatorStatus = 0
+	ValidatorActive   ValidatorStatus = 1
+	ValidatorExiting  ValidatorStatus = 3
 )
 
 // ValidatorRecord is stored on-chain for each registered validator.
 type ValidatorRecord struct {
-	Address      qcrypto.Address `json:"address"`
-	PublicKey    []byte          `json:"public_key"`
-	Stake        *big.Int        `json:"stake"`
-	Status       ValidatorStatus `json:"status"`
-	Tier         StakingTier     `json:"tier"`
-	Rewards      *big.Int        `json:"rewards"`
-	JoinedHeight uint64          `json:"joined_height"`
-	LastSlashed  uint64          `json:"last_slashed"`
-	UptimeScore  uint8           `json:"uptime_score"` // 0-100
+	Address       qcrypto.Address `json:"address"`
+	PublicKey     []byte          `json:"public_key"`
+	Bond          *big.Int        `json:"bond"`
+	Status        ValidatorStatus `json:"status"`
+	JoinedHeight  uint64          `json:"joined_height"`
+	ExitHeight    uint64          `json:"exit_height,omitempty"`
 }
 
-// ── Storage slot derivation ────────────────────────────────────────────────────
-
-var slotStakingTotalStaked = qcrypto.Hash32([]byte("staking:total_staked"))
-var slotStakingValidatorCount = qcrypto.Hash32([]byte("staking:validator_count"))
+var (
+	slotStakingTotalStaked    = qcrypto.Hash32([]byte("staking:total_staked"))
+	slotStakingValidatorCount = qcrypto.Hash32([]byte("staking:validator_count"))
+	slotStakingIndex          = qcrypto.Hash32([]byte("staking:index"))
+)
 
 func stakingValidatorSlot(addr qcrypto.Address) [32]byte {
 	return qcrypto.Hash32(append([]byte("staking:validator:"), addr[:]...))
 }
 
-func stakingDelegatorSlot(delegator, validator qcrypto.Address) [32]byte {
-	key := append([]byte("staking:delegation:"), delegator[:]...)
-	key = append(key, validator[:]...)
-	return qcrypto.Hash32(key)
-}
-
-// ── StakingContract ────────────────────────────────────────────────────────────
-
-// StakingContract manages validator staking and rewards.
+// StakingContract is the validator registry (name kept so existing RPC compiles).
 type StakingContract struct {
 	stateDB  *state.StateDB
 	contract qcrypto.Address
 }
 
-// NewStakingContract returns a handle to the staking contract.
 func NewStakingContract(stateDB *state.StateDB, contract qcrypto.Address) *StakingContract {
 	return &StakingContract{stateDB: stateDB, contract: contract}
 }
 
-// DeployStaking deploys the staking contract at a deterministic address.
 func DeployStaking(stateDB *state.StateDB) qcrypto.Address {
-	// Staking contract lives at a well-known address: SHA3-256("staking_contract")
 	h := qcrypto.Hash32([]byte("splendor_staking_contract_v1"))
 	var addr qcrypto.Address
 	copy(addr[:], h[:])
 	return addr
 }
 
-// ── Validator management ──────────────────────────────────────────────────────
+func ValidatorsModuleAddress() qcrypto.Address {
+	return DeployStaking(nil)
+}
 
-// Register registers a new validator with the given ML-DSA-65 public key and stake.
-// The staker must have already transferred the stake SPLD to the contract.
-func (s *StakingContract) Register(
-	caller qcrypto.Address,
-	pubKey []byte,
-	stakeAmount *big.Int,
-	currentHeight uint64,
-) error {
+// Register locks ValidatorBond() from the caller and adds them to the set.
+func (s *StakingContract) Register(caller qcrypto.Address, pubKey []byte, currentHeight uint64) error {
 	if len(pubKey) != qcrypto.PublicKeySize {
-		return fmt.Errorf("staking: invalid public key size")
+		return fmt.Errorf("validators: invalid public key size")
 	}
-	if stakeAmount.Cmp(StakeBronze) < 0 {
-		return fmt.Errorf("staking: stake below minimum Bronze tier (%s SPLD units)", StakeBronze)
+	derived := qcrypto.DeriveAddress(mustPub(pubKey))
+	if derived != caller {
+		return fmt.Errorf("validators: pubkey does not match caller")
 	}
-
-	// Check not already registered
 	existing, _ := s.GetValidator(caller)
-	if existing != nil && existing.Status != ValidatorInactive {
-		return fmt.Errorf("staking: validator %s already registered", caller)
+	if existing != nil && existing.Status == ValidatorActive {
+		return fmt.Errorf("validators: %s already registered", caller)
 	}
+	bond := ValidatorBond()
+	acc, err := s.stateDB.GetAccount(caller)
+	if err != nil {
+		return err
+	}
+	if acc.Balance.Cmp(bond) < 0 {
+		return fmt.Errorf("validators: need %s units bond, have %s", bond, acc.Balance)
+	}
+	acc.Balance.Sub(acc.Balance, bond)
+	s.stateDB.SetAccount(acc)
+
+	pool, err := s.stateDB.GetAccount(s.contract)
+	if err != nil {
+		return err
+	}
+	if pool.Balance == nil {
+		pool.Balance = big.NewInt(0)
+	}
+	pool.Balance.Add(pool.Balance, bond)
+	s.stateDB.SetAccount(pool)
 
 	rec := &ValidatorRecord{
 		Address:      caller,
-		PublicKey:    pubKey,
-		Stake:        new(big.Int).Set(stakeAmount),
+		PublicKey:    append([]byte(nil), pubKey...),
+		Bond:         new(big.Int).Set(bond),
 		Status:       ValidatorActive,
-		Tier:         computeTier(stakeAmount),
-		Rewards:      big.NewInt(0),
 		JoinedHeight: currentHeight,
-		UptimeScore:  100,
 	}
-
 	if err := s.setValidator(rec); err != nil {
 		return err
 	}
-
-	// Update total staked
+	if err := s.addIndex(caller); err != nil {
+		return err
+	}
 	total, _ := s.TotalStaked()
-	s.setBigInt(slotStakingTotalStaked, new(big.Int).Add(total, stakeAmount))
-
-	// Increment count
+	s.setBigInt(slotStakingTotalStaked, new(big.Int).Add(total, bond))
 	count, _ := s.ValidatorCount()
 	s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count+1)))
-
 	return nil
 }
 
-// AddStake adds more stake to an existing validator.
-func (s *StakingContract) AddStake(caller qcrypto.Address, amount *big.Int) error {
+// Unregister starts the unbonding delay. Bond returns at FinalizeExit.
+func (s *StakingContract) Unregister(caller qcrypto.Address, currentHeight uint64) error {
 	rec, err := s.GetValidator(caller)
-	if err != nil || rec == nil {
-		return fmt.Errorf("staking: validator %s not found", caller)
+	if err != nil || rec == nil || rec.Status != ValidatorActive {
+		return fmt.Errorf("validators: %s is not active", caller)
 	}
-	if rec.Status == ValidatorJailed {
-		return fmt.Errorf("staking: cannot add stake to jailed validator")
-	}
-
-	rec.Stake.Add(rec.Stake, amount)
-	rec.Tier = computeTier(rec.Stake)
-
-	total, _ := s.TotalStaked()
-	s.setBigInt(slotStakingTotalStaked, new(big.Int).Add(total, amount))
-
-	return s.setValidator(rec)
-}
-
-// Unstake initiates withdrawal. Moves validator to Exiting status.
-// Actual withdrawal is processed after unbonding period.
-func (s *StakingContract) Unstake(caller qcrypto.Address, amount *big.Int) error {
-	rec, err := s.GetValidator(caller)
-	if err != nil || rec == nil {
-		return fmt.Errorf("staking: validator %s not found", caller)
-	}
-	if rec.Stake.Cmp(amount) < 0 {
-		return fmt.Errorf("staking: insufficient stake to unstake")
-	}
-
-	rec.Stake.Sub(rec.Stake, amount)
-	if rec.Stake.Cmp(StakeBronze) < 0 {
-		rec.Status = ValidatorExiting
-	}
-	rec.Tier = computeTier(rec.Stake)
-
-	total, _ := s.TotalStaked()
-	s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, amount))
-
-	return s.setValidator(rec)
-}
-
-// Slash penalises a validator by reducing their stake by `slashAmount`.
-// Sets status to Jailed if stake drops below minimum.
-func (s *StakingContract) Slash(validator qcrypto.Address, slashAmount *big.Int, currentHeight uint64) error {
-	rec, err := s.GetValidator(validator)
-	if err != nil || rec == nil {
-		return fmt.Errorf("staking: validator %s not found", validator)
-	}
-
-	if rec.Stake.Cmp(slashAmount) < 0 {
-		slashAmount.Set(rec.Stake) // cap at current stake
-	}
-	rec.Stake.Sub(rec.Stake, slashAmount)
-	rec.LastSlashed = currentHeight
-
-	if rec.Stake.Cmp(StakeBronze) < 0 {
-		rec.Status = ValidatorJailed
-	}
-	rec.Tier = computeTier(rec.Stake)
-
-	total, _ := s.TotalStaked()
-	newTotal := new(big.Int).Sub(total, slashAmount)
-	if newTotal.Sign() < 0 {
-		newTotal = big.NewInt(0)
-	}
-	s.setBigInt(slotStakingTotalStaked, newTotal)
-
-	return s.setValidator(rec)
-}
-
-// Unjail removes a validator from jail if they meet the minimum stake again.
-func (s *StakingContract) Unjail(caller qcrypto.Address, additionalStake *big.Int) error {
-	rec, err := s.GetValidator(caller)
-	if err != nil || rec == nil {
-		return fmt.Errorf("staking: validator %s not found", caller)
-	}
-	if rec.Status != ValidatorJailed {
-		return fmt.Errorf("staking: validator is not jailed")
-	}
-
-	if additionalStake.Sign() > 0 {
-		rec.Stake.Add(rec.Stake, additionalStake)
-	}
-	if rec.Stake.Cmp(StakeBronze) < 0 {
-		return fmt.Errorf("staking: stake still below minimum after unjail")
-	}
-
-	rec.Status = ValidatorActive
-	rec.Tier = computeTier(rec.Stake)
-	return s.setValidator(rec)
-}
-
-// AddRewards credits pending rewards to a validator.
-func (s *StakingContract) AddRewards(validator qcrypto.Address, amount *big.Int) error {
-	rec, err := s.GetValidator(validator)
-	if err != nil || rec == nil {
-		return fmt.Errorf("staking: validator %s not found", validator)
-	}
-	rec.Rewards.Add(rec.Rewards, amount)
-	return s.setValidator(rec)
-}
-
-// ClaimRewards withdraws all pending rewards for a validator.
-// Returns the claimed amount.
-func (s *StakingContract) ClaimRewards(caller qcrypto.Address) (*big.Int, error) {
-	rec, err := s.GetValidator(caller)
-	if err != nil || rec == nil {
-		return nil, fmt.Errorf("staking: validator %s not found", caller)
-	}
-	if rec.Rewards.Sign() == 0 {
-		return big.NewInt(0), nil
-	}
-	claimed := new(big.Int).Set(rec.Rewards)
-	rec.Rewards = big.NewInt(0)
+	rec.Status = ValidatorExiting
+	rec.ExitHeight = currentHeight + UnbondingBlocks
 	if err := s.setValidator(rec); err != nil {
-		return nil, err
+		return err
 	}
-	return claimed, nil
+	count, _ := s.ValidatorCount()
+	if count > 0 {
+		s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count-1)))
+	}
+	return nil
 }
 
-// UpdateUptime updates a validator's uptime score (0–100).
-func (s *StakingContract) UpdateUptime(validator qcrypto.Address, score uint8) error {
-	rec, err := s.GetValidator(validator)
-	if err != nil || rec == nil {
-		return nil // silently ignore unknown validators
+// FinalizeExit returns the bond after UnbondingBlocks.
+func (s *StakingContract) FinalizeExit(caller qcrypto.Address, currentHeight uint64) error {
+	rec, err := s.GetValidator(caller)
+	if err != nil || rec == nil || rec.Status != ValidatorExiting {
+		return fmt.Errorf("validators: %s is not exiting", caller)
 	}
-	rec.UptimeScore = score
-	return s.setValidator(rec)
+	if currentHeight < rec.ExitHeight {
+		return fmt.Errorf("validators: unbonding until height %d", rec.ExitHeight)
+	}
+	bond := rec.Bond
+	if bond == nil {
+		bond = ValidatorBond()
+	}
+	pool, err := s.stateDB.GetAccount(s.contract)
+	if err != nil {
+		return err
+	}
+	if pool.Balance.Cmp(bond) < 0 {
+		return fmt.Errorf("validators: bond pool underfunded")
+	}
+	pool.Balance.Sub(pool.Balance, bond)
+	s.stateDB.SetAccount(pool)
+	acc, err := s.stateDB.GetAccount(caller)
+	if err != nil {
+		return err
+	}
+	acc.Balance.Add(acc.Balance, bond)
+	s.stateDB.SetAccount(acc)
+
+	rec.Status = ValidatorInactive
+	rec.Bond = big.NewInt(0)
+	if err := s.setValidator(rec); err != nil {
+		return err
+	}
+	total, _ := s.TotalStaked()
+	s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, bond))
+	return s.removeIndex(caller)
 }
 
-// ── Queries ────────────────────────────────────────────────────────────────────
-
-// GetValidator returns the validator record for the given address.
-// Returns nil (no error) if not found.
 func (s *StakingContract) GetValidator(addr qcrypto.Address) (*ValidatorRecord, error) {
 	b, err := s.stateDB.GetStorageValue(s.contract, stakingValidatorSlot(addr))
 	if err != nil || len(b) == 0 {
@@ -300,18 +196,14 @@ func (s *StakingContract) GetValidator(addr qcrypto.Address) (*ValidatorRecord, 
 	}
 	var rec ValidatorRecord
 	if err := json.Unmarshal(b, &rec); err != nil {
-		return nil, fmt.Errorf("staking: failed to decode validator: %w", err)
+		return nil, fmt.Errorf("validators: decode: %w", err)
 	}
-	if rec.Stake == nil {
-		rec.Stake = big.NewInt(0)
-	}
-	if rec.Rewards == nil {
-		rec.Rewards = big.NewInt(0)
+	if rec.Bond == nil {
+		rec.Bond = big.NewInt(0)
 	}
 	return &rec, nil
 }
 
-// IsActive returns true if the validator is currently active.
 func (s *StakingContract) IsActive(addr qcrypto.Address) (bool, error) {
 	rec, err := s.GetValidator(addr)
 	if err != nil || rec == nil {
@@ -320,12 +212,10 @@ func (s *StakingContract) IsActive(addr qcrypto.Address) (bool, error) {
 	return rec.Status == ValidatorActive, nil
 }
 
-// TotalStaked returns the total SPLD staked across all validators.
 func (s *StakingContract) TotalStaked() (*big.Int, error) {
 	return s.getBigInt(slotStakingTotalStaked)
 }
 
-// ValidatorCount returns the number of registered validators.
 func (s *StakingContract) ValidatorCount() (uint64, error) {
 	v, err := s.getBigInt(slotStakingValidatorCount)
 	if err != nil {
@@ -334,37 +224,63 @@ func (s *StakingContract) ValidatorCount() (uint64, error) {
 	return v.Uint64(), nil
 }
 
-// GetTier returns the staking tier name for a given stake amount.
-func GetTierName(stake *big.Int) string {
-	switch computeTier(stake) {
-	case TierPlatinum:
-		return "Platinum"
-	case TierGold:
-		return "Gold"
-	case TierSilver:
-		return "Silver"
-	case TierBronze:
-		return "Bronze"
-	default:
-		return "None"
+// ListActive returns every active validator (for BFT).
+func (s *StakingContract) ListActive() ([]ValidatorRecord, error) {
+	raw, err := s.stateDB.GetStorageValue(s.contract, slotStakingIndex)
+	if err != nil || len(raw) == 0 {
+		return nil, nil
 	}
+	var addrs []qcrypto.Address
+	if err := json.Unmarshal(raw, &addrs); err != nil {
+		return nil, err
+	}
+	var out []ValidatorRecord
+	for _, a := range addrs {
+		rec, err := s.GetValidator(a)
+		if err != nil || rec == nil || rec.Status != ValidatorActive {
+			continue
+		}
+		out = append(out, *rec)
+	}
+	return out, nil
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-func computeTier(stake *big.Int) StakingTier {
-	switch {
-	case stake.Cmp(StakePlatinum) >= 0:
-		return TierPlatinum
-	case stake.Cmp(StakeGold) >= 0:
-		return TierGold
-	case stake.Cmp(StakeSilver) >= 0:
-		return TierSilver
-	case stake.Cmp(StakeBronze) >= 0:
-		return TierBronze
-	default:
-		return TierNone
+func (s *StakingContract) addIndex(addr qcrypto.Address) error {
+	raw, _ := s.stateDB.GetStorageValue(s.contract, slotStakingIndex)
+	var addrs []qcrypto.Address
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &addrs)
 	}
+	for _, a := range addrs {
+		if a == addr {
+			return nil
+		}
+	}
+	addrs = append(addrs, addr)
+	b, err := json.Marshal(addrs)
+	if err != nil {
+		return err
+	}
+	return s.stateDB.SetStorageValue(s.contract, slotStakingIndex, b)
+}
+
+func (s *StakingContract) removeIndex(addr qcrypto.Address) error {
+	raw, _ := s.stateDB.GetStorageValue(s.contract, slotStakingIndex)
+	var addrs []qcrypto.Address
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &addrs)
+	}
+	next := addrs[:0]
+	for _, a := range addrs {
+		if a != addr {
+			next = append(next, a)
+		}
+	}
+	b, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	return s.stateDB.SetStorageValue(s.contract, slotStakingIndex, b)
 }
 
 func (s *StakingContract) setValidator(rec *ValidatorRecord) error {
@@ -385,4 +301,12 @@ func (s *StakingContract) getBigInt(slot [32]byte) (*big.Int, error) {
 		return big.NewInt(0), nil
 	}
 	return new(big.Int).SetBytes(b), nil
+}
+
+func mustPub(b []byte) *qcrypto.PublicKey {
+	pk, err := qcrypto.PublicKeyFromBytes(b)
+	if err != nil {
+		return &qcrypto.PublicKey{}
+	}
+	return pk
 }

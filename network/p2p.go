@@ -214,6 +214,23 @@ func (b *Broadcaster) sendBlock(peerURL string, blockData []byte) error {
 	return nil
 }
 
+// BroadcastSealed pushes a sealed write-plane payload (vote, proposal, …) to peers.
+func (b *Broadcaster) BroadcastSealed(kind string, data []byte) {
+	b.mu.RLock()
+	peers := make([]string, 0, len(b.peers))
+	for peer := range b.peers {
+		peers = append(peers, peer)
+	}
+	b.mu.RUnlock()
+	for _, peer := range peers {
+		go func(peerURL string) {
+			if err := b.identities.SendSealed(peerURL, b.authToken, kind, data); err != nil {
+				log.Debug().Err(err).Str("peer", peerURL).Str("kind", kind).Msg("sealed push failed")
+			}
+		}(peer)
+	}
+}
+
 // RunBroadcastLoop reads blocks from blockCh and broadcasts each one.
 // Run in a goroutine alongside the validator consensus loop.
 func (b *Broadcaster) RunBroadcastLoop(blockCh <-chan *types.Block) {

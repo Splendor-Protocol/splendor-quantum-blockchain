@@ -1,8 +1,10 @@
 package types
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 )
@@ -76,6 +78,79 @@ type Block struct {
 
 	// Ordered list of transactions included in this block.
 	Transactions []*Transaction `json:"transactions"`
+
+	// Votes is the quorum certificate justifying this block under
+	// multi_validator. Not part of the voted hash (see ComputeVotedHash).
+	Votes []QCVote `json:"votes,omitempty"`
+}
+
+// QCVote is a validator vote stored with a block as a quorum certificate.
+type QCVote struct {
+	AlgID         string          `json:"alg_id"`
+	Height        uint64          `json:"height"`
+	Round         uint32          `json:"round"`
+	BlockHash     [32]byte        `json:"block_hash"`
+	ValidatorAddr qcrypto.Address `json:"validator_addr"`
+	Signature     []byte          `json:"signature"`
+	Timestamp     int64           `json:"timestamp"`
+}
+
+// Hash is the signed vote body (excludes Signature), matching consensus.Vote.
+func (v QCVote) Hash() ([32]byte, error) {
+	body := struct {
+		AlgID         string          `json:"alg_id"`
+		Height        uint64          `json:"height"`
+		Round         uint32          `json:"round"`
+		BlockHash     [32]byte        `json:"block_hash"`
+		ValidatorAddr qcrypto.Address `json:"validator_addr"`
+		Timestamp     int64           `json:"timestamp"`
+	}{v.AlgID, v.Height, v.Round, v.BlockHash, v.ValidatorAddr, v.Timestamp}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return qcrypto.Hash32(b), nil
+}
+
+// Verify checks the ML-DSA-65 vote signature against pubKeyBytes.
+func (v QCVote) Verify(pubKeyBytes []byte) error {
+	if v.AlgID != qcrypto.AlgMLDSA65 {
+		return fmt.Errorf("unsupported vote alg_id %q", v.AlgID)
+	}
+	pub, err := qcrypto.PublicKeyFromBytes(pubKeyBytes)
+	if err != nil {
+		return fmt.Errorf("vote pubkey: %w", err)
+	}
+	if qcrypto.DeriveAddress(pub) != v.ValidatorAddr {
+		return fmt.Errorf("vote claims %s but key belongs to %s", v.ValidatorAddr, qcrypto.DeriveAddress(pub))
+	}
+	hash, err := v.Hash()
+	if err != nil {
+		return err
+	}
+	if !qcrypto.Verify(pub, hash[:], qcrypto.CtxVote, v.Signature) {
+		return fmt.Errorf("invalid vote signature from %s", v.ValidatorAddr)
+	}
+	return nil
+}
+
+// ComputeQCRoot is SHA3-256 over the canonical vote set (sorted by address).
+func ComputeQCRoot(votes []QCVote) [32]byte {
+	type body struct {
+		AlgID         string          `json:"alg_id"`
+		Height        uint64          `json:"height"`
+		Round         uint32          `json:"round"`
+		BlockHash     [32]byte        `json:"block_hash"`
+		ValidatorAddr qcrypto.Address `json:"validator_addr"`
+		Timestamp     int64           `json:"timestamp"`
+		Signature     []byte          `json:"signature"`
+	}
+	cp := append([]QCVote(nil), votes...)
+	sort.Slice(cp, func(i, j int) bool {
+		return bytes.Compare(cp[i].ValidatorAddr[:], cp[j].ValidatorAddr[:]) < 0
+	})
+	raw, _ := json.Marshal(cp)
+	return qcrypto.Hash32(raw)
 }
 
 // ComputeHash computes SHA3-256 of the serialised block header.
@@ -84,6 +159,19 @@ func (b *Block) ComputeHash() ([32]byte, error) {
 	data, err := json.Marshal(b.Header)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to marshal block header: %w", err)
+	}
+	return qcrypto.Hash32(data), nil
+}
+
+// ComputeVotedHash is the hash validators sign and vote on. QCRoot is omitted
+// so a certificate can be attached after the proposal is signed without
+// changing the voted identity.
+func (b *Block) ComputeVotedHash() ([32]byte, error) {
+	h := b.Header
+	h.QCRoot = nil
+	data, err := json.Marshal(h)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("failed to marshal voted header: %w", err)
 	}
 	return qcrypto.Hash32(data), nil
 }
@@ -158,30 +246,27 @@ func (b *Block) VerifySignature(validatorPubKeyBytes []byte) error {
 // It verifies: hash integrity, merkle root, and basic header consistency.
 // It does NOT verify transaction signatures (done during block execution).
 func (b *Block) Validate() error {
-	// Recompute and check the block hash
-	computed, err := b.ComputeHash()
+	voted, err := b.ComputeVotedHash()
 	if err != nil {
 		return fmt.Errorf("failed to compute block hash: %w", err)
 	}
-	if computed != b.Hash {
+	if voted != b.Hash {
 		return fmt.Errorf("block hash mismatch at height %d", b.Header.Height)
 	}
 
-	// A quorum certificate this build cannot check is refused, not ignored.
-	//
-	// The field is reserved but unimplemented, so a node accepting a block that
-	// carries one would be waving through the very evidence it is supposed to
-	// verify — and doing it while reporting the block as fully validated. It is
-	// signed by the producer, so only the producer can set it, but "only the
-	// validator can lie to you" is the assumption a validator set exists to
-	// remove. Refusing now also means the day multi_validator activates, an
-	// un-upgraded node stops rather than silently follows a chain whose rules it
-	// no longer implements.
 	if len(b.Header.QCRoot) != 0 {
-		return fmt.Errorf(
-			"block %d carries a quorum certificate (qc_root), which this build cannot verify: "+
-				"the multi_validator upgrade is not implemented yet. Upgrade the node",
-			b.Header.Height)
+		if len(b.Votes) == 0 {
+			return fmt.Errorf("block %d carries qc_root but no votes", b.Header.Height)
+		}
+		root := ComputeQCRoot(b.Votes)
+		if !bytes.Equal(b.Header.QCRoot, root[:]) {
+			return fmt.Errorf("block %d qc_root does not match votes", b.Header.Height)
+		}
+		for _, v := range b.Votes {
+			if v.BlockHash != b.Hash {
+				return fmt.Errorf("block %d vote from %s is for a different hash", b.Header.Height, v.ValidatorAddr)
+			}
+		}
 	}
 
 	// Verify tx merkle root
