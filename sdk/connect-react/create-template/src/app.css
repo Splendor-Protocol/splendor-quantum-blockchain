@@ -1,0 +1,53 @@
+:root {
+  color-scheme: dark;
+  font-family: Outfit, system-ui, sans-serif;
+  background: #0b1218;
+  color: #e8f2f4;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.brand {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.brand span {
+  color: #2ec4b6;
+  font-weight: 500;
+}
+
+.hero h1 {
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+  margin: 0 0 0.5rem;
+}
+
+.hero p {
+  margin: 0 0 1.75rem;
+  color: #8aa3ad;
+  max-width: 36rem;
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}

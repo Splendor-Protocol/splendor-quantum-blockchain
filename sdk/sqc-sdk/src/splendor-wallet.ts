@@ -33,6 +33,7 @@ import { getDefaultNetwork } from './networks.js';
 import { Connection } from './core/connection.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import { encodeModuleCallHex } from './core/module-call.js';
+import { prepareSignMessage } from './message-domain.js';
 import type {
   BridgeOptions,
   DeriveInfo,
@@ -52,6 +53,12 @@ import type {
   SignedIncrementNonce,
   BridgeClaimSignParams,
   SignedBridgeClaim,
+  WalletAccount,
+  WalletConnectOpts,
+  UnsignedTx,
+  SignedTx,
+  SendTxResult,
+  SignMessageOpts,
 } from './types.js';
 
 export type {
@@ -73,6 +80,12 @@ export type {
   SignedIncrementNonce,
   BridgeClaimSignParams,
   SignedBridgeClaim,
+  WalletAccount,
+  WalletConnectOpts,
+  UnsignedTx,
+  SignedTx,
+  SendTxResult,
+  SignMessageOpts,
 };
 
 export class SplendorPQBridge {
@@ -372,6 +385,64 @@ export class SplendorPQBridge {
         /user rejected|user denied|rejected by user/i.test(msg);
       throw wrapUnknown(e, rejected ? 'USER_REJECTED' : 'UNKNOWN');
     }
+  }
+
+  /**
+   * Single connect entry (wallet-adapter / viem style).
+   * Wraps connectFromSeed / MetaMask / EVM derivation paths.
+   */
+  async connect(opts: WalletConnectOpts): Promise<DeriveInfo> {
+    switch (opts.mode) {
+      case 'seed':
+        return this.connectFromSeed(opts.seed);
+      case 'metamask':
+        return this.connectFromMetaMask(opts.ethereumProvider);
+      case 'evmSignature':
+        return this.connectFromEvmSignature(opts.signature, opts.evmAddress, opts.scheme);
+      case 'evmKey':
+        return this.connectFromEvmPrivateKey(opts.privateKey);
+      default: {
+        const _exhaustive: never = opts;
+        throw BridgeError.rpc(`Unknown connect mode: ${JSON.stringify(_exhaustive)}`);
+      }
+    }
+  }
+
+  /**
+   * Nullable account snapshot — null when locked or disconnected (does not throw).
+   */
+  get account(): WalletAccount | null {
+    if (!this.info || !this.isUnlocked()) return null;
+    return {
+      address: this.info.address,
+      publicKeyB64: this.info.public_key_b64,
+      keyOrigin: this.info.keyOrigin ?? 'native',
+      postQuantumSecure: this.info.postQuantumSecure !== false,
+      evmAddress: this.info.evmAddress,
+    };
+  }
+
+  /** Network id from construction options (may be undefined). */
+  get networkId(): string | undefined {
+    return this.opts.networkId;
+  }
+
+  /** Connected SQ: addresses (length 0 or 1). */
+  getAddresses(): string[] {
+    const a = this.account;
+    return a ? [a.address] : [];
+  }
+
+  /**
+   * Emit `chainChanged` after a soft network switch (ConnectKit) or manual update.
+   * Does not rebuild RPC — callers recreate Connection / client for new endpoints.
+   */
+  notifyChainChanged(payload: { chainId: number | string; networkId: string }): void {
+    const chainId =
+      typeof payload.chainId === 'number'
+        ? payload.chainId
+        : Number.parseInt(String(payload.chainId).replace(/\D/g, ''), 10) || 0;
+    this.emitter.emit('chainChanged', { chainId, networkId: payload.networkId });
   }
 
   getAddress(): string {
@@ -733,21 +804,164 @@ export class SplendorPQBridge {
   }
 
   /**
+   * Sign an unsigned envelope without submitting (wallet-standard shaped).
+   * Fetches nonce when not provided via opts (transfer/call/deploy use account nonce).
+   */
+  async signTransaction(tx: UnsignedTx): Promise<SignedTx> {
+    switch (tx.type) {
+      case 'transfer': {
+        const { nonce } = await this.getNonce();
+        const signedTx = await this.signTransferOnly({ ...tx, nonce });
+        return { type: 'transfer', signedTx, nonce };
+      }
+      case 'call': {
+        return this.withSignLock(async () => {
+          await this.init();
+          assertAddress(tx.contract);
+          const value = tx.valueSPLD != null ? fromSPLD(tx.valueSPLD) : tx.value || '0';
+          let fee: string;
+          try {
+            fee = assertFeeAtLeastMin(tx.fee);
+          } catch (e) {
+            throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
+          }
+          let calldata: Uint8Array | string;
+          if (tx.function) {
+            assertQSolSignature(tx.function);
+            calldata = '0x' + bytesToHex(encodeFunctionData(tx.function, tx.args || []));
+          } else if (tx.calldata != null) {
+            calldata = tx.calldata;
+          } else {
+            throw BridgeError.rpc('call requires `function`+args or `calldata`');
+          }
+          await this.beforeSignAndSubmit();
+          const { nonce } = await this.getNonce();
+          const enc = encodePayload(calldata);
+          const params: Record<string, unknown> = {
+            contract: tx.contract,
+            value,
+            fee,
+            nonce,
+            ...(enc.calldata_hex ? { calldata_hex: enc.calldata_hex } : { calldata_b64: enc.calldata_b64 }),
+          };
+          this.opts.onRequest?.({ method: 'signCall' });
+          const wireStr = unwrap(this.api().sqSignCall(this.sid(), JSON.stringify(params))) as string;
+          return { type: 'call', signedTx: JSON.parse(wireStr), nonce };
+        });
+      }
+      case 'deploy': {
+        return this.withSignLock(async () => {
+          await this.init();
+          let fee: string;
+          try {
+            fee = assertFeeAtLeastMin(tx.fee);
+          } catch (e) {
+            throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
+          }
+          await this.beforeSignAndSubmit();
+          const { nonce } = await this.getNonce();
+          const enc = encodePayload(tx.bytecode);
+          const params: Record<string, unknown> = {
+            fee,
+            nonce,
+            ...(enc.bytecode_hex ? { bytecode_hex: enc.bytecode_hex } : { bytecode_b64: enc.bytecode_b64 }),
+          };
+          this.opts.onRequest?.({ method: 'signDeploy' });
+          const wireStr = unwrap(this.api().sqSignDeploy(this.sid(), JSON.stringify(params))) as string;
+          return { type: 'deploy', signedTx: JSON.parse(wireStr), nonce };
+        });
+      }
+      case 'module': {
+        const envelope = {
+          module: tx.module,
+          action: tx.action,
+          params: tx.params,
+        };
+        const signed = await this.signTransaction({
+          type: 'call',
+          contract: MODULE_ROUTER_ADDRESS,
+          calldata: encodeModuleCallHex(envelope),
+          value: '0',
+          fee: tx.fee,
+        });
+        return { type: 'module', signedTx: signed.signedTx, nonce: signed.nonce };
+      }
+      default: {
+        const _exhaustive: never = tx;
+        throw BridgeError.rpc(`Unknown tx type: ${JSON.stringify(_exhaustive)}`);
+      }
+    }
+  }
+
+  /**
+   * Submit a previously signed tx, or sign+send an unsigned envelope.
+   */
+  async sendTransaction(
+    tx: UnsignedTx | SignedTx,
+    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+  ): Promise<SendTxResult> {
+    if ('signedTx' in tx && tx.signedTx && 'nonce' in tx) {
+      const result = await this.connection.submitTransaction(tx.signedTx);
+      let confirmation: { confirmed: true; nonce: number } | undefined;
+      if (opts?.waitForConfirmation) {
+        confirmation = await this.waitForConfirmation({
+          nonceBefore: tx.nonce,
+          hash: result.hash,
+          timeoutMs: opts.confirmTimeoutMs,
+        });
+      }
+      return { ...result, signedTx: tx.signedTx, confirmation };
+    }
+    return this.signAndSendTransaction(tx as UnsignedTx, opts);
+  }
+
+  /** Sign and submit in one step (wallet-standard shaped). */
+  async signAndSendTransaction(
+    tx: UnsignedTx,
+    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+  ): Promise<SendTxResult> {
+    const wait = opts?.waitForConfirmation ?? ('waitForConfirmation' in tx ? tx.waitForConfirmation : undefined);
+    const confirmTimeoutMs =
+      opts?.confirmTimeoutMs ?? ('confirmTimeoutMs' in tx ? tx.confirmTimeoutMs : undefined);
+    switch (tx.type) {
+      case 'transfer':
+        return this.sendTransfer({ ...tx, waitForConfirmation: wait, confirmTimeoutMs });
+      case 'call':
+        return this.callContract({ ...tx, waitForConfirmation: wait, confirmTimeoutMs });
+      case 'deploy':
+        return this.deployContract({ ...tx, waitForConfirmation: wait, confirmTimeoutMs });
+      case 'module':
+        return this.sendModuleCall({ ...tx, waitForConfirmation: wait, confirmTimeoutMs });
+      default: {
+        const _exhaustive: never = tx;
+        throw BridgeError.rpc(`Unknown tx type: ${JSON.stringify(_exhaustive)}`);
+      }
+    }
+  }
+
+  /**
    * Sign an arbitrary message with the connected quantum (ML-DSA-65) key —
    * the primitive Splendor Connect v2 needs to authenticate an `SQ:` identity
    * (the tx signers only sign structured payloads). Returns the SQ: address,
-   * the base64 public key, and the base64 signature over the raw message bytes.
+   * the base64 public key, and the base64 signature over the prepared message bytes.
+   *
+   * Unstructured messages are domain-separated with `SPLENDOR-QC-MSG-v1\\n` unless
+   * `opts.raw` is true or the message already starts with a known protocol prefix
+   * (e.g. Splendor Connect v2 challenges).
    */
   async signMessage(
     message: string,
-  ): Promise<{ address: string; publicKeyB64: string; signatureB64: string }> {
+    opts?: SignMessageOpts,
+  ): Promise<{ address: string; publicKeyB64: string; signatureB64: string; message: string }> {
     return this.withSignLock(async () => {
       await this.init();
-      return unwrap(this.api().sqSignMessage(this.sid(), message)) as {
+      const prepared = prepareSignMessage(message, opts);
+      const signed = unwrap(this.api().sqSignMessage(this.sid(), prepared)) as {
         address: string;
         publicKeyB64: string;
         signatureB64: string;
       };
+      return { ...signed, message: prepared };
     });
   }
 
@@ -756,10 +970,20 @@ export class SplendorPQBridge {
    * no session), so a Node gateway can authenticate a Connect v2 challenge
    * server-side (there is no native-JS CIRCL Mode-3 verifier). Only the WASM
    * needs to be loaded.
+   *
+   * Applies the same domain preparation as signMessage unless `opts.raw`.
    */
-  async verifyMessage(publicKeyB64: string, message: string, signatureB64: string): Promise<boolean> {
+  async verifyMessage(
+    publicKeyB64: string,
+    message: string,
+    signatureB64: string,
+    opts?: SignMessageOpts,
+  ): Promise<boolean> {
     await this.init();
-    const r = unwrap(this.api().sqVerifyMessage(publicKeyB64, message, signatureB64)) as { valid: boolean };
+    const prepared = prepareSignMessage(message, opts);
+    const r = unwrap(this.api().sqVerifyMessage(publicKeyB64, prepared, signatureB64)) as {
+      valid: boolean;
+    };
     return Boolean(r.valid);
   }
 

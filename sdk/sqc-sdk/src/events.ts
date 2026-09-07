@@ -1,4 +1,4 @@
-/** Minimal typed event emitter for bridge connection lifecycle. */
+/** Minimal typed event emitter for wallet connection lifecycle. */
 
 export type BridgeEventMap = {
   connect: { address: string; evmAddress?: string };
@@ -6,8 +6,13 @@ export type BridgeEventMap = {
   /** ML-DSA-65 keys cleared; session slot retained for soft reconnect. */
   lock: Record<string, never>;
   accountsChanged: { address: string; evmAddress?: string };
+  /** Fired after a soft network switch (or explicit notifyChainChanged). */
+  chainChanged: { chainId: number; networkId: string };
   error: { code: string; message: string };
 };
+
+/** Canonical alias — prefer over BridgeEventMap in new code. */
+export type WalletEventMap = BridgeEventMap;
 
 type Handler<T> = (payload: T) => void;
 

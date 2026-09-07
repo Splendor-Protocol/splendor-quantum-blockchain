@@ -26,8 +26,8 @@ export {
   onMetaMaskDisconnect,
 } from './metamask.js';
 export type { EthereumProvider, SignDerivationOpts } from './metamask.js';
-export { BridgeError, isBridgeError } from './errors.js';
-export type { BridgeErrorCode } from './errors.js';
+export { BridgeError, isBridgeError, WalletError, isWalletError } from './errors.js';
+export type { BridgeErrorCode, WalletErrorCode } from './errors.js';
 export { isValidAddress, assertAddress, canonicalizeAddress } from './address.js';
 export { MIN_FEE, bytesToHex, hexToBytes, isHexString } from './encoding.js';
 export {
@@ -42,7 +42,7 @@ export {
   assertQSolSignature,
 } from './abi.js';
 export type { AbiArg } from './abi.js';
-export type { BridgeEventMap } from './events.js';
+export type { BridgeEventMap, WalletEventMap } from './events.js';
 export {
   SQDP_VERSION,
   PROTOCOL,
@@ -103,7 +103,28 @@ export type {
   SignedIncrementNonce,
   BridgeClaimSignParams,
   SignedBridgeClaim,
+  WalletAccount,
+  WalletConnectOpts,
+  UnsignedTx,
+  SignedTx,
+  SendTxResult,
+  SignMessageOpts,
 } from './types.js';
+export { createPublicClient, createWalletClient, createWalletClientAsync } from './clients.js';
+export type { PublicClientOptions } from './clients.js';
+export { SIGN_MESSAGE_DOMAIN, prepareSignMessage } from './message-domain.js';
+export {
+  createSplendorProvider,
+  installSplendorProvider,
+  uninstallSplendorProvider,
+  getSplendorProvider,
+} from './injected-provider.js';
+export type {
+  SplendorInjectedProvider,
+  SplendorProviderRequestArgs,
+  SplendorProviderEventMap,
+  InstallSplendorProviderOptions,
+} from './injected-provider.js';
 export { Connection } from './core/connection.js';
 export { buildModuleCall, encodeModuleCallHex, type ModuleCall } from './core/module-call.js';
 export { Program } from './core/program.js';

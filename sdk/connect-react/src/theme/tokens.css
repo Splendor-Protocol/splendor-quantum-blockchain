@@ -616,6 +616,65 @@
   color: var(--sqc-accent);
 }
 
+/* —— Drop-in dApp widgets —— */
+
+.sqc-widget {
+  background: var(--sqc-surface);
+  border: 1px solid var(--sqc-border);
+  border-radius: var(--sqc-radius);
+  padding: 1.1rem 1.25rem;
+  color: var(--sqc-text);
+  font-family: var(--sqc-font-body);
+}
+
+.sqc-widget__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.sqc-widget__title {
+  font-family: var(--sqc-font-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}
+
+.sqc-widget__header .sqc-widget__title {
+  margin: 0;
+}
+
+.sqc-widget__hint {
+  color: var(--sqc-text-muted);
+  font-size: 0.875rem;
+  margin: 0 0 0.75rem;
+}
+
+.sqc-widget__label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--sqc-text-muted);
+  margin: 0.65rem 0 0.35rem;
+}
+
+.sqc-widget__msg {
+  font-size: 0.8125rem;
+  margin: 0.75rem 0 0;
+  word-break: break-all;
+  color: var(--sqc-text-muted);
+}
+
+.sqc-widget__msg--error {
+  color: var(--sqc-danger);
+}
+
+.sqc-widget .sqc-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sqc-backdrop,
   .sqc-modal,

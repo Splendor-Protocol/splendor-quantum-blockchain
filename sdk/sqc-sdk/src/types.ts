@@ -263,3 +263,58 @@ export type SignedBridgeClaim = {
   recipient: string;
   evm_tx: string;
 };
+
+/** Nullable account snapshot — does not throw when locked/disconnected. */
+export type WalletAccount = {
+  address: string;
+  publicKeyB64: string;
+  keyOrigin: KeyOrigin;
+  postQuantumSecure: boolean;
+  evmAddress?: string;
+};
+
+/**
+ * Unified wallet.connect() options (market-standard single entry).
+ * Prefer this over connectFromSeed / connectFromMetaMask in new code.
+ */
+export type WalletConnectOpts =
+  | { mode: 'seed'; seed: string }
+  | { mode: 'metamask'; ethereumProvider?: EthereumProvider }
+  | {
+      mode: 'evmSignature';
+      signature: string;
+      evmAddress?: string;
+      scheme?: DerivationScheme;
+    }
+  | { mode: 'evmKey'; privateKey: string };
+
+/** Unsigned transaction envelope for signTransaction / sendTransaction. */
+export type UnsignedTx =
+  | ({ type: 'transfer' } & TransferOpts)
+  | ({ type: 'call' } & CallOpts)
+  | ({ type: 'deploy' } & DeployOpts)
+  | ({ type: 'module' } & ModuleCallOpts);
+
+/** Signed wire transaction returned by signTransaction (not yet submitted). */
+export type SignedTx = {
+  type: UnsignedTx['type'];
+  signedTx: object;
+  nonce: number;
+};
+
+/** Result of sendTransaction / signAndSendTransaction. */
+export type SendTxResult = {
+  status: string;
+  hash: string;
+  signedTx: object;
+  confirmation?: { confirmed: true; nonce: number };
+};
+
+export type SignMessageOpts = {
+  /**
+   * When true, sign the message bytes as-is (Connect v2 challenges, etc.).
+   * Default false: domain-separate with SIGN_MESSAGE_DOMAIN unless the message
+   * already starts with a known protocol prefix.
+   */
+  raw?: boolean;
+};

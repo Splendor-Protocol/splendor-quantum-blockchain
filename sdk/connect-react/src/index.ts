@@ -99,5 +99,19 @@ export {
 export type { ConnectButtonProps } from './ui/ConnectButton.js';
 export type { NetworkBadgeProps } from './ui/NetworkBadge.js';
 
+export {
+  AccountCard,
+  TransferWidget,
+  TokenPanel,
+  DeployTokenWidget,
+  sanitizeIconUrl,
+} from './widgets/index.js';
+export type {
+  AccountCardProps,
+  TransferWidgetProps,
+  TokenPanelProps,
+  DeployTokenWidgetProps,
+} from './widgets/index.js';
+
 export type { ThemeName, ThemeOverrides, ThemeProp } from './theme/themes.js';
 export { resolveThemeAttr, themeOverridesToStyle } from './theme/themes.js';

@@ -6,6 +6,15 @@ The first action in the modal is a **native ML-DSA-65 wallet** — create one fr
 
 `@splendor/pq-bridge` remains a deprecated shim; new apps should depend on `@splendor/sqc-sdk`.
 
+## Scaffold a dApp
+
+```bash
+npm exec create-splendor-dapp my-dapp
+cd my-dapp && npm install && npm run dev
+```
+
+Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plugin.
+
 ## Production readiness
 
 | Capability | Status |
@@ -15,10 +24,12 @@ The first action in the modal is a **native ML-DSA-65 wallet** — create one fr
 | SSR-safe hooks | Yes — stub until client |
 | Native ML-DSA wallet (create / import) | Yes — first item in the modal |
 | Auto connectors (EIP-6963) | Yes — `connectors="auto"`, listed after native |
-| Soft network switch + reconnect | Yes |
+| Soft network switch + reconnect | Yes (`chainChanged` emitted) |
 | Idle lock syncs UI | Yes — bridge `lock` event → `status: 'locked'` |
 | Inline / custom networks | Yes — `networks` / `networkConfig` / `registerNetwork` |
 | Tx hooks + receipt confirmation | Yes (receipt when node indexes) |
+| Drop-in widgets | Yes — `TransferWidget`, `TokenPanel`, `DeployTokenWidget`, `AccountCard` |
+| Optional `window.splendor` | Yes — `exposeInjectedProvider` |
 | QRC-20 hooks (`useQRC20`, `useDeployToken`) | Yes |
 | Module hooks | Yes — see matrix below |
 
@@ -47,12 +58,14 @@ const { claim } = useBridge(bridgeAddress);
 await claim({ id, asset: 'spld', amount, recipient, evmTx, attestations });
 ```
 
-**Out of scope:** WalletConnect v2, full EIP-1193 SQC provider for wagmi, CDN WASM, desktop/mobile wallet apps, browser extension (separate repo).
+**Out of scope:** WalletConnect v2, Ethereum `eth_*` / wagmi adapters, CDN WASM, desktop/mobile wallet apps, browser extension (separate repo).  
+**In scope:** SQC `window.splendor` via `exposeInjectedProvider` (`splendor_*` methods).
 
 ## 5-minute integrate
 
 ```bash
 npm install @splendor/connect-react @splendor/sqc-sdk react react-dom
+# or scaffold: npm exec create-splendor-dapp my-dapp
 ```
 
 ```ts
@@ -63,14 +76,23 @@ plugins: [react(), sqcWasmPlugin()],
 
 ```tsx
 import '@splendor/connect-react/style.css';
-import { SplendorConnectProvider, ConnectKit } from '@splendor/connect-react';
+import {
+  SplendorConnectProvider,
+  ConnectKit,
+  TransferWidget,
+  AccountCard,
+} from '@splendor/connect-react';
 
 // connectors="auto" (default): native ML-DSA first, MetaMask/EIP-6963 after it.
 // wasmSha256 pins the signer bundle — see "Pin the signer" below.
 <SplendorConnectProvider network="testnet" wasmSha256="<digest>">
   <ConnectKit />
+  <AccountCard />
+  <TransferWidget />
 </SplendorConnectProvider>
 ```
+
+Widgets are also available as `@splendor/connect-react/widgets`.
 
 `autoReconnect` only ever resumes an injected wallet — a native seed is typed in
 by the user, so it is never persisted and never silently reconnected.

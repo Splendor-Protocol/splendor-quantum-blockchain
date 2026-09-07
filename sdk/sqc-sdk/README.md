@@ -6,6 +6,60 @@ This package is Splendor PQ–specific (`SQ:` addresses, SHA3-256 QSol ABI, Go W
 
 **`@splendor/pq-bridge`** remains a deprecated re-export shim for older imports.
 
+**Do not use** the legacy root file [`sdk/sqc-sdk.js`](../sqc-sdk.js) — unsafe wire format for submit.
+
+## Happy path (pick one)
+
+### 1. Browser dApp — ConnectKit + widgets
+
+```bash
+npm exec create-splendor-dapp my-dapp
+# or: npm i @splendor/connect-react @splendor/sqc-sdk
+```
+
+```tsx
+import '@splendor/connect-react/style.css';
+import {
+  SplendorConnectProvider,
+  ConnectKit,
+  TransferWidget,
+  AccountCard,
+} from '@splendor/connect-react';
+
+<SplendorConnectProvider network="local" allowUnpinnedWasm>
+  <ConnectKit />
+  <AccountCard />
+  <TransferWidget />
+</SplendorConnectProvider>
+```
+
+Optional: `exposeInjectedProvider` installs `window.splendor` (`splendor_*` methods, not `eth_*`).
+
+### 2. Headless / agents — createSession
+
+```js
+import { createSession } from '@splendor/sqc-sdk';
+
+const s = await createSession({ network: 'local', mode: 'seed', seed: process.env.SEED });
+await s.sendSPLD(recipient, '0.01');
+await s.token(tokenAddr).transfer(recipient, '100');
+```
+
+### 3. WalletClient style (viem-adjacent)
+
+```js
+import { createPublicClient, createWalletClient } from '@splendor/sqc-sdk';
+
+const publicClient = createPublicClient({ network: 'local' });
+const wallet = createWalletClient({ network: 'local', allowUnpinnedWasm: true });
+await wallet.connect({ mode: 'seed', seed });
+await wallet.signAndSendTransaction({
+  type: 'transfer',
+  to: recipient,
+  amountSPLD: '0.01',
+});
+```
+
 ```js
 import { createSession, fromUnits } from '@splendor/sqc-sdk';
 

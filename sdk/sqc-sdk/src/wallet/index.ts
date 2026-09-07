@@ -16,6 +16,13 @@ export {
   Wallet,
   MIN_FEE,
 } from '../splendor-wallet.js';
+export { createPublicClient, createWalletClient, createWalletClientAsync } from '../clients.js';
+export {
+  installSplendorProvider,
+  createSplendorProvider,
+  uninstallSplendorProvider,
+  getSplendorProvider,
+} from '../injected-provider.js';
 export type {
   BridgeOptions,
   DeriveInfo,
@@ -28,4 +35,7 @@ export type {
   ModuleCallOpts,
   PermitParams,
   SignedPermit,
+  WalletAccount,
+  UnsignedTx,
+  SignedTx,
 } from '../types.js';
