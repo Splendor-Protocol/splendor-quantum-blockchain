@@ -75,6 +75,36 @@ func (e *Executor) EligibleToProduce(pubKey []byte, height uint64) error {
 	return e.requireEligibleProducer(pubKey, qcrypto.Address{}, height)
 }
 
+// EligibleToProduceAddr is EligibleToProduce for a caller that holds the
+// producing ADDRESS rather than the key — a scheduler deciding whose slot a
+// height is, or a follower judging a header. On this chain the address is the
+// key's SHA3-256, so the registry is keyed by a value both callers have; the
+// predicate, the state it reads and the answer it gives are identical.
+//
+// Same lock, same rule, no second implementation of it: a schedule that decided
+// eligibility for itself would be free to disagree with the gate consensus
+// actually enforces, which is the one thing a schedule must never do.
+func (e *Executor) EligibleToProduceAddr(addr qcrypto.Address, height uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.requireEligibleProducer(nil, addr, height)
+}
+
+// SetAttachProducerKey makes ProduceBlock embed the sealing key in each block
+// it builds.
+//
+// A Phase-1 chain has one producer and every node pins its key, so blocks carry
+// no key above height 0 and followers verify against the pinned one. With
+// several producers that pin no longer names whoever sealed the block, so the
+// block has to carry its own key and the follower has to bind it to the header
+// (DeriveAddress(key) == Header.ValidatorAddr) before trusting the signature.
+//
+// Off by default. Turning it on is a network-wide decision — it changes what a
+// follower must be prepared to verify, not just what this node emits.
+func (e *Executor) SetAttachProducerKey(on bool) {
+	e.attachProducerKey.Store(on)
+}
+
 // requireEligibleProducer is the gate itself. Callers hold e.mu.
 //
 //	pubKey — the producer's key when the caller has it (ProduceBlock always

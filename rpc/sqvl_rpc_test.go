@@ -3,12 +3,16 @@ package rpc
 import (
 	"bytes"
 	"encoding/json"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
@@ -146,5 +150,80 @@ func TestVerifyDoorsCheckTheActionBeforeAdmitting(t *testing.T) {
 	s.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/verify/settle", bytes.NewReader(mk("verify", "spend"))))
 	if !strings.Contains(rec.Body.String(), "rejected") {
 		t.Fatalf("a well-formed but unsigned spend should reach admission, got: %s", rec.Body.String())
+	}
+}
+
+// Signed verify.attest / verify.spend TxCalls must clear the product-door
+// action check and reach admitTx (202 into the mempool). Full on-chain
+// check→attest→settle→proof is covered by `featsmoke verify` against a live node.
+func TestVerifyDoorsAdmitSignedAttestAndSettle(t *testing.T) {
+	s := newTestServer(t, "")
+	s.executor.SetForks(forks.Schedule{forks.VerifyV1: 1, forks.ModuleRevertV1: 1})
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := qcrypto.DeriveAddress(pub)
+	acc := types.NewAccount(from)
+	acc.AddBalance(big.NewInt(1_000_000))
+	acc.PublicKey = pub.Bytes()
+	s.stateDB.SetAccount(acc)
+	if _, err := s.stateDB.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	inst := "SQ:" + strings.Repeat("11", 32)
+	id := strings.Repeat("42", 32)
+	params, _ := json.Marshal(map[string]string{"verify": inst, "instruction_id": id})
+	postDoor := func(path, action string, nonce uint64) *httptest.ResponseRecorder {
+		t.Helper()
+		data, _ := json.Marshal(vm.ModuleCall{Module: "verify", Action: action, Params: params})
+		tx := types.NewCall(from, vm.ModuleRouterAddress, data, big.NewInt(0), big.NewInt(mempool.MinFee), nonce, now)
+		if err := tx.Sign(priv, true); err != nil {
+			t.Fatal(err)
+		}
+		body, _ := json.Marshal(map[string]any{"tx": tx})
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)))
+		return rec
+	}
+	before := s.pool.Size()
+	rec := postDoor("/verify/attest", "attest", 0)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("attest door: status %d body %s, want 202", rec.Code, rec.Body.String())
+	}
+	if s.pool.Size() != before+1 {
+		t.Fatalf("attest not in mempool: size %d", s.pool.Size())
+	}
+	rec = postDoor("/verify/settle", "spend", 1)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("settle door: status %d body %s, want 202", rec.Code, rec.Body.String())
+	}
+	if s.pool.Size() != before+2 {
+		t.Fatalf("settle not in mempool: size %d", s.pool.Size())
+	}
+	rec = postDoor("/verify/settle", "finalize", 2)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("settle finalize door: status %d body %s, want 202", rec.Code, rec.Body.String())
+	}
+}
+
+// End-to-end wire shape for /verify/check → doors: a dual-signed instruction
+// validates, and the doors refuse a bare (non-tx) body before admission.
+func TestVerifyCheckThenDoorsRefuseBareBody(t *testing.T) {
+	s := newTestServer(t, "")
+	ins, _ := signedTestInstruction(t)
+	body, _ := json.Marshal(ins)
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/verify/check", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"valid":true`) {
+		t.Fatalf("check: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, path := range []string{"/verify/attest", "/verify/settle"} {
+		rec = httptest.NewRecorder()
+		s.router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s bare instruction body: status %d %s, want 400", path, rec.Code, rec.Body.String())
+		}
 	}
 }

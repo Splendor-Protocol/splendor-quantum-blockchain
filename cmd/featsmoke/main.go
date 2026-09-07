@@ -6,6 +6,8 @@
 //
 //	featsmoke keygen --out faucet.seed           # make (or reuse) the faucet key; prints its SQ: address
 //	featsmoke run --rpc http://127.0.0.1:8080 --seed faucet.seed --chain-id sqc-featval-1
+//	featsmoke verify --rpc http://3.84.91.28:8080 --seed faucet.seed --chain-id sqc-featval-1
+//	  # SQVL doors only: check → attest → settle → proof
 //
 // The faucet address must be funded at genesis. Every step prints PASS or
 // FAIL; the exit code is non-zero if anything failed.
@@ -34,7 +36,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: featsmoke {keygen|run} [flags]")
+		fmt.Fprintln(os.Stderr, "usage: featsmoke {keygen|run|verify} [flags]")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -42,6 +44,8 @@ func main() {
 		keygen(os.Args[2:])
 	case "run":
 		os.Exit(run(os.Args[2:]))
+	case "verify":
+		os.Exit(runVerify(os.Args[2:]))
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command:", os.Args[1])
 		os.Exit(2)
@@ -142,6 +146,49 @@ func run(args []string) int {
 	return 0
 }
 
+// runVerify exercises only the SQVL product doors end-to-end:
+// POST /verify/check → deploy/register → POST /verify/attest → POST /verify/settle → GET /verify/proof/{id}.
+func runVerify(args []string) int {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	rpc := fs.String("rpc", "http://127.0.0.1:8080", "node RPC base URL")
+	seedFile := fs.String("seed", "faucet.seed", "faucet seed file from keygen")
+	chainID := fs.String("chain-id", "", "chain id the node must report and every tx is signed for (required)")
+	_ = fs.Parse(args)
+	if *chainID == "" {
+		fatal("--chain-id is required")
+	}
+	if err := types.SetClientChainID(*chainID); err != nil {
+		fatal("chain id: %v", err)
+	}
+	raw, err := os.ReadFile(*seedFile)
+	if err != nil {
+		fatal("read seed: %v", err)
+	}
+	seed, err := signer.SeedFromHex(strings.TrimSpace(string(raw)))
+	if err != nil {
+		fatal("seed: %v", err)
+	}
+	w, err := signer.DeriveFromSeed(seed)
+	if err != nil {
+		fatal("derive: %v", err)
+	}
+	slhPub, slhPriv, err := qcrypto.SLHKeypairFromSeed(seed)
+	if err != nil {
+		fatal("slh derive: %v", err)
+	}
+	r := &runner{rpc: strings.TrimRight(*rpc, "/"), chainID: *chainID, http: &http.Client{Timeout: 20 * time.Second}, w: w, slhPub: slhPub, slhPriv: slhPriv}
+	fmt.Printf("featsmoke verify (SQVL doors) against %s as %s\n", r.rpc, w.Address)
+	r.stepStatus()
+	r.stepFaucet()
+	r.stepVerify()
+	if r.failures > 0 {
+		fmt.Printf("\n%d step(s) FAILED\n", r.failures)
+		return 1
+	}
+	fmt.Println("\nALL PASS")
+	return 0
+}
+
 // ── steps ───────────────────────────────────────────────────────────────────
 
 func (r *runner) stepStatus() uint64 {
@@ -216,6 +263,7 @@ func (r *runner) stepVerify() {
 	r.check("verify: POST /verify/check accepts the dual signature", code == 200 && chk["valid"] == true, "%d %s", code, trim(resp))
 	digest, _ := chk["digest"].(string)
 
+	// deploy + register stay on /tx/submit (no product door for them).
 	rc, err := r.moduleTx("verify", "deploy", map[string]any{"threshold": 1, "operators": []string{}})
 	if !r.check("verify: deploy an instance", err == nil && rc.ok() && rc.contract != "", "%v %s", err, rc.err) {
 		return
@@ -235,25 +283,27 @@ func (r *runner) stepVerify() {
 	if !r.check("verify: dual-sign an attestation bound to the instance", err == nil, "%v", err) {
 		return
 	}
-	rc, err = r.moduleTx("verify", "attest", map[string]any{
+	// Product door: POST /verify/attest (not /tx/submit).
+	rc, err = r.moduleDoor("/verify/attest", "verify", "attest", map[string]any{
 		"verify": inst, "instruction_id": id.Hex(),
 		"attestation": map[string]string{
 			"pubkey": hex.EncodeToString(r.w.PublicKey), "slh_pubkey": hex.EncodeToString(r.slhPub.Bytes()),
 			"sig_mldsa": hex.EncodeToString(sigM), "sig_slh": hex.EncodeToString(sigS),
 		},
 	})
-	r.check("verify: attest (owner is an attestor)", err == nil && rc.ok(), "%v %s", err, rc.err)
+	r.check("verify: POST /verify/attest admits attest (owner is an attestor)", err == nil && rc.ok(), "%v %s", err, rc.err)
 
 	proof, err := r.read("verify", "proof", map[string]any{"verify": inst, "instruction_id": id.Hex()})
 	r.check("verify: proof shows threshold met, unspent", err == nil && proof["threshold_met"] == true && proof["spent"] == false, "%v %v", err, compact(proof))
 
-	rc, err = r.moduleTx("verify", "spend", map[string]any{"verify": inst, "instruction_id": id.Hex()})
-	r.check("verify: spend (finalize_only) settles once", err == nil && rc.ok(), "%v %s", err, rc.err)
+	// Product door: POST /verify/settle with spend (finalize_only).
+	rc, err = r.moduleDoor("/verify/settle", "verify", "spend", map[string]any{"verify": inst, "instruction_id": id.Hex()})
+	r.check("verify: POST /verify/settle admits spend (finalize_only) once", err == nil && rc.ok(), "%v %s", err, rc.err)
 	proof, err = r.read("verify", "proof", map[string]any{"verify": inst, "instruction_id": id.Hex()})
 	r.check("verify: proof shows spent", err == nil && proof["spent"] == true, "%v %v", err, compact(proof))
 
-	rc, err = r.moduleTx("verify", "spend", map[string]any{"verify": inst, "instruction_id": id.Hex()})
-	r.check("verify: replayed spend is a failed receipt (already spent)", err == nil && !rc.ok() && strings.Contains(rc.err, "already spent"), "%v ok=%v %s", err, rc.ok(), rc.err)
+	rc, err = r.moduleDoor("/verify/settle", "verify", "spend", map[string]any{"verify": inst, "instruction_id": id.Hex()})
+	r.check("verify: replayed settle is a failed receipt (already spent)", err == nil && !rc.ok() && strings.Contains(rc.err, "already spent"), "%v ok=%v %s", err, rc.ok(), rc.err)
 
 	code, resp = r.get("/verify/proof/" + id.Hex() + "?instance=" + inst)
 	r.check("verify: GET /verify/proof/{id} serves the record", code == 200 && strings.Contains(resp, `"spent":true`), "%d %s", code, trim(resp))
@@ -362,21 +412,61 @@ func (r *runner) nextNonce() uint64 {
 	return n
 }
 
-// moduleTx signs and submits a module TxCall, then waits for its receipt.
+// moduleTx signs and submits a module TxCall via /tx/submit, then waits for its receipt.
 func (r *runner) moduleTx(module, action string, params any) (receipt, error) {
-	praw, err := json.Marshal(params)
+	tx, err := r.signedModuleCall(module, action, params)
 	if err != nil {
-		return receipt{}, err
-	}
-	data, err := json.Marshal(vm.ModuleCall{Module: module, Action: action, Params: praw})
-	if err != nil {
-		return receipt{}, err
-	}
-	tx := types.NewCall(r.w.Address, vm.ModuleRouterAddress, data, big.NewInt(0), r.feeNow(), r.nextNonce(), time.Now().Unix())
-	if err := tx.Sign(r.w.Private, true); err != nil {
 		return receipt{}, err
 	}
 	return r.submitAndWait(tx)
+}
+
+// moduleDoor signs the same module TxCall but admits it through a SQVL product
+// door (/verify/attest or /verify/settle) as {"tx": …}.
+func (r *runner) moduleDoor(door, module, action string, params any) (receipt, error) {
+	tx, err := r.signedModuleCall(module, action, params)
+	if err != nil {
+		return receipt{}, err
+	}
+	b, _ := json.Marshal(map[string]any{"tx": tx})
+	code, resp := r.post(door, b)
+	if code/100 != 2 {
+		r.nonce = tx.Nonce // not admitted
+		return receipt{}, fmt.Errorf("%s refused: %d %s", door, code, trim(resp))
+	}
+	var sub struct {
+		Hash string `json:"hash"`
+	}
+	if err := json.Unmarshal([]byte(resp), &sub); err != nil || sub.Hash == "" {
+		return receipt{}, fmt.Errorf("%s response: %s", door, trim(resp))
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		code, body := r.get("/tx/" + strings.TrimPrefix(sub.Hash, "0x") + "/receipt")
+		if code == 200 {
+			return parseReceipt(body), nil
+		}
+		if time.Now().After(deadline) {
+			return receipt{}, fmt.Errorf("no receipt for %s within 60s (last %d %s)", sub.Hash, code, trim(body))
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func (r *runner) signedModuleCall(module, action string, params any) (*types.Transaction, error) {
+	praw, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(vm.ModuleCall{Module: module, Action: action, Params: praw})
+	if err != nil {
+		return nil, err
+	}
+	tx := types.NewCall(r.w.Address, vm.ModuleRouterAddress, data, big.NewInt(0), r.feeNow(), r.nextNonce(), time.Now().Unix())
+	if err := tx.Sign(r.w.Private, true); err != nil {
+		return nil, err
+	}
+	return tx, nil
 }
 
 func (r *runner) transferTx(to qcrypto.Address, amount, fee *big.Int) (receipt, error) {

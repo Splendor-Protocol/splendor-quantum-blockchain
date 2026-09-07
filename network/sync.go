@@ -71,6 +71,16 @@ type SyncConfig struct {
 	// no sealed transport. Off by default so the channel cannot be downgraded
 	// by an attacker who simply refuses to answer /p2p/identity.
 	AllowPlaintext bool
+
+	// MultiProducer authenticates pulled blocks against the key each block
+	// carries, bound to its header address (VerifyProducerBound), instead of
+	// against ValidatorPubKey. Set it only on a chain where more than one key
+	// seals blocks and the staking gate decides which — see the long comment on
+	// VerifyProducerBound for why the pinned-key check cannot simply be dropped.
+	// Block 0 is exempt: it is still checked against ValidatorPubKey and the
+	// GenesisHash pin, because the anchor everything else is rooted in cannot
+	// be allowed to authenticate itself.
+	MultiProducer bool
 }
 
 // DefaultSyncConfig returns sensible defaults.
@@ -261,12 +271,23 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 	// former "learn it from the first block" path accepted any chain the first
 	// peer chose to fabricate. The only sanctioned way to acquire the key is
 	// FetchGenesisValidatorPubKey, which checks block 0 against a pinned hash.
-	if len(f.cfg.ValidatorPubKey) == 0 {
-		return nil, fmt.Errorf("block %d: no trusted validator pubkey — refusing to apply an unverified block "+
-			"(set --validator-pubkey-hex, or --genesis-hash to bootstrap it)", height)
-	}
-	if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-		return nil, fmt.Errorf("block %d: invalid validator signature: %w", height, err)
+	//
+	// On a multi-producer chain the pinned key names only the genesis producer,
+	// so above height 0 the check becomes "signed by the key the header names"
+	// and the staking gate in ExecuteBlock decides whether that producer is one
+	// this chain admits. Height 0 keeps the pinned check either way.
+	if f.cfg.MultiProducer && height > 0 {
+		if err := VerifyProducerBound(&block); err != nil {
+			return nil, err
+		}
+	} else {
+		if len(f.cfg.ValidatorPubKey) == 0 {
+			return nil, fmt.Errorf("block %d: no trusted validator pubkey — refusing to apply an unverified block "+
+				"(set --validator-pubkey-hex, or --genesis-hash to bootstrap it)", height)
+		}
+		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
+			return nil, fmt.Errorf("block %d: invalid validator signature: %w", height, err)
+		}
 	}
 
 	// Height 0 must additionally match the pin when one is configured, so a peer
@@ -297,11 +318,17 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 	}
 
 	// Verify signature; fail closed with no pinned key (matches FetchBlock).
-	if len(f.cfg.ValidatorPubKey) == 0 {
-		return nil, fmt.Errorf("latest block: no trusted validator pubkey")
-	}
-	if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-		return nil, fmt.Errorf("latest block: invalid validator signature: %w", err)
+	if f.cfg.MultiProducer && block.Header.Height > 0 {
+		if err := VerifyProducerBound(&block); err != nil {
+			return nil, fmt.Errorf("latest block: %w", err)
+		}
+	} else {
+		if len(f.cfg.ValidatorPubKey) == 0 {
+			return nil, fmt.Errorf("latest block: no trusted validator pubkey")
+		}
+		if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
+			return nil, fmt.Errorf("latest block: invalid validator signature: %w", err)
+		}
 	}
 
 	return &block, nil
@@ -369,6 +396,49 @@ func (s *Syncer) bootstrapValidatorPubKey() {
 
 // SyncOnce performs one sync pass: check peers, download missing blocks.
 // Returns the number of blocks applied, and any error.
+// FetchGenesisBlock pulls block 0 from a peer and applies it.
+//
+// SyncOnce cannot: it starts at localHeight()+1, and a node with no blocks at
+// all reports the same 0 as a node holding block 0 — so block 0 is the one
+// height the catch-up loop can never ask for. On a single-producer chain that
+// is invisible, because the only nodes that follow are full nodes, and
+// verifyBlockLinkage lets block 1 land on an empty chain for exactly that case.
+//
+// With several producers it is not invisible. A producer whose chain is still
+// empty when its slot arrives builds height 1 on a null prev-hash and forks
+// away from the chain it was started to join — observed, on a control run where
+// the staking gate was not active to keep the other three out of the rotation
+// until they had caught up.
+//
+// Block 0 is fetched through the same FetchBlock as everything else, so a
+// configured --genesis-hash pin is checked and the signature is verified
+// against ValidatorPubKey — never against the block's own embedded key, whether
+// or not this node runs in multi-producer mode. The anchor cannot be allowed to
+// authenticate itself.
+func (s *Syncer) FetchGenesisBlock() error {
+	peers := s.pool.Addrs()
+	if len(peers) == 0 {
+		return fmt.Errorf("sync: no peers to take block 0 from")
+	}
+	var lastErr error
+	for _, peer := range peers {
+		b, err := s.fetcher.FetchBlock(peer, 0)
+		if err != nil {
+			log.Debug().Err(err).Str("peer", peer).Msg("sync: block 0 fetch failed")
+			lastErr = fmt.Errorf("%s: %w", peer, err)
+			continue
+		}
+		if err := s.applyBlock(b); err != nil {
+			log.Debug().Err(err).Str("peer", peer).Msg("sync: block 0 apply failed")
+			lastErr = fmt.Errorf("%s: apply: %w", peer, err)
+			continue
+		}
+		log.Info().Str("peer", peer).Msg("sync: block 0 adopted from peer")
+		return nil
+	}
+	return fmt.Errorf("sync: could not adopt block 0 from any of %d peers: %w", len(peers), lastErr)
+}
+
 func (s *Syncer) SyncOnce() (int, error) {
 	localH := s.localHeight()
 	bestH := s.pool.BestPeerHeight()

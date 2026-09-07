@@ -30,6 +30,10 @@ type Config struct {
 	Address    qcrypto.Address
 	PublicKey  []byte
 	PrivateKey *qcrypto.PrivateKey
+
+	// Schedule, when set, decides which of several configured producers owns a
+	// height (poa.go). nil is Phase 1: one producer, every height its own.
+	Schedule Slots
 }
 
 // Validator is the single Phase-1 block producer.
@@ -138,6 +142,16 @@ func (v *Validator) produceBlock() error {
 	if latest != nil {
 		prevHash = latest.Hash
 		height = latest.Header.Height + 1
+	} else if v.cfg.Schedule != nil {
+		// An empty chain, on a node that is one of several producers, means
+		// block 0 has not arrived yet — not that this node should mint block 1.
+		// Building it here would seal height 1 on a null prev-hash and fork away
+		// from the chain this node was started to join. Exactly one key mints
+		// block 0 (the one the genesis document names); everyone else waits for
+		// it. Note this is NOT the gate's business: the gate is inert at height
+		// 0 and the schedule would happily hand out slot 1.
+		log.Debug().Msg("waiting for block 0 before producing: this node does not mint genesis")
+		return nil
 	}
 
 	// Under validator_gates_v1 a producer must hold an admission pass and a
@@ -151,6 +165,26 @@ func (v *Validator) produceBlock() error {
 		return nil
 	}
 	v.ineligible = false
+
+	// Admitted, but on a multi-producer chain admitted is not the same as
+	// entitled: this height belongs to exactly one of them. Asked AFTER the
+	// gate so a validator that is not producing because it lost its pass says
+	// so, instead of reporting the schedule skip that follows from it.
+	if v.cfg.Schedule != nil {
+		owner, err := v.cfg.Schedule.SlotOwner(height)
+		if err != nil {
+			log.Warn().Err(err).Uint64("height", height).Msg("no producer is scheduled for this height")
+			return nil
+		}
+		if owner != v.cfg.Address {
+			log.Debug().
+				Uint64("height", height).
+				Str("owner", owner.String()).
+				Msg("not this validator's slot")
+			return nil
+		}
+		log.Debug().Uint64("height", height).Msg("this validator's slot")
+	}
 
 	// Produce and sign block
 	b, err := v.executor.ProduceBlock(

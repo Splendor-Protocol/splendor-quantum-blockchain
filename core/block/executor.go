@@ -111,6 +111,13 @@ type Executor struct {
 	// every module call and every block, and taking the block lock to read it
 	// would stall every RPC goroutine behind a whole block transition.
 	genesisValidator atomic.Pointer[qcrypto.Address]
+
+	// attachProducerKey makes ProduceBlock carry the sealing key inside the
+	// block, so a follower can authenticate a producer that is not the one
+	// pinned key it was configured with. Off by default: on a single-producer
+	// chain every node already holds that key, and 1,952 bytes per block buys
+	// nothing. See SetAttachProducerKey.
+	attachProducerKey atomic.Bool
 }
 
 // receiptStorer is satisfied by *state.TxIndexStore.
@@ -1007,6 +1014,15 @@ func (e *Executor) ProduceBlock(
 	}
 
 	b := &types.Block{Header: header, Transactions: executed}
+
+	// Carry the sealing key when the node runs more than one producer. The key
+	// is outside the block hash, so this changes nothing a follower verifies —
+	// the binding that makes it usable is DeriveAddress(key) == Header.
+	// ValidatorAddr, which IS inside the hash. Set before storeBlock so the
+	// persisted copy a catching-up peer pulls carries it too.
+	if e.attachProducerKey.Load() {
+		b.ValidatorPubKey = validatorPubKey
+	}
 
 	hash, err := b.ComputeHash()
 	if err != nil {

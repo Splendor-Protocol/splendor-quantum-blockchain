@@ -3,18 +3,19 @@
 // Architecture: Push-based (like geth), not poll-based.
 //
 // When a validator produces a block:
-//   1. It calls Broadcaster.Broadcast(block) immediately
-//   2. The broadcaster sends POST /block to every known peer
-//   3. Each receiving peer calls ExecuteBlock() immediately
-//   4. The RPC node is always within milliseconds of the validator
+//  1. It calls Broadcaster.Broadcast(block) immediately
+//  2. The broadcaster sends POST /block to every known peer
+//  3. Each receiving peer calls ExecuteBlock() immediately
+//  4. The RPC node is always within milliseconds of the validator
 //
 // This is true realtime sync — no polling, no intervals.
 // The RPC node's 1s polling loop is a fallback for missed blocks only.
 //
 // Peer announcement:
-//   When a node starts and connects to a peer, it sends POST /peers/announce
-//   with its own address. This makes bidirectional peer tracking work.
-//   Validator can then also push blocks to the RPC node.
+//
+//	When a node starts and connects to a peer, it sends POST /peers/announce
+//	with its own address. This makes bidirectional peer tracking work.
+//	Validator can then also push blocks to the RPC node.
 package network
 
 import (
@@ -28,8 +29,76 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
+
+// VerifyProducerBound authenticates a block against the key the block itself
+// carries, for a chain that runs more than one producer.
+//
+// Read the warning in sync.go's FetchBlock first, because it is right: a block
+// verified against its own embedded key ALWAYS verifies, so on its own this
+// proves nothing. Two things make it usable, and neither is in this function:
+//
+//  1. The key is bound to the header. DeriveAddress(key) must equal
+//     Header.ValidatorAddr, and that address is inside the block hash the
+//     signature covers. So the key cannot be swapped for another after the
+//     fact — the pair (key, address) is as sealed as the rest of the header.
+//  2. WHO that address may be is not this layer's decision. It is the staking
+//     gate's, enforced in ExecuteBlock against the caller's own committed state
+//     at height-1, and rooted in the genesis validator anchor that every node
+//     pins. An attacker's self-signed chain gets past this function and is
+//     refused there, by a registry it cannot write to.
+//
+// In other words this replaces "is it signed by THE key" with "is it signed by
+// the key it claims", and moves the authority question to the gate that exists
+// to answer it. That trade is only sound on a chain whose gate is active; it is
+// why this path is opt-in per node rather than the default.
+func VerifyProducerBound(b *types.Block) error {
+	if len(b.ValidatorPubKey) == 0 {
+		return fmt.Errorf("block %d carries no producer key: a multi-producer chain cannot "+
+			"authenticate it against a single pinned validator", b.Header.Height)
+	}
+	pub, err := qcrypto.PublicKeyFromBytes(b.ValidatorPubKey)
+	if err != nil {
+		return fmt.Errorf("block %d: undecodable producer key: %w", b.Header.Height, err)
+	}
+	if derived := qcrypto.DeriveAddress(pub); derived != b.Header.ValidatorAddr {
+		return fmt.Errorf("block %d: producer key derives to %s but the header names %s",
+			b.Header.Height, derived, b.Header.ValidatorAddr)
+	}
+	if err := b.VerifySignature(b.ValidatorPubKey); err != nil {
+		return fmt.Errorf("block %d: invalid producer signature: %w", b.Header.Height, err)
+	}
+	return nil
+}
+
+// HandleIncomingBlockMultiProducer is HandleIncomingBlock for a chain with
+// several producers: the same structural validation, the producer-bound
+// signature check above instead of the single pinned key, and the same
+// applyBlock — which is where the chain decides whether it admits the producer
+// at all.
+func HandleIncomingBlockMultiProducer(body []byte, applyBlock func(*types.Block) error) error {
+	var block types.Block
+	if err := json.Unmarshal(body, &block); err != nil {
+		return fmt.Errorf("invalid block JSON: %w", err)
+	}
+	if err := block.Validate(); err != nil {
+		return fmt.Errorf("block validation failed: %w", err)
+	}
+	if err := VerifyProducerBound(&block); err != nil {
+		return err
+	}
+	if err := applyBlock(&block); err != nil {
+		return fmt.Errorf("block application failed: %w", err)
+	}
+	log.Debug().
+		Uint64("height", block.Header.Height).
+		Str("producer", block.Header.ValidatorAddr.String()).
+		Str("hash", fmt.Sprintf("%x", block.Hash[:8])).
+		Msg("p2p: multi-producer block received and applied")
+	return nil
+}
 
 // Broadcaster pushes newly produced blocks to all known peers immediately.
 // This provides true realtime sync — peers receive blocks within milliseconds

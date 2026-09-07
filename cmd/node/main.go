@@ -85,6 +85,7 @@ var (
 	flagAllowPlaintextP2P  bool
 	flagPeerPins           []string
 	flagRequirePeerPins    bool
+	flagPoAProducers       []string
 )
 
 func main() {
@@ -138,6 +139,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagPublicURL, "public-url", "", "Externally reachable base URL advertised to peers (default: derived from --rpc-addr)")
 	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Accept AND send cleartext peer traffic: registers the plaintext POST /block and /peers/announce routes and permits outbound fallback when a peer serves no sealed transport. Off by default, so the sealed ML-KEM channel is the only way in or out.")
 	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use — set --require-peer-pins to refuse unpinned peers instead.")
+	root.Flags().StringArrayVar(&flagPoAProducers, "poa-producer", nil, "TEST HARNESS. Ordered round-robin producer, as an SQ address (repeatable, or one comma-separated list). Two or more turns this node into a multi-producer node: it seals only its own slots, accepts blocks signed by the key each block carries instead of by the single pinned validator, and refuses one sealed out of turn. The rotation runs over the producers the chain's own staking gate admits at height-1, so a revoked pass or a dropped bond removes that key from it. THIS IS NOT THE multi_validator UPGRADE: no vote gossip, no equivocation handling, no view change — a scheduled producer that is down halts the chain until it returns. Every node must be given the SAME list in the SAME order.")
 	root.Flags().BoolVar(&flagRequirePeerPins, "require-peer-pins", false, "Refuse to talk to any peer that has no --peer-pin, instead of trusting its identity on first contact. Governs who this node dials — block push, announce and catch-up pull; inbound blocks stay authenticated by the validator signature and the write-plane token. Recommended once a cluster's peers are known: trust-on-first-use hands the relationship to whoever answers first at bootstrap.")
 
 	// Operators need a way to produce the value they pin, and to check that a
@@ -499,6 +501,69 @@ func runNode(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// ── Multi-producer test harness (--poa-producer) ───────────────────────
+	// Off unless the operator names two or more producers. When on it changes
+	// three things, all of them network-wide decisions: which heights this node
+	// seals, what a block must carry to be authenticated, and whether a block
+	// sealed out of turn is applied. See consensus/poa.go for what it is and,
+	// more importantly, what it is not.
+	poaSchedule, poaProducerList, err := buildPoASchedule(flagPoAProducers, executor)
+	if err != nil {
+		return err
+	}
+
+	// verifyPK is the key inbound blocks are authenticated against. On a Phase-1
+	// node it is validatorPKBytes, which for a VALIDATOR is that node's own
+	// wallet key: --validator-pubkey-hex is read only `if !flagIsValidator`
+	// above, because the single producer never verifies anyone else's blocks.
+	//
+	// With a schedule, three producers out of four do nothing but verify other
+	// producers' blocks, and the flag means what it is documented to mean — the
+	// trusted GENESIS validator key. Above height 0 this makes no difference
+	// (those blocks are authenticated against the key they carry), but block 0
+	// is deliberately still checked against the pin, and a node checking the
+	// master's block 0 against its own key rejects it. That is how this was
+	// found: every follower refused to adopt block 0.
+	//
+	// Only verification changes. Minting block 0 still uses validatorPKBytes —
+	// a node must seal with the key it holds, not with the one it trusts.
+	verifyPK := validatorPKBytes
+	if poaSchedule != nil && len(pinnedGenesisPK) > 0 {
+		verifyPK = pinnedGenesisPK
+	}
+
+	applyIncomingBlock := executor.ExecuteBlock
+	if poaSchedule != nil {
+		executor.SetAttachProducerKey(true)
+		applyIncomingBlock = func(b *types.Block) error {
+			// Judge the slot only when this node is exactly one block behind the
+			// one being applied: the schedule is computed from committed state at
+			// height-1, so a node that is further back would compute it from the
+			// wrong state. Blocks that are not the next one are the executor's to
+			// reject on linkage, which it does before touching state.
+			//
+			// And only when the chain admits the producer at all. A key the
+			// registry does not admit has no turn to be out of, and saying "it
+			// was not your slot" would bury the real answer — which ExecuteBlock
+			// gives, from the gate, in the words every node would use. The
+			// schedule is this node's configuration; the gate is the network's
+			// rule. The rule answers first.
+			if h, herr := executor.LatestHeight(); herr == nil && h+1 == b.Header.Height {
+				if executor.EligibleToProduceAddr(b.Header.ValidatorAddr, b.Header.Height) == nil {
+					if aerr := poaSchedule.Authorize(b.Header.Height, b.Header.ValidatorAddr); aerr != nil {
+						return aerr
+					}
+				}
+			}
+			return executor.ExecuteBlock(b)
+		}
+		log.Warn().
+			Strs("producers", poaProducerList).
+			Msg("MULTI-PRODUCER TEST HARNESS ENABLED (--poa-producer): round-robin over the producers " +
+				"the staking gate admits. This is NOT the multi_validator upgrade — no vote gossip, no " +
+				"equivocation handling, no view change. A scheduled producer that is down halts the chain.")
+	}
+
 	// Chain id assertion (env fallback), so a container can be told which network
 	// it is on without editing its command line.
 	if flagChainID == "" {
@@ -604,13 +669,14 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Catch-up pulls ride the same sealed channel and the same pinned peer
 	// identities as block push, so falling behind does not drop the node back
 	// onto cleartext HTTP.
-	syncCfg := network.DefaultSyncConfig(validatorPKBytes)
+	syncCfg := network.DefaultSyncConfig(verifyPK)
 	syncCfg.Identities = broadcaster.Identities()
 	syncCfg.AllowPlaintext = flagAllowPlaintextP2P
+	syncCfg.MultiProducer = poaSchedule != nil
 	if genesisHashPin != nil {
 		syncCfg.GenesisHash = *genesisHashPin
 	}
-	if len(validatorPKBytes) == 0 && genesisHashPin == nil {
+	if len(verifyPK) == 0 && genesisHashPin == nil {
 		log.Warn().Msg("Neither --validator-pubkey-hex nor --genesis-hash is set: this node cannot " +
 			"authenticate blocks from peers and will not sync. Pin one of them.")
 	}
@@ -619,7 +685,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 		syncCfg,
 		peerPool,
 		func() uint64 { h, _ := executor.LatestHeight(); return h },
-		func(b *types.Block) error { return executor.ExecuteBlock(b) },
+		applyIncomingBlock,
 	)
 
 	// ── Context + signal handling ──────────────────────────────────────────
@@ -696,24 +762,37 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}
 
 		// The validator builds and signs block 0 over the resulting state root.
-		if flagIsValidator && validatorPriv != nil {
+		mintsGenesis := flagIsValidator && validatorPriv != nil
+		if mintsGenesis && genesisDoc != nil {
 			// Refuse to mint block 0 under a key the genesis document does not name.
 			// Block 0 was built from whatever wallet this process loaded, so an
 			// operator pointing a validator at someone else's genesis silently
 			// started a chain whose block 0 disagrees with the document every other
 			// node is pinning — a network nobody else can join, discovered later.
-			if genesisDoc != nil {
-				docPub, docErr := genesisDoc.ValidatorPublicKey()
-				if docErr != nil {
-					return fmt.Errorf("genesis %s has an unusable validator_pubkey_hex: %w", flagGenesisPath, docErr)
-				}
-				if !bytes.Equal(docPub.Bytes(), validatorPKBytes) {
+			docPub, docErr := genesisDoc.ValidatorPublicKey()
+			if docErr != nil {
+				return fmt.Errorf("genesis %s has an unusable validator_pubkey_hex: %w", flagGenesisPath, docErr)
+			}
+			if !bytes.Equal(docPub.Bytes(), validatorPKBytes) {
+				// On a chain with a producer schedule this is the ordinary state
+				// of three nodes out of four: they hold the same document — they
+				// need its allocations and its fork schedule — and exactly one of
+				// them is the key it names. They apply the allocations (done
+				// above) and take block 0 from the network, like any other
+				// follower. Without a schedule it is the misconfiguration the
+				// check was written for, and still fatal.
+				if poaSchedule == nil {
 					return fmt.Errorf("this node's wallet is %s but genesis %s declares validator %s — "+
 						"refusing to mint block 0 under a key the document does not name",
 						validatorAddr, flagGenesisPath, qcrypto.DeriveAddress(docPub))
 				}
+				mintsGenesis = false
+				log.Info().
+					Str("genesis_validator", qcrypto.DeriveAddress(docPub).String()).
+					Msg("Genesis allocations applied; block 0 will be taken from the genesis validator, not minted here")
 			}
-
+		}
+		if mintsGenesis {
 			log.Info().Msg("Chain is empty — creating genesis block")
 			stateRoot, _ := stateDB.StateRoot()
 
@@ -756,6 +835,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 			Address:       validatorAddr,
 			PublicKey:     validatorPKBytes,
 			PrivateKey:    validatorPriv,
+		}
+		// nil on a single-producer chain, which is every height this node's.
+		if poaSchedule != nil {
+			vCfg.Schedule = poaSchedule
 		}
 		v := consensus.New(vCfg, executor, pool, scheduler)
 
@@ -820,7 +903,13 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// validator by up to a minute, catching up in bursts. Polling here makes the
 	// pull path genuinely real-time on any topology, without needing push/announce
 	// or an advertised self-URL.
-	if !flagIsValidator {
+	// A Phase-1 validator is the only producer, so it can never be behind and
+	// has nothing to catch up to — hence the exclusion. With a producer
+	// schedule that stops being true: every node is a producer, every one of
+	// them spends most heights following the other three, and one that misses a
+	// push has no other way back. So a scheduled producer runs the catch-up loop
+	// like any follower.
+	if !flagIsValidator || poaSchedule != nil {
 		go func() {
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
@@ -832,6 +921,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 					for _, addr := range peerPool.Addrs() {
 						if h, derr := network.DialPeer(addr); derr == nil {
 							peerPool.UpdatePeerHeight(addr, h)
+						}
+					}
+					// Block 0 first, when this node has no chain at all.
+					// SyncOnce starts at localHeight()+1 and cannot ask for it,
+					// and a scheduled producer that reaches its slot without it
+					// forks (see Syncer.FetchGenesisBlock).
+					// An empty chain reports ErrBlockNotFound, not (nil, nil).
+					if b, berr := executor.LatestBlock(); b == nil &&
+						(berr == nil || errors.Is(berr, types.ErrBlockNotFound)) {
+						if gerr := syncer.FetchGenesisBlock(); gerr != nil {
+							log.Debug().Err(gerr).Msg("block 0 not adopted yet")
 						}
 					}
 					if n, err := syncer.SyncOnce(); err != nil {
@@ -876,7 +976,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	coreRPC := rpc.New(
 		rpc.Config{
 			ListenAddr:        flagRPCAddr,
-			ValidatorPK:       validatorPKBytes,
+			ValidatorPK:       verifyPK,
 			PeerCount:         peerPool.Count, // wire live peer count from peerPool
 			AuthToken:         authToken,
 			AllowPlaintextP2P: flagAllowPlaintextP2P,
@@ -888,6 +988,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 			SimBurst:          flagSimBurst,
 			SimMaxInFlight:    flagSimMaxInFlight,
 			SimTimeout:        flagSimTimeout,
+			MultiProducer:     poaSchedule != nil,
+			ApplyBlock:        applyIncomingBlock,
+			PoAProducers:      poaProducerList,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
@@ -911,7 +1014,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Identity: nodeIdentity,
 		Token:    authToken,
 		HandleBlock: func(body []byte) error {
-			return network.HandleIncomingBlock(body, validatorPKBytes, executor.ExecuteBlock)
+			if poaSchedule != nil {
+				return network.HandleIncomingBlockMultiProducer(body, applyIncomingBlock)
+			}
+			return network.HandleIncomingBlock(body, verifyPK, applyIncomingBlock)
 		},
 		HandleAnnounce: func(body []byte) error {
 			var peer network.PeerInfo
@@ -1269,6 +1375,55 @@ type genesisPolicy struct {
 // nonce back to their genesis values and then diverge on state root.
 func bootstrapsGenesisFromPeers(isValidator bool, peers []string, localGenesisPath string) bool {
 	return !isValidator && len(peers) > 0 && localGenesisPath == ""
+}
+
+// buildPoASchedule turns --poa-producer into the round-robin schedule, or
+// returns (nil, nil, nil) when the node runs the Phase-1 single producer.
+//
+// Entries may be repeated flags, comma-separated lists, or both, so a container
+// can carry the list in one environment variable. Order is preserved exactly as
+// written: it is consensus input, and a node that sorted it would disagree with
+// a peer that did not about who owns every height.
+//
+// One producer is refused rather than quietly accepted. A one-entry rotation is
+// indistinguishable from no rotation, so taking it would mean the flag that
+// switches block authentication away from the pinned key could be set without
+// anything about the chain actually being multi-producer.
+func buildPoASchedule(entries []string, executor *block.Executor) (*consensus.RoundRobin, []string, error) {
+	var names []string
+	for _, entry := range entries {
+		for _, field := range strings.Split(entry, ",") {
+			if trimmed := strings.TrimSpace(field); trimmed != "" {
+				names = append(names, trimmed)
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil, nil
+	}
+	if len(names) == 1 {
+		return nil, nil, fmt.Errorf("--poa-producer: %d producer configured; a round-robin needs at least 2 "+
+			"(omit the flag entirely for a single-producer chain)", len(names))
+	}
+	producers := make([]qcrypto.Address, 0, len(names))
+	for _, name := range names {
+		addr, err := qcrypto.AddressFromString(name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("--poa-producer %q: %w", name, err)
+		}
+		producers = append(producers, addr)
+	}
+	schedule, err := consensus.NewRoundRobin(producers, executor)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--poa-producer: %w", err)
+	}
+	// Report the canonical rendering, not what was typed, so comparing /status
+	// across nodes compares addresses rather than formatting.
+	canonical := make([]string, 0, len(producers))
+	for _, p := range producers {
+		canonical = append(canonical, p.String())
+	}
+	return schedule, canonical, nil
 }
 
 // metaForksKey is where the schedule a chain was started under is persisted, in

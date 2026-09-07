@@ -65,6 +65,11 @@ type Server struct {
 	simGuard *ExecGuard
 	// allowPlaintextP2P registers the cleartext peer routes. Off = sealed only.
 	allowPlaintextP2P bool
+	// multiProducer / applyBlock / poaProducers carry the multi-producer
+	// configuration onto the cleartext block-ingest path. See Config.
+	multiProducer bool
+	applyBlock    func(*types.Block) error
+	poaProducers  []string
 }
 
 // Config holds server configuration.
@@ -99,6 +104,25 @@ type Config struct {
 	SimBurst       float64
 	SimMaxInFlight int
 	SimTimeout     time.Duration
+
+	// MultiProducer authenticates a pushed block against the key it carries,
+	// bound to its header address, instead of against ValidatorPK — which on a
+	// chain with several producers names only the genesis one. See
+	// network.VerifyProducerBound: this does not remove the authority check, it
+	// moves it to the staking gate ApplyBlock runs.
+	MultiProducer bool
+
+	// ApplyBlock replaces Executor.ExecuteBlock as what an accepted inbound
+	// block is applied with, so a node running a producer schedule can refuse a
+	// block sealed out of turn before the executor commits to it. nil = apply
+	// with the executor directly, which is the single-producer default.
+	ApplyBlock func(*types.Block) error
+
+	// PoAProducers is the configured round-robin producer list, reported on
+	// /status as poa_producers. Evidence only: nothing here enforces it, and a
+	// node that reports a list its peers do not share is exactly the
+	// misconfiguration this makes visible.
+	PoAProducers []string
 }
 
 // Defaults for the simulation plane.
@@ -143,6 +167,12 @@ func New(
 		cors:              NewCORSPolicy(cfg.CORSOrigins),
 		submitLimiter:     NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
 		simGuard:          newSimGuard(cfg),
+		multiProducer:     cfg.MultiProducer,
+		applyBlock:        cfg.ApplyBlock,
+		poaProducers:      cfg.PoAProducers,
+	}
+	if s.applyBlock == nil {
+		s.applyBlock = executor.ExecuteBlock
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -441,9 +471,11 @@ func (s *Server) handleIncomingBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = network.HandleIncomingBlock(body, s.validatorPK, func(b *types.Block) error {
-		return s.executor.ExecuteBlock(b)
-	})
+	if s.multiProducer {
+		err = network.HandleIncomingBlockMultiProducer(body, s.applyBlock)
+	} else {
+		err = network.HandleIncomingBlock(body, s.validatorPK, s.applyBlock)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("block rejected: %v", err))
 		return
@@ -488,6 +520,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// only when known, so the response shape is unchanged where it is not.
 	if anchor := s.executor.GenesisValidator(); !anchor.IsZero() {
 		status["genesis_validator"] = anchor.String()
+	}
+	// The producer schedule this node was configured with, when it runs one.
+	// Same reason again: the ordered list is consensus input that arrives by
+	// configuration rather than from the chain, so the only way to confirm four
+	// nodes agree on it is to be able to read it off all four.
+	if len(s.poaProducers) > 0 {
+		status["poa_producers"] = s.poaProducers
+		status["multi_producer"] = s.multiProducer
 	}
 	writeJSON(w, http.StatusOK, status)
 }
