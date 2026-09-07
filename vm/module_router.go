@@ -106,6 +106,8 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 		return dispatchBridge(stateDB, ctx, mc.Action, mc.Params, receipt)
 	case "staking":
 		return dispatchStaking(stateDB, ctx, mc.Action, mc.Params, receipt)
+	case "verify":
+		return dispatchVerify(stateDB, ctx, mc.Action, mc.Params, receipt)
 	default:
 		return hard(fmt.Errorf("module call: unknown module %q", mc.Module))
 	}
@@ -1519,4 +1521,40 @@ func parseBigOrZero(s string) *big.Int {
 		return v
 	}
 	return big.NewInt(0)
+}
+
+// ── Verify (SQVL) ────────────────────────────────────────────────────────────
+
+// dispatchVerify routes the verify module (docs/modules/verify.md). Every
+// action runs under one snapshot, so a half-applied one cannot outlive its own
+// failure; the fork gate and an unknown action are HARD, everything after is
+// SOFT (a failed receipt under module_revert_v1, which verify_v1 requires).
+func dispatchVerify(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
+	if err := requireFork(ctx, forks.VerifyV1); err != nil {
+		return err
+	}
+	return verifyAtomic(stateDB, receipt, func() error {
+		switch action {
+		case "deploy":
+			return verifyDeploy(stateDB, ctx, raw, receipt)
+		case "register":
+			return verifyRegister(stateDB, ctx, raw, receipt)
+		case "attest":
+			return verifyAttest(stateDB, ctx, raw, receipt)
+		case "finalize":
+			return verifyFinalize(stateDB, ctx, raw, receipt)
+		case "spend":
+			return verifySpend(stateDB, ctx, raw, receipt)
+		case "set_operator":
+			return verifySetOperator(stateDB, ctx, raw, receipt)
+		case "set_threshold":
+			return verifySetThreshold(stateDB, ctx, raw, receipt)
+		case "pause":
+			return verifyPause(stateDB, ctx, raw, receipt, true)
+		case "unpause":
+			return verifyPause(stateDB, ctx, raw, receipt, false)
+		default:
+			return hard(fmt.Errorf("module call: unknown action %q", action))
+		}
+	})
 }

@@ -914,6 +914,7 @@ unappliable in a block.
 | `exchange` | `deploy`, `create_condition`, `split`, `merge`, `match`, `cancel_order`, `increment_nonce`, `resolve`, `redeem`, `redeem_for`, `pause`, `unpause`, `set_redeem_fee_bps`, `set_fee_recipient`, `set_operator`, `transfer_ownership` | `exchange_v1` (requires `module_revert_v1`) | `exchange_info`, `condition_info`, `order_status`, `order_remaining`, `order_hash`, `nonce`, `is_operator`, `position`, `position_id`, `simulate_match` (also `GET /exchange/...`) |
 | `bridge` | `deploy`, `claim` (M-of-N attested), `set_operator`, `set_threshold`, `pause`, `unpause`, `transfer_ownership` | `bridge_v1` (requires `module_revert_v1`) | `bridge_info`, `claim_status` (also `GET /bridge/...`) — see `docs/modules/bridge.md` |
 | `staking` | `register`, `add_stake`, `unstake`, `withdraw`, `unjail` (open to anyone); `slash`, `set_pass`, `set_admin` (admin only) | `validator_gates_v1` (requires `module_revert_v1`) | `validator`, `pass`, `can_produce`, `staking_info`, `validator_set` (also `GET /staking/...`) — see `docs/modules/staking.md` |
+| `verify` | `deploy`, `register` (dual-signed ML-DSA-65 + SLH-DSA instruction), `attest`, `finalize`, `spend`, `set_operator`, `set_threshold`, `pause`, `unpause` | `verify_v1` (requires `module_revert_v1`) | `proof`, `instance` (also `POST /verify/check`, `GET /verify/proof/...`) — see `docs/modules/verify.md` |
 
 One more name, `module_revert_v1`, is not a module but the failure rule: under
 it a module call that errors is included with a failed receipt (fee kept,

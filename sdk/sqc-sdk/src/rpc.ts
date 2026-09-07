@@ -130,6 +130,39 @@ export class SqRpc {
     return this.post('/tx/submit', body, true);
   }
 
+  /** `POST /verify/check` — stateless dual-signature check of an SQVL instruction. */
+  async verifyCheck(instruction: object): Promise<{
+    valid: boolean;
+    reason?: string;
+    chain_id?: string;
+    digest?: string;
+    signer?: string;
+    instruction_id?: string;
+    purpose?: string;
+    origin?: string;
+    settlement_hint?: string;
+    settlement_action?: string;
+  }> {
+    return this.post('/verify/check', instruction, false);
+  }
+
+  /** `GET /verify/proof/{id}?instance=` — the on-chain record of one instruction. */
+  async verifyProof(instructionId: string, instance: string): Promise<Record<string, unknown>> {
+    const id = String(instructionId).replace(/^0x/i, '');
+    const inst = assertAddress(instance);
+    return this.get(`/verify/proof/${encodeURIComponent(id)}?instance=${encodeURIComponent(inst)}`);
+  }
+
+  /** `POST /verify/attest` — admit a signed `verify.attest` TxCall. */
+  async verifyAttest(signedTx: object): Promise<{ status: string; hash: string }> {
+    return this.post('/verify/attest', { tx: signedTx }, true);
+  }
+
+  /** `POST /verify/settle` — admit a signed `verify.spend` or `verify.finalize` TxCall. */
+  async verifySettle(signedTx: object): Promise<{ status: string; hash: string }> {
+    return this.post('/verify/settle', { tx: signedTx }, true);
+  }
+
   async x402Verify(requirements: object, payload: object): Promise<{ valid: boolean; reason?: string }> {
     return this.post('/x402/verify', { requirements, payload }, false);
   }

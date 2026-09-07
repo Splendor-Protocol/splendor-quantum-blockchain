@@ -29,6 +29,8 @@ await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
 | Deploy + use token | `const { token } = await s.deployToken({ name, symbol, decimals: 18, totalSupply })` |
 | DEX swap | `await s.dex(pool).swap({ tokenIn, amountIn, minAmountOut })` |
 | Bridge claim | `await s.bridge(addr).claim({ id, asset, amount, recipient, evmTx, attestations })` |
+| SQVL instruction (dual-signed) | `const { instruction, digest_hex } = await s.wallet.signVerifyInstruction({ instruction_id, purpose, origin, settlement_hint, settlement_action, from, to, amount })` then `await s.verify(inst).register(instruction)` |
+| SQVL attest / settle / proof | `await s.verify(inst).attest(id, await opWallet.signVerifyAttestation({ verify: inst, digest_hex }))` · `.spend(id)` · `.proof(id)` |
 | QRC-1155 mint | `await s.collection(addr).mint(to, id, amount)` |
 | Raw units helper | `fromUnits('1.5', 18)` / `toUnits(raw, 18)` |
 
@@ -45,6 +47,7 @@ Native modules are also on subpaths `/tokens`, `/defi`, `/bridge`. See [SDK_ARCH
 | QRC-20 / QRC-1155 module clients | Built |
 | DEX + Exchange Program clients | Built |
 | On-chain Bridge module client | Built (`/bridge`; ≠ `@splendor/pq-bridge` shim) |
+| SQVL verify module client + dual-sig (ML-DSA-65 + SLH-DSA) WASM signing | Built (`verify_v1`; `docs/modules/verify.md`) |
 | Bytecode contracts (`/contracts`) | Built |
 | Explorer reads + `/ws` subscribe | Built |
 | `modules` factory registry | Built |

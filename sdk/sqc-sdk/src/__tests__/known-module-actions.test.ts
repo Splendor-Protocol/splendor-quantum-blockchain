@@ -102,6 +102,20 @@ const SDK_COVERAGE: Record<string, { writes: string[]; reads: string[]; allowlis
     ],
     reads: ['bridge_info', 'claim_status'],
   },
+  verify: {
+    writes: [
+      'deploy',
+      'register',
+      'attest',
+      'finalize',
+      'spend',
+      'set_operator',
+      'set_threshold',
+      'pause',
+      'unpause',
+    ],
+    reads: ['proof', 'instance'],
+  },
 };
 
 describe('KnownModuleActions sync', () => {

@@ -81,6 +81,10 @@ const (
 	// it remains unimplemented. What this upgrade decides is WHO is allowed to
 	// produce, not how many of them agree.
 	ValidatorGatesV1 = "validator_gates_v1"
+	// VerifyV1 routes the native SQVL verify/settlement module (dual-signed
+	// ML-DSA-65 + SLH-DSA instructions). Requires ModuleRevertV1 no later
+	// than itself (see Validate).
+	VerifyV1 = "verify_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -89,7 +93,7 @@ const (
 // fork name is otherwise invisible: the node reports a healthy schedule, the
 // rule never activates, and nobody finds out until the height passes without
 // anything happening.
-var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1, ValidatorGatesV1}
+var Known = []string{MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1, ValidatorGatesV1, VerifyV1}
 
 // Schedule maps an upgrade name to the height at which it takes effect.
 type Schedule map[string]uint64
@@ -141,7 +145,7 @@ func (s Schedule) Validate() error {
 	// before (or without) that rule describes a chain that cannot run it
 	// safely, so the document is refused rather than honoured in part. The
 	// dependents are checked in sorted order for a stable report.
-	for _, name := range []string{BridgeV1, ExchangeV1, QRC1155V1, QRC20V2, ValidatorGatesV1} {
+	for _, name := range []string{BridgeV1, ExchangeV1, QRC1155V1, QRC20V2, ValidatorGatesV1, VerifyV1} {
 		at, ok := s.At(name)
 		if !ok {
 			continue

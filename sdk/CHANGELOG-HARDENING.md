@@ -1,5 +1,28 @@
 # Changelog
 
+## @splendor/sqc-sdk — SQVL verify module (`verify_v1`)
+
+- **Signer WASM rebuilt** (go1.25.0, `wasm/build.sh`): new exports `sqGetSLHPublicKeyHex`,
+  `sqSignVerifyInstruction`, `sqSignVerifyAttestation`. `sqc_signer.wasm` sha256 is now
+  `bec3f8d6dcb4804ab191ca86263d91eb694379c828998170d9579bcecf700c2e` (pinned in both
+  `sqc.networks.json` copies). **`splendor-quantum-wallet-extension` must run
+  `npm run sync:signer`** to take the new bytes and re-pin `WASM_SHA256`; its committed copy
+  is stale until it does.
+- Every session now carries an SLH-DSA-SHA2-128s key derived from the same seed as the
+  ML-DSA key (own domain, derived lazily on first SQVL use). `Wallet.getSLHPublicKeyHex()`,
+  `Wallet.signVerifyInstruction()`, `Wallet.signVerifyAttestation()`; `Signer` gains the two
+  optional capabilities.
+- `VerifyModule` / `deployVerify` / `getVerify` (Program: `register`, `attest`, `finalize`,
+  `spend`, `setOperator`, `setThreshold`, `pause`, `unpause`; reads `proof`, `instance`),
+  registered as built-in module `verify`; `verifyAddress` derivation; `session.verify(addr)` /
+  `session.deployVerify`.
+- `SqRpc.verifyCheck` / `verifyProof` / `verifyAttest` / `verifySettle` — the `/verify/*` doors.
+- Golden vectors: `verify` section (instruction digest, instance-bound attestation digest,
+  seeded SLH public key), pinned by Go `TestGoldenVerifyVectorsPinDigests` and
+  `wasm-verify.test.ts`.
+- Wire note: `instruction_id` is a 64-char hex string (never an integer array); byte fields are
+  base64. Attestation fields accept hex or base64, length-checked.
+
 ## @splendor/sqc-sdk architecture top-10
 
 - Transport owns chain IO; Connection no longer spawns a hidden `SqRpc` for MockTransport

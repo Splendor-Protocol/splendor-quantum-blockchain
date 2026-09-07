@@ -26,6 +26,7 @@ Connect → fund → transfer → wait. Use a read-only `Connection` / `SqcProvi
 | Deploy QRC-20 token | `deployQRC20(wallet, …)` or `useDeployToken()` |
 | Token balance / transfer | `modules.qrc20(connection, addr)` / `useQRC20(addr)` |
 | QRC-1155 / DEX / Exchange / Bridge | `modules.qrc1155` / `modules.dex` / `modules.exchange` / `modules.bridge` |
+| SQVL verify (dual-signed instructions, attestations, settlement, proof) | `modules.verify` + `wallet.signVerifyInstruction` / `wallet.signVerifyAttestation` — `docs/modules/verify.md` in the chain repo |
 | Confirmation that is not fake | `waitForConfirmation` / `waitForConfirmation: true` — receipt-first, nonce fallback ([SQDP §7](./SQDP-1.md)) |
 
 **Out of scope (documented):** WalletConnect v2 protocol, full EIP-1193 SQC provider for wagmi, CDN-hosted WASM.

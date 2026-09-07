@@ -195,6 +195,10 @@ func (s *Server) buildRouter() *mux.Router {
 	r.Handle("/tx/submit", s.limited(s.handleSubmitTx)).Methods(http.MethodPost)
 	r.Handle("/x402/verify", s.limited(s.handleX402Verify)).Methods(http.MethodPost)
 	r.Handle("/x402/settle", s.limited(s.handleX402Settle)).Methods(http.MethodPost)
+	r.Handle("/verify/check", s.limited(s.handleVerifyCheck)).Methods(http.MethodPost)
+	r.Handle("/verify/attest", s.limited(s.handleVerifyAttest)).Methods(http.MethodPost)
+	r.Handle("/verify/settle", s.limited(s.handleVerifySettle)).Methods(http.MethodPost)
+	r.HandleFunc("/verify/proof/{id}", s.handleVerifyProof).Methods(http.MethodGet)
 
 	// ── Write plane: authenticated. POST /block applies a block to local
 	// state, so it must never be reachable by an anonymous caller. ───────
@@ -280,11 +284,18 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.admitTx(w, &tx)
+}
+
+// admitTx runs the shared admission path for a decoded transaction: envelope
+// checks, module preflight, then the pool. Used by /tx/submit and the
+// /verify/* doors, which pre-check the module and action before admitting.
+func (s *Server) admitTx(w http.ResponseWriter, tx *types.Transaction) {
 	// The pool's cheap structural checks and Data cap come FIRST: the module
 	// preflight below parses tx.Data (twice for an exchange match), so an
 	// unauthenticated 512 KiB body must be refused on size before any of that
 	// work is done on it. Same check, same wording as pool.Add.
-	if err := mempool.ValidateEnvelope(&tx); err != nil {
+	if err := mempool.ValidateEnvelope(tx); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 		return
 	}
@@ -311,7 +322,7 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.pool.Add(&tx); err != nil {
+	if err := s.pool.Add(tx); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 		return
 	}

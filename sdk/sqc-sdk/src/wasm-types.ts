@@ -37,6 +37,12 @@ export type WasmSignerApi = {
   sqSignBridgeClaim: (sessionId: string, paramsJson: string) => string | { error: string };
   sqGetModuleRouterAddress: () => string | { error: string };
   sqSetChainID: (chainId: string) => { ok: boolean } | { error: string };
+  /** SLH-DSA-SHA2-128s public key (hex) of the session, derived from its seed. */
+  sqGetSLHPublicKeyHex: (sessionId: string) => string | { error: string };
+  /** Dual-sign (ML-DSA-65 + SLH-DSA) an SQVL instruction under CtxVerify. */
+  sqSignVerifyInstruction: (sessionId: string, instructionJson: string) => string | { error: string };
+  /** Dual-sign an operator attestation bound to one instance + instruction digest. */
+  sqSignVerifyAttestation: (sessionId: string, paramsJson: string) => string | { error: string };
 };
 
 export function unwrap<T>(v: T | { error: string }): T {
@@ -95,6 +101,9 @@ export const WASM_EXPORTS = [
   'sqSignBridgeClaim',
   'sqGetModuleRouterAddress',
   'sqSetChainID',
+  'sqGetSLHPublicKeyHex',
+  'sqSignVerifyInstruction',
+  'sqSignVerifyAttestation',
 ] as const satisfies readonly (keyof WasmSignerApi)[];
 
 // Adding a method to WasmSignerApi without listing it above fails to compile,
@@ -141,6 +150,9 @@ export function bindWasmApi(g: Record<string, unknown>): WasmSignerApi {
     sqSignBridgeClaim: (id, j) => x.sqSignBridgeClaim(id, j),
     sqGetModuleRouterAddress: () => x.sqGetModuleRouterAddress(),
     sqSetChainID: (c) => x.sqSetChainID(c),
+    sqGetSLHPublicKeyHex: (id) => x.sqGetSLHPublicKeyHex(id),
+    sqSignVerifyInstruction: (id, j) => x.sqSignVerifyInstruction(id, j),
+    sqSignVerifyAttestation: (id, j) => x.sqSignVerifyAttestation(id, j),
   };
 }
 

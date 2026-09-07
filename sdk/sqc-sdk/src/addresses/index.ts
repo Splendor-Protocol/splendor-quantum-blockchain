@@ -130,3 +130,14 @@ export function dexPoolAddress(tokenA: string, tokenB: string): string {
   const tag = new TextEncoder().encode('pool');
   return hashToAddress(sha3_256(concatBytes(t0, t1, tag)));
 }
+
+/**
+ * Verify (SQVL) instance: SHA3(deployer ‖ decimal(nonce) ‖ u64be(height) ‖ "verify")
+ * Height is the including block height at execution time (vm.VerifyAddress).
+ */
+export function verifyAddress(deployer: string, nonce: number, height: number): string {
+  const depBytes = addressBytes(deployer);
+  const nonceStr = new TextEncoder().encode(String(nonce));
+  const tag = new TextEncoder().encode('verify');
+  return hashToAddress(sha3_256(concatBytes(depBytes, nonceStr, u64be(height), tag)));
+}

@@ -21,8 +21,14 @@ import (
 const defaultSessionID = "default"
 
 var (
-	mu       sync.Mutex
-	wallets  = map[string]*signer.DerivedWallet{}
+	mu      sync.Mutex
+	wallets = map[string]*signer.DerivedWallet{}
+	// slhSeeds keeps each session's 32-byte seed so the SLH-DSA half of an
+	// SQVL identity can be derived on first use (SLHKeypairFromSeed) rather
+	// than at connect, where nobody signing plain transfers should pay for
+	// it. slhKeys caches the derived key. Both are wiped with the wallet.
+	slhSeeds = map[string][qcrypto.SeedSize]byte{}
+	slhKeys  = map[string]*qcrypto.SLHPrivateKey{}
 	nextSess uint64
 )
 
@@ -50,6 +56,9 @@ func main() {
 	js.Global().Set("sqSignIncrementNonce", js.FuncOf(sqSignIncrementNonce))
 	js.Global().Set("sqSignBridgeClaim", js.FuncOf(sqSignBridgeClaim))
 	js.Global().Set("sqGetModuleRouterAddress", js.FuncOf(sqGetModuleRouterAddress))
+	js.Global().Set("sqGetSLHPublicKeyHex", js.FuncOf(sqGetSLHPublicKeyHex))
+	js.Global().Set("sqSignVerifyInstruction", js.FuncOf(sqSignVerifyInstruction))
+	js.Global().Set("sqSignVerifyAttestation", js.FuncOf(sqSignVerifyAttestation))
 
 	select {}
 }
@@ -93,6 +102,7 @@ func sqDestroySession(this js.Value, args []js.Value) interface{} {
 		w.Zeroize()
 	}
 	delete(wallets, id)
+	forgetSLH(id)
 	mu.Unlock()
 	return map[string]interface{}{"ok": true}
 }
@@ -120,6 +130,7 @@ func sqDeriveFromSeedHex(this js.Value, args []js.Value) interface{} {
 		old.Zeroize()
 	}
 	wallets[id] = w
+	rememberSLHSeed(id, seed)
 	mu.Unlock()
 	b, _ := json.Marshal(w.PublicResult())
 	return okJSON(b)
@@ -143,6 +154,7 @@ func sqDeriveFromSigHex(this js.Value, args []js.Value) interface{} {
 		old.Zeroize()
 	}
 	wallets[id] = w
+	rememberSLHSeed(id, signer.SeedFromEVMSignature(sig))
 	mu.Unlock()
 	b, _ := json.Marshal(w.PublicResult())
 	return okJSON(b)
@@ -523,6 +535,7 @@ func sqLock(this js.Value, args []js.Value) interface{} {
 		w.Zeroize()
 	}
 	wallets[id] = nil
+	forgetSLH(id)
 	mu.Unlock()
 	return map[string]interface{}{"ok": true}
 }
@@ -589,4 +602,182 @@ func sqSetChainID(this js.Value, args []js.Value) interface{} {
 		return errVal(err.Error())
 	}
 	return map[string]interface{}{"ok": true}
+}
+
+// ── SQVL: the SLH-DSA half of a session, and the two verify signatures ─────
+
+// rememberSLHSeed / forgetSLH: caller holds mu.
+func rememberSLHSeed(id string, seed [qcrypto.SeedSize]byte) {
+	slhSeeds[id] = seed
+	delete(slhKeys, id)
+}
+
+func forgetSLH(id string) {
+	if seed, ok := slhSeeds[id]; ok {
+		for i := range seed {
+			seed[i] = 0
+		}
+	}
+	delete(slhSeeds, id)
+	delete(slhKeys, id)
+}
+
+// sessionSLH returns the session's SLH-DSA key, deriving it from the stored
+// seed on first use. Caller holds mu. The session must be unlocked.
+func sessionSLH(id string) (*qcrypto.SLHPrivateKey, error) {
+	if _, ok := getWallet(id); !ok {
+		return nil, fmt.Errorf("wallet locked")
+	}
+	if k := slhKeys[id]; k != nil {
+		return k, nil
+	}
+	seed, ok := slhSeeds[id]
+	if !ok {
+		return nil, fmt.Errorf("session has no seed to derive an SLH-DSA key from")
+	}
+	_, priv, err := qcrypto.SLHKeypairFromSeed(seed)
+	if err != nil {
+		return nil, err
+	}
+	slhKeys[id] = priv
+	return priv, nil
+}
+
+// sqGetSLHPublicKeyHex returns the session's SLH-DSA-SHA2-128s public key as
+// hex (32 bytes). Args: [sessionId?].
+func sqGetSLHPublicKeyHex(this js.Value, args []js.Value) interface{} {
+	id := sessionID(args, 0)
+	mu.Lock()
+	defer mu.Unlock()
+	slh, err := sessionSLH(id)
+	if err != nil {
+		return errVal(err.Error())
+	}
+	return hex.EncodeToString(slh.Public().Bytes())
+}
+
+// signedVerifyInstruction is what sqSignVerifyInstruction returns.
+type signedVerifyInstruction struct {
+	Instruction *types.VerifyInstruction `json:"instruction"`
+	DigestHex   string                   `json:"digest_hex"`
+	ChainID     string                   `json:"chain_id"`
+	Signer      string                   `json:"signer"`
+}
+
+// sqSignVerifyInstruction dual-signs an SQVL instruction with the session's
+// ML-DSA-65 and SLH-DSA keys under CtxVerify. Args: [sessionId?,
+// instructionJSON] where the JSON is the unsigned types.VerifyInstruction
+// (instruction_id as 64 hex chars, payload as base64, version optional).
+// Returns {instruction, digest_hex, chain_id, signer}: the instruction is
+// what verify.register and POST /verify/check take.
+func sqSignVerifyInstruction(this js.Value, args []js.Value) interface{} {
+	id, raw, errMsg := parseSessionAndString(args, "instruction JSON")
+	if errMsg != "" {
+		return errVal(errMsg)
+	}
+	var ins types.VerifyInstruction
+	if err := json.Unmarshal([]byte(raw), &ins); err != nil {
+		return errVal("invalid instruction: " + err.Error())
+	}
+	if ins.Version == 0 {
+		ins.Version = types.VerifyInstructionVersion
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	slh, err := sessionSLH(id)
+	if err != nil {
+		return errVal(err.Error())
+	}
+	if err := types.SignVerifyInstruction(types.ChainID, &ins, w.Private, slh); err != nil {
+		return errVal(err.Error())
+	}
+	digest, _ := types.VerifyInstructionDigest(types.ChainID, &ins)
+	b, err := json.Marshal(signedVerifyInstruction{
+		Instruction: &ins,
+		DigestHex:   hex.EncodeToString(digest[:]),
+		ChainID:     types.ChainID,
+		Signer:      w.Address.String(),
+	})
+	if err != nil {
+		return errVal(err.Error())
+	}
+	return okJSON(b)
+}
+
+// verifyAttestationParams are the inputs of sqSignVerifyAttestation: the
+// instance and the instruction digest (from register / proof / check).
+type verifyAttestationParams struct {
+	Verify    string `json:"verify"`
+	DigestHex string `json:"digest_hex"`
+}
+
+// signedVerifyAttestation is the `attestation` object verify.attest takes,
+// plus what it was computed from. Keys and signatures are hex.
+type signedVerifyAttestation struct {
+	PubKey               string `json:"pubkey"`
+	SLHPubKey            string `json:"slh_pubkey"`
+	SigMLDSA             string `json:"sig_mldsa"`
+	SigSLH               string `json:"sig_slh"`
+	Attestor             string `json:"attestor"`
+	Verify               string `json:"verify"`
+	DigestHex            string `json:"digest_hex"`
+	AttestationDigestHex string `json:"attestation_digest_hex"`
+	ChainID              string `json:"chain_id"`
+}
+
+// sqSignVerifyAttestation signs types.VerifyAttestationDigest(chainID,
+// instance, digest) with both session keys. Args: [sessionId?, paramsJSON].
+func sqSignVerifyAttestation(this js.Value, args []js.Value) interface{} {
+	id, raw, errMsg := parseSessionAndString(args, "params JSON")
+	if errMsg != "" {
+		return errVal(errMsg)
+	}
+	var p verifyAttestationParams
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return errVal("invalid params: " + err.Error())
+	}
+	instance, err := qcrypto.AddressFromString(p.Verify)
+	if err != nil {
+		return errVal("verify: " + err.Error())
+	}
+	digestRaw, err := hex.DecodeString(strip0x(p.DigestHex))
+	if err != nil || len(digestRaw) != 32 {
+		return errVal("digest_hex must be 32 bytes of hex")
+	}
+	var digest [32]byte
+	copy(digest[:], digestRaw)
+	mu.Lock()
+	defer mu.Unlock()
+	w, ok := getWallet(id)
+	if !ok {
+		return errVal("wallet locked")
+	}
+	slh, err := sessionSLH(id)
+	if err != nil {
+		return errVal(err.Error())
+	}
+	sigM, sigS, err := types.SignVerifyAttestation(types.ChainID, instance, digest, w.Private, slh)
+	if err != nil {
+		return errVal(err.Error())
+	}
+	msg, _ := types.VerifyAttestationDigest(types.ChainID, instance, digest)
+	b, err := json.Marshal(signedVerifyAttestation{
+		PubKey:               hex.EncodeToString(w.PublicKey),
+		SLHPubKey:            hex.EncodeToString(slh.Public().Bytes()),
+		SigMLDSA:             hex.EncodeToString(sigM),
+		SigSLH:               hex.EncodeToString(sigS),
+		Attestor:             w.Address.String(),
+		Verify:               instance.String(),
+		DigestHex:            hex.EncodeToString(digest[:]),
+		AttestationDigestHex: hex.EncodeToString(msg[:]),
+		ChainID:              types.ChainID,
+	})
+	if err != nil {
+		return errVal(err.Error())
+	}
+	return okJSON(b)
 }

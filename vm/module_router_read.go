@@ -116,6 +116,16 @@ var KnownModuleActions = map[string]ModuleActions{
 			"bridge_info": true, "claim_status": true,
 		},
 	},
+	"verify": {
+		// verify_v1: SQVL dual-signed instructions, attestations, settlement.
+		Writes: map[string]string{
+			"deploy": forks.VerifyV1, "register": forks.VerifyV1, "attest": forks.VerifyV1,
+			"finalize": forks.VerifyV1, "spend": forks.VerifyV1,
+			"set_operator": forks.VerifyV1, "set_threshold": forks.VerifyV1,
+			"pause": forks.VerifyV1, "unpause": forks.VerifyV1,
+		},
+		Reads: map[string]bool{"proof": true, "instance": true},
+	},
 	"staking": {
 		// validator_gates_v1: validator bonding and the admission registry,
 		// routed whole. register/add_stake/unstake/withdraw/unjail are open to
@@ -217,6 +227,8 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 		return dispatchBridgeRead(stateDB, mc.Action, mc.Params)
 	case "staking":
 		return dispatchStakingRead(stateDB, rctx, mc.Action, mc.Params)
+	case "verify":
+		return dispatchVerifyRead(stateDB, mc.Action, mc.Params)
 	default:
 		return nil, fmt.Errorf("module call: unknown module %q", mc.Module)
 	}
@@ -1115,5 +1127,18 @@ func dispatchExchangeRead(stateDB *state.StateDB, rctx ReadContext, action strin
 	default:
 		// Unreachable: DispatchModuleReadCall admits only the read set.
 		return nil, fmt.Errorf("exchange: unknown read action %q", action)
+	}
+}
+
+// ── Verify (SQVL) reads ─────────────────────────────────────────────────────
+
+func dispatchVerifyRead(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
+	switch action {
+	case "proof":
+		return verifyProofRead(stateDB, raw)
+	case "instance":
+		return verifyInstanceRead(stateDB, raw)
+	default:
+		return nil, fmt.Errorf("verify read: unknown action %q", action)
 	}
 }

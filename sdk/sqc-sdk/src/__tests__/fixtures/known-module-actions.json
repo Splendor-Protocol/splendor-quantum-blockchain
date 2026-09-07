@@ -18,5 +18,9 @@
   "bridge": {
     "writes": ["deploy","claim","set_operator","set_threshold","pause","unpause","transfer_ownership"],
     "reads": ["bridge_info","claim_status"]
+  },
+  "verify": {
+    "writes": ["deploy","register","attest","finalize","spend","set_operator","set_threshold","pause","unpause"],
+    "reads": ["proof","instance"]
   }
 }

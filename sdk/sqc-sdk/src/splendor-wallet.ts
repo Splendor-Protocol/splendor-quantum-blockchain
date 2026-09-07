@@ -52,6 +52,10 @@ import type {
   SignedIncrementNonce,
   BridgeClaimSignParams,
   SignedBridgeClaim,
+  VerifyInstructionInput,
+  SignedVerifyInstruction,
+  VerifyAttestationSignParams,
+  SignedVerifyAttestation,
 } from './types.js';
 
 export type {
@@ -73,6 +77,10 @@ export type {
   SignedIncrementNonce,
   BridgeClaimSignParams,
   SignedBridgeClaim,
+  VerifyInstructionInput,
+  SignedVerifyInstruction,
+  VerifyAttestationSignParams,
+  SignedVerifyAttestation,
 };
 
 export class SplendorPQBridge {
@@ -870,6 +878,61 @@ export class SplendorPQBridge {
         this.api().sqSignBridgeClaim(this.sid(), JSON.stringify(params)),
       ) as string;
       return JSON.parse(wireStr) as SignedBridgeClaim;
+    });
+  }
+
+  /**
+   * The SLH-DSA-SHA2-128s public key of this session (hex, 32 bytes). It is
+   * derived from the same seed as the ML-DSA key, under its own domain, so it
+   * is stable across sessions without a second secret to back up.
+   */
+  async getSLHPublicKeyHex(): Promise<string> {
+    await this.init();
+    return unwrap(this.api().sqGetSLHPublicKeyHex(this.sid())) as string;
+  }
+
+  /**
+   * Dual-sign an SQVL instruction (ML-DSA-65 + SLH-DSA under CtxVerify). The
+   * returned `instruction` is what `verify.register` and `POST /verify/check`
+   * take. Signing SLH-DSA-128s takes seconds in the browser; keep it off the
+   * UI thread's critical path.
+   */
+  async signVerifyInstruction(input: VerifyInstructionInput): Promise<SignedVerifyInstruction> {
+    return this.withSignLock(async () => {
+      await this.init();
+      await this.beforeSignAndSubmit();
+      if (input.from) assertAddress(input.from);
+      if (input.to) assertAddress(input.to);
+      if (input.token) assertAddress(input.token);
+      this.opts.onRequest?.({ method: 'signVerifyInstruction' });
+      const wireStr = unwrap(
+        this.api().sqSignVerifyInstruction(
+          this.sid(),
+          JSON.stringify({ ...input, instruction_id: strip0x(input.instruction_id) }),
+        ),
+      ) as string;
+      return JSON.parse(wireStr) as SignedVerifyInstruction;
+    });
+  }
+
+  /**
+   * Dual-sign an operator attestation for one instruction inside one verify
+   * instance. `digest_hex` is the instruction digest (from `signVerifyInstruction`,
+   * `/verify/check` or the `proof` read).
+   */
+  async signVerifyAttestation(params: VerifyAttestationSignParams): Promise<SignedVerifyAttestation> {
+    return this.withSignLock(async () => {
+      await this.init();
+      await this.beforeSignAndSubmit();
+      assertAddress(params.verify);
+      this.opts.onRequest?.({ method: 'signVerifyAttestation' });
+      const wireStr = unwrap(
+        this.api().sqSignVerifyAttestation(
+          this.sid(),
+          JSON.stringify({ verify: params.verify, digest_hex: strip0x(params.digest_hex) }),
+        ),
+      ) as string;
+      return JSON.parse(wireStr) as SignedVerifyAttestation;
     });
   }
 

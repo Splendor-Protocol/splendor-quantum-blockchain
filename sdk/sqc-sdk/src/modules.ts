@@ -23,6 +23,8 @@ import { getPool } from './defi/dex.js';
 import type { DEX } from './defi/dex.js';
 import { getBridge } from './bridge/module.js';
 import type { BridgeModule } from './bridge/module.js';
+import { getVerify } from './verify.js';
+import type { VerifyModule } from './verify.js';
 import { getContract } from './contracts/contract.js';
 import type { Contract } from './contracts/contract.js';
 import type { BoundClient, WalletLike } from './bound.js';
@@ -37,6 +39,7 @@ export function ensureBuiltInModulesRegistered(): void {
   registerModule(defineModule({ id: 'exchange', create: getExchange, label: 'Exchange' }));
   registerModule(defineModule({ id: 'dex', create: getPool, label: 'DEX' }));
   registerModule(defineModule({ id: 'bridge', create: getBridge, label: 'Bridge' }));
+  registerModule(defineModule({ id: 'verify', create: getVerify, label: 'Verify (SQVL)' }));
   registerModule(defineModule({ id: 'contract', create: getContract, label: 'Contract' }));
   builtInsRegistered = true;
 }
@@ -49,6 +52,7 @@ export const modules = {
   exchange: (connection: Connection, address: string): Exchange => getExchange(connection, address),
   dex: (connection: Connection, address: string): DEX => getPool(connection, address),
   bridge: (connection: Connection, address: string): BridgeModule => getBridge(connection, address),
+  verify: (connection: Connection, address: string): VerifyModule => getVerify(connection, address),
   contract: (connection: Connection, address: string): Contract => getContract(connection, address),
 
   /**
@@ -66,6 +70,7 @@ export const modules = {
       exchange: (address: string) => maybeSign(getExchange(connection, address)),
       dex: (address: string) => maybeSign(getPool(connection, address)),
       bridge: (address: string) => maybeSign(getBridge(connection, address)),
+      verify: (address: string) => maybeSign(getVerify(connection, address)),
       contract: (address: string) => maybeSign(getContract(connection, address)),
       /** All registered modules (built-ins + addons). */
       registered: bindRegisteredModules(connection, wallet),
@@ -82,6 +87,7 @@ export type BoundModules = {
   exchange: (address: string) => Exchange | BoundClient<Exchange>;
   dex: (address: string) => DEX | BoundClient<DEX>;
   bridge: (address: string) => BridgeModule | BoundClient<BridgeModule>;
+  verify: (address: string) => VerifyModule | BoundClient<VerifyModule>;
   contract: (address: string) => Contract | BoundClient<Contract>;
   registered: Record<string, (address: string) => unknown>;
   list: () => string[];
@@ -94,6 +100,7 @@ export type SignedBoundModules = {
   exchange: (address: string) => BoundClient<Exchange>;
   dex: (address: string) => BoundClient<DEX>;
   bridge: (address: string) => BoundClient<BridgeModule>;
+  verify: (address: string) => BoundClient<VerifyModule>;
   contract: (address: string) => BoundClient<Contract>;
   registered: Record<string, (address: string) => unknown>;
   list: () => string[];
@@ -109,6 +116,7 @@ export function bindModules(
     exchange: (address) => getExchange(connection, address).withSigner(wallet),
     dex: (address) => getPool(connection, address).withSigner(wallet),
     bridge: (address) => getBridge(connection, address).withSigner(wallet),
+    verify: (address) => getVerify(connection, address).withSigner(wallet),
     contract: (address) => getContract(connection, address).withSigner(wallet),
     registered: bindRegisteredModules(connection, wallet),
     list: () => listModules().map((m) => m.id),

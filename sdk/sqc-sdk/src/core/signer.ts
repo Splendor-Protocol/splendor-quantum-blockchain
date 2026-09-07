@@ -15,6 +15,10 @@ import type {
   SignedIncrementNonce,
   BridgeClaimSignParams,
   SignedBridgeClaim,
+  VerifyInstructionInput,
+  SignedVerifyInstruction,
+  VerifyAttestationSignParams,
+  SignedVerifyAttestation,
   X402PayOpts,
 } from '../types.js';
 import { BridgeError } from '../errors.js';
@@ -39,6 +43,8 @@ export type Signer = SignerAddress & {
   signCancel?(params: OrderParams): Promise<SignedCancel>;
   signIncrementNonce?(params: IncrementNonceParams): Promise<SignedIncrementNonce>;
   signBridgeClaim?(params: BridgeClaimSignParams): Promise<SignedBridgeClaim>;
+  signVerifyInstruction?(input: VerifyInstructionInput): Promise<SignedVerifyInstruction>;
+  signVerifyAttestation?(params: VerifyAttestationSignParams): Promise<SignedVerifyAttestation>;
   payX402?(opts: X402PayOpts): Promise<unknown>;
   getNonce?(address?: string): Promise<{ address: string; nonce: number }>;
   getLatestBlock?(): Promise<unknown>;

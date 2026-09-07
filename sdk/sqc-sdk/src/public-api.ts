@@ -103,6 +103,11 @@ export type {
   SignedIncrementNonce,
   BridgeClaimSignParams,
   SignedBridgeClaim,
+  VerifyInstruction,
+  VerifyInstructionInput,
+  SignedVerifyInstruction,
+  VerifyAttestationSignParams,
+  SignedVerifyAttestation,
 } from './types.js';
 export { Connection } from './core/connection.js';
 export { buildModuleCall, encodeModuleCallHex, type ModuleCall } from './core/module-call.js';
@@ -111,13 +116,15 @@ export { RpcTransport } from './core/transport/rpc-transport.js';
 export { MockTransport } from './core/transport/mock-transport.js';
 export { MockSigner, type Signer } from './core/signer.js';
 export type { Transport } from './core/transport/types.js';
-export { MODULE_ROUTER_ADDRESS, qrc20Address, qrc1155Address, bytecodeContractAddress, exchangeAddress, bridgeAddress, bridgeSplvAddress, dexPoolAddress } from './addresses/index.js';
+export { MODULE_ROUTER_ADDRESS, qrc20Address, qrc1155Address, bytecodeContractAddress, exchangeAddress, bridgeAddress, bridgeSplvAddress, dexPoolAddress, verifyAddress } from './addresses/index.js';
 export { QRC20, deployQRC20, getToken } from './tokens/qrc20.js';
 export { QRC1155, deployQRC1155, getCollection } from './tokens/qrc1155.js';
 export { Contract, deployBytecode, getContract } from './contracts/contract.js';
 export { Exchange, deployExchange, getExchange } from './defi/exchange.js';
 export { DEX, deployPool, getPool } from './defi/dex.js';
 export { BridgeModule, deployBridge, getBridge } from './bridge/module.js';
+export { VerifyModule, deployVerify, getVerify } from './verify.js';
+export type { VerifyDeployParams, VerifyAttestationInput } from './verify.js';
 export { modules, bindModules, ensureBuiltInModulesRegistered } from './modules.js';
 export type { Modules, BoundModules, SignedBoundModules } from './modules.js';
 export {

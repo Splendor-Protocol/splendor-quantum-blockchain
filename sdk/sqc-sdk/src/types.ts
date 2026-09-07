@@ -263,3 +263,65 @@ export type SignedBridgeClaim = {
   recipient: string;
   evm_tx: string;
 };
+
+/**
+ * SQVL (`verify_v1`) instruction as the chain sees it (core/types
+ * VerifyInstruction). `instruction_id` is 64 hex chars; the byte fields —
+ * payload, both public keys, both signatures — are base64, Go's encoding of
+ * []byte. `settlement_action` is one of finalize_only (default),
+ * native_transfer, qrc20_transfer; x402 is refused at register.
+ */
+export type VerifyInstruction = {
+  version: number;
+  instruction_id: string;
+  purpose: string;
+  origin: string;
+  payload?: string;
+  settlement_hint: string;
+  settlement_action?: string;
+  from?: string;
+  to?: string;
+  amount?: string;
+  token?: string;
+  mldsa_pubkey: string;
+  sig_mldsa: string;
+  slh_pubkey: string;
+  sig_slh: string;
+};
+
+/** What `signVerifyInstruction` takes: the instruction without keys and signatures. */
+export type VerifyInstructionInput = Omit<
+  VerifyInstruction,
+  'version' | 'mldsa_pubkey' | 'sig_mldsa' | 'slh_pubkey' | 'sig_slh'
+> & { version?: number };
+
+export type SignedVerifyInstruction = {
+  /** Ready for `verify.register` and `POST /verify/check`. */
+  instruction: VerifyInstruction;
+  digest_hex: string;
+  chain_id: string;
+  /** The ML-DSA signer's address (this wallet). */
+  signer: string;
+};
+
+/** Operator attestation inputs: the instance and the instruction digest. */
+export type VerifyAttestationSignParams = {
+  verify: string;
+  digest_hex: string;
+};
+
+/**
+ * What `signVerifyAttestation` returns. `pubkey` / `slh_pubkey` / `sig_mldsa`
+ * / `sig_slh` (hex) are the `attestation` object `verify.attest` takes.
+ */
+export type SignedVerifyAttestation = {
+  pubkey: string;
+  slh_pubkey: string;
+  sig_mldsa: string;
+  sig_slh: string;
+  attestor: string;
+  verify: string;
+  digest_hex: string;
+  attestation_digest_hex: string;
+  chain_id: string;
+};

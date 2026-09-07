@@ -10,6 +10,7 @@ import { getContract, deployBytecode, type Contract } from './contracts/contract
 import { getPool, deployPool, type DEX } from './defi/dex.js';
 import { getExchange, deployExchange, type Exchange, type ExchangeDeployParams } from './defi/exchange.js';
 import { getBridge, deployBridge, type BridgeModule, type BridgeDeployParams } from './bridge/module.js';
+import { getVerify, deployVerify, type VerifyModule, type VerifyDeployParams } from './verify.js';
 import { modules, bindModules, type SignedBoundModules } from './modules.js';
 import type { BoundClient } from './bound.js';
 import type { DeployOpts } from './types.js';
@@ -45,6 +46,8 @@ export type Session = ConnectResult & {
   exchange: (addr: string) => BoundClient<Exchange>;
   /** Wallet-bound Bridge module. */
   bridge: (addr: string) => BoundClient<BridgeModule>;
+  /** Wallet-bound Verify (SQVL) instance. */
+  verify: (addr: string) => BoundClient<VerifyModule>;
   /** Wallet-bound bytecode contract. */
   contract: (addr: string) => BoundClient<Contract>;
 
@@ -84,6 +87,16 @@ export type Session = ConnectResult & {
     address: string;
     bridge: BoundClient<BridgeModule>;
     splvAddress: string;
+    hash?: string;
+    /** False means `address` is the next-height prediction, not the receipt's. */
+    confirmed: boolean;
+  }>;
+  deployVerify: (
+    params: VerifyDeployParams,
+    opts?: { fee?: string; waitForConfirmation?: boolean; height?: number },
+  ) => Promise<{
+    address: string;
+    verify: BoundClient<VerifyModule>;
     hash?: string;
     /** False means `address` is the next-height prediction, not the receipt's. */
     confirmed: boolean;
@@ -128,6 +141,7 @@ export async function createSession(opts: ConnectOptions = {}): Promise<Session>
     dex: (addr) => getPool(s.connection, addr).withSigner(s.wallet),
     exchange: (addr) => getExchange(s.connection, addr).withSigner(s.wallet),
     bridge: (addr) => getBridge(s.connection, addr).withSigner(s.wallet),
+    verify: (addr) => getVerify(s.connection, addr).withSigner(s.wallet),
     contract: (addr) => getContract(s.connection, addr).withSigner(s.wallet),
 
     get modules() {
@@ -184,6 +198,15 @@ export async function createSession(opts: ConnectOptions = {}): Promise<Session>
         splvAddress,
         confirmed,
         bridge: getBridge(s.connection, address).withSigner(s.wallet),
+        hash: result.hash,
+      };
+    },
+    async deployVerify(params, deployOpts) {
+      const { address, confirmed, result } = await deployVerify(s.wallet, params, deployOpts);
+      return {
+        address,
+        confirmed,
+        verify: getVerify(s.connection, address).withSigner(s.wallet),
         hash: result.hash,
       };
     },

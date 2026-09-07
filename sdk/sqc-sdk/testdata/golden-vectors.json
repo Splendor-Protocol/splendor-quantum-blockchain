@@ -60,5 +60,33 @@
     "recipient": "SQ:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "evmTx": "0xabababababababababababababababababababababababababababababababab",
     "digest": "87d5f6caae8775174809ad6da4dbb06869e9797dca4bd42dd48917382b69baa0"
+  },
+  "verify": {
+    "description": "SQVL instruction digest = core/types VerifyInstructionDigest(chainId, instruction): SHA3-256(\"sqvl:instruction:v1:\" || u16be(len(chainId)) || chainId || instruction_id[32] || u16be(len(purpose)) || purpose || u16be(len(origin)) || origin || u16be(len(settlement_hint)) || settlement_hint || u16be(len(settlement_action)) || settlement_action || u16be(len(payload)) || payload). from/to/amount/token are settlement parameters and are NOT in the digest. Signed under context by BOTH ML-DSA-65 and SLH-DSA-SHA2-128s. The digest takes no signer input, so sqSignVerifyInstruction reports this digest_hex from any session. Go: signer.TestGoldenVerifyVectorsPinDigests.",
+    "context": "SPLENDOR-QC-VERIFY-v1",
+    "slhScheme": "SLH-DSA-SHA2-128s (FIPS-205)",
+    "chainId": "splendor-quantum-1",
+    "instruction": {
+      "version": 1,
+      "instruction_id": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "purpose": "payment",
+      "origin": "bank:swift",
+      "payload": "aW52b2ljZS00Mg==",
+      "settlement_hint": "splendor-qc",
+      "settlement_action": "native_transfer",
+      "from": "SQ:307f4559431e680933fc1c62503f050140e5740068248d7374461e0311a2728e",
+      "to": "SQ:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "amount": "1000000000000000000"
+    },
+    "digest": "7ff004f2b6c79782c237bd27943dfece0887ee3e0b8a2f0fdca13bacd1fa0826",
+    "attestation": {
+      "description": "Operator attestation digest = VerifyAttestationDigest(chainId, instance, digest) = SHA3-256(\"sqvl:attest:v1:\" || u16be(len(chainId)) || chainId || instance[32] || digest[32]); bound to the instance so it cannot be replayed on another. sqSignVerifyAttestation({verify: instance, digest_hex: digest}) reports attestation_digest_hex.",
+      "instance": "SQ:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "digest": "11bd5b68b759bf67767196419f58ec8c7ea1be70fe82c8512ece516467da8720"
+    },
+    "fromGoldenSeed": {
+      "description": "The SLH-DSA half of a session is derived from the same 32-byte seed as the ML-DSA key, under its own domain (crypto.SLHKeypairFromSeed: SHAKE256(\"SPLENDOR-QC-SLH-DSA-KEYGEN-v1\" || seed)). From the seedHex session, sqGetSLHPublicKeyHex reports this key and sqSignVerifyInstruction reports signer = address.",
+      "slhPublicKeyHex": "8c7b83cf3e4f5ac47256d15f51acad65379ae53099777b68cc9e2f1bb1eb4b7c"
+    }
   }
 }

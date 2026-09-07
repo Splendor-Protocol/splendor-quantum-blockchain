@@ -40,7 +40,7 @@ Prefer `createSession` / `modules.bind(connection, wallet)` so writes omit the w
 
 1. **Transport (chain IO)** — owns balance, nonce, module reads, submit, confirmation, x402 verify/settle, subscribe. `RpcTransport` wraps `SqRpc` privately; `MockTransport` scripts the same surface for tests (no hidden live RPC).
 2. **Connection** — thin façade over Transport. Do not use a parallel `SqRpc` for production paths. `connection.rpc` is deprecated and only works when the transport is `RpcTransport`.
-3. **Signer** — Program write type: `getAddress`, `sendModuleCall`, `callContract`, plus optional capabilities (`signPermit`, `signOrder`, `signCancel`, `signIncrementNonce`, `signBridgeClaim`, `payX402`). `Wallet` implements the full surface; `MockSigner` is submit-only.
+3. **Signer** — Program write type: `getAddress`, `sendModuleCall`, `callContract`, plus optional capabilities (`signPermit`, `signOrder`, `signCancel`, `signIncrementNonce`, `signBridgeClaim`, `signVerifyInstruction`, `signVerifyAttestation`, `payX402`). `Wallet` implements the full surface; `MockSigner` is submit-only.
 4. **Program** — typed native module clients. Writes take `Signer`; deploy actions use `isDeployAction()` overrides (e.g. DEX `deploy_pool`). Declarative `writeMethods()` drive `withSigner` binding.
 5. **Module registry** — `registerModule` / `defineModule` / `listModules`. Built-ins register once from `modules.ts`; session bind tables come from the registry.
 6. **Recipes** — `createSession()`, `modules.*`, `deployQRC20()`, etc.
@@ -80,6 +80,7 @@ registerModule(
 | DEX | Built | deploy_pool, add_liquidity, swap, pool_info |
 | Exchange | Built | deploy, conditions, match, cancel, signing, position_id, order_hash |
 | Bridge (`bridge_v1`) | Built | deploy, claim, operators |
+| Verify / SQVL (`verify_v1`) | Built | deploy, register (dual-signed instruction), attest, finalize, spend, operators, pause; `proof` / `instance` reads; `/verify/*` doors on `SqRpc` |
 | Bytecode contracts | Built | QSol ABI call + deployBytecode |
 | QSol compile-in-SDK | Not built | use monorepo `sqc-solc` offline |
 
@@ -89,7 +90,7 @@ Writes: `signer.sendModuleCall({ module, action, params })` → `TxCall` to `MOD
 
 Reads: `connection.moduleCall(envelope)` → Transport `POST /call` with the same JSON envelope.
 
-Programs inject the instance address under the correct key (`token`, `collection`, `pool`, `exchange`, `bridge`).
+Programs inject the instance address under the correct key (`token`, `collection`, `pool`, `exchange`, `bridge`, `verify`).
 
 ## Connectors
 
