@@ -298,3 +298,53 @@ fix:
 - Uptime scoring is stored but nothing writes it.
 - Multi-validator scheduling — a separate ADR, and the real Phase 2 work.
 - Explorer / SDK / wallet surfaces for the new reads.
+
+---
+
+## Addendum — `feat/validator` (2026-09-07)
+
+The gates above are unchanged and remain the producer source of truth. On top
+of them, `feat/validator` carries the portable parts of Dale's uncommitted
+tree, re-authored and reviewed piece by piece. **The full included / excluded
+outline, with the reason for every line, is `docs/FEAT_VALIDATOR.md`.** The
+short form:
+
+| landed | fork | doc |
+|---|---|---|
+| SQVL: dual-signed (ML-DSA-65 + SLH-DSA-SHA2-128s) verify / settlement module, `/verify/*` doors, SDK + signer WASM | `verify_v1` | `docs/modules/verify.md` |
+| Native supply hard cap: refused at mint above 26 B, every block held to the minted record | — (always on for chains genesis'd under it) | `docs/FEAT_VALIDATOR.md` §3 |
+| Fee floor 0.001 SPLD by fork, on every node's pool and the producer hook | `min_fee_v1` | `docs/FEAT_VALIDATOR.md` §4 |
+| Lending oracle binding, oracle feeder index, QRC-721 owner-only mint (library) | — | `docs/FEAT_VALIDATOR.md` §5 |
+| QRC-721 routed whole | `qrc721_v1` | `docs/modules/qrc721.md` |
+| `cmd/featsmoke` end-to-end driver; `scripts/aws/feat-validator/`; AWS plan | — | `docs/AWS_FEAT_VALIDATOR_TEST_PLAN.md` |
+
+Left out on purpose: Dale's flat-bond `validators_v1` (conflicts with the
+gates), his `multi_validator` BFT as-is (to be rebased on `CanProduce`), the
+`genesis-production.json` edit, the SDK `minFee` default flip, and the
+routing of lending / oracle / multisig / governance / qrc4626 (each
+incomplete in a way the outline names).
+
+### Live chain smoke, local
+
+`cmd/featsmoke` against a fresh single-validator chain built from this
+branch (`sqc-featval-1`, forks `module_revert_v1`, `validator_gates_v1`,
+`verify_v1`, `qrc721_v1` at 1, `min_fee_v1` at 40; 1 s blocks), run once
+before the fee height and once after:
+
+- `/status` reports the schedule and the `genesis_validator` anchor;
+- a 5,000 SPLD `staking.register` from the faucet key confirms; the record is
+  `active`; `can_produce` answers **eligible: false** — "validator has no
+  admission pass"; `validator_set` lists the genesis key as `passed`,
+  `bond_exempt`, `eligible`;
+- `POST /verify/check` accepts a dual-signed instruction; `verify.deploy` →
+  `register` → `attest` (instance-bound) → proof `threshold_met` → `spend` →
+  proof `spent`; the replayed `spend` is a failed receipt "already spent";
+  `GET /verify/proof/{id}` serves the record;
+- `qrc721.deploy`, owner `mint`, `owner_of` agree;
+- before height 40 a 1,000-unit fee is applied; after it, refused "fee too
+  low" and 0.001 SPLD is applied;
+- the chain kept producing through all of it; the node logged no `ERR`.
+
+Both runs: every step PASS. The AWS run of the same driver is prepared, not
+executed — credentials on this machine were not live
+(`docs/AWS_FEAT_VALIDATOR_TEST_PLAN.md`, first section).
