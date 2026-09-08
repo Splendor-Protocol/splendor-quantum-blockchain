@@ -36,6 +36,10 @@ type P2PConfig struct {
 	ServeBlock func(height uint64) ([]byte, error)
 	// ServeLatestBlock returns the head block's JSON, for sealed catch-up sync.
 	ServeLatestBlock func() ([]byte, error)
+	// ServeStateSnapshot returns this node's committed state at its head as a
+	// types.StateSnapshot JSON, for a peer joining a chain it cannot replay.
+	// nil means the node serves none.
+	ServeStateSnapshot func() ([]byte, error)
 }
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
@@ -181,6 +185,12 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			return
 		}
 		payload, err = cfg.ServeLatestBlock()
+	case network.KindGetStateSnapshot:
+		if cfg.ServeStateSnapshot == nil {
+			writeError(w, http.StatusNotImplemented, "sealed state snapshot reads not available")
+			return
+		}
+		payload, err = cfg.ServeStateSnapshot()
 	default:
 		writeError(w, http.StatusBadRequest, "unknown sealed read kind")
 		return
