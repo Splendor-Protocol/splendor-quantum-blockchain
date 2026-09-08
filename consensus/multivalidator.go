@@ -63,11 +63,24 @@ func (m *MultiValidator) RefreshSet() {
 		})
 	}
 	if len(infos) == 0 {
-		infos = append(infos, ValidatorInfo{
-			Address: m.cfg.Address, PublicKey: m.cfg.PublicKey, IsActive: true,
-		})
+		// Empty registry: the chain is still run by whoever sealed block 0.
+		// Every node must name the same key here, or each BFT node on such a
+		// chain is its own sole leader and they fork from each other.
+		fallback := m.cfg.GenesisValidator
+		if len(fallback.PublicKey) == 0 {
+			fallback = ValidatorInfo{Address: m.cfg.Address, PublicKey: m.cfg.PublicKey}
+		}
+		fallback.IsActive = true
+		infos = append(infos, fallback)
 	}
 	m.engine.UpdateValidatorSet(infos)
+}
+
+// ready reports whether this node may propose. A validator that is behind its
+// peers still votes on their proposals; proposing on a stale head would put a
+// second chain in front of the same set.
+func (m *MultiValidator) ready() bool {
+	return m.cfg.Ready == nil || m.cfg.Ready()
 }
 
 func (m *MultiValidator) Run(ctx context.Context) error {
@@ -83,6 +96,10 @@ func (m *MultiValidator) Run(ctx context.Context) error {
 
 	m.engine.onViewChange = func(height uint64, round uint32) {
 		if m.engine.IsLeader(height, round) {
+			if !m.ready() {
+				log.Debug().Uint64("height", height).Msg("BFT: leader but not synced, holding the proposal")
+				return
+			}
 			if err := m.propose(); err != nil {
 				log.Warn().Err(err).Msg("BFT: view-change propose failed")
 			}
@@ -108,6 +125,10 @@ func (m *MultiValidator) Run(ctx context.Context) error {
 				h = want
 			}
 			if !m.engine.IsLeader(h, m.engine.Round()) {
+				continue
+			}
+			if !m.ready() {
+				log.Debug().Uint64("height", h).Msg("BFT: leader but not synced, holding the proposal")
 				continue
 			}
 			if err := m.propose(); err != nil {

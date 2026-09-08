@@ -30,6 +30,18 @@ type Config struct {
 	Address    qcrypto.Address
 	PublicKey  []byte
 	PrivateKey *qcrypto.PrivateKey
+
+	// GenesisValidator is the key that sealed block 0. A BFT node whose
+	// registry is empty runs with this as the whole validator set, so two
+	// nodes on a chain whose genesis validator never registered agree on one
+	// leader instead of each electing itself. The zero value keeps the older
+	// local-node fallback, for a producer that knows nothing but its own key.
+	GenesisValidator ValidatorInfo
+
+	// Ready reports whether this node may propose. nil means always. Wired to
+	// the syncer, so a validator that is still catching up votes on peers'
+	// proposals but never proposes on top of a stale head.
+	Ready func() bool
 }
 
 // Validator is the single Phase-1 block producer.
