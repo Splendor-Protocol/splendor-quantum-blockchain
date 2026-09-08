@@ -23,6 +23,9 @@ function mockWallet(extra: Partial<SplendorPQBridge> = {}): SplendorPQBridge {
   return {
     getAddress: () => OWNER,
     getNonce: async () => ({ nonce: 2 }),
+    // deployExchange / deployBridge predict the instance address from the next
+    // height, which they read through the Signer's own getLatestBlock capability.
+    getLatestBlock: async () => ({ height: 100 }),
     connection: {
       getLatestBlock: async () => ({ height: 100 }),
       moduleCall: vi.fn(),
