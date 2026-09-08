@@ -109,8 +109,8 @@ describe('networks', () => {
 describe('fee and encoding', () => {
   it('enforces MIN_FEE', () => {
     expect(assertFeeAtLeastMin(undefined)).toBe(MIN_FEE);
-    expect(assertFeeAtLeastMin('1000')).toBe('1000');
-    expect(() => assertFeeAtLeastMin('999')).toThrow();
+    expect(assertFeeAtLeastMin(MIN_FEE)).toBe(MIN_FEE);
+    expect(() => assertFeeAtLeastMin((BigInt(MIN_FEE) - 1n).toString())).toThrow();
   });
 
   it('classifies hex vs base64 payloads', () => {

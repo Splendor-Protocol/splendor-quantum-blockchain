@@ -1,4 +1,10 @@
+#!/usr/bin/env bash
 # Build Splendor QC WASM signer for Node.js / browser
+#
+# This file must stay LF-terminated. It was committed with CRLF once, and bash
+# then read `set -euo pipefail<CR>` as an option named "pipefail\r" and refused
+# to start ("set: pipefail: invalid option name"), which took the signer-drift
+# CI job down before it built anything.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 OUT="$ROOT/dist"

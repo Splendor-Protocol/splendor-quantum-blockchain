@@ -2,7 +2,7 @@
  * SQDP-1 security: per-wallet sign/submit mutex (no double-spent nonce).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SplendorPQBridge } from '../index.js';
+import { MIN_FEE, SplendorPQBridge } from '../index.js';
 import { CHAIN_ID } from '../derive.js';
 import golden from '../../testdata/golden-vectors.json';
 
@@ -54,8 +54,8 @@ describe('security-mutex concurrent sendTransfer', () => {
     await b.connectFromSeed(GOLDEN_SEED);
 
     await Promise.all([
-      b.sendTransfer({ to: GOLDEN_ADDRESS, amount: '1', fee: '1000' }),
-      b.sendTransfer({ to: GOLDEN_ADDRESS, amount: '2', fee: '1000' }),
+      b.sendTransfer({ to: GOLDEN_ADDRESS, amount: '1', fee: MIN_FEE }),
+      b.sendTransfer({ to: GOLDEN_ADDRESS, amount: '2', fee: MIN_FEE }),
     ]);
 
     expect(submitted).toEqual([5, 6]);

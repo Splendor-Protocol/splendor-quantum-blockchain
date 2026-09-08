@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { SplendorPQBridge } from '../index.js';
+import { MIN_FEE, SplendorPQBridge } from '../index.js';
 import golden from '../../testdata/golden-vectors.json' with { type: 'json' };
 
 // Read the seed→address vector from the shared golden file rather than
@@ -42,7 +42,7 @@ describe('WASM offline integration', () => {
     const signed = (await b.signTransferOnly({
       to: GOLDEN_ADDRESS,
       amount: '1000',
-      fee: '1000',
+      fee: MIN_FEE,
       nonce: 0,
       assertChain: false,
     })) as {
@@ -68,14 +68,14 @@ describe('WASM offline integration', () => {
     const sa = (await a.signTransferOnly({
       to: a.getAddress(),
       amount: '1',
-      fee: '1000',
+      fee: MIN_FEE,
       nonce: 0,
       assertChain: false,
     })) as { from: number[] };
     const sb = (await b.signTransferOnly({
       to: b.getAddress(),
       amount: '1',
-      fee: '1000',
+      fee: MIN_FEE,
       nonce: 0,
       assertChain: false,
     })) as { from: number[] };
