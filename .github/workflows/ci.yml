@@ -111,16 +111,17 @@ jobs:
             echo "The signer was changed without rebuilding. Anyone building from this tree"
             echo "gets a binary that does not do what main.go says it does."
             echo "Fix: bash sdk/sqc-sdk/wasm/build.sh && (cd sdk/sqc-sdk && npm run sync:config)"
-            echo "Then re-pin the same digest in splendor-quantum-wallet-extension, which"
-            echo "ships its own copy of this artifact."
+            echo "The wallet extension re-pins itself from main once this passes (see the"
+            echo "wallet-sync job below)."
             fail=1
           fi
 
           # This is the only committed copy of the signer, and the step above
           # now enforces that rather than asserting it: sdk/bridge is a pure
           # re-export shim and ships no artifact. The browser extension keeps its
-          # own copy (splendor-quantum-wallet-extension) and its own CI compares it
-          # against this file, so drift there is caught there.
+          # own copy (splendor-quantum-wallet-extension); the wallet-sync job
+          # below tells it to re-sync from main, and its own CI compares its copy
+          # against this file, so drift there is both fixed and caught there.
 
           exit "$fail"
 
@@ -138,6 +139,64 @@ jobs:
 
       - name: Golden vector still derives the published address
         run: go test -count=1 ./sdk/sqc-sdk/signer/ -run 'Golden|Domain'
+
+  # The browser extension (splendor-quantum-wallet-extension) ships its own
+  # copy of the signer and refuses to start unless that copy matches the
+  # digest it pins, so every change to the signer on main has to reach it.
+  # Until now nothing told it: its sync ran on ITS pushes and a weekday cron,
+  # and opened a PR nobody merged. #26 rebuilt the signer and the extension
+  # kept shipping the previous one. Standing rule: a main push that changes the
+  # signer updates the extension's signer and pins, and this job is how.
+  #
+  # It fires on every push to main, not only when dist/ changed: the wallet
+  # rebuilds the signer from SOURCE under the pinned toolchain, so a go.mod
+  # bump or a change under sdk/sqc-sdk/signer/ moves its bytes just as much as
+  # a commit to dist/ does, and path filters would miss those. The receiver
+  # no-ops when it is already in step, so the cost of a spurious dispatch is
+  # a two-minute wallet run. It runs after wasm-drift so the extension only
+  # ever syncs a main whose committed signer matches its source.
+  #
+  # workflow_dispatch rather than repository_dispatch, deliberately: the
+  # fine-grained permission it needs on the wallet repo is `actions: write`,
+  # which can start a workflow there and nothing else — it cannot push to
+  # that repo, open PRs, or read its secrets. repository_dispatch would need
+  # `contents: write` on the repo that holds the signer users' keys go
+  # through. That token is WALLET_DISPATCH_TOKEN; it is the only credential
+  # this direction needs, and it is not one that can write the wallet.
+  wallet-sync:
+    name: tell the wallet extension to re-sync its signer
+    needs: wasm-drift
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # Only the signer, for its digest: it goes in the dispatch so the wallet's
+      # log names the bytes this push committed. wasm-drift has just proven they
+      # match the source the wallet rebuilds.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: sdk/sqc-sdk/wasm/dist/sqc_signer.wasm
+          sparse-checkout-cone-mode: false
+
+      - name: Dispatch splendor-quantum-wallet-extension/sync-signer.yml
+        env:
+          GH_TOKEN: ${{ secrets.WALLET_DISPATCH_TOKEN }}
+          WALLET_REPO: Splendor-Protocol/splendor-quantum-wallet-extension
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::secret WALLET_DISPATCH_TOKEN is not set, so the wallet extension was not told that main changed. Add it under this repo's Settings > Secrets and variables > Actions: a fine-grained personal access token (resource owner Splendor-Protocol; repository access: only ${WALLET_REPO}; repository permissions: Actions = Read and write, Metadata = Read; nothing else). Then re-run this job, or run the wallet's 'Sync signer from chain' workflow by hand."
+            exit 1
+          fi
+          wasm_sha="$(sha256sum sdk/sqc-sdk/wasm/dist/sqc_signer.wasm | cut -d' ' -f1)"
+          echo "chain main ${GITHUB_SHA} committed signer ${wasm_sha}"
+          gh workflow run sync-signer.yml \
+            --repo "$WALLET_REPO" --ref main \
+            -f "chain_sha=${GITHUB_SHA}" \
+            -f "wasm_sha256=${wasm_sha}"
+          echo "dispatched: https://github.com/${WALLET_REPO}/actions/workflows/sync-signer.yml"
 
   js:
     name: SDK typechecks and tests
