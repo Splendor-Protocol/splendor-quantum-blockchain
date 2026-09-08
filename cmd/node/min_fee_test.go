@@ -38,12 +38,13 @@ func TestKeepPoolFloorAlignedMovesWithTheHead(t *testing.T) {
 	defer cancel()
 
 	keepPoolFloorAligned(ctx, pool, func() forks.Schedule { return sched }, func() uint64 { return head }, 5*time.Millisecond)
-	if got := pool.BaseFee(); got != mempool.MinFee {
+	// The pool is empty, so MinFeeNow is the uncongested base fee.
+	if got := pool.MinFeeNow(); got != mempool.MinFee {
 		t.Fatalf("head 3, next block 4: floor %d, want %d", got, mempool.MinFee)
 	}
 	head = 4 // next block is 5, the activation height
 	deadline := time.Now().Add(2 * time.Second)
-	for pool.BaseFee() != mempool.MinFeeV1Amount {
+	for pool.MinFeeNow() != mempool.MinFeeV1Amount {
 		if time.Now().After(deadline) {
 			t.Fatalf("floor did not move to %d after the head reached the activation height", mempool.MinFeeV1Amount)
 		}

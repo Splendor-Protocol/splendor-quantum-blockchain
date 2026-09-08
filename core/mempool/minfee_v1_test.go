@@ -38,7 +38,7 @@ func TestMinFeeV1RaisesThePoolFloor(t *testing.T) {
 	defer sdb.Close()
 
 	m := New(100, sdb)
-	if got := m.BaseFee(); got != MinFee {
+	if got := m.MinFeeNow(); got != MinFee {
 		t.Fatalf("launch base fee = %d, want %d", got, MinFee)
 	}
 	m.SetBaseFee(MinFeeV1Amount)

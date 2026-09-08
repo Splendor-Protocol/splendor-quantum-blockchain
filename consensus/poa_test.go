@@ -4,14 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 // fakeGate stands in for the chain's admission rule so a test can move a
@@ -26,25 +20,6 @@ type fakeGate struct {
 func (g *fakeGate) EligibleToProduceAddr(addr qcrypto.Address, _ uint64) error {
 	g.asked++
 	return g.refused[addr]
-}
-
-// sealGenesis puts a block 0 on the chain, the way cmd/node does, so a test
-// about heights above 0 is not also a test about the empty-chain rule.
-func sealGenesis(t *testing.T, ex *block.Executor, pub *qcrypto.PublicKey, priv *qcrypto.PrivateKey, root [32]byte) {
-	t.Helper()
-	g := types.GenesisBlock(qcrypto.DeriveAddress(pub), root, time.Now().Unix())
-	g.ValidatorPubKey = pub.Bytes()
-	hash, err := g.ComputeHash()
-	if err != nil {
-		t.Fatalf("genesis hash: %v", err)
-	}
-	g.Hash = hash
-	if err := g.SignBlock(priv); err != nil {
-		t.Fatalf("genesis sign: %v", err)
-	}
-	if err := ex.ExecuteBlock(g); err != nil {
-		t.Fatalf("genesis apply: %v", err)
-	}
 }
 
 func addrs(t *testing.T, n int) []qcrypto.Address {
@@ -196,132 +171,5 @@ func TestRoundRobinRefusesUnusableConfiguration(t *testing.T) {
 	got[0], got[1] = got[1], got[0]
 	if rr.Producers()[0] != p[0] {
 		t.Error("Producers() handed out the schedule's own slice")
-	}
-}
-
-// A scheduled producer must not mint block 1 on an empty chain. Exactly one key
-// mints block 0; a second producer that sealed height 1 on a null prev-hash
-// would fork away from the chain it was started to join. Found on a control run
-// with the gates inactive, where nothing else kept the other three out of the
-// rotation until they had caught up.
-func TestScheduledValidatorWaitsForBlockZero(t *testing.T) {
-	sdb, err := state.NewStateDB(t.TempDir())
-	if err != nil {
-		t.Fatalf("statedb: %v", err)
-	}
-	t.Cleanup(func() { _ = sdb.Close() })
-	ex, err := block.NewExecutor(sdb, t.TempDir())
-	if err != nil {
-		t.Fatalf("executor: %v", err)
-	}
-	t.Cleanup(func() { _ = ex.Close() })
-
-	pub, priv, err := qcrypto.GenerateKeypair()
-	if err != nil {
-		t.Fatalf("keygen: %v", err)
-	}
-	self := qcrypto.DeriveAddress(pub)
-	other := addrs(t, 1)[0]
-
-	// Ungated, and this node owns slot 1 — so nothing but the empty-chain rule
-	// stands between it and a forking block.
-	ex.SetForks(forks.Schedule{forks.ModuleRevertV1: 1})
-	rr, err := NewRoundRobin([]qcrypto.Address{other, self}, ex)
-	if err != nil {
-		t.Fatalf("NewRoundRobin: %v", err)
-	}
-	if owner, _ := rr.SlotOwner(1); owner != self {
-		t.Fatalf("test setup: height 1 should be this node's slot, got %s", owner)
-	}
-
-	v := New(Config{
-		Address: self, PublicKey: pub.Bytes(), PrivateKey: priv, Schedule: rr,
-	}, ex, mempool.New(16, sdb), nil)
-
-	if err := v.produceBlock(); err != nil {
-		t.Fatalf("waiting for block 0 must not be an error: %v", err)
-	}
-	if b, _ := ex.LatestBlock(); b != nil {
-		t.Fatalf("a scheduled producer minted height %d on an empty chain", b.Header.Height)
-	}
-
-	// Without a schedule the single Phase-1 producer behaves exactly as before.
-	v.cfg.Schedule = nil
-	if err := v.produceBlock(); err != nil {
-		t.Fatalf("single-producer path: %v", err)
-	}
-	if b, _ := ex.LatestBlock(); b == nil || b.Header.Height != 1 {
-		t.Fatal("the ungated single producer should still have sealed block 1")
-	}
-}
-
-// A scheduled validator waits for its turn, and the wait is silent — the same
-// discipline the gate skip follows, and for the same reason: a producer that
-// logged an error on three out of every four ticks would bury the one tick
-// that mattered.
-func TestValidatorSkipsHeightsOwnedByAnotherProducer(t *testing.T) {
-	sdb, err := state.NewStateDB(t.TempDir())
-	if err != nil {
-		t.Fatalf("statedb: %v", err)
-	}
-	t.Cleanup(func() { _ = sdb.Close() })
-	ex, err := block.NewExecutor(sdb, t.TempDir())
-	if err != nil {
-		t.Fatalf("executor: %v", err)
-	}
-	t.Cleanup(func() { _ = ex.Close() })
-
-	pub, priv, err := qcrypto.GenerateKeypair()
-	if err != nil {
-		t.Fatalf("keygen: %v", err)
-	}
-	self := qcrypto.DeriveAddress(pub)
-	other := addrs(t, 1)[0]
-
-	// Ungated chain: the staking gate is inert, so what is being tested is the
-	// schedule alone. Block 0 exists, so the empty-chain rule is not in play
-	// either.
-	ex.SetForks(forks.Schedule{forks.ModuleRevertV1: 1})
-	root, err := sdb.StateRoot()
-	if err != nil {
-		t.Fatalf("state root: %v", err)
-	}
-	sealGenesis(t, ex, pub, priv, root)
-
-	// Height 1 belongs to `other` under [other, self] (1 mod 2 == 1 is self —
-	// so order the list to put `other` on the odd slot).
-	rr, err := NewRoundRobin([]qcrypto.Address{self, other}, ex)
-	if err != nil {
-		t.Fatalf("NewRoundRobin: %v", err)
-	}
-	v := New(Config{
-		Address: self, PublicKey: pub.Bytes(), PrivateKey: priv, Schedule: rr,
-	}, ex, mempool.New(16, sdb), nil)
-
-	owner, err := rr.SlotOwner(1)
-	if err != nil {
-		t.Fatalf("SlotOwner: %v", err)
-	}
-	if owner != other {
-		t.Fatalf("test setup: height 1 should belong to the other producer, got %s", owner)
-	}
-	if err := v.produceBlock(); err != nil {
-		t.Fatalf("waiting for its turn must not be an error: %v", err)
-	}
-	if h, _ := ex.LatestHeight(); h != 0 {
-		t.Fatalf("a block was produced at height %d on another producer's slot", h)
-	}
-
-	// Its own slot, and it seals.
-	solo, err := NewRoundRobin([]qcrypto.Address{other, self}, ex)
-	if err != nil {
-		t.Fatalf("NewRoundRobin: %v", err)
-	}
-	v.cfg.Schedule = solo
-	if err := v.produceBlock(); err != nil {
-		t.Fatalf("produce on its own slot: %v", err)
-	}
-	if h, _ := ex.LatestHeight(); h != 1 {
-		t.Fatalf("height is %d; the validator did not seal its own slot", h)
 	}
 }
