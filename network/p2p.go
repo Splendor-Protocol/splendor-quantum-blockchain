@@ -28,6 +28,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -254,7 +255,7 @@ func (b *Broadcaster) AnnounceSelf(selfURL string, selfHeight uint64) {
 		Addr:     selfURL,
 		LastSeen: time.Now().Unix(),
 		Height:   selfHeight,
-		Version:  "1.0.0-quantum",
+		Version:  buildinfo.Version(),
 	}
 	data, _ := json.Marshal(announcement)
 
