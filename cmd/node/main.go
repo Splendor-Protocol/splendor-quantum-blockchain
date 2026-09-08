@@ -1019,8 +1019,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Token:    authToken,
 		HandleBlock: func(body []byte) error {
 			// The trusted key is read at call time: a node pinning only
-			// --genesis-hash learns it from block 0 after start-up.
-			return network.HandleIncomingBlock(body, syncer.TrustedPubKey(), executor.ActiveValidatorKey, executor.ExecuteBlock)
+			// --genesis-hash learns it from block 0 after start-up. A pushed
+			// block this node already committed through BFT is accepted, not
+			// refused — every BFT peer pushes every block it commits.
+			return network.HandleIncomingBlock(body, syncer.TrustedPubKey(), executor.ActiveValidatorKey,
+				func(b *types.Block) error { return applyCommittedBlock(executor, b) })
 		},
 		HandleVote: func(body []byte) error {
 			if bftEngine == nil {
