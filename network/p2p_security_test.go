@@ -33,7 +33,7 @@ func TestHandleIncomingBlockMandatorySignature(t *testing.T) {
 	apply := func(b *types.Block) error { applied = true; return nil }
 
 	// Empty PK → refuse, do not apply.
-	if err := HandleIncomingBlock(body, nil, apply); err == nil {
+	if err := HandleIncomingBlock(body, nil, nil, apply); err == nil {
 		t.Fatal("expected refusal with empty validator pubkey")
 	}
 	if applied {
@@ -42,7 +42,7 @@ func TestHandleIncomingBlockMandatorySignature(t *testing.T) {
 
 	// Wrong PK → signature verification fails, do not apply.
 	otherPub, _, _ := qcrypto.GenerateKeypair()
-	if err := HandleIncomingBlock(body, otherPub.Bytes(), apply); err == nil {
+	if err := HandleIncomingBlock(body, otherPub.Bytes(), nil, apply); err == nil {
 		t.Fatal("expected signature failure with wrong pubkey")
 	}
 	if applied {
@@ -50,7 +50,7 @@ func TestHandleIncomingBlockMandatorySignature(t *testing.T) {
 	}
 
 	// Correct PK → verify passes and the block is applied.
-	if err := HandleIncomingBlock(body, pub.Bytes(), apply); err != nil {
+	if err := HandleIncomingBlock(body, pub.Bytes(), nil, apply); err != nil {
 		t.Fatalf("valid signed block rejected: %v", err)
 	}
 	if !applied {

@@ -944,7 +944,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Identity: nodeIdentity,
 		Token:    authToken,
 		HandleBlock: func(body []byte) error {
-			return network.HandleIncomingBlock(body, validatorPKBytes, executor.ExecuteBlock)
+			return network.HandleIncomingBlock(body, validatorPKBytes, executor.ActiveValidatorKey, executor.ExecuteBlock)
 		},
 		HandleVote: func(body []byte) error {
 			if bftEngine == nil {
