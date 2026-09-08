@@ -420,21 +420,25 @@ func runNode(cmd *cobra.Command, args []string) error {
 		log.Info().Str("validator_addr", validatorAddr.String()).Msg("Validator key loaded")
 	}
 
-	// Full nodes: pin the trusted genesis validator pubkey so inbound (POST /block)
-	// and sync blocks are ML-DSA-65-verified. Without it a full node cannot
-	// authenticate pushed blocks and fails closed on the push path (relying on
-	// pull-sync, which bootstraps the key from the genesis block).
-	if !flagIsValidator && flagValidatorPKHex != "" {
-		pkBytes, decErr := hex.DecodeString(strings.TrimPrefix(flagValidatorPKHex, "0x"))
-		if decErr != nil {
-			return fmt.Errorf("invalid --validator-pubkey-hex: %w", decErr)
-		}
-		if _, perr := qcrypto.PublicKeyFromBytes(pkBytes); perr != nil {
-			return fmt.Errorf("invalid --validator-pubkey-hex: %w", perr)
-		}
-		validatorPKBytes = pkBytes
-		log.Info().Str("pubkey_prefix", fmt.Sprintf("%x", pkBytes[:8])).
+	// trustedPK is the genesis validator key this node authenticates blocks
+	// with on every ingress (push, pull-sync, proposals): --validator-pubkey-hex
+	// when set — on a validator joining a running chain its own key is NOT the
+	// chain's trust anchor — else a validator's own key (the producer that
+	// minted the chain), else nothing until a pinned genesis block supplies
+	// one. Blocks sealed by other registered validators are authenticated
+	// against the active set (network.VerifyBlockProducer).
+	trustedPK, err := resolveTrustedProducerKey(flagValidatorPKHex, flagIsValidator, validatorPKBytes)
+	if err != nil {
+		return err
+	}
+	if !flagIsValidator && len(trustedPK) > 0 {
+		// Full nodes report the pinned key as /status.local_validator, as before.
+		validatorPKBytes = trustedPK
+		log.Info().Str("pubkey_prefix", fmt.Sprintf("%x", trustedPK[:8])).
 			Msg("Trusted validator pubkey pinned (full node block verification enabled)")
+	} else if flagIsValidator && flagValidatorPKHex != "" {
+		log.Info().Str("pubkey_prefix", fmt.Sprintf("%x", trustedPK[:8])).
+			Msg("Trusted genesis validator pubkey pinned: blocks are authenticated against it and the active set, not this node's own key")
 	}
 
 	// Optional genesis pin. This is what lets a node with no pinned validator
@@ -518,7 +522,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	peerPool := network.NewPeerPool(selfURL, 50)
-	broadcaster := network.NewBroadcaster(validatorPKBytes, authToken, flagAllowPlaintextP2P)
+	broadcaster := network.NewBroadcaster(trustedPK, authToken, flagAllowPlaintextP2P)
 	discoverer := network.NewDiscoverer(peerPool, selfURL, 60*time.Second)
 
 	// ── Node identity for the encrypted P2P transport ──────────────────────
@@ -592,13 +596,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Catch-up pulls ride the same sealed channel and the same pinned peer
 	// identities as block push, so falling behind does not drop the node back
 	// onto cleartext HTTP.
-	syncCfg := network.DefaultSyncConfig(validatorPKBytes)
+	syncCfg := network.DefaultSyncConfig(trustedPK)
 	syncCfg.Identities = broadcaster.Identities()
 	syncCfg.AllowPlaintext = flagAllowPlaintextP2P
+	// Under a rotating BFT leader most blocks are sealed by a registered
+	// validator other than the genesis one; the registry is the second key
+	// ring. ExecuteBlock still verifies the certificate.
+	syncCfg.LookupProducerKey = executor.ActiveValidatorKey
 	if genesisHashPin != nil {
 		syncCfg.GenesisHash = *genesisHashPin
 	}
-	if len(validatorPKBytes) == 0 && genesisHashPin == nil {
+	if len(trustedPK) == 0 && genesisHashPin == nil {
 		log.Warn().Msg("Neither --validator-pubkey-hex nor --genesis-hash is set: this node cannot " +
 			"authenticate blocks from peers and will not sync. Pin one of them.")
 	}
@@ -725,6 +733,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// ── Validator consensus ────────────────────────────────────────────────
 	var bftEngine *consensus.BFTEngine
+	// useBFT also decides whether this validator runs the pull-sync loop
+	// below: a single-path validator that pulled blocks would be a second
+	// producer; a BFT one that does not pull cannot catch up before it votes.
+	useBFT := false
 	if flagIsValidator && validatorPriv != nil {
 		vCfg := consensus.Config{
 			BlockInterval: time.Duration(flagBlockInterval) * time.Second,
@@ -732,6 +744,14 @@ func runNode(cmd *cobra.Command, args []string) error {
 			Address:       validatorAddr,
 			PublicKey:     validatorPKBytes,
 			PrivateKey:    validatorPriv,
+			// A validator behind its peers votes but does not propose.
+			Ready: syncer.IsSynced,
+		}
+		if gv, ok := genesisValidatorInfo(executor, trustedPK); ok {
+			vCfg.GenesisValidator = gv
+		} else {
+			log.Warn().Msg("No genesis validator known (no block 0 stored, no --validator-pubkey-hex): " +
+				"with an empty registry this node would treat itself as the sole BFT leader")
 		}
 		broadcastCh := make(chan *types.Block, 64)
 		go func() {
@@ -744,18 +764,20 @@ func runNode(cmd *cobra.Command, args []string) error {
 			}
 		}()
 
+		// Judged for the block this node is about to seal (head+1), never for
+		// the head it already has — see bftForNextBlock.
 		head, _ := executor.LatestHeight()
-		useBFT := executor.Forks().Active(forks.MultiValidator, head)
+		useBFT = bftForNextBlock(executor.Forks(), head)
 		if useBFT {
 			eng, bftErr := consensus.NewBFTEngine(consensus.BFTConfig{
 				LocalAddr:    validatorAddr,
 				LocalPubKey:  validatorPKBytes,
 				LocalPrivKey: validatorPriv,
+				// The pull-sync loop and the block push race this commit for
+				// the same block; if one of them landed it first it is still
+				// committed (applyCommittedBlock).
 				OnCommit: func(b *types.Block) error {
-					if err := executor.ExecuteBlock(b); err != nil {
-						return err
-					}
-					return nil
+					return applyCommittedBlock(executor, b)
 				},
 				Broadcast: func(vote *consensus.Vote) {
 					data, err := json.Marshal(vote)
@@ -853,7 +875,12 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// validator by up to a minute, catching up in bursts. Polling here makes the
 	// pull path genuinely real-time on any topology, without needing push/announce
 	// or an advertised self-URL.
-	if !flagIsValidator {
+	//
+	// BFT validators run it too: a validator that joins a running chain has to
+	// reach the tip before it may propose (consensus.Config.Ready), and a
+	// missed push must not leave it voting on proposals it cannot apply. A
+	// single-path validator must NOT pull — it would be a second producer.
+	if !flagIsValidator || useBFT {
 		go func() {
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
@@ -908,19 +935,21 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Core RPC server (handles /tx/submit, /block/*, /balance/*, /status, etc.)
 	coreRPC := rpc.New(
 		rpc.Config{
-			ListenAddr:        flagRPCAddr,
-			ValidatorPK:       validatorPKBytes,
-			PeerCount:         peerPool.Count, // wire live peer count from peerPool
-			AuthToken:         authToken,
-			AllowPlaintextP2P: flagAllowPlaintextP2P,
-			CORSOrigins:       flagCORSOrigins,
-			SubmitRatePerSec:  flagRateLimit,
-			SubmitBurst:       flagRateBurst,
-			TrustProxy:        flagTrustProxy,
-			SimRatePerSec:     flagSimRate,
-			SimBurst:          flagSimBurst,
-			SimMaxInFlight:    flagSimMaxInFlight,
-			SimTimeout:        flagSimTimeout,
+			ListenAddr:         flagRPCAddr,
+			ValidatorPK:        validatorPKBytes,
+			TrustedProducerKey: syncer.TrustedPubKey,
+			LookupProducerKey:  executor.ActiveValidatorKey,
+			PeerCount:          peerPool.Count, // wire live peer count from peerPool
+			AuthToken:          authToken,
+			AllowPlaintextP2P:  flagAllowPlaintextP2P,
+			CORSOrigins:        flagCORSOrigins,
+			SubmitRatePerSec:   flagRateLimit,
+			SubmitBurst:        flagRateBurst,
+			TrustProxy:         flagTrustProxy,
+			SimRatePerSec:      flagSimRate,
+			SimBurst:           flagSimBurst,
+			SimMaxInFlight:     flagSimMaxInFlight,
+			SimTimeout:         flagSimTimeout,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
@@ -944,7 +973,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Identity: nodeIdentity,
 		Token:    authToken,
 		HandleBlock: func(body []byte) error {
-			return network.HandleIncomingBlock(body, validatorPKBytes, executor.ActiveValidatorKey, executor.ExecuteBlock)
+			// The trusted key is read at call time: a node pinning only
+			// --genesis-hash learns it from block 0 after start-up.
+			return network.HandleIncomingBlock(body, syncer.TrustedPubKey(), executor.ActiveValidatorKey, executor.ExecuteBlock)
 		},
 		HandleVote: func(body []byte) error {
 			if bftEngine == nil {
@@ -964,6 +995,16 @@ func runNode(cmd *cobra.Command, args []string) error {
 			var prop types.Block
 			if err := json.Unmarshal(body, &prop); err != nil {
 				return fmt.Errorf("invalid proposal: %w", err)
+			}
+			// A proposal is voted on before it is ever executed, so it is
+			// authenticated here with the rule pushed blocks get: the pinned
+			// genesis key or the active set. The write-plane token alone only
+			// says the sender is in the cluster.
+			if err := prop.Validate(); err != nil {
+				return fmt.Errorf("invalid proposal: %w", err)
+			}
+			if err := network.VerifyBlockProducer(&prop, syncer.TrustedPubKey(), executor.ActiveValidatorKey); err != nil {
+				return fmt.Errorf("proposal rejected: %w", err)
 			}
 			bftEngine.ProposeBlock(&prop)
 			return nil
