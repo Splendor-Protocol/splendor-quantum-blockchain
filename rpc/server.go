@@ -447,7 +447,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"height":       height,
 		"mempool_size": s.pool.Size(),
 		"peer_count":   peerCount,
-		"node_version": buildinfo.Version,
+		"node_version": buildinfo.Version(),
 		"commit":       buildinfo.Commit,
 		"image_tag":    buildinfo.ImageTag,
 		"timestamp":    time.Now().Unix(),

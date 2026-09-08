@@ -205,7 +205,7 @@ func makeHealthzHandler(startTime time.Time) http.HandlerFunc {
 			"status":         "ok",
 			"uptime_seconds": int64(time.Since(startTime).Seconds()),
 			"chain_id":       types.ChainID,
-			"node_version":   buildinfo.Version,
+			"node_version":   buildinfo.Version(),
 			"commit":         buildinfo.Commit,
 			"image_tag":      buildinfo.ImageTag,
 			"timestamp":      time.Now().Unix(),
