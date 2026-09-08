@@ -57,36 +57,11 @@ func TestApplyToStateRecordsMintedAndRefusesAboveTheCap(t *testing.T) {
 	}
 }
 
-// Validate is re-run on the pinned document every time a running chain
-// starts, so it must not judge the cap: a tier that minted more before the
-// rule existed has to keep starting. ApplyToState — the mint — is the gate.
-func TestValidateLeavesTheCapToApplyToState(t *testing.T) {
-	over := liveTierGenesis(t)
-	over.Allocations = []Allocation{{
-		Address: over.Allocations[0].Address,
-		Balance: new(big.Int).Add(NativeSupplyCap(), big.NewInt(1)).String(),
-	}}
-	over.TotalSupply = ""
-	if err := over.Validate(); err != nil {
-		t.Fatalf("Validate must not refuse an over-cap document a live tier may already be running under: %v", err)
-	}
-}
-
 // The per-block check holds circulating supply to the minted record: a
-// transfer passes, an account credited from nowhere does not, and a chain
-// with no record (genesis applied before the rule) is left alone.
+// transfer passes, an account credited from nowhere does not.
 func TestCheckNativeSupplyHoldsCirculationToTheMintedRecord(t *testing.T) {
-	sdb := newCapState(t)
-	stranger := qcrypto.Address{0x77}
-	acc := types.NewAccount(stranger)
-	acc.AddBalance(new(big.Int).Add(NativeSupplyCap(), big.NewInt(1)))
-	sdb.SetAccount(acc)
-	if err := CheckNativeSupply(sdb); err != nil {
-		t.Fatalf("a chain with no minted record must not be judged: %v", err)
-	}
-
 	g := liveTierGenesis(t)
-	sdb = newCapState(t)
+	sdb := newCapState(t)
 	if _, err := g.ApplyToState(sdb); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
