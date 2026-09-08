@@ -99,6 +99,21 @@ func SnapshotRoot(leaves []types.StateLeaf) [32]byte {
 	return merkleRoot(index)
 }
 
+// IsFresh reports whether the state holds no committed leaves, no applied-
+// height marker and no pending writes — the only state ImportSnapshot may
+// replace. The executor asks before it stores the snapshot's head block, so a
+// refusal never leaves a head with no state behind it.
+func (s *StateDB) IsFresh() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.freshLocked()
+}
+
+func (s *StateDB) freshLocked() bool {
+	return len(s.leaves) == 0 && !s.heightKnown &&
+		len(s.dirty) == 0 && len(s.codeCache) == 0 && len(s.pendingRaw) == 0
+}
+
 // ImportSnapshot replaces an empty state with the given leaves at height, in
 // one batch together with the height marker, but only if the leaves hash to
 // wantRoot — the state_root of an already-authenticated block. On any refusal
@@ -109,7 +124,7 @@ func (s *StateDB) ImportSnapshot(leaves []types.StateLeaf, height uint64, wantRo
 	if s.sandbox {
 		return ErrSandboxCommit
 	}
-	if len(s.leaves) != 0 || s.heightKnown || len(s.dirty) != 0 || len(s.codeCache) != 0 || len(s.pendingRaw) != 0 {
+	if !s.freshLocked() {
 		return ErrStateNotFresh
 	}
 
