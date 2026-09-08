@@ -162,7 +162,6 @@ func dispatchLending(stateDB *state.StateDB, ctx ModuleContext, action string, r
 	default:
 		return hard(fmt.Errorf("module call: unknown action %q", action))
 	}
-	return nil
 }
 
 func dispatchLendingRead(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
@@ -482,7 +481,6 @@ func dispatchQRC721(stateDB *state.StateDB, ctx ModuleContext, action string, ra
 	default:
 		return hard(fmt.Errorf("module call: unknown action %q", action))
 	}
-	return nil
 }
 
 func dispatchQRC721Read(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
