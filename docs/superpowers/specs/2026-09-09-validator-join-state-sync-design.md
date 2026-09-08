@@ -1,10 +1,18 @@
 # New validator joins a running producer — design (hypothesis)
 
-Date: 2026-09-09. Base: `origin/main @ a74757c`. Status: **not implemented,
-not built, not tested.** The authoring session could not invoke the Go
-toolchain (every `go`/`gofmt`/`make` call was refused by the harness
-permission mode), and the brief said to stop rather than write unbuilt code.
-Every line number below refers to `a74757c`.
+Date: 2026-09-09. Base: `origin/main @ a74757c`. Status: **implemented on
+branch `feat/validator-join-state-sync`** (see
+`docs/superpowers/plans/2026-09-09-validator-join-state-sync.md` for the
+task list and the six documented deviations from this text) and proven with
+a local two-node run (`docs/multi-validator-local.md`, "Joining a running
+chain"). The authoring session could not invoke the Go toolchain; the
+implementing session could. Every line number below refers to `a74757c`.
+
+Devnet, checked read-only on 2026-09-09 (step 0 below): its fork schedule
+never scheduled `multi_validator`, six keys are registered, and the tip
+carries no votes. Its history is therefore replayable, and nothing on
+devnet votes until an operator schedules `multi_validator` by fork extension
+and trims the registry to keys that will run — see §4.
 
 ## 1. What is broken, confirmed from code
 
