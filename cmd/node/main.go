@@ -383,7 +383,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// ── Metrics server ─────────────────────────────────────────────────────
 	nodeMetrics := rpc.NewNodeMetrics()
 	nodeMetrics.SetLabel("chain_id", types.ChainID)
-	nodeMetrics.SetLabel("version", "1.0.0-quantum")
+	nodeMetrics.SetLabel("version", buildinfo.Version())
 	metricsServer := rpc.NewMetricsServer(flagMetricsAddr, nodeMetrics)
 	if flagTLSCert != "" && flagTLSKey != "" {
 		if err := metricsServer.EnableTLS(flagTLSCert, flagTLSKey); err != nil {
