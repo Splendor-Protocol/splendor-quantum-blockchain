@@ -284,7 +284,9 @@ spoof `X-Forwarded-For` and mint a fresh rate-limit bucket per request.
 curl http://localhost:8080/healthz
 
 # Expected:
-# {"status":"ok","uptime_seconds":5,"chain_id":"splendor-quantum-1","node_version":"1.0.0-quantum","timestamp":...}
+# {"status":"ok","uptime_seconds":5,"chain_id":"splendor-quantum-1","node_version":"v1.1.0-devnet","commit":"3dc5a35...","image_tag":"v1.1.0-devnet","timestamp":...}
+# node_version is the stamped image_tag, or the short commit when the image was
+# built without a tag, or "unknown" when the build was not stamped at all.
 
 # Check status
 curl http://localhost:8080/status
