@@ -103,6 +103,14 @@ type Executor struct {
 	forks atomic.Pointer[forks.Schedule]
 }
 
+// ErrQuorumRequired is returned by ProduceBlock when multi_validator is active
+// at the height being produced and the registry lists two or more active
+// validators. From that height on every block needs a quorum certificate, which
+// the single-path producer never attaches: each block it sealed would be
+// canonical here and unappliable everywhere else. Halting is the mainnet-5786
+// failure made visible instead of a fork; the fix is to restart in BFT mode.
+var ErrQuorumRequired = errors.New("multi_validator: quorum certificate required")
+
 // receiptStorer is satisfied by *state.TxIndexStore.
 // Using an interface keeps executor.go from importing the state package's txindex.
 type receiptStorer interface {
@@ -877,6 +885,15 @@ func (e *Executor) assembleBlock(
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// The single path (persist) has no certificate rule of its own, so it is
+	// judged here, before any state mutation, against the same registry a
+	// follower reads at the top of ExecuteBlock: the parent's committed state.
+	if persist {
+		if err := e.refuseSinglePathIfQuorumRequired(height); err != nil {
+			return nil, err
+		}
+	}
+
 	if len(txs) > MaxTxPerBlock {
 		txs = txs[:MaxTxPerBlock]
 	}
@@ -1082,6 +1099,40 @@ func (e *Executor) latestHeightRaw() (uint64, bool) {
 		return 0, false
 	}
 	return info.Height, true
+}
+
+// refuseSinglePathIfQuorumRequired is the producer half of the rule
+// verifyProducerAndQC enforces on followers. Caller holds e.mu.
+func (e *Executor) refuseSinglePathIfQuorumRequired(height uint64) error {
+	if !e.schedule().Active(forks.MultiValidator, height) {
+		return nil
+	}
+	active, err := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).ListActive()
+	if err != nil {
+		return fmt.Errorf("validator set: %w", err)
+	}
+	if len(active) < 2 {
+		return nil
+	}
+	return fmt.Errorf("%w: %d active validators at height %d, this node must run in BFT mode "+
+		"(restart it; multi_validator is active for the block it is about to seal)",
+		ErrQuorumRequired, len(active), height)
+}
+
+// ActiveValidatorKey returns the ML-DSA-65 public key of addr when the
+// validator registry lists it as Active, and nil otherwise.
+//
+// It is the resolver the network layer uses to authenticate a block sealed by
+// a validator other than the pinned genesis key, before ExecuteBlock runs. It
+// reads committed state, which for the next block to apply is the parent
+// state — the same set verifyProducerAndQC judges the block against.
+// ExecuteBlock remains the authority: it still verifies the certificate.
+func (e *Executor) ActiveValidatorKey(addr qcrypto.Address) []byte {
+	rec, err := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).GetValidator(addr)
+	if err != nil || rec == nil || rec.Status != vm.ValidatorActive || len(rec.PublicKey) == 0 {
+		return nil
+	}
+	return append([]byte(nil), rec.PublicKey...)
 }
 
 func (e *Executor) verifyProducerAndQC(b *types.Block) error {
