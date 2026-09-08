@@ -244,6 +244,7 @@ type BFTEngine struct {
 	proposal      *types.Block
 	seenVotes     map[string]*Vote // validator|height|round → first vote (equivocation)
 	lockedHash    [32]byte
+	lockedHeight  uint64 // the lock binds one height only; the next height is a new decision
 	hasLock       bool
 	stateMu       sync.Mutex
 
@@ -459,8 +460,12 @@ func (e *BFTEngine) handleProposal(b *types.Block) {
 		return
 	}
 
-	if e.hasLock && b.Hash != e.lockedHash {
-		log.Warn().Msg("BFT: proposal conflicts with locked block")
+	// A lock is a statement about ONE height. Holding it against every later
+	// proposal wedged the engine for good whenever a commit failed (the block
+	// had already landed through push or pull-sync, or the node was behind):
+	// no proposal at h+1 could ever match the hash locked at h.
+	if e.hasLock && b.Header.Height == e.lockedHeight && b.Hash != e.lockedHash {
+		log.Warn().Uint64("height", b.Header.Height).Msg("BFT: proposal conflicts with locked block")
 		return
 	}
 
@@ -542,6 +547,7 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 
 	if reachedQuorum && e.proposal != nil {
 		e.lockedHash = e.proposal.Hash
+		e.lockedHeight = e.proposal.Header.Height
 		e.hasLock = true
 		e.commitBlock(e.proposal)
 	}
