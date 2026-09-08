@@ -21,7 +21,8 @@ describe('SQDP-1 protocol constants', () => {
     expect(PROTOCOL.chainId).toBe(CHAIN_ID);
     expect(PROTOCOL.chainId).toBe('splendor-quantum-1');
     expect(PROTOCOL.minFee).toBe(MIN_FEE);
-    expect(PROTOCOL.minFee).toBe('1000000000000000');
+    // The chain's admission floor (core/mempool.MinFee, /status min_fee).
+    expect(PROTOCOL.minFee).toBe('1000');
     expect(PROTOCOL.confirmation).toBe('nonce');
     expect(PROTOCOL.derivationDomainVersion).toBe('v1');
     expect(PROTOCOL.derivationDomainMessage).toBe(DERIVATION_DOMAIN_MESSAGE);

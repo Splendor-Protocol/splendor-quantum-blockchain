@@ -1,20 +1,20 @@
-// sqc-modcall — the module-call driver used to exercise the staking registry
-// from a shell, and the forged-block prober used to test the producer gate from
-// the outside.
+// sqc-modcall — the module-call driver used to exercise native modules (the
+// validators registry, verify, qrc721, …) from a shell, and the forged-block
+// prober used to test a node's inbound block check from the outside.
 //
 // This is TEST TOOLING, not a wallet. It reads the password from a file, prints
 // receipts, and has one subcommand whose whole purpose is to be refused.
 //
 //	sqc-modcall write  --node URL --wallet W --pass-file P --chain-id ID \
-//	                   --module staking --action register --params '{...}' [--wait]
-//	sqc-modcall read   --node URL --module staking --action can_produce --params '{...}'
+//	                   --module validators --action register --params '{...}' [--wait]
+//	sqc-modcall read   --node URL --module validators --action validator --params '{...}'
 //	sqc-modcall forge  --node URL --wallet W --pass-file P --chain-id ID
-//	sqc-modcall addr   --router | --staking
+//	sqc-modcall addr
 //
 // `forge` seals a syntactically valid, correctly linked block with a key of the
-// caller's choosing and pushes it to a node. On a chain running
-// validator_gates_v1 the only right answer is a refusal from the gate; anything
-// else is the finding.
+// caller's choosing and pushes it to a node. The inbound path verifies the seal
+// against the node's trusted validator key, so the only right answer is a
+// refusal; anything else is the finding.
 package main
 
 import (
@@ -48,7 +48,7 @@ func main() {
 	case "forge":
 		err = cmdForge(os.Args[2:])
 	case "addr":
-		fmt.Printf("router  %s\nstaking %s\n", vm.ModuleRouterAddress, vm.StakingAddress)
+		fmt.Printf("router     %s\nvalidators %s\n", vm.ModuleRouterAddress, vm.ValidatorsModuleAddress())
 	default:
 		usage()
 	}

@@ -2,7 +2,7 @@
   "sqdpVersion": "1",
   "defaultNetwork": "local",
   "protocol": {
-    "minFee": "1000000000000000",
+    "minFee": "1000",
     "addressPrefix": "SQ:",
     "addressHexLen": 64,
     "confirmation": "nonce",
@@ -25,8 +25,8 @@
       "gatewayPort": 3090,
       "wasmUrl": "/sqc_signer.wasm",
       "execUrl": "/wasm_exec.js",
-      "wasmSha256": "3e51a560a06e5ffd98b70a7f29cceaf81132c16f4eeca606f688759f954b30cf",
-      "execSha256": "4703f2fbe910e05faceea7cc2c38a7e3b4083ed9bb09f76efe5d6c1edfede695",
+      "wasmSha256": "ec4d5d1c275ce41e1ee67d85f6ee69adac6b4473d0fad6a21e36254b7d5e2279",
+      "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
       "timeoutMs": 15000,
       "retries": 2
     },
@@ -42,8 +42,8 @@
       "gatewayPort": 443,
       "wasmUrl": "/sqc_signer.wasm",
       "execUrl": "/wasm_exec.js",
-      "wasmSha256": "3e51a560a06e5ffd98b70a7f29cceaf81132c16f4eeca606f688759f954b30cf",
-      "execSha256": "4703f2fbe910e05faceea7cc2c38a7e3b4083ed9bb09f76efe5d6c1edfede695",
+      "wasmSha256": "ec4d5d1c275ce41e1ee67d85f6ee69adac6b4473d0fad6a21e36254b7d5e2279",
+      "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
       "timeoutMs": 20000,
       "retries": 3
     },
@@ -59,8 +59,8 @@
       "gatewayPort": 443,
       "wasmUrl": "/sqc_signer.wasm",
       "execUrl": "/wasm_exec.js",
-      "wasmSha256": "3e51a560a06e5ffd98b70a7f29cceaf81132c16f4eeca606f688759f954b30cf",
-      "execSha256": "4703f2fbe910e05faceea7cc2c38a7e3b4083ed9bb09f76efe5d6c1edfede695",
+      "wasmSha256": "ec4d5d1c275ce41e1ee67d85f6ee69adac6b4473d0fad6a21e36254b7d5e2279",
+      "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
       "timeoutMs": 20000,
       "retries": 3
     }

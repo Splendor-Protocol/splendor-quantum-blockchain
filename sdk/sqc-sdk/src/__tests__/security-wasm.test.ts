@@ -2,7 +2,7 @@
  * SQDP-1 security: WASM session lock/disconnect, re-derive Zeroize, pin integrity, fee floor.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { SplendorPQBridge, resetWasmLoader } from '../index.js';
+import { MIN_FEE, SplendorPQBridge, resetWasmLoader } from '../index.js';
 import { BridgeError, isBridgeError } from '../errors.js';
 import { assertWasmSha256 } from '../wasm-types.js';
 import golden from '../../testdata/golden-vectors.json';
@@ -41,7 +41,7 @@ describe('security-wasm session lifecycle', () => {
       b.signTransferOnly({
         to: GOLDEN_ADDRESS,
         amount: '1',
-        fee: '1000',
+        fee: MIN_FEE,
         nonce: 0,
         assertChain: false,
       }),
@@ -54,7 +54,7 @@ describe('security-wasm session lifecycle', () => {
       b.signTransferOnly({
         to: GOLDEN_ADDRESS,
         amount: '1',
-        fee: '1000',
+        fee: MIN_FEE,
         nonce: 0,
         assertChain: false,
       }),
@@ -73,7 +73,7 @@ describe('security-wasm session lifecycle', () => {
     const signed = (await b.signTransferOnly({
       to: next,
       amount: '1',
-      fee: '1000',
+      fee: MIN_FEE,
       nonce: 0,
       assertChain: false,
     })) as { from: number[] };
@@ -90,7 +90,7 @@ describe('security-wasm session lifecycle', () => {
       b.signTransferOnly({
         to: GOLDEN_ADDRESS,
         amount: '1',
-        fee: '999',
+        fee: (BigInt(MIN_FEE) - 1n).toString(),
         nonce: 0,
         assertChain: false,
       }),
