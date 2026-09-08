@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo"
-	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -28,6 +27,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -85,6 +85,7 @@ var (
 	flagAllowPlaintextP2P  bool
 	flagPeerPins           []string
 	flagRequirePeerPins    bool
+	flagStateSync          bool
 )
 
 func main() {
@@ -139,6 +140,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().BoolVar(&flagAllowPlaintextP2P, "allow-plaintext-p2p", false, "Accept AND send cleartext peer traffic: registers the plaintext POST /block and /peers/announce routes and permits outbound fallback when a peer serves no sealed transport. Off by default, so the sealed ML-KEM channel is the only way in or out.")
 	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use — set --require-peer-pins to refuse unpinned peers instead.")
 	root.Flags().BoolVar(&flagRequirePeerPins, "require-peer-pins", false, "Refuse to talk to any peer that has no --peer-pin, instead of trusting its identity on first contact. Governs who this node dials — block push, announce and catch-up pull; inbound blocks stay authenticated by the validator signature and the write-plane token. Recommended once a cluster's peers are known: trust-on-first-use hands the relationship to whoever answers first at bootstrap.")
+	root.Flags().BoolVar(&flagStateSync, "state-sync", false, "Join a chain whose history cannot be replayed. On an empty data dir: take the fork schedule, chain id and minted supply from the pinned genesis document (--genesis, or --peer with --genesis-doc-hash), then import a peer's live state snapshot — its head block authenticated by the genesis validator key — and follow from the next block. Needs --validator-pubkey-hex or --genesis-hash. Not combinable with --validator: join as a follower, then restart as one on the synced data dir.")
 
 	// Operators need a way to produce the value they pin, and to check that a
 	// genesis.json they were handed is the one they expect, without starting a node.
@@ -671,7 +673,45 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Genesis (if chain is empty) ────────────────────────────────────────
-	if latestBlock, _ := executor.LatestBlock(); latestBlock == nil {
+	// stateSyncPending holds the periodic block-sync loop off until a
+	// --state-sync import has landed: with an empty state, block 1 would be
+	// fetched, fail on state root, and be retried forever.
+	var stateSyncPending atomic.Bool
+	if latestBlock, _ := executor.LatestBlock(); latestBlock == nil && flagStateSync {
+		if err := validateStateSyncFlags(flagIsValidator, trustedPK, genesisHashPin, flagGenesisPath, flagPeers); err != nil {
+			return err
+		}
+		deps := stateSyncDeps{
+			peers:    flagPeers,
+			policy:   genesisPolicy{docHash: genesisDocPin, trustPeer: flagTrustPeerGenesis},
+			stateDB:  stateDB,
+			executor: executor,
+			syncer:   syncer,
+			retry:    syncCfg.RetryDelay,
+		}
+		if flagGenesisPath != "" {
+			g, err := genesiscfg.LoadFile(flagGenesisPath)
+			if err != nil {
+				return fmt.Errorf("load genesis %q: %w", flagGenesisPath, err)
+			}
+			if err := prepareStateSyncGenesis(g, genesisDocPin, flagGenesisPath, stateDB, executor); err != nil {
+				return err
+			}
+			deps.genesisPrepared = true
+		}
+		stateSyncPending.Store(true)
+		log.Info().Msg("--state-sync: genesis allocations are not applied here; waiting for a peer's state snapshot")
+		go func() {
+			if err := runStateSync(ctx, deps); err != nil {
+				if ctx.Err() == nil {
+					log.Error().Err(err).Msg("state sync failed: this node cannot follow the chain — fix the configuration and restart")
+					cancel()
+				}
+				return
+			}
+			stateSyncPending.Store(false)
+		}()
+	} else if latestBlock == nil {
 		// Credit genesis allocations before block 0 so every node — validator
 		// and sync — starts from the same funded state root. Without this the
 		// total_supply declared in genesis.json is never minted, the chain has
@@ -844,7 +884,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// allocations before creating block 0, so its state root ≠ empty state root.
 	// Before syncing blocks, the RPC must fetch and apply the same genesis
 	// allocations so its state root matches the validator's.
-	if bootstrapsGenesisFromPeers(flagIsValidator, flagPeers, flagGenesisPath) {
+	// A --state-sync node takes the document without its allocations (above).
+	if bootstrapsGenesisFromPeers(flagIsValidator, flagPeers, flagGenesisPath) && !flagStateSync {
 		policy := genesisPolicy{docHash: genesisDocPin, trustPeer: flagTrustPeerGenesis}
 		go func() {
 			time.Sleep(2 * time.Second) // wait for HTTP server to start
@@ -889,6 +930,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					if stateSyncPending.Load() {
+						continue
+					}
 					for _, addr := range peerPool.Addrs() {
 						if h, derr := network.DialPeer(addr); derr == nil {
 							peerPool.UpdatePeerHeight(addr, h)
@@ -969,6 +1013,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Post-quantum sealed P2P transport (ML-KEM-768 + AES-256-GCM). Carries the
 	// same block-ingest and peer-announce operations as the plaintext write
 	// plane, but encrypted and with the write token inside the envelope.
+	var snapshotInFlight atomic.Bool
 	rpc.RegisterP2PRoutes(router, rpc.P2PConfig{
 		Identity: nodeIdentity,
 		Token:    authToken,
@@ -1039,6 +1084,20 @@ func runNode(cmd *cobra.Command, args []string) error {
 				return nil, fmt.Errorf("latest block not available: %w", err)
 			}
 			return json.Marshal(b)
+		},
+		// A snapshot is a full state scan on a public, token-free read, so
+		// one at a time: a second requester is told to come back rather than
+		// allowed to multiply the work.
+		ServeStateSnapshot: func() ([]byte, error) {
+			if !snapshotInFlight.CompareAndSwap(false, true) {
+				return nil, errors.New("a state snapshot export is already in progress, retry shortly")
+			}
+			defer snapshotInFlight.Store(false)
+			snap, err := executor.ExportStateSnapshot()
+			if err != nil {
+				return nil, fmt.Errorf("state snapshot not available: %w", err)
+			}
+			return json.Marshal(snap)
 		},
 	})
 
@@ -1765,38 +1824,13 @@ func bootstrapGenesisFromPeer(peerURL string, stateDB *state.StateDB, executor *
 		return nil
 	}
 
-	// Fail closed before the request is even made. Nothing downstream can
-	// establish that an arbitrary peer's genesis is this network's genesis, so
-	// an operator who has not said what to expect gets told how to say it.
-	if policy.docHash == nil && !policy.trustPeer {
-		return fmt.Errorf("%w: refusing to credit balances from %s because nothing says what that document should be. "+
-			"Either copy the network's genesis.json to this host and pass --genesis <path>, "+
-			"or pin it with --genesis-doc-hash <hex> (print the pin with 'sqc-node genesis-hash <path>'), "+
-			"or pass --trust-peer-genesis if you control that peer and accept it can mint balances here",
-			errGenesisUnpinned, peerURL)
-	}
-
-	// Fetch genesis.json from the validator peer
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(peerURL + "/genesis")
+	// Fail closed before the request is even made (fetchPeerGenesis): nothing
+	// downstream can establish that an arbitrary peer's genesis is this
+	// network's genesis, so an operator who has not said what to expect gets
+	// told how to say it.
+	g, err := fetchPeerGenesis(peerURL, policy)
 	if err != nil {
-		return fmt.Errorf("fetch /genesis from peer: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Returning nil here would count as success and stop the caller trying the
-	// remaining peers, leaving the node unfunded on the word of the one peer that
-	// happened to answer first without the endpoint.
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("peer %s serves no /genesis (it was started without --genesis)", peerURL)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("peer /genesis returned %d", resp.StatusCode)
-	}
-
-	g, err := genesiscfg.LoadFromReader(io.LimitReader(resp.Body, maxGenesisDocBytes))
-	if err != nil {
-		return fmt.Errorf("parse peer genesis.json: %w", err)
+		return err
 	}
 
 	if err := verifyGenesisDocument(g, policy.docHash, "peer "+peerURL); err != nil {
