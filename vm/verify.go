@@ -192,6 +192,12 @@ func verifyAttest(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage
 	if err != nil {
 		return err
 	}
+	// Pause stops the whole lifecycle, not just registration: while the
+	// instance is paused nothing is attested, finalized or settled. Only the
+	// owner's admin actions (unpause, set_operator, set_threshold) run.
+	if inst.Paused {
+		return fmt.Errorf("verify attest: paused")
+	}
 	if rec.Spent {
 		return fmt.Errorf("verify attest: already spent")
 	}
@@ -254,6 +260,9 @@ func verifyFinalize(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessa
 	if err != nil {
 		return err
 	}
+	if inst.Paused {
+		return fmt.Errorf("verify finalize: paused")
+	}
 	if rec.Spent {
 		return fmt.Errorf("verify finalize: already spent")
 	}
@@ -280,6 +289,9 @@ func verifySpend(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage,
 	inst, err := loadInstance(stateDB, instAddr)
 	if err != nil {
 		return err
+	}
+	if inst.Paused {
+		return fmt.Errorf("verify spend: paused")
 	}
 	if rec.Spent {
 		return fmt.Errorf("verify spend: already spent")
