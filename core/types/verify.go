@@ -8,8 +8,13 @@ import (
 )
 
 const (
-	// VerifyInstructionVersion is the only instruction version this build accepts.
-	VerifyInstructionVersion = 1
+	// VerifyInstructionVersion is the only instruction version this build
+	// accepts. Version 1 signed the routing fields only: from, to, amount and
+	// token were outside the digest, so a relayer could re-point a signed
+	// settlement at any recipient or amount. Version 2 covers every field a
+	// settlement acts on. Version 1 instructions are refused, not grandfathered:
+	// an unbound digest is not something to keep honouring.
+	VerifyInstructionVersion = 2
 	// MaxVerifyOriginBytes caps origin (chain / bank / api id).
 	MaxVerifyOriginBytes = 128
 	// MaxVerifyPurposeBytes caps the purpose string.
@@ -43,14 +48,27 @@ type VerifyInstruction struct {
 	SLHSig       []byte `json:"sig_slh"`
 }
 
-var verifyDigestPrefix = []byte("sqvl:instruction:v1:")
+var verifyDigestPrefix = []byte("sqvl:instruction:v2:")
+
+// MaxVerifyAddressBytes caps from/to/token (an SQ: address is 67 bytes; the
+// cap leaves room for a foreign-chain identifier in the origin's own format).
+const MaxVerifyAddressBytes = 128
+
+// MaxVerifyAmountBytes caps the decimal amount string.
+const MaxVerifyAmountBytes = 80
 
 // VerifyInstructionDigest is the message both schemes sign under CtxVerify.
 //
-//	"sqvl:instruction:v1:" ‖ u16be(len(chainID)) ‖ chainID
+//	"sqvl:instruction:v2:" ‖ u16be(len(chainID)) ‖ chainID
 //	‖ instruction_id[32] ‖ u16be(len(purpose)) ‖ purpose
 //	‖ u16be(len(origin)) ‖ origin ‖ u16be(len(hint)) ‖ hint
-//	‖ u16be(len(action)) ‖ action ‖ u16be(len(payload)) ‖ payload
+//	‖ u16be(len(action)) ‖ action
+//	‖ u16be(len(from)) ‖ from ‖ u16be(len(to)) ‖ to
+//	‖ u16be(len(amount)) ‖ amount ‖ u16be(len(token)) ‖ token
+//	‖ u16be(len(payload)) ‖ payload
+//
+// Every field is length-prefixed, so no two field boundaries can be shifted
+// into each other, and every field a settlement acts on is inside the hash.
 func VerifyInstructionDigest(chainID string, ins *VerifyInstruction) ([32]byte, error) {
 	if ins == nil {
 		return [32]byte{}, fmt.Errorf("verify instruction digest: nil instruction")
@@ -61,19 +79,16 @@ func VerifyInstructionDigest(chainID string, ins *VerifyInstruction) ([32]byte, 
 	if err := validateVerifyFields(ins); err != nil {
 		return [32]byte{}, err
 	}
-	msg := make([]byte, 0, 64+len(chainID)+len(ins.Purpose)+len(ins.Origin)+len(ins.SettlementHint)+len(ins.SettlementAction)+len(ins.Payload))
+	msg := make([]byte, 0, 96+len(chainID)+len(ins.Purpose)+len(ins.Origin)+len(ins.SettlementHint)+
+		len(ins.SettlementAction)+len(ins.From)+len(ins.To)+len(ins.Amount)+len(ins.Token)+len(ins.Payload))
 	msg = append(msg, verifyDigestPrefix...)
 	msg = appendU16BE(msg, len(chainID))
 	msg = append(msg, chainID...)
 	msg = append(msg, ins.InstructionID[:]...)
-	msg = appendU16BE(msg, len(ins.Purpose))
-	msg = append(msg, ins.Purpose...)
-	msg = appendU16BE(msg, len(ins.Origin))
-	msg = append(msg, ins.Origin...)
-	msg = appendU16BE(msg, len(ins.SettlementHint))
-	msg = append(msg, ins.SettlementHint...)
-	msg = appendU16BE(msg, len(ins.SettlementAction))
-	msg = append(msg, ins.SettlementAction...)
+	for _, field := range []string{ins.Purpose, ins.Origin, ins.SettlementHint, ins.SettlementAction, ins.From, ins.To, ins.Amount, ins.Token} {
+		msg = appendU16BE(msg, len(field))
+		msg = append(msg, field...)
+	}
 	msg = appendU16BE(msg, len(ins.Payload))
 	msg = append(msg, ins.Payload...)
 	return qcrypto.Hash32(msg), nil
@@ -100,6 +115,14 @@ func validateVerifyFields(ins *VerifyInstruction) error {
 	}
 	if len(ins.SettlementAction) > MaxVerifyPurposeBytes {
 		return fmt.Errorf("verify instruction: settlement_action too long")
+	}
+	for name, v := range map[string]string{"from": ins.From, "to": ins.To, "token": ins.Token} {
+		if len(v) > MaxVerifyAddressBytes {
+			return fmt.Errorf("verify instruction: %s length %d, cap %d", name, len(v), MaxVerifyAddressBytes)
+		}
+	}
+	if len(ins.Amount) > MaxVerifyAmountBytes {
+		return fmt.Errorf("verify instruction: amount length %d, cap %d", len(ins.Amount), MaxVerifyAmountBytes)
 	}
 	return nil
 }

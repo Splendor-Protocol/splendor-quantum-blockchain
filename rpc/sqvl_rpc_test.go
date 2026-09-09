@@ -26,7 +26,7 @@ func TestVerifyCheckDualSig(t *testing.T) {
 	var id [32]byte
 	id[0] = 0x42
 	ins := types.VerifyInstruction{
-		Version:          1,
+		Version:          types.VerifyInstructionVersion,
 		InstructionID:    id,
 		Purpose:          "pay",
 		Origin:           "eip155:1",
