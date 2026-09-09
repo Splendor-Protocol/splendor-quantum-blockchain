@@ -335,13 +335,29 @@ func (v *QRC4626Vault) Mint(caller, receiver qcrypto.Address, shares *big.Int) (
 // Withdraw burns shares from `owner` and sends `assets` to `receiver`.
 // `caller` must be `owner` or have allowance.
 func (v *QRC4626Vault) Withdraw(caller, receiver, owner qcrypto.Address, assets *big.Int) (*big.Int, error) {
-	if assets.Sign() <= 0 {
+	if assets == nil || assets.Sign() <= 0 {
 		return nil, fmt.Errorf("vault withdraw: assets must be positive")
+	}
+	if receiver.IsZero() {
+		return nil, fmt.Errorf("vault withdraw: cannot withdraw to zero address")
+	}
+	// Solvency: the vault cannot pay out more than it accounts for. The
+	// previous code clamped the running total at zero after the fact, which
+	// let the books and the token balance drift apart silently.
+	totalAssets, err := v.TotalAssets()
+	if err != nil {
+		return nil, err
+	}
+	if assets.Cmp(totalAssets) > 0 {
+		return nil, fmt.Errorf("vault withdraw: %s assets requested, vault holds %s", assets, totalAssets)
 	}
 
 	shares, err := v.PreviewWithdraw(assets)
 	if err != nil {
 		return nil, err
+	}
+	if shares.Sign() == 0 {
+		return nil, fmt.Errorf("vault withdraw: zero shares would be burned")
 	}
 
 	if err := v.spendAllowance(caller, owner, shares); err != nil {
@@ -362,25 +378,34 @@ func (v *QRC4626Vault) Withdraw(caller, receiver, owner qcrypto.Address, assets 
 		return nil, fmt.Errorf("vault withdraw: asset transfer failed: %w", err)
 	}
 
-	totalAssets, _ := v.TotalAssets()
-	newTotal := new(big.Int).Sub(totalAssets, assets)
-	if newTotal.Sign() < 0 {
-		newTotal = big.NewInt(0)
+	if err := v.setBigInt(slotVaultTotalAssets, new(big.Int).Sub(totalAssets, assets)); err != nil {
+		return nil, err
 	}
-	v.setBigInt(slotVaultTotalAssets, newTotal)
-
 	return shares, nil
 }
 
 // Redeem burns exactly `shares` from `owner` and sends assets to `receiver`.
 func (v *QRC4626Vault) Redeem(caller, receiver, owner qcrypto.Address, shares *big.Int) (*big.Int, error) {
-	if shares.Sign() <= 0 {
+	if shares == nil || shares.Sign() <= 0 {
 		return nil, fmt.Errorf("vault redeem: shares must be positive")
+	}
+	if receiver.IsZero() {
+		return nil, fmt.Errorf("vault redeem: cannot redeem to zero address")
 	}
 
 	assets, err := v.PreviewRedeem(shares)
 	if err != nil {
 		return nil, err
+	}
+	if assets.Sign() == 0 {
+		return nil, fmt.Errorf("vault redeem: shares are worth zero assets")
+	}
+	totalAssets, err := v.TotalAssets()
+	if err != nil {
+		return nil, err
+	}
+	if assets.Cmp(totalAssets) > 0 {
+		return nil, fmt.Errorf("vault redeem: %s assets owed, vault holds %s", assets, totalAssets)
 	}
 
 	if err := v.spendAllowance(caller, owner, shares); err != nil {
@@ -400,13 +425,9 @@ func (v *QRC4626Vault) Redeem(caller, receiver, owner qcrypto.Address, shares *b
 		return nil, fmt.Errorf("vault redeem: asset transfer failed: %w", err)
 	}
 
-	totalAssets, _ := v.TotalAssets()
-	newTotal := new(big.Int).Sub(totalAssets, assets)
-	if newTotal.Sign() < 0 {
-		newTotal = big.NewInt(0)
+	if err := v.setBigInt(slotVaultTotalAssets, new(big.Int).Sub(totalAssets, assets)); err != nil {
+		return nil, err
 	}
-	v.setBigInt(slotVaultTotalAssets, newTotal)
-
 	return assets, nil
 }
 
