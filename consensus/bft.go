@@ -272,10 +272,11 @@ type BFTEngine struct {
 	commitCh  chan *types.Block
 	proposeCh chan *pendingProposal
 
-	onCommit     func(*types.Block) error
-	onViewChange func(height uint64, round uint32)
-	broadcast    VoteBroadcaster
-	broadcastP   ProposalBroadcaster
+	onCommit         func(*types.Block) error
+	onViewChange     func(height uint64, round uint32)
+	validateProposal func(*types.Block) error
+	broadcast        VoteBroadcaster
+	broadcastP       ProposalBroadcaster
 }
 
 // BFTConfig configures the BFT engine.
@@ -289,6 +290,15 @@ type BFTConfig struct {
 	OnViewChange      func(height uint64, round uint32)
 	Broadcast         VoteBroadcaster
 	BroadcastProposal ProposalBroadcaster
+	// ValidateProposal judges a peer's proposal before this node votes on
+	// it: linkage to the local head, producer authorization, every
+	// transaction, the state root — everything the committed block will be
+	// judged on except the certificate, which does not exist yet. A proposal
+	// it rejects gets no vote and changes no engine state. nil skips the
+	// check, which is only acceptable in tests: without it a quorum can form
+	// on a block no honest node can apply, and the leader's own commit is the
+	// first place anyone finds out.
+	ValidateProposal func(*types.Block) error
 }
 
 // NewBFTEngine creates a working multi-validator BFT engine.
@@ -305,10 +315,11 @@ func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
 		localPrivKey: cfg.LocalPrivKey,
 		voteTimeout:  cfg.VoteTimeout,
 		roundTimeout: cfg.RoundTimeout,
-		onCommit:     cfg.OnCommit,
-		onViewChange: cfg.OnViewChange,
-		broadcast:    cfg.Broadcast,
-		broadcastP:   cfg.BroadcastProposal,
+		onCommit:         cfg.OnCommit,
+		onViewChange:     cfg.OnViewChange,
+		validateProposal: cfg.ValidateProposal,
+		broadcast:        cfg.Broadcast,
+		broadcastP:       cfg.BroadcastProposal,
 		voteCh:       make(chan *Vote, 1000),
 		commitCh:     make(chan *types.Block, 16),
 		proposeCh:    make(chan *pendingProposal, 16),
@@ -584,6 +595,32 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 			Str("leader", leader.String()).
 			Msg("BFT: proposal from non-leader rejected")
 		return
+	}
+
+	// A peer's proposal is judged before anything here changes and before a
+	// vote is cast. The leader check above says who MAY have sealed it; the
+	// block signature says who DID — a bare block from an older peer carries
+	// no vote, so proposalRound verified nothing about it — and the validator
+	// says whether it can ever be applied to this node's head.
+	if !p.local {
+		pk := e.findValidatorPubKey(b.Header.ValidatorAddr)
+		if pk == nil {
+			log.Warn().Uint64("height", b.Header.Height).Str("proposer", b.Header.ValidatorAddr.String()).
+				Msg("BFT: proposal rejected, no key for the proposer in the validator set")
+			return
+		}
+		if err := b.VerifySignature(pk); err != nil {
+			log.Warn().Err(err).Uint64("height", b.Header.Height).
+				Str("proposer", b.Header.ValidatorAddr.String()).Msg("BFT: proposal rejected, block signature invalid")
+			return
+		}
+		if e.validateProposal != nil {
+			if err := e.validateProposal(b); err != nil {
+				log.Warn().Err(err).Uint64("height", b.Header.Height).Uint32("round", round).
+					Str("proposer", b.Header.ValidatorAddr.String()).Msg("BFT: proposal rejected, would not apply; no vote cast")
+				return
+			}
+		}
 	}
 
 	// A lock is a statement about ONE height and ONE round. Holding it against
