@@ -2,6 +2,7 @@
 package block
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1283,6 +1284,120 @@ func (e *Executor) verifyBlockLinkage(b *types.Block) error {
 			b.Header.Height, b.Header.Timestamp, latest.Header.Timestamp)
 	}
 	return nil
+}
+
+// HeadConsensus is what /status reports about the certificate on the head
+// block. It exists because the fork bit alone ("multi_validator": true) says
+// only that a rule is scheduled — not that the head carries a certificate,
+// nor that the certificate verifies. Presence and validity are reported
+// separately: a block can carry a qc_root and votes that do not verify.
+type HeadConsensus struct {
+	// Height is the head the rest of the fields describe.
+	Height uint64 `json:"height"`
+	// MultiValidatorActive is whether the multi_validator rule applied to
+	// the head block (schedule.Active at Height).
+	MultiValidatorActive bool `json:"multi_validator_active"`
+	// QCPresent is whether the head carries a qc_root and at least one vote.
+	QCPresent bool `json:"qc_present"`
+	// QCVotes is how many votes the head carries.
+	QCVotes int `json:"qc_votes"`
+	// QuorumRequired is floor(2n/3)+1 over the validator set below, with n
+	// treated as 1 when the registry is empty (the genesis validator is
+	// typically not registered and self-certifies with its own vote).
+	QuorumRequired int `json:"quorum_required"`
+	// QCValid is true only when a certificate is present, every vote is from
+	// the validator set (or from the producer itself while the set has fewer
+	// than two members), no voter is duplicated, every vote names this
+	// block's hash and height, every signature verifies, and the vote count
+	// meets QuorumRequired.
+	QCValid bool `json:"qc_valid"`
+	// Reason names the first check that failed when QCValid is false; empty
+	// when it is true.
+	Reason string `json:"reason,omitempty"`
+	// ValidatorSetSize is the number of Active registry entries in committed
+	// state, and ValidatorSetHeight the height that state is committed at
+	// (the head). This is the set judged against here; the executor judged
+	// the head against the PARENT state when it applied it, and the two
+	// differ exactly when the head itself registered or exited a validator.
+	ValidatorSetSize   int    `json:"validator_set_size"`
+	ValidatorSetHeight uint64 `json:"validator_set_height"`
+}
+
+// HeadConsensus inspects the head block's certificate against the validator
+// set in committed state. It never fails the node: an unreadable head or
+// registry is reported in Reason with QCValid false.
+func (e *Executor) HeadConsensus() HeadConsensus {
+	head, err := e.LatestBlock()
+	if err != nil || head == nil {
+		return HeadConsensus{Reason: "no head block"}
+	}
+	hc := HeadConsensus{
+		Height:               head.Header.Height,
+		MultiValidatorActive: e.schedule().Active(forks.MultiValidator, head.Header.Height),
+		QCPresent:            len(head.Header.QCRoot) > 0 && len(head.Votes) > 0,
+		QCVotes:              len(head.Votes),
+		ValidatorSetHeight:   head.Header.Height,
+	}
+	active, err := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).ListActive()
+	if err != nil {
+		hc.Reason = "validator set unreadable: " + err.Error()
+		return hc
+	}
+	hc.ValidatorSetSize = len(active)
+	n := len(active)
+	if n == 0 {
+		n = 1
+	}
+	hc.QuorumRequired = (n*2)/3 + 1
+
+	if !hc.QCPresent {
+		hc.Reason = "no certificate on head"
+		return hc
+	}
+	if got := types.ComputeQCRoot(head.Votes); !bytes.Equal(got[:], head.Header.QCRoot) {
+		hc.Reason = "qc_root does not match the votes"
+		return hc
+	}
+	byAddr := make(map[qcrypto.Address][]byte, len(active))
+	for _, rec := range active {
+		byAddr[rec.Address] = rec.PublicKey
+	}
+	if _, ok := byAddr[head.Header.ValidatorAddr]; !ok && len(active) < 2 {
+		// Same bootstrap rule as verifyProducerAndQC: below two members the
+		// producer may be the unregistered genesis validator.
+		byAddr[head.Header.ValidatorAddr] = head.ValidatorPubKey
+	}
+	seen := make(map[qcrypto.Address]struct{}, len(head.Votes))
+	for _, v := range head.Votes {
+		pk, ok := byAddr[v.ValidatorAddr]
+		if !ok || len(pk) == 0 {
+			hc.Reason = fmt.Sprintf("vote from %s, not in the validator set", v.ValidatorAddr)
+			return hc
+		}
+		if _, dup := seen[v.ValidatorAddr]; dup {
+			hc.Reason = fmt.Sprintf("duplicate vote from %s", v.ValidatorAddr)
+			return hc
+		}
+		seen[v.ValidatorAddr] = struct{}{}
+		if v.Height != head.Header.Height {
+			hc.Reason = fmt.Sprintf("vote from %s is for height %d", v.ValidatorAddr, v.Height)
+			return hc
+		}
+		if v.BlockHash != head.Hash {
+			hc.Reason = fmt.Sprintf("vote from %s is for another block", v.ValidatorAddr)
+			return hc
+		}
+		if err := v.Verify(pk); err != nil {
+			hc.Reason = err.Error()
+			return hc
+		}
+	}
+	if len(head.Votes) < hc.QuorumRequired {
+		hc.Reason = fmt.Sprintf("qc has %d votes, need %d", len(head.Votes), hc.QuorumRequired)
+		return hc
+	}
+	hc.QCValid = true
+	return hc
 }
 
 func (e *Executor) GetBlock(hashHex string) (*types.Block, error) {
