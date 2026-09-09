@@ -656,7 +656,8 @@ before the field existed.
   `qrc20_v2`, `qrc1155_v1`, `exchange_v1`), `bridge_v1`, SQVL (`verify_v1`),
   permissionless validators (`validators_v1`, 2,500 SPLD bond), lending,
   oracle, multisig, governance, QRC-721, QRC-4626, the 0.001 SPLD fee floor
-  (`min_fee_v1`), and BFT (`multi_validator`). Routed modules require
+  (`min_fee_v1`), BFT (`multi_validator`), and `modules_v2` (dex
+  `remove_liquidity`, the validator re-register guard, module gas). Routed modules require
   `module_revert_v1` at the same or an earlier height. A chain already running
   keeps its stored schedule and adds missing names with
   `--allow-fork-extension` at a height above the current head.
