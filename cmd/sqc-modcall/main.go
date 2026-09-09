@@ -6,7 +6,8 @@
 // receipts, and has one subcommand whose whole purpose is to be refused.
 //
 //	sqc-modcall write  --node URL --wallet W --pass-file P --chain-id ID \
-//	                   --module validators --action register --params '{...}' [--wait]
+//	                   --module validators --action register --params '{...}' \
+//	                   [--wait] [--require-success]
 //	sqc-modcall read   --node URL --module validators --action validator --params '{...}'
 //	sqc-modcall forge  --node URL --wallet W --pass-file P --chain-id ID
 //	sqc-modcall addr
@@ -106,8 +107,14 @@ func loadWallet(f flags) (*qcrypto.PublicKey, *qcrypto.PrivateKey, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := qcrypto.CheckKeyFilePermissions(path); err != nil {
+		return nil, nil, err
+	}
 	passFile, err := f.need("pass-file")
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := qcrypto.CheckKeyFilePermissions(passFile); err != nil {
 		return nil, nil, err
 	}
 	pass, err := os.ReadFile(passFile)
@@ -255,23 +262,34 @@ func cmdWrite(args []string) error {
 	if f["wait"] != "true" {
 		return nil
 	}
-	return waitReceipt(node, hash)
+	return waitReceipt(node, hash, f["require-success"] == "true")
 }
 
 // waitReceipt polls for the receipt and prints it. A SOFT module failure is a
-// receipt with status 0 and the reason inside it — the tool prints it and does
-// NOT exit non-zero, because "the chain refused this on purpose" is frequently
-// the result being tested for.
-func waitReceipt(node, hash string) error {
+// receipt with status 0 and the reason inside it — by default the tool prints
+// it and does NOT exit non-zero, because "the chain refused this on purpose"
+// is frequently the result being tested for. Pass requireSuccess to print a
+// labeled receipt-status line and exit nonzero unless execution succeeded.
+func waitReceipt(node, hash string, requireSuccess bool) error {
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		var r map[string]any
 		if err := getJSON(node+"/tx/"+hash+"/receipt", &r); err == nil && len(r) > 0 {
 			out, _ := json.Marshal(r)
 			fmt.Printf("receipt %s\n", out)
+			if requireSuccess {
+				label := classifyReceiptStatus(r)
+				fmt.Printf("receipt-status %s\n", label)
+				if label != receiptStatusSuccess {
+					return fmt.Errorf("receipt %s", label)
+				}
+			}
 			return nil
 		}
 		time.Sleep(time.Second)
+	}
+	if requireSuccess {
+		fmt.Printf("receipt-status %s\n", receiptStatusPending)
 	}
 	return fmt.Errorf("no receipt for %s within 60s", hash)
 }

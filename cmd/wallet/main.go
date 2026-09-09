@@ -60,7 +60,7 @@ Addresses are derived as SHA3-256(ml_dsa_65_public_key) — no ECDSA.`,
 // ── generate ──────────────────────────────────────────────────────────────
 
 func cmdGenerate() *cobra.Command {
-	var outPath, seedIn string
+	var outPath, seedIn, passFile string
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate a new ML-DSA-65 wallet (prints 24-word phrase + 64-hex seed)",
@@ -70,7 +70,10 @@ BIP39 phrase that import into the extension as the same SQ: address.
 
 Pass --seed to restore an existing phrase or hex instead of creating a new one.
 Wallets created before this (raw GenerateKeypair) have no seed and cannot
-gain one.`,
+gain one.
+
+Pass --pass-file to read the encryption password from a mode-0600 file
+instead of prompting. The file must not be readable by other users.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var seed [qcrypto.SeedSize]byte
 			var err error
@@ -95,16 +98,9 @@ gain one.`,
 				return fmt.Errorf("mnemonic: %w", err)
 			}
 
-			pass, err := readPassword("Enter wallet password: ")
+			pass, err := readGeneratePassword(passFile)
 			if err != nil {
-				return fmt.Errorf("password read error: %w", err)
-			}
-			pass2, err := readPassword("Confirm password: ")
-			if err != nil {
-				return fmt.Errorf("password confirm error: %w", err)
-			}
-			if string(pass) != string(pass2) {
-				return fmt.Errorf("passwords do not match")
+				return err
 			}
 
 			if err := qcrypto.SaveWallet(outPath, pub, priv, pass); err != nil {
@@ -125,6 +121,7 @@ gain one.`,
 	}
 	cmd.Flags().StringVarP(&outPath, "out", "o", "wallet.sqwallet", "Output wallet file path")
 	cmd.Flags().StringVar(&seedIn, "seed", "", "Restore from 24-word phrase or 64-char seed hex")
+	cmd.Flags().StringVar(&passFile, "pass-file", "", "Read the wallet password from a file (must not be readable by other users)")
 	return cmd
 }
 
@@ -387,6 +384,36 @@ KEEP THIS FILE SECURE. Delete it after card provisioning.`,
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
+
+func readGeneratePassword(passFile string) ([]byte, error) {
+	if strings.TrimSpace(passFile) != "" {
+		if err := qcrypto.CheckKeyFilePermissions(passFile); err != nil {
+			return nil, err
+		}
+		b, err := os.ReadFile(passFile)
+		if err != nil {
+			return nil, fmt.Errorf("read --pass-file: %w", err)
+		}
+		pass := bytes.TrimRight(b, "\r\n")
+		if len(pass) == 0 {
+			return nil, fmt.Errorf("--pass-file %s is empty", passFile)
+		}
+		return pass, nil
+	}
+
+	pass, err := readPassword("Enter wallet password: ")
+	if err != nil {
+		return nil, fmt.Errorf("password read error: %w", err)
+	}
+	pass2, err := readPassword("Confirm password: ")
+	if err != nil {
+		return nil, fmt.Errorf("password confirm error: %w", err)
+	}
+	if string(pass) != string(pass2) {
+		return nil, fmt.Errorf("passwords do not match")
+	}
+	return pass, nil
+}
 
 func loadWalletInteractive(path string) (*qcrypto.PublicKey, *qcrypto.PrivateKey, error) {
 	pass, err := readPassword(fmt.Sprintf("Password for %s: ", path))

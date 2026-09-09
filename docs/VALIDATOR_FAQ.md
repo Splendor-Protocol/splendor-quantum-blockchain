@@ -1,3 +1,9 @@
+> **Archived lab model.**
+> This page describes the feat/validator pass/tier lab, not the live
+> 2,500 SPLD `validators_v1` registry. Public admission has not launched.
+> Do not treat these numbers or procedures as mainnet admission.
+> Current lifecycle: [`VALIDATOR.md`](VALIDATOR.md).
+
 # Feat/validator lab — short FAQ (shareable)
 
 Plain-language prep for the **feat/validator** demo lab.  
