@@ -85,9 +85,9 @@ func TestSinglePathProducerHandsOverToBFTWhenQuorumBecomesRequired(t *testing.T)
 		LocalAddr: localAddr, LocalPubKey: localPK, LocalPrivKey: localPriv,
 		RoundTimeout: time.Hour,
 		OnCommit:     func(b *types.Block) error { return ex.ExecuteBlock(b) },
-		BroadcastProposal: func(b *types.Block) {
+		BroadcastProposal: func(m *ProposalMsg) {
 			select {
-			case proposals <- b:
+			case proposals <- m.Block:
 			default:
 			}
 		},

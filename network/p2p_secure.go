@@ -34,6 +34,16 @@ const (
 	KindAnnounce = "announce"
 	KindVote     = "vote"
 	KindProposal = "proposal"
+	// KindTx relays a transaction one hop to the node's peers.
+	//
+	// Only the leader of a height puts transactions into a block, and there
+	// was no path from one mempool to another: a transaction submitted to any
+	// node other than the current leader — an RPC node, or the validator that
+	// happens not to be leading — simply never landed. That is how an operator
+	// registering a new validator watched a correctly signed transaction go
+	// nowhere. Relayed transactions are never re-relayed, so the fan-out is
+	// one hop and cannot storm.
+	KindTx = "tx"
 
 	KindGetBlock  = "get_block"
 	KindGetLatest = "get_latest"

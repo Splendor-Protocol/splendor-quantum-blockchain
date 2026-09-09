@@ -19,10 +19,15 @@ import (
 // validateStateSyncFlags refuses --state-sync configurations that cannot work,
 // at start-up, naming the flag that fixes each.
 func validateStateSyncFlags(isValidator bool, trustedPK []byte, genesisPin *[32]byte, genesisPath string, peers []string) error {
-	if isValidator {
-		return errors.New("--state-sync cannot be combined with --validator: a validator on an empty chain seals " +
-			"its own block before the snapshot lands. Join as a follower first, then restart with --validator " +
-			"on the synced data dir")
+	// A validator may state-sync. It used to be refused because a validator on
+	// an empty chain sealed its own block 1 before the snapshot landed; a
+	// validator that did not mint the chain it was started against now holds
+	// production until it has a stored head (joiningValidatorReady), so the
+	// case the refusal existed for cannot happen. It still needs somewhere to
+	// take the snapshot FROM.
+	if isValidator && len(peers) == 0 {
+		return errors.New("--state-sync --validator needs at least one --peer: the snapshot, and every block " +
+			"after it, comes from a peer, and this node must not seal anything until it has them")
 	}
 	if len(trustedPK) == 0 && genesisPin == nil {
 		return errors.New("--state-sync needs --validator-pubkey-hex or --genesis-hash: the snapshot's head block " +

@@ -7,6 +7,7 @@ import (
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 )
 
 // Which path seals the next block is decided per block by consensus.Producer;
@@ -78,6 +79,73 @@ func TestGenesisValidatorInfo(t *testing.T) {
 	}
 	if !info.IsActive {
 		t.Fatal("fallback validator must be marked active")
+	}
+}
+
+// A --validator handed a genesis document that names somebody else used to
+// exit at start-up, which is why the only documented way onto a running chain
+// was "start a full node, then restart it as a validator". With a peer to take
+// the chain from it now joins instead; without one it still refuses, because
+// there it could only mint a second, incompatible chain.
+func TestValidatorStartRole(t *testing.T) {
+	ourPub, _, _ := qcrypto.GenerateKeypair()
+	theirPub, _, _ := qcrypto.GenerateKeypair()
+	docFor := func(pub *qcrypto.PublicKey) *genesiscfg.Genesis {
+		return &genesiscfg.Genesis{ValidatorPubKeyHex: hex.EncodeToString(pub.Bytes())}
+	}
+	peers := []string{"http://127.0.0.1:9999"}
+
+	role, err := validatorStartRole(docFor(ourPub), ourPub.Bytes(), nil)
+	if err != nil || role != roleMintGenesis {
+		t.Fatalf("the document's own validator must mint: role=%v err=%v", role, err)
+	}
+	role, err = validatorStartRole(docFor(ourPub), ourPub.Bytes(), peers)
+	if err != nil || role != roleMintGenesis {
+		t.Fatalf("the founder mints even with peers configured: role=%v err=%v", role, err)
+	}
+	role, err = validatorStartRole(docFor(theirPub), ourPub.Bytes(), peers)
+	if err != nil || role != roleJoin {
+		t.Fatalf("a validator with a peer must join, not exit: role=%v err=%v", role, err)
+	}
+	if _, err := validatorStartRole(docFor(theirPub), ourPub.Bytes(), nil); err == nil {
+		t.Fatal("a document naming someone else with NO peer must still be refused: " +
+			"minting there forks the network the document describes")
+	}
+	role, err = validatorStartRole(nil, ourPub.Bytes(), nil)
+	if err != nil || role != roleMintGenesis {
+		t.Fatalf("no document and no peer is the solo dev node: role=%v err=%v", role, err)
+	}
+	role, err = validatorStartRole(nil, ourPub.Bytes(), peers)
+	if err != nil || role != roleJoin {
+		t.Fatalf("no document but a peer: the chain is the peer's, join it: role=%v err=%v", role, err)
+	}
+	if _, err := validatorStartRole(&genesiscfg.Genesis{ValidatorPubKeyHex: "zz"}, ourPub.Bytes(), peers); err == nil {
+		t.Fatal("an unusable validator_pubkey_hex must be an error, not a silent join")
+	}
+}
+
+// The joiner's readiness gate. syncer.IsSynced answers "synced" while no peer
+// height is known, which is right for the chain's own producer and wrong for a
+// node that has just been told to take someone else's chain: it would seal its
+// own block 1 over genesis before the first pull ever ran.
+func TestJoiningValidatorIsNotReadyUntilItHasABlock(t *testing.T) {
+	_, ex := newBootstrapNode(t)
+	ready := joiningValidatorReady(ex, func() bool { return true })
+	if ready() {
+		t.Fatal("a joining validator with an empty chain reported ready to propose")
+	}
+
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	b1, err := ex.ProduceBlock(nil, qcrypto.DeriveAddress(vpub), vpub.Bytes(), vpriv, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+	_ = b1
+	if !ready() {
+		t.Fatal("with a block applied the gate must defer to the syncer")
+	}
+	if joiningValidatorReady(ex, func() bool { return false })() {
+		t.Fatal("the gate must still refuse while the syncer says the node is behind")
 	}
 }
 

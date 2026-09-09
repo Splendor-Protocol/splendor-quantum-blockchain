@@ -32,6 +32,9 @@ type P2PConfig struct {
 	HandleVote func(body []byte) error
 	// HandleProposal processes a sealed block proposal (raw JSON).
 	HandleProposal func(body []byte) error
+	// HandleTx admits a transaction relayed by a peer (raw JSON). The
+	// implementation must NOT relay it onwards: relaying is one hop.
+	HandleTx func(body []byte) error
 	// ServeBlock returns a block's JSON by height, for sealed catch-up sync.
 	ServeBlock func(height uint64) ([]byte, error)
 	// ServeLatestBlock returns the head block's JSON, for sealed catch-up sync.
@@ -140,6 +143,12 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 				return
 			}
 			handleErr = cfg.HandleProposal(req.Body)
+		case network.KindTx:
+			if cfg.HandleTx == nil {
+				writeError(w, http.StatusNotImplemented, "transaction relay not available")
+				return
+			}
+			handleErr = cfg.HandleTx(req.Body)
 		default:
 			writeError(w, http.StatusBadRequest, "unknown sealed request kind")
 			return

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 )
 
 // Which path seals the next block — single or BFT — is no longer decided
@@ -70,6 +72,89 @@ func genesisValidatorInfo(ex *block.Executor, trustedPK []byte) (consensus.Valid
 		}
 	}
 	return consensus.ValidatorInfo{}, false
+}
+
+// validatorRole is what a --validator does with an EMPTY data directory:
+// start the chain, or take one that already exists.
+type validatorRole int
+
+const (
+	// roleMintGenesis — this node is the chain's founder. It applies the
+	// genesis allocations and seals block 0 under its own key.
+	roleMintGenesis validatorRole = iota
+
+	// roleJoin — the chain exists somewhere else. Seal nothing; pull it from a
+	// peer, and only produce once there is a head to produce on top of.
+	roleJoin
+)
+
+// validatorStartRole decides which of the two a --validator on an empty chain
+// is, and refuses the configuration that can only be a fork.
+//
+// A validator whose --genesis named a different key used to exit at start-up.
+// That is why the documented way to add a validator to a running chain was to
+// start it as a full node and restart it as a validator once it had caught up:
+// the second process was a consequence of this check, not of the problem. With
+// a peer to take the chain from, the node joins instead — same data directory,
+// one launch.
+//
+// The refusal stays for the case that really is unrecoverable: a document
+// naming somebody else and no peer to sync from. A node there can do nothing
+// but mint a second chain under the same document, which is the failure the
+// original check existed to prevent.
+func validatorStartRole(doc *genesiscfg.Genesis, localPK []byte, peers []string) (validatorRole, error) {
+	if doc == nil {
+		// No document to compare against. With a peer, the chain is the peer's;
+		// without one this is the solo development node that mints its own.
+		if len(peers) > 0 {
+			return roleJoin, nil
+		}
+		return roleMintGenesis, nil
+	}
+	docPub, err := doc.ValidatorPublicKey()
+	if err != nil {
+		return 0, fmt.Errorf("genesis document has an unusable validator_pubkey_hex: %w", err)
+	}
+	if bytes.Equal(docPub.Bytes(), localPK) {
+		return roleMintGenesis, nil
+	}
+	if len(peers) == 0 {
+		return 0, fmt.Errorf(
+			"this node's wallet is %s but the genesis document declares validator %s, "+
+				"and no --peer was given: minting block 0 here would start a SECOND chain "+
+				"under the same document. Pass --peer <url of a node on that chain> to join it",
+			qcrypto.DeriveAddress(mustPublic(localPK)), qcrypto.DeriveAddress(docPub))
+	}
+	return roleJoin, nil
+}
+
+// mustPublic is only used to render an address in the error above; an
+// unparseable local key cannot reach it (the wallet loaded it).
+func mustPublic(pk []byte) *qcrypto.PublicKey {
+	pub, err := qcrypto.PublicKeyFromBytes(pk)
+	if err != nil {
+		return &qcrypto.PublicKey{}
+	}
+	return pub
+}
+
+// joiningValidatorReady gates proposals on a validator that was pointed at
+// somebody else's chain.
+//
+// syncer.IsSynced reports "synced" while no peer height is known yet, which is
+// the right answer for the chain's own producer and the wrong one here: a
+// joiner would pass the gate in the first second of its life, before any pull
+// had run, and seal its own block 1 on top of genesis. Requiring a stored head
+// first means the node has taken at least one block from the network before it
+// is allowed to add one.
+func joiningValidatorReady(ex *block.Executor, synced func() bool) func() bool {
+	return func() bool {
+		head, err := ex.LatestBlock()
+		if err != nil || head == nil {
+			return false
+		}
+		return synced == nil || synced()
+	}
 }
 
 // applyCommittedBlock is the BFT engine's commit callback.

@@ -53,6 +53,8 @@ type Server struct {
 	// the cleartext ingest route; see Config.
 	trustedProducerKey func() []byte
 	lookupProducerKey  network.ProducerKeyLookup
+	// relayTx passes a transaction this node admitted to its peers; see Config.
+	relayTx            func(tx *types.Transaction)
 	router             *mux.Router
 	httpServer         *http.Server
 	// peerCount returns the number of connected peers (from peer pool)
@@ -88,6 +90,16 @@ type Config struct {
 	// sealed by someone other than the genesis validator. nil keeps the
 	// single-key rule.
 	LookupProducerKey network.ProducerKeyLookup
+
+	// RelayTx hands a transaction this node has just admitted to its peers.
+	//
+	// Only the leader of a height puts transactions into a block, and nothing
+	// carried one mempool's contents to another: a transaction submitted to any
+	// node that is not the current leader — an RPC node, or the validator that
+	// happens not to be leading — was never included. nil disables the relay,
+	// which is the correct setting on the ingest path itself, so a relayed
+	// transaction is never relayed on.
+	RelayTx func(tx *types.Transaction)
 
 	// AllowPlaintextP2P registers the CLEARTEXT peer routes (POST /block,
 	// POST /peers/announce). The flag of the same name used to gate only the
@@ -155,6 +167,7 @@ func New(
 		validatorPK:        cfg.ValidatorPK,
 		trustedProducerKey: cfg.TrustedProducerKey,
 		lookupProducerKey:  cfg.LookupProducerKey,
+		relayTx:            cfg.RelayTx,
 		peerCount:          cfg.PeerCount,
 		writeAuth:          NewWriteAuth(cfg.AuthToken),
 		cors:               NewCORSPolicy(cfg.CORSOrigins),
@@ -323,6 +336,12 @@ func (s *Server) admitTx(w http.ResponseWriter, tx *types.Transaction) {
 	if err := s.pool.Add(tx); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 		return
+	}
+	// Admitted here, so every peer should see it: this node may not be the one
+	// that leads the next height. The relay runs after Add, so only a
+	// transaction this node itself accepted is ever passed on.
+	if s.relayTx != nil {
+		s.relayTx(tx)
 	}
 	hash, _ := tx.FullHash()
 	writeJSON(w, http.StatusAccepted, map[string]string{

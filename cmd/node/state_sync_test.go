@@ -26,7 +26,10 @@ func TestStateSyncFlagValidation(t *testing.T) {
 		peers     []string
 		wantErr   string
 	}{
-		{"validator refused", true, key, nil, "g.json", []string{"http://p"}, "--validator"},
+		// A validator may state-sync — it holds production until the snapshot
+		// has landed — but it must have somewhere to take the snapshot from.
+		{"validator with a peer", true, key, nil, "g.json", []string{"http://p"}, ""},
+		{"validator with no peer", true, key, nil, "g.json", nil, "--peer"},
 		{"no trust anchor", false, nil, nil, "g.json", []string{"http://p"}, "--validator-pubkey-hex"},
 		{"no genesis source", false, key, nil, "", nil, "--genesis"},
 		{"key and local genesis", false, key, nil, "g.json", nil, ""},
