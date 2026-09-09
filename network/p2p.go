@@ -29,8 +29,61 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo"
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
+
+// ProducerKeyLookup resolves the ML-DSA-65 public key of a validator the
+// chain's registry lists as ACTIVE, by address. nil means unknown. The node
+// wires it to the executor's committed-state registry, which for the next
+// block to apply is the parent state — the same set ExecuteBlock judges the
+// block's certificate against.
+type ProducerKeyLookup func(addr qcrypto.Address) []byte
+
+// VerifyBlockProducer authenticates a block's signature before it is applied.
+//
+// The pinned genesis validator key is tried first and is the only key block 0
+// may verify under. Above height 0, when the pinned key does not match and a
+// resolver is given, the block is checked against the active-set key of the
+// address its header names — bound by DeriveAddress(key) == ValidatorAddr, so
+// a registry entry can never authenticate a block sealed by someone else. A
+// producer that is neither is refused, which is what keeps a single-producer
+// chain on exactly today's rule while a rotating BFT leader can be followed.
+//
+// Nothing here trusts the key a block carries: verifying a block against its
+// own embedded key always succeeds and proves nothing. ExecuteBlock remains
+// the authority and still verifies the certificate.
+func VerifyBlockProducer(b *types.Block, trustedPK []byte, lookup ProducerKeyLookup) error {
+	if len(trustedPK) == 0 {
+		return fmt.Errorf("block %d: no trusted validator pubkey configured — refusing to authenticate it "+
+			"(set --validator-pubkey-hex, or --genesis-hash to bootstrap it)", b.Header.Height)
+	}
+	pinErr := b.VerifySignature(trustedPK)
+	if pinErr == nil {
+		return nil
+	}
+	if b.Header.Height == 0 || lookup == nil {
+		return fmt.Errorf("block %d: invalid validator signature: %w", b.Header.Height, pinErr)
+	}
+	key := lookup(b.Header.ValidatorAddr)
+	if len(key) == 0 {
+		return fmt.Errorf("block %d: producer %s is neither the trusted genesis validator nor in the active validator set",
+			b.Header.Height, b.Header.ValidatorAddr)
+	}
+	pub, err := qcrypto.PublicKeyFromBytes(key)
+	if err != nil {
+		return fmt.Errorf("block %d: registry key for %s is invalid: %w", b.Header.Height, b.Header.ValidatorAddr, err)
+	}
+	if derived := qcrypto.DeriveAddress(pub); derived != b.Header.ValidatorAddr {
+		return fmt.Errorf("block %d: registry key for %s derives to %s — refusing it",
+			b.Header.Height, b.Header.ValidatorAddr, derived)
+	}
+	if err := b.VerifySignature(key); err != nil {
+		return fmt.Errorf("block %d: invalid signature from active validator %s: %w",
+			b.Header.Height, b.Header.ValidatorAddr, err)
+	}
+	return nil
+}
 
 // Broadcaster pushes newly produced blocks to all known peers immediately.
 // This provides true realtime sync — peers receive blocks within milliseconds
@@ -285,8 +338,8 @@ func (b *Broadcaster) AnnounceSelf(selfURL string, selfHeight uint64) {
 }
 
 // HandleIncomingBlock processes a raw block JSON received from a peer.
-// It validates the block's ML-DSA-65 signature and calls applyBlock.
-func HandleIncomingBlock(body []byte, validatorPK []byte, applyBlock func(*types.Block) error) error {
+// It authenticates the block (VerifyBlockProducer) and calls applyBlock.
+func HandleIncomingBlock(body []byte, validatorPK []byte, lookup ProducerKeyLookup, applyBlock func(*types.Block) error) error {
 	var block types.Block
 	if err := json.Unmarshal(body, &block); err != nil {
 		return fmt.Errorf("invalid block JSON: %w", err)
@@ -299,15 +352,12 @@ func HandleIncomingBlock(body []byte, validatorPK []byte, applyBlock func(*types
 
 	// ML-DSA-65 signature verification is MANDATORY on the inbound push path.
 	// An empty validatorPK previously meant "skip verification", which let any
-	// unauthenticated caller POST a forged block to /block. We now fail closed:
-	// a node with no trusted validator pubkey refuses pushed blocks and relies on
-	// the pull-sync path (which bootstraps the key from the genesis block) instead.
-	// Operators can pin the key explicitly via --validator-pubkey-hex.
-	if len(validatorPK) == 0 {
-		return fmt.Errorf("refusing inbound block: no trusted validator pubkey configured")
-	}
-	if err := block.VerifySignature(validatorPK); err != nil {
-		return fmt.Errorf("invalid validator signature: %w", err)
+	// unauthenticated caller POST a forged block to /block. We fail closed: a
+	// node with no trusted validator pubkey refuses pushed blocks and relies on
+	// the pull-sync path (which bootstraps the key from the genesis block)
+	// instead. Operators can pin the key explicitly via --validator-pubkey-hex.
+	if err := VerifyBlockProducer(&block, validatorPK, lookup); err != nil {
+		return fmt.Errorf("refusing inbound block: %w", err)
 	}
 
 	// Apply to local chain

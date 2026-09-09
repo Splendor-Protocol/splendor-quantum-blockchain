@@ -49,8 +49,14 @@ type Server struct {
 	x402proc    *x402.Processor
 	scheduler   *ai.Scheduler
 	validatorPK []byte
-	router      *mux.Router
-	httpServer  *http.Server
+	// trustedProducerKey and lookupProducerKey authenticate pushed blocks on
+	// the cleartext ingest route; see Config.
+	trustedProducerKey func() []byte
+	lookupProducerKey  network.ProducerKeyLookup
+	// relayTx passes a transaction this node admitted to its peers; see Config.
+	relayTx            func(tx *types.Transaction)
+	router             *mux.Router
+	httpServer         *http.Server
 	// peerCount returns the number of connected peers (from peer pool)
 	peerCount func() int
 	// writeAuth gates the write plane (block ingest, peer announce). With no
@@ -71,9 +77,29 @@ type Server struct {
 // Config holds server configuration.
 type Config struct {
 	ListenAddr  string     // e.g. "127.0.0.1:8080"
-	ValidatorPK []byte     // ML-DSA public key of the genesis validator
+	ValidatorPK []byte     // ML-DSA public key this node reports as /status.local_validator
 	PeerCount   func() int // optional: returns live peer count
 	AuthToken   string     // shared secret required on write-plane routes
+
+	// TrustedProducerKey returns the genesis validator key pushed blocks are
+	// authenticated against — read at call time, because a node that pins
+	// only --genesis-hash learns the key from block 0 after start-up. nil
+	// falls back to ValidatorPK (the pre-existing behaviour).
+	TrustedProducerKey func() []byte
+	// LookupProducerKey resolves an active validator's key for a pushed block
+	// sealed by someone other than the genesis validator. nil keeps the
+	// single-key rule.
+	LookupProducerKey network.ProducerKeyLookup
+
+	// RelayTx hands a transaction this node has just admitted to its peers.
+	//
+	// Only the leader of a height puts transactions into a block, and nothing
+	// carried one mempool's contents to another: a transaction submitted to any
+	// node that is not the current leader — an RPC node, or the validator that
+	// happens not to be leading — was never included. nil disables the relay,
+	// which is the correct setting on the ingest path itself, so a relayed
+	// transaction is never relayed on.
+	RelayTx func(tx *types.Transaction)
 
 	// AllowPlaintextP2P registers the CLEARTEXT peer routes (POST /block,
 	// POST /peers/announce). The flag of the same name used to gate only the
@@ -130,20 +156,23 @@ func New(
 	scheduler *ai.Scheduler,
 ) *Server {
 	s := &Server{
-		allowPlaintextP2P: cfg.AllowPlaintextP2P,
-		addr:              cfg.ListenAddr,
-		stateDB:           stateDB,
-		executor:          executor,
-		pool:              pool,
-		broadcaster:       broadcaster,
-		x402proc:          x402.NewProcessor(stateDB),
-		scheduler:         scheduler,
-		validatorPK:       cfg.ValidatorPK,
-		peerCount:         cfg.PeerCount,
-		writeAuth:         NewWriteAuth(cfg.AuthToken),
-		cors:              NewCORSPolicy(cfg.CORSOrigins),
-		submitLimiter:     NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
-		simGuard:          newSimGuard(cfg),
+		allowPlaintextP2P:  cfg.AllowPlaintextP2P,
+		addr:               cfg.ListenAddr,
+		stateDB:            stateDB,
+		executor:           executor,
+		pool:               pool,
+		broadcaster:        broadcaster,
+		x402proc:           x402.NewProcessor(stateDB),
+		scheduler:          scheduler,
+		validatorPK:        cfg.ValidatorPK,
+		trustedProducerKey: cfg.TrustedProducerKey,
+		lookupProducerKey:  cfg.LookupProducerKey,
+		relayTx:            cfg.RelayTx,
+		peerCount:          cfg.PeerCount,
+		writeAuth:          NewWriteAuth(cfg.AuthToken),
+		cors:               NewCORSPolicy(cfg.CORSOrigins),
+		submitLimiter:      NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
+		simGuard:           newSimGuard(cfg),
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -308,6 +337,12 @@ func (s *Server) admitTx(w http.ResponseWriter, tx *types.Transaction) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 		return
 	}
+	// Admitted here, so every peer should see it: this node may not be the one
+	// that leads the next height. The relay runs after Add, so only a
+	// transaction this node itself accepted is ever passed on.
+	if s.relayTx != nil {
+		s.relayTx(tx)
+	}
 	hash, _ := tx.FullHash()
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"status": "accepted",
@@ -422,7 +457,11 @@ func (s *Server) handleIncomingBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = network.HandleIncomingBlock(body, s.validatorPK, func(b *types.Block) error {
+	trusted := s.validatorPK
+	if s.trustedProducerKey != nil {
+		trusted = s.trustedProducerKey()
+	}
+	err = network.HandleIncomingBlock(body, trusted, s.lookupProducerKey, func(b *types.Block) error {
 		return s.executor.ExecuteBlock(b)
 	})
 	if err != nil {

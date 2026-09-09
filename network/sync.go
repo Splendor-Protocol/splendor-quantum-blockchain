@@ -25,6 +25,7 @@ import (
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -71,6 +72,12 @@ type SyncConfig struct {
 	// no sealed transport. Off by default so the channel cannot be downgraded
 	// by an attacker who simply refuses to answer /p2p/identity.
 	AllowPlaintext bool
+
+	// LookupProducerKey resolves the key of an ACTIVE registered validator, so
+	// a block sealed by a rotating BFT leader other than the genesis validator
+	// can be authenticated (see VerifyBlockProducer). nil keeps the single
+	// pinned-key rule. Block 0 is never resolved through it.
+	LookupProducerKey ProducerKeyLookup
 }
 
 // DefaultSyncConfig returns sensible defaults.
@@ -87,18 +94,44 @@ func DefaultSyncConfig(validatorPubKey []byte) SyncConfig {
 type BlockFetcher struct {
 	cfg    SyncConfig
 	client *http.Client
+
+	// trustedPK is the genesis validator key every block is authenticated
+	// against (with the active set as the second key ring, see
+	// VerifyBlockProducer). It starts as cfg.ValidatorPubKey and may be
+	// learned later from a pinned genesis block, on another goroutine, so it
+	// lives behind a lock rather than in cfg.
+	mu        sync.RWMutex
+	trustedPK []byte
 }
 
 // NewBlockFetcher creates a fetcher with the given config.
 func NewBlockFetcher(cfg SyncConfig) *BlockFetcher {
 	return &BlockFetcher{
-		cfg: cfg,
+		cfg:       cfg,
+		trustedPK: append([]byte(nil), cfg.ValidatorPubKey...),
 		client: &http.Client{
 			Timeout:       cfg.RequestTimeout,
 			CheckRedirect: noRedirect,
 			Transport:     SafeTransport(cfg.RequestTimeout),
 		},
 	}
+}
+
+// TrustedPubKey returns the genesis validator key blocks are verified with,
+// or nil while none is known.
+func (f *BlockFetcher) TrustedPubKey() []byte {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if len(f.trustedPK) == 0 {
+		return nil
+	}
+	return append([]byte(nil), f.trustedPK...)
+}
+
+func (f *BlockFetcher) setTrustedPubKey(pk []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.trustedPK = append([]byte(nil), pk...)
 }
 
 // fetchBlockJSON retrieves a block document from a peer.
@@ -261,12 +294,10 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 	// former "learn it from the first block" path accepted any chain the first
 	// peer chose to fabricate. The only sanctioned way to acquire the key is
 	// FetchGenesisValidatorPubKey, which checks block 0 against a pinned hash.
-	if len(f.cfg.ValidatorPubKey) == 0 {
-		return nil, fmt.Errorf("block %d: no trusted validator pubkey — refusing to apply an unverified block "+
-			"(set --validator-pubkey-hex, or --genesis-hash to bootstrap it)", height)
-	}
-	if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-		return nil, fmt.Errorf("block %d: invalid validator signature: %w", height, err)
+	// Above height 0 the active validator set is the second key ring, so a
+	// rotating BFT leader can be followed without trusting what it carries.
+	if err := VerifyBlockProducer(&block, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
+		return nil, err
 	}
 
 	// Height 0 must additionally match the pin when one is configured, so a peer
@@ -296,12 +327,9 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 		return nil, fmt.Errorf("decode latest block: %w", err)
 	}
 
-	// Verify signature; fail closed with no pinned key (matches FetchBlock).
-	if len(f.cfg.ValidatorPubKey) == 0 {
-		return nil, fmt.Errorf("latest block: no trusted validator pubkey")
-	}
-	if err := block.VerifySignature(f.cfg.ValidatorPubKey); err != nil {
-		return nil, fmt.Errorf("latest block: invalid validator signature: %w", err)
+	// Same rule as FetchBlock: pinned key, then the active set; fail closed.
+	if err := VerifyBlockProducer(&block, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
+		return nil, fmt.Errorf("latest block: %w", err)
 	}
 
 	return &block, nil
@@ -356,7 +384,7 @@ func (s *Syncer) bootstrapValidatorPubKey() {
 			continue
 		}
 		if len(pubkey) > 0 {
-			s.fetcher.cfg.ValidatorPubKey = pubkey
+			s.fetcher.setTrustedPubKey(pubkey)
 			log.Info().
 				Str("peer", peer).
 				Str("pubkey_prefix", fmt.Sprintf("%x", pubkey[:8])).
@@ -365,6 +393,13 @@ func (s *Syncer) bootstrapValidatorPubKey() {
 		}
 	}
 	log.Error().Msg("sync: no peer served a genesis block matching the pinned hash — refusing to sync")
+}
+
+// TrustedPubKey returns the genesis validator key this syncer authenticates
+// blocks with — the configured one, or the one learned from a pinned genesis
+// block — so the push path can apply the same rule. nil while none is known.
+func (s *Syncer) TrustedPubKey() []byte {
+	return s.fetcher.TrustedPubKey()
 }
 
 // SyncOnce performs one sync pass: check peers, download missing blocks.
