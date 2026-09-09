@@ -87,6 +87,13 @@ type Executor struct {
 	// nil = unpinned, which is the pre-existing behaviour.
 	genesisHash *[32]byte
 
+	// genesisValidatorKey supplies block 0's sealing key when the chain DB
+	// does not hold block 0; see WithGenesisValidatorKey.
+	genesisValidatorKey func() []byte
+	// warnedCarriedKey makes the "no genesis key known, trusting the carried
+	// key" warning fire once rather than on every block.
+	warnedCarriedKey atomic.Bool
+
 	// forks is the chain's rule-change schedule. It travels into every module
 	// call (vm.ModuleContext.Forks) so a gate is judged against the height of
 	// the block being applied — the one code path producer and follower share.
@@ -162,6 +169,24 @@ func (e *Executor) WithTxIndex(idx receiptStorer) *Executor {
 // a divergent one after its data dir is wiped.
 func (e *Executor) WithGenesisHash(h [32]byte) *Executor {
 	e.genesisHash = &h
+	return e
+}
+
+// WithGenesisValidatorKey names the key that sealed block 0, for the one place
+// the registry is not yet the authority on who produces: below two active
+// validators a block from an address the registry does not list is accepted,
+// and before this the executor accepted it on the key the block CARRIED —
+// which every block passes. A chain's genesis validator is typically not
+// registered, so the fallback is needed, but it must be pinned to that
+// validator, not to whoever signs.
+//
+// The key is read at call time because a node that pins only --genesis-hash
+// learns it from block 0 after start-up. Block 0 in the chain DB, when stored,
+// is consulted first; the function is the fallback for a node that never
+// stored it (pull-sync and state-sync joiners). With neither, the executor
+// keeps the old carried-key rule and says so once in the log.
+func (e *Executor) WithGenesisValidatorKey(fn func() []byte) *Executor {
+	e.genesisValidatorKey = fn
 	return e
 }
 
@@ -250,88 +275,9 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		Int("txs", len(b.Transactions)).
 		Msg("executing block")
 
-	// Chain-continuity checks before any state mutation.
-	if err := e.verifyBlockLinkage(b); err != nil {
-		return fmt.Errorf("block linkage rejected: %w", err)
-	}
-	if err := e.verifyProducerAndQC(b); err != nil {
-		return fmt.Errorf("block certificate rejected: %w", err)
-	}
-
-	// Run pre-block hooks
-	if e.hooks != nil {
-		if err := e.hooks.RunPreBlock(b); err != nil {
-			return fmt.Errorf("pre-block hook rejected block: %w", err)
-		}
-	}
-
-	var receipts []*types.Receipt
-	totalFees := new(bigInt)
-	var blockGas uint64
-
-	for i, tx := range b.Transactions {
-		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
-		if err != nil {
-			// The tx could not be applied at all: bad signature, wrong nonce,
-			// unaffordable, unknown type. ProduceBlock drops such txs, so a block
-			// that still carries one was not built honestly. It must be rejected
-			// outright — the previous behaviour reverted the tx (leaving the
-			// sender undebited) yet still credited its fee to the validator,
-			// which minted the fee out of nothing on every invalid tx packed.
-			e.state.DiscardPending()
-			return fmt.Errorf("block contains an unappliable tx at index %d: %w", i, err)
-		}
-		receipts = append(receipts, receipt)
-
-		// Reject a block that exceeds the consensus gas budget (defence against a
-		// producer packing far more compute than the interval can process).
-		blockGas += receipt.GasUsed
-		if blockGas > MaxBlockGas {
-			e.state.DiscardPending()
-			return fmt.Errorf("block exceeds gas budget: %d > %d", blockGas, MaxBlockGas)
-		}
-
-		// Accumulate fees for validator credit (mirrors ProduceBlock). Only txs
-		// that actually applied reach here, and every exec path debits tx.Fee
-		// from the sender before doing its work — including the reverted-call
-		// case, where the fee is kept as gas. So the credit always has a
-		// matching debit and total supply is conserved.
-		totalFees.Add(totalFees, tx.Fee)
-
-		// Run post-tx hooks (non-fatal)
-		if e.hooks != nil {
-			e.hooks.RunPostTx(tx, receipt)
-		}
-	}
-
-	// Credit accumulated fees to the block's validator address.
-	// This MUST match what ProduceBlock does or state roots will diverge on
-	// any block that contains transactions.
-	if totalFees.Sign() > 0 {
-		va, err := e.state.GetAccount(b.Header.ValidatorAddr)
-		if err != nil {
-			e.state.DiscardPending()
-			return fmt.Errorf("fee credit: get validator account: %w", err)
-		}
-		va.AddBalance(totalFees)
-		e.state.SetAccount(va)
-	}
-
-	if err := genesis.CheckNativeSupply(e.state); err != nil {
-		e.state.DiscardPending()
-		return err
-	}
-
-	// Verify the declared state root BEFORE persisting.
-	stateRoot, err := e.state.PendingStateRoot()
+	receipts, stateRoot, err := e.applyBlockPending(b, true)
 	if err != nil {
-		e.state.DiscardPending()
-		return fmt.Errorf("state root computation failed: %w", err)
-	}
-	if stateRoot != b.Header.StateRoot {
-		e.state.DiscardPending()
-		return fmt.Errorf("state root mismatch: computed %x, header %x",
-			stateRoot[:8], b.Header.StateRoot[:8])
+		return err
 	}
 
 	// Root matches — persist. ORDER MATTERS: store the block + advance the chain
@@ -363,6 +309,126 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 	}
 
 	return nil
+}
+
+// ValidateProposal judges a BFT proposal exactly as ExecuteBlock would judge
+// the committed block — linkage to this node's head, producer authorization
+// and signature, every transaction applied, the gas budget, the supply cap and
+// the declared state root — and then discards the result. Nothing is
+// persisted and the pending layer is left empty.
+//
+// This is what stands between a vote and a proposal that could never commit.
+// Before it, a validator voted on any block from the scheduled leader and
+// found out at commit time that the parent was wrong, a transaction was
+// unappliable or the state root did not match; a quorum could form on a block
+// that no honest node could apply. The certificate is not required here,
+// because it does not exist until the votes are in; everything else is.
+//
+// Callers hold no lock; mu is taken here, so a proposal is never judged while
+// a block is being applied.
+func (e *Executor) ValidateProposal(b *types.Block) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, _, err := e.applyBlockPending(b, false)
+	// Success leaves the block's writes in the pending layer; they must not
+	// survive into the next transition.
+	e.state.DiscardPending()
+	return err
+}
+
+// applyBlockPending runs every check and every state transition of a block
+// into the pending layer and verifies the declared state root, without
+// persisting anything. On error the pending layer is already discarded. On
+// success it is left populated for the caller to commit or discard.
+// requireQC decides whether a quorum certificate is demanded of the block
+// (committed blocks) or not (proposals, which have none yet).
+func (e *Executor) applyBlockPending(b *types.Block, requireQC bool) ([]*types.Receipt, [32]byte, error) {
+	var zero [32]byte
+
+	// Chain-continuity checks before any state mutation.
+	if err := e.verifyBlockLinkage(b); err != nil {
+		return nil, zero, fmt.Errorf("block linkage rejected: %w", err)
+	}
+	if err := e.verifyProducerAndQC(b, requireQC); err != nil {
+		return nil, zero, fmt.Errorf("block certificate rejected: %w", err)
+	}
+
+	// Run pre-block hooks
+	if e.hooks != nil {
+		if err := e.hooks.RunPreBlock(b); err != nil {
+			return nil, zero, fmt.Errorf("pre-block hook rejected block: %w", err)
+		}
+	}
+
+	var receipts []*types.Receipt
+	totalFees := new(bigInt)
+	var blockGas uint64
+
+	for i, tx := range b.Transactions {
+		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
+		if err != nil {
+			// The tx could not be applied at all: bad signature, wrong nonce,
+			// unaffordable, unknown type. ProduceBlock drops such txs, so a block
+			// that still carries one was not built honestly. It must be rejected
+			// outright — the previous behaviour reverted the tx (leaving the
+			// sender undebited) yet still credited its fee to the validator,
+			// which minted the fee out of nothing on every invalid tx packed.
+			e.state.DiscardPending()
+			return nil, zero, fmt.Errorf("block contains an unappliable tx at index %d: %w", i, err)
+		}
+		receipts = append(receipts, receipt)
+
+		// Reject a block that exceeds the consensus gas budget (defence against a
+		// producer packing far more compute than the interval can process).
+		blockGas += receipt.GasUsed
+		if blockGas > MaxBlockGas {
+			e.state.DiscardPending()
+			return nil, zero, fmt.Errorf("block exceeds gas budget: %d > %d", blockGas, MaxBlockGas)
+		}
+
+		// Accumulate fees for validator credit (mirrors ProduceBlock). Only txs
+		// that actually applied reach here, and every exec path debits tx.Fee
+		// from the sender before doing its work — including the reverted-call
+		// case, where the fee is kept as gas. So the credit always has a
+		// matching debit and total supply is conserved.
+		totalFees.Add(totalFees, tx.Fee)
+
+		// Run post-tx hooks (non-fatal)
+		if e.hooks != nil {
+			e.hooks.RunPostTx(tx, receipt)
+		}
+	}
+
+	// Credit accumulated fees to the block's validator address.
+	// This MUST match what ProduceBlock does or state roots will diverge on
+	// any block that contains transactions.
+	if totalFees.Sign() > 0 {
+		va, err := e.state.GetAccount(b.Header.ValidatorAddr)
+		if err != nil {
+			e.state.DiscardPending()
+			return nil, zero, fmt.Errorf("fee credit: get validator account: %w", err)
+		}
+		va.AddBalance(totalFees)
+		e.state.SetAccount(va)
+	}
+
+	if err := genesis.CheckNativeSupply(e.state); err != nil {
+		e.state.DiscardPending()
+		return nil, zero, err
+	}
+
+	// Verify the declared state root BEFORE persisting.
+	stateRoot, err := e.state.PendingStateRoot()
+	if err != nil {
+		e.state.DiscardPending()
+		return nil, zero, fmt.Errorf("state root computation failed: %w", err)
+	}
+	if stateRoot != b.Header.StateRoot {
+		e.state.DiscardPending()
+		return nil, zero, fmt.Errorf("state root mismatch: computed %x, header %x",
+			stateRoot[:8], b.Header.StateRoot[:8])
+	}
+	return receipts, stateRoot, nil
 }
 
 // ReconcileState catches committed state up to the chain head after a crash.
@@ -1142,7 +1208,23 @@ func (e *Executor) ActiveValidatorKey(addr qcrypto.Address) []byte {
 	return append([]byte(nil), rec.PublicKey...)
 }
 
-func (e *Executor) verifyProducerAndQC(b *types.Block) error {
+// genesisProducerKey returns the key that sealed block 0, or nil when this
+// node cannot know it: block 0 from the chain DB first, then the configured
+// resolver (a joiner that never stored block 0).
+func (e *Executor) genesisProducerKey() []byte {
+	if g, err := e.GetBlockByHeight(0); err == nil && g != nil && len(g.ValidatorPubKey) > 0 {
+		return g.ValidatorPubKey
+	}
+	if e.genesisValidatorKey != nil {
+		return e.genesisValidatorKey()
+	}
+	return nil
+}
+
+// verifyProducerAndQC authorizes the block's producer and, once a quorum is
+// required of the chain, its certificate. requireQC is false for a proposal,
+// which is judged before any vote exists; everything else applies to both.
+func (e *Executor) verifyProducerAndQC(b *types.Block, requireQC bool) error {
 	if b.Header.Height == 0 {
 		return nil
 	}
@@ -1156,7 +1238,10 @@ func (e *Executor) verifyProducerAndQC(b *types.Block) error {
 	reg := vm.NewStakingContract(e.state, vm.DeployStaking(nil))
 	active, err := reg.ListActive()
 	if err != nil {
-		return fmt.Errorf("validator set: %w", err)
+		// Fail closed. An unreadable registry is not an empty registry: the
+		// latter has a defined meaning (the genesis validator runs the chain),
+		// the former means this node cannot tell who is allowed to produce.
+		return fmt.Errorf("validator set unreadable, refusing to judge block %d: %w", b.Header.Height, err)
 	}
 	byAddr := make(map[qcrypto.Address][]byte, len(active))
 	for _, rec := range active {
@@ -1165,17 +1250,36 @@ func (e *Executor) verifyProducerAndQC(b *types.Block) error {
 	pub := byAddr[b.Header.ValidatorAddr]
 	if len(pub) == 0 {
 		// Once a quorum is required the leader is always drawn from the active
-		// set, so a producer outside it cannot have sealed a canonical block —
-		// and falling back to the key the block CARRIES would authenticate it
-		// against itself, which every block passes. Below two the registry is
-		// not yet the authority on who produces: a chain's genesis validator is
-		// typically not registered, and the block in which the first validator
-		// registers is sealed by a producer the parent state does not list.
+		// set, so a producer outside it cannot have sealed a canonical block.
 		if len(active) >= 2 {
 			return fmt.Errorf("multi_validator: producer %s is not in the active validator set (%d members) at height %d",
 				b.Header.ValidatorAddr, len(active), b.Header.Height)
 		}
-		pub = b.ValidatorPubKey
+		// Below two the registry is not yet the authority on who produces: a
+		// chain's genesis validator is typically not registered, and the block
+		// in which the first validator registers is sealed by a producer the
+		// parent state does not list. That producer is the genesis validator
+		// and nobody else, so the fallback is pinned to block 0's key. The key
+		// the block CARRIES is trusted only when this node has no way to know
+		// the genesis key at all — and it says so.
+		if gk := e.genesisProducerKey(); len(gk) > 0 {
+			gpub, perr := qcrypto.PublicKeyFromBytes(gk)
+			if perr != nil {
+				return fmt.Errorf("genesis validator key unreadable: %w", perr)
+			}
+			if qcrypto.DeriveAddress(gpub) != b.Header.ValidatorAddr {
+				return fmt.Errorf("producer %s is neither in the active validator set (%d members) nor the genesis validator %s at height %d",
+					b.Header.ValidatorAddr, len(active), qcrypto.DeriveAddress(gpub), b.Header.Height)
+			}
+			pub = gk
+		} else {
+			if e.warnedCarriedKey.CompareAndSwap(false, true) {
+				log.Warn().Uint64("height", b.Header.Height).
+					Msg("no genesis validator key known (no block 0 stored, no --validator-pubkey-hex): " +
+						"authenticating an unregistered producer on the key its block carries")
+			}
+			pub = b.ValidatorPubKey
+		}
 	}
 	if len(pub) == 0 {
 		return fmt.Errorf("producer %s is not in the active validator set", b.Header.ValidatorAddr)
@@ -1183,20 +1287,42 @@ func (e *Executor) verifyProducerAndQC(b *types.Block) error {
 	if err := b.VerifySignature(pub); err != nil {
 		return err
 	}
-	if len(active) < 2 {
-		return nil
+	// Whoever may certify: the active set, plus — below two members — the
+	// producer just authorized above, since a sole BFT validator (or the
+	// unregistered genesis validator) self-certifies with its own vote.
+	if _, ok := byAddr[b.Header.ValidatorAddr]; !ok && len(active) < 2 {
+		byAddr[b.Header.ValidatorAddr] = pub
+	}
+
+	hasCert := len(b.Header.QCRoot) > 0 || len(b.Votes) > 0
+	if !requireQC && !hasCert {
+		return nil // a proposal: the certificate does not exist yet
+	}
+	if len(active) < 2 && !hasCert {
+		return nil // history sealed on the single path before any quorum was demanded
 	}
 	if len(b.Header.QCRoot) == 0 || len(b.Votes) == 0 {
 		return fmt.Errorf("multi_validator requires a quorum certificate at height %d", b.Header.Height)
 	}
-	need := (len(active)*2)/3 + 1
+	// From here a certificate is present and is judged in full whatever the
+	// set size. A malformed certificate on a one-validator chain used to pass
+	// unread, so "qc_root present" meant nothing until a second validator
+	// registered.
+	if root := types.ComputeQCRoot(b.Votes); !bytes.Equal(root[:], b.Header.QCRoot) {
+		return fmt.Errorf("qc_root does not cover the votes at height %d", b.Header.Height)
+	}
+	n := len(active)
+	if n == 0 {
+		n = 1
+	}
+	need := (n*2)/3 + 1
 	if len(b.Votes) < need {
 		return fmt.Errorf("qc has %d votes, need %d", len(b.Votes), need)
 	}
 	seen := make(map[qcrypto.Address]struct{})
 	for _, v := range b.Votes {
 		pk, ok := byAddr[v.ValidatorAddr]
-		if !ok {
+		if !ok || len(pk) == 0 {
 			return fmt.Errorf("vote from unknown validator %s", v.ValidatorAddr)
 		}
 		if _, dup := seen[v.ValidatorAddr]; dup {
