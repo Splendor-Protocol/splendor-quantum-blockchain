@@ -137,9 +137,9 @@ var KnownModuleActions = map[string]ModuleActions{
 			"deploy": forks.LendingV1, "enable_asset": forks.LendingV1,
 			"set_oracle": forks.LendingV1,
 			"deposit": forks.LendingV1, "withdraw": forks.LendingV1,
-			"borrow": forks.LendingV1, "repay": forks.LendingV1,
+			"borrow": forks.LendingV1, "repay": forks.LendingV1, "liquidate": forks.LendingV1,
 		},
-		Reads: map[string]bool{"pool": true, "deposit_balance": true},
+		Reads: map[string]bool{"pool": true, "deposit_balance": true, "borrow_balance": true, "assets": true, "health": true},
 	},
 	"oracle": {
 		Writes: map[string]string{
@@ -160,8 +160,11 @@ var KnownModuleActions = map[string]ModuleActions{
 	"governance": {
 		Writes: map[string]string{
 			"submit": forks.GovernanceV1, "vote": forks.GovernanceV1,
+			"tally": forks.GovernanceV1, "cancel": forks.GovernanceV1,
 		},
-		Reads: map[string]bool{"proposal": true, "count": true},
+		Reads: map[string]bool{
+			"proposal": true, "count": true, "vote_of": true, "voting_power": true, "total_voting_power": true,
+		},
 	},
 	"qrc721": {
 		Writes: map[string]string{
@@ -171,9 +174,14 @@ var KnownModuleActions = map[string]ModuleActions{
 	},
 	"qrc4626": {
 		Writes: map[string]string{
-			"deploy": forks.QRC4626V1, "deposit": forks.QRC4626V1,
+			"deploy": forks.QRC4626V1, "deposit": forks.QRC4626V1, "mint": forks.QRC4626V1,
+			"withdraw": forks.QRC4626V1, "redeem": forks.QRC4626V1, "approve": forks.QRC4626V1,
 		},
-		Reads: map[string]bool{"total_assets": true, "name": true},
+		Reads: map[string]bool{
+			"total_assets": true, "total_shares": true, "name": true, "symbol": true, "asset": true,
+			"share_balance": true, "allowance": true, "exchange_rate": true,
+			"preview_deposit": true, "preview_mint": true, "preview_withdraw": true, "preview_redeem": true,
+		},
 	},
 }
 

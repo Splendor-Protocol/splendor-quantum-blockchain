@@ -118,6 +118,13 @@ func govVoterPowerSlot(voter qcrypto.Address) [32]byte {
 	return qcrypto.Hash32(append([]byte("gov:power:"), voter[:]...))
 }
 
+// govVoteWeightSlot stores the weight a vote was counted with, so a re-vote
+// or a later correction removes exactly what was added.
+func govVoteWeightSlot(proposalID uint64, voter qcrypto.Address) [32]byte {
+	key := fmt.Sprintf("gov:vote_weight:%d:", proposalID)
+	return qcrypto.Hash32(append([]byte(key), voter[:]...))
+}
+
 // ── GovernanceContract ────────────────────────────────────────────────────────
 
 // GovernanceContract manages on-chain governance proposals and voting.
@@ -141,6 +148,45 @@ func DeployGovernance(stateDB *state.StateDB) qcrypto.Address {
 
 // ── Proposal lifecycle ────────────────────────────────────────────────────────
 
+// Advisory is the honest label for what this module does today. A passed
+// proposal changes no chain parameter, moves no funds and alters no validator
+// set: nothing in the node reads governance state. Execute used to flip a
+// passed proposal to "Executed" while enacting nothing, which is the kind of
+// status a client would trust. So: only text (signalling) proposals are
+// accepted, Passed is their terminal status, and Execute refuses. When a
+// proposal type gains a real, deterministic effect it gets its own fork rule
+// and its own routing.
+const Advisory = true
+
+// Voting power is the validator bond. Nothing ever called SetVotingPower, so
+// no address had any power and no proposal could be submitted; the registry is
+// the one deterministic, on-chain measure of stake this chain has. A validator's
+// weight is its bond while it is Active; everyone else weighs zero.
+func (g *GovernanceContract) votingPowerOf(addr qcrypto.Address) *big.Int {
+	reg := NewStakingContract(g.stateDB, DeployStaking(nil))
+	rec, err := reg.GetValidator(addr)
+	if err != nil || rec == nil || rec.Status != ValidatorActive || rec.Bond == nil {
+		return new(big.Int)
+	}
+	return new(big.Int).Set(rec.Bond)
+}
+
+// activeVotingPower is the sum of every Active validator's bond.
+func (g *GovernanceContract) activeVotingPower() (*big.Int, error) {
+	reg := NewStakingContract(g.stateDB, DeployStaking(nil))
+	active, err := reg.ListActive()
+	if err != nil {
+		return nil, fmt.Errorf("governance: validator set: %w", err)
+	}
+	total := new(big.Int)
+	for _, rec := range active {
+		if rec.Bond != nil {
+			total.Add(total, rec.Bond)
+		}
+	}
+	return total, nil
+}
+
 // Submit creates a new governance proposal.
 // Returns the new proposal ID.
 func (g *GovernanceContract) Submit(
@@ -158,11 +204,16 @@ func (g *GovernanceContract) Submit(
 	if len(description) > 10_000 {
 		return 0, fmt.Errorf("governance: description too long (max 10,000 chars)")
 	}
+	if proposalType != ProposalTypeText {
+		return 0, fmt.Errorf("governance: proposal type %d has no on-chain execution in this build; only text (signalling) proposals are accepted", proposalType)
+	}
+	if len(payload) > MaxModuleURIBytes {
+		return 0, fmt.Errorf("governance: payload is %d bytes, above the cap of %d", len(payload), MaxModuleURIBytes)
+	}
 
 	// Check proposer has voting power
-	power, err := g.GetVotingPower(proposer)
-	if err != nil || power.Sign() == 0 {
-		return 0, fmt.Errorf("governance: proposer has no voting power")
+	if power := g.votingPowerOf(proposer); power.Sign() == 0 {
+		return 0, fmt.Errorf("governance: proposer %s is not an active validator and has no voting power", proposer)
 	}
 
 	// Assign ID
@@ -220,25 +271,36 @@ func (g *GovernanceContract) Vote(
 			proposalID, p.VotingEndHeight)
 	}
 
+	if p.Status == ProposalCanceled {
+		return fmt.Errorf("governance: proposal %d was cancelled", proposalID)
+	}
+	if option < VoteYes || option > VoteNoWithVeto {
+		return fmt.Errorf("governance: invalid vote option %d", option)
+	}
+
 	// Update status if needed
 	if p.Status == ProposalPending {
 		p.Status = ProposalActive
 	}
 
 	// Check voter has power
-	power, err := g.GetVotingPower(voter)
-	if err != nil || power.Sign() == 0 {
-		return fmt.Errorf("governance: voter has no voting power")
+	power := g.votingPowerOf(voter)
+	if power.Sign() == 0 {
+		return fmt.Errorf("governance: voter %s is not an active validator and has no voting power", voter)
 	}
 
-	// Check not already voted
+	// Check not already voted. A re-vote removes the OLD weight, which is
+	// recorded with the vote: the voter's bond may have changed since.
 	existingVote, err := g.getVote(proposalID, voter)
 	if err != nil {
 		return err
 	}
 	if existingVote != 0 {
-		// Remove old vote before re-voting
-		g.removeVoteFromTally(p, VoteOption(existingVote), power)
+		oldPower, _ := g.getBigInt(govVoteWeightSlot(proposalID, voter))
+		g.removeVoteFromTally(p, VoteOption(existingVote), oldPower)
+	}
+	if err := g.setBigInt(govVoteWeightSlot(proposalID, voter), power); err != nil {
+		return err
 	}
 
 	// Record vote
@@ -252,6 +314,15 @@ func (g *GovernanceContract) Vote(
 	return g.setProposal(p)
 }
 
+// TallyNow closes voting against the active validator set's total bond.
+func (g *GovernanceContract) TallyNow(proposalID uint64, currentHeight uint64) error {
+	total, err := g.activeVotingPower()
+	if err != nil {
+		return err
+	}
+	return g.Tally(proposalID, currentHeight, total)
+}
+
 // Tally closes voting and determines the result. Call after VotingEndHeight.
 func (g *GovernanceContract) Tally(proposalID uint64, currentHeight uint64, totalVotingPower *big.Int) error {
 	p, err := g.GetProposal(proposalID)
@@ -261,8 +332,11 @@ func (g *GovernanceContract) Tally(proposalID uint64, currentHeight uint64, tota
 	if currentHeight <= p.VotingEndHeight {
 		return fmt.Errorf("governance: voting period for proposal %d has not ended yet", proposalID)
 	}
+	if p.Status == ProposalCanceled {
+		return fmt.Errorf("governance: proposal %d was cancelled", proposalID)
+	}
 	if p.Status != ProposalActive && p.Status != ProposalPending {
-		return nil // already tallied
+		return fmt.Errorf("governance: proposal %d already tallied (%s)", proposalID, ProposalStatusName(p.Status))
 	}
 
 	// Check quorum: total votes ≥ 4% of total voting power
@@ -304,23 +378,18 @@ func (g *GovernanceContract) Tally(proposalID uint64, currentHeight uint64, tota
 	return g.setProposal(p)
 }
 
-// Execute marks a passed proposal as executed.
-// The actual execution of proposal actions is handled by the node's governance handler.
+// Execute refuses. It used to set ProposalExecuted on a passed proposal while
+// enacting nothing — a status that says "done" about an action that never
+// happened. Passed is the terminal status of a signalling proposal (see
+// Advisory); no proposal type in this build has an on-chain effect. The
+// function stays so a future type with a real effect has a place to land.
 func (g *GovernanceContract) Execute(proposalID uint64, currentHeight uint64) error {
 	p, err := g.GetProposal(proposalID)
 	if err != nil || p == nil {
 		return fmt.Errorf("governance: proposal %d not found", proposalID)
 	}
-	if p.Status != ProposalPassed {
-		return fmt.Errorf("governance: proposal %d is not in Passed status", proposalID)
-	}
-	if currentHeight < p.ExecuteAfterHeight {
-		return fmt.Errorf("governance: proposal %d timelock not expired (can execute after block %d)",
-			proposalID, p.ExecuteAfterHeight)
-	}
-
-	p.Status = ProposalExecuted
-	return g.setProposal(p)
+	return fmt.Errorf("governance: proposal %d (%s) is advisory: nothing executes on-chain in this build, Passed is its final status",
+		proposalID, ProposalStatusName(p.Status))
 }
 
 // Cancel cancels a pending proposal (proposer only, before voting starts).

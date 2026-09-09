@@ -49,7 +49,15 @@ var (
 	slotLendingTreasury = qcrypto.Hash32([]byte("lending:treasury"))
 	slotLendingOwner    = qcrypto.Hash32([]byte("lending:owner"))
 	slotLendingOracle   = qcrypto.Hash32([]byte("lending:oracle"))
+	// slotLendingAssets is the list of every asset EnableAsset ever registered.
+	// Positions are keyed per (user, asset), so without this list the protocol
+	// could not see a user's other collateral or other debts, and health was
+	// judged against one pair at a time.
+	slotLendingAssets = qcrypto.Hash32([]byte("lending:assets"))
 )
+
+// MaxLendingAssets bounds the registry: every health check walks it.
+const MaxLendingAssets = 64
 
 func lendingPoolSlot(asset qcrypto.Address) [32]byte {
 	return qcrypto.Hash32(append([]byte("lending:pool:"), asset[:]...))
@@ -219,6 +227,16 @@ func (l *LendingProtocol) EnableAsset(caller, asset qcrypto.Address, cfBPS, ltBP
 		return fmt.Errorf("lending: liquidation threshold must be >= collateral factor")
 	}
 
+	if existing, _ := l.GetPool(asset); existing != nil {
+		return fmt.Errorf("lending: asset %s already registered", asset)
+	}
+	assets, err := l.RegisteredAssets()
+	if err != nil {
+		return err
+	}
+	if len(assets) >= MaxLendingAssets {
+		return fmt.Errorf("lending: %d assets registered, cap %d", len(assets), MaxLendingAssets)
+	}
 	pool := &AssetPool{
 		Asset:                   asset.String(),
 		TotalDeposits:           big.NewInt(0),
@@ -229,7 +247,170 @@ func (l *LendingProtocol) EnableAsset(caller, asset qcrypto.Address, cfBPS, ltBP
 		LiquidationThresholdBPS: ltBPS,
 		Active:                  true,
 	}
-	return l.setPool(asset, pool)
+	if err := l.setPool(asset, pool); err != nil {
+		return err
+	}
+	return l.setRegisteredAssets(append(assets, asset))
+}
+
+// RegisteredAssets lists every asset ever enabled, in registration order.
+func (l *LendingProtocol) RegisteredAssets() ([]qcrypto.Address, error) {
+	b, err := l.stateDB.GetStorageValue(l.contract, slotLendingAssets)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, nil
+	}
+	var strs []string
+	if err := json.Unmarshal(b, &strs); err != nil {
+		return nil, fmt.Errorf("lending: asset registry: %w", err)
+	}
+	out := make([]qcrypto.Address, 0, len(strs))
+	for _, s := range strs {
+		a, err := qcrypto.AddressFromString(s)
+		if err != nil {
+			return nil, fmt.Errorf("lending: asset registry: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+func (l *LendingProtocol) setRegisteredAssets(assets []qcrypto.Address) error {
+	strs := make([]string, 0, len(assets))
+	for _, a := range assets {
+		strs = append(strs, a.String())
+	}
+	b, err := json.Marshal(strs)
+	if err != nil {
+		return err
+	}
+	return l.stateDB.SetStorageValue(l.contract, slotLendingAssets, b)
+}
+
+// accountHealth values a user's whole position at oracle prices, across every
+// registered asset, after accruing interest on each pool it touches.
+//
+//	borrowCap  = Σ deposit_i × price_i × CF_i / BPS   (what may be borrowed against)
+//	ltValue    = Σ deposit_i × price_i × LT_i / BPS   (below this debt, liquidatable)
+//	debtValue  = Σ debt_j × price_j
+//
+// deltaAsset/delta let a caller ask "and after this deposit changes by delta?"
+// (a withdrawal passes a negative delta). Prices are fetched only for assets
+// the user actually holds or owes, so an account with no debt anywhere is
+// judged without an oracle and can always withdraw.
+type accountHealth struct {
+	borrowCap, ltValue, debtValue *big.Int
+	hasDebt                       bool
+}
+
+func (l *LendingProtocol) health(user qcrypto.Address, height uint64, deltaAsset qcrypto.Address, delta *big.Int) (*accountHealth, error) {
+	return l.healthOpt(user, height, deltaAsset, delta, false, true)
+}
+
+// pricedCapacity is health() with every deposit priced even when the user
+// has no debt yet: the first borrow needs the capacity number.
+func (l *LendingProtocol) pricedCapacity(user qcrypto.Address, height uint64) (*accountHealth, error) {
+	return l.healthOpt(user, height, qcrypto.Address{}, nil, true, true)
+}
+
+// persist=false is the read side: interest is not accrued (accrual writes the
+// pool) and the position is valued at the stored indexes.
+func (l *LendingProtocol) healthOpt(user qcrypto.Address, height uint64, deltaAsset qcrypto.Address, delta *big.Int, priceAlways, persist bool) (*accountHealth, error) {
+	assets, err := l.RegisteredAssets()
+	if err != nil {
+		return nil, err
+	}
+	h := &accountHealth{borrowCap: new(big.Int), ltValue: new(big.Int), debtValue: new(big.Int)}
+	type leg struct {
+		asset    qcrypto.Address
+		deposit  *big.Int
+		debt     *big.Int
+		cf, lt   int64
+	}
+	var legs []leg
+	for _, asset := range assets {
+		pool, err := l.GetPool(asset)
+		if err != nil || pool == nil {
+			continue
+		}
+		// accrueInterest stores the pool itself; the read side skips it and
+		// values the position at the stored indexes.
+		if persist {
+			if err := l.accrueInterest(asset, pool, height); err != nil {
+				return nil, err
+			}
+		}
+		pos, err := l.getUserPosition(user, asset)
+		if err != nil {
+			return nil, err
+		}
+		dep := l.normaliseDeposit(pos.DepositBalance, pos.InterestIndexAtDeposit, pool.AccruedInterestIndex)
+		if asset == deltaAsset && delta != nil {
+			dep = new(big.Int).Add(dep, delta)
+			if dep.Sign() < 0 {
+				return nil, fmt.Errorf("lending: withdrawal exceeds the deposit")
+			}
+		}
+		bor, err := l.getUserBorrow(user, asset)
+		if err != nil {
+			return nil, err
+		}
+		debt := l.normaliseBorrow(bor.BorrowBalance, bor.InterestIndexAtBorrow, pool.AccruedInterestIndex)
+		if dep.Sign() == 0 && debt.Sign() == 0 {
+			continue
+		}
+		if debt.Sign() > 0 {
+			h.hasDebt = true
+		}
+		legs = append(legs, leg{asset: asset, deposit: dep, debt: debt, cf: pool.CollateralFactorBPS, lt: pool.LiquidationThresholdBPS})
+	}
+	if !h.hasDebt && !priceAlways {
+		return h, nil
+	}
+	oa, err := l.Oracle()
+	if err != nil {
+		return nil, err
+	}
+	if oa.IsZero() {
+		return nil, fmt.Errorf("lending: oracle not set, cannot value the position")
+	}
+	o := NewPriceOracle(l.stateDB, oa)
+	for _, g := range legs {
+		price, err := o.GetPrice(g.asset, height)
+		if err != nil {
+			return nil, fmt.Errorf("lending: price of %s: %w", g.asset, err)
+		}
+		if price == nil || price.Sign() <= 0 {
+			return nil, fmt.Errorf("lending: oracle returned a non-positive price for %s", g.asset)
+		}
+		if g.deposit.Sign() > 0 {
+			v := new(big.Int).Mul(g.deposit, price)
+			h.borrowCap.Add(h.borrowCap, new(big.Int).Div(new(big.Int).Mul(v, big.NewInt(g.cf)), big.NewInt(BPS)))
+			h.ltValue.Add(h.ltValue, new(big.Int).Div(new(big.Int).Mul(v, big.NewInt(g.lt)), big.NewInt(BPS)))
+		}
+		if g.debt.Sign() > 0 {
+			h.debtValue.Add(h.debtValue, new(big.Int).Mul(g.debt, price))
+		}
+	}
+	return h, nil
+}
+
+// AccountHealth is the read-side view of health: values and whether the
+// position can be liquidated (debt above the liquidation-threshold value).
+func (l *LendingProtocol) AccountHealth(user qcrypto.Address, height uint64) (map[string]any, error) {
+	h, err := l.healthOpt(user, height, qcrypto.Address{}, nil, false, false)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"borrow_capacity_value":       h.borrowCap.String(),
+		"liquidation_threshold_value": h.ltValue.String(),
+		"debt_value":                  h.debtValue.String(),
+		"has_debt":                    h.hasDebt,
+		"liquidatable":                h.hasDebt && h.debtValue.Cmp(h.ltValue) > 0,
+	}, nil
 }
 
 // DisableAsset prevents new deposits/borrows for an asset.
@@ -331,8 +512,25 @@ func (l *LendingProtocol) Withdraw(caller, asset qcrypto.Address, amount *big.In
 		return nil, fmt.Errorf("lending withdraw: insufficient protocol liquidity")
 	}
 
-	// Check this wouldn't make caller's position undercollateralised
-	// (skip if they have no borrows)
+	// The withdrawal must leave every debt the caller has covered by the
+	// collateral factor of what remains. This used to be a comment. A caller
+	// with no debt anywhere is not priced and always may withdraw.
+	if withdrawAmount.Sign() <= 0 {
+		return nil, fmt.Errorf("lending withdraw: amount must be positive")
+	}
+	after, err := l.health(caller, currentBlock, asset, new(big.Int).Neg(withdrawAmount))
+	if err != nil {
+		return nil, fmt.Errorf("lending withdraw: %w", err)
+	}
+	if after.hasDebt && after.debtValue.Cmp(after.borrowCap) > 0 {
+		return nil, fmt.Errorf("lending withdraw: would leave debt value %s above the borrow capacity %s of the remaining collateral",
+			after.debtValue, after.borrowCap)
+	}
+	// health() accrued and stored the pool; reload so the write below carries
+	// the same index.
+	if pool, err = l.GetPool(asset); err != nil || pool == nil {
+		return nil, fmt.Errorf("lending withdraw: asset not registered")
+	}
 
 	// Update position
 	pos.DepositBalance = new(big.Int).Sub(actualBalance, withdrawAmount)
@@ -383,39 +581,53 @@ func (l *LendingProtocol) Borrow(
 		return err
 	}
 
-	// Check health factor AFTER borrowing
-	colPos, err := l.getUserPosition(caller, collateralAsset)
-	if err != nil {
-		return err
-	}
+	// Health AFTER borrowing, over the caller's WHOLE position: every
+	// collateral deposit at its own collateral factor against every debt,
+	// all at oracle prices. The named collateralAsset must be a registered
+	// pool the caller has deposited into (the API still names it), but it is
+	// no longer the only collateral counted, and other debts are no longer
+	// ignored.
 	colPool, _ := l.GetPool(collateralAsset)
 	if colPool == nil {
 		return fmt.Errorf("lending borrow: collateral asset not registered")
 	}
+	colPos, err := l.getUserPosition(caller, collateralAsset)
+	if err != nil {
+		return err
+	}
 	if err := l.accrueInterest(collateralAsset, colPool, currentBlock); err != nil {
 		return err
 	}
-
-	collateralBalance := l.normaliseDeposit(colPos.DepositBalance, colPos.InterestIndexAtDeposit, colPool.AccruedInterestIndex)
-	if collateralBalance.Sign() == 0 {
+	if l.normaliseDeposit(colPos.DepositBalance, colPos.InterestIndexAtDeposit, colPool.AccruedInterestIndex).Sign() == 0 {
 		return fmt.Errorf("lending borrow: no collateral deposited")
 	}
-
-	// collateral value in price units
-	colValue := new(big.Int).Mul(collateralBalance, collateralPrice)
-	// max borrow value = colValue * CF
-	maxBorrowValue := new(big.Int).Mul(colValue, big.NewInt(colPool.CollateralFactorBPS))
-	maxBorrowValue.Div(maxBorrowValue, big.NewInt(BPS))
-
-	// existing borrows
+	if collateralPrice == nil || collateralPrice.Sign() <= 0 || borrowPrice == nil || borrowPrice.Sign() <= 0 {
+		return fmt.Errorf("lending borrow: non-positive price")
+	}
+	h, err := l.health(caller, currentBlock, qcrypto.Address{}, nil)
+	if err != nil {
+		return fmt.Errorf("lending borrow: %w", err)
+	}
+	// health() prices only assets with a position; the new debt is priced
+	// with the borrow price the caller supplied through the oracle path.
+	newDebtValue := new(big.Int).Add(h.debtValue, new(big.Int).Mul(amount, borrowPrice))
+	if !h.hasDebt {
+		// No debt yet, so health() did not price the collateral. Do it now,
+		// for every deposit the caller holds.
+		h, err = l.pricedCapacity(caller, currentBlock)
+		if err != nil {
+			return fmt.Errorf("lending borrow: %w", err)
+		}
+	}
+	if newDebtValue.Cmp(h.borrowCap) > 0 {
+		return fmt.Errorf("lending borrow: would exceed collateral factor (debt value %s, borrow capacity %s)", newDebtValue, h.borrowCap)
+	}
+	// Reload the borrow pool: health() may have stored a newer index.
+	if pool, err = l.GetPool(borrowAsset); err != nil || pool == nil {
+		return fmt.Errorf("lending borrow: borrow asset not registered")
+	}
 	existingBorrow, _ := l.getUserBorrow(caller, borrowAsset)
 	existingBorrowBalance := l.normaliseBorrow(existingBorrow.BorrowBalance, existingBorrow.InterestIndexAtBorrow, pool.AccruedInterestIndex)
-
-	// new total borrow value
-	newBorrowValue := new(big.Int).Mul(new(big.Int).Add(existingBorrowBalance, amount), borrowPrice)
-	if newBorrowValue.Cmp(maxBorrowValue) > 0 {
-		return fmt.Errorf("lending borrow: would exceed collateral factor (max borrow value: %s)", maxBorrowValue)
-	}
 
 	// Check pool liquidity
 	liquidity := new(big.Int).Sub(pool.TotalDeposits, pool.TotalBorrows)
@@ -506,34 +718,54 @@ func (l *LendingProtocol) Liquidate(
 	collateralPrice, borrowPrice *big.Int,
 	currentBlock uint64,
 ) (seizedCollateral *big.Int, err error) {
-	// Accrue interest on both assets
+	if liquidator == borrower {
+		return nil, fmt.Errorf("liquidate: cannot liquidate yourself")
+	}
+	if repayAmount == nil || repayAmount.Sign() <= 0 {
+		return nil, fmt.Errorf("liquidate: repay amount must be positive")
+	}
+	if collateralPrice == nil || collateralPrice.Sign() <= 0 || borrowPrice == nil || borrowPrice.Sign() <= 0 {
+		return nil, fmt.Errorf("liquidate: non-positive price")
+	}
+	// Eligibility is judged on the borrower's WHOLE position: total debt above
+	// the liquidation-threshold value of all collateral. A borrower who is
+	// under water on one pair but well covered elsewhere is not liquidatable.
+	// health() also accrues interest on every pool, so the balances read
+	// below are current.
+	h, err := l.health(borrower, currentBlock, qcrypto.Address{}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("liquidate: %w", err)
+	}
+	if !h.hasDebt || h.debtValue.Cmp(h.ltValue) <= 0 {
+		return nil, fmt.Errorf("liquidate: position is healthy (debt value %s, liquidation threshold value %s)", h.debtValue, h.ltValue)
+	}
 	borrowPool, _ := l.GetPool(borrowAsset)
 	colPool, _ := l.GetPool(collateralAsset)
 	if borrowPool == nil || colPool == nil {
 		return nil, fmt.Errorf("liquidate: asset not registered")
 	}
-	l.accrueInterest(borrowAsset, borrowPool, currentBlock)
-	l.accrueInterest(collateralAsset, colPool, currentBlock)
-
-	// Check health factor < 1
-	colPos, _ := l.getUserPosition(borrower, collateralAsset)
-	borrow, _ := l.getUserBorrow(borrower, borrowAsset)
-
+	colPos, err := l.getUserPosition(borrower, collateralAsset)
+	if err != nil {
+		return nil, err
+	}
+	borrow, err := l.getUserBorrow(borrower, borrowAsset)
+	if err != nil {
+		return nil, err
+	}
 	colBalance := l.normaliseDeposit(colPos.DepositBalance, colPos.InterestIndexAtDeposit, colPool.AccruedInterestIndex)
 	debtBalance := l.normaliseBorrow(borrow.BorrowBalance, borrow.InterestIndexAtBorrow, borrowPool.AccruedInterestIndex)
-
-	colValue := new(big.Int).Mul(colBalance, collateralPrice)
-	debtValue := new(big.Int).Mul(debtBalance, borrowPrice)
-
-	// Health factor = colValue * LT / debtValue (must be < 1 = BPS)
-	healthNumerator := new(big.Int).Mul(colValue, big.NewInt(colPool.LiquidationThresholdBPS))
-	healthNumerator.Div(healthNumerator, big.NewInt(BPS))
-	if healthNumerator.Cmp(debtValue) >= 0 {
-		return nil, fmt.Errorf("liquidate: position is healthy (health factor >= 1)")
+	if debtBalance.Sign() == 0 {
+		return nil, fmt.Errorf("liquidate: borrower owes nothing in %s", borrowAsset)
+	}
+	if colBalance.Sign() == 0 {
+		return nil, fmt.Errorf("liquidate: borrower holds no %s collateral", collateralAsset)
 	}
 
-	// Max repay = 50% of debt
+	// Close factor: at most 50% of THIS debt per liquidation.
 	maxRepay := new(big.Int).Div(debtBalance, big.NewInt(2))
+	if maxRepay.Sign() == 0 {
+		maxRepay = new(big.Int).Set(debtBalance)
+	}
 	if repayAmount.Cmp(maxRepay) > 0 {
 		repayAmount = new(big.Int).Set(maxRepay)
 	}
@@ -566,18 +798,42 @@ func (l *LendingProtocol) Liquidate(
 	// Update borrower's borrow
 	borrow.BorrowBalance = new(big.Int).Sub(debtBalance, repayAmount)
 	borrow.InterestIndexAtBorrow = new(big.Int).Set(borrowPool.AccruedInterestIndex)
-	l.setUserBorrow(borrower, borrowAsset, borrow)
+	if err := l.setUserBorrow(borrower, borrowAsset, borrow); err != nil {
+		return nil, err
+	}
 	borrowPool.TotalBorrows.Sub(borrowPool.TotalBorrows, repayAmount)
-	l.setPool(borrowAsset, borrowPool)
+	if borrowPool.TotalBorrows.Sign() < 0 {
+		borrowPool.TotalBorrows = big.NewInt(0)
+	}
+	if err := l.setPool(borrowAsset, borrowPool); err != nil {
+		return nil, err
+	}
 
 	// Update borrower's collateral
 	colPos.DepositBalance = new(big.Int).Sub(colBalance, seizedCollateral)
 	colPos.InterestIndexAtDeposit = new(big.Int).Set(colPool.AccruedInterestIndex)
-	l.setUserPosition(borrower, collateralAsset, colPos)
+	if err := l.setUserPosition(borrower, collateralAsset, colPos); err != nil {
+		return nil, err
+	}
 	colPool.TotalDeposits.Sub(colPool.TotalDeposits, seizedCollateral)
-	l.setPool(collateralAsset, colPool)
+	if colPool.TotalDeposits.Sign() < 0 {
+		colPool.TotalDeposits = big.NewInt(0)
+	}
+	if err := l.setPool(collateralAsset, colPool); err != nil {
+		return nil, err
+	}
 
 	return seizedCollateral, nil
+}
+
+// LiquidateFromOracle is Liquidate at on-chain oracle prices. The public
+// router must use this — never a caller-supplied price.
+func (l *LendingProtocol) LiquidateFromOracle(liquidator, borrower, borrowAsset, collateralAsset qcrypto.Address, repayAmount *big.Int, height uint64) (*big.Int, error) {
+	cp, bp, err := l.oraclePrices(collateralAsset, borrowAsset, height)
+	if err != nil {
+		return nil, err
+	}
+	return l.Liquidate(liquidator, borrower, borrowAsset, collateralAsset, repayAmount, cp, bp, height)
 }
 
 // ── Interest ──────────────────────────────────────────────────────────────────
