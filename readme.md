@@ -1787,13 +1787,36 @@ an HTTP 200 does not establish correctness, freshness or production readiness.
 | Indexer read API | `https://quantum-rpc-devnet.splendor.org/idx/v1` | `https://quantum-rpc-testnet.splendor.org/idx/v1` | `https://quantum-rpc.splendor.org/idx/v1` |
 | Explorer | `https://quantum-devnet-explorer.splendor.org` | `https://quantum-testnet-explorer.splendor.org` | `https://quantum-explorer.splendor.org` |
 | Faucet | `https://quantum-faucet.splendor.org` | `https://quantum-faucet.splendor.org` | none, by design |
-| Node image / commit observed | `sqc-node:v0.6.2` / `d2ed9cfa9f66` | `sqc-node:v0.6.1` / `2982523195d0` | `sqc-node:v0.6.1` / `2982523195d0` |
-| Indexer image | `sqc-indexer:v0.2.14` | `sqc-indexer:v0.2.12` | `sqc-indexer:v0.2.11` |
-| Height observed | 202,554 (13:05Z, after the `v0.6.2` rollout; 202,534 at 13:03Z still on `v0.6.1`) | 88,913 | 332,398 |
-| Fork schedule (`/status.forks`) | `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1` at 1; `vm_revert_v1` at 130,000 | `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1` at 1; `bridge_v1` at 11,000 | none reported (`exchange_v1` deliberately omitted) |
-| Genesis block hash | `fc83aa50c5eb011af9b72e7a61007b96af2034492020a0ae0b55bc865dc1e300` | `a52af7f86e77a50d3707452e7def8c7f4c46de9952597acaabfa8f1a5d76d775` | `80eb31e60b689f5dbb82ad3178b6f0bab9d768cb987dafc69607d05a25b083fc` |
-| Genesis validator | `SQ:4fd3394ce33d1e2e7787b74028126181a22b9e68ffd7ba5511bcc321a99d4b09` | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
-| Peers reported | 0 (single validator) | 0 (single validator) | 0 (single validator) |
+| Node image / commit observed (2026-09-09T18:22Z) | see note below | `sqc-node:v1.0.11` / `c79ede535aac` | `sqc-node:v1.0.11` / `c79ede535aac` |
+| Indexer image | `sqc-indexer:v0.3.1` | `sqc-indexer:v0.3.2` | `sqc-indexer:v0.3.1` |
+| Height observed (2026-09-09T18:22Z) | see note below | 81,997 | 82,324 |
+| Fork schedule (`/status.forks`) | see note below | `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1`, `bridge_v1`, `validators_v1`, `multi_validator` at 1; `modules_v2` at 74,674 | `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1`, `validators_v1`, `multi_validator` at 1; `modules_v2` at 79,202 |
+| Consensus (`/status.consensus_mode`, `head_qc_valid`) | see note below | `bft`, one-vote certificate on every block | `bft`, one-vote certificate on every block |
+| Registered validators (`validator_set_size`) | see note below | 0 (the genesis validator produces unregistered) | 1 (the genesis validator, registered) |
+| Genesis block hash (`/status.genesis_hash`) | `c341a89bb740a516ff0c3bbd703d6ebd5badaf5bec52f11e73b081c6992458b8` (pipeline node) | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` | `ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949` |
+| Genesis validator | `SQ:481db30740b78c4a190ad28a7da1719d3574edd9b5a5507dfc7b1e6a1375d800` (lab chain, see note) | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
+| Peers reported | see note below | 0 (single validator) | 0 (single validator) |
+
+Every tier has been reset at least once since the earlier snapshots in this
+file, so the genesis block hashes above are the ones a `--genesis-hash` pin
+must use today; the older values (`80eb31e6…` for mainnet, for example) name
+chains that no longer exist. Mainnet's schedule adopted `multi_validator` and
+`validators_v1` on 2026-09-08 and `modules_v2` on 2026-09-09 through
+`--allow-fork-extension`, without a reset.
+
+Devnet, as of the same timestamp, is two chains behind one hostname:
+`quantum-rpc-devnet.splendor.org` round-robins between the pipeline node
+(`sqc-node:v1.0.11`, `splendor-quantum-devnet-1`, genesis `c341a89b…`, the
+four settlement forks plus `vm_revert_v1` at 130,000, single validator) and a
+four-validator lab chain running an out-of-tree build (`v1.1.0-join-1aeec2a`,
+every module fork at 1, height ~41,000). Until the lab hosts drop the devnet
+tag or the tunnel is pointed at one origin, a devnet reading proves nothing
+without checking `/status.commit` first.
+
+Fees on every tier are integers in the smallest unit (`fee_unit`,
+`decimals` in `/status`): the current floor of `1000` is 1000 × 10⁻¹⁸ SPLD, not
+0.001 SPLD. The 0.001 SPLD floor belongs to `min_fee_v1`, which no public tier
+schedules.
 
 A fourth explorer, `https://splendor-quantum-simnet.splendor.org`, is a
 deterministic in-process simulator, visibly labelled as such. It has no chain
