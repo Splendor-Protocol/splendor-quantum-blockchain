@@ -8,8 +8,8 @@
 > SHA3-256. Native peer traffic can be sealed using ML-KEM-768-established
 > secrets and AES-256-GCM. Native SPLD is minted once at genesis — 26 billion,
 > never more. SQVL (Splendor Quantum Verification Layer) is a native module
-> for dual-signed instructions (ML-DSA-65 + SLH-DSA). Validators register
-> permissionlessly with a 2,500 SPLD bond. This is not an ECDSA-ledger
+> for dual-signed instructions (ML-DSA-65 + SLH-DSA). The protocol bond is
+> 2,500 SPLD; public validator admission has not launched. This is not an ECDSA-ledger
 > migration, but it is also not a guarantee against every future attack:
 > security depends on the current assumptions of those algorithms, this
 > implementation, and its operation.**
@@ -25,6 +25,12 @@ around the chain. If you only read one page, read this one; the detail is in
 [§21](#21-how-a-release-reaches-a-tier) (deployment) and
 [§22](#22-repository-layout-and-developer-quick-start) (this repository's
 layout and quick start).
+
+Operators joining a published chain: [docs/RPC_NODE.md](docs/RPC_NODE.md)
+(follower) and [docs/VALIDATOR.md](docs/VALIDATOR.md) (lifecycle; admission
+is closed). Lab pass/tier pages (`docs/VALIDATOR_FAQ.md`,
+`docs/FEAT_VALIDATOR.md`, `docs/modules/staking.md`) are archived
+`sqc-featval-1` material, not current mainnet onboarding.
 
 ### The repository map
 
