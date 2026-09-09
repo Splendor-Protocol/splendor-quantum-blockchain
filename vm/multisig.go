@@ -157,16 +157,25 @@ func DeployMultiSig(
 		return qcrypto.Address{}, err
 	}
 
-	// Register owners
+	// Register owners. Every owner is Active from the start (the router used
+	// to store whatever it was handed, which was Active=false, so no owner of
+	// a deployed wallet could ever confirm), the key must be the key of the
+	// address it claims, and an address may appear once.
+	seen := make(map[qcrypto.Address]struct{}, len(owners))
 	for _, owner := range owners {
 		addr, err := qcrypto.AddressFromString(owner.Address)
 		if err != nil {
 			return qcrypto.Address{}, fmt.Errorf("multisig: invalid owner address %q: %w", owner.Address, err)
 		}
-		if len(owner.PublicKey) != qcrypto.PublicKeySize {
-			return qcrypto.Address{}, fmt.Errorf("multisig: invalid public key for %s", owner.Address)
+		if err := checkOwnerKey(addr, owner.PublicKey); err != nil {
+			return qcrypto.Address{}, err
 		}
-		if err := w.setOwner(addr, &owner); err != nil {
+		if _, dup := seen[addr]; dup {
+			return qcrypto.Address{}, fmt.Errorf("multisig: duplicate owner %s", addr)
+		}
+		seen[addr] = struct{}{}
+		rec := MSigOwner{Address: addr.String(), PublicKey: append([]byte(nil), owner.PublicKey...), Name: owner.Name, Active: true}
+		if err := w.setOwner(addr, &rec); err != nil {
 			return qcrypto.Address{}, err
 		}
 	}
@@ -183,11 +192,37 @@ func DeployMultiSig(
 	return contractAddr, nil
 }
 
+// checkOwnerKey requires pubKey to be an ML-DSA-65 key whose address is addr.
+// An owner record whose key belongs to someone else would let that someone
+// confirm in the owner's name.
+func checkOwnerKey(addr qcrypto.Address, pubKey []byte) error {
+	if len(pubKey) != qcrypto.PublicKeySize {
+		return fmt.Errorf("multisig: invalid public key for %s", addr)
+	}
+	pub, err := qcrypto.PublicKeyFromBytes(pubKey)
+	if err != nil {
+		return fmt.Errorf("multisig: invalid public key for %s: %w", addr, err)
+	}
+	if qcrypto.DeriveAddress(pub) != addr {
+		return fmt.Errorf("multisig: public key does not belong to owner %s", addr)
+	}
+	return nil
+}
+
 // ── Proposal lifecycle ────────────────────────────────────────────────────────
 
 // ProposalHash computes the canonical hash of a proposal that owners sign.
-// hash = SHA3-256("msig:proposal:" + contract + nonce8 + to + value32 + sha3(data))
-func ProposalHash(contract qcrypto.Address, nonce uint64, to qcrypto.Address, value *big.Int, data []byte) [32]byte {
+//
+//	hash = SHA3-256("msig:proposal:v2:" + chain_id + 0x00 + contract + nonce8
+//	                + tx_type + to + value32 + sha3(data))
+//
+// The chain id is inside the digest because a wallet's address is derived
+// from its deployer and nonce alone, so the same wallet exists at the same
+// address on every tier; without it a confirmation signed for a testnet
+// proposal would verify for the identical proposal on mainnet. The type is
+// inside it because the same (to, value, data) means a transfer under one
+// type and an owner change under another.
+func ProposalHash(contract qcrypto.Address, nonce uint64, txType MSigTxType, to qcrypto.Address, value *big.Int, data []byte) [32]byte {
 	nonceBytes := make([]byte, 8)
 	n := nonce
 	for i := 7; i >= 0; i-- {
@@ -203,12 +238,95 @@ func ProposalHash(contract qcrypto.Address, nonce uint64, to qcrypto.Address, va
 
 	dataHash := qcrypto.Hash32(data)
 
-	msg := append([]byte("msig:proposal:"), contract[:]...)
+	msg := append([]byte("msig:proposal:v2:"), []byte(types.ChainID)...)
+	msg = append(msg, 0x00)
+	msg = append(msg, contract[:]...)
 	msg = append(msg, nonceBytes...)
+	msg = append(msg, byte(txType))
 	msg = append(msg, to[:]...)
 	msg = append(msg, valueBytes...)
 	msg = append(msg, dataHash[:]...)
 	return qcrypto.Hash32(msg)
+}
+
+// validateAction checks a proposal's payload against the wallet's current
+// state. It runs at Submit, so a proposal that can never execute is refused
+// up front, and again at Execute, because owners and threshold may have
+// changed in between. Transfer, owner and threshold changes are supported;
+// contract calls are refused rather than "executed" as no-ops, which is what
+// MSigCallToken and MSigCallAny used to do — a proposal marked executed that
+// did nothing.
+func (w *MultiSigWallet) validateAction(txType MSigTxType, to qcrypto.Address, value *big.Int, data []byte) error {
+	switch txType {
+	case MSigTransfer:
+		if value == nil || value.Sign() <= 0 {
+			return fmt.Errorf("multisig: transfer value must be positive")
+		}
+		if to == (qcrypto.Address{}) {
+			return fmt.Errorf("multisig: transfer to the zero address")
+		}
+		return nil
+	case MSigAddOwner:
+		addr, pubKey, _, err := decodeAddOwnerData(data)
+		if err != nil {
+			return err
+		}
+		if err := checkOwnerKey(addr, pubKey); err != nil {
+			return err
+		}
+		if info, _ := w.GetOwner(addr); info != nil && info.Active {
+			return fmt.Errorf("multisig: %s is already an owner", addr)
+		}
+		return nil
+	case MSigRemOwner:
+		if len(data) < qcrypto.AddressSize {
+			return fmt.Errorf("multisig: RemoveOwner data too short")
+		}
+		var addr qcrypto.Address
+		copy(addr[:], data[:qcrypto.AddressSize])
+		info, _ := w.GetOwner(addr)
+		if info == nil || !info.Active {
+			return fmt.Errorf("multisig: %s is not an active owner", addr)
+		}
+		count, _ := w.OwnerCount()
+		threshold, _ := w.Threshold()
+		if count <= 1 || count-1 < threshold {
+			return fmt.Errorf("multisig: removing %s would leave %d owners below the threshold of %d", addr, count-1, threshold)
+		}
+		return nil
+	case MSigChangeThreshold:
+		if len(data) < 8 {
+			return fmt.Errorf("multisig: ChangeThreshold data too short")
+		}
+		var newThreshold uint64
+		for i := 0; i < 8; i++ {
+			newThreshold = newThreshold<<8 | uint64(data[i])
+		}
+		count, _ := w.OwnerCount()
+		if newThreshold == 0 || newThreshold > count {
+			return fmt.Errorf("multisig: invalid threshold %d (owners: %d)", newThreshold, count)
+		}
+		return nil
+	case MSigCallToken, MSigCallAny:
+		return fmt.Errorf("multisig: proposal type %d (contract call) is not supported by this module", txType)
+	default:
+		return fmt.Errorf("multisig: unknown proposal type %d", txType)
+	}
+}
+
+// decodeAddOwnerData splits [32-byte address][1952-byte pubkey][name].
+func decodeAddOwnerData(data []byte) (qcrypto.Address, []byte, string, error) {
+	if len(data) < qcrypto.AddressSize+qcrypto.PublicKeySize {
+		return qcrypto.Address{}, nil, "", fmt.Errorf("multisig: AddOwner data too short")
+	}
+	var addr qcrypto.Address
+	copy(addr[:], data[:qcrypto.AddressSize])
+	pubKey := data[qcrypto.AddressSize : qcrypto.AddressSize+qcrypto.PublicKeySize]
+	name := string(data[qcrypto.AddressSize+qcrypto.PublicKeySize:])
+	if len(name) > MaxModuleNameBytes {
+		return qcrypto.Address{}, nil, "", fmt.Errorf("multisig: owner name is %d bytes, above the cap of %d", len(name), MaxModuleNameBytes)
+	}
+	return addr, pubKey, name, nil
 }
 
 // Submit creates a new transaction proposal.
@@ -224,14 +342,19 @@ func (w *MultiSigWallet) Submit(
 	if err := w.requireOwner(proposer); err != nil {
 		return 0, err
 	}
+	if value == nil {
+		value = big.NewInt(0)
+	}
+	if len(description) > MaxModuleURIBytes {
+		return 0, fmt.Errorf("multisig: description is %d bytes, above the cap of %d", len(description), MaxModuleURIBytes)
+	}
+	if err := w.validateAction(txType, to, value, data); err != nil {
+		return 0, err
+	}
 
 	nonce, err := w.nextNonce()
 	if err != nil {
 		return 0, err
-	}
-
-	if value == nil {
-		value = big.NewInt(0)
 	}
 
 	proposal := &MSigProposal{
@@ -291,7 +414,7 @@ func (w *MultiSigWallet) Confirm(
 	}
 
 	// Verify ML-DSA-65 signature
-	hash := ProposalHash(w.contract, nonce, toAddr, proposal.Value, proposal.Data)
+	hash := ProposalHash(w.contract, nonce, proposal.TxType, toAddr, proposal.Value, proposal.Data)
 	pub, err := qcrypto.PublicKeyFromBytes(info.PublicKey)
 	if err != nil {
 		return fmt.Errorf("multisig: invalid owner public key: %w", err)
@@ -367,48 +490,54 @@ func (w *MultiSigWallet) Execute(caller qcrypto.Address, nonce uint64, stateDB *
 	if err != nil {
 		return err
 	}
-	if uint64(len(proposal.Confirmations)) < threshold {
-		return fmt.Errorf("multisig: insufficient confirmations (%d / %d required)",
-			len(proposal.Confirmations), threshold)
+	// Only confirmations from owners who are STILL active count: an owner
+	// removed since confirming must not carry a proposal over the line.
+	live := uint64(0)
+	for _, addr := range proposal.Confirmations {
+		a, perr := qcrypto.AddressFromString(addr)
+		if perr != nil {
+			continue
+		}
+		if info, _ := w.GetOwner(a); info != nil && info.Active {
+			live++
+		}
+	}
+	if live < threshold {
+		return fmt.Errorf("multisig: insufficient confirmations (%d / %d required)", live, threshold)
 	}
 
 	toAddr, err := qcrypto.AddressFromString(proposal.To)
 	if err != nil {
 		return err
 	}
+	// The payload is judged against the wallet as it is NOW, not as it was
+	// at Submit: owners and threshold may have changed in between.
+	if err := w.validateAction(proposal.TxType, toAddr, proposal.Value, proposal.Data); err != nil {
+		return err
+	}
 
-	// Execute based on type
+	// Mark executed BEFORE the effect, so a failed transfer below cannot be
+	// retried against a proposal that stays open (the module snapshot rolls
+	// this back together with the effect when the call fails).
+	proposal.Executed = true
+	if err := w.setProposal(nonce, proposal); err != nil {
+		return err
+	}
+
 	switch proposal.TxType {
 	case MSigTransfer:
-		if proposal.Value.Sign() > 0 {
-			if err := stateDB.Transfer(w.contract, toAddr, proposal.Value); err != nil {
-				return fmt.Errorf("multisig execute: transfer failed: %w", err)
-			}
-		}
-
-	case MSigCallToken:
-		// Call a QRC-20 token function — data encodes function selector + args
-		// In production: route through VM engine; here we interpret common selectors
-		if len(proposal.Data) >= 4 {
-			// Could be transfer(address,uint256), approve(address,uint256), etc.
-			// For now, note that full QSol-bytecode contract calls would use MSigCallAny
+		if err := stateDB.Transfer(w.contract, toAddr, proposal.Value); err != nil {
+			return fmt.Errorf("multisig execute: transfer failed: %w", err)
 		}
 
 	case MSigAddOwner:
-		// data = [32-byte address][1952-byte pubkey][name_bytes]
-		if len(proposal.Data) < qcrypto.AddressSize+qcrypto.PublicKeySize {
-			return fmt.Errorf("multisig: AddOwner data too short")
-		}
-		var newOwnerAddr qcrypto.Address
-		copy(newOwnerAddr[:], proposal.Data[:qcrypto.AddressSize])
-		newPubKey := proposal.Data[qcrypto.AddressSize : qcrypto.AddressSize+qcrypto.PublicKeySize]
-		name := ""
-		if len(proposal.Data) > qcrypto.AddressSize+qcrypto.PublicKeySize {
-			name = string(proposal.Data[qcrypto.AddressSize+qcrypto.PublicKeySize:])
+		newOwnerAddr, newPubKey, name, err := decodeAddOwnerData(proposal.Data)
+		if err != nil {
+			return err
 		}
 		newOwner := &MSigOwner{
 			Address:   newOwnerAddr.String(),
-			PublicKey: newPubKey,
+			PublicKey: append([]byte(nil), newPubKey...),
 			Name:      name,
 			Active:    true,
 		}
@@ -416,47 +545,37 @@ func (w *MultiSigWallet) Execute(caller qcrypto.Address, nonce uint64, stateDB *
 			return err
 		}
 		count, _ := w.OwnerCount()
-		w.setUint64(slotMSigOwnerCount, count+1)
+		if err := w.setUint64(slotMSigOwnerCount, count+1); err != nil {
+			return err
+		}
 
 	case MSigRemOwner:
-		if len(proposal.Data) < qcrypto.AddressSize {
-			return fmt.Errorf("multisig: RemoveOwner data too short")
-		}
 		var remAddr qcrypto.Address
 		copy(remAddr[:], proposal.Data[:qcrypto.AddressSize])
-		info, _ := w.GetOwner(remAddr)
-		if info != nil {
-			info.Active = false
-			w.setOwner(remAddr, info)
+		info, _ := w.GetOwner(remAddr) // validated active above
+		info.Active = false
+		if err := w.setOwner(remAddr, info); err != nil {
+			return err
 		}
 		count, _ := w.OwnerCount()
-		if count > 1 {
-			w.setUint64(slotMSigOwnerCount, count-1)
+		if err := w.setUint64(slotMSigOwnerCount, count-1); err != nil {
+			return err
 		}
 
 	case MSigChangeThreshold:
-		if len(proposal.Data) < 8 {
-			return fmt.Errorf("multisig: ChangeThreshold data too short")
-		}
 		var newThreshold uint64
 		for i := 0; i < 8; i++ {
 			newThreshold = newThreshold<<8 | uint64(proposal.Data[i])
 		}
-		ownerCount, _ := w.OwnerCount()
-		if newThreshold == 0 || newThreshold > ownerCount {
-			return fmt.Errorf("multisig: invalid threshold %d (owners: %d)", newThreshold, ownerCount)
+		if err := w.setUint64(slotMSigThreshold, newThreshold); err != nil {
+			return err
 		}
-		w.setUint64(slotMSigThreshold, newThreshold)
 
-	case MSigCallAny:
-		// For full contract calls via the VM engine, caller must pass the engine.
-		// This case intentionally left as a hook — integrate with vm.Engine in executor.
-		// The proposal.Data contains ABI-encoded calldata.
+	default:
+		// validateAction refused every other type already.
+		return fmt.Errorf("multisig: proposal type %d is not executable", proposal.TxType)
 	}
-
-	// Mark executed
-	proposal.Executed = true
-	return w.setProposal(nonce, proposal)
+	return nil
 }
 
 // Cancel allows the proposer to cancel their own proposal before execution.
@@ -468,11 +587,13 @@ func (w *MultiSigWallet) Cancel(caller qcrypto.Address, nonce uint64) error {
 	if proposal.Executed {
 		return fmt.Errorf("multisig: proposal %d already executed", nonce)
 	}
+	if proposal.Cancelled {
+		return fmt.Errorf("multisig: proposal %d already cancelled", nonce)
+	}
+	// Only the proposer cancels. The previous rule let ANY owner cancel any
+	// proposal, which made a single owner a veto over the whole wallet.
 	if caller.String() != proposal.Proposer {
-		// Also allow any owner if threshold reached for cancellation
-		if err := w.requireOwner(caller); err != nil {
-			return fmt.Errorf("multisig: only proposer can cancel (or owner with quorum)")
-		}
+		return fmt.Errorf("multisig: only the proposer %s can cancel proposal %d", proposal.Proposer, nonce)
 	}
 
 	proposal.Cancelled = true
