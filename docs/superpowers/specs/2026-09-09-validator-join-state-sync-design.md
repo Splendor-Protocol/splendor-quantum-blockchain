@@ -343,8 +343,98 @@ anyone stopping.
 - Deploying 3.1 to mainnet makes the producer run BFT with 2 active keys and
   halts it until the second key's node joins or that key unregisters. That is a
   mainnet operations decision, not part of this work.
-- BFT round drift: rounds advance independently on timeout and only resync on
+- ~~BFT round drift: rounds advance independently on timeout and only resync on
   commit, so a long stall with 2 validators can leave the nodes disagreeing on
-  the leader. The proof sequence above (N synced and idle before the restart,
-  register only after both run BFT) avoids it; it is not fixed here.
+  the leader.~~ **Fixed after this document, see §6.**
 - Snapshots are single-shot and capped at 64 MiB. Paging is a follow-up.
+
+## 6. Addendum, 2026-09-09: what a real sequential join found
+
+Everything above was written and implemented without ever starting two
+processes. Running the sequence for real (`scripts/validator-join/`) found six
+further defects. Each has a regression test named beside it; the live runs and
+the reproduction commands are in
+`/tmp/sqc-validator-live-20260909/claude-status.md`.
+
+1. **A validator could not be launched onto a running chain at all.** With a
+   `--genesis` naming another validator the node exited at start-up; without
+   one it minted its own block 0 and forked. That refusal, not anything about
+   the problem, is what made the documented procedure "start a full node, then
+   restart it as a validator". A validator with a `--peer` now joins, holds
+   production until it has a stored head and has caught up
+   (`joiningValidatorReady`), and pull-syncs on every path.
+   `cmd/node.TestValidatorStartRole`,
+   `TestJoiningValidatorIsNotReadyUntilItHasABlock`.
+
+2. **An unregistered node voted, and certified blocks with its own vote.** With
+   one registered validator the quorum is one, so a joiner that had not yet
+   registered reached it alone and stored the producer's block under a
+   certificate consisting of its own vote — two honest nodes holding different
+   certificates for the same block, observed live at height 9.
+   `consensus.TestNonMemberDoesNotVote`.
+
+3. **Round drift was permanent.** The proposal carried no round, so the
+   receiver judged the leader against its own; nothing resynchronised them.
+   Proposals now carry the round inside the proposer's own signed vote
+   (`ProposalMsg`), bounded by `MaxRoundAdvance`, and `SetHeight` resets the
+   round when the height changes.
+   `TestProposalCarriesRoundAndResynchronisesTheReceiver`,
+   `TestProposalWithAnUnauthenticatedRoundIsRefused`,
+   `TestAdvancingHeightResetsTheRound`.
+
+4. **A vote that overtook its proposal was dropped**, costing the height a full
+   round timeout — with two validators, the whole quorum. Early votes are now
+   buffered (bounded) and drained when the vote set appears, and the engine
+   broadcasts its own proposal itself, after its vote set exists.
+   `TestVoteArrivingBeforeTheProposalIsNotLost`,
+   `TestEngineBroadcastsItsOwnProposalAfterTheVoteSetExists`,
+   `TestPendingVoteBufferIsBounded`.
+
+5. **The set transition could stop the chain for good.** The engine sized a
+   quorum from a registry it refreshed on a timer, so in the window a
+   registration lands it committed on one vote where the chain wanted two; the
+   failed commit left a lock, and every retry carries a fresh timestamp and so
+   a fresh hash, which the lock refused. Reproduced in three of six runs of the
+   in-process three-node test. The engine now refreshes the set before sizing
+   anything, and a failed commit releases the height.
+   `TestProposalRefreshesTheValidatorSetBeforeSizingTheQuorum`,
+   `TestFailedCommitDoesNotWedgeTheHeight`.
+
+6. **A registration submitted anywhere but the current leader never landed.**
+   There was no path from one mempool to another. Nodes now relay what they
+   admit to their peers, one hop, over the sealed write plane (`KindTx`).
+   `rpc.TestAdmittedTransactionIsRelayedToPeers`,
+   `TestRejectedTransactionIsNotRelayed`,
+   `TestSealedTransactionRelayIsTokenGated`.
+
+Two further hardening changes, not join bugs but adjacent fail-opens:
+
+- `verifyProducerAndQC` fell back to the key the block CARRIES when the
+  producer was not in the active set — and a block always verifies against its
+  own embedded key. Once a quorum is required the producer must now be in the
+  set; below two active the fallback stays, because the genesis validator is
+  typically unregistered and the block that registers the first validator is
+  sealed by a producer its parent state does not list.
+  `core/block.TestExecuteBlockRejectsProducerOutsideTheActiveSet`.
+- Every vote in a certificate must name the height of the block it certifies.
+  `TestExecuteBlockRejectsQCVoteForAnotherHeight`.
+
+And one data race: `MultiValidator.Run` installed `onViewChange` *after*
+starting the engine goroutine that reads it.
+
+`--state-sync` and `--validator` now combine (deviation 2 of the plan is
+withdrawn): the reason it was refused — a validator sealing its own block 1
+before the snapshot lands — is what the joiner's readiness gate prevents. It
+requires at least one `--peer`.
+
+### Not addressed
+
+- A validator votes on a proposal whose parent it does not hold. `ExecuteBlock`
+  remains the authority and refuses such a block, so this is not a safety gap,
+  but a validator certifying what it has not verified is worth closing. Gating
+  the vote on `head+1` risks a stall whenever a proposal overtakes the block
+  before it, so it needs a held-proposal queue rather than a plain refusal.
+- View changes carry no certificate proving the previous round timed out, so a
+  member can name a round in which it is the leader. `MaxRoundAdvance` bounds
+  the jump; a real fix is a round-change certificate.
+- Snapshots are still single-shot and capped at 64 MiB.
