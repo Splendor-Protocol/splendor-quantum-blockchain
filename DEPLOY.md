@@ -341,7 +341,7 @@ Create `/var/sqc/genesis.json`:
   "validator_pubkey_hex": "YOUR_VALIDATOR_PUBKEY_HEX_HERE",
   "allocations": [
     {
-      "address": "SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc",
+      "address": "SQ:665f89b60e3ebb95eac3ac6c6ed89f14caa74947d64bc9300cd4609f0075fc4c",
       "balance": "26000000000000000000000000000",
       "comment": "Genesis address — ALL 26 billion SPLD. Nothing else is ever minted."
     }
@@ -371,7 +371,7 @@ Replace:
 - `YOUR_VALIDATOR_PUBKEY_HEX_HERE` with the hex from the validator wallet (signer only)
 
 The 26B goes to the **genesis address**
-`SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc` — not the validator.
+`SQ:665f89b60e3ebb95eac3ac6c6ed89f14caa74947d64bc9300cd4609f0075fc4c` — not the validator.
 
 Native supply is **26 billion SPLD**, minted once, to **one** allocation. The
 protocol refuses a genesis that sums above that figure, and every block apply
@@ -545,7 +545,7 @@ VALIDATOR_ADDR=$(./sqc-wallet address --wallet /var/sqc/validator.sqwallet)
 echo "Validator address (must stay at 0): $VALIDATOR_ADDR"
 
 # Step 3: Genesis address — the one address that receives 26B.
-GENESIS_ADDR="${SQC_GENESIS_ADDR:-SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc}"
+GENESIS_ADDR="${SQC_GENESIS_ADDR:-SQ:665f89b60e3ebb95eac3ac6c6ed89f14caa74947d64bc9300cd4609f0075fc4c}"
 if [ "${GENESIS_ADDR,,}" = "${VALIDATOR_ADDR,,}" ]; then
   echo "refusing: genesis address must not be the validator" >&2
   exit 1
