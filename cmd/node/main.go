@@ -855,6 +855,18 @@ func runNode(cmd *cobra.Command, args []string) error {
 			}
 		}()
 
+		// The last vote this validator signed survives restarts here, so a
+		// process that comes back mid-height cannot sign a second, conflicting
+		// vote for the same height and round. It lives beside the chain data
+		// because it is part of this validator's consensus state.
+		voteJournal, err := consensus.OpenVoteJournal(filepath.Join(flagDataDir, "vote-journal.json"))
+		if err != nil {
+			return fmt.Errorf("vote journal: %w", err)
+		}
+		if h, r, _, ok := voteJournal.Last(); ok {
+			log.Info().Uint64("height", h).Uint32("round", r).Msg("vote journal: last signed vote restored")
+		}
+
 		// The BFT half is configured now and used whenever the producer needs
 		// it — at boot when multi_validator is already active for the next
 		// block, otherwise at the tick that reaches the activation height.
@@ -862,6 +874,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			LocalAddr:    validatorAddr,
 			LocalPubKey:  validatorPKBytes,
 			LocalPrivKey: validatorPriv,
+			VoteJournal:  voteJournal,
 			// The pull-sync loop and the block push race this commit for
 			// the same block; if one of them landed it first it is still
 			// committed (applyCommittedBlock).
