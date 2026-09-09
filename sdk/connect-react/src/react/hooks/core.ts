@@ -15,6 +15,7 @@ import { listSelectableNetworks, txExplorerUrl } from '@splendor/sqc-sdk/network
 import type { Connector } from '../../connectors/types.js';
 import { connectErrorMessage } from '../../core/controller.js';
 import type { ConnectAccount, ConnectingStep, ConnectionStatus } from '../../core/types.js';
+import { toAccountDto, type AccountDto } from '../../core/dto.js';
 import {
   useBrandLabels,
   useConnectController,
@@ -93,6 +94,13 @@ export function useAccount(): {
     info: account?.info ?? null,
     account,
   };
+}
+
+/** Thin account DTO for UI (avoids digging into SplendorPQBridge). */
+export function useAccountDto(): AccountDto {
+  const account = useConnectState((s) => s.account);
+  const status = useConnectState((s) => s.status);
+  return toAccountDto(account, status);
 }
 
 export function useBalance(pollMs = 12_000): {

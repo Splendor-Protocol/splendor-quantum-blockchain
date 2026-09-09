@@ -27,6 +27,7 @@ import { ModalHost } from '../ui/ModalHost.js';
 import {
   BrandContext,
   ControllerContext,
+  HostModalsContext,
   NetworkSwitchContext,
   type ConnectBrandLabels,
 } from './context.js';
@@ -212,7 +213,8 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     autoReconnect,
     connectorsKey,
     customNetsKey,
-    rpcUrls: clientOpts.rpcUrls,
+    // Sort arrays so referentially unstable but equal props do not rebuild the controller.
+    rpcUrls: clientOpts.rpcUrls ? [...clientOpts.rpcUrls].sort() : undefined,
     gatewayUrl: clientOpts.gatewayUrl,
     chainId: clientOpts.chainId,
     timeoutMs: clientOpts.timeoutMs,
@@ -389,12 +391,14 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   return (
     <ControllerContext.Provider value={controller}>
       <BrandContext.Provider value={labels ?? {}}>
-        <NetworkSwitchContext.Provider value={networkCtx}>
-          <div data-sqc-theme={themeAttr} style={themeStyle} className="sqc-root">
-            {children}
-            {hostModals ? <ModalHost /> : null}
-          </div>
-        </NetworkSwitchContext.Provider>
+        <HostModalsContext.Provider value={hostModals}>
+          <NetworkSwitchContext.Provider value={networkCtx}>
+            <div data-sqc-theme={themeAttr} style={themeStyle} className="sqc-root">
+              {children}
+              {hostModals ? <ModalHost /> : null}
+            </div>
+          </NetworkSwitchContext.Provider>
+        </HostModalsContext.Provider>
       </BrandContext.Provider>
     </ControllerContext.Provider>
   );
@@ -404,8 +408,10 @@ export {
   useConnectController,
   useConnectState,
   useBrandLabels,
+  useHostModals,
   useNetworkSwitch,
   ControllerContext,
   BrandContext,
+  HostModalsContext,
   NetworkSwitchContext,
 } from './context.js';

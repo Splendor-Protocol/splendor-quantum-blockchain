@@ -28,10 +28,17 @@ Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plug
 | Idle lock syncs UI | Yes — bridge `lock` event → `status: 'locked'` |
 | Inline / custom networks | Yes — `networks` / `networkConfig` / `registerNetwork` |
 | Tx hooks + receipt confirmation | Yes (receipt when node indexes) |
-| Drop-in widgets | Yes — `TransferWidget`, `TokenPanel`, `DeployTokenWidget`, `AccountCard` |
+| Drop-in widgets | Yes — **connect + SPLD/QRC-20 only**: `TransferWidget`, `TokenPanel`, `DeployTokenWidget`, `AccountCard` |
 | Optional `window.splendor` | Yes — `exposeInjectedProvider` |
 | QRC-20 hooks (`useQRC20`, `useDeployToken`) | Yes |
-| Module hooks | Yes — see matrix below |
+| ML-DSA Sign-In | Yes — `useSignIn` / `createAuthMessage` |
+| Tx toasts | Yes — `<TxToastHost />` + `useTxToast` |
+| Wrong-network banner | Yes — `<WrongNetworkBanner expectedNetworkId="…" />` |
+| Module hooks | Yes — DEX/bridge/exchange hooks for app-level UI (no Swap/Bridge widgets) |
+
+### Widget scope
+
+Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. DEX, bridge, exchange, and QRC-1155 are available as **hooks** for app-built UI — not as packaged AppKit widgets. WalletConnect remains deferred.
 
 ### Hook coverage matrix
 
@@ -49,6 +56,8 @@ Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plug
 | Bound module factory | `useModules()` |
 | Raw module router | `useModuleCall` (power user) |
 | X402 micropayment | `usePayX402` |
+| ML-DSA Sign-In | `useSignIn`, `createAuthMessage` |
+| Account / tx DTOs | `useAccountDto`, `toTxResultDto` |
 
 ```tsx
 const { swap, status, hash } = useDex(poolAddress);

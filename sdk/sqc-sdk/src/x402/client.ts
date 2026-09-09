@@ -7,6 +7,7 @@ import type { SplendorPQBridge } from '../splendor-wallet.js';
 import type { X402PayOpts } from '../types.js';
 import { randomNonceHex } from '../encoding.js';
 import { assertAddress } from '../address.js';
+import { WalletError } from '../errors.js';
 
 export type PaymentRequirements = {
   pay_to: string;
@@ -82,11 +83,11 @@ export class X402Client {
   }
 
   async verify(requirements: PaymentRequirements, payload: PaymentPayload) {
-    return this.connection.rpc.x402Verify(requirements, payload);
+    return this.connection.x402Verify(requirements, payload);
   }
 
   async settle(requirements: PaymentRequirements, payload: PaymentPayload, settlementTx: object) {
-    return this.connection.rpc.x402Settle(requirements, payload, settlementTx);
+    return this.connection.x402Settle(requirements, payload, settlementTx);
   }
 
   /** Full pay flow using a connected wallet (sign + optional verify/settle). */
@@ -122,7 +123,7 @@ function resolvePrice(price: string | Record<string, string>, path: string): str
   }
   const values = Object.values(price);
   if (values.length === 0) {
-    throw new Error('createX402Middleware: price map is empty');
+    throw WalletError.invalidAmount('createX402Middleware: price map is empty');
   }
   return values[0]!;
 }
@@ -134,7 +135,9 @@ function resolvePrice(price: string | Record<string, string>, path: string): str
  * payload). Verify-only access is not granted — use `wallet.payX402` to pay.
  */
 export function createX402Middleware(config: X402MiddlewareConfig) {
-  if (!config.payTo) throw new Error('createX402Middleware: payTo is required');
+  if (!config.payTo) {
+    throw new WalletError('INVALID_ADDRESS', 'createX402Middleware: payTo is required');
+  }
   const client = X402Client.fromConnection(config.connection);
   const requireSettlement = config.requireSettlement !== false;
 

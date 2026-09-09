@@ -15,6 +15,8 @@ export type ConnectBrandLabels = {
 
 export const ControllerContext = createContext<ConnectController | null>(null);
 export const BrandContext = createContext<ConnectBrandLabels>({});
+/** When true, Provider already mounts ModalHost — ConnectButton must not. */
+export const HostModalsContext = createContext(true);
 export const NetworkSwitchContext = createContext<{
   switchNetwork: (id: NetworkId) => Promise<void>;
   allowPlaceholderNetworks: boolean;
@@ -57,6 +59,10 @@ export function useConnectState<T = ConnectControllerState>(
   const ctrl = useConnectController();
   if (selector) return useControllerStore(ctrl, selector);
   return useControllerStore(ctrl) as T;
+}
+
+export function useHostModals(): boolean {
+  return useContext(HostModalsContext);
 }
 
 export function useBrandLabels(): ConnectBrandLabels {

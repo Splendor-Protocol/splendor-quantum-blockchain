@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createSplendorClient } from './connect.js';
-import type { SplendorClient, CreateClientOptions } from './connect.js';
+import type { ClientSession, CreateClientOptions } from './connect.js';
 import { BridgeError } from './errors.js';
 import type { BridgeErrorCode } from './errors.js';
 import type { ConnectionState, DeriveInfo } from './types.js';
@@ -15,7 +15,7 @@ export type UseSplendorPQOpts = CreateClientOptions;
 
 /** @deprecated Prefer `@splendor/connect-react` ConnectKit hooks. */
 export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
-  const [client, setClient] = useState<SplendorClient | null>(null);
+  const [client, setClient] = useState<ClientSession | null>(null);
   const [state, setState] = useState<ConnectionState | 'locked'>('disconnected');
   const [info, setInfo] = useState<DeriveInfo | null>(null);
   const [error, setError] = useState<Error | null>(null);

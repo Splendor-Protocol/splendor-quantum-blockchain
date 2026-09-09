@@ -1,13 +1,14 @@
 import { SplendorPQBridge } from '../../splendor-wallet.js';
 import type { Connection } from '../../core/connection.js';
+import { BridgeError } from '../../errors.js';
 import type { Connector, ConnectorConnectOptions } from './types.js';
 
 export const metamaskConnector: Connector = {
   id: 'metamask',
   async connect(connection: Connection, options: ConnectorConnectOptions = {}) {
     const wallet = new SplendorPQBridge({
-      ...connection.toRpcOptions(),
       ...options,
+      connection,
       ethereumProvider: options.ethereumProvider,
     });
     await wallet.init();
@@ -19,10 +20,13 @@ export const metamaskConnector: Connector = {
 export const evmKeyConnector: Connector = {
   id: 'evmKey',
   async connect(connection: Connection, options: ConnectorConnectOptions = {}) {
-    const wallet = new SplendorPQBridge({ ...connection.toRpcOptions(), ...options });
+    const wallet = new SplendorPQBridge({
+      ...options,
+      connection,
+    });
     await wallet.init();
     if (!options.evmPrivateKey) {
-      throw new Error('evmKeyConnector requires evmPrivateKey');
+      throw BridgeError.notConnected('evmKeyConnector requires evmPrivateKey');
     }
     await wallet.connectFromEvmPrivateKey(options.evmPrivateKey);
     return wallet;

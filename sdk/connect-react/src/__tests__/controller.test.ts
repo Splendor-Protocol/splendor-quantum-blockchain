@@ -514,4 +514,54 @@ describe('createConnectController', () => {
     await a;
     ctrl.destroy();
   });
+
+  it('getState snapshot is referentially stable across no-op reads', () => {
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: async () => mockInfo,
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    const a = ctrl.getState();
+    const b = ctrl.getState();
+    expect(a).toBe(b);
+    ctrl.openModal('connect');
+    const c = ctrl.getState();
+    expect(c).not.toBe(a);
+    expect(c.modal).toBe('connect');
+    const d = ctrl.getState();
+    expect(c).toBe(d);
+    ctrl.destroy();
+  });
+
+  it('wires connector.onAccountsChanged when present', async () => {
+    let fire: ((evm: string) => void) | null = null;
+    const connector: Connector = {
+      id: 'metamask',
+      name: 'MetaMask',
+      ready: () => true,
+      connect: async () => mockInfo,
+      onAccountsChanged: (cb) => {
+        fire = cb;
+        return () => {
+          fire = null;
+        };
+      },
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [connector],
+      allowUnpinnedWasm: true,
+    });
+    await ctrl.connect('metamask');
+    expect(typeof fire).toBe('function');
+    fire?.('0x2222222222222222222222222222222222222222');
+    ctrl.destroy();
+    expect(fire).toBeNull();
+  });
 });

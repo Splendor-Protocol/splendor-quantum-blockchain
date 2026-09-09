@@ -1,4 +1,5 @@
-import { SqRpc } from './rpc.js';
+import type { Connection } from './core/connection.js';
+import type { Transport } from './core/transport/types.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import { buildModuleCall, type ModuleCall } from './core/module-call.js';
 
@@ -20,23 +21,56 @@ export type VerifyInstruction = {
   sig_slh: string;
 };
 
+type ChainIo = Pick<Transport, 'get' | 'post'>;
+
+function asIo(source: Connection | Transport | ChainIo): ChainIo {
+  if ('transport' in source && source.transport && typeof source.transport.get === 'function') {
+    return source.transport;
+  }
+  return source as ChainIo;
+}
+
 export class VerifyClient {
-  constructor(private readonly rpc: SqRpc) {}
+  private readonly io: ChainIo;
+
+  constructor(source: Connection | Transport | ChainIo) {
+    this.io = asIo(source);
+  }
 
   check(instruction: VerifyInstruction) {
-    return this.rpc.verifyCheck(instruction);
+    return this.io.post<{
+      valid: boolean;
+      reason?: string;
+      digest?: string;
+      signer?: string;
+      instruction_id?: string;
+      origin?: string;
+      settlement_hint?: string;
+      action?: string;
+    }>('/verify/check', instruction, false);
   }
 
   proof(instructionId: string, instance: string) {
-    return this.rpc.verifyProof(instructionId, instance);
+    const id = String(instructionId).replace(/^0x/i, '');
+    return this.io.get<Record<string, unknown>>(
+      `/verify/proof/${encodeURIComponent(id)}?instance=${encodeURIComponent(instance)}`,
+    );
   }
 
   attest(signedTx: object) {
-    return this.rpc.verifyAttest(signedTx);
+    return this.io.post<{ status: string; hash: string }>(
+      '/verify/attest',
+      { tx: signedTx },
+      true,
+    );
   }
 
   settle(signedTx: object) {
-    return this.rpc.verifySettle(signedTx);
+    return this.io.post<{ status: string; hash: string }>(
+      '/verify/settle',
+      { tx: signedTx },
+      true,
+    );
   }
 
   moduleCall(action: string, params: Record<string, unknown>): ModuleCall {
@@ -48,6 +82,7 @@ export class VerifyClient {
   }
 }
 
-export function getVerify(rpc: SqRpc): VerifyClient {
-  return new VerifyClient(rpc);
+/** Prefer `getVerify(connection)` — Transport-backed Connection. */
+export function getVerify(source: Connection | Transport | ChainIo): VerifyClient {
+  return new VerifyClient(source);
 }

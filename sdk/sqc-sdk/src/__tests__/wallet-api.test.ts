@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import {
   Wallet,
   createPublicClient,
@@ -8,7 +8,10 @@ import {
   WalletError,
   isWalletError,
   resetWasmLoader,
+  Connection,
 } from '../index.js';
+import * as connectMod from '../connect.js';
+import { SplendorPQBridge } from '../splendor-wallet.js';
 
 const GOLDEN_SEED = '01'.repeat(32);
 
@@ -35,6 +38,15 @@ describe('Phase 1 — canonical Wallet API', () => {
     const c = createPublicClient({ network: 'local' });
     expect(c.chainId).toBeTruthy();
     expect(typeof c.getBalance).toBe('function');
+  });
+
+  it('createPublicClient does not allocate a Wallet', () => {
+    const spy = vi.spyOn(connectMod, 'createSplendorClient');
+    const c = createPublicClient({ network: 'local' });
+    expect(c).toBeInstanceOf(Connection);
+    expect(c instanceof SplendorPQBridge).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it('createWalletClient + connect({ mode: seed }) unlocks account', async () => {

@@ -10,14 +10,12 @@ function mockConnection(opts: {
 }): Connection {
   return {
     chainId: 'splendor-quantum-1',
-    rpc: {
-      x402Verify: vi.fn(async () => ({ valid: opts.verifyValid !== false })),
-      x402Settle: vi.fn(async () =>
-        opts.settleSuccess === false
-          ? { success: false, error: 'settle failed' }
-          : { success: true, tx_hash: '0xsettle' },
-      ),
-    },
+    x402Verify: vi.fn(async () => ({ valid: opts.verifyValid !== false })),
+    x402Settle: vi.fn(async () =>
+      opts.settleSuccess === false
+        ? { success: false, error: 'settle failed' }
+        : { success: true, tx_hash: '0xsettle' },
+    ),
   } as unknown as Connection;
 }
 

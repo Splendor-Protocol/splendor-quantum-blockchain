@@ -3,6 +3,7 @@
  * SqRpc stays private to this adapter; Connection should not need a parallel client.
  */
 import { SqRpc, type RpcOptions } from '../../rpc.js';
+import { BridgeError } from '../../errors.js';
 import type { ModuleCall } from '../module-call.js';
 import type {
   EstimateGasRequest,
@@ -116,7 +117,7 @@ export class RpcTransport implements Transport {
 
   call(opts: CallRequest): Promise<Record<string, unknown>> {
     if (opts.data == null) {
-      throw new Error('RpcTransport.call requires data');
+      throw BridgeError.rpc('RpcTransport.call requires data');
     }
     return this.rpc.call({ ...opts, data: opts.data });
   }

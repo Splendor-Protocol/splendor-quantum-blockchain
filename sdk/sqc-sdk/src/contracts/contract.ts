@@ -14,6 +14,7 @@ import {
 } from '../abi.js';
 import type { CallOpts, DeployOpts } from '../types.js';
 import { withSigner, type BoundClient, type WalletLike } from '../bound.js';
+import { WalletError } from '../errors.js';
 
 export type ContractReadResult = {
   return_data?: string;
@@ -54,7 +55,7 @@ export class Contract {
   async readUint256(functionSig: string, args: AbiArg[] = [], from?: string): Promise<bigint> {
     const res = await this.read(functionSig, args, from);
     if (res.reverted) {
-      throw new Error(res.revert_reason || 'contract call reverted');
+      throw new WalletError('TX_FAILED', res.revert_reason || 'contract call reverted');
     }
     if (!res.return_data) return 0n;
     return decodeUint256(res.return_data);
@@ -63,9 +64,9 @@ export class Contract {
   async readAddress(functionSig: string, args: AbiArg[] = [], from?: string): Promise<string> {
     const res = await this.read(functionSig, args, from);
     if (res.reverted) {
-      throw new Error(res.revert_reason || 'contract call reverted');
+      throw new WalletError('TX_FAILED', res.revert_reason || 'contract call reverted');
     }
-    if (!res.return_data) throw new Error('empty return data');
+    if (!res.return_data) throw new WalletError('TX_FAILED', 'empty return data');
     return decodeAddress(res.return_data);
   }
 

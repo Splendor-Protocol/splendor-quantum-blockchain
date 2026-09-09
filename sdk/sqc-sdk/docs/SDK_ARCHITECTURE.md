@@ -2,26 +2,36 @@
 
 Unified JavaScript/TypeScript SDK for Splendor Quantum Chain — wallet, native modules, and dApp integration.
 
+## Canonical export map
+
+| Import | Purpose |
+|--------|---------|
+| `@splendor/sqc-sdk` → `createSession`, `createPublicClient`, `createWalletClient`, `connect` | Recipes (happy path) |
+| `@splendor/sqc-sdk/core` | `Connection`, `Transport`, `Program`, `Signer`, module-call |
+| `@splendor/sqc-sdk/wallet` | `Keypair`, factory connectors, `WasmSession`, `installBrowserSessionPolicy` |
+| `@splendor/sqc-sdk/tokens`, `/defi`, `/bridge`, `/contracts`, `/x402` | Domain Program clients |
+| `@splendor/sqc-sdk/errors` | `BridgeError` / `WalletError` / `isBridgeError` |
+| `@splendor/connect-react` | ConnectKit UI (connect + SPLD/QRC-20 widgets) |
+
+Prefer **`createSession`** (headless) and **ConnectKit** (UI). Prefer `Connection` for reads. Do **not** construct `SqRpc` or default-import `SplendorPQBridge` in new apps — use `Wallet` / factory connectors.
+
+Deprecated root exports (still present one minor): `connectSplendor`, `createSplendorClient`, `SqRpc`, `SqcProvider`, `useSplendorPQ`, default `SplendorPQBridge` name. Session shape is **`ClientSession`** (the `SplendorClient` **class** is a factory; do not use the old type alias name).
+
 ## Recommended entry paths
 
 | Who | Use |
 |-----|-----|
 | Headless / agents / Node | `createSession()` (bound modules) |
+| Read-only | `createPublicClient()` → `Connection` only (no Wallet) |
 | Browser UI | `@splendor/connect-react` (`ConnectKit` / `SplendorConnectProvider`) |
 | Full UI demo | [`examples/web-dapp`](../examples/web-dapp) |
 | Legacy imports | `@splendor/pq-bridge` (deprecated shim) |
-
-Canonical recipes: **`createSession`** (headless) + **ConnectKit** (UI). Prefer `Connection` for reads; `SqcProvider` is a thin deprecated alias.
-
-Deprecated (still exported): `connectSplendor`, `createSplendorClient`, `useSplendorPQ`, default `SplendorPQBridge` name (`Wallet` preferred).
-
-Prefer `createSession` / `modules.bind(connection, wallet)` so writes omit the wallet argument. Unbound `modules.qrc20(connection, addr).transfer(wallet, …)` remains for advanced use.
 
 ### Built-in Program clients vs on-chain modules
 
 Typed `modules.*` / `bindModules` clients ship for: **qrc20**, **qrc1155**, **exchange**, **dex**, **bridge**, **contract**.
 
-On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall` / `registerModule` — do not stub fake Programs): **lending**, **oracle**, **multisig**, **governance**, **qrc721**, **qrc4626**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient` (not bindModules Programs).
+On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall` / `registerModule` — do not stub fake Programs): **lending**, **oracle**, **multisig**, **governance**, **qrc721**, **qrc4626**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient` (Connection/Transport-backed).
 
 ## Package layout
 
@@ -29,7 +39,7 @@ On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall`
 @splendor/sqc-sdk
 ├── .                    # createSession(), modules, deployQRC20(), Wallet
 ├── /core                # Connection, Transport, Program, Signer, module-registry
-├── /wallet              # Keypair, connectors, connect()
+├── /wallet              # Keypair, connectors, connect(), WasmSession, browser policy
 ├── /tokens              # QRC20 + QRC1155
 ├── /tokens/qrc20
 ├── /tokens/qrc1155
@@ -46,18 +56,20 @@ On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall`
 
 1. **Transport (chain IO)** — owns balance, nonce, module reads, submit, confirmation, x402 verify/settle, subscribe. `RpcTransport` wraps `SqRpc` privately; `MockTransport` scripts the same surface for tests (no hidden live RPC).
 2. **Connection** — thin façade over Transport. Do not use a parallel `SqRpc` for production paths. `connection.rpc` is deprecated and only works when the transport is `RpcTransport`.
-3. **Signer** — Program write type: `getAddress`, `sendModuleCall`, `callContract`, plus optional capabilities (`signPermit`, `signOrder`, `signCancel`, `signIncrementNonce`, `signBridgeClaim`, `payX402`). `Wallet` implements the full surface; `MockSigner` is submit-only.
-4. **Program** — typed native module clients. Writes take `Signer`; deploy actions use `isDeployAction()` overrides (e.g. DEX `deploy_pool`). Declarative `writeMethods()` drive `withSigner` binding.
-5. **Module registry** — `registerModule` / `defineModule` / `listModules`. Built-ins register once from `modules.ts`; session bind tables come from the registry.
-6. **Recipes** — `createSession()`, `modules.*`, `deployQRC20()`, etc.
+3. **Signer / Wallet** — `Wallet` implements `Signer`. Crypto session lives in **`WasmSession`**. Browser idle/visibility is **`installBrowserSessionPolicy`** (host-owned; ConnectKit / Wallet opts install it). MetaMask account watch is **`attachMetaMaskAccountWatcher`** (not inline DOM in Wallet).
+4. **Program** — typed native module clients. Writes take `Signer`; deploy actions use `isDeployAction()` overrides.
+5. **Module registry** — `registerModule` / `defineModule` / `listModules`.
+6. **Recipes** — `createSession()`, `connect()` via factory connectors on a **shared Connection**, `modules.*`, `deployQRC20()`, etc.
 
 ```mermaid
 flowchart LR
-  P[Program.write] --> S[Signer]
-  S --> IO[Transport]
-  C[Connection] --> IO
-  W[Wallet] --> S
-  W --> C
+  UI[connect-react] --> Ctrl[Controller]
+  Ctrl --> Conn[WalletFactoryConnector]
+  Conn --> W[Wallet + WasmSession]
+  W --> C[Connection]
+  C --> T[Transport]
+  T --> R[SqRpc private]
+  Policy[BrowserSessionPolicy] -.-> W
 ```
 
 ## Module registry
@@ -68,7 +80,6 @@ import { createSession, modules, registerModule, defineModule } from '@splendor/
 const s = await createSession({ network: 'local', mode: 'seed', seed });
 await s.token(tokenAddr).transfer(recipient, '10');
 
-// Addon: implement Program → register once → export subpath (no Session bind edits)
 registerModule(
   defineModule({
     id: 'myModule',
@@ -88,6 +99,9 @@ registerModule(
 | Bridge (`bridge_v1`) | Built | deploy, claim, operators |
 | Bytecode contracts | Built | QSol ABI call + deployBytecode |
 | QSol compile-in-SDK | Not built | use monorepo `sqc-solc` offline |
+| QRC-721 / lending / oracle | Roadmap | no stubs until on-chain ABI stable |
+| WalletConnect / mobile | Deferred | ConnectKit is browser-injected first |
+| ABI/codegen for QSol | Roadmap | viem-like typed contracts later |
 
 ## Native modules
 
@@ -95,13 +109,15 @@ Writes: `signer.sendModuleCall({ module, action, params })` → `TxCall` to `MOD
 
 Reads: `connection.moduleCall(envelope)` → Transport `POST /call` with the same JSON envelope.
 
-Programs inject the instance address under the correct key (`token`, `collection`, `pool`, `exchange`, `bridge`).
-
 ## Connectors
 
-- **Headless** (`Connector`): `connect(connection) → Wallet` — used by `connect()`.
+- **Headless** (`WalletFactoryConnector`): `connect(connection) → Wallet` — used by `connect()`; **must reuse** the passed Connection (never `toRpcOptions()` clone).
 - **Unlock** (`WalletUnlockConnector`): `unlock({ wallet, connection }) → DeriveInfo` — canonical for UI.
 - **connect-react** wraps unlock with UI metadata (`name`, `icon`, `keyOrigin`).
+
+## Errors
+
+Public surfaces throw `BridgeError` / `WalletError` with a stable `.code`. Catch with `isBridgeError`. Prefer `WalletError` on new throw sites.
 
 ## SQDP-1
 

@@ -61,6 +61,7 @@ export type {
 export {
   useConnect,
   useAccount,
+  useAccountDto,
   useBalance,
   useNetwork,
   useWallet,
@@ -84,8 +85,13 @@ export {
   useContract,
   useDeployBytecode,
   useModules,
+  useSignIn,
+  createAuthMessage,
 } from './react/hooks.js';
 export type { TxHookStatus } from './react/hooks.js';
+export type { AccountDto, TxResultDto } from './core/dto.js';
+export { toAccountDto, toTxResultDto } from './core/dto.js';
+export type { AuthMessageParams, SignedAuth } from './react/auth.js';
 
 export {
   ConnectKit,
@@ -95,9 +101,14 @@ export {
   NetworkBadge,
   ModalShell,
   ModalHost,
+  TxToastHost,
+  useTxToast,
+  WrongNetworkBanner,
 } from './ui/index.js';
 export type { ConnectButtonProps } from './ui/ConnectButton.js';
 export type { NetworkBadgeProps } from './ui/NetworkBadge.js';
+export type { TxToastHostProps, TxToast } from './ui/TxToastHost.js';
+export type { WrongNetworkBannerProps } from './ui/WrongNetworkBanner.js';
 
 export {
   AccountCard,
