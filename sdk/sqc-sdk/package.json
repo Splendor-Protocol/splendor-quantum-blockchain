@@ -108,7 +108,7 @@
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run build:ts",
     "prepare": "npm run build:ts",
-    "prepublishOnly": "node ./scripts/check-wasm-dist.mjs && npm run build:ts",
+    "prepack": "bash ./wasm/build.sh && node ./scripts/sync-config.mjs && npm run build:ts && node ./scripts/check-wasm-dist.mjs",
     "test": "vitest run",
     "test:go": "go test github.com/splendor-protocol/splendor-quantum-blockchain/sdk/sqc-sdk/signer -count=1",
     "test:gateway": "npm --prefix gateway test",

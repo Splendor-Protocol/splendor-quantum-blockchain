@@ -1,11 +1,16 @@
 name: CI
 
-# There was no CI in this repository at all. The committed signer WASM drifted
-# from its source twice — once across the CRYSTALS-Dilithium to ML-DSA-65
-# migration, and again when a chain-id export was added — and neither was caught,
-# because the only existing check (scripts/check-wasm-dist.mjs) compares the
-# binary to its recorded digest rather than to the source it was built from. Both
+# There was no CI in this repository at all. The signer WASM drifted from its
+# source three times — the CRYSTALS-Dilithium to ML-DSA-65 migration, a chain-id
+# export, and 22 lines of snapshot structs added to core/types — because the
+# binary was committed and the only check (scripts/check-wasm-dist.mjs) compares
+# it to its recorded digest rather than to the source it was built from. Both
 # agree during a drift, so it passes.
+#
+# The binary is no longer tracked, so there is nothing left to drift: CI builds
+# it, and npm `prepack` builds it into the published tarball. What is still
+# committed is the sha256 pins consumers verify at load, and wasm-drift below
+# re-pins those itself rather than asking a person to.
 
 on:
   push:
@@ -67,6 +72,10 @@ jobs:
     name: signer WASM matches its source
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # To push the re-pin below. It writes only the two sqc.networks.json files,
+    # and only values it derived from a build of this commit's own source.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -74,55 +83,64 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Nothing enforced that "one signer" claim until now, and a second copy
-      # had already appeared: examples/basic-dapp/public/sqc_signer.wasm sat
-      # three rebuilds stale, checked by nothing, and the example loads it with
-      # allowUnpinnedWasm. sqcWasmPlugin copies that file from wasm/dist on every
-      # build, so it never needed committing in the first place.
-      - name: No second signer is tracked
+      # A committed signer is the thing that drifts, and copies of it appear on
+      # their own: examples/basic-dapp/public/sqc_signer.wasm once sat three
+      # rebuilds stale, checked by nothing, loaded with allowUnpinnedWasm. Every
+      # place that needs the bytes copies them at build time (sqcWasmPlugin) or
+      # gets them from the npm package, so none of them needs a copy in git.
+      - name: No signer is tracked
         run: |
           set -euo pipefail
-          extra="$(git ls-files '*.wasm' | grep -v '^sdk/sqc-sdk/wasm/dist/sqc_signer.wasm$' || true)"
-          if [ -z "$extra" ]; then echo "one tracked signer, as intended"; exit 0; fi
-          echo "::error::a second signer binary is committed and nothing checks it:"
+          extra="$(git ls-files '*.wasm')"
+          if [ -z "$extra" ]; then echo "no signer binary in git, as intended"; exit 0; fi
+          echo "::error::a signer binary is committed, and a committed binary drifts:"
           echo "$extra"
-          echo "Delete it. If a build needs the bytes somewhere, copy them there at"
-          echo "build time from sdk/sqc-sdk/wasm/dist — do not commit a second copy."
+          echo "Delete it. Whatever needs the bytes builds them with"
+          echo "sdk/sqc-sdk/wasm/build.sh, or takes them from the npm package."
           exit 1
 
-      # The digest is Go-release-sensitive, so this has to build under the same
-      # toolchain build.sh pins or it would report drift that does not exist.
-      - name: Rebuild the signer from source
-        run: |
-          cp sdk/sqc-sdk/wasm/dist/sqc_signer.wasm /tmp/committed.wasm
-          bash sdk/sqc-sdk/wasm/build.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: Compare the rebuild against every committed copy and pin
+      # The digest is Go-release-sensitive, so this has to build under the same
+      # toolchain build.sh pins, or it would re-pin to bytes nobody else gets.
+      #
+      # The pins are a pure function of that build, so on main this makes them
+      # right instead of asking a person to. core/types and core/crypto are
+      # linked into the signer, so any chain commit can move the bytes, and this
+      # repo has no branch protection — most changes arrive as a direct push to
+      # main and never see a PR, which is where a "go rebuild it" error just
+      # leaves main red. This job cannot approve source; it only makes the
+      # committed pins name the bytes this commit's own source builds, which is
+      # exactly what a person would have run by hand. Off main it warns instead,
+      # and main re-pins when the change lands.
+      #
+      # A push made with GITHUB_TOKEN starts no further workflow run, so this
+      # cannot loop.
+      - name: Rebuild the signer and re-pin whatever moved
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          built="$(sha256sum sdk/sqc-sdk/wasm/dist/sqc_signer.wasm | cut -d' ' -f1)"
-          committed="$(sha256sum /tmp/committed.wasm | cut -d' ' -f1)"
-          echo "rebuilt from source : $built"
-          echo "committed in repo   : $committed"
-
-          fail=0
-          if [ "$built" != "$committed" ]; then
-            echo "::error::sdk/sqc-sdk/wasm/dist/sqc_signer.wasm does not match its source."
-            echo "The signer was changed without rebuilding. Anyone building from this tree"
-            echo "gets a binary that does not do what main.go says it does."
-            echo "Fix: bash sdk/sqc-sdk/wasm/build.sh && (cd sdk/sqc-sdk && npm run sync:config)"
-            echo "Then re-pin the same digest in splendor-quantum-wallet-extension, which"
-            echo "ships its own copy of this artifact."
-            fail=1
+          bash sdk/sqc-sdk/wasm/build.sh
+          node sdk/sqc-sdk/scripts/sync-config.mjs
+          pins='sdk/sqc-sdk/config/sqc.networks.json sdk/sqc-sdk/src/config/sqc.networks.json'
+          if git diff --quiet -- $pins; then
+            echo "the pins already name the bytes this source builds"
+            exit 0
           fi
-
-          # This is the only committed copy of the signer, and the step above
-          # now enforces that rather than asserting it: sdk/bridge is a pure
-          # re-export shim and ships no artifact. The browser extension keeps its
-          # own copy (splendor-quantum-wallet-extension) and its own CI compares it
-          # against this file, so drift there is caught there.
-
-          exit "$fail"
+          git diff --stat -- $pins
+          if [ "$EVENT" != push ] || [ "$REF" != refs/heads/main ]; then
+            echo "::warning::the signer moved; main re-pins itself when this lands"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "chore(signer): re-pin to the signer ${GITHUB_SHA:0:7} builds" -- $pins
+          git push origin "HEAD:$GITHUB_REF_NAME" \
+            || { git pull --rebase origin "$GITHUB_REF_NAME" && git push origin "HEAD:$GITHUB_REF_NAME"; }
 
       # The pins themselves, per network and per field. The grep this replaced
       # only asked whether the wasm digest appeared ANYWHERE in the file, so one
@@ -130,9 +148,6 @@ jobs:
       # all — a wrong wasm_exec.js pin makes every consumer refuse to sign, and
       # would have shipped. check-wasm-dist.mjs is the same check npm publish
       # already runs; CI just never ran it.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
       - name: Every network pin names the rebuilt bytes
         run: node sdk/sqc-sdk/scripts/check-wasm-dist.mjs
 
@@ -154,6 +169,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The signer is a build output now, and these tests load the real one
+      # (permit-golden and the audit scenarios call loadWasmSigner). Same script
+      # a developer runs once after cloning.
+      - name: Build the signer these tests load
+        run: bash sdk/sqc-sdk/wasm/build.sh
 
       # connect-react resolves @splendor/sqc-sdk through a file: link to the
       # sibling package and typechecks against its BUILT dist/, so the SDK has to

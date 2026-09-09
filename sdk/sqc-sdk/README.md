@@ -277,8 +277,11 @@ The browser wallet extension lives in its own repository
 (`splendor-quantum-wallet-extension`) and re-pins from the digest published
 here; it is no longer rebuilt from this tree.
 
-`npm run prepublishOnly` refuses to publish when `wasm/dist` and the pins in
-`sqc.networks.json` disagree.
+`wasm/dist` is not in git. `prepack` builds the signer under the toolchain
+`wasm/build.sh` pins, re-pins `sqc.networks.json` from those bytes and refuses
+to publish if they still disagree, so `npm publish` always ships a signer built
+from the source in this tree. Working from a checkout, run
+`bash wasm/build.sh` once before `npm test` or a gateway `docker compose build`.
 
 ## Node usage
 
