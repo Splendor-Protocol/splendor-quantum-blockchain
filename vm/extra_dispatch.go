@@ -40,6 +40,12 @@ func dispatchValidators(stateDB *state.StateDB, ctx ModuleContext, action string
 		if err != nil {
 			return fmt.Errorf("validators register: pubkey: %w", err)
 		}
+		// modules_v2: an Exiting record refuses a new bond until the exit
+		// is finalized. Before it, the legacy rule (Active only) applies so
+		// already-applied blocks replay unchanged.
+		if ctx.Forks.Active(forks.ModulesV2, ctx.Height) {
+			return reg.RegisterV2(ctx.Caller, pk, ctx.Height)
+		}
 		return reg.Register(ctx.Caller, pk, ctx.Height)
 	case "unregister":
 		return reg.Unregister(ctx.Caller, ctx.Height)
