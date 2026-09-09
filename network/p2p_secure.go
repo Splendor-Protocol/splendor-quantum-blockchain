@@ -34,14 +34,28 @@ const (
 	KindAnnounce = "announce"
 	KindVote     = "vote"
 	KindProposal = "proposal"
+	// KindTx relays a transaction one hop to the node's peers.
+	//
+	// Only the leader of a height puts transactions into a block, and there
+	// was no path from one mempool to another: a transaction submitted to any
+	// node other than the current leader — an RPC node, or the validator that
+	// happens not to be leading — simply never landed. That is how an operator
+	// registering a new validator watched a correctly signed transaction go
+	// nowhere. Relayed transactions are never re-relayed, so the fan-out is
+	// one hop and cannot storm.
+	KindTx = "tx"
 
 	KindGetBlock  = "get_block"
 	KindGetLatest = "get_latest"
+	// KindGetStateSnapshot asks for the peer's committed state at its head,
+	// for a node joining a chain whose history it cannot replay. Public data
+	// like a block, so not token-gated; served sealed only.
+	KindGetStateSnapshot = "get_state_snapshot"
 )
 
 // IsReadKind reports whether a sealed request only reads chain data.
 func IsReadKind(kind string) bool {
-	return kind == KindGetBlock || kind == KindGetLatest
+	return kind == KindGetBlock || kind == KindGetLatest || kind == KindGetStateSnapshot
 }
 
 // SealedRequest is the plaintext inside an Envelope.
@@ -349,6 +363,22 @@ func (c *IdentityCache) SendSealed(peerURL, token, kind string, body []byte) err
 // still content-verified by the caller — encryption authenticates the channel,
 // not the chain data travelling over it.
 func (c *IdentityCache) QuerySealed(peerURL, kind string, body []byte, maxReply int64) ([]byte, error) {
+	return c.querySealed(c.client, peerURL, kind, body, maxReply)
+}
+
+// QuerySealedTimeout is QuerySealed with its own request timeout, for the one
+// read whose reply is legitimately large — a state snapshot — and would never
+// finish inside the 5 s the block-sized queries get.
+func (c *IdentityCache) QuerySealedTimeout(peerURL, kind string, body []byte, maxReply int64, timeout time.Duration) ([]byte, error) {
+	client := &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: noRedirect,
+		Transport:     SafeTransport(timeout),
+	}
+	return c.querySealed(client, peerURL, kind, body, maxReply)
+}
+
+func (c *IdentityCache) querySealed(client *http.Client, peerURL, kind string, body []byte, maxReply int64) ([]byte, error) {
 	peerURL = canonicalPeerURL(peerURL)
 	doc, err := c.Get(peerURL)
 	if err != nil {
@@ -377,7 +407,7 @@ func (c *IdentityCache) QuerySealed(peerURL, kind string, body []byte, maxReply 
 		return nil, fmt.Errorf("marshal envelope: %w", err)
 	}
 
-	resp, err := c.client.Post(peerURL+PathSealed, "application/json", bytes.NewReader(wire))
+	resp, err := client.Post(peerURL+PathSealed, "application/json", bytes.NewReader(wire))
 	if err != nil {
 		c.Forget(peerURL)
 		return nil, fmt.Errorf("POST %s: %w", PathSealed, err)

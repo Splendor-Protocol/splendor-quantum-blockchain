@@ -1,0 +1,177 @@
+package main
+
+import (
+	"bytes"
+	"encoding/hex"
+	"fmt"
+	"strings"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/consensus"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
+)
+
+// Which path seals the next block — single or BFT — is no longer decided
+// here at boot. consensus.Producer judges it per block against the live
+// schedule, so a validator that boots below the multi_validator activation
+// moves onto BFT when the height arrives instead of stopping there.
+
+// resolveTrustedProducerKey decides which genesis validator key this node
+// authenticates blocks with.
+//
+// --validator-pubkey-hex wins on every node. It used to be honoured only on
+// full nodes, so a validator joining a running chain trusted its OWN key —
+// which seals nothing on that chain — and refused every block the producer
+// pushed. A validator without the flag trusts its own key (the producer that
+// minted the chain); a full node without it has nothing to trust until a
+// pinned genesis block supplies a key.
+func resolveTrustedProducerKey(flagHex string, isValidator bool, localPK []byte) ([]byte, error) {
+	if flagHex != "" {
+		pk, err := hex.DecodeString(strings.TrimPrefix(flagHex, "0x"))
+		if err != nil {
+			return nil, fmt.Errorf("invalid --validator-pubkey-hex: %w", err)
+		}
+		if _, err := qcrypto.PublicKeyFromBytes(pk); err != nil {
+			return nil, fmt.Errorf("invalid --validator-pubkey-hex: %w", err)
+		}
+		return pk, nil
+	}
+	if isValidator && len(localPK) > 0 {
+		return append([]byte(nil), localPK...), nil
+	}
+	return nil, nil
+}
+
+// genesisValidatorInfo names whoever sealed block 0, for the BFT engine's
+// empty-registry fallback (consensus.Config.GenesisValidator).
+//
+// Block 0 is the record when the chain DB holds it. A node that joined by
+// pull-sync never has it — sync starts at height 1 — so the trusted key,
+// which is that validator's key by definition, stands in. ok is false when
+// neither is available.
+func genesisValidatorInfo(ex *block.Executor, trustedPK []byte) (consensus.ValidatorInfo, bool) {
+	if g, err := ex.GetBlockByHeight(0); err == nil && g != nil && len(g.ValidatorPubKey) > 0 {
+		if pub, perr := qcrypto.PublicKeyFromBytes(g.ValidatorPubKey); perr == nil &&
+			qcrypto.DeriveAddress(pub) == g.Header.ValidatorAddr {
+			return consensus.ValidatorInfo{
+				Address:   g.Header.ValidatorAddr,
+				PublicKey: append([]byte(nil), g.ValidatorPubKey...),
+				IsActive:  true,
+			}, true
+		}
+	}
+	if len(trustedPK) > 0 {
+		if pub, err := qcrypto.PublicKeyFromBytes(trustedPK); err == nil {
+			return consensus.ValidatorInfo{
+				Address:   qcrypto.DeriveAddress(pub),
+				PublicKey: append([]byte(nil), trustedPK...),
+				IsActive:  true,
+			}, true
+		}
+	}
+	return consensus.ValidatorInfo{}, false
+}
+
+// validatorRole is what a --validator does with an EMPTY data directory:
+// start the chain, or take one that already exists.
+type validatorRole int
+
+const (
+	// roleMintGenesis — this node is the chain's founder. It applies the
+	// genesis allocations and seals block 0 under its own key.
+	roleMintGenesis validatorRole = iota
+
+	// roleJoin — the chain exists somewhere else. Seal nothing; pull it from a
+	// peer, and only produce once there is a head to produce on top of.
+	roleJoin
+)
+
+// validatorStartRole decides which of the two a --validator on an empty chain
+// is, and refuses the configuration that can only be a fork.
+//
+// A validator whose --genesis named a different key used to exit at start-up.
+// That is why the documented way to add a validator to a running chain was to
+// start it as a full node and restart it as a validator once it had caught up:
+// the second process was a consequence of this check, not of the problem. With
+// a peer to take the chain from, the node joins instead — same data directory,
+// one launch.
+//
+// The refusal stays for the case that really is unrecoverable: a document
+// naming somebody else and no peer to sync from. A node there can do nothing
+// but mint a second chain under the same document, which is the failure the
+// original check existed to prevent.
+func validatorStartRole(doc *genesiscfg.Genesis, localPK []byte, peers []string) (validatorRole, error) {
+	if doc == nil {
+		// No document to compare against. With a peer, the chain is the peer's;
+		// without one this is the solo development node that mints its own.
+		if len(peers) > 0 {
+			return roleJoin, nil
+		}
+		return roleMintGenesis, nil
+	}
+	docPub, err := doc.ValidatorPublicKey()
+	if err != nil {
+		return 0, fmt.Errorf("genesis document has an unusable validator_pubkey_hex: %w", err)
+	}
+	if bytes.Equal(docPub.Bytes(), localPK) {
+		return roleMintGenesis, nil
+	}
+	if len(peers) == 0 {
+		return 0, fmt.Errorf(
+			"this node's wallet is %s but the genesis document declares validator %s, "+
+				"and no --peer was given: minting block 0 here would start a SECOND chain "+
+				"under the same document. Pass --peer <url of a node on that chain> to join it",
+			qcrypto.DeriveAddress(mustPublic(localPK)), qcrypto.DeriveAddress(docPub))
+	}
+	return roleJoin, nil
+}
+
+// mustPublic is only used to render an address in the error above; an
+// unparseable local key cannot reach it (the wallet loaded it).
+func mustPublic(pk []byte) *qcrypto.PublicKey {
+	pub, err := qcrypto.PublicKeyFromBytes(pk)
+	if err != nil {
+		return &qcrypto.PublicKey{}
+	}
+	return pub
+}
+
+// joiningValidatorReady gates proposals on a validator that was pointed at
+// somebody else's chain.
+//
+// syncer.IsSynced reports "synced" while no peer height is known yet, which is
+// the right answer for the chain's own producer and the wrong one here: a
+// joiner would pass the gate in the first second of its life, before any pull
+// had run, and seal its own block 1 on top of genesis. Requiring a stored head
+// first means the node has taken at least one block from the network before it
+// is allowed to add one.
+func joiningValidatorReady(ex *block.Executor, synced func() bool) func() bool {
+	return func() bool {
+		head, err := ex.LatestBlock()
+		if err != nil || head == nil {
+			return false
+		}
+		return synced == nil || synced()
+	}
+}
+
+// applyCommittedBlock is the BFT engine's commit callback.
+//
+// The pull-sync loop and the block push both race the engine for the same
+// block: whichever lands first makes the other's ExecuteBlock fail on
+// linkage. When the block that failed is already the head — same hash, so
+// the same header and transactions — the commit still happened, and the
+// engine must advance rather than report a failed commit and hold the height
+// open.
+func applyCommittedBlock(ex *block.Executor, b *types.Block) error {
+	err := ex.ExecuteBlock(b)
+	if err == nil {
+		return nil
+	}
+	if head, herr := ex.LatestBlock(); herr == nil && head != nil && head.Hash == b.Hash {
+		return nil
+	}
+	return err
+}

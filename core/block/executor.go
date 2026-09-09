@@ -103,6 +103,20 @@ type Executor struct {
 	forks atomic.Pointer[forks.Schedule]
 }
 
+// ErrQuorumRequired is returned by ProduceBlock when multi_validator is active
+// at the height being produced and the registry lists two or more active
+// validators. From that height on every block needs a quorum certificate, which
+// the single-path producer never attaches: each block it sealed would be
+// canonical here and unappliable everywhere else. Refusing is the mainnet-5786
+// failure made visible instead of a fork.
+//
+// It is a backstop, not the node's steering: consensus.Producer leaves the
+// single path for BFT at the first multi_validator block, whether that block
+// is due at boot or arrives while the node runs, so its own producer never
+// reaches this. Any caller that does is driving ProduceBlock on a chain that
+// has moved past it.
+var ErrQuorumRequired = errors.New("multi_validator: quorum certificate required")
+
 // receiptStorer is satisfied by *state.TxIndexStore.
 // Using an interface keeps executor.go from importing the state package's txindex.
 type receiptStorer interface {
@@ -877,6 +891,15 @@ func (e *Executor) assembleBlock(
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// The single path (persist) has no certificate rule of its own, so it is
+	// judged here, before any state mutation, against the same registry a
+	// follower reads at the top of ExecuteBlock: the parent's committed state.
+	if persist {
+		if err := e.refuseSinglePathIfQuorumRequired(height); err != nil {
+			return nil, err
+		}
+	}
+
 	if len(txs) > MaxTxPerBlock {
 		txs = txs[:MaxTxPerBlock]
 	}
@@ -1084,6 +1107,40 @@ func (e *Executor) latestHeightRaw() (uint64, bool) {
 	return info.Height, true
 }
 
+// refuseSinglePathIfQuorumRequired is the producer half of the rule
+// verifyProducerAndQC enforces on followers. Caller holds e.mu.
+func (e *Executor) refuseSinglePathIfQuorumRequired(height uint64) error {
+	if !e.schedule().Active(forks.MultiValidator, height) {
+		return nil
+	}
+	active, err := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).ListActive()
+	if err != nil {
+		return fmt.Errorf("validator set: %w", err)
+	}
+	if len(active) < 2 {
+		return nil
+	}
+	return fmt.Errorf("%w: %d active validators at height %d, this block must be sealed through "+
+		"BFT (multi_validator is active for it) — the single path cannot attach a certificate",
+		ErrQuorumRequired, len(active), height)
+}
+
+// ActiveValidatorKey returns the ML-DSA-65 public key of addr when the
+// validator registry lists it as Active, and nil otherwise.
+//
+// It is the resolver the network layer uses to authenticate a block sealed by
+// a validator other than the pinned genesis key, before ExecuteBlock runs. It
+// reads committed state, which for the next block to apply is the parent
+// state — the same set verifyProducerAndQC judges the block against.
+// ExecuteBlock remains the authority: it still verifies the certificate.
+func (e *Executor) ActiveValidatorKey(addr qcrypto.Address) []byte {
+	rec, err := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).GetValidator(addr)
+	if err != nil || rec == nil || rec.Status != vm.ValidatorActive || len(rec.PublicKey) == 0 {
+		return nil
+	}
+	return append([]byte(nil), rec.PublicKey...)
+}
+
 func (e *Executor) verifyProducerAndQC(b *types.Block) error {
 	if b.Header.Height == 0 {
 		return nil
@@ -1106,6 +1163,17 @@ func (e *Executor) verifyProducerAndQC(b *types.Block) error {
 	}
 	pub := byAddr[b.Header.ValidatorAddr]
 	if len(pub) == 0 {
+		// Once a quorum is required the leader is always drawn from the active
+		// set, so a producer outside it cannot have sealed a canonical block —
+		// and falling back to the key the block CARRIES would authenticate it
+		// against itself, which every block passes. Below two the registry is
+		// not yet the authority on who produces: a chain's genesis validator is
+		// typically not registered, and the block in which the first validator
+		// registers is sealed by a producer the parent state does not list.
+		if len(active) >= 2 {
+			return fmt.Errorf("multi_validator: producer %s is not in the active validator set (%d members) at height %d",
+				b.Header.ValidatorAddr, len(active), b.Header.Height)
+		}
 		pub = b.ValidatorPubKey
 	}
 	if len(pub) == 0 {
@@ -1134,6 +1202,14 @@ func (e *Executor) verifyProducerAndQC(b *types.Block) error {
 			return fmt.Errorf("duplicate vote from %s", v.ValidatorAddr)
 		}
 		seen[v.ValidatorAddr] = struct{}{}
+		// Validate() has already bound every vote to this block's hash. The
+		// height inside the signed body must agree with it too, so a
+		// certificate cannot be assembled from votes their signers cast about
+		// a different height.
+		if v.Height != b.Header.Height {
+			return fmt.Errorf("vote from %s is for height %d, block is %d",
+				v.ValidatorAddr, v.Height, b.Header.Height)
+		}
 		if err := v.Verify(pk); err != nil {
 			return err
 		}
