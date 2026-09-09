@@ -17,29 +17,67 @@ to schedule `multi_validator`, `validators_v1`, `verify_v1`, and `min_fee_v1`.
 
 ## Joining a running chain
 
-A new node joins without the producer stopping. Every joiner needs the
+A new validator joins in ONE launch, without the producer stopping and
+without a second process on the same data directory. Every joiner needs the
 genesis validator's key (`--validator-pubkey-hex`, or `--genesis-hash` to
 learn it from block 0), the chain's genesis document (`--genesis` plus
 `--genesis-doc-hash`), and the cluster's `--rpc-auth-token`; without the
 token the producer never accepts its announce and never pushes proposals or
 votes to it.
 
-1. Start the joiner as a follower with a fresh `--data-dir` and `--peer` at
-   the producer. It pull-syncs from block 1; blocks sealed by validators other
-   than the genesis one are authenticated against the active validator set.
+1. Fund the joiner's address from the running chain: 2,500 SPLD bond plus
+   fee.
+2. Start it with a fresh `--data-dir`, `--peer` at the producer, and
+   `--validator --wallet <joiner.sqwallet>`. Because the genesis document
+   names someone else and a peer is configured, the node joins rather than
+   minting its own block 0 — it used to exit here, which is why the procedure
+   used to say "start a full node, then restart it as a validator". It
+   pull-syncs from block 1 (blocks sealed by validators other than the genesis
+   one are authenticated against the active validator set), holds production
+   until it has a stored head and has caught up, and votes on nothing until it
+   is in the registry.
+
    On a chain whose history cannot be replayed (a QC-less block sealed while
    two or more validators were active), add `--state-sync`: the node takes the
    fork schedule, chain id and minted supply from the genesis document,
    imports the producer's live state snapshot at its head — the head block is
    authenticated against the genesis validator key — and follows from there.
-2. When its height tracks the producer's, restart it on the same data dir
-   with `--validator --wallet <joiner.sqwallet>`, keeping
-   `--validator-pubkey-hex <genesis key>`. It runs BFT, votes on the
-   producer's proposals, and does not propose until it is synced.
-3. Fund the joiner (2,500 SPLD bond plus fee) and register both keys: the
-   producer's first, if it never registered itself, then the joiner's. From
-   the next block the set has two members, the leader alternates
-   `(height+round) % 2`, and every block carries two votes and a `qc_root`.
+   `--state-sync` and `--validator` combine; it needs at least one `--peer`.
+3. When its height tracks the producer's, submit a `validators.register` from
+   its own key. It can be submitted to any node in the cluster, including the
+   joiner itself: a node relays what it admits to its peers one hop, so the
+   transaction reaches whichever validator leads next. Register the producer's
+   own key first if it never registered itself.
+
+From the block after the registration the set has two members, the leader
+alternates `(height+round) % 2`, and every block carries two votes and a
+`qc_root`.
+
+Both flows are exercised end to end, against real processes, by
+`scripts/validator-join/run-live-join.sh` and
+`scripts/validator-join/run-state-sync-join.sh`; the same scenario runs
+in-process in a few seconds under `go test -race ./consensus`.
+
+### What keeps the two nodes in step
+
+- A proposal carries the round it was made in, signed by the proposer (its own
+  vote rides with the block). A node whose round timer fired once adopts the
+  proposer's round instead of rejecting it as a non-leader — before this, one
+  view change on one node was permanent, because nothing ever resynchronised
+  the two.
+- Advancing to a new height resets the round, so a node that takes blocks by
+  push or pull-sync rather than by its own commit does not stay a round ahead.
+- A vote that overtakes its proposal is held until the proposal arrives
+  instead of being dropped.
+- The engine re-reads the validator registry before it sizes a quorum, so the
+  set it counts against is the one the executor will judge the certificate
+  against — the window a registration lands in used to produce a quorum of one
+  where the chain wanted two.
+- A commit that fails releases the height instead of locking it: every retry
+  carries a fresh timestamp, so a lock left behind refused all of them.
+- A node that is not in the active set follows and counts votes but does not
+  cast one. An unregistered joiner used to vote, reach a quorum of one, and
+  store its own vote as the certificate of the producer's block.
 
 The producer moves onto BFT by itself, in-process. It seals on the single
 path while the block it is about to seal predates `multi_validator`, and from
