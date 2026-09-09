@@ -7,6 +7,7 @@ import {
   SIGN_MESSAGE_DOMAIN,
   WalletError,
   isWalletError,
+  resetWasmLoader,
 } from '../index.js';
 
 const GOLDEN_SEED = '01'.repeat(32);
@@ -21,6 +22,7 @@ afterEach(() => {
     }
   }
   wallets.length = 0;
+  resetWasmLoader();
 });
 
 function track(w: Wallet) {
@@ -73,9 +75,10 @@ describe('Phase 1 — canonical Wallet API', () => {
     expect(prepareSignMessage(challenge)).toBe(challenge);
   });
 
-  it('WalletError aliases BridgeError', () => {
+  it('WalletError subclasses BridgeError with name WalletError', () => {
     const err = WalletError.notConnected();
     expect(isWalletError(err)).toBe(true);
-    expect(err.name).toBe('BridgeError');
+    expect(err.name).toBe('WalletError');
+    expect(err).toBeInstanceOf(WalletError);
   });
 });

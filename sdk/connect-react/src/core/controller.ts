@@ -88,8 +88,12 @@ export type ConnectController = {
    * Try last connector (MetaMask/injected only — never a connector whose secret
    * the user types in).
    * Pass `{ force: true }` after a soft network switch (ignores autoReconnect flag).
+   * Pass `isStale` so rapid soft-switches abort before mutating state.
    */
-  tryAutoReconnect(opts?: { force?: boolean }): Promise<boolean>;
+  tryAutoReconnect(opts?: {
+    force?: boolean;
+    isStale?: () => boolean;
+  }): Promise<boolean>;
   getWallet(): SplendorPQBridge;
   getProvider(): SqcProvider;
   getNetwork(): NetworkConfig;
@@ -225,7 +229,14 @@ export function createConnectController(
       if (destroyed) {
         return Promise.reject(new Error('ConnectController destroyed'));
       }
-      if (connectInFlight) return connectInFlight;
+      if (connectInFlight) {
+        return Promise.reject(
+          new BridgeError(
+            'USER_REJECTED',
+            'Another connect is already in progress — wait or cancel before switching connectors',
+          ),
+        );
+      }
 
       const connector = connectors.find((c) => c.id === connectorId);
       if (!connector) {
@@ -329,22 +340,37 @@ export function createConnectController(
       activeConnectorId = null;
       emit();
     },
-    async tryAutoReconnect(opts?: { force?: boolean }) {
+    async tryAutoReconnect(opts?: { force?: boolean; isStale?: () => boolean }) {
       if (!options.autoReconnect && !opts?.force) return false;
+      if (opts?.isStale?.()) return false;
       const last = getLastConnectorId();
       if (!last) return false;
       const connector = connectors.find((c) => c.id === last);
       if (!connector || needsUserSecret(connector)) return false;
       try {
+        if (opts?.isStale?.()) return false;
         const ready = await connector.ready();
+        if (opts?.isStale?.()) return false;
         if (!ready) return false;
         if (connector.authorized) {
           const ok = await connector.authorized();
+          if (opts?.isStale?.()) return false;
           if (!ok) return false;
         }
+        if (opts?.isStale?.()) return false;
         await controller.connect(last);
+        if (opts?.isStale?.()) {
+          // Stale after connect: soft-disconnect so the newer controller owns the session.
+          try {
+            await controller.softDisconnect();
+          } catch {
+            /* ignore */
+          }
+          return false;
+        }
         return true;
       } catch (e) {
+        if (opts?.isStale?.()) return false;
         if (isBridgeError(e) && e.code === 'USER_REJECTED') return false;
         error = e instanceof Error ? e : new Error(String(e));
         status = 'error';
@@ -428,7 +454,7 @@ export function createStubConnectController(
     async softDisconnect() {
       /* no-op */
     },
-    async tryAutoReconnect(_opts?: { force?: boolean }) {
+    async tryAutoReconnect(_opts?: { force?: boolean; isStale?: () => boolean }) {
       return false;
     },
     getWallet: notReady,
@@ -452,17 +478,27 @@ export function connectErrorMessage(err: unknown): string {
         return 'Signer failed to load — check WASM hosting';
       case 'NETWORK':
       case 'RPC':
-        return err.message || 'Network error';
+        return 'Network error';
       case 'CHAIN_MISMATCH':
         return 'Chain mismatch — check network config';
       case 'TIMEOUT':
         return 'Request timed out';
       case 'NOT_CONNECTED':
         return 'Wallet not connected';
+      case 'TX_FAILED':
+        return 'Transaction failed';
+      case 'TX_NOT_CONFIRMED':
+        return 'Transaction not confirmed in time';
+      case 'INVALID_AMOUNT':
+        return 'Invalid amount';
+      case 'INVALID_FEE':
+        return 'Invalid fee';
+      case 'INVALID_ADDRESS':
+        return 'Invalid address';
       case 'UNKNOWN':
-        return err.message || 'Connection failed';
+        return 'Connection failed';
       default:
-        return err.message || 'Connection failed';
+        return 'Connection failed';
     }
   }
   if (err instanceof Error) {
@@ -475,7 +511,7 @@ export function connectErrorMessage(err: unknown): string {
     if (/user rejected|denied/i.test(err.message)) {
       return 'Request rejected in wallet';
     }
-    return err.message;
+    return 'Connection failed';
   }
   return 'Connection failed';
 }

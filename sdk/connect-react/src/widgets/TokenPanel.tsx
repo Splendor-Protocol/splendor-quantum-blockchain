@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { useAccount, useQRC20 } from '../react/hooks.js';
+import { toUnits } from '@splendor/sqc-sdk/units';
+import { useAccount, useConnect, useQRC20 } from '../react/hooks.js';
+import { connectErrorMessage } from '../core/controller.js';
 
 export type TokenPanelProps = {
   /** QRC-20 token address. */
@@ -8,23 +10,47 @@ export type TokenPanelProps = {
 };
 
 /**
- * Drop-in QRC-20 balance + transfer panel.
+ * Drop-in QRC-20 balance + human-amount transfer panel.
  */
 export function TokenPanel({ tokenAddress, className }: TokenPanelProps) {
   const { isConnected } = useAccount();
-  const { balance, tokenInfo, transfer, status, hash, explorerUrl, error, reset, loading } =
+  const { status: connStatus, openModal } = useConnect();
+  const { balance, tokenInfo, transferHuman, status, hash, explorerUrl, error, reset, loading } =
     useQRC20(tokenAddress || null);
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('1');
 
   const symbol =
     tokenInfo && typeof tokenInfo.symbol === 'string' ? tokenInfo.symbol : 'TOKEN';
+  const decimals =
+    tokenInfo && typeof tokenInfo.decimals === 'number' ? tokenInfo.decimals : 18;
+
+  let humanBalance: string | null = null;
+  if (balance != null) {
+    try {
+      humanBalance = toUnits(balance, decimals);
+    } catch {
+      humanBalance = balance;
+    }
+  }
 
   if (!tokenAddress) {
     return (
       <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
         <h3 className="sqc-widget__title">Token</h3>
         <p className="sqc-widget__hint">Pass a QRC-20 tokenAddress prop.</p>
+      </div>
+    );
+  }
+
+  if (connStatus === 'locked') {
+    return (
+      <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
+        <h3 className="sqc-widget__title">{symbol}</h3>
+        <p className="sqc-widget__hint">Wallet locked — unlock to manage this token.</p>
+        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
+          Unlock
+        </button>
       </div>
     );
   }
@@ -41,17 +67,23 @@ export function TokenPanel({ tokenAddress, className }: TokenPanelProps) {
   const onTransfer = async () => {
     reset();
     try {
-      await transfer(to.trim(), amount.trim());
+      await transferHuman(to.trim(), amount.trim());
     } catch {
       /* error state */
     }
   };
 
+  const canSend = !!to.trim() && !!amount.trim() && Number(amount) > 0 && status !== 'pending';
+
   return (
     <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
       <h3 className="sqc-widget__title">{symbol}</h3>
       <p className="sqc-widget__hint">
-        {loading ? 'Loading…' : balance != null ? `Balance: ${balance}` : '—'}
+        {loading
+          ? 'Loading…'
+          : humanBalance != null
+            ? `Balance: ${humanBalance} ${symbol}`
+            : '—'}
       </p>
       <label className="sqc-widget__label" htmlFor="sqc-tok-to">
         To (SQ:…)
@@ -65,7 +97,7 @@ export function TokenPanel({ tokenAddress, className }: TokenPanelProps) {
         autoComplete="off"
       />
       <label className="sqc-widget__label" htmlFor="sqc-tok-amt">
-        Amount (raw units)
+        Amount (human, e.g. 1.5)
       </label>
       <input
         id="sqc-tok-amt"
@@ -78,7 +110,7 @@ export function TokenPanel({ tokenAddress, className }: TokenPanelProps) {
         type="button"
         className="sqc-btn sqc-btn--primary"
         style={{ marginTop: '0.75rem', width: '100%' }}
-        disabled={status === 'pending' || !to.trim()}
+        disabled={!canSend}
         onClick={() => void onTransfer()}
       >
         {status === 'pending' ? 'Sending…' : `Transfer ${symbol}`}
@@ -96,7 +128,9 @@ export function TokenPanel({ tokenAddress, className }: TokenPanelProps) {
           ) : null}
         </p>
       ) : null}
-      {error ? <p className="sqc-widget__msg sqc-widget__msg--error">{error.message}</p> : null}
+      {error ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error">{connectErrorMessage(error)}</p>
+      ) : null}
     </div>
   );
 }

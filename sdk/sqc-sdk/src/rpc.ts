@@ -31,7 +31,33 @@ export type RpcOptions = {
   chainId?: string;
   /** Retries per URL on timeout / 5xx (default from network config). */
   retries?: number;
+  /**
+   * Allow link-local / cloud-metadata hosts (Node only). Default false.
+   * Browser CORS still applies client-side.
+   */
+  allowPrivateRpcHosts?: boolean;
 };
+
+/** Block SSRF-prone targets in Node (cloud metadata, link-local). */
+export function assertSafeRpcUrl(url: string, opts?: { allowPrivateRpcHosts?: boolean }): void {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw BridgeError.rpc(`Invalid RPC URL: ${url}`);
+  }
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (opts?.allowPrivateRpcHosts) return;
+  if (
+    host === '169.254.169.254' ||
+    host === 'metadata.google.internal' ||
+    host.startsWith('169.254.') ||
+    host === 'metadata' ||
+    host.endsWith('.internal')
+  ) {
+    throw BridgeError.rpc(`RPC host blocked (SSRF/metadata): ${host}`);
+  }
+}
 
 export class SqRpc {
   readonly rpcUrls: string[];
@@ -40,6 +66,8 @@ export class SqRpc {
   readonly retries: number;
   /** Sticky URL after a successful submit (`stickyOnSuccess`). */
   private stickyUrl: string | null = null;
+  /** Coalesce identical in-flight GETs. */
+  private inflight = new Map<string, Promise<any>>();
 
   constructor(options: RpcOptions = {}) {
     const defaults = getDefaultNetwork();
@@ -58,6 +86,13 @@ export class SqRpc {
       }
     } else {
       list = [...defaults.rpcUrls];
+    }
+    const isNode =
+      typeof process !== 'undefined' &&
+      process.versions != null &&
+      process.versions.node != null;
+    if (isNode) {
+      for (const u of list) assertSafeRpcUrl(u, options);
     }
     this.rpcUrls = list;
     this.timeoutMs = options.timeoutMs ?? defaults.timeoutMs;
@@ -361,12 +396,20 @@ export class SqRpc {
         try {
           const receipt = await this.getTxReceipt(hash);
           const statusRaw = receipt.status;
-          const status =
-            typeof statusRaw === 'number'
-              ? statusRaw
-              : typeof statusRaw === 'string' && statusRaw !== ''
-                ? Number(statusRaw)
-                : undefined;
+          let status: number | undefined;
+          if (typeof statusRaw === 'number') {
+            status = statusRaw;
+          } else if (typeof statusRaw === 'string' && statusRaw !== '') {
+            const lower = statusRaw.toLowerCase();
+            if (lower === 'failed' || lower === 'failure' || lower === 'error' || lower === 'reverted') {
+              status = 0;
+            } else if (lower === 'success' || lower === 'ok' || lower === 'confirmed') {
+              status = 1;
+            } else {
+              const n = Number(statusRaw);
+              status = Number.isFinite(n) ? n : undefined;
+            }
+          }
 
           if (status === 0) {
             const errMsg =
@@ -406,7 +449,14 @@ export class SqRpc {
   }
 
   private async get(path: string): Promise<any> {
-    return this.request('GET', path, undefined, false);
+    const key = `GET:${path}`;
+    const existing = this.inflight.get(key);
+    if (existing) return existing;
+    const p = this.request('GET', path, undefined, false).finally(() => {
+      this.inflight.delete(key);
+    });
+    this.inflight.set(key, p);
+    return p;
   }
 
   private async post(path: string, body: unknown, stickyOnSuccess: boolean): Promise<any> {

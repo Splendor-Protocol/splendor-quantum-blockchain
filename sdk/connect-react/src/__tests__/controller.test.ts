@@ -480,7 +480,7 @@ describe('createConnectController', () => {
     ctrl.destroy();
   });
 
-  it('connect mutex returns same in-flight promise', async () => {
+  it('connect mutex rejects overlapping connect', async () => {
     let resolveConnect!: (v: DeriveInfo) => void;
     const connector: Connector = {
       id: 'metamask',
@@ -491,14 +491,22 @@ describe('createConnectController', () => {
           resolveConnect = resolve;
         }),
     };
+    const seedConnector: Connector = {
+      id: 'seed',
+      name: 'Seed',
+      ready: () => true,
+      connect: async () => mockInfo,
+    };
     const ctrl = createConnectController({
       network: 'local',
-      connectors: [connector],
+      connectors: [connector, seedConnector],
       allowUnpinnedWasm: true,
     });
     const a = ctrl.connect('metamask');
-    const b = ctrl.connect('metamask');
-    expect(a).toBe(b);
+    await expect(ctrl.connect('seed')).rejects.toMatchObject({
+      code: 'USER_REJECTED',
+      message: expect.stringMatching(/already in progress/i),
+    });
     await vi.waitFor(() => {
       expect(typeof resolveConnect).toBe('function');
     });

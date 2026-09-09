@@ -13,6 +13,7 @@ import {
   resolveNetwork,
   registerNetwork,
   networkToRpcOptions,
+  isLoopbackOrLocalhostUrl,
   type NetworkConfig,
   type NetworkId,
 } from './networks.js';
@@ -105,17 +106,37 @@ function buildBridgeOptions(opts: CreateClientOptions = {}): {
   }
 
   const rpc = networkToRpcOptions(network);
-  const wasmSha256 = opts.wasmSha256 ?? (network.wasmSha256 || undefined);
-  const execSha256 = opts.execSha256 ?? (network.execSha256 || undefined);
   const allowUnpinnedWasm = opts.allowUnpinnedWasm === true;
+  // Explicit opts pins win; allowUnpinnedWasm skips inherited network pins (dev/tests).
+  const wasmSha256 =
+    opts.wasmSha256 ?? (allowUnpinnedWasm ? undefined : network.wasmSha256 || undefined);
+  const execSha256 =
+    opts.execSha256 ?? (allowUnpinnedWasm ? undefined : network.execSha256 || undefined);
   const isBrowser =
     typeof globalThis !== 'undefined' &&
     typeof (globalThis as { document?: unknown }).document !== 'undefined';
-  const isLocal = network.id === 'local';
-  // Non-local browser: require integrity pin unless explicitly opted out.
-  if (isBrowser && !isLocal && !wasmSha256 && !allowUnpinnedWasm) {
+  const rpcUrls = opts.rpcUrls?.length ? opts.rpcUrls : network.rpcUrls;
+  const wasmUrl = opts.wasmUrl ?? network.wasmUrl ?? '';
+  const nonLoopback =
+    rpcUrls.some((u) => {
+      try {
+        return !isLoopbackOrLocalhostUrl(u);
+      } catch {
+        return true;
+      }
+    }) ||
+    (wasmUrl !== '' &&
+      (() => {
+        try {
+          return !isLoopbackOrLocalhostUrl(wasmUrl);
+        } catch {
+          return true;
+        }
+      })());
+  // Browser: require integrity pin for non-loopback endpoints (even if network id is "local").
+  if (isBrowser && !wasmSha256 && !allowUnpinnedWasm && nonLoopback) {
     throw BridgeError.wasm(
-      `wasmSha256 is required for network "${network.id}" in the browser ` +
+      `wasmSha256 is required for non-loopback endpoints (network "${network.id}") in the browser ` +
         '(pass wasmSha256 or allowUnpinnedWasm: true)',
     );
   }

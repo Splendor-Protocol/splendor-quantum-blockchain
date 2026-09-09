@@ -22,11 +22,22 @@ export const NetworkSwitchContext = createContext<{
   switching: boolean;
 } | null>(null);
 
-export function useControllerStore(controller: ConnectController): ConnectControllerState {
+export function useControllerStore(controller: ConnectController): ConnectControllerState;
+export function useControllerStore<T>(
+  controller: ConnectController,
+  selector: (s: ConnectControllerState) => T,
+): T;
+export function useControllerStore<T = ConnectControllerState>(
+  controller: ConnectController,
+  selector?: (s: ConnectControllerState) => T,
+): T {
+  const select = (selector ?? ((s: ConnectControllerState) => s as unknown as T)) as (
+    s: ConnectControllerState,
+  ) => T;
   return useSyncExternalStore(
     (onStoreChange) => controller.subscribe(onStoreChange),
-    () => controller.getState(),
-    () => controller.getState(),
+    () => select(controller.getState()),
+    () => select(controller.getState()),
   );
 }
 
@@ -38,9 +49,14 @@ export function useConnectController(): ConnectController {
   return ctrl;
 }
 
-export function useConnectState(): ConnectControllerState {
+export function useConnectState(): ConnectControllerState;
+export function useConnectState<T>(selector: (s: ConnectControllerState) => T): T;
+export function useConnectState<T = ConnectControllerState>(
+  selector?: (s: ConnectControllerState) => T,
+): T {
   const ctrl = useConnectController();
-  return useControllerStore(ctrl);
+  if (selector) return useControllerStore(ctrl, selector);
+  return useControllerStore(ctrl) as T;
 }
 
 export function useBrandLabels(): ConnectBrandLabels {

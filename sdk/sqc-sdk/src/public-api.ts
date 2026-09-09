@@ -15,7 +15,7 @@ export {
   personalSignHash,
 } from './derive.js';
 export type { DerivationScheme, Eip712DeriveTypedData } from './derive.js';
-export { fromSPLD, toSPLD, SqRpc } from './rpc.js';
+export { fromSPLD, toSPLD, SqRpc, assertSafeRpcUrl } from './rpc.js';
 export type { RpcOptions } from './rpc.js';
 export { SqcProvider } from './provider.js';
 export type { ProviderOptions } from './provider.js';
@@ -68,6 +68,7 @@ export {
   txExplorerUrl,
   derivationDomainMessage,
   networkToRpcOptions,
+  isLoopbackOrLocalhostUrl,
 } from './networks.js';
 export type {
   NetworkConfig,
@@ -173,6 +174,7 @@ export { connect } from './wallet/connect.js';
 export type { ConnectOptions, ConnectResult } from './wallet/connect.js';
 export type {
   Connector,
+  WalletFactoryConnector,
   ConnectorConnectOptions,
   WalletUnlockConnector,
   WalletUnlockContext,

@@ -18,17 +18,20 @@ function TokenNote() {
 }
 
 export function App() {
+  const wasmSha256 = (import.meta.env.VITE_SQC_WASM_SHA256 as string | undefined)?.trim();
+  const isDev = import.meta.env.DEV;
+  if (!isDev && !wasmSha256) {
+    throw new Error(
+      'VITE_SQC_WASM_SHA256 is required for production builds (or run with import.meta.env.DEV).',
+    );
+  }
   return (
     <SplendorConnectProvider
       network="local"
       connectors="auto"
       theme="splendor"
       autoReconnect
-      // Local dev only: this example builds the signer from source, so its
-      // digest changes on every rebuild and there is nothing stable to pin.
-      // A deployed app must pass wasmSha256 instead — the signer bundle is the
-      // code that handles private keys, and it is fetched at runtime.
-      allowUnpinnedWasm
+      {...(wasmSha256 ? { wasmSha256 } : { allowUnpinnedWasm: true })}
     >
       <div className="app-shell">
         <header className="app-header">

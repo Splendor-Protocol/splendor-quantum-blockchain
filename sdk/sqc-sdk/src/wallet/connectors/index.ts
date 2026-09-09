@@ -1,5 +1,6 @@
 export type {
   Connector,
+  WalletFactoryConnector,
   ConnectorConnectOptions,
   WalletUnlockConnector,
   WalletUnlockContext,

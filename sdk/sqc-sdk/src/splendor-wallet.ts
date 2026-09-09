@@ -29,7 +29,7 @@ import {
 } from './encoding.js';
 import { assertQSolSignature, encodeFunctionData } from './abi.js';
 import { BridgeEmitter, type BridgeEventMap } from './events.js';
-import { getDefaultNetwork } from './networks.js';
+import { getDefaultNetwork, isLoopbackOrLocalhostUrl } from './networks.js';
 import { Connection } from './core/connection.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import { encodeModuleCallHex } from './core/module-call.js';
@@ -105,6 +105,11 @@ export class SplendorPQBridge {
   private signChain: Promise<unknown> = Promise.resolve();
   /** Last chain_id stamped into WASM digests (sqSetChainID). */
   private wasmChainId: string | null = null;
+  /**
+   * Next account nonce after locally signed (possibly unsubmitted) txs.
+   * Prevents parallel signTransaction from reusing the same chain nonce.
+   */
+  private pendingNonce: number | null = null;
 
   /**
    * @deprecated Prefer `connection` (Transport-backed). Only available when
@@ -166,13 +171,39 @@ export class SplendorPQBridge {
     return run;
   }
 
+  private signingIdentity(): { chainId: string; networkId: string } {
+    return {
+      chainId: this.connection.chainId,
+      networkId: this.opts.networkId ?? getDefaultNetwork().id,
+    };
+  }
+
+  /** Chain nonce, advanced past any locally reserved signed nonces (call under sign lock). */
+  private async nextAccountNonce(): Promise<number> {
+    const { nonce: chainNonce } = await this.getNonce();
+    return this.pendingNonce != null ? Math.max(chainNonce, this.pendingNonce) : chainNonce;
+  }
+
+  private reserveNonce(nonce: number): void {
+    this.pendingNonce = nonce + 1;
+  }
+
   async init(): Promise<void> {
     if (this.wasm && this.sessionId) return;
     const isBrowser = typeof document !== 'undefined';
     const networkId = this.opts.networkId ?? getDefaultNetwork().id;
-    if (isBrowser && networkId !== 'local' && !this.opts.wasmSha256 && !this.opts.allowUnpinnedWasm) {
+    const rpcUrls = this.connection.rpcUrls;
+    const wasmUrl = this.opts.wasmUrl ?? '';
+    const needsPin =
+      isBrowser &&
+      !this.opts.allowUnpinnedWasm &&
+      !this.opts.wasmSha256 &&
+      (networkId !== 'local' ||
+        rpcUrls.some((u) => !isLoopbackOrLocalhostUrl(u)) ||
+        (wasmUrl !== '' && !isLoopbackOrLocalhostUrl(wasmUrl)));
+    if (needsPin) {
       throw BridgeError.wasm(
-        `wasmSha256 is required for network "${networkId}" in the browser ` +
+        `wasmSha256 is required for non-local endpoints (network "${networkId}") in the browser ` +
           '(pass wasmSha256 or allowUnpinnedWasm: true)',
       );
     }
@@ -213,9 +244,41 @@ export class SplendorPQBridge {
 
   /** SQDP-1: assert chain before any sign/submit. */
   private async beforeSignAndSubmit(): Promise<void> {
+    if (!this.isUnlocked()) {
+      throw BridgeError.notConnected('Wallet is locked or disconnected — connect/unlock first');
+    }
     this.syncWasmChainId();
     this.opts.onRequest?.({ method: 'assertChainId' });
     await this.connection.assertChainId();
+  }
+
+  /**
+   * Sign + submit under the mutex; confirmation runs outside so parallel signs are not blocked.
+   */
+  private async signSubmitThenMaybeConfirm(
+    signAndSubmit: () => Promise<{
+      status: string;
+      hash: string;
+      signedTx: object;
+      nonce: number;
+    }>,
+    opts: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+  ): Promise<{
+    status: string;
+    hash: string;
+    signedTx: object;
+    confirmation?: { confirmed: true; nonce: number };
+  }> {
+    const { status, hash, signedTx, nonce } = await this.withSignLock(signAndSubmit);
+    let confirmation: { confirmed: true; nonce: number } | undefined;
+    if (opts.waitForConfirmation) {
+      confirmation = await this.waitForConfirmation({
+        nonceBefore: nonce,
+        hash,
+        timeoutMs: opts.confirmTimeoutMs,
+      });
+    }
+    return { status, hash, signedTx, confirmation };
   }
 
   private clearIdleLock(): void {
@@ -309,8 +372,9 @@ export class SplendorPQBridge {
         unsubAccounts();
         unsubDisconnect();
       };
-    } catch {
-      /* MetaMask not available (Node) */
+    } catch (e) {
+      // Fail closed — do not leave an unlocked MetaMask-derived session without watchers.
+      throw wrapUnknown(e, 'NO_PROVIDER');
     }
   }
 
@@ -372,7 +436,12 @@ export class SplendorPQBridge {
         scheme: this.derivation,
       });
       const info = await this.connectFromEvmSignature(signatureHex, evmAddress, scheme);
-      this.ensureMetaMaskWatch();
+      try {
+        this.ensureMetaMaskWatch();
+      } catch (e) {
+        this.disconnect();
+        throw e;
+      }
       return info;
     } catch (e) {
       this.opts.onError?.(e);
@@ -481,6 +550,7 @@ export class SplendorPQBridge {
       this.wasm.sqLock(this.sessionId);
     }
     this.info = null;
+    this.pendingNonce = null;
     if (hadSession) this.emitter.emit('lock', {});
   }
 
@@ -495,6 +565,7 @@ export class SplendorPQBridge {
     }
     this.sessionId = null;
     this.info = null;
+    this.pendingNonce = null;
     this.emitter.emit('disconnect', {});
   }
 
@@ -574,7 +645,7 @@ export class SplendorPQBridge {
     signedTx: object;
     confirmation?: { confirmed: true; nonce: number };
   }> {
-    return this.withSignLock(async () => {
+    return this.signSubmitThenMaybeConfirm(async () => {
       await this.init();
       assertAddress(opts.to);
       const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
@@ -589,7 +660,7 @@ export class SplendorPQBridge {
       }
 
       await this.beforeSignAndSubmit();
-      const { nonce } = await this.getNonce();
+      const nonce = await this.nextAccountNonce();
       const params = {
         to: opts.to,
         amount,
@@ -600,18 +671,10 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signTransfer' });
       const wireStr = unwrap(this.api().sqSignTransfer(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
+      this.reserveNonce(nonce);
       const result = await this.connection.submitTransaction(signedTx);
-
-      let confirmation: { confirmed: true; nonce: number } | undefined;
-      if (opts.waitForConfirmation) {
-        confirmation = await this.waitForConfirmation({
-          nonceBefore: nonce,
-          hash: result.hash,
-          timeoutMs: opts.confirmTimeoutMs,
-        });
-      }
-      return { ...result, signedTx, confirmation };
-    });
+      return { ...result, signedTx, nonce };
+    }, opts);
   }
 
   async callContract(opts: CallOpts): Promise<{
@@ -620,7 +683,7 @@ export class SplendorPQBridge {
     signedTx: object;
     confirmation?: { confirmed: true; nonce: number };
   }> {
-    return this.withSignLock(async () => {
+    return this.signSubmitThenMaybeConfirm(async () => {
       await this.init();
       assertAddress(opts.contract);
       const value = opts.valueSPLD != null ? fromSPLD(opts.valueSPLD) : opts.value || '0';
@@ -642,7 +705,7 @@ export class SplendorPQBridge {
       }
 
       await this.beforeSignAndSubmit();
-      const { nonce } = await this.getNonce();
+      const nonce = await this.nextAccountNonce();
       const enc = encodePayload(calldata);
       const params: Record<string, unknown> = {
         contract: opts.contract,
@@ -654,17 +717,10 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signCall' });
       const wireStr = unwrap(this.api().sqSignCall(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
+      this.reserveNonce(nonce);
       const result = await this.connection.submitTransaction(signedTx);
-      let confirmation: { confirmed: true; nonce: number } | undefined;
-      if (opts.waitForConfirmation) {
-        confirmation = await this.waitForConfirmation({
-          nonceBefore: nonce,
-          hash: result.hash,
-          timeoutMs: opts.confirmTimeoutMs,
-        });
-      }
-      return { ...result, signedTx, confirmation };
-    });
+      return { ...result, signedTx, nonce };
+    }, opts);
   }
 
   async deployContract(opts: DeployOpts): Promise<{
@@ -673,7 +729,7 @@ export class SplendorPQBridge {
     signedTx: object;
     confirmation?: { confirmed: true; nonce: number };
   }> {
-    return this.withSignLock(async () => {
+    return this.signSubmitThenMaybeConfirm(async () => {
       await this.init();
       let fee: string;
       try {
@@ -682,7 +738,7 @@ export class SplendorPQBridge {
         throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
       }
       await this.beforeSignAndSubmit();
-      const { nonce } = await this.getNonce();
+      const nonce = await this.nextAccountNonce();
       const enc = encodePayload(opts.bytecode);
       const params: Record<string, unknown> = {
         fee,
@@ -692,17 +748,10 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signDeploy' });
       const wireStr = unwrap(this.api().sqSignDeploy(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
+      this.reserveNonce(nonce);
       const result = await this.connection.submitTransaction(signedTx);
-      let confirmation: { confirmed: true; nonce: number } | undefined;
-      if (opts.waitForConfirmation) {
-        confirmation = await this.waitForConfirmation({
-          nonceBefore: nonce,
-          hash: result.hash,
-          timeoutMs: opts.confirmTimeoutMs,
-        });
-      }
-      return { ...result, signedTx, confirmation };
-    });
+      return { ...result, signedTx, nonce };
+    }, opts);
   }
 
   async payX402(opts: X402PayOpts): Promise<{
@@ -745,7 +794,7 @@ export class SplendorPQBridge {
           // Settlement runs through consensus: the payer signs a TxX402 that the
           // node admits to the mempool. The node cannot sign this on our behalf,
           // because it debits this account and consumes this account's nonce.
-          const { nonce: accountNonce } = await this.getNonce();
+          const accountNonce = await this.nextAccountNonce();
           this.opts.onRequest?.({ method: 'signX402Settlement' });
           const settlementStr = unwrap(
             this.api().sqSignX402Settlement(
@@ -759,6 +808,7 @@ export class SplendorPQBridge {
               }),
             ),
           ) as string;
+          this.reserveNonce(accountNonce);
           out.settle = await this.connection.x402Settle(
             opts.requirements,
             payload,
@@ -770,37 +820,41 @@ export class SplendorPQBridge {
     });
   }
 
+  private async signTransferUnlocked(
+    opts: TransferOpts & { nonce: number; assertChain?: boolean },
+  ): Promise<object> {
+    await this.init();
+    assertAddress(opts.to);
+    const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
+    if (!amount || BigInt(amount) < 0n) {
+      throw BridgeError.invalidAmount('amount must be a non-negative integer string');
+    }
+    let fee: string;
+    try {
+      fee = assertFeeAtLeastMin(opts.fee);
+    } catch (e) {
+      throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
+    }
+    if (opts.assertChain !== false) {
+      await this.beforeSignAndSubmit();
+    }
+    const wireStr = unwrap(
+      this.api().sqSignTransfer(
+        this.sid(),
+        JSON.stringify({
+          to: opts.to,
+          amount,
+          fee,
+          nonce: opts.nonce,
+          memo: opts.memo || '',
+        }),
+      ),
+    ) as string;
+    return JSON.parse(wireStr);
+  }
+
   async signTransferOnly(opts: TransferOpts & { nonce: number; assertChain?: boolean }): Promise<object> {
-    return this.withSignLock(async () => {
-      await this.init();
-      assertAddress(opts.to);
-      const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
-      if (!amount || BigInt(amount) < 0n) {
-        throw BridgeError.invalidAmount('amount must be a non-negative integer string');
-      }
-      let fee: string;
-      try {
-        fee = assertFeeAtLeastMin(opts.fee);
-      } catch (e) {
-        throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
-      }
-      if (opts.assertChain !== false) {
-        await this.beforeSignAndSubmit();
-      }
-      const wireStr = unwrap(
-        this.api().sqSignTransfer(
-          this.sid(),
-          JSON.stringify({
-            to: opts.to,
-            amount,
-            fee,
-            nonce: opts.nonce,
-            memo: opts.memo || '',
-          }),
-        ),
-      ) as string;
-      return JSON.parse(wireStr);
-    });
+    return this.withSignLock(() => this.signTransferUnlocked(opts));
   }
 
   /**
@@ -810,9 +864,19 @@ export class SplendorPQBridge {
   async signTransaction(tx: UnsignedTx): Promise<SignedTx> {
     switch (tx.type) {
       case 'transfer': {
-        const { nonce } = await this.getNonce();
-        const signedTx = await this.signTransferOnly({ ...tx, nonce });
-        return { type: 'transfer', signedTx, nonce };
+        return this.withSignLock(async () => {
+          await this.init();
+          await this.beforeSignAndSubmit();
+          const nonce = await this.nextAccountNonce();
+          const signedTx = await this.signTransferUnlocked({ ...tx, nonce, assertChain: false });
+          this.reserveNonce(nonce);
+          return {
+            type: 'transfer',
+            signedTx,
+            nonce,
+            ...this.signingIdentity(),
+          };
+        });
       }
       case 'call': {
         return this.withSignLock(async () => {
@@ -835,7 +899,7 @@ export class SplendorPQBridge {
             throw BridgeError.rpc('call requires `function`+args or `calldata`');
           }
           await this.beforeSignAndSubmit();
-          const { nonce } = await this.getNonce();
+          const nonce = await this.nextAccountNonce();
           const enc = encodePayload(calldata);
           const params: Record<string, unknown> = {
             contract: tx.contract,
@@ -846,7 +910,13 @@ export class SplendorPQBridge {
           };
           this.opts.onRequest?.({ method: 'signCall' });
           const wireStr = unwrap(this.api().sqSignCall(this.sid(), JSON.stringify(params))) as string;
-          return { type: 'call', signedTx: JSON.parse(wireStr), nonce };
+          this.reserveNonce(nonce);
+          return {
+            type: 'call',
+            signedTx: JSON.parse(wireStr),
+            nonce,
+            ...this.signingIdentity(),
+          };
         });
       }
       case 'deploy': {
@@ -859,7 +929,7 @@ export class SplendorPQBridge {
             throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
           }
           await this.beforeSignAndSubmit();
-          const { nonce } = await this.getNonce();
+          const nonce = await this.nextAccountNonce();
           const enc = encodePayload(tx.bytecode);
           const params: Record<string, unknown> = {
             fee,
@@ -868,7 +938,13 @@ export class SplendorPQBridge {
           };
           this.opts.onRequest?.({ method: 'signDeploy' });
           const wireStr = unwrap(this.api().sqSignDeploy(this.sid(), JSON.stringify(params))) as string;
-          return { type: 'deploy', signedTx: JSON.parse(wireStr), nonce };
+          this.reserveNonce(nonce);
+          return {
+            type: 'deploy',
+            signedTx: JSON.parse(wireStr),
+            nonce,
+            ...this.signingIdentity(),
+          };
         });
       }
       case 'module': {
@@ -884,7 +960,13 @@ export class SplendorPQBridge {
           value: '0',
           fee: tx.fee,
         });
-        return { type: 'module', signedTx: signed.signedTx, nonce: signed.nonce };
+        return {
+          type: 'module',
+          signedTx: signed.signedTx,
+          nonce: signed.nonce,
+          chainId: signed.chainId,
+          networkId: signed.networkId,
+        };
       }
       default: {
         const _exhaustive: never = tx;
@@ -900,17 +982,40 @@ export class SplendorPQBridge {
     tx: UnsignedTx | SignedTx,
     opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
   ): Promise<SendTxResult> {
-    if ('signedTx' in tx && tx.signedTx && 'nonce' in tx) {
-      const result = await this.connection.submitTransaction(tx.signedTx);
+    const isSigned =
+      tx &&
+      typeof tx === 'object' &&
+      'signedTx' in tx &&
+      tx.signedTx != null &&
+      typeof (tx as SignedTx).nonce === 'number' &&
+      'type' in tx;
+
+    if (isSigned) {
+      const signed = tx as SignedTx;
+      await this.connection.assertChainId();
+      const current = this.signingIdentity();
+      if (!signed.chainId || !signed.networkId) {
+        throw BridgeError.chainMismatch('(missing signed identity)', `${current.chainId}@${current.networkId}`);
+      }
+      if (signed.chainId !== current.chainId) {
+        throw BridgeError.chainMismatch(signed.chainId, current.chainId);
+      }
+      if (signed.networkId !== current.networkId) {
+        throw BridgeError.chainMismatch(
+          `${signed.chainId}@${signed.networkId}`,
+          `${current.chainId}@${current.networkId}`,
+        );
+      }
+      const result = await this.connection.submitTransaction(signed.signedTx);
       let confirmation: { confirmed: true; nonce: number } | undefined;
       if (opts?.waitForConfirmation) {
         confirmation = await this.waitForConfirmation({
-          nonceBefore: tx.nonce,
+          nonceBefore: signed.nonce,
           hash: result.hash,
           timeoutMs: opts.confirmTimeoutMs,
         });
       }
-      return { ...result, signedTx: tx.signedTx, confirmation };
+      return { ...result, signedTx: signed.signedTx, confirmation };
     }
     return this.signAndSendTransaction(tx as UnsignedTx, opts);
   }
@@ -955,6 +1060,9 @@ export class SplendorPQBridge {
   ): Promise<{ address: string; publicKeyB64: string; signatureB64: string; message: string }> {
     return this.withSignLock(async () => {
       await this.init();
+      if (!this.isUnlocked()) {
+        throw BridgeError.notConnected('Wallet is locked or disconnected — connect/unlock first');
+      }
       const prepared = prepareSignMessage(message, opts);
       const signed = unwrap(this.api().sqSignMessage(this.sid(), prepared)) as {
         address: string;

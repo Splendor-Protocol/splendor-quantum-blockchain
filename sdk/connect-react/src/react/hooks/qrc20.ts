@@ -1,25 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type {
-  CallOpts,
-  DeployOpts,
-  DeriveInfo,
-  NetworkConfig,
-  NetworkId,
-  PreflightResult,
-  SplendorPQBridge,
-  SqcProvider,
-  TransferOpts,
-} from '@splendor/sqc-sdk';
-import { bindModules, listSelectableNetworks, listModules, txExplorerUrl } from '@splendor/sqc-sdk';
-import type { Connector } from '../../connectors/types.js';
-import { connectErrorMessage } from '../../core/controller.js';
-import type { ConnectAccount, ConnectingStep, ConnectionStatus } from '../../core/types.js';
-import {
-  useBrandLabels,
-  useConnectController,
-  useConnectState,
-  useNetworkSwitch,
-} from '../context.js';
+import { useConnectState } from '../context.js';
 import { useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet, useAccount } from './core.js';
 
@@ -29,6 +9,8 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   tokenInfo: Record<string, unknown> | null;
   refresh: () => Promise<void>;
   transfer: (to: string, amount: string) => Promise<{ hash?: string }>;
+  /** Human-decimal transfer (uses on-chain decimals). */
+  transferHuman: (to: string, amountHuman: string) => Promise<{ hash?: string }>;
   approve: (spender: string, amount: string) => Promise<{ hash?: string }>;
   mint: (to: string, amount: string) => Promise<{ hash?: string }>;
   pause: () => Promise<{ hash?: string }>;
@@ -52,7 +34,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
-  const { network } = useConnectState();
+  const network = useConnectState((s) => s.network);
   const tx = useTxAction(network);
   const [balance, setBalance] = useState<string | null>(null);
   const [tokenInfo, setTokenInfo] = useState<Record<string, unknown> | null>(null);
@@ -97,6 +79,19 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
       const res = await tx.run(async () => {
         const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
         return new QRC20(wallet.connection, tokenAddress).transfer(wallet, to, amount);
+      });
+      await refresh();
+      return { hash: res.hash };
+    },
+    [ready, wallet, tokenAddress, tx, refresh],
+  );
+
+  const transferHuman = useCallback(
+    async (to: string, amountHuman: string) => {
+      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      const res = await tx.run(async () => {
+        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        return new QRC20(wallet.connection, tokenAddress).transferHuman(wallet, to, amountHuman);
       });
       await refresh();
       return { hash: res.hash };
@@ -172,6 +167,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     tokenInfo,
     refresh,
     transfer,
+    transferHuman,
     approve,
     mint,
     pause,

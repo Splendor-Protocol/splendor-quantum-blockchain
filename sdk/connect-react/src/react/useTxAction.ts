@@ -2,7 +2,8 @@
  * Shared mutation state for connect-react tx hooks.
  */
 import { useCallback, useState } from 'react';
-import { txExplorerUrl, type NetworkConfig } from '@splendor/sqc-sdk';
+import { txExplorerUrl, type NetworkConfig } from '@splendor/sqc-sdk/networks';
+import { connectErrorMessage } from '../core/controller.js';
 
 export type TxHookStatus = 'idle' | 'pending' | 'success' | 'error';
 
@@ -11,6 +12,8 @@ export function useTxAction(network?: NetworkConfig | null): {
   hash: string | null;
   explorerUrl: string | null;
   error: Error | null;
+  /** Safe UI copy — never raw RPC bodies. */
+  errorMessage: string | null;
   reset: () => void;
   run: <T extends { hash?: string }>(fn: () => Promise<T>) => Promise<T>;
 } {
@@ -49,5 +52,13 @@ export function useTxAction(network?: NetworkConfig | null): {
     [network],
   );
 
-  return { status, hash, explorerUrl, error, reset, run };
+  return {
+    status,
+    hash,
+    explorerUrl,
+    error,
+    errorMessage: error ? connectErrorMessage(error) : null,
+    reset,
+    run,
+  };
 }

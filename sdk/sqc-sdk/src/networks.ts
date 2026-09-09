@@ -86,6 +86,23 @@ function isPlaceholderUrl(url: string): boolean {
   return /\.example(\/|$)/i.test(url) || /splendor\.example/i.test(url);
 }
 
+/** True for loopback / localhost (HTTP allowed without production HTTPS gates). */
+export function isLoopbackOrLocalhostUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    return (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '::1' ||
+      host === '[::1]' ||
+      host.endsWith('.localhost')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function cloneNetwork(net: NetworkConfig): NetworkConfig {
   return {
     ...net,
@@ -201,26 +218,36 @@ export function resolveNetwork(
         );
       }
     }
-    if (!opts?.allowInsecureHttp) {
-      for (const url of merged.rpcUrls) {
-        if (!url.startsWith('https://')) {
-          throw BridgeError.rpc(
-            `Network "${key}" RPC URL must use https:// (${url}). Pass allowInsecureHttp: true to override.`,
-          );
-        }
+  }
+
+  // Production HTTPS policy follows endpoint host, not the network id label.
+  // `local` + remote overrides must still use https unless allowInsecureHttp.
+  if (!opts?.allowInsecureHttp) {
+    for (const url of merged.rpcUrls) {
+      if (isLoopbackOrLocalhostUrl(url)) continue;
+      if (isPlaceholderUrl(url) && (key === 'local' || opts?.allowPlaceholder)) continue;
+      if (!url.startsWith('https://')) {
+        throw BridgeError.rpc(
+          `RPC URL must use https:// for non-loopback hosts (${url}). Pass allowInsecureHttp: true to override.`,
+        );
       }
     }
-    if (opts?.requireGateway) {
-      if (!merged.gatewayUrl || isPlaceholderUrl(merged.gatewayUrl)) {
-        throw BridgeError.rpc(
-          `Network "${key}" requires a real gatewayUrl (got ${merged.gatewayUrl || 'empty'}).`,
-        );
-      }
-      if (!opts?.allowInsecureHttp && !merged.gatewayUrl.startsWith('https://')) {
-        throw BridgeError.rpc(
-          `Network "${key}" gatewayUrl must use https:// (${merged.gatewayUrl}).`,
-        );
-      }
+  }
+
+  if (opts?.requireGateway && key !== 'local' && !opts?.allowPlaceholder) {
+    if (!merged.gatewayUrl || isPlaceholderUrl(merged.gatewayUrl)) {
+      throw BridgeError.rpc(
+        `Network "${key}" requires a real gatewayUrl (got ${merged.gatewayUrl || 'empty'}).`,
+      );
+    }
+    if (
+      !opts?.allowInsecureHttp &&
+      !isLoopbackOrLocalhostUrl(merged.gatewayUrl) &&
+      !merged.gatewayUrl.startsWith('https://')
+    ) {
+      throw BridgeError.rpc(
+        `Network "${key}" gatewayUrl must use https:// (${merged.gatewayUrl}).`,
+      );
     }
   }
   return merged;

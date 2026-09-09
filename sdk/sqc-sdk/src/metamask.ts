@@ -91,7 +91,9 @@ export function onMetaMaskAccountsChanged(
 ): () => void {
   const eth = getProvider(provider);
   if (!eth.on) {
-    return () => undefined;
+    throw BridgeError.noProvider(
+      'EIP-1193 provider lacks accountsChanged events — cannot safely watch account switches',
+    );
   }
   const listener = (accounts: unknown) => {
     handler(Array.isArray(accounts) ? (accounts as string[]) : []);
@@ -111,7 +113,9 @@ export function onMetaMaskDisconnect(
 ): () => void {
   const eth = getProvider(provider);
   if (!eth.on) {
-    return () => undefined;
+    throw BridgeError.noProvider(
+      'EIP-1193 provider lacks disconnect events — cannot safely watch provider lifecycle',
+    );
   }
   const listener = () => {
     handler();

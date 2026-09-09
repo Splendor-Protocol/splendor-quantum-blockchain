@@ -300,6 +300,13 @@ export type SignedTx = {
   type: UnsignedTx['type'];
   signedTx: object;
   nonce: number;
+  /** Wire chain_id at sign time — required; sendTransaction rejects mismatch. */
+  chainId: string;
+  /**
+   * SDK network id at sign time (local/testnet/mainnet/…).
+   * Soft-switch can keep the same wire chain_id; networkId catches that.
+   */
+  networkId: string;
 };
 
 /** Result of sendTransaction / signAndSendTransaction. */

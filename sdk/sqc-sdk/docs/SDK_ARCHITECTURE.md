@@ -17,6 +17,12 @@ Deprecated (still exported): `connectSplendor`, `createSplendorClient`, `useSple
 
 Prefer `createSession` / `modules.bind(connection, wallet)` so writes omit the wallet argument. Unbound `modules.qrc20(connection, addr).transfer(wallet, …)` remains for advanced use.
 
+### Built-in Program clients vs on-chain modules
+
+Typed `modules.*` / `bindModules` clients ship for: **qrc20**, **qrc1155**, **exchange**, **dex**, **bridge**, **contract**.
+
+On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall` / `registerModule` — do not stub fake Programs): **lending**, **oracle**, **multisig**, **governance**, **qrc721**, **qrc4626**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient` (not bindModules Programs).
+
 ## Package layout
 
 ```
