@@ -716,6 +716,26 @@ func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, rec
 // executor's handling of it, independent of any real module's failure modes.
 var dispatchModuleCall = vm.DispatchModuleCall
 
+// Module gas under modules_v2. A native-module call used to record zero gas,
+// so the block gas budget — the one limit that bounds how much work a block
+// asks of every node — did not see module calls at all. The charge is
+// deterministic and depends only on the call's bytes, so producer and
+// follower always agree: a flat base for dispatch plus a per-byte charge on
+// the envelope. It is charged whether the call succeeds or fails SOFT (the
+// work was done either way); a HARD failure leaves no receipt to charge.
+//
+// These are accounting figures against MaxBlockGas, not a price: the fee a
+// module call pays is unchanged.
+const (
+	ModuleGasBase    uint64 = 50_000
+	ModuleGasPerByte uint64 = 16
+)
+
+// moduleGas is the gas a module call with the given envelope records.
+func moduleGas(data []byte) uint64 {
+	return ModuleGasBase + ModuleGasPerByte*uint64(len(data))
+}
+
 // errModulePanic is the SOFT error a recovered module panic becomes under
 // module_revert_v1. The panic value is deliberately not in the text: it can
 // carry addresses or allocation sizes that differ between nodes.
@@ -752,6 +772,13 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 			Height: blockHeight,
 			Time:   blockTime,
 			Forks:  schedule,
+		}
+
+		// modules_v2: the call records gas that counts against the block
+		// budget. Set before dispatch so success and SOFT failure both carry
+		// it; a HARD failure returns an error and the receipt is dropped.
+		if schedule.Active(forks.ModulesV2, blockHeight) {
+			receipt.GasUsed = moduleGas(tx.Data)
 		}
 
 		// Legacy rules: any module error makes the tx unappliable — the
