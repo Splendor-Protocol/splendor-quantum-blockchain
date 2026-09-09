@@ -41,8 +41,16 @@ votes to it.
    the next block the set has two members, the leader alternates
    `(height+round) % 2`, and every block carries two votes and a `qc_root`.
 
-The producer must itself be running BFT (its tip carries a vote and a
-`qc_root`). A producer started at head 0 on a chain that activates
-`multi_validator` at 1 picks BFT for block 1 and self-commits with one vote.
-A producer still on the single path halts with `ErrQuorumRequired` once two
-validators are registered — restart it and it comes back in BFT mode.
+The producer moves onto BFT by itself, in-process. It seals on the single
+path while the block it is about to seal predates `multi_validator`, and from
+the first block under it — at boot when the activation is already behind its
+head, otherwise at the tick that reaches the activation height — it proposes
+through BFT: alone it self-commits with one vote and a `qc_root`; once a
+second validator is registered it needs that validator's vote, and the
+leader alternates. A producer on this binary therefore never stops on
+`ErrQuorumRequired`; that error is now only a backstop for a caller driving
+`ProduceBlock` directly. The one restart left is the operator's: adopting a
+schedule change with `--allow-fork-extension` is a start-up decision. A
+producer on an older binary is still single-path for the life of its process
+and does stop at the first block that needs a certificate; restart it onto
+this binary before registering the second validator.

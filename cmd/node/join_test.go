@@ -6,31 +6,12 @@ import (
 	"time"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
-// The producer decides BFT for the block it is ABOUT to seal, not for the
-// head it already has: on the boot that mints a chain the head is 0, and an
-// activation at 1 was never active at 0, so the producer stayed single-path
-// for the whole life of the chain.
-func TestBFTChosenForNextHeight(t *testing.T) {
-	if !bftForNextBlock(forks.Schedule{forks.MultiValidator: 1}, 0) {
-		t.Fatal("head 0 with activation at 1 must run BFT for block 1")
-	}
-	if bftForNextBlock(forks.Schedule{forks.MultiValidator: 5}, 3) {
-		t.Fatal("block 4 is before the activation at 5")
-	}
-	if !bftForNextBlock(forks.Schedule{forks.MultiValidator: 5}, 4) {
-		t.Fatal("block 5 is the first BFT block")
-	}
-	if bftForNextBlock(nil, 100) {
-		t.Fatal("a nil schedule never activates")
-	}
-	if bftForNextBlock(forks.Schedule{forks.MultiValidator: 0}, 100) {
-		t.Fatal("height 0 means never")
-	}
-}
+// Which path seals the next block is decided per block by consensus.Producer;
+// see consensus/producer_test.go for the boot-at-activation, boot-below-
+// activation and never-scheduled cases.
 
 // --validator-pubkey-hex names the trusted genesis key on every node. A
 // validator without it trusts its own key (the producer that minted the

@@ -8,21 +8,13 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/consensus"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
-// bftForNextBlock reports whether the block this node is about to seal
-// (head+1) falls under multi_validator.
-//
-// The decision was judged at the head itself, once, at boot. On the boot that
-// minted a chain the head is 0, an activation at height 1 was never active at
-// 0, and nothing re-evaluated it: the producer stayed on the single path for
-// the life of the chain, sealing QC-less blocks that every follower refused
-// once a second validator registered (mainnet from 5786).
-func bftForNextBlock(s forks.Schedule, head uint64) bool {
-	return s.Active(forks.MultiValidator, head+1)
-}
+// Which path seals the next block — single or BFT — is no longer decided
+// here at boot. consensus.Producer judges it per block against the live
+// schedule, so a validator that boots below the multi_validator activation
+// moves onto BFT when the height arrives instead of stopping there.
 
 // resolveTrustedProducerKey decides which genesis validator key this node
 // authenticates blocks with.

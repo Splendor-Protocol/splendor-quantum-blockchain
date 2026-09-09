@@ -772,11 +772,22 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Validator consensus ────────────────────────────────────────────────
-	var bftEngine *consensus.BFTEngine
-	// useBFT also decides whether this validator runs the pull-sync loop
-	// below: a single-path validator that pulled blocks would be a second
-	// producer; a BFT one that does not pull cannot catch up before it votes.
-	useBFT := false
+	// producer is nil on a full node. On a validator it runs the single path
+	// until the block about to be sealed falls under multi_validator, then the
+	// BFT path — in-process, at the activation height, with the same head.
+	// The path used to be chosen once at boot, so a producer that booted
+	// below the activation stayed single-path and stopped with
+	// ErrQuorumRequired when the height arrived with two validators
+	// registered, until it was restarted.
+	var producer *consensus.Producer
+	// bftEngine reports the engine while the producer is on the BFT path and
+	// nil otherwise — read per message, because the answer changes mid-run.
+	bftEngine := func() *consensus.BFTEngine {
+		if producer == nil {
+			return nil
+		}
+		return producer.Engine()
+	}
 	if flagIsValidator && validatorPriv != nil {
 		vCfg := consensus.Config{
 			BlockInterval: time.Duration(flagBlockInterval) * time.Second,
@@ -804,60 +815,38 @@ func runNode(cmd *cobra.Command, args []string) error {
 			}
 		}()
 
-		// Judged for the block this node is about to seal (head+1), never for
-		// the head it already has — see bftForNextBlock.
-		head, _ := executor.LatestHeight()
-		useBFT = bftForNextBlock(executor.Forks(), head)
-		if useBFT {
-			eng, bftErr := consensus.NewBFTEngine(consensus.BFTConfig{
-				LocalAddr:    validatorAddr,
-				LocalPubKey:  validatorPKBytes,
-				LocalPrivKey: validatorPriv,
-				// The pull-sync loop and the block push race this commit for
-				// the same block; if one of them landed it first it is still
-				// committed (applyCommittedBlock).
-				OnCommit: func(b *types.Block) error {
-					return applyCommittedBlock(executor, b)
-				},
-				Broadcast: func(vote *consensus.Vote) {
-					data, err := json.Marshal(vote)
-					if err == nil {
-						broadcaster.BroadcastSealed(network.KindVote, data)
-					}
-				},
-				BroadcastProposal: func(b *types.Block) {
-					data, err := json.Marshal(b)
-					if err == nil {
-						broadcaster.BroadcastSealed(network.KindProposal, data)
-					}
-				},
-			})
-			if bftErr != nil {
-				return fmt.Errorf("bft engine: %w", bftErr)
+		// The BFT half is configured now and used whenever the producer needs
+		// it — at boot when multi_validator is already active for the next
+		// block, otherwise at the tick that reaches the activation height.
+		producer = consensus.NewProducer(vCfg, consensus.BFTConfig{
+			LocalAddr:    validatorAddr,
+			LocalPubKey:  validatorPKBytes,
+			LocalPrivKey: validatorPriv,
+			// The pull-sync loop and the block push race this commit for
+			// the same block; if one of them landed it first it is still
+			// committed (applyCommittedBlock).
+			OnCommit: func(b *types.Block) error {
+				return applyCommittedBlock(executor, b)
+			},
+			Broadcast: func(vote *consensus.Vote) {
+				data, err := json.Marshal(vote)
+				if err == nil {
+					broadcaster.BroadcastSealed(network.KindVote, data)
+				}
+			},
+			BroadcastProposal: func(b *types.Block) {
+				data, err := json.Marshal(b)
+				if err == nil {
+					broadcaster.BroadcastSealed(network.KindProposal, data)
+				}
+			},
+		}, executor, pool, scheduler, stateDB)
+		producer.Subscribe(broadcastCh)
+		go func() {
+			if err := producer.Run(ctx); err != nil && ctx.Err() == nil {
+				log.Error().Err(err).Msg("Validator exited with error")
 			}
-			bftEngine = eng
-			mv := consensus.NewMultiValidator(vCfg, eng, executor, pool, scheduler, stateDB)
-			mv.Subscribe(broadcastCh)
-			go func() {
-				for b := range eng.CommitCh() {
-					mv.NotifyCommit(b)
-				}
-			}()
-			go func() {
-				if err := mv.Run(ctx); err != nil && ctx.Err() == nil {
-					log.Error().Err(err).Msg("BFT validator exited with error")
-				}
-			}()
-			log.Info().Msg("multi_validator BFT producer started")
-		} else {
-			v := consensus.New(vCfg, executor, pool, scheduler)
-			v.Subscribe(broadcastCh)
-			go func() {
-				if err := v.Run(ctx); err != nil && ctx.Err() == nil {
-					log.Error().Err(err).Msg("Validator exited with error")
-				}
-			}()
-		}
+		}()
 
 		// Keep the mempool floor aligned with the live fork.
 		go func() {
@@ -921,32 +910,34 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// reach the tip before it may propose (consensus.Config.Ready), and a
 	// missed push must not leave it voting on proposals it cannot apply. A
 	// single-path validator must NOT pull — it would be a second producer.
-	if !flagIsValidator || useBFT {
-		go func() {
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if stateSyncPending.Load() {
-						continue
-					}
-					for _, addr := range peerPool.Addrs() {
-						if h, derr := network.DialPeer(addr); derr == nil {
-							peerPool.UpdatePeerHeight(addr, h)
-						}
-					}
-					if n, err := syncer.SyncOnce(); err != nil {
-						log.Warn().Err(err).Msg("sync failed")
-					} else if n > 0 {
-						log.Debug().Int("blocks", n).Msg("synced blocks")
+	// Which of the two a validator is changes mid-run (the producer moves
+	// onto BFT at the activation height), so it is judged on every tick
+	// rather than once here.
+	pullsBlocks := func() bool { return !flagIsValidator || bftEngine() != nil }
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if stateSyncPending.Load() || !pullsBlocks() {
+					continue
+				}
+				for _, addr := range peerPool.Addrs() {
+					if h, derr := network.DialPeer(addr); derr == nil {
+						peerPool.UpdatePeerHeight(addr, h)
 					}
 				}
+				if n, err := syncer.SyncOnce(); err != nil {
+					log.Warn().Err(err).Msg("sync failed")
+				} else if n > 0 {
+					log.Debug().Int("blocks", n).Msg("synced blocks")
+				}
 			}
-		}()
-	}
+		}
+	}()
 
 	// ── Metrics update loop ────────────────────────────────────────────────
 	go func() {
@@ -1025,19 +1016,23 @@ func runNode(cmd *cobra.Command, args []string) error {
 			return network.HandleIncomingBlock(body, syncer.TrustedPubKey(), executor.ActiveValidatorKey,
 				func(b *types.Block) error { return applyCommittedBlock(executor, b) })
 		},
+		// Both BFT ingresses resolve the engine per message: a producer that
+		// booted on the single path has one from the activation height on.
 		HandleVote: func(body []byte) error {
-			if bftEngine == nil {
+			eng := bftEngine()
+			if eng == nil {
 				return fmt.Errorf("this node is not running BFT")
 			}
 			var vote consensus.Vote
 			if err := json.Unmarshal(body, &vote); err != nil {
 				return fmt.Errorf("invalid vote: %w", err)
 			}
-			bftEngine.SubmitVote(&vote)
+			eng.SubmitVote(&vote)
 			return nil
 		},
 		HandleProposal: func(body []byte) error {
-			if bftEngine == nil {
+			eng := bftEngine()
+			if eng == nil {
 				return fmt.Errorf("this node is not running BFT")
 			}
 			var prop types.Block
@@ -1054,7 +1049,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			if err := network.VerifyBlockProducer(&prop, syncer.TrustedPubKey(), executor.ActiveValidatorKey); err != nil {
 				return fmt.Errorf("proposal rejected: %w", err)
 			}
-			bftEngine.ProposeBlock(&prop)
+			eng.ProposeBlock(&prop)
 			return nil
 		},
 		HandleAnnounce: func(body []byte) error {
