@@ -10,8 +10,8 @@ WORKDIR /build
 # Copy all source
 COPY . .
 
-# Generate go.sum by fetching all dependencies, then build
-RUN go get ./... && go mod tidy
+# Fetch the committed dependency set without changing it during image builds.
+RUN go mod download
 
 # Build identity, stamped into the binary so a running node can say what it is.
 # Without these the node reports commit "unknown" — deliberately, because a
@@ -20,16 +20,22 @@ ARG SQC_COMMIT=unknown
 ARG SQC_IMAGE_TAG=unknown
 
 RUN mkdir -p /out
-RUN CGO_ENABLED=1 GOOS=linux go build -mod=mod \
+RUN CGO_ENABLED=1 GOOS=linux go build -mod=readonly \
       -ldflags="-s -w \
         -X github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo.Commit=${SQC_COMMIT} \
         -X github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo.ImageTag=${SQC_IMAGE_TAG}" \
       -o /out/sqc-node ./cmd/node
-RUN CGO_ENABLED=1 GOOS=linux go build -mod=mod \
+RUN CGO_ENABLED=1 GOOS=linux go build -mod=readonly \
       -ldflags="-s -w \
         -X github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo.Commit=${SQC_COMMIT} \
         -X github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo.ImageTag=${SQC_IMAGE_TAG}" \
       -o /out/sqc-wallet ./cmd/wallet
+
+# Operators register a new validator with a signed module call after it has
+# synced. Keep the existing module-call driver alongside the wallet so that
+# registration can use the host's wallet without exporting its private key.
+RUN CGO_ENABLED=1 GOOS=linux go build -mod=readonly \
+      -ldflags="-s -w" -o /out/sqc-modcall ./cmd/sqc-modcall
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────
 FROM alpine:3.19
@@ -40,6 +46,7 @@ WORKDIR /sqc
 
 COPY --from=builder /out/sqc-node /usr/local/bin/sqc-node
 COPY --from=builder /out/sqc-wallet /usr/local/bin/sqc-wallet
+COPY --from=builder /out/sqc-modcall /usr/local/bin/sqc-modcall
 
 RUN mkdir -p /sqc/data
 
