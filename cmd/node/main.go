@@ -620,6 +620,13 @@ func runNode(cmd *cobra.Command, args []string) error {
 		func() uint64 { h, _ := executor.LatestHeight(); return h },
 		func(b *types.Block) error { return executor.ExecuteBlock(b) },
 	)
+	// Below two registered validators the executor accepts a block from the
+	// unregistered genesis validator; it must know WHICH key that is rather
+	// than trust the one the block carries. Block 0 in the chain DB is
+	// consulted first; a joiner that never stored it uses the trusted key,
+	// read at call time because a --genesis-hash pin learns it from block 0
+	// after start-up.
+	executor.WithGenesisValidatorKey(syncer.TrustedPubKey)
 
 	// ── Context + signal handling ──────────────────────────────────────────
 	ctx, cancel := context.WithCancel(context.Background())
@@ -861,6 +868,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 			OnCommit: func(b *types.Block) error {
 				return applyCommittedBlock(executor, b)
 			},
+			// A peer's proposal is applied to a discarded pending layer
+			// before this node votes on it, so a quorum cannot form on a
+			// block this node could never commit.
+			ValidateProposal: executor.ValidateProposal,
 			Broadcast: func(vote *consensus.Vote) {
 				data, err := json.Marshal(vote)
 				if err == nil {
