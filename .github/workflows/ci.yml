@@ -154,6 +154,53 @@ jobs:
       - name: Golden vector still derives the published address
         run: go test -count=1 ./sdk/sqc-sdk/signer/ -run 'Golden|Domain'
 
+  # The browser extension ships its own copy of the signer and refuses to start
+  # unless it matches the digest it pins, so a main push that moves the signer
+  # has to reach it. Nothing here told it: its sync ran on ITS pushes and a cron,
+  # so a chain change sat unshipped until that clock came round.
+  #
+  # It fires on every main push, not behind a path filter: the wallet rebuilds
+  # the signer from SOURCE, so a go.mod bump moves its bytes as much as a commit
+  # under sdk/ does. The receiver no-ops when already in step, so a spurious
+  # dispatch costs a two-minute run there. It runs after wasm-drift so the wallet
+  # only ever syncs a main whose pins already name the bytes it will rebuild.
+  #
+  # workflow_dispatch, not repository_dispatch: the permission it needs there is
+  # `actions: write`, which can start that workflow and nothing else — it cannot
+  # push to the wallet, open PRs, or read its secrets. repository_dispatch would
+  # need `contents: write` on the repo holding the signer users' keys go through.
+  #
+  # Missing token = a warning, not a red main: the wallet's own cron still
+  # catches the change, and a chain build has no business failing over a
+  # notification it could not send. A token that IS present and cannot dispatch
+  # does fail — that is a broken promise rather than an absent one.
+  wallet-sync:
+    name: tell the wallet extension to re-sync its signer
+    needs: wasm-drift
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Dispatch splendor-quantum-wallet-extension/sync-signer.yml
+        env:
+          GH_TOKEN: ${{ secrets.WALLET_DISPATCH_TOKEN }}
+          WALLET_REPO: Splendor-Protocol/splendor-quantum-wallet-extension
+          CHAIN_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::WALLET_DISPATCH_TOKEN is not set, so the wallet extension was not told the signer may have moved. It will catch up on its own schedule. To make it immediate, add a fine-grained PAT (resource owner Splendor-Protocol; only ${WALLET_REPO}; permissions Actions=Read and write, Metadata=Read) as this repo's WALLET_DISPATCH_TOKEN secret."
+            exit 0
+          fi
+          # No -f inputs: the receiving workflow only declares them on some
+          # revisions, and `gh workflow run` errors on an input a workflow does
+          # not declare. It rebuilds the signer from this main either way, so
+          # the inputs were never more than log decoration.
+          gh workflow run sync-signer.yml --repo "$WALLET_REPO" --ref main
+          echo "dispatched for chain ${CHAIN_SHA}: https://github.com/${WALLET_REPO}/actions/workflows/sync-signer.yml"
+
   js:
     name: SDK typechecks and tests
     runs-on: ubuntu-24.04
