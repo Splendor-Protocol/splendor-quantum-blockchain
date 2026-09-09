@@ -1,3 +1,9 @@
+> **Archived lab model.**
+> This page describes the feat/validator pass/tier lab, not the live
+> 2,500 SPLD `validators_v1` registry. Public admission has not launched.
+> Do not treat these numbers or procedures as mainnet admission.
+> Current lifecycle: [`VALIDATOR.md`](../VALIDATOR.md).
+
 # Staking: validator bonding and admission (`validator_gates_v1`)
 
 Who is allowed to produce a block on this chain, and what it costs them to
