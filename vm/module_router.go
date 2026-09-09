@@ -796,6 +796,18 @@ type dexSwapParams struct {
 	MinAmountOut string `json:"min_amount_out,omitempty"`
 }
 
+// dexRemoveLiquidityParams burns the caller's LP shares for both reserves.
+// Deadline is a block height: the call is refused (SOFT) once the block being
+// applied is above it, so a stale exit signed at one price cannot land at
+// another. 0 means no deadline.
+type dexRemoveLiquidityParams struct {
+	Pool       string `json:"pool"`
+	LPShares   string `json:"lp_shares"`
+	Amount0Min string `json:"amount0_min,omitempty"`
+	Amount1Min string `json:"amount1_min,omitempty"`
+	Deadline   uint64 `json:"deadline,omitempty"`
+}
+
 func dispatchDEX(stateDB *state.StateDB, ctx ModuleContext, action string, raw json.RawMessage, receipt *types.Receipt) error {
 	caller, nonce := ctx.Caller, ctx.Nonce
 	switch action {
@@ -857,6 +869,42 @@ func dispatchDEX(stateDB *state.StateDB, ctx ModuleContext, action string, raw j
 		}
 		minOut := parseBigOrZero(p.MinAmountOut)
 		_, err = NewLiquidityPool(stateDB, pool).SwapExactIn(caller, caller, p.TokenIn, amtIn, minOut)
+		return err
+
+	case "remove_liquidity":
+		// modules_v2: the exit for LP shares. deploy_pool, add_liquidity and
+		// swap were routed without a gate, so deposits have been possible on
+		// every tier while nothing could burn the shares; this is the missing
+		// half, added under a rule so every node agrees on the height from
+		// which it applies.
+		if err := requireFork(ctx, forks.ModulesV2); err != nil {
+			return err
+		}
+		var p dexRemoveLiquidityParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return fmt.Errorf("dex remove_liquidity: bad params: %w", err)
+		}
+		pool, err := qcrypto.AddressFromString(p.Pool)
+		if err != nil {
+			return fmt.Errorf("dex remove_liquidity: pool: %w", err)
+		}
+		shares, err := parseBig(p.LPShares)
+		if err != nil {
+			return fmt.Errorf("dex remove_liquidity: lp_shares: %w", err)
+		}
+		if shares.Sign() <= 0 {
+			return fmt.Errorf("dex remove_liquidity: lp_shares must be positive")
+		}
+		if p.Deadline != 0 && ctx.Height > p.Deadline {
+			return fmt.Errorf("dex remove_liquidity: deadline %d passed at height %d", p.Deadline, ctx.Height)
+		}
+		min0 := parseBigOrZero(p.Amount0Min)
+		min1 := parseBigOrZero(p.Amount1Min)
+		lp := NewLiquidityPool(stateDB, pool)
+		if t0, err := lp.Token0(); err != nil || t0 == (qcrypto.Address{}) {
+			return fmt.Errorf("dex remove_liquidity: %s is not a pool", pool)
+		}
+		_, _, err = lp.RemoveLiquidity(caller, shares, min0, min1)
 		return err
 
 	default:

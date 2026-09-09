@@ -82,6 +82,7 @@ var KnownModuleActions = map[string]ModuleActions{
 	"dex": {
 		Writes: map[string]string{
 			"deploy_pool": "", "add_liquidity": "", "swap": "",
+			"remove_liquidity": forks.ModulesV2,
 		},
 		Reads: map[string]bool{
 			"reserves": true, "pool_info": true,
