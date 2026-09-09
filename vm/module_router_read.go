@@ -149,9 +149,13 @@ var KnownModuleActions = map[string]ModuleActions{
 	},
 	"multisig": {
 		Writes: map[string]string{
-			"deploy": forks.MultisigV1, "submit": forks.MultisigV1,
+			"deploy": forks.MultisigV1, "submit": forks.MultisigV1, "confirm": forks.MultisigV1,
+			"revoke": forks.MultisigV1, "execute": forks.MultisigV1, "cancel": forks.MultisigV1,
 		},
-		Reads: map[string]bool{"threshold": true, "proposal": true},
+		Reads: map[string]bool{
+			"threshold": true, "proposal": true, "owner": true, "owner_count": true,
+			"nonce": true, "balance": true, "confirmations": true, "proposal_hash": true,
+		},
 	},
 	"governance": {
 		Writes: map[string]string{

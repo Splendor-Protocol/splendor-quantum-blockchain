@@ -319,22 +319,46 @@ func dispatchMultisig(stateDB *state.StateDB, ctx ModuleContext, action string, 
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return err
 		}
-		var owners []MSigOwner
+		if len(p.Owners) > MaxMultisigOwners {
+			return fmt.Errorf("multisig deploy: %d owners, above the cap of %d", len(p.Owners), MaxMultisigOwners)
+		}
+		owners := make([]MSigOwner, 0, len(p.Owners))
 		for _, o := range p.Owners {
-			pk, _ := hex.DecodeString(o.Pubkey)
+			// A key that does not decode used to become an empty key, which
+			// DeployMultiSig then refused with a message about the wrong
+			// thing; say what was actually wrong.
+			pk, err := b64orHex(o.Pubkey)
+			if err != nil {
+				return fmt.Errorf("multisig deploy: owner %s pubkey: %w", o.Address, err)
+			}
+			if err := capString("multisig deploy", "name", o.Name, MaxModuleNameBytes); err != nil {
+				return err
+			}
 			owners = append(owners, MSigOwner{Address: o.Address, PublicKey: pk, Name: o.Name})
 		}
 		addr, err := DeployMultiSig(stateDB, ctx.Caller, owners, p.Threshold, ctx.Nonce)
 		if err != nil {
 			return err
 		}
+		markContract(stateDB, addr)
 		receipt.ContractAddress = &addr
 		return nil
+
 	case "submit":
+		// tx_type selects the payload: "transfer" (default) moves value to
+		// `to`; "add_owner" adds {owner, pubkey, name}; "remove_owner" removes
+		// {owner}; "change_threshold" sets {threshold}. Contract calls are
+		// not offered: the module cannot execute them.
 		var p struct {
-			Wallet string `json:"wallet"`
-			To     string `json:"to"`
-			Value  string `json:"value"`
+			Wallet      string `json:"wallet"`
+			TxType      string `json:"tx_type,omitempty"`
+			To          string `json:"to,omitempty"`
+			Value       string `json:"value,omitempty"`
+			Owner       string `json:"owner,omitempty"`
+			Pubkey      string `json:"pubkey,omitempty"`
+			Name        string `json:"name,omitempty"`
+			Threshold   uint64 `json:"threshold,omitempty"`
+			Description string `json:"description,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return err
@@ -343,25 +367,104 @@ func dispatchMultisig(stateDB *state.StateDB, ctx ModuleContext, action string, 
 		if err != nil {
 			return err
 		}
-		to, err := qcrypto.AddressFromString(p.To)
-		if err != nil {
-			return err
+		w := NewMultiSigWallet(stateDB, waddr)
+		var (
+			txType MSigTxType
+			to     qcrypto.Address
+			val    = new(big.Int)
+			data   []byte
+		)
+		switch p.TxType {
+		case "", "transfer":
+			txType = MSigTransfer
+			if to, err = qcrypto.AddressFromString(p.To); err != nil {
+				return fmt.Errorf("multisig submit: to: %w", err)
+			}
+			if val, err = parseAmt(p.Value); err != nil {
+				return fmt.Errorf("multisig submit: value: %w", err)
+			}
+		case "add_owner":
+			txType = MSigAddOwner
+			owner, err := qcrypto.AddressFromString(p.Owner)
+			if err != nil {
+				return fmt.Errorf("multisig submit: owner: %w", err)
+			}
+			pk, err := b64orHex(p.Pubkey)
+			if err != nil {
+				return fmt.Errorf("multisig submit: pubkey: %w", err)
+			}
+			data = EncodeAddOwnerData(owner, pk, p.Name)
+		case "remove_owner":
+			txType = MSigRemOwner
+			owner, err := qcrypto.AddressFromString(p.Owner)
+			if err != nil {
+				return fmt.Errorf("multisig submit: owner: %w", err)
+			}
+			data = EncodeRemoveOwnerData(owner)
+		case "change_threshold":
+			txType = MSigChangeThreshold
+			data = EncodeChangeThresholdData(p.Threshold)
+		default:
+			return fmt.Errorf("multisig submit: unsupported tx_type %q", p.TxType)
 		}
-		val, err := parseAmt(p.Value)
-		if err != nil {
-			return err
-		}
-		_, err = NewMultiSigWallet(stateDB, waddr).Submit(ctx.Caller, MSigTransfer, to, val, nil, "")
+		_, err = w.Submit(ctx.Caller, txType, to, val, data, p.Description)
 		return err
+
+	case "confirm":
+		var p struct {
+			Wallet    string `json:"wallet"`
+			Nonce     uint64 `json:"nonce"`
+			Signature string `json:"signature"` // ML-DSA-65 over ProposalHash, hex or base64
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return err
+		}
+		waddr, err := qcrypto.AddressFromString(p.Wallet)
+		if err != nil {
+			return err
+		}
+		sig, err := b64orHex(p.Signature)
+		if err != nil {
+			return fmt.Errorf("multisig confirm: signature: %w", err)
+		}
+		return NewMultiSigWallet(stateDB, waddr).Confirm(ctx.Caller, p.Nonce, sig)
+
+	case "revoke", "execute", "cancel":
+		var p struct {
+			Wallet string `json:"wallet"`
+			Nonce  uint64 `json:"nonce"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return err
+		}
+		waddr, err := qcrypto.AddressFromString(p.Wallet)
+		if err != nil {
+			return err
+		}
+		w := NewMultiSigWallet(stateDB, waddr)
+		switch action {
+		case "revoke":
+			return w.Revoke(ctx.Caller, p.Nonce)
+		case "execute":
+			return w.Execute(ctx.Caller, p.Nonce, stateDB)
+		default:
+			return w.Cancel(ctx.Caller, p.Nonce)
+		}
+
 	default:
 		return hard(fmt.Errorf("module call: unknown action %q", action))
 	}
 }
 
+// MaxMultisigOwners bounds a wallet's owner list at deploy: each owner is a
+// 1952-byte key persisted as state for a flat fee.
+const MaxMultisigOwners = 32
+
 func dispatchMultisigRead(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
 	var p struct {
-		Wallet string `json:"wallet"`
-		Nonce  uint64 `json:"nonce"`
+		Wallet  string `json:"wallet"`
+		Nonce   uint64 `json:"nonce"`
+		Address string `json:"address,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
@@ -376,6 +479,33 @@ func dispatchMultisigRead(stateDB *state.StateDB, action string, raw json.RawMes
 		return w.Threshold()
 	case "proposal":
 		return w.GetProposal(p.Nonce)
+	case "owner":
+		a, err := qcrypto.AddressFromString(p.Address)
+		if err != nil {
+			return nil, err
+		}
+		return w.GetOwner(a)
+	case "owner_count":
+		return w.OwnerCount()
+	case "nonce":
+		return w.CurrentNonce()
+	case "balance":
+		return w.Balance(stateDB)
+	case "confirmations":
+		return w.ConfirmationCount(p.Nonce)
+	case "proposal_hash":
+		// What an owner signs for `confirm`: bound to this chain, this wallet,
+		// this nonce and this payload.
+		prop, err := w.GetProposal(p.Nonce)
+		if err != nil || prop == nil {
+			return nil, fmt.Errorf("multisig: proposal %d not found", p.Nonce)
+		}
+		to, err := qcrypto.AddressFromString(prop.To)
+		if err != nil {
+			return nil, err
+		}
+		h := ProposalHash(waddr, p.Nonce, prop.TxType, to, prop.Value, prop.Data)
+		return map[string]string{"hash": hex.EncodeToString(h[:]), "context": string(qcrypto.CtxMultisig)}, nil
 	default:
 		return nil, fmt.Errorf("multisig: unknown read %q", action)
 	}
