@@ -55,7 +55,16 @@ func (m *MultiValidator) Subscribe(ch chan<- *types.Block) {
 
 func (m *MultiValidator) RefreshSet() {
 	reg := vm.NewStakingContract(m.stateDB, vm.DeployStaking(nil))
-	active, _ := reg.ListActive()
+	active, err := reg.ListActive()
+	if err != nil {
+		// Fail closed: keep the set the engine already holds. An unreadable
+		// registry used to be indistinguishable from an empty one, and an
+		// empty one elects the genesis validator — or, with no genesis key
+		// known, this node — as the sole leader. A read error must never
+		// shrink the quorum to one.
+		log.Error().Err(err).Msg("BFT: validator registry unreadable, keeping the current set")
+		return
+	}
 	infos := make([]ValidatorInfo, 0, len(active)+1)
 	for _, rec := range active {
 		infos = append(infos, ValidatorInfo{
