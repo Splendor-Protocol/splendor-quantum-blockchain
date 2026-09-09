@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,16 +34,17 @@ func TestKeepPoolFloorAlignedMovesWithTheHead(t *testing.T) {
 	defer sdb.Close()
 	pool := mempool.New(10, sdb)
 	sched := forks.Schedule{forks.MinFeeV1: 5}
-	head := uint64(3)
+	var head atomic.Uint64
+	head.Store(3)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	keepPoolFloorAligned(ctx, pool, func() forks.Schedule { return sched }, func() uint64 { return head }, 5*time.Millisecond)
+	keepPoolFloorAligned(ctx, pool, func() forks.Schedule { return sched }, head.Load, 5*time.Millisecond)
 	// The pool is empty, so MinFeeNow is the uncongested base fee.
 	if got := pool.MinFeeNow(); got != mempool.MinFee {
 		t.Fatalf("head 3, next block 4: floor %d, want %d", got, mempool.MinFee)
 	}
-	head = 4 // next block is 5, the activation height
+	head.Store(4) // next block is 5, the activation height
 	deadline := time.Now().Add(2 * time.Second)
 	for pool.MinFeeNow() != mempool.MinFeeV1Amount {
 		if time.Now().After(deadline) {
