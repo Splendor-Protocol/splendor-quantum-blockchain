@@ -160,6 +160,11 @@ func (v *Validator) sealsUnderBFT(height uint64) bool {
 	return v.executor.Forks().Active(forks.MultiValidator, height)
 }
 
+// ready reports whether this node may seal. nil means always.
+func (v *Validator) ready() bool {
+	return v.cfg.Ready == nil || v.cfg.Ready()
+}
+
 // produceBlock pulls transactions from the mempool and produces a signed block.
 // It returns ErrBFTRequired, and seals nothing, when the block it would seal
 // falls under multi_validator.
@@ -170,6 +175,14 @@ func (v *Validator) produceBlock() error {
 	}
 	if v.sealsUnderBFT(height) {
 		return fmt.Errorf("%w: block %d", ErrBFTRequired, height)
+	}
+	// The gate applies to the single path too. A validator that joined a chain
+	// which never scheduled multi_validator has no BFT engine to hold it back,
+	// and sealing there would put a second producer on the same chain — which
+	// on an empty data directory means block 1 on top of genesis, and a fork.
+	if !v.ready() {
+		log.Debug().Uint64("height", height).Msg("validator: not synced, holding production")
+		return nil
 	}
 
 	// Ask AI scheduler for recommended batch size

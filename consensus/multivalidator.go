@@ -88,12 +88,17 @@ func (m *MultiValidator) Run(ctx context.Context) error {
 	m.engine.SetHeight(head + 1)
 	m.RefreshSet()
 
-	go func() {
-		if err := m.engine.Run(ctx); err != nil && ctx.Err() == nil {
-			log.Error().Err(err).Msg("BFT engine exited")
-		}
-	}()
-
+	// Both callbacks are installed BEFORE the engine loop starts. They used to
+	// be assigned after `go m.engine.Run(ctx)`, which is a data race with the
+	// loop that reads them — and, on the losing schedule, a first view change
+	// that called a nil callback and simply did nothing.
+	//
+	// refreshSet: the engine sizes a quorum from the set it holds, while the
+	// executor judges the certificate against the registry in the block's
+	// parent state. Refreshing only on the tick left those two disagreeing for
+	// up to one interval — the window a registration lands in — and a quorum of
+	// one where the chain wants two is a commit that can only fail.
+	m.engine.refreshSet = m.RefreshSet
 	m.engine.onViewChange = func(height uint64, round uint32) {
 		if m.engine.IsLeader(height, round) {
 			if !m.ready() {
@@ -105,6 +110,12 @@ func (m *MultiValidator) Run(ctx context.Context) error {
 			}
 		}
 	}
+
+	go func() {
+		if err := m.engine.Run(ctx); err != nil && ctx.Err() == nil {
+			log.Error().Err(err).Msg("BFT engine exited")
+		}
+	}()
 
 	ticker := time.NewTicker(m.cfg.BlockInterval)
 	defer ticker.Stop()
@@ -163,10 +174,10 @@ func (m *MultiValidator) propose() error {
 	if err != nil {
 		return err
 	}
+	// The engine broadcasts, once its own vote set exists. Sending from here —
+	// immediately after handing the block to a buffered channel — let a peer's
+	// vote reach this node before it could count one, and the vote was dropped.
 	m.engine.ProposeBlock(b)
-	if m.engine.broadcastP != nil {
-		m.engine.broadcastP(b)
-	}
 	return nil
 }
 

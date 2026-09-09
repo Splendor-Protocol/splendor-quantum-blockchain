@@ -226,8 +226,9 @@ func (vs *VoteSet) Votes() []*Vote {
 // VoteBroadcaster sends a signed vote to peers. Implementations use sealed P2P.
 type VoteBroadcaster func(vote *Vote)
 
-// ProposalBroadcaster sends a proposed block to peers.
-type ProposalBroadcaster func(b *types.Block)
+// ProposalBroadcaster sends a proposal to peers. It carries the round and the
+// proposer's own vote, not just the block — see ProposalMsg.
+type ProposalBroadcaster func(p *ProposalMsg)
 
 // BFTEngine is the multi-validator BFT consensus engine.
 type BFTEngine struct {
@@ -243,17 +244,33 @@ type BFTEngine struct {
 	voteSet       *VoteSet
 	proposal      *types.Block
 	seenVotes     map[string]*Vote // validator|height|round → first vote (equivocation)
-	lockedHash    [32]byte
-	lockedHeight  uint64 // the lock binds one height only; the next height is a new decision
-	hasLock       bool
-	stateMu       sync.Mutex
+
+	// pendingVotes holds verified votes that arrived before the proposal they
+	// belong to, keyed height|round. Dropping them meant a peer's vote that
+	// overtook the proposal on the wire was lost and the height ran to
+	// timeout, which with two validators is the whole quorum.
+	pendingVotes map[string][]*Vote
+
+	lockedHash   [32]byte
+	lockedHeight uint64 // the lock binds one height only; the next height is a new decision
+	lockedRound  uint32 // and one round: a view change is a fresh decision too
+	hasLock      bool
+	stateMu      sync.Mutex
+
+	// refreshSet re-reads the on-chain validator registry. The engine sizes a
+	// quorum from the set it holds, and the executor judges the resulting
+	// certificate against the registry in the block's parent state; between a
+	// registration landing and the next periodic refresh those two disagree,
+	// and a quorum of one where the chain wants two is a commit that can only
+	// fail. nil leaves the set to whoever calls UpdateValidatorSet.
+	refreshSet func()
 
 	voteTimeout  time.Duration
 	roundTimeout time.Duration
 
 	voteCh    chan *Vote
 	commitCh  chan *types.Block
-	proposeCh chan *types.Block
+	proposeCh chan *pendingProposal
 
 	onCommit     func(*types.Block) error
 	onViewChange func(height uint64, round uint32)
@@ -294,10 +311,20 @@ func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
 		broadcastP:   cfg.BroadcastProposal,
 		voteCh:       make(chan *Vote, 1000),
 		commitCh:     make(chan *types.Block, 16),
-		proposeCh:    make(chan *types.Block, 16),
+		proposeCh:    make(chan *pendingProposal, 16),
 		seenVotes:    make(map[string]*Vote),
+		pendingVotes: make(map[string][]*Vote),
 	}, nil
 }
+
+// maxPendingVotes bounds the early-vote buffer, and maxSeenVotes the
+// equivocation table. Both are fed from the network, so both need a ceiling:
+// without one a peer holding the write-plane token could grow either without
+// limit by sending votes for heights that never arrive.
+const (
+	maxPendingVotes = 256
+	maxSeenVotes    = 4096
+)
 
 // UpdateValidatorSet updates the active validator set.
 // This is called when the on-chain validator registry changes (epoch transitions).
@@ -357,11 +384,27 @@ func (e *BFTEngine) SubmitVote(vote *Vote) {
 	}
 }
 
-// ProposeBlock submits a new block proposal (called by leader's block producer).
+// ProposeBlock submits a block this node is proposing. The engine stamps it
+// with the round it is on, casts and attaches this node's vote, and only then
+// broadcasts it — so a peer can never answer a proposal before the proposer is
+// able to count the answer.
 func (e *BFTEngine) ProposeBlock(b *types.Block) {
 	select {
-	case e.proposeCh <- b:
+	case e.proposeCh <- &pendingProposal{block: b, local: true}:
 	default:
+	}
+}
+
+// SubmitProposal queues a proposal received from a peer.
+func (e *BFTEngine) SubmitProposal(msg *ProposalMsg) {
+	p := pendingProposalOf(msg)
+	if p == nil || p.block == nil {
+		return
+	}
+	select {
+	case e.proposeCh <- p:
+	default:
+		log.Warn().Msg("BFT: proposal channel full, dropping proposal")
 	}
 }
 
@@ -370,11 +413,11 @@ func (e *BFTEngine) CommitCh() <-chan *types.Block {
 	return e.commitCh
 }
 
-// castVote creates and signs a vote for the given block.
-func (e *BFTEngine) castVote(b *types.Block) (*Vote, error) {
+// castVote creates and signs a vote for the given block at round.
+func (e *BFTEngine) castVote(b *types.Block, round uint32) (*Vote, error) {
 	vote := &Vote{
 		Height:        b.Header.Height,
-		Round:         e.currentRound,
+		Round:         round,
 		BlockHash:     b.Hash,
 		ValidatorAddr: e.localAddr,
 		Timestamp:     time.Now().Unix(),
@@ -383,6 +426,25 @@ func (e *BFTEngine) castVote(b *types.Block) (*Vote, error) {
 		return nil, err
 	}
 	return vote, nil
+}
+
+// isMember reports whether this node is in the active validator set.
+//
+// A validator that has joined a running chain and not yet registered runs the
+// engine — it needs to follow proposals and count real votes — but it is not
+// entitled to a vote. It used to cast one anyway, and with a single registered
+// validator that was a quorum of one: the joiner committed the leader's block
+// under a certificate consisting of its own vote, so two honest nodes held
+// different certificates for the same block.
+func (e *BFTEngine) isMember() bool {
+	e.validatorsMu.RLock()
+	defer e.validatorsMu.RUnlock()
+	for _, v := range e.activeLocked() {
+		if v.Address == e.localAddr {
+			return true
+		}
+	}
+	return false
 }
 
 // Run drives proposals, votes, timeouts, and commits until ctx is cancelled.
@@ -395,8 +457,8 @@ func (e *BFTEngine) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			log.Info().Msg("BFT: stopping")
 			return nil
-		case b := <-e.proposeCh:
-			e.handleProposal(b)
+		case p := <-e.proposeCh:
+			e.handleProposal(p)
 			resetTimer(timer, e.roundTimeout)
 		case vote := <-e.voteCh:
 			e.handleVote(vote)
@@ -435,13 +497,60 @@ func (e *BFTEngine) handleTimeout() {
 	}
 }
 
+// proposalRound resolves the round a received proposal was made in.
+//
+// For a locally built proposal that is simply this node's round. For one off
+// the wire it comes from the proposer's bundled vote, which is signed over
+// (height, round, block hash) by the key that sealed the block — so the round
+// is authenticated by the proposer, not asserted by whoever relayed it. A
+// proposal with no vote is an older peer's bare block: it is judged against
+// this node's round, exactly as every proposal used to be.
+func (e *BFTEngine) proposalRound(p *pendingProposal) (uint32, error) {
+	b := p.block
+	if p.local || p.vote == nil {
+		return e.currentRound, nil
+	}
+	v := p.vote
+	if v.ValidatorAddr != b.Header.ValidatorAddr {
+		return 0, fmt.Errorf("proposal carries a vote from %s but was sealed by %s",
+			v.ValidatorAddr, b.Header.ValidatorAddr)
+	}
+	if v.Height != b.Header.Height || v.BlockHash != b.Hash {
+		return 0, fmt.Errorf("proposal's vote is for %d/%x, block is %d/%x",
+			v.Height, v.BlockHash[:4], b.Header.Height, b.Hash[:4])
+	}
+	pubKey := e.findValidatorPubKey(v.ValidatorAddr)
+	if pubKey == nil {
+		return 0, fmt.Errorf("proposer %s is not in this node's validator set", v.ValidatorAddr)
+	}
+	if err := v.Verify(pubKey); err != nil {
+		return 0, fmt.Errorf("proposal's own vote does not verify: %w", err)
+	}
+	if v.Round > e.currentRound+MaxRoundAdvance {
+		return 0, fmt.Errorf("proposal is at round %d, this node is at %d (max advance %d)",
+			v.Round, e.currentRound, MaxRoundAdvance)
+	}
+	if b.Header.Height == e.currentHeight && v.Round < e.currentRound {
+		return 0, fmt.Errorf("proposal is at round %d, this node has already left it for %d",
+			v.Round, e.currentRound)
+	}
+	return v.Round, nil
+}
+
 // handleProposal processes a new block proposal.
-func (e *BFTEngine) handleProposal(b *types.Block) {
+func (e *BFTEngine) handleProposal(p *pendingProposal) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 
-	if b == nil {
+	if p == nil || p.block == nil {
 		return
+	}
+	b := p.block
+	// Size the quorum from the registry as it is NOW, not as it was at the
+	// last tick: a registration that has just landed changes what the executor
+	// will demand of this block's certificate.
+	if e.refreshSet != nil {
+		e.refreshSet()
 	}
 	nValidators := e.activeCount()
 	if nValidators == 0 {
@@ -450,51 +559,160 @@ func (e *BFTEngine) handleProposal(b *types.Block) {
 		return
 	}
 
-	leader, ok := e.LeaderAddress(b.Header.Height, e.currentRound)
+	// Never go backwards. handleProposal used to adopt whatever height it was
+	// handed, so a replayed proposal for a height the node had already
+	// committed dragged the engine back to it.
+	if b.Header.Height < e.currentHeight {
+		log.Debug().Uint64("height", b.Header.Height).Uint64("engine_height", e.currentHeight).
+			Msg("BFT: proposal for a height already left behind, ignored")
+		return
+	}
+
+	round, err := e.proposalRound(p)
+	if err != nil {
+		log.Warn().Err(err).Uint64("height", b.Header.Height).
+			Str("proposer", b.Header.ValidatorAddr.String()).Msg("BFT: proposal rejected")
+		return
+	}
+
+	leader, ok := e.LeaderAddress(b.Header.Height, round)
 	if !ok || b.Header.ValidatorAddr != leader {
 		log.Warn().
 			Uint64("height", b.Header.Height).
+			Uint32("round", round).
 			Str("proposer", b.Header.ValidatorAddr.String()).
 			Str("leader", leader.String()).
 			Msg("BFT: proposal from non-leader rejected")
 		return
 	}
 
-	// A lock is a statement about ONE height. Holding it against every later
-	// proposal wedged the engine for good whenever a commit failed (the block
-	// had already landed through push or pull-sync, or the node was behind):
-	// no proposal at h+1 could ever match the hash locked at h.
-	if e.hasLock && b.Header.Height == e.lockedHeight && b.Hash != e.lockedHash {
-		log.Warn().Uint64("height", b.Header.Height).Msg("BFT: proposal conflicts with locked block")
+	// A lock is a statement about ONE height and ONE round. Holding it against
+	// every later proposal wedged the engine for good whenever a commit failed:
+	// no proposal at h+1 could ever match the hash locked at h, and — until the
+	// round was part of it — no re-proposal at h either, because a fresh
+	// proposal always carries a fresh timestamp and therefore a fresh hash.
+	if e.hasLock && b.Header.Height == e.lockedHeight && round == e.lockedRound && b.Hash != e.lockedHash {
+		log.Warn().Uint64("height", b.Header.Height).Uint32("round", round).
+			Msg("BFT: proposal conflicts with the block locked in this round")
 		return
 	}
 
 	e.currentHeight = b.Header.Height
+	e.currentRound = round
 	e.proposal = b
-	e.voteSet = NewVoteSet(b.Header.Height, e.currentRound, b.Hash, nValidators)
+	e.voteSet = NewVoteSet(b.Header.Height, round, b.Hash, nValidators)
 
-	vote, err := e.castVote(b)
-	if err != nil {
-		log.Error().Err(err).Msg("BFT: failed to cast vote")
-		return
+	// The proposer's own vote travels with the proposal, so it can never be
+	// reordered ahead of it and dropped.
+	if p.vote != nil {
+		if _, addErr := e.voteSet.AddVote(p.vote); addErr != nil {
+			log.Debug().Err(addErr).Msg("BFT: proposer's own vote not counted")
+		}
 	}
-	reachedQuorum, err := e.voteSet.AddVote(vote)
-	if err != nil {
-		log.Error().Err(err).Msg("BFT: failed to add own vote")
+
+	var ownVote *Vote
+	if e.isMember() {
+		vote, verr := e.castVote(b, round)
+		if verr != nil {
+			log.Error().Err(verr).Msg("BFT: failed to cast vote")
+			return
+		}
+		ownVote = vote
+		if _, addErr := e.voteSet.AddVote(vote); addErr != nil {
+			log.Error().Err(addErr).Msg("BFT: failed to add own vote")
+		}
+		if e.broadcast != nil {
+			e.broadcast(vote)
+		}
+	} else {
+		log.Debug().Uint64("height", b.Header.Height).
+			Msg("BFT: this node is not in the active validator set, following without voting")
 	}
-	if e.broadcast != nil {
-		e.broadcast(vote)
+
+	// Own the broadcast here, after the vote set exists: MultiValidator used to
+	// send the proposal straight after handing the block to a buffered channel,
+	// so a peer's answer could arrive before this node could count it.
+	if p.local && e.broadcastP != nil && b.Header.ValidatorAddr == e.localAddr {
+		e.broadcastP(&ProposalMsg{Block: b, Vote: ownVote})
 	}
+
+	// Anything that overtook the proposal on the wire belongs to this set.
+	e.drainPendingVotes()
 
 	log.Debug().
 		Uint64("height", b.Header.Height).
+		Uint32("round", round).
 		Int("validators", nValidators).
+		Int("votes", e.voteSet.VoteCount()).
 		Int("required", e.voteSet.requiredWeight).
-		Msg("BFT: voted on block proposal")
+		Msg("BFT: proposal accepted")
 
-	if reachedQuorum {
+	if e.voteSet.HasQuorum() {
+		e.lock(b, round)
 		e.commitBlock(b)
 	}
+}
+
+// pendingVoteKey identifies the vote set a buffered vote belongs to.
+func pendingVoteKey(height uint64, round uint32) string {
+	return fmt.Sprintf("%d|%d", height, round)
+}
+
+// bufferVote holds a verified vote whose proposal has not arrived yet.
+func (e *BFTEngine) bufferVote(v *Vote) {
+	if e.pendingVoteCountLocked() >= maxPendingVotes {
+		e.prunePendingVotes(e.currentHeight)
+		if e.pendingVoteCountLocked() >= maxPendingVotes {
+			log.Debug().Msg("BFT: early-vote buffer full, dropping vote")
+			return
+		}
+	}
+	key := pendingVoteKey(v.Height, v.Round)
+	for _, have := range e.pendingVotes[key] {
+		if have.ValidatorAddr == v.ValidatorAddr {
+			return
+		}
+	}
+	cp := *v
+	e.pendingVotes[key] = append(e.pendingVotes[key], &cp)
+}
+
+// drainPendingVotes feeds the current vote set every early vote that belongs
+// to it. Called with stateMu held and e.voteSet non-nil.
+func (e *BFTEngine) drainPendingVotes() {
+	key := pendingVoteKey(e.currentHeight, e.currentRound)
+	held := e.pendingVotes[key]
+	delete(e.pendingVotes, key)
+	for _, v := range held {
+		if _, err := e.voteSet.AddVote(v); err != nil {
+			log.Debug().Err(err).Msg("BFT: early vote not counted")
+		}
+	}
+	e.prunePendingVotes(e.currentHeight)
+}
+
+// prunePendingVotes drops buffers for heights the node has left.
+func (e *BFTEngine) prunePendingVotes(below uint64) {
+	for key, votes := range e.pendingVotes {
+		if len(votes) == 0 || votes[0].Height < below {
+			delete(e.pendingVotes, key)
+		}
+	}
+}
+
+func (e *BFTEngine) pendingVoteCountLocked() int {
+	n := 0
+	for _, v := range e.pendingVotes {
+		n += len(v)
+	}
+	return n
+}
+
+// pendingVoteCount reports how many early votes are held. Test observability.
+func (e *BFTEngine) pendingVoteCount() int {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	return e.pendingVoteCountLocked()
 }
 
 // handleVote processes a vote received from a peer.
@@ -525,11 +743,24 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 			return
 		}
 	} else {
-		cp := *vote
-		e.seenVotes[key] = &cp
+		if len(e.seenVotes) >= maxSeenVotes {
+			e.pruneSeenVotes(e.currentHeight)
+		}
+		if len(e.seenVotes) < maxSeenVotes {
+			cp := *vote
+			e.seenVotes[key] = &cp
+		}
 	}
 
 	if e.voteSet == nil || vote.Height != e.currentHeight || vote.Round != e.currentRound {
+		// The proposal it belongs to may simply not have arrived yet: the
+		// leader broadcasts the proposal and its vote as two sealed messages
+		// and the network is free to reorder them. Dropping the vote here cost
+		// the height a full round timeout, which with two validators is the
+		// whole quorum.
+		if vote.Height >= e.currentHeight {
+			e.bufferVote(vote)
+		}
 		return
 	}
 
@@ -546,9 +777,7 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 		Msg("BFT: vote collected")
 
 	if reachedQuorum && e.proposal != nil {
-		e.lockedHash = e.proposal.Hash
-		e.lockedHeight = e.proposal.Header.Height
-		e.hasLock = true
+		e.lock(e.proposal, e.currentRound)
 		e.commitBlock(e.proposal)
 	}
 }
@@ -574,7 +803,16 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 
 	if e.onCommit != nil {
 		if err := e.onCommit(b); err != nil {
-			log.Error().Err(err).Msg("BFT: commit callback failed")
+			// Nothing was committed, so there is nothing to hold a lock on —
+			// and holding one here is what used to end the height for good:
+			// every retry carries a new timestamp, so a new hash, and the lock
+			// refused all of them. Release it and let the round time out into
+			// a fresh attempt.
+			log.Error().Err(err).Uint64("height", b.Header.Height).
+				Msg("BFT: commit callback failed, releasing the height for another round")
+			e.hasLock = false
+			e.voteSet = nil
+			e.proposal = nil
 			return
 		}
 	}
@@ -588,6 +826,29 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	e.voteSet = nil
 	e.proposal = nil
 	e.hasLock = false
+	e.prunePendingVotes(e.currentHeight)
+	e.pruneSeenVotes(e.currentHeight)
+}
+
+// pruneSeenVotes drops equivocation records for heights the chain has passed.
+// The table is fed from the network and was never trimmed, so a long-running
+// node accumulated one entry per validator per height for ever.
+func (e *BFTEngine) pruneSeenVotes(below uint64) {
+	for key, v := range e.seenVotes {
+		if v.Height < below {
+			delete(e.seenVotes, key)
+		}
+	}
+}
+
+// lock records the block this node saw a quorum for, so it cannot then vote
+// for a different one in the same round. It is cleared by a successful commit
+// and by a failed one alike.
+func (e *BFTEngine) lock(b *types.Block, round uint32) {
+	e.lockedHash = b.Hash
+	e.lockedHeight = b.Header.Height
+	e.lockedRound = round
+	e.hasLock = true
 }
 
 func (e *BFTEngine) activeCount() int {
@@ -596,11 +857,29 @@ func (e *BFTEngine) activeCount() int {
 	return len(e.activeLocked())
 }
 
-// SetHeight initialises the engine at the next height to produce.
+// SetHeight moves the engine to the next height to produce.
+//
+// Moving to a DIFFERENT height resets the round, because a round is a
+// statement about one height and the next one starts a fresh decision. Without
+// this, a node that timed out once and then took the following blocks by push
+// or pull-sync — rather than by its own commit, which does reset — stayed a
+// round ahead of its peers for the life of the process and rejected every
+// proposal the round-0 leader made.
+//
+// Re-setting the SAME height leaves the round alone: MultiValidator.propose
+// calls this before every proposal, including the one that follows a view
+// change, and clearing the round there would undo the view change.
 func (e *BFTEngine) SetHeight(h uint64) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	if e.currentHeight == h {
+		return
+	}
 	e.currentHeight = h
+	e.currentRound = 0
+	e.voteSet = nil
+	e.proposal = nil
+	e.prunePendingVotes(h)
 }
 
 // Height returns the height the engine is working on.
