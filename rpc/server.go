@@ -17,6 +17,7 @@
 package rpc
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo"
@@ -53,6 +54,8 @@ type Server struct {
 	// the cleartext ingest route; see Config.
 	trustedProducerKey func() []byte
 	lookupProducerKey  network.ProducerKeyLookup
+	// consensusMode reports the live producer path; see Config.
+	consensusMode func() string
 	// relayTx passes a transaction this node admitted to its peers; see Config.
 	relayTx            func(tx *types.Transaction)
 	router             *mux.Router
@@ -91,6 +94,13 @@ type Config struct {
 	// single-key rule.
 	LookupProducerKey network.ProducerKeyLookup
 
+	// ConsensusMode reports the producer path this node is ACTUALLY on right
+	// now, read at request time: ConsensusModeSingle, ConsensusModeBFT or
+	// ConsensusModeFollower. nil reports ConsensusModeFollower. This is
+	// distinct from /status.multi_validator, which is the scheduled rule bit
+	// and says nothing about the engine that sealed the head.
+	ConsensusMode func() string
+
 	// RelayTx hands a transaction this node has just admitted to its peers.
 	//
 	// Only the leader of a height puts transactions into a block, and nothing
@@ -127,6 +137,19 @@ type Config struct {
 	SimMaxInFlight int
 	SimTimeout     time.Duration
 }
+
+// Values of /status.consensus_mode.
+const (
+	// ConsensusModeSingle: this node seals blocks on the single-validator path
+	// (no certificate; the block predates multi_validator).
+	ConsensusModeSingle = "single"
+	// ConsensusModeBFT: this node proposes and commits through the BFT engine
+	// and attaches a quorum certificate to every block it commits.
+	ConsensusModeBFT = "bft"
+	// ConsensusModeFollower: this node produces nothing; it applies blocks
+	// pushed or pulled from peers.
+	ConsensusModeFollower = "follower"
+)
 
 // Defaults for the simulation plane.
 //
@@ -167,6 +190,7 @@ func New(
 		validatorPK:        cfg.ValidatorPK,
 		trustedProducerKey: cfg.TrustedProducerKey,
 		lookupProducerKey:  cfg.LookupProducerKey,
+		consensusMode:      cfg.ConsensusMode,
 		relayTx:            cfg.RelayTx,
 		peerCount:          cfg.PeerCount,
 		writeAuth:          NewWriteAuth(cfg.AuthToken),
@@ -504,6 +528,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status["forks"] = schedule
 	}
 	status["min_fee"] = s.pool.MinFeeNow()
+	// min_fee is an integer in the smallest unit. The unit is stated because
+	// "1000" has been read as 0.001 SPLD; it is 1000 × 10^-18 SPLD.
+	status["fee_unit"] = "smallest_spld"
+	status["decimals"] = types.Decimals
+	// multi_validator is the SCHEDULE bit — whether the rule applies at the
+	// head. It is kept for compatibility. It does not say which engine sealed
+	// the head or whether a certificate exists; the fields below do.
 	status["multi_validator"] = schedule.Active(forks.MultiValidator, height)
 	reg := vm.NewStakingContract(s.stateDB, vm.DeployStaking(nil))
 	if list, err := reg.ListActive(); err == nil {
@@ -513,6 +544,33 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if pub, err := qcrypto.PublicKeyFromBytes(s.validatorPK); err == nil {
 			status["local_validator"] = qcrypto.DeriveAddress(pub).String()
 		}
+	}
+
+	// The engine this process is actually running, read now.
+	mode := ConsensusModeFollower
+	if s.consensusMode != nil {
+		mode = s.consensusMode()
+	}
+	status["consensus_mode"] = mode
+	// The head's certificate, judged against the committed validator set.
+	// "healthy HTTP", "producing blocks", "registered validators" and "a
+	// valid certificate on the head" are four different properties; this
+	// is the fourth one, so an operator no longer has to infer it from the
+	// schedule bit.
+	hc := s.executor.HeadConsensus()
+	status["head_qc_present"] = hc.QCPresent
+	status["head_qc_valid"] = hc.QCValid
+	status["head_qc_votes"] = hc.QCVotes
+	status["head_quorum_required"] = hc.QuorumRequired
+	status["validator_set_height"] = hc.ValidatorSetHeight
+	if hc.Reason != "" {
+		status["head_qc_reason"] = hc.Reason
+	}
+	// The identity of THIS chain, not just its id string: block 0's hash is
+	// what a --genesis-hash pin must match, and it changes on every reset even
+	// when chain_id does not.
+	if g, err := s.executor.GetBlockByHeight(0); err == nil && g != nil {
+		status["genesis_hash"] = hex.EncodeToString(g.Hash[:])
 	}
 	writeJSON(w, http.StatusOK, status)
 }

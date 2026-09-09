@@ -26,6 +26,11 @@ const (
 // unconfigured node still speaks to the network it always spoke to.
 const DefaultChainID = "splendor-quantum-1"
 
+// Decimals is how many base units make one SPLD: balances, fees and amounts
+// on the wire are integers in the smallest unit, 10^-18 SPLD. Reported by
+// /status so "min_fee": 1000 is not read as 0.001 SPLD.
+const Decimals = 18
+
 // ChainID is the chain this node belongs to. It is signed into every
 // transaction body (see TransactionBody) and stamped into every block header,
 // so it is what separates one network's transactions from another's: a

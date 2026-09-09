@@ -807,6 +807,20 @@ func runNode(cmd *cobra.Command, args []string) error {
 		}
 		return producer.Engine()
 	}
+	// consensusMode is what /status.consensus_mode reports: the path this
+	// process is on NOW, derived from the same pointer the ingress reads, so
+	// the answer flips at the activation height without a restart — unlike
+	// /status.multi_validator, which is the schedule bit.
+	consensusMode := func() string {
+		switch {
+		case producer == nil:
+			return rpc.ConsensusModeFollower
+		case producer.Engine() != nil:
+			return rpc.ConsensusModeBFT
+		default:
+			return rpc.ConsensusModeSingle
+		}
+	}
 	if flagIsValidator && validatorPriv != nil {
 		vCfg := consensus.Config{
 			BlockInterval: time.Duration(flagBlockInterval) * time.Second,
@@ -1002,6 +1016,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			ValidatorPK:        validatorPKBytes,
 			TrustedProducerKey: syncer.TrustedPubKey,
 			LookupProducerKey:  executor.ActiveValidatorKey,
+			ConsensusMode:      consensusMode,
 			// Only the leader of a height puts transactions into a block, and
 			// nothing carried one mempool to another: a transaction submitted
 			// to any node that was not about to lead simply never landed —
