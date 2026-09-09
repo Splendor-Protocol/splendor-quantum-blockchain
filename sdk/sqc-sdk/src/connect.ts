@@ -78,10 +78,18 @@ export type ClientSession = {
   info: DeriveInfo | null;
 };
 
-/** @deprecated Use ClientSession — kept for backward compatibility. */
-export type SplendorClient = ClientSession;
+/** @deprecated Use {@link ClientSession}. Kept as a type-only alias; prefer ClientSession
+ * to avoid colliding with the {@link SplendorClient} class in `client.ts`. */
+export type LegacySplendorClient = ClientSession;
 
-function buildBridgeOptions(opts: CreateClientOptions = {}): {
+/**
+ * @deprecated Use {@link ClientSession}. This type alias historically collided with the
+ * `SplendorClient` class — new code must import ClientSession.
+ */
+export type SplendorClientType = ClientSession;
+
+/** Resolve network + BridgeOptions (shared by createSplendorClient / connect). */
+export function buildBridgeOptions(opts: CreateClientOptions = {}): {
   network: NetworkConfig;
   bridgeOpts: BridgeOptions;
 } {

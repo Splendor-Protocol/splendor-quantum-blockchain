@@ -122,10 +122,58 @@ export function createConnectController(
   let modal: ModalView = 'closed';
   let destroyed = false;
   let connectInFlight: Promise<DeriveInfo> | null = null;
+  let snapshot: ConnectControllerState = {
+    status,
+    connectingStep,
+    account,
+    error,
+    activeConnectorId,
+    modal,
+    connectors,
+    network: client.network,
+  };
+  let connectorAccountsUnsub: (() => void) | null = null;
 
   const unsubs: Array<() => void> = [];
 
+  const clearConnectorAccountsWatch = () => {
+    if (connectorAccountsUnsub) {
+      connectorAccountsUnsub();
+      connectorAccountsUnsub = null;
+    }
+  };
+
+  const refreshSnapshot = (): ConnectControllerState => {
+    const next: ConnectControllerState = {
+      status,
+      connectingStep,
+      account,
+      error,
+      activeConnectorId,
+      modal,
+      connectors,
+      network: client.network,
+    };
+    const prev = snapshot;
+    if (
+      prev.status === next.status &&
+      prev.connectingStep === next.connectingStep &&
+      prev.account === next.account &&
+      prev.error === next.error &&
+      prev.activeConnectorId === next.activeConnectorId &&
+      prev.modal === next.modal &&
+      prev.connectors === next.connectors &&
+      prev.network === next.network &&
+      prev.connectorsLoading === next.connectorsLoading
+    ) {
+      return prev;
+    }
+    snapshot = next;
+    return snapshot;
+  };
+
   const emit = () => {
+    refreshSnapshot();
     for (const l of listeners) l();
   };
 
@@ -192,16 +240,7 @@ export function createConnectController(
     }),
   );
 
-  const getState = (): ConnectControllerState => ({
-    status,
-    connectingStep,
-    account,
-    error,
-    activeConnectorId,
-    modal,
-    connectors,
-    network: client.network,
-  });
+  const getState = (): ConnectControllerState => snapshot;
 
   const controller: ConnectController = {
     client,
@@ -279,6 +318,13 @@ export function createConnectController(
           status = 'connected';
           connectingStep = null;
           modal = 'closed';
+          clearConnectorAccountsWatch();
+          if (connector.onAccountsChanged) {
+            connectorAccountsUnsub = connector.onAccountsChanged((_evm) => {
+              // Wallet MetaMask watch usually owns re-derive; this keeps custom connectors honest.
+              syncFromWallet();
+            });
+          }
           if (resumable) {
             broadcastConnectEvent({
               type: 'connected',
@@ -307,6 +353,7 @@ export function createConnectController(
     },
     async disconnect() {
       const connector = connectors.find((c) => c.id === activeConnectorId);
+      clearConnectorAccountsWatch();
       try {
         await connector?.disconnect?.();
       } catch {
@@ -325,6 +372,7 @@ export function createConnectController(
     },
     async softDisconnect() {
       const connector = connectors.find((c) => c.id === activeConnectorId);
+      clearConnectorAccountsWatch();
       try {
         await connector?.disconnect?.();
       } catch {
@@ -390,6 +438,7 @@ export function createConnectController(
     },
     destroy() {
       destroyed = true;
+      clearConnectorAccountsWatch();
       for (const off of unsubs) off();
       unsubs.length = 0;
       listeners.clear();
@@ -397,6 +446,7 @@ export function createConnectController(
     },
   };
 
+  refreshSnapshot();
   return controller;
 }
 
@@ -406,10 +456,7 @@ export function createStubConnectController(
   opts?: { connectorsLoading?: boolean },
 ): ConnectController {
   const listeners = new Set<Listener>();
-  const emit = () => {
-    for (const l of listeners) l();
-  };
-  const state: ConnectControllerState = {
+  let snapshot: ConnectControllerState = {
     status: 'disconnected',
     connectingStep: null,
     account: null,
@@ -420,30 +467,46 @@ export function createStubConnectController(
     network: null,
     connectorsLoading: opts?.connectorsLoading === true,
   };
+  const emit = () => {
+    for (const l of listeners) l();
+  };
+  const patch = (partial: Partial<ConnectControllerState>) => {
+    const next = { ...snapshot, ...partial };
+    if (
+      next.status === snapshot.status &&
+      next.connectingStep === snapshot.connectingStep &&
+      next.account === snapshot.account &&
+      next.error === snapshot.error &&
+      next.activeConnectorId === snapshot.activeConnectorId &&
+      next.modal === snapshot.modal &&
+      next.connectors === snapshot.connectors &&
+      next.network === snapshot.network &&
+      next.connectorsLoading === snapshot.connectorsLoading
+    ) {
+      return;
+    }
+    snapshot = next;
+    emit();
+  };
   const notReady = () => {
     throw new Error('@splendor/connect-react: wallet not ready (SSR or hydrating)');
   };
   return {
     isStub: true,
     client: null as unknown as SplendorClient,
-    getState: () => state,
+    getState: () => snapshot,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     openModal(view = 'connect') {
-      state.modal = view;
-      state.error = null;
-      emit();
+      patch({ modal: view, error: null });
     },
     closeModal() {
-      state.modal = 'closed';
-      state.error = null;
-      emit();
+      patch({ modal: 'closed', error: null });
     },
     clearError() {
-      state.error = null;
-      emit();
+      patch({ error: null });
     },
     async connect() {
       throw new Error('@splendor/connect-react: cannot connect during SSR');

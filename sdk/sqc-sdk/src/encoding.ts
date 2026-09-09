@@ -1,6 +1,7 @@
 /** Encoding helpers — browser-safe (no Buffer). Fee floor from sqc.networks.json. */
 import { strip0x } from './derive.js';
 import { getProtocolConfig } from './networks.js';
+import { BridgeError, isBridgeError } from './errors.js';
 
 export const MIN_FEE = getProtocolConfig().minFee;
 
@@ -26,10 +27,10 @@ export function randomNonceHex(): string {
 export function hexToBytes(hex: string): Uint8Array {
   const s = strip0x(hex);
   if (s.length % 2 !== 0) {
-    throw new Error('hex string must have even length');
+    throw new BridgeError('UNKNOWN', 'hex string must have even length');
   }
   if (!/^[0-9a-fA-F]*$/.test(s)) {
-    throw new Error('invalid hex string');
+    throw new BridgeError('UNKNOWN', 'invalid hex string');
   }
   const out = new Uint8Array(s.length / 2);
   for (let i = 0; i < out.length; i++) {
@@ -76,11 +77,11 @@ export function assertFeeAtLeastMin(fee: string | undefined): string {
   const f = fee || MIN_FEE;
   try {
     if (BigInt(f) < BigInt(MIN_FEE)) {
-      throw new Error(`fee ${f} below minimum ${MIN_FEE}`);
+      throw BridgeError.invalidFee(`fee ${f} below minimum ${MIN_FEE}`);
     }
   } catch (e) {
-    if (e instanceof Error && e.message.includes('below minimum')) throw e;
-    throw new Error(`invalid fee: ${f}`);
+    if (isBridgeError(e) && e.code === 'INVALID_FEE') throw e;
+    throw BridgeError.invalidFee(`invalid fee: ${f}`);
   }
   return f;
 }

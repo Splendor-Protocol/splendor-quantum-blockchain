@@ -15,7 +15,9 @@ export {
   personalSignHash,
 } from './derive.js';
 export type { DerivationScheme, Eip712DeriveTypedData } from './derive.js';
-export { fromSPLD, toSPLD, SqRpc, assertSafeRpcUrl } from './rpc.js';
+export { fromSPLD, toSPLD, assertSafeRpcUrl } from './rpc.js';
+/** @deprecated Prefer Connection / Transport. SqRpc remains the private adapter behind RpcTransport. */
+export { SqRpc } from './rpc.js';
 export type { RpcOptions } from './rpc.js';
 export { SqcProvider } from './provider.js';
 export type { ProviderOptions } from './provider.js';
@@ -184,3 +186,5 @@ export { createSession } from './session.js';
 export type { Session } from './session.js';
 export { SplendorClient } from './client.js';
 export { loadWasmSigner, resetWasmLoader } from './wasm-loader.js';
+export { installBrowserSessionPolicy } from './wallet/browser-session-policy.js';
+export { WasmSession } from './wallet/wasm-session.js';

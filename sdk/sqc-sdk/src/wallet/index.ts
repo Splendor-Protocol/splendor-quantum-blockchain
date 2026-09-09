@@ -6,11 +6,14 @@ export type {
   ConnectMode,
   CreateClientOptions,
   ConnectSplendorOptions,
+  ClientSession,
   SplendorClient,
   ConnectorConnectOptions,
 } from './connect.js';
 export { seedConnector, metamaskConnector, evmKeyConnector } from './connectors/index.js';
 export type { Connector } from './connectors/types.js';
+export { installBrowserSessionPolicy } from './browser-session-policy.js';
+export { WasmSession } from './wasm-session.js';
 export {
   SplendorPQBridge,
   Wallet,

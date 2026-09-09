@@ -2,6 +2,7 @@
  * Real-time node event subscriptions via /ws (SSE).
  */
 import type { Subscription, WsEvent, WsEventType } from './explorer-types.js';
+import { BridgeError } from '../errors.js';
 
 function eventsParam(events: WsEventType | WsEventType[]): string {
   return Array.isArray(events) ? events.join(',') : events;
@@ -34,7 +35,7 @@ async function nodeStreamSubscribe(
     signal,
   });
   if (!res.ok || !res.body) {
-    throw new Error(`subscribe failed: ${res.status}`);
+    throw BridgeError.network(`subscribe failed: ${res.status}`);
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

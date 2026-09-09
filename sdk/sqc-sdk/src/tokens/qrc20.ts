@@ -82,7 +82,7 @@ export class QRC20 extends Program {
   private async decimalsOrThrow(): Promise<number> {
     const info = await this.tokenInfo();
     if (typeof info.decimals !== 'number') {
-      throw new Error('tokenInfo().decimals unavailable');
+      throw BridgeError.rpc('tokenInfo().decimals unavailable');
     }
     return info.decimals;
   }
@@ -128,7 +128,7 @@ export class QRC20 extends Program {
     const n = res.permit_nonce;
     if (typeof n === 'number') return n;
     if (typeof n === 'string' && /^(0|[1-9]\d*)$/.test(n)) return Number(n);
-    throw new Error(`permit_nonce: unexpected value ${JSON.stringify(n)}`);
+    throw BridgeError.rpc(`permit_nonce: unexpected value ${JSON.stringify(n)}`);
   }
 
   async paused(): Promise<boolean> {

@@ -7,3 +7,4 @@ export * from './bridge.js';
 export * from './contract.js';
 export * from './x402.js';
 export * from './modules.js';
+export * from './signIn.js';

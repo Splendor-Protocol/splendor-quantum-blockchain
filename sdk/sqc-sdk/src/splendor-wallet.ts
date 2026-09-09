@@ -9,15 +9,10 @@ import {
   strip0x,
   type DerivationScheme,
 } from './derive.js';
-import { loadWasmSigner, parseWasmJson, unwrap, type WasmSignerApi } from './wasm-loader.js';
+import { parseWasmJson, unwrap } from './wasm-loader.js';
 import { SqRpc, fromSPLD } from './rpc.js';
 import { SqcProvider } from './provider.js';
-import {
-  signDerivationWithMetaMask,
-  onMetaMaskAccountsChanged,
-  onMetaMaskDisconnect,
-  type EthereumProvider,
-} from './metamask.js';
+import { signDerivationWithMetaMask, type EthereumProvider } from './metamask.js';
 import { BridgeError, wrapUnknown } from './errors.js';
 import { assertAddress } from './address.js';
 import {
@@ -29,11 +24,14 @@ import {
 } from './encoding.js';
 import { assertQSolSignature, encodeFunctionData } from './abi.js';
 import { BridgeEmitter, type BridgeEventMap } from './events.js';
-import { getDefaultNetwork, isLoopbackOrLocalhostUrl } from './networks.js';
+import { getDefaultNetwork } from './networks.js';
 import { Connection } from './core/connection.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import { encodeModuleCallHex } from './core/module-call.js';
 import { prepareSignMessage } from './message-domain.js';
+import { WasmSession } from './wallet/wasm-session.js';
+import { attachMetaMaskAccountWatcher } from './wallet/metamask-account-watcher.js';
+import { installBrowserSessionPolicy } from './wallet/browser-session-policy.js';
 import type {
   BridgeOptions,
   DeriveInfo,
@@ -91,25 +89,15 @@ export type {
 export class SplendorPQBridge {
   readonly provider: SqcProvider;
   readonly connection: Connection;
-  private wasm: WasmSignerApi | null = null;
-  private sessionId: string | null = null;
+  private readonly wasmSession = new WasmSession();
   private info: DeriveInfo | null = null;
   private readonly opts: BridgeOptions;
   private readonly emitter = new BridgeEmitter();
   private unwatchMetaMask: (() => void) | null = null;
+  private disposeBrowserPolicy: (() => void) | null = null;
   private metaMaskWatchEnabled: boolean;
   private readonly ethereumProvider?: EthereumProvider;
   private readonly derivation: DerivationScheme;
-  private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private idleUnsubs: Array<() => void> = [];
-  private signChain: Promise<unknown> = Promise.resolve();
-  /** Last chain_id stamped into WASM digests (sqSetChainID). */
-  private wasmChainId: string | null = null;
-  /**
-   * Next account nonce after locally signed (possibly unsubmitted) txs.
-   * Prevents parallel signTransaction from reusing the same chain nonce.
-   */
-  private pendingNonce: number | null = null;
 
   /**
    * @deprecated Prefer `connection` (Transport-backed). Only available when
@@ -143,6 +131,13 @@ export class SplendorPQBridge {
       this.connection = new Connection(options);
       this.provider = new SqcProvider(options, this.connection.rpc);
     }
+    // Host-owned idle/visibility policy (no document listeners inside Wallet methods).
+    if (options.sessionIdleMs || options.lockOnHidden) {
+      this.disposeBrowserPolicy = installBrowserSessionPolicy(this, {
+        sessionIdleMs: options.sessionIdleMs,
+        lockOnHidden: options.lockOnHidden,
+      });
+    }
   }
 
   static fromProvider(provider: SqcProvider, extra?: Omit<BridgeOptions, 'provider'>): SplendorPQBridge {
@@ -163,12 +158,7 @@ export class SplendorPQBridge {
   }
 
   private withSignLock<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.signChain.then(fn, fn);
-    this.signChain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+    return this.wasmSession.withSignLock(fn);
   }
 
   private signingIdentity(): { chainId: string; networkId: string } {
@@ -181,65 +171,37 @@ export class SplendorPQBridge {
   /** Chain nonce, advanced past any locally reserved signed nonces (call under sign lock). */
   private async nextAccountNonce(): Promise<number> {
     const { nonce: chainNonce } = await this.getNonce();
-    return this.pendingNonce != null ? Math.max(chainNonce, this.pendingNonce) : chainNonce;
+    return this.wasmSession.nextAccountNonce(chainNonce);
   }
 
   private reserveNonce(nonce: number): void {
-    this.pendingNonce = nonce + 1;
+    this.wasmSession.reserveNonce(nonce);
   }
 
   async init(): Promise<void> {
-    if (this.wasm && this.sessionId) return;
-    const isBrowser = typeof document !== 'undefined';
-    const networkId = this.opts.networkId ?? getDefaultNetwork().id;
-    const rpcUrls = this.connection.rpcUrls;
-    const wasmUrl = this.opts.wasmUrl ?? '';
-    const needsPin =
-      isBrowser &&
-      !this.opts.allowUnpinnedWasm &&
-      !this.opts.wasmSha256 &&
-      (networkId !== 'local' ||
-        rpcUrls.some((u) => !isLoopbackOrLocalhostUrl(u)) ||
-        (wasmUrl !== '' && !isLoopbackOrLocalhostUrl(wasmUrl)));
-    if (needsPin) {
-      throw BridgeError.wasm(
-        `wasmSha256 is required for non-local endpoints (network "${networkId}") in the browser ` +
-          '(pass wasmSha256 or allowUnpinnedWasm: true)',
-      );
-    }
-    this.wasm = await loadWasmSigner({
+    await this.wasmSession.init({
+      networkId: this.opts.networkId,
+      rpcUrls: this.connection.rpcUrls,
+      chainId: this.connection.chainId,
       wasmUrl: this.opts.wasmUrl,
       execUrl: this.opts.execUrl,
       wasmSha256: this.opts.wasmSha256,
       execSha256: this.opts.execSha256,
+      allowUnpinnedWasm: this.opts.allowUnpinnedWasm,
     });
-    this.syncWasmChainId();
-    const wasmRouter = unwrap(this.wasm.sqGetModuleRouterAddress()) as string;
-    if (wasmRouter !== MODULE_ROUTER_ADDRESS) {
-      throw BridgeError.wasm(
-        `module router mismatch: WASM reports ${wasmRouter}, SDK expects ${MODULE_ROUTER_ADDRESS}`,
-      );
-    }
-    this.sessionId = this.wasm.sqCreateSession();
   }
 
   /** Bind WASM signer to the RPC network chain_id (permits, orders, txs). */
   private syncWasmChainId(): void {
-    if (!this.wasm || this.wasmChainId === this.connection.chainId) return;
-    unwrap(this.wasm.sqSetChainID(this.connection.chainId));
-    this.wasmChainId = this.connection.chainId;
+    this.wasmSession.syncChainId(this.connection.chainId);
   }
 
-  private api(): WasmSignerApi {
-    if (!this.wasm || !this.sessionId) {
-      throw BridgeError.notConnected('Call init() or connect*() first');
-    }
-    return this.wasm;
+  private api() {
+    return this.wasmSession.api();
   }
 
   private sid(): string {
-    if (!this.sessionId) throw BridgeError.notConnected();
-    return this.sessionId;
+    return this.wasmSession.sid();
   }
 
   /** SQDP-1: assert chain before any sign/submit. */
@@ -281,101 +243,38 @@ export class SplendorPQBridge {
     return { status, hash, signedTx, confirmation };
   }
 
-  private clearIdleLock(): void {
-    if (this.idleTimer != null) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
-    for (const unsub of this.idleUnsubs) unsub();
-    this.idleUnsubs = [];
-  }
-
-  private setupIdleLock(): void {
-    this.clearIdleLock();
-    const ms = this.opts.sessionIdleMs;
-    if (!ms || ms <= 0) return;
-    if (typeof document === 'undefined') return;
-
-    const reset = () => {
-      if (this.idleTimer != null) clearTimeout(this.idleTimer);
-      this.idleTimer = setTimeout(() => this.lock(), ms);
-    };
-
-    const onActivity = () => reset();
-
-    document.addEventListener('pointerdown', onActivity);
-    this.idleUnsubs.push(() => document.removeEventListener('pointerdown', onActivity));
-    document.addEventListener('keydown', onActivity);
-    this.idleUnsubs.push(() => document.removeEventListener('keydown', onActivity));
-
-    // Optional: lock when tab is hidden (off by default — avoids UI desync on tab switch).
-    if (this.opts.lockOnHidden === true) {
-      const onVisibility = () => {
-        if (document.visibilityState === 'hidden') this.lock();
-      };
-      const onPageHide = () => this.lock();
-      document.addEventListener('visibilitychange', onVisibility);
-      this.idleUnsubs.push(() => document.removeEventListener('visibilitychange', onVisibility));
-      globalThis.addEventListener?.('pagehide', onPageHide);
-      this.idleUnsubs.push(() => globalThis.removeEventListener?.('pagehide', onPageHide));
-    }
-
-    reset();
-  }
-
   private emitConnect(info: DeriveInfo, changed = false): void {
     const payload = { address: info.address, evmAddress: info.evmAddress };
     if (changed) this.emitter.emit('accountsChanged', payload);
     else this.emitter.emit('connect', payload);
-    this.setupIdleLock();
   }
 
   private failAccountSwitch(err: unknown): void {
     const be = wrapUnknown(err, 'USER_REJECTED');
     this.emitter.emit('error', { code: be.code, message: be.message });
-    // Destroy session + clear watchers (not merely lock).
     this.disconnect();
   }
 
   private ensureMetaMaskWatch(): void {
     if (!this.metaMaskWatchEnabled || this.unwatchMetaMask) return;
-    try {
-      const unsubAccounts = onMetaMaskAccountsChanged(async (accounts) => {
-        if (!accounts.length) {
-          this.disconnect();
-          return;
-        }
-        const next = accounts[0];
-        if (this.info?.evmAddress && next.toLowerCase() === this.info.evmAddress.toLowerCase()) {
-          return;
-        }
-        try {
-          const { evmAddress, signatureHex, scheme } = await signDerivationWithMetaMask({
-            address: next,
-            provider: this.ethereumProvider,
-            scheme: this.derivation,
-          });
-          assertSignatureMatchesAddress(signatureHex, evmAddress, scheme);
-          await this.init();
-          const raw = unwrap(this.api().sqDeriveFromSigHex(this.sid(), strip0x(signatureHex)));
-          this.info = parseWasmJson<DeriveInfo>(raw as string);
-          this.info.evmAddress = evmAddress;
-          this.emitConnect(this.info, true);
-        } catch (e) {
-          this.failAccountSwitch(e);
-        }
-      }, this.ethereumProvider);
-      const unsubDisconnect = onMetaMaskDisconnect(() => {
-        this.disconnect();
-      }, this.ethereumProvider);
-      this.unwatchMetaMask = () => {
-        unsubAccounts();
-        unsubDisconnect();
-      };
-    } catch (e) {
-      // Fail closed — do not leave an unlocked MetaMask-derived session without watchers.
-      throw wrapUnknown(e, 'NO_PROVIDER');
-    }
+    this.unwatchMetaMask = attachMetaMaskAccountWatcher(
+      {
+        getEvmAddress: () => this.info?.evmAddress,
+        init: () => this.init(),
+        api: () => this.api(),
+        sid: () => this.sid(),
+        setInfo: (info) => {
+          this.info = info;
+        },
+        emitAccountsChanged: (info) => this.emitConnect(info, true),
+        disconnect: () => this.disconnect(),
+        failAccountSwitch: (err) => this.failAccountSwitch(err),
+      },
+      {
+        ethereumProvider: this.ethereumProvider,
+        derivation: this.derivation,
+      },
+    );
   }
 
   /**
@@ -529,13 +428,11 @@ export class SplendorPQBridge {
   }
 
   getConnectionState(): ConnectionState {
-    return this.info && this.sessionId && this.wasm?.sqIsUnlocked(this.sessionId)
-      ? 'connected'
-      : 'disconnected';
+    return this.info && this.wasmSession.isUnlocked() ? 'connected' : 'disconnected';
   }
 
   isUnlocked(): boolean {
-    return !!this.wasm && !!this.sessionId && this.wasm.sqIsUnlocked(this.sessionId);
+    return this.wasmSession.isUnlocked();
   }
 
   /**
@@ -545,27 +442,18 @@ export class SplendorPQBridge {
    */
   lock(): void {
     const hadSession = !!this.info || this.isUnlocked();
-    this.clearIdleLock();
-    if (this.wasm && this.sessionId) {
-      this.wasm.sqLock(this.sessionId);
-    }
+    this.wasmSession.lock();
     this.info = null;
-    this.pendingNonce = null;
     if (hadSession) this.emitter.emit('lock', {});
   }
 
   disconnect(): void {
-    this.clearIdleLock();
     if (this.unwatchMetaMask) {
       this.unwatchMetaMask();
       this.unwatchMetaMask = null;
     }
-    if (this.wasm && this.sessionId) {
-      this.wasm.sqDestroySession(this.sessionId);
-    }
-    this.sessionId = null;
+    this.wasmSession.destroy();
     this.info = null;
-    this.pendingNonce = null;
     this.emitter.emit('disconnect', {});
   }
 
@@ -1207,8 +1095,9 @@ export class SplendorPQBridge {
 
   /** Module router address (from WASM or offline derivation). */
   getModuleRouterAddress(): string {
-    if (this.wasm) {
-      const r = this.wasm.sqGetModuleRouterAddress();
+    const wasm = this.wasmSession.apiOrNull;
+    if (wasm) {
+      const r = wasm.sqGetModuleRouterAddress();
       if (typeof r === 'string') return r;
     }
     return MODULE_ROUTER_ADDRESS;

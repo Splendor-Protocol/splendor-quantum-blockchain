@@ -8,7 +8,11 @@ export const seedConnector: Connector = {
   async connect(connection: Connection, options: ConnectorConnectOptions = {}) {
     const seed = options.seed;
     if (!seed) throw BridgeError.notConnected('seedConnector requires seed');
-    const wallet = new SplendorPQBridge({ ...connection.toRpcOptions(), ...options });
+    // Reuse the shared Connection — never clone via toRpcOptions() (detaches sticky RPC).
+    const wallet = new SplendorPQBridge({
+      ...options,
+      connection,
+    });
     await wallet.init();
     await wallet.connectFromSeed(seed);
     return wallet;

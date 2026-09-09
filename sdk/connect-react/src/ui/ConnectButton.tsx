@@ -1,4 +1,5 @@
 import { useAccount, useBalance, useConnect } from '../react/hooks.js';
+import { useHostModals } from '../react/context.js';
 import { AccountModal } from './AccountModal.js';
 import { ConnectModal } from './ConnectModal.js';
 
@@ -12,7 +13,8 @@ export type ConnectButtonProps = {
   className?: string;
   /**
    * When true, also mount ConnectModal/AccountModal next to the button.
-   * Default false — prefer provider `hostModals` (single modal host).
+   * Ignored when Provider `hostModals` is true (single modal host).
+   * Default false — prefer provider `hostModals`.
    */
   includeModals?: boolean;
   /** Poll balance for the account chip (ms). 0 disables. Default 12s. */
@@ -25,6 +27,8 @@ export function ConnectButton({
   includeModals = false,
   balancePollMs = 12_000,
 }: ConnectButtonProps) {
+  const hostModals = useHostModals();
+  const mountModals = includeModals && !hostModals;
   const { openModal, status, connectingStep, connectors } = useConnect();
   const { address, isConnected } = useAccount();
   const showBalance = isConnected && !!address;
@@ -71,7 +75,7 @@ export function ConnectButton({
       </button>
     );
 
-  if (!includeModals) return button;
+  if (!mountModals) return button;
 
   return (
     <>

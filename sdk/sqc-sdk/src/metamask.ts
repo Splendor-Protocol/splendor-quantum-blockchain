@@ -39,7 +39,7 @@ function getProvider(explicit?: EthereumProvider): EthereumProvider {
 export async function connectMetaMask(provider?: EthereumProvider): Promise<string> {
   const eth = getProvider(provider);
   const accounts = (await eth.request({ method: 'eth_requestAccounts' })) as string[];
-  if (!accounts?.length) throw new Error('No MetaMask accounts');
+  if (!accounts?.length) throw BridgeError.noProvider('No MetaMask accounts');
   return accounts[0];
 }
 
