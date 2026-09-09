@@ -529,6 +529,12 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     );
   }
 
+  if (ALLOW_CUSTODIAL_PROXY && !API_KEY && !ALLOW_INSECURE) {
+    throw new Error(
+      'ALLOW_CUSTODIAL_PROXY=1 requires GATEWAY_API_KEY (or allowInsecure / ALLOW_INSECURE=1)',
+    );
+  }
+
   const wasmPinOpts = {
     wasmSha256: net.wasmSha256 || undefined,
     execSha256: net.execSha256 || undefined,
@@ -546,8 +552,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     if (creds.seed) {
       throw Object.assign(
         new Error(
-          'proxy mode rejects ML-DSA-65 seed — sign client-side and POST signedTx' +
-            (ALLOW_CUSTODIAL_PROXY ? '' : ' (set ALLOW_CUSTODIAL_PROXY=1 for private backends)'),
+          'proxy mode rejects ML-DSA-65 seed — sign client-side and POST signedTx',
         ),
         { code: 'USER_REJECTED' },
       );
@@ -555,7 +560,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     if (creds.evmSignature && !ALLOW_CUSTODIAL_PROXY) {
       throw Object.assign(
         new Error(
-          'proxy mode rejects evmSignature (key material) — submit signedTx, or set ALLOW_CUSTODIAL_PROXY=1',
+          'proxy mode rejects evmSignature (key material) — submit signedTx, or set ALLOW_CUSTODIAL_PROXY=1 with GATEWAY_API_KEY',
         ),
         { code: 'USER_REJECTED' },
       );
@@ -636,7 +641,9 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
   } else if (logger) {
     console.log('[gateway] MODE=proxy (non-custodial — clients sign, gateway relays signedTx)');
     if (ALLOW_CUSTODIAL_PROXY) {
-      console.warn('[gateway] ALLOW_CUSTODIAL_PROXY=1 — seed/evmSignature accepted (private use only)');
+      console.warn(
+        '[gateway] ALLOW_CUSTODIAL_PROXY=1 — evmSignature accepted only with GATEWAY_API_KEY (private use)',
+      );
     }
     console.log(`[gateway] SQDP-${SQDP_VERSION} network=${net.id} rpc=${bridgeRpcUrls.join(',')}`);
   }
@@ -683,13 +690,14 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
   };
 
   app.addHook('onRequest', async (req, reply) => {
-    if (MODE === 'service-wallet' && API_KEY) {
-      const path = req.url.split('?')[0];
-      if (path === '/health' || path === '/ready') return;
-      const err = requireApiKey(req.headers as Record<string, string | string[] | undefined>);
-      if (err) {
-        return reply.code(401).send(err);
-      }
+    const needsKey =
+      (MODE === 'service-wallet' && API_KEY) || (ALLOW_CUSTODIAL_PROXY && API_KEY);
+    if (!needsKey) return;
+    const path = req.url.split('?')[0];
+    if (path === '/health' || path === '/ready') return;
+    const err = requireApiKey(req.headers as Record<string, string | string[] | undefined>);
+    if (err) {
+      return reply.code(401).send(err);
     }
   });
 

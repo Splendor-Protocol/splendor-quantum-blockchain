@@ -10,7 +10,8 @@ import type {
   SqcProvider,
   TransferOpts,
 } from '@splendor/sqc-sdk';
-import { bindModules, listSelectableNetworks, txExplorerUrl } from '@splendor/sqc-sdk';
+import { bindModules } from '@splendor/sqc-sdk';
+import { listSelectableNetworks, txExplorerUrl } from '@splendor/sqc-sdk/networks';
 import type { Connector } from '../../connectors/types.js';
 import { connectErrorMessage } from '../../core/controller.js';
 import type { ConnectAccount, ConnectingStep, ConnectionStatus } from '../../core/types.js';
@@ -39,7 +40,12 @@ export function useConnect(): {
   labels: ReturnType<typeof useBrandLabels>;
 } {
   const ctrl = useConnectController();
-  const state = useConnectState();
+  const connectors = useConnectState((s) => s.connectors);
+  const status = useConnectState((s) => s.status);
+  const connectingStep = useConnectState((s) => s.connectingStep);
+  const error = useConnectState((s) => s.error);
+  const modal = useConnectState((s) => s.modal);
+  const activeConnectorId = useConnectState((s) => s.activeConnectorId);
   const labels = useBrandLabels();
 
   const connect = useCallback(
@@ -57,16 +63,16 @@ export function useConnect(): {
   return {
     connect,
     disconnect,
-    connectors: state.connectors,
-    status: state.status,
-    connectingStep: state.connectingStep,
-    error: state.error,
-    errorMessage: state.error ? connectErrorMessage(state.error) : null,
+    connectors,
+    status,
+    connectingStep,
+    error,
+    errorMessage: error ? connectErrorMessage(error) : null,
     clearError,
     openModal,
     closeModal,
-    modal: state.modal,
-    activeConnectorId: state.activeConnectorId,
+    modal,
+    activeConnectorId,
     labels,
   };
 }
@@ -78,13 +84,14 @@ export function useAccount(): {
   info: DeriveInfo | null;
   account: ConnectAccount | null;
 } {
-  const state = useConnectState();
+  const account = useConnectState((s) => s.account);
+  const status = useConnectState((s) => s.status);
   return {
-    address: state.account?.address ?? null,
-    evmAddress: state.account?.evmAddress ?? null,
-    isConnected: state.status === 'connected' && !!state.account,
-    info: state.account?.info ?? null,
-    account: state.account,
+    address: account?.address ?? null,
+    evmAddress: account?.evmAddress ?? null,
+    isConnected: status === 'connected' && !!account,
+    info: account?.info ?? null,
+    account,
   };
 }
 
@@ -139,14 +146,14 @@ export function useNetwork(): {
   networks: NetworkConfig[];
   switching: boolean;
 } {
-  const state = useConnectState();
+  const network = useConnectState((s) => s.network);
   const { switchNetwork, allowPlaceholderNetworks, networkId, switching } = useNetworkSwitch();
   const networks = listSelectableNetworks({
     allowPlaceholder: allowPlaceholderNetworks,
   });
   return {
-    network: state.network,
-    chainId: state.network?.chainId ?? null,
+    network,
+    chainId: network?.chainId ?? null,
     networkId,
     switchNetwork,
     networks,
@@ -227,7 +234,7 @@ export function useSendTransfer(): {
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
-  const { network } = useConnectState();
+  const network = useConnectState((s) => s.network);
   const [status, setStatus] = useState<TxHookStatus>('idle');
   const [hash, setHash] = useState<string | null>(null);
   const [explorerUrl, setExplorerUrl] = useState<string | null>(null);
@@ -287,7 +294,7 @@ export function useCallContract(): {
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
-  const { network } = useConnectState();
+  const network = useConnectState((s) => s.network);
   const [status, setStatus] = useState<TxHookStatus>('idle');
   const [hash, setHash] = useState<string | null>(null);
   const [explorerUrl, setExplorerUrl] = useState<string | null>(null);
@@ -341,7 +348,7 @@ export function useDeployContract(): {
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
-  const { network } = useConnectState();
+  const network = useConnectState((s) => s.network);
   const [status, setStatus] = useState<TxHookStatus>('idle');
   const [hash, setHash] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);

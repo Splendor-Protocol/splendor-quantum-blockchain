@@ -15,12 +15,14 @@ export async function copyText(text: string): Promise<boolean> {
 }
 
 /**
- * Allow only https: and data: image URLs for connector icons (XSS / tracking hygiene).
+ * Allow only https: and raster data: image URLs for connector icons.
+ * Rejects svg+xml (scriptable) and http:/javascript:.
  */
 export function sanitizeIconUrl(url: string | undefined | null): string | null {
   if (!url || typeof url !== 'string') return null;
   const trimmed = url.trim();
-  if (trimmed.startsWith('data:image/')) return trimmed;
+  if (/^data:image\/(png|jpe?g|webp|gif);/i.test(trimmed)) return trimmed;
+  if (/^data:image\/svg\+xml/i.test(trimmed)) return null;
   try {
     const u = new URL(trimmed);
     if (u.protocol === 'https:') return u.href;

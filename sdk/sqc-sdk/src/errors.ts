@@ -86,9 +86,25 @@ export function isBridgeError(e: unknown): e is BridgeError {
   return e instanceof BridgeError;
 }
 
-/** Canonical alias — prefer over BridgeError in new code. */
-export const WalletError = BridgeError;
-export type WalletError = BridgeError;
+/**
+ * Preferred name for new code — same codes as BridgeError, `name === 'WalletError'`.
+ * Runtime throw sites may still use BridgeError; use factories when you need the name.
+ */
+export class WalletError extends BridgeError {
+  constructor(code: BridgeErrorCode, message: string, details?: unknown) {
+    super(code, message, details);
+    this.name = 'WalletError';
+  }
+
+  static override notConnected(msg = 'Not connected — call connect*() first'): WalletError {
+    return new WalletError('NOT_CONNECTED', msg);
+  }
+
+  static override txFailed(msg: string, details?: unknown): WalletError {
+    return new WalletError('TX_FAILED', msg, details);
+  }
+}
+
 export type WalletErrorCode = BridgeErrorCode;
 export const isWalletError = isBridgeError;
 

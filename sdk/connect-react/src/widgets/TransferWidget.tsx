@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { useAccount, useBalance, useSendTransfer } from '../react/hooks.js';
+import { useAccount, useBalance, useConnect, useSendTransfer } from '../react/hooks.js';
+import { connectErrorMessage } from '../core/controller.js';
 
 export type TransferWidgetProps = {
   className?: string;
@@ -7,15 +8,35 @@ export type TransferWidgetProps = {
   defaultAmount?: string;
 };
 
+function isValidAmount(v: string): boolean {
+  const t = v.trim();
+  if (!t) return false;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0;
+}
+
 /**
  * Drop-in SPLD transfer panel (uses useSendTransfer / useBalance).
  */
 export function TransferWidget({ className, defaultAmount = '0.01' }: TransferWidgetProps) {
   const { isConnected } = useAccount();
+  const { status: connStatus, openModal } = useConnect();
   const { balanceSPLD } = useBalance();
   const { sendTransfer, status, hash, explorerUrl, confirmed, error, reset } = useSendTransfer();
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState(defaultAmount);
+
+  if (connStatus === 'locked') {
+    return (
+      <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
+        <h3 className="sqc-widget__title">Transfer SPLD</h3>
+        <p className="sqc-widget__hint">Wallet locked — unlock to send.</p>
+        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
+          Unlock
+        </button>
+      </div>
+    );
+  }
 
   if (!isConnected) {
     return (
@@ -26,7 +47,10 @@ export function TransferWidget({ className, defaultAmount = '0.01' }: TransferWi
     );
   }
 
+  const canSend = !!to.trim() && isValidAmount(amount) && status !== 'pending';
+
   const onSend = async () => {
+    if (!canSend) return;
     reset();
     try {
       await sendTransfer({
@@ -70,7 +94,7 @@ export function TransferWidget({ className, defaultAmount = '0.01' }: TransferWi
         type="button"
         className="sqc-btn sqc-btn--primary"
         style={{ marginTop: '0.75rem', width: '100%' }}
-        disabled={status === 'pending' || !to.trim()}
+        disabled={!canSend}
         onClick={() => void onSend()}
       >
         {status === 'pending' ? 'Sending…' : 'Send'}
@@ -88,7 +112,9 @@ export function TransferWidget({ className, defaultAmount = '0.01' }: TransferWi
           ) : null}
         </p>
       ) : null}
-      {error ? <p className="sqc-widget__msg sqc-widget__msg--error">{error.message}</p> : null}
+      {error ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error">{connectErrorMessage(error)}</p>
+      ) : null}
     </div>
   );
 }

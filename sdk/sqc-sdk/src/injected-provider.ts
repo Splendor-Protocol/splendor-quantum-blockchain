@@ -2,11 +2,18 @@
  * SQC injected provider — `window.splendor` (NOT Ethereum EIP-1193 / eth_*).
  *
  * Methods use the `splendor_*` prefix. Prefer an already-injected extension
- * provider; in-page install only when absent (or force: true).
+ * provider; in-page install only when absent.
+ *
+ * Security:
+ * - Never accepts seed/privateKey/evmSignature via injected connect (use ConnectKit UI).
+ * - Rejects raw signMessage (domain separation required).
+ * - Sensitive methods require onApprove (default deny when omitted).
+ * - switchNetwork requires onSwitchNetwork (no fake local-only switch).
+ * - Does not overwrite a non-in-page (extension) inject.
  */
 import type { Connection } from './core/connection.js';
 import type { SplendorPQBridge } from './splendor-wallet.js';
-import type { UnsignedTx, SignedTx, WalletConnectOpts } from './types.js';
+import type { UnsignedTx, SignedTx } from './types.js';
 import { BridgeError } from './errors.js';
 import { getNetwork, resolveNetwork, type NetworkId } from './networks.js';
 
@@ -39,19 +46,17 @@ export type SplendorInjectedProvider = {
 export type InstallSplendorProviderOptions = {
   wallet: SplendorPQBridge;
   connection?: Connection;
-  /**
-   * Network id for splendor_chainId / switchNetwork responses.
-   * Defaults to wallet opts networkId or connection-derived lookup.
-   */
   networkId?: string;
-  /**
-   * Optional soft-switch callback (ConnectKit). When omitted,
-   * splendor_switchNetwork only validates and emits chainChanged locally.
-   */
+  /** Required for splendor_switchNetwork — rebuilds RPC/session via host. */
   onSwitchNetwork?: (networkId: string) => Promise<void>;
   /**
-   * When true, replace an existing window.splendor (dangerous — prefer false).
-   * Default false: keep extension inject if present.
+   * Approval gate for sensitive methods (sign/send/disconnect/switchNetwork).
+   * Required for those methods — omitting it fails closed (USER_REJECTED).
+   * Return false or throw to reject. Hosts SHOULD show a confirmation UI.
+   */
+  onApprove?: (args: { method: string; params?: unknown }) => boolean | Promise<boolean>;
+  /**
+   * @deprecated Ignored — extension/non-in-page providers are never overwritten.
    */
   force?: boolean;
 };
@@ -77,6 +82,14 @@ function parseChainIdNumber(chainId: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+const SENSITIVE = new Set([
+  'splendor_signMessage',
+  'splendor_signTransaction',
+  'splendor_sendTransaction',
+  'splendor_disconnect',
+  'splendor_switchNetwork',
+]);
+
 /**
  * Create an in-page SQC provider bound to a Wallet (+ optional Connection).
  */
@@ -100,7 +113,6 @@ export function createSplendorProvider(
     }
   };
 
-  // Bridge wallet events → provider events
   unsubs.push(
     wallet.on('connect', (p) => emit('connect', p)),
     wallet.on('disconnect', (p) => emit('disconnect', p)),
@@ -112,6 +124,17 @@ export function createSplendorProvider(
     wallet.on('lock', (p) => emit('lock', p)),
     wallet.on('error', (p) => emit('error', p)),
   );
+
+  const approve = async (method: string, params?: unknown) => {
+    if (!SENSITIVE.has(method)) return;
+    if (!options.onApprove) {
+      throw BridgeError.userRejected(
+        `Request rejected: ${method} (no onApprove — silent inject signing disabled)`,
+      );
+    }
+    const ok = await options.onApprove({ method, params });
+    if (!ok) throw BridgeError.userRejected(`Request rejected: ${method}`);
+  };
 
   const provider: SplendorInjectedProvider = {
     isSplendor: true,
@@ -136,6 +159,7 @@ export function createSplendorProvider(
     },
     async request({ method, params }) {
       const p = asRecord(params);
+      await approve(method, params);
       switch (method) {
         case 'splendor_accounts': {
           return wallet.getAddresses();
@@ -151,30 +175,26 @@ export function createSplendorProvider(
         }
         case 'splendor_connect': {
           if (wallet.account) return wallet.getAddresses();
-          const mode = (p.mode as WalletConnectOpts['mode']) || 'seed';
-          if (mode === 'seed') {
-            if (typeof p.seed !== 'string') {
-              throw BridgeError.rpc('splendor_connect seed mode requires params.seed');
-            }
-            await wallet.connect({ mode: 'seed', seed: p.seed });
-          } else if (mode === 'metamask') {
+          const mode = (p.mode as string) || 'metamask';
+          // Never accept key material via injected API (XSS / silent theft).
+          if (
+            mode === 'seed' ||
+            mode === 'evmKey' ||
+            mode === 'evmSignature' ||
+            p.seed != null ||
+            p.privateKey != null ||
+            p.signature != null
+          ) {
+            throw BridgeError.userRejected(
+              'splendor_connect refuses seed/privateKey/evmSignature — unlock via ConnectKit UI',
+            );
+          }
+          if (mode === 'metamask') {
             await wallet.connect({ mode: 'metamask' });
-          } else if (mode === 'evmKey') {
-            if (typeof p.privateKey !== 'string') {
-              throw BridgeError.rpc('splendor_connect evmKey mode requires params.privateKey');
-            }
-            await wallet.connect({ mode: 'evmKey', privateKey: p.privateKey });
-          } else if (mode === 'evmSignature') {
-            if (typeof p.signature !== 'string') {
-              throw BridgeError.rpc('splendor_connect evmSignature mode requires params.signature');
-            }
-            await wallet.connect({
-              mode: 'evmSignature',
-              signature: p.signature,
-              evmAddress: typeof p.evmAddress === 'string' ? p.evmAddress : undefined,
-            });
           } else {
-            throw BridgeError.rpc(`splendor_connect unknown mode: ${String(mode)}`);
+            throw BridgeError.rpc(
+              `splendor_connect supports metamask only via inject (got ${String(mode)})`,
+            );
           }
           return wallet.getAddresses();
         }
@@ -194,9 +214,12 @@ export function createSplendorProvider(
           if (message == null) {
             throw BridgeError.rpc('splendor_signMessage requires params.message');
           }
-          return wallet.signMessage(message, {
-            raw: p.raw === true,
-          });
+          if (p.raw === true) {
+            throw BridgeError.userRejected(
+              'splendor_signMessage rejects raw:true — domain separation required',
+            );
+          }
+          return wallet.signMessage(message);
         }
         case 'splendor_signTransaction': {
           const tx = (p.tx ?? p) as UnsignedTx;
@@ -219,22 +242,17 @@ export function createSplendorProvider(
         case 'splendor_switchNetwork': {
           const id = String(p.networkId ?? p.id ?? '');
           if (!id) throw BridgeError.rpc('splendor_switchNetwork requires params.networkId');
-          // Validate resolvable when possible
+          if (!options.onSwitchNetwork) {
+            throw BridgeError.rpc(
+              'splendor_switchNetwork requires onSwitchNetwork callback (refuses desynced local-only switch)',
+            );
+          }
           try {
             resolveNetwork(id as NetworkId, { allowPlaceholder: true });
           } catch (e) {
             if (!getNetwork(id)) throw e;
           }
-          if (options.onSwitchNetwork) {
-            await options.onSwitchNetwork(id);
-          } else {
-            networkId = id;
-            const net = getNetwork(id);
-            wallet.notifyChainChanged({
-              chainId: net ? parseChainIdNumber(net.chainId) : 0,
-              networkId: id,
-            });
-          }
+          await options.onSwitchNetwork(id);
           networkId = id;
           return provider.request({ method: 'splendor_chainId' });
         }
@@ -246,7 +264,6 @@ export function createSplendorProvider(
     },
   };
 
-  // Attach dispose for tests (not part of public surface)
   (provider as SplendorInjectedProvider & { _dispose?: () => void })._dispose = () => {
     for (const u of unsubs) u();
     unsubs.length = 0;
@@ -258,7 +275,7 @@ export function createSplendorProvider(
 
 /**
  * Install `window.splendor` bound to the given wallet session.
- * Skips install if an extension (or other) provider is already present unless `force`.
+ * Never overwrites an existing non-in-page (extension) provider.
  */
 export function installSplendorProvider(
   options: InstallSplendorProviderOptions,
@@ -266,9 +283,13 @@ export function installSplendorProvider(
   if (typeof window === 'undefined') return null;
 
   const existing = window.splendor;
-  if (existing?.isSplendor && !options.force) {
-    // Prefer extension / prior inject — do not double-bind.
+  if (existing?.isSplendor && !existing.isInPage) {
+    // Extension owns the inject — do not replace (force ignored).
     return existing;
+  }
+  if (existing?.isSplendor && existing.isInPage) {
+    // Replace prior in-page install with fresh wallet binding.
+    uninstallSplendorProvider();
   }
 
   const provider = createSplendorProvider(options);

@@ -233,6 +233,39 @@ describe('gateway body limit and rate limit', () => {
 });
 
 describe('gateway custodial + CORS and chain_id', () => {
+  it('refuses ALLOW_CUSTODIAL_PROXY without GATEWAY_API_KEY', async () => {
+    await expect(
+      buildServer({
+        mode: 'proxy',
+        allowCustodialProxy: true,
+        corsOrigins: ['https://app.example'],
+        logger: false,
+        listen: false,
+        rateMax: 10_000,
+      }),
+    ).rejects.toThrow(/GATEWAY_API_KEY|ALLOW_INSECURE/i);
+  }, 60_000);
+
+  it('custodial proxy returns 401 without API key header', async () => {
+    gw = await buildServer({
+      mode: 'proxy',
+      allowCustodialProxy: true,
+      apiKey: 'correct-key-32chars-xxxxxxxxxxxx',
+      corsOrigins: ['https://app.example'],
+      logger: false,
+      listen: false,
+      rateMax: 10_000,
+      rateTxMax: 10_000,
+      rpcUrl: 'http://127.0.0.1:1',
+    });
+
+    const missing = await gw.app.inject({ method: 'GET', url: '/v1/status' });
+    expect(missing.statusCode).toBe(401);
+
+    const health = await gw.app.inject({ method: 'GET', url: '/health' });
+    expect(health.statusCode).toBe(200);
+  }, 60_000);
+
   it('refuses ALLOW_CUSTODIAL_PROXY with CORS *', async () => {
     await expect(
       buildServer({

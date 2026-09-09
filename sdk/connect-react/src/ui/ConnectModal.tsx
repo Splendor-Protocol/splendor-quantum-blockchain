@@ -91,6 +91,7 @@ export function ConnectModal() {
       await connect(id, opts);
       setFieldValues({});
       setAdvancedOpen(false);
+      // Wipe seed material from React state after successful unlock.
       resetNative();
     } catch {
       /* error surfaced via useConnect */

@@ -6,6 +6,15 @@ import {
   DeployTokenWidget,
 } from '@splendor/connect-react';
 
+const wasmSha256 = (import.meta.env.VITE_SQC_WASM_SHA256 as string | undefined)?.trim();
+const isDev = import.meta.env.DEV;
+
+if (!isDev && !wasmSha256) {
+  throw new Error(
+    'VITE_SQC_WASM_SHA256 is required for production builds (or run with import.meta.env.DEV).',
+  );
+}
+
 export function App() {
   return (
     <SplendorConnectProvider
@@ -13,10 +22,9 @@ export function App() {
       connectors="auto"
       theme="splendor"
       autoReconnect
-      // Local only — pin wasmSha256 in production (see README).
-      allowUnpinnedWasm
-      // Optional: expose window.splendor for other page scripts
-      // exposeInjectedProvider
+      {...(wasmSha256
+        ? { wasmSha256 }
+        : { allowUnpinnedWasm: true })}
     >
       <div className="app-shell">
         <header className="app-header">

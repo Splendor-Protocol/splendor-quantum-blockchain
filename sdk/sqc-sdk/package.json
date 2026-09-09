@@ -55,6 +55,30 @@
       "types": "./dist/addresses/index.d.ts",
       "import": "./dist/addresses/index.js"
     },
+    "./networks": {
+      "types": "./dist/networks.d.ts",
+      "import": "./dist/networks.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js"
+    },
+    "./verify": {
+      "types": "./dist/verify.d.ts",
+      "import": "./dist/verify.js"
+    },
+    "./validators": {
+      "types": "./dist/validators.d.ts",
+      "import": "./dist/validators.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
+    },
+    "./units": {
+      "types": "./dist/units.d.ts",
+      "import": "./dist/units.js"
+    },
     "./browser": {
       "types": "./dist/browser.d.ts",
       "import": "./dist/browser.js",

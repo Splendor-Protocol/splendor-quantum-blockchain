@@ -1,8 +1,13 @@
 /**
- * Beginner-friendly module registry — typed clients for every native router module.
+ * Beginner-friendly module registry — typed clients for first-party Programs.
  *
  * Unbound (advanced): `modules.qrc20(connection, addr).transfer(wallet, to, amt)`
  * Bound (beginner):   `modules.bind(connection, wallet).qrc20(addr).transfer(to, amt)`
+ *
+ * Built-in clients: qrc20, qrc1155, exchange, dex, bridge, contract.
+ * On-chain modules without dedicated Program clients (use sendModuleCall / registerModule):
+ * lending, oracle, multisig, governance, qrc721, qrc4626.
+ * Verify/Validators helpers exist as VerifyClient / ValidatorsClient (not bindModules Programs).
  *
  * Addons: `registerModule({ id, create })` then use `createModuleClient` / `bindRegisteredModules`.
  */

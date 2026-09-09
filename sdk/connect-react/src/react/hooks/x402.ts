@@ -1,25 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type {
-  CallOpts,
-  DeployOpts,
-  DeriveInfo,
-  NetworkConfig,
-  NetworkId,
-  PreflightResult,
-  SplendorPQBridge,
-  SqcProvider,
-  TransferOpts,
-} from '@splendor/sqc-sdk';
-import { bindModules, listSelectableNetworks, listModules, txExplorerUrl } from '@splendor/sqc-sdk';
-import type { Connector } from '../../connectors/types.js';
-import { connectErrorMessage } from '../../core/controller.js';
-import type { ConnectAccount, ConnectingStep, ConnectionStatus } from '../../core/types.js';
-import {
-  useBrandLabels,
-  useConnectController,
-  useConnectState,
-  useNetworkSwitch,
-} from '../context.js';
+import { useCallback, useState } from 'react';
 import { useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet } from './core.js';
 

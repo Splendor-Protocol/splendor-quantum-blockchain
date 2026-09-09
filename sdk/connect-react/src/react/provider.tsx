@@ -57,8 +57,15 @@ export type SplendorConnectProviderProps = Omit<CreateClientOptions, 'network'> 
    * When true, install `window.splendor` bound to the ConnectKit wallet session
    * so other page scripts can call splendor_* methods. Default false.
    * Skips install if an extension provider is already present.
+   * Sensitive methods require approval — pass `injectedOnApprove` or they fail closed.
    */
   exposeInjectedProvider?: boolean;
+  /**
+   * Approval gate for injected `splendor_sign*` / `send*` / disconnect / switchNetwork.
+   * When `exposeInjectedProvider` is true and this is omitted, sensitive methods reject
+   * (no silent page-script signing).
+   */
+  injectedOnApprove?: (args: { method: string; params?: unknown }) => boolean | Promise<boolean>;
 };
 
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
@@ -109,6 +116,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     sessionIdleMs,
     hostModals = true,
     exposeInjectedProvider = false,
+    injectedOnApprove,
     ...clientOpts
   } = props;
 
@@ -223,6 +231,8 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   clientOptsRef.current = clientOpts;
   const customNetworksRef = useRef(customNetworks);
   customNetworksRef.current = customNetworks;
+  const injectedOnApproveRef = useRef(injectedOnApprove);
+  injectedOnApproveRef.current = injectedOnApprove;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -295,10 +305,9 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     const shouldReconnect = force || autoReconnect;
 
     const gen = ++reconnectGenRef.current;
+    const isStale = () => gen !== reconnectGenRef.current;
     if (shouldReconnect) {
-      void controller.tryAutoReconnect({ force }).finally(() => {
-        void gen;
-      });
+      void controller.tryAutoReconnect({ force, isStale });
     }
 
     return () => {
@@ -341,6 +350,11 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
         networkId: net.id,
         onSwitchNetwork: async (id) => {
           await softSwitchTo(id as NetworkId);
+        },
+        onApprove: async (args) => {
+          const cb = injectedOnApproveRef.current;
+          if (!cb) return false;
+          return cb(args);
         },
       });
     }
