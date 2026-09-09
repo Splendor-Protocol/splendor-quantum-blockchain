@@ -74,7 +74,10 @@ const WATCH = [
   { path: 'core/types/block.go',       ships: 'explorer — it re-derives block hashes in-browser' },
   { path: 'core/crypto/mldsa.go',      ships: 'explorer, wallet, WASM signer — signature scheme or sizes changed' },
   { path: 'genesis/genesis.go',        ships: 'infra entrypoint — the genesis document shape changed' },
-  { path: 'sdk/sqc-sdk/wasm/dist/sqc_signer.wasm', ships: 'wallet extension — it pins this exact digest; its sync workflow opens the PR on its next push to main, merge it before the wallet ships' },
+  // The signer binary itself is no longer tracked (CI builds it), so watching
+  // its path would never match again. These pins are what moves when the signer
+  // moves, and CI rewrites them on main — so a diff touching them IS the signal.
+  { path: 'sdk/sqc-sdk/src/config/sqc.networks.json', ships: 'wallet extension + SDK — the signer digest changed. CI dispatches the extension\'s sync workflow, which re-pins and merges itself; check that run went green. `npm publish` from sdk/sqc-sdk ships the SDK side' },
 ];
 
 const sh = (cmd, args, opts = {}) =>
