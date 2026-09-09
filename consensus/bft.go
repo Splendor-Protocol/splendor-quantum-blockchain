@@ -275,6 +275,7 @@ type BFTEngine struct {
 	onCommit         func(*types.Block) error
 	onViewChange     func(height uint64, round uint32)
 	validateProposal func(*types.Block) error
+	journal          *VoteJournal
 	broadcast        VoteBroadcaster
 	broadcastP       ProposalBroadcaster
 }
@@ -299,6 +300,11 @@ type BFTConfig struct {
 	// on a block no honest node can apply, and the leader's own commit is the
 	// first place anyone finds out.
 	ValidateProposal func(*types.Block) error
+	// VoteJournal, when set, is consulted and written before every vote this
+	// node signs, so a restart cannot make it sign a second, conflicting
+	// vote for a height and round it already voted in. nil (tests) keeps
+	// only the in-memory lock.
+	VoteJournal *VoteJournal
 }
 
 // NewBFTEngine creates a working multi-validator BFT engine.
@@ -318,6 +324,7 @@ func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
 		onCommit:         cfg.OnCommit,
 		onViewChange:     cfg.OnViewChange,
 		validateProposal: cfg.ValidateProposal,
+		journal:          cfg.VoteJournal,
 		broadcast:        cfg.Broadcast,
 		broadcastP:       cfg.BroadcastProposal,
 		voteCh:       make(chan *Vote, 1000),
@@ -425,7 +432,17 @@ func (e *BFTEngine) CommitCh() <-chan *types.Block {
 }
 
 // castVote creates and signs a vote for the given block at round.
+//
+// The journal is written before the signature exists: if the write fails or
+// the journal refuses (this node already voted differently at this height
+// and round, possibly in a previous process), no vote is produced and nothing
+// reaches the wire.
 func (e *BFTEngine) castVote(b *types.Block, round uint32) (*Vote, error) {
+	if e.journal != nil {
+		if err := e.journal.Record(b.Header.Height, round, b.Hash); err != nil {
+			return nil, err
+		}
+	}
 	vote := &Vote{
 		Height:        b.Header.Height,
 		Round:         round,
