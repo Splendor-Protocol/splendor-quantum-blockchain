@@ -107,8 +107,14 @@ type Executor struct {
 // at the height being produced and the registry lists two or more active
 // validators. From that height on every block needs a quorum certificate, which
 // the single-path producer never attaches: each block it sealed would be
-// canonical here and unappliable everywhere else. Halting is the mainnet-5786
-// failure made visible instead of a fork; the fix is to restart in BFT mode.
+// canonical here and unappliable everywhere else. Refusing is the mainnet-5786
+// failure made visible instead of a fork.
+//
+// It is a backstop, not the node's steering: consensus.Producer leaves the
+// single path for BFT at the first multi_validator block, whether that block
+// is due at boot or arrives while the node runs, so its own producer never
+// reaches this. Any caller that does is driving ProduceBlock on a chain that
+// has moved past it.
 var ErrQuorumRequired = errors.New("multi_validator: quorum certificate required")
 
 // receiptStorer is satisfied by *state.TxIndexStore.
@@ -1114,8 +1120,8 @@ func (e *Executor) refuseSinglePathIfQuorumRequired(height uint64) error {
 	if len(active) < 2 {
 		return nil
 	}
-	return fmt.Errorf("%w: %d active validators at height %d, this node must run in BFT mode "+
-		"(restart it; multi_validator is active for the block it is about to seal)",
+	return fmt.Errorf("%w: %d active validators at height %d, this block must be sealed through "+
+		"BFT (multi_validator is active for it) — the single path cannot attach a certificate",
 		ErrQuorumRequired, len(active), height)
 }
 

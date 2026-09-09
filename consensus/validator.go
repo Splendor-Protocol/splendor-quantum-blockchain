@@ -6,6 +6,7 @@ package consensus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/ai"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
@@ -43,6 +45,16 @@ type Config struct {
 	// proposals but never proposes on top of a stale head.
 	Ready func() bool
 }
+
+// ErrBFTRequired is returned by Validator.Run when the block this node would
+// seal next falls under multi_validator. The single path attaches no quorum
+// certificate, so it is finished for good at that height: a block it sealed
+// there would be canonical here and refused by every follower once two
+// validators are registered (mainnet from 5786). Run returns instead of
+// sealing, and the caller — Producer — continues on the BFT path in the same
+// process. Whether the path is judged at boot or mid-run makes no difference:
+// it is decided per block, for the block about to be sealed.
+var ErrBFTRequired = errors.New("multi_validator: the next block must be sealed by the BFT path")
 
 // Validator is the single Phase-1 block producer.
 // It reads from the mempool, produces a block every BlockInterval,
@@ -83,12 +95,23 @@ func (v *Validator) Subscribe(ch chan<- *types.Block) {
 	v.subscribers = append(v.subscribers, ch)
 }
 
-// Run starts the consensus loop. It blocks until ctx is cancelled.
+// Run starts the consensus loop. It blocks until ctx is cancelled, or returns
+// ErrBFTRequired the moment the next block to seal falls under
+// multi_validator — before the first tick if it already does, so a node
+// booting at head 0 on a chain that activates at height 1 never idles an
+// interval on a path it will not use.
 func (v *Validator) Run(ctx context.Context) error {
 	log.Info().
 		Str("validator", v.cfg.Address.String()).
 		Dur("interval", v.cfg.BlockInterval).
 		Msg("validator starting")
+
+	if _, height, err := v.nextBlock(); err != nil {
+		// Not fatal here: the tick below retries it, as production always has.
+		log.Error().Err(err).Msg("cannot read the chain head; retrying on the next tick")
+	} else if v.sealsUnderBFT(height) {
+		return fmt.Errorf("%w: block %d", ErrBFTRequired, height)
+	}
 
 	ticker := time.NewTicker(v.cfg.BlockInterval)
 	defer ticker.Stop()
@@ -101,6 +124,11 @@ func (v *Validator) Run(ctx context.Context) error {
 
 		case <-ticker.C:
 			if err := v.produceBlock(); err != nil {
+				if errors.Is(err, ErrBFTRequired) {
+					// Not a production error to ride out: this loop can never
+					// seal that block. Hand the height back to the caller.
+					return err
+				}
 				log.Error().Err(err).Msg("block production failed")
 				// Continue — don't halt the chain on a single production error
 			}
@@ -108,8 +136,42 @@ func (v *Validator) Run(ctx context.Context) error {
 	}
 }
 
+// nextBlock returns the parent hash and height of the block this node would
+// seal next.
+func (v *Validator) nextBlock() (prevHash [32]byte, height uint64, err error) {
+	height = 1
+	latest, err := v.executor.LatestBlock()
+	if err != nil && err != types.ErrBlockNotFound {
+		return prevHash, 0, fmt.Errorf("failed to get latest block: %w", err)
+	}
+	if latest != nil {
+		prevHash = latest.Hash
+		height = latest.Header.Height + 1
+	}
+	return prevHash, height, nil
+}
+
+// sealsUnderBFT reports whether a block at height belongs to the BFT path:
+// multi_validator is active there. Judged against the executor's live
+// schedule every time, for the block about to be sealed, never once at boot
+// for the head the node happened to have — the schedule activates at a
+// height, and the node is running when that height arrives.
+func (v *Validator) sealsUnderBFT(height uint64) bool {
+	return v.executor.Forks().Active(forks.MultiValidator, height)
+}
+
 // produceBlock pulls transactions from the mempool and produces a signed block.
+// It returns ErrBFTRequired, and seals nothing, when the block it would seal
+// falls under multi_validator.
 func (v *Validator) produceBlock() error {
+	prevHash, height, err := v.nextBlock()
+	if err != nil {
+		return err
+	}
+	if v.sealsUnderBFT(height) {
+		return fmt.Errorf("%w: block %d", ErrBFTRequired, height)
+	}
+
 	// Ask AI scheduler for recommended batch size
 	batchSize := v.cfg.MaxTxPerBlock
 	if v.scheduler != nil {
@@ -118,18 +180,6 @@ func (v *Validator) produceBlock() error {
 
 	// Pull transactions
 	txs := v.pool.Pending(batchSize)
-
-	// Get previous block hash and height
-	prevHash := [32]byte{}
-	height := uint64(1)
-	latest, err := v.executor.LatestBlock()
-	if err != nil && err != types.ErrBlockNotFound {
-		return fmt.Errorf("failed to get latest block: %w", err)
-	}
-	if latest != nil {
-		prevHash = latest.Hash
-		height = latest.Header.Height + 1
-	}
 
 	// Produce and sign block
 	b, err := v.executor.ProduceBlock(
