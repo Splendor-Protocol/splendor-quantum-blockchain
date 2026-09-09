@@ -30,22 +30,43 @@
       "timeoutMs": 15000,
       "retries": 2
     },
-    "testnet": {
-      "id": "testnet",
-      "name": "Splendor Quantum Testnet",
-      "networkId": "splendor-testnet",
-      "chainId": "splendor-quantum-1",
+    "devnet": {
+      "id": "devnet",
+      "name": "Splendor Quantum Devnet",
+      "networkId": "splendor-devnet",
+      "chainId": "splendor-quantum-devnet-1",
       "rpcUrls": [
-        "https://testnet-rpc.splendor.example"
+        "https://quantum-rpc-devnet.splendor.org"
       ],
-      "gatewayUrl": "https://testnet-gateway.splendor.example",
+      "gatewayUrl": "",
       "gatewayPort": 443,
       "wasmUrl": "/sqc_signer.wasm",
       "execUrl": "/wasm_exec.js",
       "wasmSha256": "e12babf4cd84d5da59e8880301b50b458ab6ee94e5fb8e2da4843cf5cf82d1b0",
       "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
       "timeoutMs": 20000,
-      "retries": 3
+      "retries": 3,
+      "explorerUrl": "https://quantum-devnet-explorer.splendor.org",
+      "txUrlTemplate": "https://quantum-devnet-explorer.splendor.org/tx/{hash}"
+    },
+    "testnet": {
+      "id": "testnet",
+      "name": "Splendor Quantum Testnet",
+      "networkId": "splendor-testnet",
+      "chainId": "splendor-quantum-testnet-1",
+      "rpcUrls": [
+        "https://quantum-rpc-testnet.splendor.org"
+      ],
+      "gatewayUrl": "",
+      "gatewayPort": 443,
+      "wasmUrl": "/sqc_signer.wasm",
+      "execUrl": "/wasm_exec.js",
+      "wasmSha256": "e12babf4cd84d5da59e8880301b50b458ab6ee94e5fb8e2da4843cf5cf82d1b0",
+      "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
+      "timeoutMs": 20000,
+      "retries": 3,
+      "explorerUrl": "https://quantum-testnet-explorer.splendor.org",
+      "txUrlTemplate": "https://quantum-testnet-explorer.splendor.org/tx/{hash}"
     },
     "mainnet": {
       "id": "mainnet",
@@ -53,16 +74,18 @@
       "networkId": "splendor-mainnet",
       "chainId": "splendor-quantum-1",
       "rpcUrls": [
-        "https://rpc.splendor.example"
+        "https://quantum-rpc.splendor.org"
       ],
-      "gatewayUrl": "https://gateway.splendor.example",
+      "gatewayUrl": "",
       "gatewayPort": 443,
       "wasmUrl": "/sqc_signer.wasm",
       "execUrl": "/wasm_exec.js",
       "wasmSha256": "e12babf4cd84d5da59e8880301b50b458ab6ee94e5fb8e2da4843cf5cf82d1b0",
       "execSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14",
       "timeoutMs": 20000,
-      "retries": 3
+      "retries": 3,
+      "explorerUrl": "https://quantum-explorer.splendor.org",
+      "txUrlTemplate": "https://quantum-explorer.splendor.org/tx/{hash}"
     }
   }
 }

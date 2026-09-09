@@ -18,12 +18,25 @@ import (
 // ciphertext.
 const maxSealedBody = (block.MaxBlockWireBytes * 4 / 3) + (64 * 1024)
 
+// defaultSealedMaxInFlight bounds how many sealed envelopes are being read and
+// opened at once. The token that authenticates a sealed write lives INSIDE the
+// envelope, so the ML-KEM decapsulation and the body read happen for anyone who
+// can reach the port; without a cap, N parallel junk envelopes pin N cores and
+// N block-sized buffers before a single byte is authenticated. A live cluster
+// exchanges a handful of proposals, votes and blocks per height, so this is
+// generous for real peers and cheap to shed for everyone else.
+const defaultSealedMaxInFlight = 64
+
 // P2PConfig wires the sealed transport to the node's handlers.
 type P2PConfig struct {
 	// Identity is this node's ML-DSA + ML-KEM key material.
 	Identity *network.NodeIdentity
 	// Token is the write-plane secret expected inside sealed requests.
 	Token string
+	// MaxInFlight caps concurrent sealed requests, counted from before the
+	// body is read until the handler returns. 0 uses defaultSealedMaxInFlight;
+	// a negative value disables the cap (tests only).
+	MaxInFlight int
 	// HandleBlock applies a received block body (raw JSON).
 	HandleBlock func(body []byte) error
 	// HandleAnnounce processes a peer announcement body (raw JSON).
@@ -67,7 +80,30 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 		writeJSON(w, http.StatusOK, doc)
 	}).Methods(http.MethodGet)
 
+	var slots chan struct{}
+	switch {
+	case cfg.MaxInFlight == 0:
+		slots = make(chan struct{}, defaultSealedMaxInFlight)
+	case cfg.MaxInFlight > 0:
+		slots = make(chan struct{}, cfg.MaxInFlight)
+	}
+
 	r.HandleFunc(network.PathSealed, func(w http.ResponseWriter, r *http.Request) {
+		// Take the slot before touching the body: reading and decrypting is
+		// the cost this cap exists to bound. Shed rather than queue — a queued
+		// request still holds its connection and goroutine.
+		if slots != nil {
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			default:
+				log.Debug().Str("remote", r.RemoteAddr).Msg("p2p: sealed request shed, too many in flight")
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusServiceUnavailable, "node busy: too many sealed requests in flight")
+				return
+			}
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, maxSealedBody)
 		wire, err := io.ReadAll(r.Body)
 		if err != nil {
