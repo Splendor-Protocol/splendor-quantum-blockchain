@@ -362,7 +362,8 @@ Create `/var/sqc/genesis.json`:
     "qrc721_v1": 1,
     "qrc4626_v1": 1,
     "min_fee_v1": 1,
-    "multi_validator": 1
+    "multi_validator": 1,
+    "modules_v2": 1
   }
 }
 ```
@@ -585,7 +586,8 @@ cat > /var/sqc/genesis.json << EOF
     "qrc721_v1": 1,
     "qrc4626_v1": 1,
     "min_fee_v1": 1,
-    "multi_validator": 1
+    "multi_validator": 1,
+    "modules_v2": 1
   }
 }
 EOF
@@ -643,9 +645,18 @@ before the field existed.
   "qrc721_v1": 1,
   "qrc4626_v1": 1,
   "min_fee_v1": 1,
-  "multi_validator": 1
+  "multi_validator": 1,
+  "modules_v2": 1
 }
 ```
+
+Not every name in that list is live on mainnet. As of 2026-09-09 mainnet
+schedules `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1`,
+`validators_v1`, `multi_validator` (all at 1) and `modules_v2` (at 79,202);
+`lending_v1`, `oracle_v1`, `multisig_v1`, `governance_v1`, `qrc721_v1`,
+`qrc4626_v1`, `verify_v1`, `bridge_v1`, `vm_revert_v1` and `min_fee_v1` are
+implemented but unscheduled there, and each needs its own reviewed activation.
+The full list above is a NEW-network template, not mainnet's schedule.
 
 - **A height is the first block produced under the new rules.** `0` or an absent
   name means *never* — genesis is block 0, so `0` cannot mean "from genesis".

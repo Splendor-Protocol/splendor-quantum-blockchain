@@ -26,16 +26,28 @@ err() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 # ── Parse flags ────────────────────────────────────────────────────────────────
 IS_VALIDATOR=false
 IS_RPC=false
+IS_NEW_NETWORK=false
 for arg in "$@"; do
   case $arg in
-    --validator) IS_VALIDATOR=true ;;
-    --rpc)       IS_RPC=true ;;
+    --validator)   IS_VALIDATOR=true ;;
+    --rpc)         IS_RPC=true ;;
+    --new-network) IS_NEW_NETWORK=true ;;
     --help|-h)
-      echo "Usage: $0 --validator | --rpc"
-      echo "  --validator   Set up as a block-producing validator node"
-      echo "  --rpc         Set up as an RPC (sync) node"
+      echo "Usage: $0 --validator [--new-network] | --rpc"
+      echo "  --validator     Set up a block-producing validator node"
+      echo "  --rpc           Set up an RPC (sync) node"
+      echo "  --new-network   With --validator: FOUND a new chain by minting a"
+      echo "                  genesis here. Without it a validator install with"
+      echo "                  no /var/sqc/genesis.json refuses to invent one,"
+      echo "                  because a genesis minted from this template is a"
+      echo "                  different chain from the live one."
       echo ""
-      echo "Validator genesis:"
+      echo "New-network genesis (only with --new-network):"
+      echo "  SQC_CHAIN_ID        Required. The new chain's id. 'splendor-quantum-1'"
+      echo "                      is the live mainnet id and is refused unless"
+      echo "                      SQC_CONFIRM_MAINNET_GENESIS=yes is also set."
+      echo "  SQC_GENESIS_FORKS   Optional. JSON object of rule name -> activation"
+      echo "                      height, written into the genesis. Unset = none."
       echo "  SQC_GENESIS_ADDR    Optional. Override the one SQ: address that"
       echo "                      receives the entire 26B supply. Default is pinned"
       echo "                      in this script. The validator signs blocks only"
@@ -272,16 +284,44 @@ setup_validator() {
     err "genesis address must not be the validator. The 26B goes to $GENESIS_ADDR_DEFAULT (or SQC_GENESIS_ADDR)."
   fi
 
-  # Create genesis.json if not exists
+  # Create genesis.json if not exists — but only when the operator is
+  # deliberately FOUNDING a chain. A validator install with no genesis and
+  # no --new-network used to mint a "splendor-quantum-1" genesis from this
+  # template: the same chain id as live mainnet, a different genesis hash,
+  # no fork schedule, and one allocation where the live document has two.
+  # That is a new, incompatible network wearing mainnet's name. To JOIN the
+  # live network as a second validator, copy its genesis.json here first
+  # (curl -s https://quantum-rpc.splendor.org/genesis > /var/sqc/genesis.json)
+  # and follow docs/multi-validator-local.md "Joining a running chain".
   if [ ! -f /var/sqc/genesis.json ]; then
-    log "Creating genesis.json (26B to genesis address, 0 to validator)..."
+    if [ "$IS_NEW_NETWORK" != true ]; then
+      err "no /var/sqc/genesis.json and --new-network not given. To join the live network, copy its genesis first:
+  curl -s https://quantum-rpc.splendor.org/genesis > /var/sqc/genesis.json
+then re-run. To found a NEW chain, re-run with --new-network and SQC_CHAIN_ID set."
+    fi
+    if [ -z "${SQC_CHAIN_ID:-}" ]; then
+      err "--new-network requires SQC_CHAIN_ID (the new chain's id)."
+    fi
+    if [ "$SQC_CHAIN_ID" = "splendor-quantum-1" ] && [ "${SQC_CONFIRM_MAINNET_GENESIS:-}" != "yes" ]; then
+      err "SQC_CHAIN_ID=splendor-quantum-1 is the live mainnet id. Minting a new genesis under it creates a second, incompatible chain with mainnet's name. Set SQC_CONFIRM_MAINNET_GENESIS=yes only if that is really what you mean."
+    fi
+    FORKS_JSON=""
+    if [ -n "${SQC_GENESIS_FORKS:-}" ]; then
+      FORKS_COMPACT="$(printf '%s' "$SQC_GENESIS_FORKS" | tr -d '[:space:]')"
+      if ! printf '%s' "$FORKS_COMPACT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert isinstance(d,dict) and all(isinstance(v,int) and v>=0 for v in d.values())' 2>/dev/null; then
+        err "SQC_GENESIS_FORKS must be a JSON object of {\"upgrade\": height}, got: $SQC_GENESIS_FORKS"
+      fi
+      FORKS_JSON=",
+  \"forks\": $FORKS_COMPACT"
+    fi
+    log "Creating genesis.json for NEW chain $SQC_CHAIN_ID (26B to genesis address, 0 to validator)..."
     VALIDATOR_PUBKEY=$(./sqc-wallet pubkey --wallet /var/sqc/validator.sqwallet)
     TIMESTAMP=$(date +%s)
 
     cat > /var/sqc/genesis.json << GENESIS
 {
-  "chain_id": "splendor-quantum-1",
-  "network_name": "Splendor Quantum Chain Mainnet",
+  "chain_id": "$SQC_CHAIN_ID",
+  "network_name": "Splendor Quantum Chain ($SQC_CHAIN_ID)",
   "timestamp": $TIMESTAMP,
   "validator_pubkey_hex": "$VALIDATOR_PUBKEY",
   "allocations": [
@@ -291,7 +331,7 @@ setup_validator() {
       "comment": "Genesis address — 26 billion SPLD"
     }
   ],
-  "total_supply": "$GENESIS_SUPPLY"
+  "total_supply": "$GENESIS_SUPPLY"$FORKS_JSON
 }
 GENESIS
     log "genesis.json written to /var/sqc/genesis.json"
@@ -299,7 +339,17 @@ GENESIS
     warn "genesis.json already exists at /var/sqc/genesis.json — not overwriting"
   fi
 
-  validate_genesis_allocation /var/sqc/genesis.json "$GENESIS_ADDR" "$VALIDATOR_ADDR"
+  if [ "$IS_NEW_NETWORK" = true ]; then
+    # The one-allocation, 26B, not-the-validator invariant is the rule for a
+    # chain founded here. A genesis copied from a running network (a joiner)
+    # carries that network's allocations as they are — mainnet's has two —
+    # and is checked by the node against the chain instead.
+    validate_genesis_allocation /var/sqc/genesis.json "$GENESIS_ADDR" "$VALIDATOR_ADDR"
+  else
+    python3 -c "import json,sys; g=json.load(open('/var/sqc/genesis.json')); print('  chain_id: %s  allocations: %d  forks: %s' % (g.get('chain_id'), len(g.get('allocations') or []), ','.join(sorted((g.get('forks') or {}).keys())) or 'none'))" \
+      || err "/var/sqc/genesis.json is not valid JSON"
+    log "Using the existing genesis document above (joining that chain; this node mints nothing)."
+  fi
 
   echo ""
   echo -e "${ORANGE}IMPORTANT: Share your validator_pubkey_hex with other nodes${NC}"
