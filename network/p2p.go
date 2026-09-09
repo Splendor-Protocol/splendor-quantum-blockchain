@@ -118,6 +118,18 @@ type Broadcaster struct {
 // the response, which callers treat as a non-200 failure.
 func noRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 
+// PeerHTTPClient is the client every request to a peer must go through: no
+// redirects, and a transport that refuses to dial internal addresses. Callers
+// outside this package (the genesis bootstrap in cmd/node, for one) used to
+// build a bare http.Client and silently lost both protections.
+func PeerHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: noRedirect,
+		Transport:     SafeTransport(timeout),
+	}
+}
+
 // NewBroadcaster creates a new block broadcaster. authToken is the shared
 // write-plane secret; peers reject pushes and announcements without it.
 // allowPlaintext permits the unencrypted fallback when a peer exposes no

@@ -285,6 +285,36 @@ func TestPeerWithoutGenesisEndpointCreditsNothingAndYieldsToTheNextPeer(t *testi
 	assertUnfunded(t, sdb, honest.Allocations[0].Address)
 }
 
+// A peer that answers /genesis with a redirect is trying to make this node fetch
+// a document from somewhere it never approved. The redirect must not be
+// followed, the target must never be contacted, and nothing may be credited.
+func TestPeerGenesisRedirectIsNotFollowed(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	honest := honestGenesis(t)
+	pin := honest.Hash()
+
+	// The redirect target serves a document that passes the pin, so a client
+	// that followed the hop would fund the node and the test would not notice
+	// the SSRF; the hit counter is what catches it.
+	target, targetHits := genesisPeer(t, honest)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target+"/genesis", http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	err := bootstrapGenesisFromPeer(redirector.URL, sdb, ex, genesisPolicy{docHash: &pin})
+	if err == nil {
+		t.Fatal("a redirecting /genesis was accepted")
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("the error does not say a redirect was refused: %v", err)
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Fatalf("the redirect target was contacted %d time(s); redirects must not be followed", n)
+	}
+	assertUnfunded(t, sdb, honest.Allocations[0].Address)
+}
+
 // The chain-id gate is only worth anything if it compares against something the
 // DOCUMENT did not supply. That anchor used to be a compiled-in constant; since
 // per-tier ids it is the operator's --chain-id, because the constant would make
