@@ -73,7 +73,10 @@ func fetchPeerGenesis(peerURL string, policy genesisPolicy) (*genesiscfg.Genesis
 			errGenesisUnpinned, peerURL)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Same client discipline as every other peer request: a 3xx is returned,
+	// not followed, so an approved peer URL cannot bounce this node to an
+	// internal address, and the transport refuses internal targets outright.
+	client := network.PeerHTTPClient(10 * time.Second)
 	resp, err := client.Get(peerURL + "/genesis")
 	if err != nil {
 		return nil, fmt.Errorf("fetch /genesis from peer: %w", err)
@@ -85,6 +88,9 @@ func fetchPeerGenesis(peerURL string, policy genesisPolicy) (*genesiscfg.Genesis
 	// happened to answer first without the endpoint.
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("peer %s serves no /genesis (it was started without --genesis)", peerURL)
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, fmt.Errorf("peer %s redirected /genesis to %q; redirects are not followed", peerURL, resp.Header.Get("Location"))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("peer /genesis returned %d", resp.StatusCode)

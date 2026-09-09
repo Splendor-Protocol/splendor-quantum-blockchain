@@ -93,16 +93,21 @@ describe('derive', () => {
 });
 
 describe('networks', () => {
-  it('gives distinct networkId per env while sharing wire chainId', () => {
+  it('gives distinct networkId and chainId per tier; local shares the mainnet wire id', () => {
     const nets = listNetworks();
     const ids = new Set(nets.map((n) => n.networkId));
     expect(ids.size).toBe(nets.length);
     expect(resolveNetwork('local').chainId).toBe('splendor-quantum-1');
+    expect(getNetwork('devnet')?.networkId).toBe('splendor-devnet');
     expect(getNetwork('testnet')?.networkId).toBe('splendor-testnet');
     expect(getNetwork('mainnet')?.networkId).toBe('splendor-mainnet');
-    expect(getNetwork('testnet')?.chainId).toBe('splendor-quantum-1');
-    expect(() => resolveNetwork('testnet')).toThrow(/placeholder RPC/);
-    expect(() => resolveNetwork('mainnet')).toThrow(/placeholder RPC/);
+    // Each public tier signs under its own chain id (see splendor-infra
+    // chain-redeploy-runbook, "Chain ids are per tier").
+    expect(getNetwork('devnet')?.chainId).toBe('splendor-quantum-devnet-1');
+    expect(getNetwork('testnet')?.chainId).toBe('splendor-quantum-testnet-1');
+    expect(getNetwork('mainnet')?.chainId).toBe('splendor-quantum-1');
+    expect(resolveNetwork('testnet').rpcUrls).toEqual(['https://quantum-rpc-testnet.splendor.org']);
+    expect(resolveNetwork('mainnet').rpcUrls).toEqual(['https://quantum-rpc.splendor.org']);
   });
 });
 

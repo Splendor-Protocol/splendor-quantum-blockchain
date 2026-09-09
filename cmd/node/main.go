@@ -78,6 +78,7 @@ var (
 	flagSimBurst           float64
 	flagSimMaxInFlight     int
 	flagSimTimeout         time.Duration
+	flagP2PMaxInFlight     int
 	flagTLSCert            string
 	flagTLSKey             string
 	flagPublicURL          string
@@ -132,6 +133,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().Float64Var(&flagSimBurst, "sim-rate-burst", 0, "Burst allowance for VM-executing routes. 0 uses the built-in default.")
 	root.Flags().IntVar(&flagSimMaxInFlight, "sim-max-inflight", 0, "Maximum concurrent VM simulations across all callers; excess requests get 503. This, not the rate limit, bounds how much CPU anonymous callers can occupy. 0 uses the built-in default.")
 	root.Flags().DurationVar(&flagSimTimeout, "sim-timeout", 0, "Maximum wall time a single simulation may hold a slot. 0 uses the built-in default.")
+	root.Flags().IntVar(&flagP2PMaxInFlight, "p2p-max-inflight", 0, "Maximum concurrent sealed P2P requests being read and decrypted; excess requests get 503. The write token sits inside the envelope, so this is what bounds unauthenticated decryption work. 0 uses the built-in default.")
 	root.Flags().StringVar(&flagTLSCert, "tls-cert", "", "PEM certificate for HTTPS. Enables TLS 1.3 and OFFERS post-quantum hybrid key exchange (X25519MLKEM768), falling back to classical X25519 for clients that cannot do it — see --tls-require-hybrid.")
 	root.Flags().BoolVar(&flagTLSRequireHybrid, "tls-require-hybrid", false, "Refuse TLS connections that cannot negotiate X25519MLKEM768, instead of falling back to classical X25519. Set this before describing the transport as post-quantum: without it a deployment can offer the hybrid group and still serve nothing but classical.")
 	root.Flags().StringVar(&flagTLSKey, "tls-key", "", "PEM private key matching --tls-cert")
@@ -1044,8 +1046,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// plane, but encrypted and with the write token inside the envelope.
 	var snapshotInFlight atomic.Bool
 	rpc.RegisterP2PRoutes(router, rpc.P2PConfig{
-		Identity: nodeIdentity,
-		Token:    authToken,
+		Identity:    nodeIdentity,
+		Token:       authToken,
+		MaxInFlight: flagP2PMaxInFlight,
 		HandleBlock: func(body []byte) error {
 			// The trusted key is read at call time: a node pinning only
 			// --genesis-hash learns it from block 0 after start-up. A pushed

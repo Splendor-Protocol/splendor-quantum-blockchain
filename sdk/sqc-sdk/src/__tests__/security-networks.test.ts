@@ -25,7 +25,7 @@ describe('security-networks HTTPS', () => {
   it('does not require gatewayUrl for SDK resolve (rpcUrls only)', () => {
     const net = resolveNetwork('testnet', {
       rpcUrls: ['https://rpc.ok'],
-      // gateway left as baked-in *.example — must not throw
+      // gateway left as the baked-in empty value — must not throw
     });
     expect(net.rpcUrls[0]).toBe('https://rpc.ok');
   });
@@ -49,7 +49,12 @@ describe('security-networks HTTPS', () => {
   });
 
   it('still rejects placeholder .example even with allowInsecureHttp', () => {
-    expect(() => resolveNetwork('testnet', { allowInsecureHttp: true })).toThrow(/placeholder/i);
+    expect(() =>
+      resolveNetwork('testnet', {
+        rpcUrls: ['https://rpc.splendor.example'],
+        allowInsecureHttp: true,
+      }),
+    ).toThrow(/placeholder/i);
   });
 });
 

@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -139,6 +142,71 @@ func TestSealedReadNeedsNoWriteToken(t *testing.T) {
 
 	if _, err := network.NewBlockFetcher(cfg).FetchBlock(srv.URL, 3); err != nil {
 		t.Fatalf("sealed read should not require a write token: %v", err)
+	}
+}
+
+// The write token is only readable after decryption, so anyone who can reach
+// the port can make the node decapsulate and read a block-sized body. The
+// in-flight cap must be taken BEFORE that work: with one slot occupied by a
+// slow handler, a second envelope is shed with 503 and never opened.
+func TestSealedRequestsBeyondInFlightCapAreShedBeforeDecryption(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	identity, err := network.NewNodeIdentity(pub, priv)
+	if err != nil {
+		t.Fatalf("node identity: %v", err)
+	}
+
+	entered := make(chan struct{}, 4) // buffered: later calls must not block on it
+	release := make(chan struct{})
+	var opened atomic.Int32
+	router := mux.NewRouter()
+	RegisterP2PRoutes(router, P2PConfig{
+		Identity:    identity,
+		Token:       "write-secret",
+		MaxInFlight: 1,
+		HandleBlock: func([]byte) error {
+			opened.Add(1)
+			entered <- struct{}{}
+			<-release
+			return nil
+		},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	cache := network.NewIdentityCache()
+	first := make(chan error, 1)
+	go func() {
+		first <- cache.SendSealed(srv.URL, "write-secret", network.KindBlock, []byte(`{}`))
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first sealed request never reached its handler")
+	}
+
+	// Slot is held. A second, otherwise valid, request must be refused.
+	err = cache.SendSealed(srv.URL, "write-secret", network.KindBlock, []byte(`{}`))
+	if err == nil {
+		t.Fatal("a sealed request beyond the in-flight cap was accepted")
+	}
+	if !strings.Contains(err.Error(), "503") && !strings.Contains(err.Error(), "in flight") {
+		t.Fatalf("the refusal does not read as a shed (503/in flight): %v", err)
+	}
+	if n := opened.Load(); n != 1 {
+		t.Fatalf("handler ran %d times; the shed request must not be decrypted or handled", n)
+	}
+
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("the request that held the slot should have succeeded: %v", err)
+	}
+	// And once the slot is free the next request goes through.
+	if err := cache.SendSealed(srv.URL, "write-secret", network.KindBlock, []byte(`{}`)); err != nil {
+		t.Fatalf("a request after the slot was released was refused: %v", err)
 	}
 }
 

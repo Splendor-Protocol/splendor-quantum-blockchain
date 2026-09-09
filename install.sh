@@ -88,7 +88,7 @@ generate_token() {
 # address. The validator key is a block signer. Crediting it (or adding a
 # second allocation) is how mainnet ended up at 27B against a 26B label.
 GENESIS_SUPPLY="26000000000000000000000000000"
-GENESIS_ADDR_DEFAULT="SQ:d643334e8710a59ef34f281ec9bb16b93296b59012e93e47ecb2aca61d1f0ecc"
+GENESIS_ADDR_DEFAULT="SQ:665f89b60e3ebb95eac3ac6c6ed89f14caa74947d64bc9300cd4609f0075fc4c"
 
 require_sq_address() {
   local addr="$1"
