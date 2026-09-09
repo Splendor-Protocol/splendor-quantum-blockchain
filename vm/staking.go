@@ -79,7 +79,26 @@ func ValidatorsModuleAddress() qcrypto.Address {
 }
 
 // Register locks ValidatorBond() from the caller and adds them to the set.
+//
+// Legacy rule: only an Active record refuses a new registration. An Exiting
+// record — bond still owed, unbonding in progress — was overwritten by a fresh
+// Active record with a second bond, so the pool held two bonds against one
+// record and the first was never returned. RegisterV2 is the corrected rule;
+// the router chooses by fork.
 func (s *StakingContract) Register(caller qcrypto.Address, pubKey []byte, currentHeight uint64) error {
+	return s.register(caller, pubKey, currentHeight, false)
+}
+
+// RegisterV2 is Register under modules_v2: a caller may register only when it
+// has no record or a record whose exit is finalized (Inactive, bond
+// returned). Active is refused as before; Exiting is refused until
+// finalize_exit has run. A registry read error is refused rather than read
+// as "no record".
+func (s *StakingContract) RegisterV2(caller qcrypto.Address, pubKey []byte, currentHeight uint64) error {
+	return s.register(caller, pubKey, currentHeight, true)
+}
+
+func (s *StakingContract) register(caller qcrypto.Address, pubKey []byte, currentHeight uint64, strict bool) error {
 	if len(pubKey) != qcrypto.PublicKeySize {
 		return fmt.Errorf("validators: invalid public key size")
 	}
@@ -87,9 +106,16 @@ func (s *StakingContract) Register(caller qcrypto.Address, pubKey []byte, curren
 	if derived != caller {
 		return fmt.Errorf("validators: pubkey does not match caller")
 	}
-	existing, _ := s.GetValidator(caller)
+	existing, err := s.GetValidator(caller)
+	if strict && err != nil {
+		return fmt.Errorf("validators: read record for %s: %w", caller, err)
+	}
 	if existing != nil && existing.Status == ValidatorActive {
 		return fmt.Errorf("validators: %s already registered", caller)
+	}
+	if strict && existing != nil && existing.Status == ValidatorExiting {
+		return fmt.Errorf("validators: %s is exiting (bond unbonding until height %d); finalize_exit before registering again",
+			caller, existing.ExitHeight)
 	}
 	bond := ValidatorBond()
 	acc, err := s.stateDB.GetAccount(caller)

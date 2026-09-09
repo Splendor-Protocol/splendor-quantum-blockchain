@@ -89,6 +89,16 @@ const (
 	// MinFeeV1 raises the mempool floor to 0.001 SPLD. Admission-only; already
 	// applied blocks are not re-judged.
 	MinFeeV1 = "min_fee_v1"
+	// ModulesV2 closes three fund-handling gaps found in the September 2026
+	// mainnet review, in one coordinated rule because they land together:
+	//   - dex remove_liquidity is routed, so LP shares have an exit;
+	//   - validators.register refuses a caller whose record is Exiting, so a
+	//     second bond cannot overwrite a record that still owes the first;
+	//   - a native-module call is charged deterministic gas (a base plus a
+	//     per-byte charge on its data) that counts against the block budget,
+	//     where it used to count zero.
+	// Requires ModuleRevertV1 no later than itself (see Validate).
+	ModulesV2 = "modules_v2"
 )
 
 // Known lists every upgrade name this build understands.
@@ -100,6 +110,7 @@ const (
 var Known = []string{
 	MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1,
 	VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1, MinFeeV1,
+	ModulesV2,
 }
 
 // Schedule maps an upgrade name to the height at which it takes effect.
@@ -155,6 +166,7 @@ func (s Schedule) Validate() error {
 	for _, name := range []string{
 		BridgeV1, ExchangeV1, QRC1155V1, QRC20V2,
 		VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1,
+		ModulesV2,
 	} {
 		at, ok := s.At(name)
 		if !ok {

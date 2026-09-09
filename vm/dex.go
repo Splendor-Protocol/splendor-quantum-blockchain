@@ -483,6 +483,15 @@ func (p *LiquidityPool) RemoveLiquidity(
 	lpShares *big.Int,
 	amount0Min, amount1Min *big.Int,
 ) (amount0, amount1 *big.Int, err error) {
+	if lpShares == nil || lpShares.Sign() <= 0 {
+		return nil, nil, fmt.Errorf("dex removeLiquidity: lp_shares must be positive")
+	}
+	if amount0Min == nil {
+		amount0Min = new(big.Int)
+	}
+	if amount1Min == nil {
+		amount1Min = new(big.Int)
+	}
 	callerBal, err := p.LPBalance(caller)
 	if err != nil {
 		return nil, nil, err
@@ -491,8 +500,17 @@ func (p *LiquidityPool) RemoveLiquidity(
 		return nil, nil, fmt.Errorf("dex removeLiquidity: insufficient LP balance")
 	}
 
-	totalLP, _ := p.TotalLPShares()
-	r0, r1, _ := p.Reserves()
+	totalLP, err := p.TotalLPShares()
+	if err != nil {
+		return nil, nil, err
+	}
+	if totalLP.Sign() <= 0 {
+		return nil, nil, fmt.Errorf("dex removeLiquidity: pool has no LP shares")
+	}
+	r0, r1, err := p.Reserves()
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// amount = (lpShares / totalLP) * reserve
 	amount0 = new(big.Int).Mul(lpShares, r0)
