@@ -165,6 +165,42 @@ func dispatchLending(stateDB *state.StateDB, ctx ModuleContext, action string, r
 			return err
 		}
 		return lp.BorrowFromOracle(ctx.Caller, asset, col, amt, ctx.Height)
+	case "liquidate":
+		// Repays up to half of `borrower`'s debt in `asset` and takes
+		// `collateral` plus the liquidation bonus, at oracle prices, only if
+		// the borrower's whole position is below its liquidation threshold.
+		var p struct {
+			Lending    string `json:"lending"`
+			Borrower   string `json:"borrower"`
+			Asset      string `json:"asset"`      // the debt asset being repaid
+			Collateral string `json:"collateral"` // the collateral asset seized
+			Amount     string `json:"amount"`     // repay amount, capped at the close factor
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return err
+		}
+		laddr, err := qcrypto.AddressFromString(p.Lending)
+		if err != nil {
+			return err
+		}
+		borrower, err := qcrypto.AddressFromString(p.Borrower)
+		if err != nil {
+			return fmt.Errorf("lending liquidate: borrower: %w", err)
+		}
+		asset, err := qcrypto.AddressFromString(p.Asset)
+		if err != nil {
+			return err
+		}
+		col, err := qcrypto.AddressFromString(p.Collateral)
+		if err != nil {
+			return err
+		}
+		amt, err := parseAmt(p.Amount)
+		if err != nil {
+			return err
+		}
+		_, err = NewLendingProtocol(stateDB, laddr).LiquidateFromOracle(ctx.Caller, borrower, asset, col, amt, ctx.Height)
+		return err
 	default:
 		return hard(fmt.Errorf("module call: unknown action %q", action))
 	}
@@ -173,8 +209,9 @@ func dispatchLending(stateDB *state.StateDB, ctx ModuleContext, action string, r
 func dispatchLendingRead(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
 	var p struct {
 		Lending string `json:"lending"`
-		Asset   string `json:"asset"`
-		Owner   string `json:"owner"`
+		Asset   string `json:"asset,omitempty"`
+		Owner   string `json:"owner,omitempty"`
+		Height  uint64 `json:"height,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
@@ -201,6 +238,35 @@ func dispatchLendingRead(stateDB *state.StateDB, action string, raw json.RawMess
 			return nil, err
 		}
 		return lp.GetDepositBalance(owner, asset)
+	case "borrow_balance":
+		asset, err := qcrypto.AddressFromString(p.Asset)
+		if err != nil {
+			return nil, err
+		}
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, err
+		}
+		return lp.GetBorrowBalance(owner, asset)
+	case "assets":
+		assets, err := lp.RegisteredAssets()
+		if err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, len(assets))
+		for _, a := range assets {
+			out = append(out, a.String())
+		}
+		return out, nil
+	case "health":
+		// Advisory read: values the whole position at the CURRENT oracle
+		// prices and the stored indexes (interest is not accrued here; a
+		// read must not write). Height 0 asks the oracle for its latest.
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, err
+		}
+		return lp.AccountHealth(owner, p.Height)
 	default:
 		return nil, fmt.Errorf("lending: unknown read %q", action)
 	}
@@ -518,6 +584,8 @@ func dispatchGovernance(stateDB *state.StateDB, ctx ModuleContext, action string
 	g := NewGovernanceContract(stateDB, DeployGovernance(stateDB))
 	switch action {
 	case "submit":
+		// Text (signalling) proposals only; see governance.Advisory. Voting
+		// power is the caller's active validator bond.
 		var p struct {
 			Title       string `json:"title"`
 			Description string `json:"description"`
@@ -526,17 +594,30 @@ func dispatchGovernance(stateDB *state.StateDB, ctx ModuleContext, action string
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return err
 		}
-		_, err := g.Submit(ctx.Caller, 0, p.Title, p.Description, p.Payload, ctx.Height)
+		_, err := g.Submit(ctx.Caller, ProposalTypeText, p.Title, p.Description, p.Payload, ctx.Height)
 		return err
 	case "vote":
 		var p struct {
 			ID     uint64 `json:"id"`
-			Option uint8  `json:"option"`
+			Option uint8  `json:"option"` // 1 yes, 2 no, 3 abstain, 4 no-with-veto
 		}
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return err
 		}
 		return g.Vote(ctx.Caller, p.ID, VoteOption(p.Option), ctx.Height)
+	case "tally", "cancel":
+		var p struct {
+			ID uint64 `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return err
+		}
+		if action == "tally" {
+			// Anyone may close a proposal whose voting period has ended; the
+			// quorum is judged against the active set's total bond NOW.
+			return g.TallyNow(p.ID, ctx.Height)
+		}
+		return g.Cancel(ctx.Caller, p.ID, ctx.Height)
 	default:
 		return hard(fmt.Errorf("module call: unknown action %q", action))
 	}
@@ -544,18 +625,49 @@ func dispatchGovernance(stateDB *state.StateDB, ctx ModuleContext, action string
 
 func dispatchGovernanceRead(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
 	g := NewGovernanceContract(stateDB, DeployGovernance(nil))
-	switch action {
-	case "proposal":
-		var p struct {
-			ID uint64 `json:"id"`
-		}
+	var p struct {
+		ID      uint64 `json:"id,omitempty"`
+		Address string `json:"address,omitempty"`
+	}
+	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, err
 		}
-		return g.GetProposal(p.ID)
+	}
+	switch action {
+	case "proposal":
+		prop, err := g.GetProposal(p.ID)
+		if err != nil || prop == nil {
+			return nil, fmt.Errorf("governance: proposal %d not found", p.ID)
+		}
+		// The label travels with every read so no client mistakes Passed
+		// for an enacted change.
+		return map[string]any{
+			"proposal": prop, "status_name": ProposalStatusName(prop.Status), "advisory": Advisory,
+			"note": "passed proposals are signalling only; nothing executes on-chain in this build",
+		}, nil
 	case "count":
 		n, err := g.ProposalCount()
 		return map[string]uint64{"count": n}, err
+	case "vote_of":
+		a, err := qcrypto.AddressFromString(p.Address)
+		if err != nil {
+			return nil, err
+		}
+		opt, err := g.GetVoteOf(p.ID, a)
+		return map[string]uint8{"option": uint8(opt)}, err
+	case "voting_power":
+		a, err := qcrypto.AddressFromString(p.Address)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"power": g.votingPowerOf(a).String(), "source": "active validator bond"}, nil
+	case "total_voting_power":
+		total, err := g.activeVotingPower()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"power": total.String(), "source": "sum of active validator bonds"}, nil
 	default:
 		return nil, fmt.Errorf("governance: unknown read %q", action)
 	}
@@ -684,32 +796,141 @@ func dispatchQRC4626(stateDB *state.StateDB, ctx ModuleContext, action string, r
 		}
 		receipt.ContractAddress = &addr
 		return nil
-	case "deposit":
+	case "deposit", "mint", "withdraw", "redeem", "approve":
+		// Every share movement in one shape. `to` defaults to the caller;
+		// `owner` (withdraw/redeem) defaults to the caller and otherwise
+		// spends the caller's share allowance from that owner. The bounds
+		// are the slippage guards: a deposit that would mint fewer than
+		// min_shares, a mint that would cost more than max_assets, a
+		// withdraw that would burn more than max_shares, or a redeem that
+		// would return fewer than min_assets is refused before any transfer.
 		var p struct {
-			Vault  string `json:"vault"`
-			Assets string `json:"assets"`
-			To     string `json:"to"`
+			Vault     string `json:"vault"`
+			Assets    string `json:"assets,omitempty"`
+			Shares    string `json:"shares,omitempty"`
+			To        string `json:"to,omitempty"`
+			Owner     string `json:"owner,omitempty"`
+			Spender   string `json:"spender,omitempty"`
+			MinShares string `json:"min_shares,omitempty"`
+			MaxShares string `json:"max_shares,omitempty"`
+			MinAssets string `json:"min_assets,omitempty"`
+			MaxAssets string `json:"max_assets,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return err
 		}
 		vaddr, err := qcrypto.AddressFromString(p.Vault)
 		if err != nil {
-			return err
+			return fmt.Errorf("qrc4626 %s: vault: %w", action, err)
+		}
+		v := NewQRC4626Vault(stateDB, vaddr)
+		if _, err := v.Asset(); err != nil {
+			return fmt.Errorf("qrc4626 %s: %s is not a vault", action, vaddr)
 		}
 		to := ctx.Caller
 		if p.To != "" {
-			to, err = qcrypto.AddressFromString(p.To)
-			if err != nil {
-				return err
+			if to, err = qcrypto.AddressFromString(p.To); err != nil {
+				return fmt.Errorf("qrc4626 %s: to: %w", action, err)
 			}
 		}
-		amt, err := parseAmt(p.Assets)
-		if err != nil {
-			return err
+		owner := ctx.Caller
+		if p.Owner != "" {
+			if owner, err = qcrypto.AddressFromString(p.Owner); err != nil {
+				return fmt.Errorf("qrc4626 %s: owner: %w", action, err)
+			}
 		}
-		_, err = NewQRC4626Vault(stateDB, vaddr).Deposit(ctx.Caller, to, amt)
-		return err
+		switch action {
+		case "deposit":
+			assets, err := parseAmt(p.Assets)
+			if err != nil {
+				return fmt.Errorf("qrc4626 deposit: assets: %w", err)
+			}
+			if p.MinShares != "" {
+				min, err := parseAmt(p.MinShares)
+				if err != nil {
+					return fmt.Errorf("qrc4626 deposit: min_shares: %w", err)
+				}
+				got, err := v.PreviewDeposit(assets)
+				if err != nil {
+					return err
+				}
+				if got.Cmp(min) < 0 {
+					return fmt.Errorf("qrc4626 deposit: would mint %s shares, below min_shares %s", got, min)
+				}
+			}
+			_, err = v.Deposit(ctx.Caller, to, assets)
+			return err
+		case "mint":
+			shares, err := parseAmt(p.Shares)
+			if err != nil {
+				return fmt.Errorf("qrc4626 mint: shares: %w", err)
+			}
+			if p.MaxAssets != "" {
+				max, err := parseAmt(p.MaxAssets)
+				if err != nil {
+					return fmt.Errorf("qrc4626 mint: max_assets: %w", err)
+				}
+				cost, err := v.PreviewMint(shares)
+				if err != nil {
+					return err
+				}
+				if cost.Cmp(max) > 0 {
+					return fmt.Errorf("qrc4626 mint: would cost %s assets, above max_assets %s", cost, max)
+				}
+			}
+			_, err = v.Mint(ctx.Caller, to, shares)
+			return err
+		case "withdraw":
+			assets, err := parseAmt(p.Assets)
+			if err != nil {
+				return fmt.Errorf("qrc4626 withdraw: assets: %w", err)
+			}
+			if p.MaxShares != "" {
+				max, err := parseAmt(p.MaxShares)
+				if err != nil {
+					return fmt.Errorf("qrc4626 withdraw: max_shares: %w", err)
+				}
+				burn, err := v.PreviewWithdraw(assets)
+				if err != nil {
+					return err
+				}
+				if burn.Cmp(max) > 0 {
+					return fmt.Errorf("qrc4626 withdraw: would burn %s shares, above max_shares %s", burn, max)
+				}
+			}
+			_, err = v.Withdraw(ctx.Caller, to, owner, assets)
+			return err
+		case "redeem":
+			shares, err := parseAmt(p.Shares)
+			if err != nil {
+				return fmt.Errorf("qrc4626 redeem: shares: %w", err)
+			}
+			if p.MinAssets != "" {
+				min, err := parseAmt(p.MinAssets)
+				if err != nil {
+					return fmt.Errorf("qrc4626 redeem: min_assets: %w", err)
+				}
+				out, err := v.PreviewRedeem(shares)
+				if err != nil {
+					return err
+				}
+				if out.Cmp(min) < 0 {
+					return fmt.Errorf("qrc4626 redeem: would return %s assets, below min_assets %s", out, min)
+				}
+			}
+			_, err = v.Redeem(ctx.Caller, to, owner, shares)
+			return err
+		default: // approve
+			spender, err := qcrypto.AddressFromString(p.Spender)
+			if err != nil {
+				return fmt.Errorf("qrc4626 approve: spender: %w", err)
+			}
+			shares, err := parseAmt(p.Shares)
+			if err != nil {
+				return fmt.Errorf("qrc4626 approve: shares: %w", err)
+			}
+			return v.Approve(ctx.Caller, spender, shares)
+		}
 	default:
 		return hard(fmt.Errorf("module call: unknown action %q", action))
 	}
@@ -717,7 +938,11 @@ func dispatchQRC4626(stateDB *state.StateDB, ctx ModuleContext, action string, r
 
 func dispatchQRC4626Read(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
 	var p struct {
-		Vault string `json:"vault"`
+		Vault   string `json:"vault"`
+		Owner   string `json:"owner,omitempty"`
+		Spender string `json:"spender,omitempty"`
+		Assets  string `json:"assets,omitempty"`
+		Shares  string `json:"shares,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
@@ -727,11 +952,74 @@ func dispatchQRC4626Read(stateDB *state.StateDB, action string, raw json.RawMess
 		return nil, err
 	}
 	v := NewQRC4626Vault(stateDB, vaddr)
+	amount := func(s, what string) (*big.Int, error) {
+		a, err := parseAmt(s)
+		if err != nil {
+			return nil, fmt.Errorf("qrc4626 %s: %s: %w", action, what, err)
+		}
+		return a, nil
+	}
 	switch action {
 	case "total_assets":
 		return v.TotalAssets()
+	case "total_shares":
+		return v.TotalShares()
 	case "name":
 		return v.Name()
+	case "symbol":
+		return v.Symbol()
+	case "asset":
+		a, err := v.Asset()
+		if err != nil {
+			return nil, err
+		}
+		return a.String(), nil
+	case "share_balance":
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, err
+		}
+		return v.ShareBalance(owner)
+	case "allowance":
+		owner, err := qcrypto.AddressFromString(p.Owner)
+		if err != nil {
+			return nil, err
+		}
+		spender, err := qcrypto.AddressFromString(p.Spender)
+		if err != nil {
+			return nil, err
+		}
+		return v.Allowance(owner, spender)
+	case "exchange_rate":
+		num, den, err := v.ExchangeRate()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"assets_per_share": num.String(), "denominator": den.String()}, nil
+	case "preview_deposit":
+		a, err := amount(p.Assets, "assets")
+		if err != nil {
+			return nil, err
+		}
+		return v.PreviewDeposit(a)
+	case "preview_mint":
+		s, err := amount(p.Shares, "shares")
+		if err != nil {
+			return nil, err
+		}
+		return v.PreviewMint(s)
+	case "preview_withdraw":
+		a, err := amount(p.Assets, "assets")
+		if err != nil {
+			return nil, err
+		}
+		return v.PreviewWithdraw(a)
+	case "preview_redeem":
+		s, err := amount(p.Shares, "shares")
+		if err != nil {
+			return nil, err
+		}
+		return v.PreviewRedeem(s)
 	default:
 		return nil, fmt.Errorf("qrc4626: unknown read %q", action)
 	}
