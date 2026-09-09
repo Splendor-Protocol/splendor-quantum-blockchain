@@ -1163,6 +1163,17 @@ func (e *Executor) verifyProducerAndQC(b *types.Block) error {
 	}
 	pub := byAddr[b.Header.ValidatorAddr]
 	if len(pub) == 0 {
+		// Once a quorum is required the leader is always drawn from the active
+		// set, so a producer outside it cannot have sealed a canonical block —
+		// and falling back to the key the block CARRIES would authenticate it
+		// against itself, which every block passes. Below two the registry is
+		// not yet the authority on who produces: a chain's genesis validator is
+		// typically not registered, and the block in which the first validator
+		// registers is sealed by a producer the parent state does not list.
+		if len(active) >= 2 {
+			return fmt.Errorf("multi_validator: producer %s is not in the active validator set (%d members) at height %d",
+				b.Header.ValidatorAddr, len(active), b.Header.Height)
+		}
 		pub = b.ValidatorPubKey
 	}
 	if len(pub) == 0 {
@@ -1191,6 +1202,14 @@ func (e *Executor) verifyProducerAndQC(b *types.Block) error {
 			return fmt.Errorf("duplicate vote from %s", v.ValidatorAddr)
 		}
 		seen[v.ValidatorAddr] = struct{}{}
+		// Validate() has already bound every vote to this block's hash. The
+		// height inside the signed body must agree with it too, so a
+		// certificate cannot be assembled from votes their signers cast about
+		// a different height.
+		if v.Height != b.Header.Height {
+			return fmt.Errorf("vote from %s is for height %d, block is %d",
+				v.ValidatorAddr, v.Height, b.Header.Height)
+		}
 		if err := v.Verify(pk); err != nil {
 			return err
 		}

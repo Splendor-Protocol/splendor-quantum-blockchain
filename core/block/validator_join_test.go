@@ -197,3 +197,106 @@ func TestActiveValidatorKeyResolvesOnlyActiveMembers(t *testing.T) {
 		t.Fatal("an exiting validator resolved to a key")
 	}
 }
+
+// Once a quorum is required, the producer must be IN the active set.
+//
+// The gate used to fall back to the key the block carries when the header's
+// producer was not registered — and a block always verifies against its own
+// embedded key, so any producer with a quorum of real votes was admitted.
+// Below two active validators that fallback is still needed (the genesis
+// validator is typically not registered, and the block that registers the
+// first one is sealed by a producer the parent state does not list), so the
+// two cases are checked separately here.
+func TestExecuteBlockRejectsProducerOutsideTheActiveSet(t *testing.T) {
+	v1, priv1, _ := qcrypto.GenerateKeypair()
+	v2, priv2, _ := qcrypto.GenerateKeypair()
+	stranger, strangerPriv, _ := qcrypto.GenerateKeypair()
+	strangerAddr := qcrypto.DeriveAddress(stranger)
+
+	// A block sealed by a key nobody registered, but carrying a full quorum of
+	// genuine votes from the two validators that ARE registered.
+	producer, sdbA := newTestExecutor(t)
+	defer producer.Close()
+	defer sdbA.Close()
+	producer.SetForks(forks.Schedule{forks.MultiValidator: 1})
+	registerValidator(t, sdbA, stranger) // funds it; the follower will not have it
+	b, err := producer.BuildProposal(nil, strangerAddr, stranger.Bytes(), strangerPriv, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("proposal: %v", err)
+	}
+	b.Votes = []types.QCVote{
+		signVote(t, b, qcrypto.DeriveAddress(v1), priv1),
+		signVote(t, b, qcrypto.DeriveAddress(v2), priv2),
+	}
+	root := types.ComputeQCRoot(b.Votes)
+	b.Header.QCRoot = root[:]
+
+	follower, sdbB := newTestExecutor(t)
+	defer follower.Close()
+	defer sdbB.Close()
+	follower.SetForks(forks.Schedule{forks.MultiValidator: 1})
+	registerValidator(t, sdbB, v1)
+	registerValidator(t, sdbB, v2)
+
+	err = follower.ExecuteBlock(b)
+	if err == nil || !strings.Contains(err.Error(), "not in the active validator set") {
+		t.Fatalf("a block from an unregistered producer with a real quorum was accepted: %v", err)
+	}
+
+	// With a single active validator the fallback still applies: this is the
+	// pre-registry shape every chain starts in.
+	solo, sdbC := newTestExecutor(t)
+	defer solo.Close()
+	defer sdbC.Close()
+	solo.SetForks(forks.Schedule{forks.MultiValidator: 1})
+	registerValidator(t, sdbC, v1)
+	soloBlock, err := solo.BuildProposal(nil, strangerAddr, stranger.Bytes(), strangerPriv, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("proposal: %v", err)
+	}
+	if err := solo.ExecuteBlock(soloBlock); err != nil {
+		t.Fatalf("below a quorum an unregistered producer must still be followed: %v", err)
+	}
+}
+
+// Every vote in a certificate must name the height of the block it certifies.
+func TestExecuteBlockRejectsQCVoteForAnotherHeight(t *testing.T) {
+	v1, priv1, _ := qcrypto.GenerateKeypair()
+	v2, priv2, _ := qcrypto.GenerateKeypair()
+
+	producer, sdbA := newTestExecutor(t)
+	defer producer.Close()
+	defer sdbA.Close()
+	producer.SetForks(forks.Schedule{forks.MultiValidator: 1})
+	addr1 := registerValidator(t, sdbA, v1)
+	registerValidator(t, sdbA, v2)
+	b, err := producer.BuildProposal(nil, addr1, v1.Bytes(), priv1, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("proposal: %v", err)
+	}
+	good := signVote(t, b, addr1, priv1)
+	bad := signVote(t, b, qcrypto.DeriveAddress(v2), priv2)
+	bad.Height = 99
+	h, herr := bad.Hash()
+	if herr != nil {
+		t.Fatal(herr)
+	}
+	sig, serr := qcrypto.Sign(priv2, h[:], qcrypto.CtxVote)
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	bad.Signature = sig // properly signed, just about another height
+	b.Votes = []types.QCVote{good, bad}
+	root := types.ComputeQCRoot(b.Votes)
+	b.Header.QCRoot = root[:]
+
+	follower, sdbB := newTestExecutor(t)
+	defer follower.Close()
+	defer sdbB.Close()
+	follower.SetForks(forks.Schedule{forks.MultiValidator: 1})
+	registerValidator(t, sdbB, v1)
+	registerValidator(t, sdbB, v2)
+	if err := follower.ExecuteBlock(b); err == nil || !strings.Contains(err.Error(), "height") {
+		t.Fatalf("a certificate containing a vote about another height was accepted: %v", err)
+	}
+}
