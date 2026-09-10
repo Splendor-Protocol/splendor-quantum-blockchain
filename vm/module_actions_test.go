@@ -179,7 +179,7 @@ func TestHardModuleErrorClassification(t *testing.T) {
 		{"unparseable envelope", []byte("nonsense")},
 		{"unknown module", moduleData(t, "nope", "x", struct{}{})},
 		{"unknown qrc20 action", moduleData(t, "qrc20", "explode", struct{}{})},
-		{"unknown dex action", moduleData(t, "dex", "explode", struct{}{})},
+		{"unknown bridge action", moduleData(t, "bridge", "explode", struct{}{})},
 		{"read action in a write call", moduleData(t, "qrc20", "balance_of", map[string]string{"token": addr(0x44).String(), "owner": caller.String()})},
 	} {
 		err := DispatchModuleCall(sdb, ModuleContext{Caller: caller}, tc.data, &types.Receipt{})
