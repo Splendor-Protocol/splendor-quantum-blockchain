@@ -13,25 +13,41 @@ internals; keep them private.
 
 Amounts, fees, and bonds are integers in the **smallest SPLD unit**.
 `1 SPLD = 10^18` units (`/status.decimals` is `18`; `/status.fee_unit` is
-`smallest_spld`). Default JSON encoding emits those integers as numbers;
-`?amounts=string` on block/tx/receipt routes quotes `amount` and `fee` so
-JavaScript clients do not round values above 2^53.
+`smallest_spld`). Encoding differs by route. Block, tx, and receipt bodies
+emit `amount` and `fee` as JSON **numbers** by default; `?amounts=string`
+on those routes quotes them so JavaScript clients do not round values above
+2^53. `/balance.balance`, `/validators*.bond`, and
+`/staking/total-staked.total_staked` are always decimal **strings**.
+`/status.min_fee` is a number. `POST /tx/submit` accepts `amount` and
+`fee` as either numbers or decimal strings.
 
 | Code | Where | Meaning |
 | --- | --- | --- |
 | 200 | GET reads, including `/tx/{hash}/receipt` | Body is the object |
 | 202 | `POST /tx/submit` | Admitted to **this** node's mempool (`status: accepted`) |
 | 400 | Submit / decode | Rejected before the mempool |
+| 401 | Write plane | Token present but wrong (`X-Node-Auth` or inside the sealed envelope) |
 | 404 | Missing block, tx, or receipt | Not indexed on this node |
-| 503 | Sim / P2P inflight caps | Too busy; sealed writes also 503 when the write plane is disabled |
+| 410 | `POST /block` | Plaintext P2P is off (default); use the sealed transport |
+| 429 | Both limiters | Per-IP rate exceeded; `Retry-After: 1` |
+| 503 | Sim / P2P inflight caps | Too busy (`Retry-After: 1`); sealed writes also 503 when the write plane is disabled |
 
 `202` is not a committed receipt. Poll `GET /tx/{hash}/receipt` until it
 returns 200.
 
 ## Read plane
 
-Anonymous `GET`s, outside both limiters below. Hashes inside block and tx
-bodies are JSON byte arrays; `/status.genesis_hash` is hex.
+Anonymous `GET`s, outside both limiters below. Wire encoding of byte
+fields in block, tx, and receipt bodies (Go `encoding/json` defaults):
+
+- Fixed 32-byte fields are **arrays of 32 integers** 0–255: `hash`,
+  `prev_hash`, `tx_merkle_root`, `state_root`, `tx_hash`, `block_hash`,
+  and every address (`from`, `to`, `validator_addr`).
+- Variable-length byte fields are **base64 strings**: `validator_signature`,
+  `validator_pubkey`, `public_key`, `signature`, `data`, `qc_root`.
+- `/status.genesis_hash` and every field of `GET /tx/{hash}` are **hex**
+  strings. `/validators*`, `/balance`, and `/nonce` render addresses as
+  `SQ:<hex>` strings.
 
 | Method | Route | Notes |
 | --- | --- | --- |
@@ -39,18 +55,18 @@ bodies are JSON byte arrays; `/status.genesis_hash` is hex.
 | GET | `/block/latest` | Head block |
 | GET | `/block/{height}` | Block by height |
 | GET | `/block/hash/{hash}` | Block by hash |
-| GET | `/tx/{hash}` | Transaction location (+ receipt when indexed) |
+| GET | `/tx/{hash}` | Transaction location — `hash`, `block_hash` (hex strings), `block_height`, `tx_index` — plus `receipt` and `status` when the receipt is indexed |
 | GET | `/tx/{hash}/receipt` | Execution receipt (`status` 1 = success, 0 = failed) |
-| GET | `/balance/{address}` | Account balance |
+| GET | `/balance/{address}` | Account balance (`balance` decimal string, `unit`) |
 | GET | `/nonce/{address}` | Next nonce |
-| GET | `/state/root` | Current state root |
-| GET | `/state/account/{address}` | Account state |
+| GET | `/state/root` | Head state root (`state_root` hex, `block_height`, `block_hash`) |
+| GET | `/state/account/{address}` | Account state (`balance` string, `nonce`, `has_public_key`, `state_root` hex) |
 | GET | `/state/proof/{address}` | Merkle proof for an account |
-| GET | `/validators` | Active validator set |
-| GET | `/validators/{addr}` | One validator record |
+| GET | `/validators` | Active validator set (`validators[]`, `count`, `bond_spld`; `bond` is a decimal string, `address` an `SQ:` string) |
+| GET | `/validators/{addr}` | One validator record (`status` `inactive`/`active`/`exiting`, `exit_height`); 404 if unknown |
 | GET | `/staking/validators/{addr}` | Same record via staking prefix |
-| GET | `/staking/total-staked` | Aggregate bond |
-| GET | `/staking/count` | Validator count |
+| GET | `/staking/total-staked` | `total_staked` (decimal string) |
+| GET | `/staking/count` | `validator_count` |
 | GET | `/gov/proposals` | Governance list |
 | GET | `/gov/proposals/{id}` | One proposal |
 | GET | `/gov/proposals/{id}/votes/{addr}` | One vote |
@@ -81,20 +97,20 @@ bodies are JSON byte arrays; `/status.genesis_hash` is hex.
 | GET | `/p2p/identity` | This node's signed ML-DSA-65 node key plus its rotating ML-KEM-768 key |
 | GET | `/peers` | Known peers |
 | GET | `/sync` | Sync view |
-| GET | `/genesis` | The genesis document. Served only by a node started with `--genesis` (the producers); a follower does not serve it |
-| GET | `/ws` | WebSocket event stream |
-| GET | `/healthz` | Process liveness |
-| GET | `/readyz` | Readiness (has committed at least one block) |
+| GET | `/genesis` | The genesis document. Registered only on a node started with `--genesis` — a producer, or a follower given the document locally. A follower that bootstrapped the document from a peer answers 404 |
+| GET | `/ws` | Server-sent event stream (`text/event-stream`, `?subscribe=` filters) — not a WebSocket upgrade despite the path |
+| GET | `/healthz` | Liveness with build identity (`status`, `chain_id`, `commit`, `image_tag`, `node_version`, `uptime_seconds`) |
+| GET | `/readyz` | Readiness: `{"status":"ready"}` once height is above 0 |
 | GET | `/ai/stats` | AI-stats snapshot |
 
 ## Examples
 
 Shapes below use the real field names from `rpc/server.go` and the
-block/tx/receipt types. Byte arrays (`hash`, `state_root`, signatures) are
-JSON arrays of 0–255; they are shortened here. `/status.genesis_hash` is
-hex. A follower does not store block 0, so `/block/0` is 404 on it —
-read that from a node that has the block (a producer, or the published
-RPC).
+block/tx/receipt types, checked against the public mainnet RPC on
+2026-09-10. 32-byte arrays are shortened to `[186, 116, …]`; base64
+strings to `"gJgu…"`. `/status.genesis_hash` is hex. A follower does not
+store block 0, so `/block/0` is 404 on it — read that from a node that has
+the block (a producer, or the published RPC).
 
 ### `GET /status`
 
@@ -112,8 +128,11 @@ GET /status
   "commit": "unknown",
   "image_tag": "unknown",
   "timestamp": 1778000000,
-  "forks": { "validators_v1": 1, "multi_validator": 1, "modules_v2": 79202 },
-  "min_fee": 1000000000000000,
+  "forks": {
+    "exchange_v1": 1, "module_revert_v1": 1, "modules_v2": 79202,
+    "multi_validator": 1, "qrc1155_v1": 1, "qrc20_v2": 1, "validators_v1": 1
+  },
+  "min_fee": 1000,
   "fee_unit": "smallest_spld",
   "decimals": 18,
   "multi_validator": true,
@@ -128,12 +147,16 @@ GET /status
 }
 ```
 
-`forks` is omitted on a chain that schedules none. `genesis_hash` is
-omitted when this node has no block 0. `local_validator` appears only
-when the process loaded a validator wallet. `head_qc_reason` appears only
-when the head QC is not valid. `node_version` / `commit` / `image_tag`
-are `unknown` on an unstamped local build; a released image stamps
-`core/buildinfo`.
+`forks` is the mainnet schedule observed 2026-09-10 and is omitted on a
+chain that schedules none. `min_fee` is the pool's current floor: `1000`
+units on the public tiers (none schedules `min_fee_v1`), raised by the
+congestion multiplier as the pool fills. `genesis_hash` is omitted when
+this node has no block 0. `local_validator` appears when the process
+loaded a validator wallet **or** was given `--validator-pubkey-hex`
+(a full node reports the pinned key's address there). `head_qc_reason`
+appears only when the head QC is not valid. `node_version` / `commit` /
+`image_tag` are `unknown` on an unstamped local build; a released image
+stamps `core/buildinfo`.
 
 ### `GET /block/0`
 
@@ -145,25 +168,32 @@ GET /block/0
 {
   "header": {
     "height": 0,
-    "timestamp": 0,
+    "timestamp": 1786618272,
     "chain_id": "splendor-quantum-1",
     "alg_id": "ML-DSA-65",
-    "prev_hash": [0, 0, 0],
-    "tx_merkle_root": [0, 0, 0],
-    "state_root": [0, 0, 0],
-    "validator_addr": "SQ:…",
+    "prev_hash": [0, 0, …],
+    "tx_merkle_root": [0, 0, …],
+    "state_root": [183, 41, …],
+    "validator_addr": [68, 46, 144, 86, …],
     "tx_count": 0
   },
-  "hash": [186, 116, 130, 99],
-  "validator_signature": [0],
-  "validator_pubkey": [0],
+  "hash": [186, 116, 130, 99, …],
+  "validator_signature": "gJgu…",
+  "validator_pubkey": "gJgu…",
   "transactions": []
 }
 ```
 
-`header.qc_root` is omitted while it is empty. `validator_pubkey` is
-populated on height 0 only. Compare `hash` and `header.state_root` to a
-second published RPC; do not trust height alone.
+`header.validator_addr` is the 32-byte address as an array, not an
+`SQ:` string; `SQ:` + hex of those bytes is the form `/validators` uses.
+`header.qc_root` (base64) is omitted while it is empty, and `votes` (the
+quorum certificate, an array of `{alg_id, height, round, block_hash,
+validator_addr, signature, timestamp}`) is omitted when there is none —
+block 0 carries neither. `validator_pubkey` is `omitempty`: block 0
+always carries it, and on the public tiers every BFT-sealed block was
+observed to carry it too, so do not assume it is absent above height 0.
+Compare `hash` and `header.state_root` to a second published RPC; do not
+trust height alone.
 
 ### `POST /tx/submit`
 
@@ -178,18 +208,24 @@ Content-Type: application/json
   "chain_id": "splendor-quantum-1",
   "type": 1,
   "alg_id": "ML-DSA-65",
-  "from": "SQ:…",
-  "to": "SQ:…",
+  "from": [68, 46, 144, 86, …],
+  "to": [224, 139, 40, 140, …],
   "amount": 1000000000000000000,
-  "fee": 1000000000000000,
+  "fee": 1000,
   "nonce": 0,
   "timestamp": 1778000000,
-  "public_key": [0],
-  "signature": [0]
+  "public_key": "gJgu…",
+  "signature": "kR3a…"
 }
 ```
 
-`type` is `1` transfer, `2` deploy, `3` call, `5` x402. On admission:
+`from` and `to` are 32-byte arrays — an `SQ:` string here is a decode
+error. `public_key` and `signature` are base64. `public_key` is required
+while the sender has no key registered in state (its first transaction;
+the CLIs attach it when `nonce` is `0`) and may be omitted afterwards —
+the node then reads the key from state. `data` (base64) is omitted when
+empty. `type` is `1` transfer, `2` deploy, `3` call, `5`
+x402. On admission:
 
 ```http
 HTTP/1.1 202 Accepted
@@ -211,24 +247,25 @@ GET /tx/ab…/receipt
 
 ```json
 {
-  "tx_hash": [0],
+  "tx_hash": [38, 59, 134, 195, …],
   "tx_index": 0,
   "block_height": 130010,
-  "block_hash": [0],
+  "block_hash": [50, 105, 88, 246, …],
   "status": 1,
   "gas_used": 0,
-  "from": "SQ:…",
-  "to": "SQ:…",
+  "from": [9, 244, 76, 65, …],
+  "to": [224, 139, 40, 140, …],
   "amount": 1000000000000000000,
-  "fee": 1000000000000000,
+  "fee": 1000,
   "logs": [],
   "type": 1
 }
 ```
 
 `status` is `1` on success and `0` on execution failure (`error` is then
-set). HTTP 200 here means the receipt exists; look at `status` for
-execution. HTTP 404 means this node has not indexed that hash yet.
+set). `contract_address` appears on a successful deploy. HTTP 200 here
+means the receipt exists; look at `status` for execution. HTTP 404 means
+this node has not indexed that hash yet.
 
 ## Metered
 
@@ -246,7 +283,8 @@ built-in default.
 | `--sim-timeout` | `0` | `5s` |
 
 Also `--cors-origin` (repeatable, default none; `*` allows any origin).
-Excess sim work returns 503.
+Over the per-IP rate: 429. Over the in-flight cap: 503. Both carry
+`Retry-After: 1`.
 
 | Method | Route | Notes |
 | --- | --- | --- |
@@ -256,7 +294,8 @@ Excess sim work returns 503.
 | POST | `/contract/verify` | Source verification |
 
 **Per-IP rate limit**: `--rpc-rate-limit` / `--rpc-rate-burst` (defaults
-25 rps, burst 50). Behind a proxy you control, `--trust-proxy` reads
+25 rps, burst 50; `0` disables). Over the limit is 429 with
+`Retry-After: 1`. Behind a proxy you control, `--trust-proxy` reads
 `X-Forwarded-For`; anywhere else it lets clients spoof their IP.
 
 | Method | Route | Notes |
@@ -279,9 +318,9 @@ a producer still requires the write-plane token today. See
 
 | Method | Route | Auth |
 | --- | --- | --- |
-| POST | `/p2p/sealed` | ML-KEM envelope. Write kinds (`block`, `announce`, `vote`, `proposal`, `tx`) need `--rpc-auth-token` inside the envelope; a node with no token answers them 503 `write plane disabled`. Read kinds (`get_block`, `get_latest`, `get_state_snapshot`) need no token. Decryption work is capped by `--p2p-max-inflight` (503 + `Retry-After`). |
-| POST | `/block` | Token + plaintext P2P. Default build answers **410** unless `--allow-plaintext-p2p`. |
-| POST | `/peers/announce` | `--rpc-auth-token` (`X-Node-Auth`) |
+| POST | `/p2p/sealed` | ML-KEM envelope. Write kinds (`block`, `announce`, `vote`, `proposal`, `tx`) need `--rpc-auth-token` inside the envelope; a node with no token answers them 503 `write plane disabled`, a wrong token is 401. Read kinds (`get_block`, `get_latest`, `get_state_snapshot`) need no token. Decryption work is capped by `--p2p-max-inflight` (default 64; 503 + `Retry-After`). |
+| POST | `/block` | Token (`X-Node-Auth`) + plaintext P2P. Default build answers **410** unless `--allow-plaintext-p2p`. |
+| POST | `/peers/announce` | `--rpc-auth-token` (`X-Node-Auth`); 503 with no token, 401 with a wrong one |
 
 A follower used only to pull blocks does not need `--rpc-auth-token`.
 A node that must push blocks, announce peers, or relay `KindTx` does.
