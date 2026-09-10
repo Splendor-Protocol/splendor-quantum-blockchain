@@ -122,3 +122,64 @@ func TestRefusedOwnVoteAdvancesTheRound(t *testing.T) {
 		t.Fatal("no view change after the refused own vote")
 	}
 }
+
+// A journal AHEAD of the engine (data dir restored from an older snapshot
+// while the journal survived) must not turn into a round-bumping loop: the
+// refusal is logged and the round is left to the timer, as before.
+func TestJournalAheadOfEngineDoesNotSpinTheRound(t *testing.T) {
+	set, keys := testSet(t, 1)
+	j, err := OpenVoteJournal(filepath.Join(t.TempDir(), "vote-journal.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Record(9, 0, proposalAt(t, set, keys, 9, 0, 1).Block.Hash); err != nil {
+		t.Fatal(err)
+	}
+	viewChanged := make(chan struct{}, 4)
+	eng := engineFor(t, set, keys, 0, BFTConfig{
+		VoteJournal:  j,
+		OnViewChange: func(uint64, uint32) { viewChanged <- struct{}{} },
+	})
+	eng.SetHeight(5)
+	eng.handleProposal(&pendingProposal{block: proposalAt(t, set, keys, 5, 0, 2).Block, local: true})
+	if r := eng.Round(); r != 0 {
+		t.Fatalf("journal ahead of the engine bumped the round to %d", r)
+	}
+	select {
+	case <-viewChanged:
+		t.Fatal("journal ahead of the engine triggered a view change")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A tick that re-proposes at a round THIS process already voted in (peers
+// still voting on the first block) is refused as before and must not abandon
+// the round: only a vote a previous process cast is the restart shape.
+func TestOwnInProcessDuplicateProposalKeepsTheRound(t *testing.T) {
+	set, keys := testSet(t, 2)
+	j, err := OpenVoteJournal(filepath.Join(t.TempDir(), "vote-journal.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewChanged := make(chan struct{}, 4)
+	eng := engineFor(t, set, keys, 0, BFTConfig{
+		VoteJournal:  j,
+		OnViewChange: func(uint64, uint32) { viewChanged <- struct{}{} },
+	})
+	eng.SetHeight(4) // (4+0) % 2 == 0: this node leads round 0
+	first := proposalAt(t, set, keys, 4, 0, 1).Block
+	eng.handleProposal(&pendingProposal{block: first, local: true})
+	if n := eng.voteSet.VoteCount(); n != 1 {
+		t.Fatalf("first proposal: %d own vote(s), want 1", n)
+	}
+	second := proposalAt(t, set, keys, 4, 0, 2).Block
+	eng.handleProposal(&pendingProposal{block: second, local: true})
+	if r := eng.Round(); r != 0 {
+		t.Fatalf("an in-process duplicate proposal bumped the round to %d", r)
+	}
+	select {
+	case <-viewChanged:
+		t.Fatal("an in-process duplicate proposal triggered a view change")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
