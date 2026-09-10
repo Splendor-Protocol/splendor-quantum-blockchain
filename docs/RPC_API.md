@@ -9,6 +9,25 @@ metrics are a separate listener, `--metrics-addr` (default
 `127.0.0.1:9100`), serving `/metrics` and `/health`. They leak node
 internals; keep them private.
 
+## Units and status codes
+
+Amounts, fees, and bonds are integers in the **smallest SPLD unit**.
+`1 SPLD = 10^18` units (`/status.decimals` is `18`; `/status.fee_unit` is
+`smallest_spld`). Default JSON encoding emits those integers as numbers;
+`?amounts=string` on block/tx/receipt routes quotes `amount` and `fee` so
+JavaScript clients do not round values above 2^53.
+
+| Code | Where | Meaning |
+| --- | --- | --- |
+| 200 | GET reads, including `/tx/{hash}/receipt` | Body is the object |
+| 202 | `POST /tx/submit` | Admitted to **this** node's mempool (`status: accepted`) |
+| 400 | Submit / decode | Rejected before the mempool |
+| 404 | Missing block, tx, or receipt | Not indexed on this node |
+| 503 | Sim / P2P inflight caps | Too busy; sealed writes also 503 when the write plane is disabled |
+
+`202` is not a committed receipt. Poll `GET /tx/{hash}/receipt` until it
+returns 200.
+
 ## Read plane
 
 Anonymous `GET`s, outside both limiters below. Hashes inside block and tx
@@ -68,13 +87,166 @@ bodies are JSON byte arrays; `/status.genesis_hash` is hex.
 | GET | `/readyz` | Readiness (has committed at least one block) |
 | GET | `/ai/stats` | AI-stats snapshot |
 
+## Examples
+
+Shapes below use the real field names from `rpc/server.go` and the
+block/tx/receipt types. Byte arrays (`hash`, `state_root`, signatures) are
+JSON arrays of 0–255; they are shortened here. `/status.genesis_hash` is
+hex. A follower does not store block 0, so `/block/0` is 404 on it —
+read that from a node that has the block (a producer, or the published
+RPC).
+
+### `GET /status`
+
+```http
+GET /status
+```
+
+```json
+{
+  "chain_id": "splendor-quantum-1",
+  "height": 130001,
+  "mempool_size": 0,
+  "peer_count": 1,
+  "node_version": "unknown",
+  "commit": "unknown",
+  "image_tag": "unknown",
+  "timestamp": 1778000000,
+  "forks": { "validators_v1": 1, "multi_validator": 1, "modules_v2": 79202 },
+  "min_fee": 1000000000000000,
+  "fee_unit": "smallest_spld",
+  "decimals": 18,
+  "multi_validator": true,
+  "validator_set_size": 1,
+  "consensus_mode": "follower",
+  "head_qc_present": true,
+  "head_qc_valid": true,
+  "head_qc_votes": 1,
+  "head_quorum_required": 1,
+  "validator_set_height": 130001,
+  "genesis_hash": "ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949"
+}
+```
+
+`forks` is omitted on a chain that schedules none. `genesis_hash` is
+omitted when this node has no block 0. `local_validator` appears only
+when the process loaded a validator wallet. `head_qc_reason` appears only
+when the head QC is not valid. `node_version` / `commit` / `image_tag`
+are `unknown` on an unstamped local build; a released image stamps
+`core/buildinfo`.
+
+### `GET /block/0`
+
+```http
+GET /block/0
+```
+
+```json
+{
+  "header": {
+    "height": 0,
+    "timestamp": 0,
+    "chain_id": "splendor-quantum-1",
+    "alg_id": "ML-DSA-65",
+    "prev_hash": [0, 0, 0],
+    "tx_merkle_root": [0, 0, 0],
+    "state_root": [0, 0, 0],
+    "validator_addr": "SQ:…",
+    "tx_count": 0
+  },
+  "hash": [186, 116, 130, 99],
+  "validator_signature": [0],
+  "validator_pubkey": [0],
+  "transactions": []
+}
+```
+
+`header.qc_root` is omitted while it is empty. `validator_pubkey` is
+populated on height 0 only. Compare `hash` and `header.state_root` to a
+second published RPC; do not trust height alone.
+
+### `POST /tx/submit`
+
+```http
+POST /tx/submit
+Content-Type: application/json
+```
+
+```json
+{
+  "version": 1,
+  "chain_id": "splendor-quantum-1",
+  "type": 1,
+  "alg_id": "ML-DSA-65",
+  "from": "SQ:…",
+  "to": "SQ:…",
+  "amount": 1000000000000000000,
+  "fee": 1000000000000000,
+  "nonce": 0,
+  "timestamp": 1778000000,
+  "public_key": [0],
+  "signature": [0]
+}
+```
+
+`type` is `1` transfer, `2` deploy, `3` call, `5` x402. On admission:
+
+```http
+HTTP/1.1 202 Accepted
+```
+
+```json
+{ "status": "accepted", "hash": "ab…64 hex chars…" }
+```
+
+A 400 body is `{ "error": "rejected: …" }` (or `invalid transaction JSON`).
+202 is mempool only. Relaying that tx to a producer still needs the
+write-plane token; see [`PEER_AUTH.md`](PEER_AUTH.md).
+
+### `GET /tx/{hash}/receipt`
+
+```http
+GET /tx/ab…/receipt
+```
+
+```json
+{
+  "tx_hash": [0],
+  "tx_index": 0,
+  "block_height": 130010,
+  "block_hash": [0],
+  "status": 1,
+  "gas_used": 0,
+  "from": "SQ:…",
+  "to": "SQ:…",
+  "amount": 1000000000000000000,
+  "fee": 1000000000000000,
+  "logs": [],
+  "type": 1
+}
+```
+
+`status` is `1` on success and `0` on execution failure (`error` is then
+set). HTTP 200 here means the receipt exists; look at `status` for
+execution. HTTP 404 means this node has not indexed that hash yet.
+
 ## Metered
 
 Two different limiters. Neither applies to the read plane above.
 
 **Simulation guard**: routes that run VM work. Per-IP rate limit plus a
-global in-flight cap and a wall-time cap (`--sim-rate-limit`,
-`--sim-max-inflight`, `--sim-timeout`); excess gets 503.
+global in-flight cap and a wall-time cap. Flag value `0` selects the
+built-in default.
+
+| Flag | CLI default | Built-in when 0 |
+| --- | --- | --- |
+| `--sim-rate-limit` | `0` | `100` req/s per client IP |
+| `--sim-rate-burst` | `0` | `200` |
+| `--sim-max-inflight` | `0` | `8` concurrent simulations |
+| `--sim-timeout` | `0` | `5s` |
+
+Also `--cors-origin` (repeatable, default none; `*` allows any origin).
+Excess sim work returns 503.
 
 | Method | Route | Notes |
 | --- | --- | --- |
@@ -119,6 +291,25 @@ A node that must push blocks, announce peers, or relay `KindTx` does.
 `GET /tx/{hash}/receipt` returns the native receipt object. `status` is `1`
 on success and `0` on execution failure, with `error` set when failed.
 `sqc-modcall write --require-success` treats only `status: 1` as success.
+Do not treat HTTP 202 from `/tx/submit` as `status: 1`.
+
+## Finality (`/status`)
+
+This API does not expose Ethereum `finalized` / `safe` tags. What
+`/status` actually reports:
+
+| Field | Meaning |
+| --- | --- |
+| `consensus_mode` | Engine this process is running: `single` (no certificate), `bft` (proposes/commits with a QC), or `follower` (applies peer blocks) |
+| `multi_validator` | Schedule bit at the head — not a QC |
+| `head_qc_present` | Head block carries a certificate |
+| `head_qc_valid` | That certificate verifies against the committed validator set |
+| `head_qc_votes` | Vote count on the head QC |
+| `head_quorum_required` | Votes required for quorum |
+| `validator_set_height` | Height the set was taken from |
+| `head_qc_reason` | Set only when the head QC is not valid |
+
+A healthy HTTP `/status` and a climbing `height` are not a valid QC.
 
 ## Not present
 
