@@ -275,6 +275,14 @@ type BFTEngine struct {
 
 	onCommit         func(*types.Block) error
 	onViewChange     func(height uint64, round uint32)
+	// The last vote THIS process signed, so a journal refusal can be told
+	// apart: one for a vote a previous process cast (a restart landed
+	// mid-height; the round is spent, move on) versus one for a vote this
+	// process cast itself (a tick re-proposed while peers were still voting;
+	// leave the round alone and let the timer decide, as before).
+	signedHeight uint64
+	signedRound  uint32
+	hasSigned    bool
 	validateProposal func(*types.Block) error
 	journal          *VoteJournal
 	broadcast        VoteBroadcaster
@@ -454,7 +462,26 @@ func (e *BFTEngine) castVote(b *types.Block, round uint32) (*Vote, error) {
 	if err := vote.Sign(e.localPrivKey); err != nil {
 		return nil, err
 	}
+	e.signedHeight, e.signedRound, e.hasSigned = b.Header.Height, round, true
 	return vote, nil
+}
+
+// spentByPreviousProcess reports whether a journal refusal of this node's own
+// proposal at (height, round) is the restart shape: the journal holds a vote
+// at exactly that height and round, and this process did not sign it. Only
+// then is advancing the round the right answer. A journal AHEAD of the engine
+// (a data dir restored under a surviving journal) or a vote this process cast
+// itself are left to the round timer, as before — bumping the round there
+// would loop at CPU speed, or abandon a round peers are still voting in.
+func (e *BFTEngine) spentByPreviousProcess(height uint64, round uint32) bool {
+	if e.journal == nil {
+		return false
+	}
+	jh, jr, _, ok := e.journal.Last()
+	if !ok || jh != height || jr != round {
+		return false
+	}
+	return !(e.hasSigned && e.signedHeight == height && e.signedRound == round)
 }
 
 // isMember reports whether this node is in the active validator set.
@@ -674,7 +701,7 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 			// the journal. Retrying at this round can never succeed, and our
 			// retries are what keep the round timer from firing — so take the
 			// view change now rather than wait for a timeout that never comes.
-			if p.local && errors.Is(verr, ErrDoubleSign) && round == e.currentRound {
+			if p.local && errors.Is(verr, ErrDoubleSign) && round == e.currentRound && e.spentByPreviousProcess(b.Header.Height, round) {
 				e.currentRound = round + 1
 				e.voteSet = nil
 				e.proposal = nil
