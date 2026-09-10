@@ -6,7 +6,8 @@
 // receipts, and has one subcommand whose whole purpose is to be refused.
 //
 //	sqc-modcall write  --node URL --wallet W --pass-file P --chain-id ID \
-//	                   --module validators --action register --params '{...}' [--wait]
+//	                   --module validators --action register --params '{...}' [--fee UNITS] \
+//	                   [--wait] [--require-success]   (--require-success implies --wait)
 //	sqc-modcall read   --node URL --module validators --action validator --params '{...}'
 //	sqc-modcall forge  --node URL --wallet W --pass-file P --chain-id ID
 //	sqc-modcall addr
@@ -106,15 +107,25 @@ func loadWallet(f flags) (*qcrypto.PublicKey, *qcrypto.PrivateKey, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := qcrypto.CheckKeyFilePermissions(path); err != nil {
+		return nil, nil, err
+	}
 	passFile, err := f.need("pass-file")
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := qcrypto.CheckKeyFilePermissions(passFile); err != nil {
 		return nil, nil, err
 	}
 	pass, err := os.ReadFile(passFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read pass file: %w", err)
 	}
-	return qcrypto.LoadWallet(path, bytes.TrimRight(pass, "\r\n"))
+	pass = bytes.TrimRight(pass, "\r\n")
+	if len(pass) == 0 {
+		return nil, nil, fmt.Errorf("pass file %s is empty", passFile)
+	}
+	return qcrypto.LoadWallet(path, pass)
 }
 
 // adoptChainID pins the chain id every signature commits to. Without it the
@@ -128,8 +139,12 @@ func adoptChainID(f flags) error {
 	return types.SetClientChainID(id)
 }
 
+// httpClient bounds every call: the default client has no timeout, so an RPC
+// that accepts the connection and never answers would hang the receipt wait.
+var httpClient = &http.Client{Timeout: 20 * time.Second}
+
 func getJSON(url string, out any) error {
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return err
 	}
@@ -157,7 +172,7 @@ func postJSON(url string, headers map[string]string, in any, out any) (int, stri
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return 0, "", err
 	}
@@ -252,26 +267,38 @@ func cmdWrite(args []string) error {
 	hash := hex.EncodeToString(full[:])
 	fmt.Printf("submitted %s.%s from=%s nonce=%d tx=%s\n", module, action, from, nonceResp.Nonce, hash)
 
-	if f["wait"] != "true" {
+	requireSuccess := f["require-success"] == "true"
+	if f["wait"] != "true" && !requireSuccess {
 		return nil
 	}
-	return waitReceipt(node, hash)
+	return waitReceipt(node, hash, requireSuccess)
 }
 
 // waitReceipt polls for the receipt and prints it. A SOFT module failure is a
-// receipt with status 0 and the reason inside it — the tool prints it and does
-// NOT exit non-zero, because "the chain refused this on purpose" is frequently
-// the result being tested for.
-func waitReceipt(node, hash string) error {
+// receipt with status 0 and the reason inside it — by default the tool prints
+// it and does NOT exit non-zero, because "the chain refused this on purpose"
+// is frequently the result being tested for. Pass requireSuccess to print a
+// labeled receipt-status line and exit nonzero unless execution succeeded.
+func waitReceipt(node, hash string, requireSuccess bool) error {
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		var r map[string]any
 		if err := getJSON(node+"/tx/"+hash+"/receipt", &r); err == nil && len(r) > 0 {
 			out, _ := json.Marshal(r)
 			fmt.Printf("receipt %s\n", out)
+			if requireSuccess {
+				label := classifyReceiptStatus(r)
+				fmt.Printf("receipt-status %s\n", label)
+				if label != receiptStatusSuccess {
+					return fmt.Errorf("receipt %s", label)
+				}
+			}
 			return nil
 		}
 		time.Sleep(time.Second)
+	}
+	if requireSuccess {
+		fmt.Printf("receipt-status %s\n", receiptStatusPending)
 	}
 	return fmt.Errorf("no receipt for %s within 60s", hash)
 }

@@ -1,0 +1,38 @@
+# Build context for Dockerfile (`COPY . .`). Keep source and the SDK
+# signer WASM (`sdk/sqc-sdk/wasm/`) in the context; exclude operator
+# material, VCS, data dirs, logs, and compiled binaries.
+
+.git
+**/.git
+
+# Wallets, pass files, env secrets
+**/*.sqwallet
+**/*.pass
+**/*.pem
+**/*.key
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Chain / node data directories
+**/sqc-data/
+/data/
+/chaindata/
+**/chaindata/
+
+# Logs and captured sessions
+**/*.log
+**/*.out
+
+# Root build outputs (same names .gitignore already keeps out of git)
+/sqc-node
+/sqc-wallet
+/sqc-modcall
+/sqc-deploy
+/node
+/wallet
+/qc
+/auditprobe
+/loadtest
+/bin/
