@@ -1,0 +1,5 @@
+[33m806431b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m bug fixes
+[33m39cea0e[m refactor: remove DeFi bloat, keep only core node functions
+[33m5a7255b[m refactor(consensus): production-ready BFT lock mechanism
+[33m00aef53[m[33m ([m[1;33mtag: [m[1;33mv1.0.17[m[33m)[m consensus: one vote hash per height
+[33m0ef16e1[m fix: DEX events, wallet send HTTP/nonce, readable GET /tx
