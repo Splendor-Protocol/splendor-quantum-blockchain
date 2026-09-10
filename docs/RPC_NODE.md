@@ -132,15 +132,24 @@ hold that same document locally. Do not use `--trust-peer-genesis`.
 ```
 
 Omit `--genesis` if `/etc/sqc/genesis.json` is not present. The `--peer-pin`
-URL must be the exact `--peer` string. `--metrics-addr` defaults to
-`127.0.0.1:9100` and serves `/metrics` plus `/health`; keep that listener
-private. Do not advertise a loopback `--public-url` — see below.
+URL must name the same endpoint as `--peer`: the node canonicalises both
+(lower-cases scheme and host, drops a default port and a trailing slash)
+but `http://` and `https://` remain different pins. `--metrics-addr`
+defaults to `127.0.0.1:9100` and serves `/metrics` plus `/health`; keep
+that listener private. Do not advertise a loopback `--public-url` — see
+below.
+
+With `--genesis`, this node also answers `GET /genesis` with that file.
+Without it, `/genesis` is 404 here; the document is applied from the peer
+and is not re-served.
 
 ### Service user and data-dir permissions
 
 Run the process as a dedicated unprivileged user. The data directory holds
 the chain store (`state/`, `chain/`, `txindex/`), the node's P2P identity
-key, and (if you later enable `--validator`) `vote-journal.json`. Other
+key (`node_identity.key`, mode `0600`), and (if you later enable
+`--validator`) `vote-journal.json`. Nothing else on the filesystem is
+written; the unit's `ReadWritePaths` covers exactly this directory. Other
 users on the box must not read or write it.
 
 - Create the system user once. Home `/var/sqc`, shell `nologin`.
@@ -202,10 +211,10 @@ Flags that already exist (defaults in parentheses):
 | Flag | Default | Role |
 | --- | --- | --- |
 | `--cors-origin` | none (repeatable; `*` allows any) | Browser origins allowed to call this node |
-| `--rpc-rate-limit` | `25` | Sustained requests/second per client IP on `/tx/submit` and x402 |
+| `--rpc-rate-limit` | `25` | Sustained requests/second per client IP on `/tx/submit`, `/x402/*`, `/verify/{check,attest,settle}`; over it is 429 |
 | `--rpc-rate-burst` | `50` | Burst for those same routes |
-| `--sim-rate-limit` | `0` → built-in `100` | Per-IP rate on `/call`, `/estimate`, `/logs` |
-| `--sim-rate-burst` | `0` → built-in `200` | Burst for those VM routes |
+| `--sim-rate-limit` | `0` → built-in `100` | Per-IP rate on `/call`, `/estimate`, `/logs`, `/contract/verify`; over it is 429 |
+| `--sim-rate-burst` | `0` → built-in `200` | Burst for those VM routes (`2 × rate` when only the rate is set) |
 | `--sim-max-inflight` | `0` → built-in `8` | Global concurrent VM simulations; excess is 503 |
 | `--sim-timeout` | `0` → built-in `5s` | Wall time one simulation may hold a slot |
 | `--trust-proxy` | `false` | Read client IP from `X-Forwarded-For` |
@@ -228,17 +237,31 @@ Height climbing is not enough. A peer can serve a tall fork. Check the pins
 and the hashes.
 
 1. The two pins are enforced at start-up, not by you. The first minute of
-   the log must show both lines, or the node did not bootstrap from the
-   pinned chain:
+   the log must show both of these, or the node did not bootstrap from the
+   pinned chain. The first line is the block-0 pin:
 
    ```
    sync: bootstrapped validator pubkey from pinned genesis block peer=... pubkey_prefix=...
+   ```
+
+   The second depends on how the document arrived. Without `--genesis`
+   (the unit's shape) it is fetched from the peer and checked against
+   `--genesis-doc-hash`:
+
+   ```
    RPC: bootstrapped genesis allocations from validator peer allocations=... genesis_doc_hash=...
    ```
 
+   With `--genesis /etc/sqc/genesis.json` the local file is applied
+   instead, after the same hash check, and the line is:
+
+   ```
+   Applied genesis allocations allocations=... genesis_doc_hash=...
+   ```
+
    A follower does not store block 0: `/block/0` is 404 and
-   `/status.genesis_hash` is null on it. Read those from the bootnode, not
-   from your node.
+   `/status.genesis_hash` is absent (the key is omitted) on it. Read those
+   from the bootnode, not from your node.
 2. `chain_id` is the pinned one and the height climbs:
 
    ```bash
@@ -279,21 +302,27 @@ Restart it. The unit's `ExecStartPre` reachability wait exists for this.
 
 ### Expected log noise
 
-- One `sync failed ... state root mismatch` on block 1 right after start:
-  the genesis document lands one catch-up attempt late and the sync
-  retries. Repeated mismatches mean the wrong document.
-- `p2p: REFUSED unpinned peer` for `http://quantum-rpc.splendor.org`: the
-  bootnode also advertises itself with an `http://` scheme, which is a
-  different pin key. Refusing it is correct; sync continues over the
-  pinned `https://` peer.
+- One or two `sync failed ... state root mismatch` on block 1 right after
+  start, only when the document comes from the peer (no `--genesis`): the
+  1 s sync tick fires before the document lands about two seconds after
+  boot, and the sync retries. Repeated mismatches after the `bootstrapped
+  genesis allocations` line mean the wrong document.
+- `peer_count` of `2` with one `--peer`, and possibly
+  `p2p: REFUSED unpinned peer` for `http://quantum-rpc.splendor.org`: the
+  bootnode's `/peers` lists itself with an `http://` scheme, which is a
+  different pin key. The refusal only logs if the sync loop happens to pick
+  that entry (it did not in two 100 s runs on 2026-09-10); when it does,
+  refusing is correct and sync continues over the pinned `https://` peer.
 - `Node P2P identity key is stored unencrypted (mode 0600)`: the follower's
   own identity, generated in the data dir. Encrypt it with
   `--node-key-pass-file` (a mode-0600 file) if the box has other users.
 
-Full replay from block 0 runs at a few blocks per second; a 130,000-block
-chain takes hours. Verified 2026-09-10: a fresh follower started with the
-mainnet values above synced about 600 blocks in 100 s over the public
-endpoint.
+Full replay from block 0 runs at a few blocks per second; a 140,000-block
+chain takes hours. Verified 2026-09-10 (twice): a fresh follower started
+with the mainnet values above synced 546–600 blocks in 100 s over the
+public endpoint, and a restart against the same `--data-dir` logged
+`Chain identity adopted from existing blocks from_height=546` and resumed
+from there.
 
 ## Backup, restore, and upgrade
 
