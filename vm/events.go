@@ -380,14 +380,6 @@ func ProposalSubmittedEvent(contract qcrypto.Address, proposalID uint64, propose
 }
 
 // VoteCastEvent builds a governance VoteCast event.
-func VoteCastEvent(contract qcrypto.Address, proposalID uint64, voter qcrypto.Address, option VoteOption, votingPower *big.Int) *types.Log {
-	return NewEvent(contract, "VoteCast(uint256,sqaddress,uint8,uint256)").
-		IndexUint256(big.NewInt(int64(proposalID))).
-		IndexAddr(voter).
-		DataUint256(big.NewInt(int64(option))).
-		DataUint256(votingPower).
-		Build()
-}
 
 // SwapEvent is emitted by a DEX pool after a successful swap.
 func SwapEvent(pool, sender, to qcrypto.Address, amount0In, amount1In, amount0Out, amount1Out *big.Int) *types.Log {
