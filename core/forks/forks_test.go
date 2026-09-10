@@ -151,3 +151,30 @@ func TestValidateReportsUnknownNamesDeterministically(t *testing.T) {
 		}
 	}
 }
+
+// validators_admission_v1 qualifies register, so it needs validators_v1 (and,
+// as a routed module rule, module_revert_v1) in force no later than itself.
+func TestValidatorsAdmissionRequiresValidatorsV1NoLaterThanItself(t *testing.T) {
+	for name, tc := range map[string]struct {
+		s  Schedule
+		ok bool
+	}{
+		"all at 1":               {Schedule{ValidatorsAdmissionV1: 1, ValidatorsV1: 1, ModuleRevertV1: 1}, true},
+		"validators earlier":     {Schedule{ValidatorsAdmissionV1: 10, ValidatorsV1: 5, ModuleRevertV1: 1}, true},
+		"validators alone":       {Schedule{ValidatorsV1: 1, ModuleRevertV1: 1}, true},
+		"admission alone":        {Schedule{ValidatorsAdmissionV1: 1, ModuleRevertV1: 1}, false},
+		"validators later":       {Schedule{ValidatorsAdmissionV1: 5, ValidatorsV1: 6, ModuleRevertV1: 1}, false},
+		"no module_revert":       {Schedule{ValidatorsAdmissionV1: 1, ValidatorsV1: 1}, false},
+		"admission never (0)":    {Schedule{ValidatorsAdmissionV1: 0, ValidatorsV1: 1, ModuleRevertV1: 1}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := tc.s.Validate()
+			if tc.ok && err != nil {
+				t.Fatalf("want accepted, got %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("want refused, got nil")
+			}
+		})
+	}
+}

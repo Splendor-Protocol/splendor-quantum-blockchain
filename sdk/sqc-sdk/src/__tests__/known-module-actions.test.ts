@@ -107,8 +107,8 @@ const SDK_COVERAGE: Record<string, { writes: string[]; reads: string[]; allowlis
     reads: ['proof', 'instance'],
   },
   validators: {
-    writes: ['register', 'unregister', 'finalize_exit'],
-    reads: ['validator', 'list', 'count', 'bond'],
+    writes: ['register', 'unregister', 'finalize_exit', 'approve', 'revoke'],
+    reads: ['validator', 'list', 'count', 'bond', 'approved'],
   },
   lending: {
     writes: ['deploy', 'enable_asset', 'set_oracle', 'deposit', 'withdraw', 'borrow', 'repay'],

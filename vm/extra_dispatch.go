@@ -40,6 +40,15 @@ func dispatchValidators(stateDB *state.StateDB, ctx ModuleContext, action string
 		if err != nil {
 			return fmt.Errorf("validators register: pubkey: %w", err)
 		}
+		// validators_admission_v1: only the block's producer or an approved
+		// address may register. Judged before the bond so a refused caller
+		// keeps its SPLD; the failure is SOFT (a failed receipt under
+		// module_revert_v1), not a dropped transaction.
+		if ctx.Forks.Active(forks.ValidatorsAdmissionV1, ctx.Height) {
+			if err := reg.CheckAdmission(ctx.Caller, ctx.Producer); err != nil {
+				return err
+			}
+		}
 		// modules_v2: an Exiting record refuses a new bond until the exit
 		// is finalized. Before it, the legacy rule (Active only) applies so
 		// already-applied blocks replay unchanged.
@@ -51,6 +60,24 @@ func dispatchValidators(stateDB *state.StateDB, ctx ModuleContext, action string
 		return reg.Unregister(ctx.Caller, ctx.Height)
 	case "finalize_exit":
 		return reg.FinalizeExit(ctx.Caller, ctx.Height)
+	case "approve", "revoke":
+		if err := requireFork(ctx, forks.ValidatorsAdmissionV1); err != nil {
+			return err
+		}
+		var p struct {
+			Address string `json:"address"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return err
+		}
+		addr, err := qcrypto.AddressFromString(p.Address)
+		if err != nil {
+			return fmt.Errorf("validators %s: address: %w", action, err)
+		}
+		if action == "approve" {
+			return reg.Approve(ctx.Caller, addr)
+		}
+		return reg.Revoke(ctx.Caller, addr)
 	default:
 		return hard(fmt.Errorf("module call: unknown action %q", action))
 	}
@@ -76,6 +103,19 @@ func dispatchValidatorsRead(stateDB *state.StateDB, action string, raw json.RawM
 	case "count":
 		n, err := reg.ValidatorCount()
 		return map[string]uint64{"count": n}, err
+	case "approved":
+		var p struct {
+			Address string `json:"address"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		addr, err := qcrypto.AddressFromString(p.Address)
+		if err != nil {
+			return nil, err
+		}
+		ok, err := reg.IsApproved(addr)
+		return map[string]bool{"approved": ok}, err
 	case "bond":
 		return map[string]string{"bond": ValidatorBond().String(), "spld": fmt.Sprintf("%d", ValidatorBondSPLD)}, nil
 	default:

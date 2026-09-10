@@ -65,6 +65,10 @@ type ModuleContext struct {
 	Height uint64
 	Time   int64
 	Forks  forks.Schedule
+	// Producer is the address that sealed the block this call executes in
+	// (the block header's ValidatorAddr), so every node judging the block
+	// sees the same value. Zero for a simulation, which has no block.
+	Producer qcrypto.Address
 }
 
 // DispatchModuleCall decodes and executes a native-module call against stateDB.

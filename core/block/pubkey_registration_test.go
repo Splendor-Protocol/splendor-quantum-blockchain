@@ -34,7 +34,7 @@ func TestPublicKeyNotRegisteredWhenSignatureFails(t *testing.T) {
 	// Corrupt the signature, leaving a well-formed key that matches From.
 	tx.Signature[0] ^= 0xff
 
-	if err := ex.executeTx(tx, 1, time.Now().Unix(), &types.Receipt{}); err == nil {
+	if err := ex.executeTx(tx, 1, time.Now().Unix(), qcrypto.Address{}, &types.Receipt{}); err == nil {
 		t.Fatal("a transaction with a bad signature must not apply")
 	}
 
@@ -58,7 +58,7 @@ func TestPublicKeyRegisteredOnValidTransaction(t *testing.T) {
 	fund(t, sdb, from, 1_000_000)
 
 	tx := signedTransfer(t, from, priv, to, 100, 0)
-	if err := ex.executeTx(tx, 1, time.Now().Unix(), &types.Receipt{}); err != nil {
+	if err := ex.executeTx(tx, 1, time.Now().Unix(), qcrypto.Address{}, &types.Receipt{}); err != nil {
 		t.Fatalf("valid transfer should apply: %v", err)
 	}
 

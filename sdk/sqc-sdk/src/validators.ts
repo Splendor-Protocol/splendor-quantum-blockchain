@@ -41,6 +41,25 @@ export class ValidatorsClient {
   finalizeExitCall(): ModuleCall {
     return buildModuleCall('validators', 'finalize_exit', {});
   }
+
+  /** validators_admission_v1: allow `address` to register. Signer must be an active validator. */
+  approveCall(address: string): ModuleCall {
+    return buildModuleCall('validators', 'approve', { address });
+  }
+
+  /** validators_admission_v1: withdraw an approval. Signer must be an active validator. */
+  revokeCall(address: string): ModuleCall {
+    return buildModuleCall('validators', 'revoke', { address });
+  }
+
+  /** validators_admission_v1: whether `address` holds a standing approval (module read `approved`). */
+  isApproved(address: string) {
+    return this.io.post<{ approved: boolean }>('/call', {
+      module: 'validators',
+      action: 'approved',
+      params: { address },
+    });
+  }
 }
 
 /** Prefer `getValidators(connection)` — Transport-backed Connection. */

@@ -300,3 +300,70 @@ func TestExecuteBlockRejectsQCVoteForAnotherHeight(t *testing.T) {
 		t.Fatalf("a certificate containing a vote about another height was accepted: %v", err)
 	}
 }
+
+// Under validators_admission_v1 the genesis validator is the only producer
+// below two members, and a follower enforces it: a block sealed by a lone
+// registrant that is not the genesis validator is refused even though the
+// registry lists it, while the unregistered genesis validator's block is
+// followed. Without the fork the lone registrant is still accepted, so
+// history sealed before activation replays unchanged.
+func TestAdmissionForkRefusesLoneRegistrantBelowTwo(t *testing.T) {
+	genesis, genesisPriv, _ := qcrypto.GenerateKeypair()
+	genesisAddr := qcrypto.DeriveAddress(genesis)
+	stranger, strangerPriv, _ := qcrypto.GenerateKeypair()
+	strangerAddr := qcrypto.DeriveAddress(stranger)
+	withFork := forks.Schedule{forks.MultiValidator: 1, forks.ModuleRevertV1: 1, forks.ValidatorsV1: 1, forks.ValidatorsAdmissionV1: 1}
+	preFork := forks.Schedule{forks.MultiValidator: 1, forks.ModuleRevertV1: 1, forks.ValidatorsV1: 1}
+	genesisKey := func() []byte { return genesis.Bytes() }
+
+	// The stranger's own node: it registered itself (n=1) and seals a block
+	// on the old rule, where a lone registrant believes it leads.
+	attacker, sdbA := newTestExecutor(t)
+	defer attacker.Close()
+	defer sdbA.Close()
+	attacker.SetForks(preFork)
+	registerValidator(t, sdbA, stranger)
+	strangerBlock, err := attacker.BuildProposal(nil, strangerAddr, stranger.Bytes(), strangerPriv, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("stranger proposal: %v", err)
+	}
+
+	// A follower on the same state with the admission fork in force and the
+	// genesis key pinned refuses it.
+	follower, sdbF := newTestExecutor(t)
+	defer follower.Close()
+	defer sdbF.Close()
+	follower.SetForks(withFork)
+	follower.WithGenesisValidatorKey(genesisKey)
+	registerValidator(t, sdbF, stranger)
+	err = follower.ExecuteBlock(strangerBlock)
+	if err == nil || !strings.Contains(err.Error(), "nor the genesis validator") {
+		t.Fatalf("a lone non-genesis registrant's block was followed under validators_admission_v1: %v", err)
+	}
+
+	// The unregistered genesis validator's block on the same state is followed.
+	producer, sdbP := newTestExecutor(t)
+	defer producer.Close()
+	defer sdbP.Close()
+	producer.SetForks(withFork)
+	producer.WithGenesisValidatorKey(genesisKey)
+	registerValidator(t, sdbP, stranger)
+	genesisBlock, err := producer.BuildProposal(nil, genesisAddr, genesis.Bytes(), genesisPriv, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("genesis proposal: %v", err)
+	}
+	if err := follower.ExecuteBlock(genesisBlock); err != nil {
+		t.Fatalf("the genesis validator's block must be followed below two members: %v", err)
+	}
+
+	// Without the fork the old rule stands, so already-sealed history replays.
+	legacy, sdbL := newTestExecutor(t)
+	defer legacy.Close()
+	defer sdbL.Close()
+	legacy.SetForks(preFork)
+	legacy.WithGenesisValidatorKey(genesisKey)
+	registerValidator(t, sdbL, stranger)
+	if err := legacy.ExecuteBlock(strangerBlock); err != nil {
+		t.Fatalf("below the fork a listed lone registrant must still be followed: %v", err)
+	}
+}

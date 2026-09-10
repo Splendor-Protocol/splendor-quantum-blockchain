@@ -57,6 +57,12 @@ func stakingValidatorSlot(addr qcrypto.Address) [32]byte {
 	return qcrypto.Hash32(append([]byte("staking:validator:"), addr[:]...))
 }
 
+// stakingApprovalSlot holds a single byte, 1 while addr may register under
+// validators_admission_v1. Absent or 0 means not approved.
+func stakingApprovalSlot(addr qcrypto.Address) [32]byte {
+	return qcrypto.Hash32(append([]byte("staking:approved:"), addr[:]...))
+}
+
 // StakingContract is the validator registry (name kept so existing RPC compiles).
 type StakingContract struct {
 	stateDB  *state.StateDB
@@ -155,6 +161,66 @@ func (s *StakingContract) register(caller qcrypto.Address, pubKey []byte, curren
 	s.setBigInt(slotStakingTotalStaked, new(big.Int).Add(total, bond))
 	count, _ := s.ValidatorCount()
 	s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count+1)))
+	return nil
+}
+
+// CheckAdmission is the validators_admission_v1 rule for register: the caller
+// must be the producer of the block the call executes in, or an address an
+// active validator has approved. The producer clause is how a chain's genesis
+// validator enrols itself without anyone to approve it — only a real
+// producer seals a canonical block, and every node reads the same producer
+// from the header — and it needs no node-local knowledge of who the genesis
+// validator is, which a consensus rule must never depend on.
+func (s *StakingContract) CheckAdmission(caller, producer qcrypto.Address) error {
+	if caller == producer {
+		return nil
+	}
+	ok, err := s.IsApproved(caller)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("validators: %s is not approved to register (an active validator must approve it first)", caller)
+	}
+	return nil
+}
+
+// Approve marks addr as allowed to register. The approver must be an active
+// validator; approval stands until Revoke, so an approved validator that exits
+// may re-register without a fresh approval.
+func (s *StakingContract) Approve(approver, addr qcrypto.Address) error {
+	if err := s.requireActive(approver, "approve"); err != nil {
+		return err
+	}
+	return s.stateDB.SetStorageValue(s.contract, stakingApprovalSlot(addr), []byte{1})
+}
+
+// Revoke withdraws an approval. It does not touch an existing registration;
+// an already-registered validator leaves through unregister.
+func (s *StakingContract) Revoke(approver, addr qcrypto.Address) error {
+	if err := s.requireActive(approver, "revoke"); err != nil {
+		return err
+	}
+	return s.stateDB.SetStorageValue(s.contract, stakingApprovalSlot(addr), []byte{0})
+}
+
+// IsApproved reports whether addr holds a standing approval.
+func (s *StakingContract) IsApproved(addr qcrypto.Address) (bool, error) {
+	v, err := s.stateDB.GetStorageValue(s.contract, stakingApprovalSlot(addr))
+	if err != nil {
+		return false, err
+	}
+	return len(v) == 1 && v[0] == 1, nil
+}
+
+func (s *StakingContract) requireActive(who qcrypto.Address, what string) error {
+	active, err := s.IsActive(who)
+	if err != nil {
+		return err
+	}
+	if !active {
+		return fmt.Errorf("validators %s: %s is not an active validator", what, who)
+	}
 	return nil
 }
 

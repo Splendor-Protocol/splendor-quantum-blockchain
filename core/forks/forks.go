@@ -99,6 +99,14 @@ const (
 	//     where it used to count zero.
 	// Requires ModuleRevertV1 no later than itself (see Validate).
 	ModulesV2 = "modules_v2"
+	// ValidatorsAdmissionV1 closes the open door in validators_v1: a
+	// register call is accepted only from the block's own producer (which
+	// is how a chain's genesis validator enrols itself) or from an address
+	// an active validator has approved. Anyone else with 2,500 SPLD could
+	// otherwise register, replace the producer set — validators_v1 makes the
+	// registry the leader set the moment it is non-empty — and stop the
+	// chain. Requires ValidatorsV1 no later than itself (see Validate).
+	ValidatorsAdmissionV1 = "validators_admission_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -110,7 +118,7 @@ const (
 var Known = []string{
 	MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1,
 	VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1, MinFeeV1,
-	ModulesV2,
+	ModulesV2, ValidatorsAdmissionV1,
 }
 
 // Schedule maps an upgrade name to the height at which it takes effect.
@@ -166,7 +174,7 @@ func (s Schedule) Validate() error {
 	for _, name := range []string{
 		BridgeV1, ExchangeV1, QRC1155V1, QRC20V2,
 		VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1,
-		ModulesV2,
+		ModulesV2, ValidatorsAdmissionV1,
 	} {
 		at, ok := s.At(name)
 		if !ok {
@@ -181,6 +189,21 @@ func (s Schedule) Validate() error {
 			return fmt.Errorf("genesis schedules %s at height %d but %s only at height %d: "+
 				"the dependency must be in force no later than the upgrade that needs it",
 				name, at, ModuleRevertV1, mrAt)
+		}
+	}
+	// The admission gate qualifies register; a schedule that gates a call
+	// the chain never accepts, or gates it only after the open window has
+	// already run, is a misconfiguration and is refused rather than honoured.
+	if at, ok := s.At(ValidatorsAdmissionV1); ok {
+		vAt, vok := s.At(ValidatorsV1)
+		if !vok {
+			return fmt.Errorf("genesis schedules %s at height %d but never schedules %s, which it depends on",
+				ValidatorsAdmissionV1, at, ValidatorsV1)
+		}
+		if vAt > at {
+			return fmt.Errorf("genesis schedules %s at height %d but %s only at height %d: "+
+				"the dependency must be in force no later than the upgrade that needs it",
+				ValidatorsAdmissionV1, at, ValidatorsV1, vAt)
 		}
 	}
 	return nil
