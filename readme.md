@@ -1788,7 +1788,7 @@ freshness or production readiness.
 
 <!-- tiers:begin -->
 Live rows were read from each tier's `/status`, `/block/0` and
-`/idx/v1/health` at **2026-09-10T14:42Z** by `npm run readme:tiers`, which
+`/idx/v1/health` at **2026-09-10T14:59Z** by `npm run readme:tiers`, which
 `npm run deploy` runs after every verified rollout. Do not edit this table by
 hand; edit `scripts/readme-tiers.mjs` and regenerate.
 
@@ -1800,9 +1800,9 @@ hand; edit `scripts/readme-tiers.mjs` and regenerate.
 | Explorer | `https://quantum-devnet-explorer.splendor.org` | `https://quantum-testnet-explorer.splendor.org` | `https://quantum-explorer.splendor.org` |
 | Faucet | `https://quantum-faucet.splendor.org` | `https://quantum-faucet.splendor.org` | none, by design |
 | Chain id | `splendor-quantum-devnet-1` | `splendor-quantum-testnet-1` | `splendor-quantum-1` |
-| Node image / commit | `sqc-node:v1.0.14` / `bef8c56e6813` | `sqc-node:v1.0.12` / `a3964a4259d2` | `sqc-node:v1.0.14` / `bef8c56e6813` |
-| Indexer image | `sqc-indexer:v0.3.3-2af063d` | `sqc-indexer:v0.3.3-2af063d` | `sqc-indexer:v0.3.1` |
-| Height | 79,456 | 136,565 | 3,738 |
+| Node image / commit | `sqc-node:v1.0.15` / `c6e04525212f` | `sqc-node:v1.0.12` / `a3964a4259d2` | `sqc-node:v1.0.14` / `bef8c56e6813` |
+| Indexer image | `sqc-indexer:v0.3.3-56d5e27` | `sqc-indexer:v0.3.3-56d5e27` | `sqc-indexer:v0.3.3-56d5e27` |
+| Height | 79,466 | 137,127 | 4,769 |
 | Fork schedule (`/status.forks`) | `exchange_v1`, `module_revert_v1`, `qrc1155_v1`, `qrc20_v2` at 1; `modules_v2` at 25,990; `multi_validator`, `validators_v1` at 74,075; `validators_admission_v1` at 80,056; `vm_revert_v1` at 130,000 | `bridge_v1`, `exchange_v1`, `module_revert_v1`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1; `modules_v2` at 74,674 | `exchange_v1`, `module_revert_v1`, `modules_v2`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1 |
 | Consensus (`/status.consensus_mode`, `head_qc_valid`) | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote |
 | Registered validators (`validator_set_size`) | 0 | 0 | 0 |
