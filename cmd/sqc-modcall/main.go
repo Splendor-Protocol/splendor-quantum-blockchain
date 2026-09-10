@@ -7,7 +7,7 @@
 //
 //	sqc-modcall write  --node URL --wallet W --pass-file P --chain-id ID \
 //	                   --module validators --action register --params '{...}' \
-//	                   [--wait] [--require-success]
+//	                   [--wait] [--require-success]   (--require-success implies --wait)
 //	sqc-modcall read   --node URL --module validators --action validator --params '{...}'
 //	sqc-modcall forge  --node URL --wallet W --pass-file P --chain-id ID
 //	sqc-modcall addr
@@ -259,10 +259,11 @@ func cmdWrite(args []string) error {
 	hash := hex.EncodeToString(full[:])
 	fmt.Printf("submitted %s.%s from=%s nonce=%d tx=%s\n", module, action, from, nonceResp.Nonce, hash)
 
-	if f["wait"] != "true" {
+	requireSuccess := f["require-success"] == "true"
+	if f["wait"] != "true" && !requireSuccess {
 		return nil
 	}
-	return waitReceipt(node, hash, f["require-success"] == "true")
+	return waitReceipt(node, hash, requireSuccess)
 }
 
 // waitReceipt polls for the receipt and prints it. A SOFT module failure is a

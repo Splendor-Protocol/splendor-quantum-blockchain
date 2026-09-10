@@ -12,9 +12,12 @@ Three planes share one node process:
 | Consensus **push** | Sealed `proposal`, `vote`, `block`, `announce` | Peers that also carry the shared `--rpc-auth-token` inside the envelope. |
 | Public **read / tx** | HTTP `GET` reads; `POST /tx/submit` | Reads are public on the RPC bind. Submit lands in the local mempool. Relaying that tx (`KindTx`) is write-plane and still token-gated. |
 
-Peer **identity** is ML-DSA-65 + ML-KEM, served at `GET /p2p/identity` and
-pinned with `--peer-pin URL=PUBKEY_HEX`. `--require-peer-pins` refuses
-trust-on-first-use.
+Peer **identity** is a long-term ML-DSA-65 node key plus a rotating
+ML-KEM-768 encapsulation key (`not_after`), served at `GET /p2p/identity`.
+`--peer-pin URL=PUBKEY_HEX` pins the ML-DSA-65 key only (base64 on the wire,
+hex on the flag). `--require-peer-pins` refuses trust-on-first-use. On the
+public tiers the node key is the genesis validator's key: its SHA3-256 is the
+genesis validator address in readme §20.
 
 The write-plane token is a **cluster secret**. It is not a validator
 identity. Every node that should accept blocks or relay txs from the
@@ -39,8 +42,11 @@ token to every independent RPC publishes write-plane access (proposals,
 votes, block ingest, peer announce). Keeping the token private means an
 independent RPC cannot relay.
 
-Proposal and vote admission is likewise the shared token, not membership
-in the on-chain validator set.
+The same token admits `proposal` and `vote` to the transport. The engine
+then counts a vote only if it is signed by a key in the active validator set,
+and drops equivocations. So the token decides who may *deliver* consensus
+messages, not whose vote counts. Membership grants no transport access: a
+registered validator outside the token cluster cannot deliver its own vote.
 
 ## Required public model (later PR)
 
