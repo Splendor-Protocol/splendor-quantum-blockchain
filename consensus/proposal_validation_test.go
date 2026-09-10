@@ -169,16 +169,16 @@ func TestLockFromAnEarlierRoundDoesNotRefuseTheNextRoundsProposal(t *testing.T) 
 		t.Fatal("a block conflicting with the round-0 lock was accepted in round 0")
 	}
 
-	// Round timeout, then a fresh proposal in round 1 ((5+1)%2 == 0: this
-	// node leads, so it is delivered as its own local proposal). The stale
-	// lock must not refuse it.
 	eng.handleTimeout()
 	if eng.Round() != 1 {
 		t.Fatalf("round = %d after timeout, want 1", eng.Round())
 	}
 	next := proposalAt(t, set, keys, 5, 1, 2)
 	eng.handleProposal(&pendingProposal{block: next.Block, local: true})
-	if eng.voteSet == nil {
-		t.Fatal("the round-1 proposal was refused because of a round-0 lock")
+	if eng.voteSet != nil {
+		t.Fatal("a different block at round 1 was accepted after a round-0 lock")
+	}
+	if _, err := eng.castVote(first.Block, 1); err != nil {
+		t.Fatalf("re-sign the locked block in the next round: %v", err)
 	}
 }
