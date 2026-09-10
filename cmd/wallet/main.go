@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"os"
@@ -63,7 +64,7 @@ func cmdGenerate() *cobra.Command {
 	var outPath, seedIn, passFile string
 	cmd := &cobra.Command{
 		Use:   "generate",
-		Short: "Generate a new ML-DSA-65 wallet (prints 24-word phrase + 64-hex seed)",
+		Short: "Generate a new ML-DSA-65 wallet (recovery phrase on stderr)",
 		Long: `Creates an ML-DSA-65 key from a 32-byte seed — the same derivation
 the browser extension uses. You get a 64-character seed hex and a 24-word
 BIP39 phrase that import into the extension as the same SQ: address.
@@ -113,11 +114,11 @@ instead of prompting. The file must not be readable by other users.`,
 			fmt.Printf("\n✅ Wallet created successfully\n")
 			fmt.Printf("   Address:  %s\n", addr.String())
 			fmt.Printf("   Saved to: %s\n", outPath)
-			fmt.Printf("\n   Seed hex (64 chars, no 0x):\n   %x\n", seed[:])
-			fmt.Printf("\n   24-word recovery phrase:\n   %s\n", phrase)
-			fmt.Printf("\n⚠️  Save the phrase or seed hex. Anyone with either controls this address.\n")
-			fmt.Printf("   The .sqwallet file is an encrypted copy of the same key.\n")
-			fmt.Printf("   Paste the phrase or hex into the extension to import this account.\n")
+			fmt.Fprintf(os.Stderr, "\n   Seed hex (64 chars, no 0x):\n   %x\n", seed[:])
+			fmt.Fprintf(os.Stderr, "\n   24-word recovery phrase:\n   %s\n", phrase)
+			fmt.Fprintf(os.Stderr, "\n⚠️  Save the phrase or seed hex. Anyone with either controls this address.\n")
+			fmt.Fprintf(os.Stderr, "   The .sqwallet file is an encrypted copy of the same key.\n")
+			fmt.Fprintf(os.Stderr, "   Paste the phrase or hex into the extension to import this account.\n")
 
 			return nil
 		},
@@ -234,10 +235,12 @@ func cmdBalance() *cobra.Command {
 func cmdSend() *cobra.Command {
 	var walletPath, nodeAddr, toAddr, amountSPLD, memo, chainID string
 	var feeUnits int64
+	var nonce uint64
 
 	cmd := &cobra.Command{
-		Use:   "send",
-		Short: "Send SPLD to another address",
+		Use:          "send",
+		Short:        "Send SPLD to another address",
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if chainID != "" {
 				if err := types.SetClientChainID(chainID); err != nil {
@@ -267,19 +270,11 @@ func cmdSend() *cobra.Command {
 			amountUnitsFloat := new(big.Float).Mul(amountFloat, divisor)
 			amountUnits, _ := amountUnitsFloat.Int(nil)
 
-			// Get current nonce from node
-			nonceURL := fmt.Sprintf("%s/nonce/%s", nodeAddr, fromAddr.String())
-			nonceResp, err := http.Get(nonceURL)
-			if err != nil {
-				return fmt.Errorf("failed to get nonce: %w", err)
-			}
-			var nonceResult map[string]interface{}
-			json.NewDecoder(nonceResp.Body).Decode(&nonceResult)
-			nonceResp.Body.Close()
-
-			nonce := uint64(0)
-			if v, ok := nonceResult["nonce"].(float64); ok {
-				nonce = uint64(v)
+			if !cmd.Flags().Changed("nonce") {
+				nonce, err = fetchNonce(walletHTTP, nodeAddr, fromAddr)
+				if err != nil {
+					return err
+				}
 			}
 
 			// Build transaction
@@ -307,17 +302,17 @@ func cmdSend() *cobra.Command {
 				return fmt.Errorf("failed to marshal tx: %w", err)
 			}
 			submitURL := fmt.Sprintf("%s/tx/submit", nodeAddr)
-			resp, err := http.Post(submitURL, "application/json", bytes.NewReader(txData))
+			resp, err := walletHTTP.Post(submitURL, "application/json", bytes.NewReader(txData))
 			if err != nil {
 				return fmt.Errorf("failed to submit tx: %w", err)
 			}
 			defer resp.Body.Close()
-
-			var submitResult map[string]string
-			json.NewDecoder(resp.Body).Decode(&submitResult)
-
-			if errMsg, ok := submitResult["error"]; ok {
-				return fmt.Errorf("tx rejected: %s", errMsg)
+			submitBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			if err != nil {
+				return fmt.Errorf("submit: %w", err)
+			}
+			if err := submitError(resp.StatusCode, submitBody); err != nil {
+				return err
 			}
 
 			txHash, _ := tx.FullHash()
@@ -336,6 +331,7 @@ func cmdSend() *cobra.Command {
 	cmd.Flags().StringVar(&toAddr, "to", "", "Recipient SQ address (required)")
 	cmd.Flags().StringVar(&amountSPLD, "amount", "", "Amount in SPLD (e.g. 10.5) (required)")
 	cmd.Flags().Int64Var(&feeUnits, "fee", 1000, "Transaction fee in smallest SPLD units")
+	cmd.Flags().Uint64Var(&nonce, "nonce", 0, "Account nonce (default: fetch from the node)")
 	cmd.Flags().StringVar(&memo, "memo", "", "Optional memo")
 	cmd.MarkFlagRequired("to")
 	cmd.MarkFlagRequired("amount")
@@ -384,6 +380,52 @@ KEEP THIS FILE SECURE. Delete it after card provisioning.`,
 	cmd.Flags().StringVarP(&walletPath, "wallet", "w", "wallet.sqwallet", "Wallet file path")
 	cmd.Flags().StringVarP(&outPath, "out", "o", "mldsa_key.bin", "Output binary file path")
 	return cmd
+}
+
+var walletHTTP = &http.Client{Timeout: 20 * time.Second}
+
+func fetchNonce(client *http.Client, node string, addr qcrypto.Address) (uint64, error) {
+	if client == nil {
+		client = walletHTTP
+	}
+	resp, err := client.Get(strings.TrimRight(node, "/") + "/nonce/" + addr.String())
+	if err != nil {
+		return 0, fmt.Errorf("failed to get nonce: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, fmt.Errorf("nonce: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("nonce: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Nonce *uint64 `json:"nonce"`
+		Error string  `json:"error"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, fmt.Errorf("nonce: not JSON: %w", err)
+	}
+	if result.Error != "" {
+		return 0, fmt.Errorf("nonce: %s", result.Error)
+	}
+	if result.Nonce == nil {
+		return 0, fmt.Errorf("nonce: missing nonce field")
+	}
+	return *result.Nonce, nil
+}
+
+func submitError(status int, body []byte) error {
+	var result map[string]string
+	_ = json.Unmarshal(body, &result)
+	if msg := result["error"]; msg != "" {
+		return fmt.Errorf("tx rejected: %s", msg)
+	}
+	if status != http.StatusOK && status != http.StatusAccepted {
+		return fmt.Errorf("tx rejected: HTTP %d: %s", status, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────

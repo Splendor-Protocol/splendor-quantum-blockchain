@@ -1078,7 +1078,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	rpc.RegisterExplorerRoutes(router, txIndex, stateDB, peerPool, func() uint64 {
 		h, _ := executor.LatestHeight()
 		return h
-	}, coreRPC.WriteAuth(), coreRPC.SimGuard(), broadcaster.AddPeer)
+	}, coreRPC.WriteAuth(), coreRPC.SimGuard(), executor.GetBlockByHeight, broadcaster.AddPeer)
 
 	// Post-quantum sealed P2P transport (ML-KEM-768 + AES-256-GCM). Carries the
 	// same block-ingest and peer-announce operations as the plaintext write

@@ -97,7 +97,7 @@ func TestM1_DEX_RemoveLiquidity_Routing(t *testing.T) {
 		SetTestTokenBalance(t, stateDB, token0, caller, big.NewInt(10000))
 		SetTestTokenBalance(t, stateDB, token1, caller, big.NewInt(10000))
 
-		_, _, shares, err := lp.AddLiquidity(caller, big.NewInt(5000), big.NewInt(5000), big.NewInt(0), big.NewInt(0))
+		_, _, shares, err := lp.AddLiquidity(caller, big.NewInt(5000), big.NewInt(5000), big.NewInt(0), big.NewInt(0), nil)
 		if err != nil {
 			t.Fatalf("Failed to add liquidity: %v", err)
 		}

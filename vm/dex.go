@@ -25,6 +25,7 @@ import (
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 const (
@@ -47,14 +48,14 @@ const (
 // cumulative_fee1   = SHA3-256("dex:fee1")
 
 var (
-	slotDexReserve0   = qcrypto.Hash32([]byte("dex:r0"))
-	slotDexReserve1   = qcrypto.Hash32([]byte("dex:r1"))
-	slotDexToken0     = qcrypto.Hash32([]byte("dex:t0"))
-	slotDexToken1     = qcrypto.Hash32([]byte("dex:t1"))
-	slotDexLPTotal    = qcrypto.Hash32([]byte("dex:lp_total"))
-	slotDexFee0       = qcrypto.Hash32([]byte("dex:fee0"))
-	slotDexFee1       = qcrypto.Hash32([]byte("dex:fee1"))
-	slotDexBlockLast  = qcrypto.Hash32([]byte("dex:block_last"))
+	slotDexReserve0  = qcrypto.Hash32([]byte("dex:r0"))
+	slotDexReserve1  = qcrypto.Hash32([]byte("dex:r1"))
+	slotDexToken0    = qcrypto.Hash32([]byte("dex:t0"))
+	slotDexToken1    = qcrypto.Hash32([]byte("dex:t1"))
+	slotDexLPTotal   = qcrypto.Hash32([]byte("dex:lp_total"))
+	slotDexFee0      = qcrypto.Hash32([]byte("dex:fee0"))
+	slotDexFee1      = qcrypto.Hash32([]byte("dex:fee1"))
+	slotDexBlockLast = qcrypto.Hash32([]byte("dex:block_last"))
 )
 
 func dexLPSlot(addr qcrypto.Address) [32]byte {
@@ -252,6 +253,7 @@ func (p *LiquidityPool) Swap(
 	caller, recipient qcrypto.Address,
 	amount0In, amount1In *big.Int,
 	amount0Out, amount1Out *big.Int,
+	receipt *types.Receipt,
 ) error {
 	if amount0Out.Sign() == 0 && amount1Out.Sign() == 0 {
 		return fmt.Errorf("dex swap: must specify at least one output amount")
@@ -283,24 +285,24 @@ func (p *LiquidityPool) Swap(
 
 	// Transfer inputs from caller to pool
 	if amount0In.Sign() > 0 {
-		if err := tok0.Transfer(caller, p.contract, amount0In); err != nil {
+		if err := p.moveToken(tok0, caller, p.contract, amount0In, receipt); err != nil {
 			return fmt.Errorf("dex swap: token0 input transfer failed: %w", err)
 		}
 	}
 	if amount1In.Sign() > 0 {
-		if err := tok1.Transfer(caller, p.contract, amount1In); err != nil {
+		if err := p.moveToken(tok1, caller, p.contract, amount1In, receipt); err != nil {
 			return fmt.Errorf("dex swap: token1 input transfer failed: %w", err)
 		}
 	}
 
 	// Transfer outputs from pool to recipient
 	if amount0Out.Sign() > 0 {
-		if err := tok0.Transfer(p.contract, recipient, amount0Out); err != nil {
+		if err := p.moveToken(tok0, p.contract, recipient, amount0Out, receipt); err != nil {
 			return fmt.Errorf("dex swap: token0 output transfer failed: %w", err)
 		}
 	}
 	if amount1Out.Sign() > 0 {
-		if err := tok1.Transfer(p.contract, recipient, amount1Out); err != nil {
+		if err := p.moveToken(tok1, p.contract, recipient, amount1Out, receipt); err != nil {
 			return fmt.Errorf("dex swap: token1 output transfer failed: %w", err)
 		}
 	}
@@ -334,7 +336,13 @@ func (p *LiquidityPool) Swap(
 	if err := p.setBigInt(slotDexReserve0, newR0); err != nil {
 		return err
 	}
-	return p.setBigInt(slotDexReserve1, newR1)
+	if err := p.setBigInt(slotDexReserve1, newR1); err != nil {
+		return err
+	}
+	if receipt != nil {
+		receipt.AddLog(SwapEvent(p.contract, caller, recipient, amount0In, amount1In, amount0Out, amount1Out))
+	}
+	return nil
 }
 
 // SwapExactIn swaps an exact input amount for the maximum possible output.
@@ -344,6 +352,7 @@ func (p *LiquidityPool) SwapExactIn(
 	tokenIn uint8,
 	amountIn *big.Int,
 	minAmountOut *big.Int,
+	receipt *types.Receipt,
 ) (*big.Int, error) {
 	r0, r1, err := p.Reserves()
 	if err != nil {
@@ -373,7 +382,7 @@ func (p *LiquidityPool) SwapExactIn(
 		return nil, fmt.Errorf("dex: slippage exceeded (got %s, min %s)", amountOut, minAmountOut)
 	}
 
-	return amountOut, p.Swap(caller, recipient, amount0In, amount1In, amount0Out, amount1Out)
+	return amountOut, p.Swap(caller, recipient, amount0In, amount1In, amount0Out, amount1Out, receipt)
 }
 
 // ── Liquidity management ──────────────────────────────────────────────────────
@@ -385,6 +394,7 @@ func (p *LiquidityPool) AddLiquidity(
 	caller qcrypto.Address,
 	amount0Desired, amount1Desired *big.Int,
 	amount0Min, amount1Min *big.Int,
+	receipt *types.Receipt,
 ) (amount0, amount1, lpShares *big.Int, err error) {
 	r0, r1, err := p.Reserves()
 	if err != nil {
@@ -455,10 +465,10 @@ func (p *LiquidityPool) AddLiquidity(
 	tok0 := NewQRC20Token(p.stateDB, t0)
 	tok1 := NewQRC20Token(p.stateDB, t1)
 
-	if err := tok0.Transfer(caller, p.contract, amount0); err != nil {
+	if err := p.moveToken(tok0, caller, p.contract, amount0, receipt); err != nil {
 		return nil, nil, nil, fmt.Errorf("dex addLiquidity: token0 transfer failed: %w", err)
 	}
-	if err := tok1.Transfer(caller, p.contract, amount1); err != nil {
+	if err := p.moveToken(tok1, caller, p.contract, amount1, receipt); err != nil {
 		return nil, nil, nil, fmt.Errorf("dex addLiquidity: token1 transfer failed: %w", err)
 	}
 
@@ -473,6 +483,9 @@ func (p *LiquidityPool) AddLiquidity(
 	newR1 := new(big.Int).Add(r1, amount1)
 	p.setBigInt(slotDexReserve0, newR0)
 	p.setBigInt(slotDexReserve1, newR1)
+	if receipt != nil {
+		receipt.AddLog(MintEvent(p.contract, caller, big.NewInt(0), lpShares))
+	}
 
 	return amount0, amount1, lpShares, nil
 }
@@ -482,6 +495,7 @@ func (p *LiquidityPool) RemoveLiquidity(
 	caller qcrypto.Address,
 	lpShares *big.Int,
 	amount0Min, amount1Min *big.Int,
+	receipt *types.Receipt,
 ) (amount0, amount1 *big.Int, err error) {
 	if lpShares == nil || lpShares.Sign() <= 0 {
 		return nil, nil, fmt.Errorf("dex removeLiquidity: lp_shares must be positive")
@@ -535,18 +549,28 @@ func (p *LiquidityPool) RemoveLiquidity(
 	tok0 := NewQRC20Token(p.stateDB, t0)
 	tok1 := NewQRC20Token(p.stateDB, t1)
 
-	if err := tok0.Transfer(p.contract, caller, amount0); err != nil {
+	if err := p.moveToken(tok0, p.contract, caller, amount0, receipt); err != nil {
 		return nil, nil, fmt.Errorf("dex removeLiquidity: token0 transfer failed: %w", err)
 	}
-	if err := tok1.Transfer(p.contract, caller, amount1); err != nil {
+	if err := p.moveToken(tok1, p.contract, caller, amount1, receipt); err != nil {
 		return nil, nil, fmt.Errorf("dex removeLiquidity: token1 transfer failed: %w", err)
 	}
 
 	// Update reserves
 	p.setBigInt(slotDexReserve0, new(big.Int).Sub(r0, amount0))
 	p.setBigInt(slotDexReserve1, new(big.Int).Sub(r1, amount1))
+	if receipt != nil {
+		receipt.AddLog(BurnEvent(p.contract, caller, big.NewInt(0), lpShares))
+	}
 
 	return amount0, amount1, nil
+}
+
+func (p *LiquidityPool) moveToken(tok *QRC20Token, from, to qcrypto.Address, amount *big.Int, receipt *types.Receipt) error {
+	if receipt != nil {
+		return tok.TransferWithEvents(from, to, amount, receipt)
+	}
+	return tok.Transfer(from, to, amount)
 }
 
 // ── Pool registry ─────────────────────────────────────────────────────────────

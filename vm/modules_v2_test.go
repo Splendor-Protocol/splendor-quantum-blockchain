@@ -51,7 +51,7 @@ func newDexFixture(t *testing.T) *dexFixture {
 		t.Fatalf("deploy pool: %v", err)
 	}
 	dep0, dep1 := big.NewInt(400_000), big.NewInt(100_000)
-	_, _, shares, err := NewLiquidityPool(sdb, pool).AddLiquidity(lp, dep0, dep1, big.NewInt(1), big.NewInt(1))
+	_, _, shares, err := NewLiquidityPool(sdb, pool).AddLiquidity(lp, dep0, dep1, big.NewInt(1), big.NewInt(1), nil)
 	if err != nil {
 		t.Fatalf("add liquidity: %v", err)
 	}
