@@ -2,11 +2,17 @@
 
 > **Public admission has not launched.**
 > Do not register on live mainnet.
+> The chain does not enforce that. `validators_v1` and `multi_validator`
+> are active on mainnet and testnet (observed 2026-09-10), so the router
+> accepts a 2,500 SPLD `register` today; on devnet `validators_v1` is not
+> scheduled and `register` is refused. Closed means no published peer
+> pins, no supported join path, and no promise that today's state
+> survives a reset. Every tier has been reset before.
 > This page documents the current CLI and the 2,500 SPLD registry.
 > Rehearse only on a scratch chain. Do not treat this as an invitation
 > to join production.
 
-Permissionless registration, once admission is open: one bond, no tiers.
+The protocol rule is permissionless registration: one bond, no tiers.
 Anyone who can fund **2,500 SPLD** can `register`. The bond locks existing
 native supply. It does not mint SPLD. After `unregister`, the bond returns
 at `finalize_exit` once **32 blocks** have passed.
@@ -39,7 +45,8 @@ install -m 600 /dev/null /var/sqc/wallet.pass
 ```
 
 `--pass-file` must not be readable by other users (`chmod 600`). The node
-and `sqc-modcall` refuse a world-readable secret file.
+and `sqc-modcall` refuse a world-readable secret file (not enforced on
+Windows, which has no POSIX modes).
 
 ## Writes
 
@@ -76,7 +83,8 @@ PASS=/var/sqc/wallet.pass
 
 `--wait` alone still exits 0 on a `status: 0` receipt (lab/test default).
 `--require-success` prints `receipt-status` (`success` / `execution_failed` /
-`pending` / `rejected`) and exits 1 unless execution succeeded.
+`pending` / `rejected`) and exits 1 unless execution succeeded. It implies
+`--wait`.
 
 `register` params: `{ "pubkey": "<hex or base64 ML-DSA-65 public key>" }`.
 `{{PUBKEY}}` expands to the signing wallet's key.

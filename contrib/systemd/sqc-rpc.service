@@ -1,6 +1,6 @@
 [Unit]
-Description=Splendor Quantum Chain RPC follower
-Documentation=https://github.com/Splendor-Protocol/splendor-quantum-blockchain
+Description=Splendor Quantum Chain RPC follower (mainnet)
+Documentation=https://github.com/Splendor-Protocol/splendor-quantum-blockchain/blob/main/docs/RPC_NODE.md
 After=network-online.target
 Wants=network-online.target
 
@@ -9,16 +9,19 @@ Type=simple
 User=sqc
 Group=sqc
 WorkingDirectory=/opt/sqc
-# Replace the REPLACE_* placeholders from the published network manifest.
-# Do not add --validator, --trust-peer-genesis, or a write-plane token
-# merely to pull-sync. See docs/RPC_NODE.md.
+# Mainnet (splendor-quantum-1): the block-0 hash below is mainnet's. Testnet
+# values are in docs/RPC_NODE.md. Fill the REPLACE_* placeholders from your
+# own derivation, cross-checked against that table, never from the peer alone.
+# Do not add --validator, --trust-peer-genesis, or a write-plane token merely
+# to pull-sync.
 ExecStart=/opt/sqc/sqc-node \
     --data-dir /var/sqc/data \
     --rpc-addr 127.0.0.1:8080 \
+    --chain-id splendor-quantum-1 \
     --genesis-hash ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949 \
     --genesis-doc-hash REPLACE_GENESIS_DOC_HASH \
-    --peer REPLACE_BOOTNODE_URL \
-    --peer-pin REPLACE_BOOTNODE_URL=REPLACE_PEER_IDENTITY_HEX \
+    --peer https://quantum-rpc.splendor.org \
+    --peer-pin https://quantum-rpc.splendor.org=REPLACE_PEER_IDENTITY_HEX \
     --require-peer-pins \
     --log-level info
 Restart=always
