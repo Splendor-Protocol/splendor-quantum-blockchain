@@ -1966,7 +1966,7 @@ npm run deploy:test            # …to testnet   (GitHub environment "test")
 npm run deploy:prod            # …to mainnet   (GitHub environment "prod", asks first)
 npm run deploy v0.6.2 prod     # promote an image that already exists — no rebuild
 npm run release:status         # what every tier is running right now
-npm run readme:tiers           # regenerate the §20 tier table (deploy does this itself)
+npm run readme:tiers           # regenerate the §20 tier table by hand (deploy no longer commits it)
 ```
 
 `npm run deploy:<tier>` is `node scripts/release.mjs patch <tier>`. The script
