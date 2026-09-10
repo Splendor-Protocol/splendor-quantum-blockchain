@@ -1,5 +1,9 @@
 # Validators (`validators_v1`)
 
+> Permissionless registration is the protocol rule (one bond, no tiers).
+> Public admission has not launched: there is no supported public join
+> path. Operator lifecycle: [`VALIDATOR.md`](../VALIDATOR.md).
+
 Permissionless block-producer registration. One bond, no tiers.
 
 Anyone who can fund **2,500 SPLD** can register. The bond is a lock of
