@@ -67,6 +67,15 @@ Until that lands, an independent follower can **sync and serve reads**.
 It cannot be a useful public submit gateway to a producer unless it is
 inside the token cluster.
 
+## Deferred (not this branch)
+
+Public-peer authentication and token-free `KindTx` are protocol plus
+security work. They need changes in `rpc/p2p_routes.go`, `network/*`, and
+`cmd/node/main.go`, which this onboarding track must not edit. Removing
+the write-plane token without a replacement would let strangers push
+proposals, votes, blocks, and announces. This PR therefore documents the
+current cluster-token model and does not implement a public relay.
+
 ## Related
 
 - Follower bring-up: [`RPC_NODE.md`](RPC_NODE.md)
