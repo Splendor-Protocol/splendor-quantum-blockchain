@@ -1053,17 +1053,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 				}
 				broadcaster.BroadcastSealed(network.KindTx, data)
 			},
-			PeerCount:          peerPool.Count, // wire live peer count from peerPool
-			AuthToken:          authToken,
-			AllowPlaintextP2P:  flagAllowPlaintextP2P,
-			CORSOrigins:        flagCORSOrigins,
-			SubmitRatePerSec:   flagRateLimit,
-			SubmitBurst:        flagRateBurst,
-			TrustProxy:         flagTrustProxy,
-			SimRatePerSec:      flagSimRate,
-			SimBurst:           flagSimBurst,
-			SimMaxInFlight:     flagSimMaxInFlight,
-			SimTimeout:         flagSimTimeout,
+			PeerCount:         peerPool.Count, // wire live peer count from peerPool
+			AuthToken:         authToken,
+			AllowPlaintextP2P: flagAllowPlaintextP2P,
+			CORSOrigins:       flagCORSOrigins,
+			SubmitRatePerSec:  flagRateLimit,
+			SubmitBurst:       flagRateBurst,
+			TrustProxy:        flagTrustProxy,
+			SimRatePerSec:     flagSimRate,
+			SimBurst:          flagSimBurst,
+			SimMaxInFlight:    flagSimMaxInFlight,
+			SimTimeout:        flagSimTimeout,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
@@ -1203,16 +1203,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// State proof routes (GET /state/root, /state/account/:addr, /state/proof/:addr)
 	rpc.RegisterStateRoutes(router, stateDB, executor)
 
-	// Governance + staking routes
-	rpc.RegisterGovRoutes(router, stateDB)
-
-	// DEX routes
-	rpc.RegisterDEXRoutes(router, stateDB)
-
-	// Exchange (settlement module) read routes — the GET mirrors of the
-	// exchange /call reads, labelled with the live chain head.
-	rpc.RegisterExchangeRoutes(router, stateDB, rpc.HeadFunc(executor))
-
 	// Migration bridge read routes — the GET mirrors of the bridge /call reads.
 	rpc.RegisterBridgeRoutes(router, stateDB)
 
@@ -1221,9 +1211,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Source verification shares the metered plane: it compiles submitted
 	// source, which is CPU spent on an anonymous caller's say-so.
 	rpc.RegisterVerifyRoutes(router, stateDB, coreRPC.SimGuard())
-
-	// Lending routes
-	rpc.RegisterLendingRoutes(router, stateDB)
 
 	// GET /genesis — serve genesis.json so RPC nodes can bootstrap genesis state.
 	// Only served if the validator has a --genesis file configured.
@@ -1247,7 +1234,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// ── Start HTTP server ──────────────────────────────────────────────────
 	// The origin policy is applied by the core RPC router; wrapping the outer
-	// router with the same policy means explorer/gov/DEX routes get identical
+	// router with the same policy means explorer/bridge/call routes get identical
 	// treatment instead of silently defaulting to permissive.
 	httpServer := &http.Server{
 		Addr:         flagRPCAddr,

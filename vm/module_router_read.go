@@ -17,15 +17,12 @@
 package vm
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/big"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 // ModuleActions is one module's action surface, split by what a call is
@@ -79,32 +76,6 @@ var KnownModuleActions = map[string]ModuleActions{
 			"uri": true, "total_supply": true, "token_info": true,
 		},
 	},
-	"dex": {
-		Writes: map[string]string{
-			"deploy_pool": "", "add_liquidity": "", "swap": "",
-			"remove_liquidity": forks.ModulesV2,
-		},
-		Reads: map[string]bool{
-			"reserves": true, "pool_info": true,
-		},
-	},
-	"exchange": {
-		// exchange_v1: the settlement module, routed whole.
-		Writes: map[string]string{
-			"deploy": forks.ExchangeV1, "create_condition": forks.ExchangeV1,
-			"split": forks.ExchangeV1, "merge": forks.ExchangeV1, "match": forks.ExchangeV1,
-			"cancel_order": forks.ExchangeV1, "increment_nonce": forks.ExchangeV1,
-			"resolve": forks.ExchangeV1, "redeem": forks.ExchangeV1, "redeem_for": forks.ExchangeV1,
-			"pause": forks.ExchangeV1, "unpause": forks.ExchangeV1,
-			"set_redeem_fee_bps": forks.ExchangeV1, "set_fee_recipient": forks.ExchangeV1,
-			"set_operator": forks.ExchangeV1, "transfer_ownership": forks.ExchangeV1,
-		},
-		Reads: map[string]bool{
-			"exchange_info": true, "condition_info": true, "order_status": true,
-			"order_remaining": true, "order_hash": true, "nonce": true, "is_operator": true,
-			"position": true, "position_id": true, "simulate_match": true,
-		},
-	},
 	"bridge": {
 		// bridge_v1: the legacy-mainnet migration bridge, routed whole.
 		Writes: map[string]string{
@@ -133,72 +104,21 @@ var KnownModuleActions = map[string]ModuleActions{
 		},
 		Reads: map[string]bool{"validator": true, "list": true, "count": true, "bond": true, "approved": true},
 	},
-	"lending": {
-		Writes: map[string]string{
-			"deploy": forks.LendingV1, "enable_asset": forks.LendingV1,
-			"set_oracle": forks.LendingV1,
-			"deposit": forks.LendingV1, "withdraw": forks.LendingV1,
-			"borrow": forks.LendingV1, "repay": forks.LendingV1, "liquidate": forks.LendingV1,
-		},
-		Reads: map[string]bool{"pool": true, "deposit_balance": true, "borrow_balance": true, "assets": true, "health": true},
-	},
-	"oracle": {
-		Writes: map[string]string{
-			"deploy": forks.OracleV1, "register_feeder": forks.OracleV1, "submit_price": forks.OracleV1,
-		},
-		Reads: map[string]bool{"price": true, "feeder": true},
-	},
-	"multisig": {
-		Writes: map[string]string{
-			"deploy": forks.MultisigV1, "submit": forks.MultisigV1, "confirm": forks.MultisigV1,
-			"revoke": forks.MultisigV1, "execute": forks.MultisigV1, "cancel": forks.MultisigV1,
-		},
-		Reads: map[string]bool{
-			"threshold": true, "proposal": true, "owner": true, "owner_count": true,
-			"nonce": true, "balance": true, "confirmations": true, "proposal_hash": true,
-		},
-	},
-	"governance": {
-		Writes: map[string]string{
-			"submit": forks.GovernanceV1, "vote": forks.GovernanceV1,
-			"tally": forks.GovernanceV1, "cancel": forks.GovernanceV1,
-		},
-		Reads: map[string]bool{
-			"proposal": true, "count": true, "vote_of": true, "voting_power": true, "total_voting_power": true,
-		},
-	},
 	"qrc721": {
 		Writes: map[string]string{
 			"deploy": forks.QRC721V1, "mint": forks.QRC721V1, "transfer": forks.QRC721V1, "burn": forks.QRC721V1,
 		},
 		Reads: map[string]bool{"owner_of": true, "balance_of": true, "token_info": true},
 	},
-	"qrc4626": {
-		Writes: map[string]string{
-			"deploy": forks.QRC4626V1, "deposit": forks.QRC4626V1, "mint": forks.QRC4626V1,
-			"withdraw": forks.QRC4626V1, "redeem": forks.QRC4626V1, "approve": forks.QRC4626V1,
-		},
-		Reads: map[string]bool{
-			"total_assets": true, "total_shares": true, "name": true, "symbol": true, "asset": true,
-			"share_balance": true, "allowance": true, "exchange_rate": true,
-			"preview_deposit": true, "preview_mint": true, "preview_withdraw": true, "preview_redeem": true,
-		},
-	},
 }
 
-// qrc20ReadParams / dexReadParams are the parameter shapes for read actions.
-// Reads need an explicit owner because a view call has no authenticated caller
-// (writes take the owner implicitly from the tx sender).
+// qrc20ReadParams is the parameter shape for qrc20 read actions. Reads need
+// an explicit owner because a view call has no authenticated caller (writes
+// take the owner implicitly from the tx sender).
 type qrc20ReadParams struct {
 	Token   string `json:"token"`             // contract SQ: address (required)
 	Owner   string `json:"owner,omitempty"`   // balance_of / allowance
 	Spender string `json:"spender,omitempty"` // allowance
-}
-
-type dexReadParams struct {
-	Pool   string `json:"pool,omitempty"`   // explicit pool SQ: address, or…
-	Token0 string `json:"token0,omitempty"` // …a token pair (pool derived via PoolAddress)
-	Token1 string `json:"token1,omitempty"`
 }
 
 // qrc1155ReadParams is the parameter shape for qrc1155 reads. Ids are
@@ -231,8 +151,9 @@ type ReadContext struct {
 // JSON-serialisable map.
 //
 // rctx describes the chain head the read runs against; it is advisory (see
-// ReadContext). The only action that consumes it is exchange.simulate_match,
-// which dry-runs a settlement against the head time and reverts everything.
+// ReadContext). No routed read consumes it today; it stays in the signature so
+// a read that labels its answer with the head can take it without an API
+// change.
 func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byte) (interface{}, error) {
 	var mc ModuleCall
 	if err := json.Unmarshal(data, &mc); err != nil {
@@ -253,26 +174,14 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 		return dispatchQRC20Read(stateDB, mc.Action, mc.Params)
 	case "qrc1155":
 		return dispatchQRC1155Read(stateDB, mc.Action, mc.Params)
-	case "dex":
-		return dispatchDEXRead(stateDB, mc.Action, mc.Params)
 	case "bridge":
 		return dispatchBridgeRead(stateDB, mc.Action, mc.Params)
 	case "verify":
 		return dispatchVerifyRead(stateDB, mc.Action, mc.Params)
 	case "validators":
 		return dispatchValidatorsRead(stateDB, mc.Action, mc.Params)
-	case "lending":
-		return dispatchLendingRead(stateDB, mc.Action, mc.Params)
-	case "oracle":
-		return dispatchOracleRead(stateDB, mc.Action, mc.Params)
-	case "multisig":
-		return dispatchMultisigRead(stateDB, mc.Action, mc.Params)
-	case "governance":
-		return dispatchGovernanceRead(stateDB, mc.Action, mc.Params)
 	case "qrc721":
 		return dispatchQRC721Read(stateDB, mc.Action, mc.Params)
-	case "qrc4626":
-		return dispatchQRC4626Read(stateDB, mc.Action, mc.Params)
 	default:
 		return nil, fmt.Errorf("module call: unknown module %q", mc.Module)
 	}
@@ -584,60 +493,6 @@ func dispatchQRC20Read(stateDB *state.StateDB, action string, raw json.RawMessag
 	}
 }
 
-func dispatchDEXRead(stateDB *state.StateDB, action string, raw json.RawMessage) (interface{}, error) {
-	switch action {
-	case "reserves", "pool_info":
-		var p dexReadParams
-		if err := json.Unmarshal(raw, &p); err != nil {
-			return nil, fmt.Errorf("dex read: bad params: %w", err)
-		}
-		pool, err := resolvePoolAddress(p)
-		if err != nil {
-			return nil, err
-		}
-		exists := false
-		if acc, aerr := stateDB.GetAccount(pool); aerr == nil {
-			exists = acc.IsContract
-		}
-		info, err := NewLiquidityPool(stateDB, pool).Info()
-		if err != nil {
-			return nil, err
-		}
-		return map[string]interface{}{
-			"module": "dex", "action": action,
-			"pool_info": info, "exists": exists,
-		}, nil
-
-	default:
-		// Unreachable: DispatchModuleReadCall admits only the read set.
-		return nil, fmt.Errorf("dex: unknown read action %q", action)
-	}
-}
-
-// resolvePoolAddress accepts either an explicit pool address or a token pair
-// (from which the deterministic pool address is derived).
-func resolvePoolAddress(p dexReadParams) (qcrypto.Address, error) {
-	if p.Pool != "" {
-		pool, err := qcrypto.AddressFromString(p.Pool)
-		if err != nil {
-			return qcrypto.Address{}, fmt.Errorf("dex read: pool: %w", err)
-		}
-		return pool, nil
-	}
-	if p.Token0 != "" && p.Token1 != "" {
-		t0, err := qcrypto.AddressFromString(p.Token0)
-		if err != nil {
-			return qcrypto.Address{}, fmt.Errorf("dex read: token0: %w", err)
-		}
-		t1, err := qcrypto.AddressFromString(p.Token1)
-		if err != nil {
-			return qcrypto.Address{}, fmt.Errorf("dex read: token1: %w", err)
-		}
-		return PoolAddress(t0, t1), nil
-	}
-	return qcrypto.Address{}, fmt.Errorf("dex read: provide either \"pool\" or (\"token0\",\"token1\")")
-}
-
 // PreflightModuleCall validates a ModuleCall envelope destined for a signed
 // TxCall WITHOUT executing it. It is the admission-time mirror of the HARD
 // classes in DispatchModuleCall: an unparseable envelope, an unknown module,
@@ -678,258 +533,4 @@ func PreflightModuleCall(data []byte, schedule forks.Schedule, height uint64) (M
 		return mc, fmt.Errorf("%s: %q: %w: %s is not scheduled at height %d", mc.Module, mc.Action, ErrForkInactive, gate, height)
 	}
 	return mc, nil
-}
-
-// PreflightExchangeMatch is the local admission check /tx/submit runs after
-// PreflightModuleCall on an exchange.match TxCall: the sender must be an
-// active operator of the instance it names. A match from anyone else can only
-// ever be a failed receipt (the operator gate is the module's first check), so
-// refusing it at the door keeps mempool and block space for settlements that
-// can settle. Every other envelope passes through untouched. Local and
-// non-consensus: the executor re-judges the call.
-func PreflightExchangeMatch(stateDB *state.StateDB, mc ModuleCall, sender qcrypto.Address) error {
-	if mc.Module != "exchange" || mc.Action != "match" {
-		return nil
-	}
-	var p struct {
-		Exchange string `json:"exchange"`
-	}
-	if err := json.Unmarshal(mc.Params, &p); err != nil {
-		return fmt.Errorf("exchange match: bad params: %w", err)
-	}
-	x, err := exchangeAt(stateDB, "match", p.Exchange)
-	if err != nil {
-		return err
-	}
-	return x.requireOperator("exchange match: ", sender)
-}
-
-// ── Exchange reads ──────────────────────────────────────────────────────────
-
-// exchangeReadParams is the parameter shape of the exchange reads. Every read
-// but position_id names the instance in `exchange`; the remaining fields
-// belong to individual actions. simulate_match additionally decodes
-// exchangeSimulateParams from the same envelope.
-type exchangeReadParams struct {
-	Exchange  string             `json:"exchange,omitempty"`  // instance SQ: address (required except for position_id)
-	Condition uint64             `json:"condition,omitempty"` // condition_info / position / position_id
-	Outcome   uint8              `json:"outcome,omitempty"`   // position_id
-	Holder    string             `json:"holder,omitempty"`    // position
-	Maker     string             `json:"maker,omitempty"`     // nonce
-	Address   string             `json:"address,omitempty"`   // is_operator
-	Hash      string             `json:"hash,omitempty"`      // order_status: 64 lowercase hex chars
-}
-
-// exchangeSimulateParams is the simulate_match shape: exactly what match takes
-// plus `caller`, the operator that would sign the TxCall — the operator gate
-// is part of what is being simulated.
-type exchangeSimulateParams struct {
-	Caller string `json:"caller"`
-}
-
-// fork-gated. simulate_match is the one read that runs module code: it
-// dry-runs Match against the head time under a snapshot that is always
-// reverted, so it reports exactly the error a real match would produce at
-// this head and leaves nothing behind — on a /call sandbox or a bare StateDB.
-	var p exchangeReadParams
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, fmt.Errorf("exchange read: bad params: %w", err)
-	}
-	out := map[string]interface{}{"module": "exchange", "action": action}
-	if action == "position_id" {
-		// Pure: the id layout needs no instance.
-		out["condition"] = p.Condition
-		out["outcome"] = p.Outcome
-		out["id"] = ExchangePositionID(p.Condition, p.Outcome).String()
-		return out, nil
-	}
-	exchange, err := qcrypto.AddressFromString(p.Exchange)
-	if err != nil {
-		return nil, fmt.Errorf("exchange %s: exchange: %w", action, err)
-	}
-	exists := false
-	if acc, aerr := stateDB.GetAccount(exchange); aerr == nil {
-		exists = acc.IsContract
-	}
-	x := NewExchange(stateDB, exchange)
-	out["exchange"] = exchange.String()
-	out["exists"] = exists
-
-	switch action {
-	case "exchange_info":
-		info, err := x.Info()
-		if err != nil {
-			return nil, err
-		}
-		out["owner"] = info.Owner
-		out["operators"] = info.Operators
-		out["paused"] = info.Paused
-		out["redeem_fee_bps"] = info.RedeemFeeBps
-		out["fee_recipient"] = info.FeeRecipient
-		out["condition_count"] = info.ConditionCount
-		return out, nil
-
-	case "condition_info":
-		c, err := x.Condition(p.Condition)
-		if err != nil {
-			return nil, fmt.Errorf("exchange condition_info: %w", err)
-		}
-		ids := make([]string, c.OutcomeCount)
-		for o := uint8(0); o < c.OutcomeCount; o++ {
-			ids[o] = ExchangePositionID(c.ID, o).String()
-		}
-		out["condition"] = c.ID
-		out["collateral"] = c.Collateral.String()
-		out["resolver"] = c.Resolver.String()
-		out["end_time"] = c.EndTime
-		out["outcome_count"] = c.OutcomeCount
-		out["question_hash"] = hex.EncodeToString(c.QuestionHash[:])
-		out["resolved"] = c.Resolved
-		out["winning_outcome"] = c.WinningOutcome
-		out["locked"] = c.Locked.String()
-		out["position_ids"] = ids
-		return out, nil
-
-	case "order_status":
-		h, err := parseHex32(p.Hash)
-		if err != nil {
-			return nil, fmt.Errorf("exchange order_status: hash: %w", err)
-		}
-		filled, err := x.OrderFilled(h)
-		if err != nil {
-			return nil, err
-		}
-		cancelled, err := x.OrderCancelled(h)
-		if err != nil {
-			return nil, err
-		}
-		out["hash"] = hex.EncodeToString(h[:])
-		out["filled"] = filled.String()
-		out["cancelled"] = cancelled
-		return out, nil
-
-	case "order_remaining":
-		if p.Order == nil {
-			return nil, fmt.Errorf("exchange order_remaining: order is required")
-		}
-		o, err := x.parseOrder("exchange order_remaining: ", *p.Order)
-		if err != nil {
-			return nil, err
-		}
-		filled, err := x.OrderFilled(o.hash)
-		if err != nil {
-			return nil, err
-		}
-		cancelled, err := x.OrderCancelled(o.hash)
-		if err != nil {
-			return nil, err
-		}
-		remaining := new(big.Int).Sub(o.ShareAmount, filled)
-		if cancelled || remaining.Sign() < 0 {
-			remaining = new(big.Int)
-		}
-		out["hash"] = hex.EncodeToString(o.hash[:])
-		out["share_amount"] = o.ShareAmount.String()
-		out["filled"] = filled.String()
-		out["cancelled"] = cancelled
-		out["remaining"] = remaining.String()
-		return out, nil
-
-	case "order_hash":
-		if p.Order == nil {
-			return nil, fmt.Errorf("exchange order_hash: order is required")
-		}
-		h, err := x.OrderHash(*p.Order)
-		if err != nil {
-			return nil, fmt.Errorf("exchange order_hash: %w", err)
-		}
-		out["hash"] = hex.EncodeToString(h[:])
-		return out, nil
-
-	case "nonce":
-		maker, err := qcrypto.AddressFromString(p.Maker)
-		if err != nil {
-			return nil, fmt.Errorf("exchange nonce: maker: %w", err)
-		}
-		n, err := x.MakerNonce(maker)
-		if err != nil {
-			return nil, err
-		}
-		out["maker"] = maker.String()
-		out["nonce"] = n
-		return out, nil
-
-	case "is_operator":
-		a, err := qcrypto.AddressFromString(p.Address)
-		if err != nil {
-			return nil, fmt.Errorf("exchange is_operator: address: %w", err)
-		}
-		ok, err := x.IsOperator(a)
-		if err != nil {
-			return nil, err
-		}
-		out["address"] = a.String()
-		out["is_operator"] = ok
-		return out, nil
-
-	case "position":
-		holder, err := qcrypto.AddressFromString(p.Holder)
-		if err != nil {
-			return nil, fmt.Errorf("exchange position: holder: %w", err)
-		}
-		c, err := x.Condition(p.Condition)
-		if err != nil {
-			return nil, fmt.Errorf("exchange position: %w", err)
-		}
-		pos := x.positions()
-		ids := make([]string, c.OutcomeCount)
-		balances := make([]string, c.OutcomeCount)
-		for o := uint8(0); o < c.OutcomeCount; o++ {
-			id := ExchangePositionID(c.ID, o)
-			bal, err := pos.BalanceOf(holder, id)
-			if err != nil {
-				return nil, err
-			}
-			ids[o] = id.String()
-			balances[o] = bal.String()
-		}
-		out["condition"] = c.ID
-		out["holder"] = holder.String()
-		out["position_ids"] = ids
-		out["balances"] = balances
-		return out, nil
-
-	case "position_id":
-		// Handled above, before the instance is resolved.
-		return out, nil
-
-	case "simulate_match":
-		var sp exchangeSimulateParams
-		if err := json.Unmarshal(raw, &sp); err != nil {
-			return nil, fmt.Errorf("exchange simulate_match: bad params: %w", err)
-		}
-		caller, err := qcrypto.AddressFromString(sp.Caller)
-		if err != nil {
-			return nil, fmt.Errorf("exchange simulate_match: caller: %w", err)
-		}
-		rc := &types.Receipt{}
-		snap := stateDB.Snapshot()
-		if err := stateDB.RevertToSnapshot(snap); err != nil {
-			return nil, fmt.Errorf("exchange simulate_match: %w", err)
-		}
-		out["caller"] = caller.String()
-		out["head_height"] = rctx.Height
-		out["head_time"] = rctx.Time
-		out["ok"] = merr == nil
-		out["error"] = ""
-		if merr != nil {
-			out["error"] = merr.Error()
-		}
-		out["logs"] = len(rc.Logs)
-		return out, nil
-
-	default:
-		// Unreachable: DispatchModuleReadCall admits only the read set.
-		return nil, fmt.Errorf("exchange: unknown read action %q", action)
-	}
 }

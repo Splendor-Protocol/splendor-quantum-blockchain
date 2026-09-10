@@ -286,6 +286,20 @@ func OwnershipTransferredEvent(contract, previousOwner, newOwner qcrypto.Address
 		Build()
 }
 
+// OperatorSetEvent builds an OperatorSet event: operator indexed; active as a
+// 0/1 data word. Emitted by a module whose owner grants or revokes an
+// operator (the bridge).
+func OperatorSetEvent(contract, operator qcrypto.Address, active bool) *types.Log {
+	v := big.NewInt(0)
+	if active {
+		v = big.NewInt(1)
+	}
+	return NewEvent(contract, "OperatorSet(sqaddress,bool)").
+		IndexAddr(operator).
+		DataUint256(v).
+		Build()
+}
+
 // TransferSingleEvent builds a QRC-1155 TransferSingle event: operator, from
 // and to indexed; id and value as data words.
 func TransferSingleEvent(contract, operator, from, to qcrypto.Address, id, value *big.Int) *types.Log {
@@ -334,26 +348,6 @@ func BurnEvent(contract, from qcrypto.Address, tokenId, amount *big.Int) *types.
 		Build()
 }
 
-// DepositEvent builds a QRC-4626 Deposit event.
-func DepositEvent(contract, caller, receiver qcrypto.Address, assets, shares *big.Int) *types.Log {
-	return NewEvent(contract, "Deposit(sqaddress,sqaddress,uint256,uint256)").
-		IndexAddr(caller).
-		IndexAddr(receiver).
-		DataUint256(assets).
-		DataUint256(shares).
-		Build()
-}
-
-// WithdrawEvent builds a QRC-4626 Withdraw event.
-func WithdrawEvent(contract, caller, receiver, owner qcrypto.Address, assets, shares *big.Int) *types.Log {
-	return NewEvent(contract, "Withdraw(sqaddress,sqaddress,uint256,uint256)").
-		IndexAddr(caller).
-		IndexAddr(receiver).
-		DataUint256(assets).
-		DataUint256(shares).
-		Build()
-}
-
 // ValidatorRegisteredEvent builds a staking ValidatorRegistered event.
 func ValidatorRegisteredEvent(contract, validator qcrypto.Address, stake *big.Int) *types.Log {
 	return NewEvent(contract, "ValidatorRegistered(sqaddress,uint256)").
@@ -368,34 +362,5 @@ func ValidatorSlashedEvent(contract, validator qcrypto.Address, slashAmount, rem
 		IndexAddr(validator).
 		DataUint256(slashAmount).
 		DataUint256(remaining).
-		Build()
-}
-
-// ProposalSubmittedEvent builds a governance ProposalSubmitted event.
-func ProposalSubmittedEvent(contract qcrypto.Address, proposalID uint64, proposer qcrypto.Address) *types.Log {
-	return NewEvent(contract, "ProposalSubmitted(uint256,sqaddress)").
-		IndexUint256(big.NewInt(int64(proposalID))).
-		IndexAddr(proposer).
-		Build()
-}
-
-// VoteCastEvent builds a governance VoteCast event.
-
-// SwapEvent is emitted by a DEX pool after a successful swap.
-func SwapEvent(pool, sender, to qcrypto.Address, amount0In, amount1In, amount0Out, amount1Out *big.Int) *types.Log {
-	return NewEvent(pool, "Swap(sqaddress,uint256,uint256,uint256,uint256,sqaddress)").
-		IndexAddr(sender).
-		IndexAddr(to).
-		DataUint256(amount0In).
-		DataUint256(amount1In).
-		DataUint256(amount0Out).
-		DataUint256(amount1Out).
-		Build()
-}
-
-// ProposalExecutedEvent builds a governance ProposalExecuted event.
-func ProposalExecutedEvent(contract qcrypto.Address, proposalID uint64) *types.Log {
-	return NewEvent(contract, "ProposalExecuted(uint256)").
-		IndexUint256(big.NewInt(int64(proposalID))).
 		Build()
 }
