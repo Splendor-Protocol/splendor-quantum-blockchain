@@ -8,8 +8,8 @@
 > SHA3-256. Native peer traffic can be sealed using ML-KEM-768-established
 > secrets and AES-256-GCM. Native SPLD is minted once at genesis — 26 billion,
 > never more. SQVL (Splendor Quantum Verification Layer) is a native module
-> for dual-signed instructions (ML-DSA-65 + SLH-DSA). Validators register
-> permissionlessly with a 2,500 SPLD bond. This is not an ECDSA-ledger
+> for dual-signed instructions (ML-DSA-65 + SLH-DSA). The protocol bond is
+> 2,500 SPLD; public validator admission has not launched. This is not an ECDSA-ledger
 > migration, but it is also not a guarantee against every future attack:
 > security depends on the current assumptions of those algorithms, this
 > implementation, and its operation.**
@@ -25,6 +25,12 @@ around the chain. If you only read one page, read this one; the detail is in
 [§21](#21-how-a-release-reaches-a-tier) (deployment) and
 [§22](#22-repository-layout-and-developer-quick-start) (this repository's
 layout and quick start).
+
+Operators joining a published chain: [docs/RPC_NODE.md](docs/RPC_NODE.md)
+(follower) and [docs/VALIDATOR.md](docs/VALIDATOR.md) (lifecycle; admission
+is closed). Lab pass/tier pages (`docs/VALIDATOR_FAQ.md`,
+`docs/FEAT_VALIDATOR.md`, `docs/modules/staking.md`) are archived
+`sqc-featval-1` material, not current mainnet onboarding.
 
 ### The repository map
 
@@ -1771,31 +1777,39 @@ signing device.
 ## 20. Live Networks and Endpoints
 
 Three chains run today, each with its own genesis, validator key, chain id and
-fork schedule, and each with its own explorer and indexer. Everything in this
-section was observed from the public endpoints on **2026-09-02 between
-13:03 and 13:06 UTC**; heights climb, everything else should not change without
-a release. Reachability at that instant is not an availability guarantee, and
-an HTTP 200 does not establish correctness, freshness or production readiness.
+fork schedule, and each with its own explorer and indexer. The live rows of the
+table below are regenerated from the tiers' own `/status` after every verified
+rollout (the timestamp is in the table); heights climb, everything else should
+not change without a release. Reachability at that instant is not an
+availability guarantee, and an HTTP 200 does not establish correctness,
+freshness or production readiness.
 
 ### The tiers
 
+<!-- tiers:begin -->
+Live rows were read from each tier's `/status`, `/block/0` and
+`/idx/v1/health` at **2026-09-10T12:52Z** by `npm run readme:tiers`, which
+`npm run deploy` runs after every verified rollout. Do not edit this table by
+hand; edit `scripts/readme-tiers.mjs` and regenerate.
+
 | | Devnet | Testnet | Mainnet |
 |---|---|---|---|
-| Purpose | Sandbox; new releases land here first | Rehearsal; mainnet's base rules plus the four optional forks mainnet has not adopted, plus the bridge | Real balances; promoted images only |
-| Chain id | `splendor-quantum-devnet-1` | `splendor-quantum-testnet-1` | `splendor-quantum-1` |
+| Purpose | Sandbox; new releases land here first | Rehearsal; mainnet's rules plus what mainnet has not adopted yet | Real balances; promoted images only |
 | Node RPC | `https://quantum-rpc-devnet.splendor.org` | `https://quantum-rpc-testnet.splendor.org` | `https://quantum-rpc.splendor.org` |
 | Indexer read API | `https://quantum-rpc-devnet.splendor.org/idx/v1` | `https://quantum-rpc-testnet.splendor.org/idx/v1` | `https://quantum-rpc.splendor.org/idx/v1` |
 | Explorer | `https://quantum-devnet-explorer.splendor.org` | `https://quantum-testnet-explorer.splendor.org` | `https://quantum-explorer.splendor.org` |
 | Faucet | `https://quantum-faucet.splendor.org` | `https://quantum-faucet.splendor.org` | none, by design |
-| Node image / commit observed (2026-09-09T18:22Z) | see note below | `sqc-node:v1.0.11` / `c79ede535aac` | `sqc-node:v1.0.11` / `c79ede535aac` |
+| Chain id | `splendor-quantum-devnet-1` | `splendor-quantum-testnet-1` | `splendor-quantum-1` |
+| Node image / commit | `sqc-node:v1.0.12` / `a3964a4259d2` | `sqc-node:v1.0.12` / `a3964a4259d2` | `sqc-node:v1.0.12` / `a3964a4259d2` |
 | Indexer image | `sqc-indexer:v0.3.1` | `sqc-indexer:v0.3.2` | `sqc-indexer:v0.3.1` |
-| Height observed (2026-09-09T18:22Z) | see note below | 81,997 | 82,324 |
-| Fork schedule (`/status.forks`) | see note below | `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1`, `bridge_v1`, `validators_v1`, `multi_validator` at 1; `modules_v2` at 74,674 | `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1`, `validators_v1`, `multi_validator` at 1; `modules_v2` at 79,202 |
-| Consensus (`/status.consensus_mode`, `head_qc_valid`) | see note below | `bft`, one-vote certificate on every block | `bft`, one-vote certificate on every block |
-| Registered validators (`validator_set_size`) | see note below | 0 (the genesis validator produces unregistered) | 1 (the genesis validator, registered) |
-| Genesis block hash (`/status.genesis_hash`) | `c341a89bb740a516ff0c3bbd703d6ebd5badaf5bec52f11e73b081c6992458b8` (pipeline node) | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` | `ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949` |
-| Genesis validator | `SQ:481db30740b78c4a190ad28a7da1719d3574edd9b5a5507dfc7b1e6a1375d800` (lab chain, see note) | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
-| Peers reported | see note below | 0 (single validator) | 0 (single validator) |
+| Height | 77,309 | 132,846 | 148,918 |
+| Fork schedule (`/status.forks`) | `exchange_v1`, `module_revert_v1`, `qrc1155_v1`, `qrc20_v2` at 1; `modules_v2` at 25,990; `multi_validator`, `validators_v1` at 74,075; `vm_revert_v1` at 130,000 | `bridge_v1`, `exchange_v1`, `module_revert_v1`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1; `modules_v2` at 74,674 | `exchange_v1`, `module_revert_v1`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1; `modules_v2` at 79,202 |
+| Consensus (`/status.consensus_mode`, `head_qc_valid`) | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote |
+| Registered validators (`validator_set_size`) | 0 | 0 | 1 |
+| Genesis block hash (`/status.genesis_hash`) | `c341a89bb740a516ff0c3bbd703d6ebd5badaf5bec52f11e73b081c6992458b8` | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` | `ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949` |
+| Genesis validator (`/block/0`) | `SQ:8d2eeb30163d2b0b6d472fcdf14065e5d81151718ca0bcb068b0308de3cc0aa3` | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
+| Peers reported | 2 | 0 | 0 |
+<!-- tiers:end -->
 
 Every tier has been reset at least once since the earlier snapshots in this
 file, so the genesis block hashes above are the ones a `--genesis-hash` pin
@@ -1804,14 +1818,13 @@ chains that no longer exist. Mainnet's schedule adopted `multi_validator` and
 `validators_v1` on 2026-09-08 and `modules_v2` on 2026-09-09 through
 `--allow-fork-extension`, without a reset.
 
-Devnet, as of the same timestamp, is two chains behind one hostname:
-`quantum-rpc-devnet.splendor.org` round-robins between the pipeline node
-(`sqc-node:v1.0.11`, `splendor-quantum-devnet-1`, genesis `c341a89b…`, the
-four settlement forks plus `vm_revert_v1` at 130,000, single validator) and a
-four-validator lab chain running an out-of-tree build (`v1.1.0-join-1aeec2a`,
-every module fork at 1, height ~41,000). Until the lab hosts drop the devnet
-tag or the tunnel is pointed at one origin, a devnet reading proves nothing
-without checking `/status.commit` first.
+Devnet has at times been two chains behind one hostname:
+`quantum-rpc-devnet.splendor.org` round-robined between the pipeline node
+(`splendor-quantum-devnet-1`, genesis `c341a89b…`) and a four-validator lab
+chain running an out-of-tree build (`v1.1.0-join-1aeec2a`, every module fork
+at 1). The generator reads each tier three times and marks a cell **mixed**
+when the answers disagree; a devnet cell marked mixed proves nothing about
+either chain until `/status.commit` is checked against a known build.
 
 Fees on every tier are integers in the smallest unit (`fee_unit`,
 `decimals` in `/status`): the current floor of `1000` is 1000 × 10⁻¹⁸ SPLD, not
@@ -1840,6 +1853,7 @@ for base in https://quantum-rpc.splendor.org \
   curl -fsS "$base/idx/v1/health"
 done
 npm run release:status        # the same, from the release tool's point of view
+npm run readme:tiers -- --check   # fails when the table above no longer matches the tiers
 ```
 
 ### The node's RPC surface
@@ -1952,6 +1966,7 @@ npm run deploy:test            # …to testnet   (GitHub environment "test")
 npm run deploy:prod            # …to mainnet   (GitHub environment "prod", asks first)
 npm run deploy v0.6.2 prod     # promote an image that already exists — no rebuild
 npm run release:status         # what every tier is running right now
+npm run readme:tiers           # regenerate the §20 tier table (deploy does this itself)
 ```
 
 `npm run deploy:<tier>` is `node scripts/release.mjs patch <tier>`. The script

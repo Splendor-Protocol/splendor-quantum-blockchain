@@ -13,7 +13,8 @@
     "reset:devnet": "node scripts/release.mjs reset devnet",
     "reset:test": "node scripts/release.mjs reset test",
     "reset:prod": "node scripts/release.mjs reset prod",
-    "release:status": "node scripts/release.mjs status"
+    "release:status": "node scripts/release.mjs status",
+    "readme:tiers": "node scripts/readme-tiers.mjs"
   },
   "engines": {
     "node": ">=20"
