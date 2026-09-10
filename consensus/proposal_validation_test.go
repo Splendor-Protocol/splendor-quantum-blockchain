@@ -78,8 +78,8 @@ func TestProposalRejectedByTheValidatorGetsNoVote(t *testing.T) {
 	if eng.voteSet != nil || eng.proposal != nil {
 		t.Fatal("a proposal the validator rejected was accepted")
 	}
-	if eng.hasLock {
-		t.Fatal("a rejected proposal left a lock behind")
+	if eng.hasVoted {
+		t.Fatal("a rejected proposal caused a vote")
 	}
 	if eng.Height() != 5 || eng.Round() != 0 {
 		t.Fatalf("engine moved to %d/%d on a rejected proposal", eng.Height(), eng.Round())
@@ -147,38 +147,39 @@ func TestLocalProposalIsNotReJudged(t *testing.T) {
 	}
 }
 
-// A lock is bound to one height AND one round. After a round timeout a fresh
-// proposal in the new round must be accepted even though its hash differs
-// from the block locked in the old round; the lock's job is only to refuse a
-// CONFLICTING block in the SAME round.
-func TestLockFromAnEarlierRoundDoesNotRefuseTheNextRoundsProposal(t *testing.T) {
+// Vote commitment is bound to one HEIGHT across ALL rounds. After voting for
+// a block at height H, a later round at the same height may only re-sign that
+// same hash, never a different one. This prevents two-QC forks.
+func TestVoteCommitmentPreventsVotingForDifferentBlockAtSameHeight(t *testing.T) {
 	set, keys := testSet(t, 2)
 	eng := engineFor(t, set, keys, 0, BFTConfig{})
 	eng.SetHeight(5)
 
 	first := peerProposalAt5(t, set, keys, 1)
-	eng.lock(first.Block, 0) // saw a quorum for this block in round 0; the commit did not happen
-	if !eng.hasLock {
-		t.Fatal("lock not recorded")
+	// Manually cast a vote for this block (simulating we voted in round 0)
+	_, err := eng.castVote(first.Block, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eng.hasVoted {
+		t.Fatal("vote not recorded")
 	}
 
-	// Same round, different block: refused by the lock.
-	conflict := peerProposalAt5(t, set, keys, 99)
-	eng.handleProposal(pendingProposalOf(conflict))
-	if eng.voteSet != nil {
-		t.Fatal("a block conflicting with the round-0 lock was accepted in round 0")
-	}
-
+	// Same height, different block, different round: MUST be refused
 	eng.handleTimeout()
 	if eng.Round() != 1 {
 		t.Fatalf("round = %d after timeout, want 1", eng.Round())
 	}
-	next := proposalAt(t, set, keys, 5, 1, 2)
-	eng.handleProposal(&pendingProposal{block: next.Block, local: true})
+	conflict := proposalAt(t, set, keys, 5, 1, 99)
+	eng.handleProposal(&pendingProposal{block: conflict.Block, local: true})
 	if eng.voteSet != nil {
-		t.Fatal("a different block at round 1 was accepted after a round-0 lock")
+		t.Fatal("a conflicting block at height 5 round 1 was accepted after voting for a different block at height 5 round 0")
 	}
-	if _, err := eng.castVote(first.Block, 1); err != nil {
-		t.Fatalf("re-sign the locked block in the next round: %v", err)
+
+	// Re-signing the SAME block in a later round at the same height is allowed
+	// Use the exact same block from round 0
+	eng.handleProposal(&pendingProposal{block: first.Block, local: true})
+	if eng.voteSet == nil {
+		t.Fatal("re-voting for the same block hash in a later round was refused")
 	}
 }
