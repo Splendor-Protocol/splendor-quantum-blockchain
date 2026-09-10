@@ -1,9 +1,10 @@
 // Package vm — ModulesV2 fork security tests
 //
 // Tests for the three critical fixes in ModulesV2:
-//   M1: DEX remove_liquidity routing
-//   M2: Staking lifecycle (Exiting state rejection)
-//   M3: Module gas metering
+//
+//	M1: DEX remove_liquidity routing
+//	M2: Staking lifecycle (Exiting state rejection)
+//	M3: Module gas metering
 //
 // Based on September 2026 mainnet security audit findings.
 package vm
@@ -22,11 +23,11 @@ import (
 // TestM1_DEX_RemoveLiquidity_Routing verifies the DEX exit path fix
 func TestM1_DEX_RemoveLiquidity_Routing(t *testing.T) {
 	t.Run("BeforeModulesV2_ShouldFailHard", func(t *testing.T) {
-		stateDB := state.NewTestStateDB(t)
+		stateDB := newSecurityStateDB(t)
 		defer stateDB.Close()
 
-		caller := qcrypto.NewTestAddress(t, 1)
-		pool := qcrypto.NewTestAddress(t, 2)
+		caller := addr(1)
+		pool := addr(2)
 
 		// Fund caller with tokens
 		acc, _ := stateDB.GetAccount(caller)
@@ -36,13 +37,13 @@ func TestM1_DEX_RemoveLiquidity_Routing(t *testing.T) {
 		ctx := ModuleContext{
 			Caller: caller,
 			Nonce:  1,
-			Height: 100, // Before ModulesV2
+			Height: 100,                                   // Before ModulesV2
 			Forks:  forks.Schedule{forks.ModulesV2: 1000}, // Activates at 1000
 		}
 
 		params := map[string]interface{}{
-			"pool":       pool.String(),
-			"lp_shares":  "1000",
+			"pool":        pool.String(),
+			"lp_shares":   "1000",
 			"amount0_min": "0",
 			"amount1_min": "0",
 		}
@@ -62,18 +63,18 @@ func TestM1_DEX_RemoveLiquidity_Routing(t *testing.T) {
 		if err == nil {
 			t.Fatal("Expected HARD error before ModulesV2 fork")
 		}
-		if !isHardError(err) {
+		if !IsHardModuleError(err) {
 			t.Errorf("Expected HARD error, got: %v", err)
 		}
 	})
 
 	t.Run("AfterModulesV2_WithValidPool_ShouldSucceed", func(t *testing.T) {
-		stateDB := state.NewTestStateDB(t)
+		stateDB := newSecurityStateDB(t)
 		defer stateDB.Close()
 
-		caller := qcrypto.NewTestAddress(t, 1)
-		token0 := qcrypto.NewTestAddress(t, 10)
-		token1 := qcrypto.NewTestAddress(t, 11)
+		caller := addr(1)
+		token0 := addr(10)
+		token1 := addr(11)
 
 		// Setup: Deploy pool
 		ctx := ModuleContext{
@@ -91,20 +92,20 @@ func TestM1_DEX_RemoveLiquidity_Routing(t *testing.T) {
 
 		// Add liquidity to get LP shares
 		lp := NewLiquidityPool(stateDB, pool)
-		
+
 		// Fund caller's tokens
 		SetTestTokenBalance(t, stateDB, token0, caller, big.NewInt(10000))
 		SetTestTokenBalance(t, stateDB, token1, caller, big.NewInt(10000))
-		
-		shares, _, _, err := lp.AddLiquidity(caller, big.NewInt(5000), big.NewInt(5000), big.NewInt(0), big.NewInt(0))
+
+		_, _, shares, err := lp.AddLiquidity(caller, big.NewInt(5000), big.NewInt(5000), big.NewInt(0), big.NewInt(0))
 		if err != nil {
 			t.Fatalf("Failed to add liquidity: %v", err)
 		}
 
 		// Now test remove_liquidity
 		params := map[string]interface{}{
-			"pool":       pool.String(),
-			"lp_shares":  shares.String(),
+			"pool":        pool.String(),
+			"lp_shares":   shares.String(),
 			"amount0_min": "0",
 			"amount1_min": "0",
 		}
@@ -125,18 +126,21 @@ func TestM1_DEX_RemoveLiquidity_Routing(t *testing.T) {
 		}
 
 		// Verify LP shares were burned
-		remainingShares := lp.BalanceOf(caller)
+		remainingShares, shErr := lp.LPBalance(caller)
+		if shErr != nil {
+			t.Fatal(shErr)
+		}
 		if remainingShares.Sign() != 0 {
 			t.Errorf("Expected LP shares to be burned, got %s", remainingShares.String())
 		}
 	})
 
 	t.Run("DeadlineExpired_ShouldFail", func(t *testing.T) {
-		stateDB := state.NewTestStateDB(t)
+		stateDB := newSecurityStateDB(t)
 		defer stateDB.Close()
 
-		caller := qcrypto.NewTestAddress(t, 1)
-		pool := qcrypto.NewTestAddress(t, 2)
+		caller := addr(1)
+		pool := addr(2)
 
 		ctx := ModuleContext{
 			Caller: caller,
@@ -145,9 +149,9 @@ func TestM1_DEX_RemoveLiquidity_Routing(t *testing.T) {
 		}
 
 		params := map[string]interface{}{
-			"pool":       pool.String(),
-			"lp_shares":  "1000",
-			"deadline":   400, // Deadline in the past
+			"pool":      pool.String(),
+			"lp_shares": "1000",
+			"deadline":  400, // Deadline in the past
 		}
 		data, _ := json.Marshal(params)
 
@@ -213,19 +217,9 @@ func TestM3_ModuleGasMetering(t *testing.T) {
 	})
 }
 
-// Helper: Check if error is HARD (unknown module/action, fork not active)
-func isHardError(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	// HARD errors from requireFork and unknown actions
-	return contains(s, "requires") || contains(s, "unknown")
-}
-
 // Helper: Check if error is SOFT (validation failure, insufficient funds, etc.)
 func isSoftError(err error) bool {
-	return err != nil && !isHardError(err)
+	return err != nil && !IsHardModuleError(err)
 }
 
 func contains(s, substr string) bool {
@@ -247,7 +241,9 @@ func SetTestTokenBalance(t *testing.T, stateDB *state.StateDB, token, holder qcr
 	tok := NewQRC20Token(stateDB, token)
 	// This assumes token is already deployed
 	// In real test, deploy token first or mock the storage
-	tok.SetBalance(holder, amount)
+	if err := tok.setBalance(holder, amount); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestModulesV2Comprehensive runs all three fixes together
@@ -269,4 +265,16 @@ func TestModulesV2Comprehensive(t *testing.T) {
 		// All three fixes must activate together - that's the point
 		// of bundling them into one fork
 	})
+}
+
+// newSecurityStateDB opens a throwaway StateDB, the way every other vm test
+// does; core/state deliberately ships no test constructor.
+func newSecurityStateDB(t *testing.T) *state.StateDB {
+	t.Helper()
+	sdb, err := state.NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sdb.Close() })
+	return sdb
 }
