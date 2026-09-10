@@ -254,8 +254,14 @@ type BFTEngine struct {
 
 	lockedHash   [32]byte
 	lockedHeight uint64 // the lock binds one height only; the next height is a new decision
-	lockedRound  uint32 // and one round: a view change is a fresh decision too
+	lockedRound  uint32
 	hasLock      bool
+	// First hash this node signed at votedHeight. A later round at the same
+	// height may re-sign that hash, never a different one — otherwise two
+	// 2-of-2 certificates can exist for one height.
+	votedHash   [32]byte
+	votedHeight uint64
+	hasVoted    bool
 	stateMu      sync.Mutex
 
 	// refreshSet re-reads the on-chain validator registry. The engine sizes a
@@ -463,6 +469,7 @@ func (e *BFTEngine) castVote(b *types.Block, round uint32) (*Vote, error) {
 		return nil, err
 	}
 	e.signedHeight, e.signedRound, e.hasSigned = b.Header.Height, round, true
+	e.votedHash, e.votedHeight, e.hasVoted = b.Hash, b.Header.Height, true
 	return vote, nil
 }
 
@@ -668,14 +675,14 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 		}
 	}
 
-	// A lock is a statement about ONE height and ONE round. Holding it against
-	// every later proposal wedged the engine for good whenever a commit failed:
-	// no proposal at h+1 could ever match the hash locked at h, and — until the
-	// round was part of it — no re-proposal at h either, because a fresh
-	// proposal always carries a fresh timestamp and therefore a fresh hash.
-	if e.hasLock && b.Header.Height == e.lockedHeight && round == e.lockedRound && b.Hash != e.lockedHash {
+	if e.hasVoted && b.Header.Height == e.votedHeight && b.Hash != e.votedHash {
 		log.Warn().Uint64("height", b.Header.Height).Uint32("round", round).
-			Msg("BFT: proposal conflicts with the block locked in this round")
+			Msg("BFT: already voted for a different block at this height")
+		return
+	}
+	if e.hasLock && b.Header.Height == e.lockedHeight && b.Hash != e.lockedHash {
+		log.Warn().Uint64("height", b.Header.Height).Uint32("round", round).
+			Msg("BFT: proposal conflicts with the block locked at this height")
 		return
 	}
 
@@ -922,6 +929,7 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	e.voteSet = nil
 	e.proposal = nil
 	e.hasLock = false
+	e.hasVoted = false
 	e.prunePendingVotes(e.currentHeight)
 	e.pruneSeenVotes(e.currentHeight)
 }
@@ -937,9 +945,8 @@ func (e *BFTEngine) pruneSeenVotes(below uint64) {
 	}
 }
 
-// lock records the block this node saw a quorum for, so it cannot then vote
-// for a different one in the same round. It is cleared by a successful commit
-// and by a failed one alike.
+// lock records the block this node saw a quorum for. A later round at this
+// height may only re-sign that hash.
 func (e *BFTEngine) lock(b *types.Block, round uint32) {
 	e.lockedHash = b.Hash
 	e.lockedHeight = b.Header.Height
@@ -973,18 +980,17 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	}
 	e.currentHeight = h
 	e.currentRound = 0
+	e.hasVoted = false
+	e.hasLock = false
 	// A restart re-enters a height the previous process may already have
 	// voted at: it signed (h, r) for some block and died before h committed.
-	// Round r is spent — the journal refuses every other block there, and a
-	// fresh proposal always carries a fresh hash — so resume at r+1, which the
-	// journal treats as a new decision. Without this a sole validator
-	// re-proposed at round 0 on every tick, was refused on every tick, and,
-	// because each of its own proposals reset the round timer, never reached
-	// the view change that would have moved it on (devnet, 2026-09-10,
-	// height 79457).
+	// Round r is spent — the journal refuses every other block there — so
+	// resume at r+1 and keep that hash. A later round may re-sign it, never
+	// a different block.
 	if e.journal != nil {
-		if jh, jr, _, ok := e.journal.Last(); ok && jh == h {
+		if jh, jr, jhash, ok := e.journal.Last(); ok && jh == h {
 			e.currentRound = jr + 1
+			e.votedHash, e.votedHeight, e.hasVoted = jhash, jh, true
 			log.Warn().Uint64("height", h).Uint32("round", jr).
 				Msg("BFT: the vote journal already holds a vote at this height; resuming at the next round")
 		}

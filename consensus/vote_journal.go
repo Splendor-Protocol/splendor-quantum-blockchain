@@ -11,8 +11,8 @@ import (
 )
 
 // ErrDoubleSign is returned when a vote would contradict one this validator
-// already signed: a different block at the same height and round, or any vote
-// for a height or round this validator has already moved past.
+// already signed: a different block at the same height (any round), or any
+// vote for a height or round this validator has already moved past.
 var ErrDoubleSign = errors.New("refusing to sign a vote that contradicts one already signed")
 
 // VoteJournal is the durable record of the last vote this validator signed.
@@ -89,11 +89,11 @@ func (j *VoteJournal) Record(height uint64, round uint32, blockHash [32]byte) er
 		switch {
 		case height < l.Height:
 			return fmt.Errorf("%w: already voted at height %d, asked to vote at %d", ErrDoubleSign, l.Height, height)
+		case height == l.Height && l.BlockHash != want:
+			return fmt.Errorf("%w: already voted for %s at height %d, asked to vote for %s at round %d",
+				ErrDoubleSign, l.BlockHash[:8], height, want[:8], round)
 		case height == l.Height && round < l.Round:
 			return fmt.Errorf("%w: already voted at height %d round %d, asked to vote at round %d", ErrDoubleSign, l.Height, l.Round, round)
-		case height == l.Height && round == l.Round && l.BlockHash != want:
-			return fmt.Errorf("%w: already voted for %s at height %d round %d, asked to vote for %s",
-				ErrDoubleSign, l.BlockHash[:8], height, round, want[:8])
 		case height == l.Height && round == l.Round:
 			return nil // identical vote, nothing new to record
 		}

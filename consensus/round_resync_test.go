@@ -450,18 +450,19 @@ func TestFailedCommitDoesNotWedgeTheHeight(t *testing.T) {
 
 	// Height 4, round 0 → set[0] leads. Its bundled vote plus this node's is a
 	// quorum, so the commit runs — and fails.
-	eng.handleProposal(pendingProposalOf(proposalAt(t, set, keys, 4, 0, 1)))
+	first := proposalAt(t, set, keys, 4, 0, 1)
+	eng.handleProposal(pendingProposalOf(first))
 	if eng.hasLock {
 		t.Fatal("a failed commit left the height locked: nothing was committed, so there is nothing to be locked on")
 	}
 
-	// The leader tries again with a different block at the same height.
+	// Retry the SAME block. A different hash at this height is a second certificate.
 	fail = false
 	committed := false
 	eng.onCommit = func(*types.Block) error { committed = true; return nil }
-	eng.handleProposal(pendingProposalOf(proposalAt(t, set, keys, 4, 0, 2)))
+	eng.handleProposal(pendingProposalOf(first))
 	if !committed {
-		t.Fatal("the retry at the same height was refused after an earlier commit failed")
+		t.Fatal("the retry of the same block was refused after an earlier commit failed")
 	}
 }
 

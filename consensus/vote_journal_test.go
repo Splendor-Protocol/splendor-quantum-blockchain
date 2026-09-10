@@ -49,8 +49,11 @@ func TestVoteJournalRefusesConflictsAcrossReopen(t *testing.T) {
 	if err := j2.Record(6, 5, b); !errors.Is(err, ErrDoubleSign) {
 		t.Fatalf("vote at a lower height accepted: %v", err)
 	}
-	if err := j2.Record(7, 1, b); err != nil {
-		t.Fatalf("next round refused: %v", err)
+	if err := j2.Record(7, 1, b); !errors.Is(err, ErrDoubleSign) {
+		t.Fatalf("different block at the next round accepted: %v", err)
+	}
+	if err := j2.Record(7, 1, a); err != nil {
+		t.Fatalf("same block at the next round refused: %v", err)
 	}
 	if err := j2.Record(7, 0, a); !errors.Is(err, ErrDoubleSign) {
 		t.Fatalf("vote at a lower round accepted: %v", err)
@@ -111,8 +114,10 @@ func TestEngineDoesNotDoubleSignAcrossRestart(t *testing.T) {
 	if _, err := second.castVote(blockA, 0); err != nil {
 		t.Fatalf("restarted engine refused to re-sign its own earlier vote: %v", err)
 	}
-	// And the next round is a fresh decision.
-	if _, err := second.castVote(blockB, 1); err != nil {
-		t.Fatalf("restarted engine refused a vote in the next round: %v", err)
+	if _, err := second.castVote(blockB, 1); !errors.Is(err, ErrDoubleSign) {
+		t.Fatalf("restarted engine signed a different block at the next round: %v", err)
+	}
+	if _, err := second.castVote(blockA, 1); err != nil {
+		t.Fatalf("restarted engine refused to re-sign A at the next round: %v", err)
 	}
 }

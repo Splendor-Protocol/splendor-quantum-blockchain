@@ -35,9 +35,11 @@ func TestRestartResumesAtTheRoundAfterTheJournaledVote(t *testing.T) {
 	if r := second.Round(); r != 1 {
 		t.Fatalf("restarted engine at height 5 is on round %d, want 1 (round 0 is spent in the journal)", r)
 	}
-	blockB := proposalAt(t, set, keys, 5, 1, 2).Block
-	if _, err := second.castVote(blockB, second.Round()); err != nil {
-		t.Fatalf("vote at the resumed round refused: %v", err)
+	if _, err := second.castVote(proposalAt(t, set, keys, 5, 1, 2).Block, second.Round()); err == nil {
+		t.Fatal("restarted engine signed a different block at the resumed round")
+	}
+	if _, err := second.castVote(blockA, second.Round()); err != nil {
+		t.Fatalf("re-signing A at the resumed round: %v", err)
 	}
 	// A later height starts at round 0 as before.
 	second.SetHeight(6)
@@ -55,7 +57,8 @@ func TestSoleValidatorSealsAfterRestartMidHeight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := j1.Record(1, 0, proposalAt(t, set, keys, 1, 0, 1).Block.Hash); err != nil {
+	blockA := proposalAt(t, set, keys, 1, 0, 1).Block
+	if err := j1.Record(1, 0, blockA.Hash); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,13 +79,11 @@ func TestSoleValidatorSealsAfterRestartMidHeight(t *testing.T) {
 	defer cancel()
 	go func() { _ = eng.Run(ctx) }()
 
-	// The node's own fresh proposal for the height it resumed at.
-	b := proposalAt(t, set, keys, 1, eng.Round(), 2).Block
-	eng.ProposeBlock(b)
+	eng.ProposeBlock(blockA)
 	select {
 	case got := <-committed:
-		if got.Hash != b.Hash {
-			t.Fatalf("committed %x, want %x", got.Hash[:4], b.Hash[:4])
+		if got.Hash != blockA.Hash {
+			t.Fatalf("committed %x, want %x", got.Hash[:4], blockA.Hash[:4])
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("the restarted sole validator never sealed the height it resumed at")
