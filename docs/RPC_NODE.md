@@ -77,12 +77,36 @@ the ML-DSA-65 `node_pubkey` is pinned.
 ## Build
 
 ```bash
+go mod download
+go mod verify
 go build -mod=readonly -o sqc-node ./cmd/node
 go build -mod=readonly -o sqc-wallet ./cmd/wallet
 go build -mod=readonly -o sqc-modcall ./cmd/sqc-modcall
 ```
 
+An unstamped `go build` does **not** report a release commit. `/status` fields
+`commit`, `image_tag`, and `node_version` come from `core/buildinfo`, which is
+injected at link time (`-X …/core/buildinfo.Commit=` and `ImageTag=`). A local
+build reports `unknown` for all three. Released container images stamp those
+values from `SQC_COMMIT` / `SQC_IMAGE_TAG`; when you run a released binary,
+compare `/status.commit` and `/status.image_tag` to the published image tag.
+
 ## Start (follower)
+
+Install an independently obtained genesis document if you have one, then hash
+it. Do not derive the pin from `genesis-production.json` in this repository.
+
+```bash
+sudo install -d -m 755 /etc/sqc
+# copy the independently obtained document, then:
+./sqc-node genesis-hash /etc/sqc/genesis.json
+# output must equal $GENESIS_DOC_HASH from the pin table
+```
+
+`--genesis` is optional. Without it, a follower still bootstraps allocations
+from the peer-served document once that document hashes to
+`--genesis-doc-hash`. Pass `--genesis /etc/sqc/genesis.json` only when you
+hold that same document locally. Do not use `--trust-peer-genesis`.
 
 ```bash
 : "${SQC_CHAIN_ID:?published chain id}"
@@ -94,7 +118,9 @@ go build -mod=readonly -o sqc-modcall ./cmd/sqc-modcall
 ./sqc-node \
   --data-dir /var/sqc/data \
   --rpc-addr 127.0.0.1:8080 \
+  --metrics-addr 127.0.0.1:9100 \
   --chain-id "$SQC_CHAIN_ID" \
+  --genesis /etc/sqc/genesis.json \
   --genesis-hash "$GENESIS_BLOCK_HASH" \
   --genesis-doc-hash "$GENESIS_DOC_HASH" \
   --peer "$BOOTNODE_URL" \
@@ -103,20 +129,40 @@ go build -mod=readonly -o sqc-modcall ./cmd/sqc-modcall
   --log-level info
 ```
 
-The `--peer-pin` URL must be the exact `--peer` string. Prometheus metrics
-listen on `--metrics-addr` (default `127.0.0.1:9100`); keep them private.
+Omit `--genesis` if `/etc/sqc/genesis.json` is not present. The `--peer-pin`
+URL must be the exact `--peer` string. `--metrics-addr` defaults to
+`127.0.0.1:9100` and serves `/metrics` plus `/health`; keep that listener
+private. Do not advertise a loopback `--public-url` — see below.
+
+### Service user and data-dir permissions
+
+Run the process as a dedicated unprivileged user. The data directory holds
+the chain store (`state/`, `chain/`, `txindex/`), the node's P2P identity
+key, and (if you later enable `--validator`) `vote-journal.json`. Other
+users on the box must not read or write it.
+
+- Create the system user once. Home `/var/sqc`, shell `nologin`.
+- Data dir `/var/sqc/data` owned by that user, mode `750` (owner rwx, group
+  rx, other none). The unit's `ExecStartPre` creates it outside the
+  systemd sandbox because `ProtectSystem=strict` blocks the node's own
+  `mkdir`.
+- Binary in `/opt/sqc` (mode `755`). Genesis document in `/etc/sqc`
+  (mode `644` is fine: it is not a secret).
+- Password / node-key files, if any, stay mode `0600` and are never
+  placed in the unit's `ExecStart` line.
 
 ### Install as a service
 
 [`contrib/systemd/sqc-follower.service`](../contrib/systemd/sqc-follower.service) is
-a mainnet unit with the derived pins left as `REPLACE_*` placeholders. It
-needs `curl`. `install.sh` writes its own `sqc-rpc.service` for validators;
-that is a different contract, hence the different name.
+the existing mainnet unit. Fill its `REPLACE_*` placeholders from your own
+derivation; do not embed secrets in the unit. It needs `curl`.
+`install.sh` writes its own `sqc-rpc.service` for validators; that is a
+different contract, hence the different name.
 
 ```bash
 sudo useradd --system --home /var/sqc --shell /usr/sbin/nologin sqc
 sudo install -d -o sqc -g sqc -m 750 /var/sqc /var/sqc/data
-sudo install -d -m 755 /opt/sqc
+sudo install -d -m 755 /opt/sqc /etc/sqc
 sudo install -m 755 sqc-node /opt/sqc/sqc-node
 sudo install -m 644 contrib/systemd/sqc-follower.service /etc/systemd/system/sqc-follower.service
 # fill the REPLACE_* values in /etc/systemd/system/sqc-follower.service
@@ -140,6 +186,40 @@ Sealed `KindTx` is on the write plane today. A public RPC that accepts
 sides share `--rpc-auth-token`. That is a current limitation; see
 [`PEER_AUTH.md`](PEER_AUTH.md). Do not add `--rpc-auth-token` just to sync.
 
+## Expose client RPC (only when intended)
+
+Keep `--rpc-addr 127.0.0.1:8080` and put TLS plus a reverse proxy in front
+when clients should reach this node. The node can terminate TLS itself
+(`--tls-cert` / `--tls-key`, TLS 1.3). `--tls-require-hybrid` refuses
+clients that cannot negotiate X25519MLKEM768; without it the node offers
+the hybrid group and still falls back to classical X25519. Metrics stay
+on `--metrics-addr 127.0.0.1:9100` — do not proxy `/metrics` publicly.
+
+Flags that already exist (defaults in parentheses):
+
+| Flag | Default | Role |
+| --- | --- | --- |
+| `--cors-origin` | none (repeatable; `*` allows any) | Browser origins allowed to call this node |
+| `--rpc-rate-limit` | `25` | Sustained requests/second per client IP on `/tx/submit` and x402 |
+| `--rpc-rate-burst` | `50` | Burst for those same routes |
+| `--sim-rate-limit` | `0` → built-in `100` | Per-IP rate on `/call`, `/estimate`, `/logs` |
+| `--sim-rate-burst` | `0` → built-in `200` | Burst for those VM routes |
+| `--sim-max-inflight` | `0` → built-in `8` | Global concurrent VM simulations; excess is 503 |
+| `--sim-timeout` | `0` → built-in `5s` | Wall time one simulation may hold a slot |
+| `--trust-proxy` | `false` | Read client IP from `X-Forwarded-For` |
+
+Enable `--trust-proxy` only behind a proxy you control. Anywhere else,
+clients can spoof `X-Forwarded-For` and bypass the per-IP limiters.
+Inventory actual routes in [`RPC_API.md`](RPC_API.md); this is not an
+Ethereum JSON-RPC API.
+
+When this node should be dialable by peers, set `--public-url` to the
+externally reachable base URL (the name the proxy serves). The default
+self-URL is derived from `--rpc-addr` and becomes `http://127.0.0.1:8080`
+or `http://localhost:…` — no peer can dial that. Do not advertise
+loopback. A follower that only pulls and serves local clients does not
+need `--public-url`.
+
 ## Validate (hash compare, not height)
 
 Height climbing is not enough. A peer can serve a tall fork. Check the pins
@@ -162,17 +242,30 @@ and the hashes.
    ```bash
    curl -sS http://127.0.0.1:8080/status | jq '{chain_id, height, peer_count}'
    ```
-3. Compare a committed block against a second published RPC, byte for byte
-   (`hash` is a JSON byte array in block bodies):
+3. Compare a committed block against a second published RPC, byte for byte.
+   Check **both** the block `hash` and `header.state_root` (`hash` and
+   `state_root` are JSON byte arrays in block bodies; `/state/root` is hex):
 
    ```bash
    H=$(curl -sS http://127.0.0.1:8080/status | jq -r .height)
-   diff <(curl -sS "http://127.0.0.1:8080/block/$H" | jq -c .hash) \
-        <(curl -sS "$BOOTNODE_URL/block/$H" | jq -c .hash) && echo "block $H matches"
+   diff <(curl -sS "http://127.0.0.1:8080/block/$H" | jq -c '{hash, root: .header.state_root}') \
+        <(curl -sS "$BOOTNODE_URL/block/$H" | jq -c '{hash, root: .header.state_root}') \
+     && echo "block $H hash and state_root match"
    ```
 
-   Matching height with a different hash means you followed the wrong
-   chain.
+   Matching height with a different hash or root means you followed the
+   wrong chain. A moving height alone does not prove the node validates.
+
+4. Restart and replay. Stop the process, start it again against the same
+   `--data-dir`, and confirm `/status.height` resumes (does not reset) and
+   a later shared height still matches hash and root. The node replays from
+   the persisted store; it does not re-download history it already has.
+
+5. Watch lag and error logs (`journalctl -u sqc-follower -f`, or the
+   process stderr). Persistent `state root mismatch`, `REFUSED unpinned
+   peer` against the pin you intended, or a height that stalls while the
+   published RPC moves, are failures — not “still catching up.” Expected
+   one-shot noise is listed below.
 
 ### Start-up is single-shot
 
@@ -199,5 +292,27 @@ Full replay from block 0 runs at a few blocks per second; a 130,000-block
 chain takes hours. Verified 2026-09-10: a fresh follower started with the
 mainnet values above synced about 600 blocks in 100 s over the public
 endpoint.
+
+## Backup, restore, and upgrade
+
+Stop the node before copying the data directory. A live copy can tear
+`state/`, `chain/`, or `txindex/`.
+
+```bash
+sudo systemctl stop sqc-follower
+sudo tar -C /var/sqc -czf /secure/sqc-data-$(date +%Y%m%d).tar.gz data
+sudo systemctl start sqc-follower
+```
+
+Restore onto an empty host by extracting that archive to `/var/sqc/data`
+as user `sqc` (mode `750`) and starting the same unit with the same pins.
+Do not restore a validator data dir onto a second live signer — see
+[`VALIDATOR.md`](VALIDATOR.md).
+
+Upgrade is non-destructive: replace `/opt/sqc/sqc-node` with the new
+binary (or the stamped release image), then `systemctl restart
+sqc-follower`. The data dir stays. Do **not** run `sqc update --clean`
+or any installer path that wipes or re-genesises the store. A public
+join is never “mint a new chain.”
 
 API inventory: [`RPC_API.md`](RPC_API.md).
