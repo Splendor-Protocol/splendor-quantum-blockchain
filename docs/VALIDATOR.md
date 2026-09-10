@@ -19,6 +19,16 @@ at `finalize_exit` once **32 blocks** have passed.
 
 Authoritative module table: [`modules/validators.md`](modules/validators.md).
 
+## 1. Sync and verify as an RPC follower first
+
+A validator is a follower that also signs. Complete
+[`RPC_NODE.md`](RPC_NODE.md) on this machine first: pinned chain id,
+block-0 hash, genesis document hash, peer pin, hash **and** state-root
+compare at a shared height, then a restart that resumes. Do not add
+`--validator` until that node is following the intended chain.
+
+Starting with `--validator` does not fund, register, or activate anything.
+
 ## Rehearsal (do this instead of live registration)
 
 The join proofs live in [`scripts/validator-join/`](../scripts/validator-join/).
@@ -44,13 +54,30 @@ install -m 600 /dev/null /var/sqc/wallet.pass
 ./sqc-wallet address --wallet /var/sqc/validator.sqwallet
 ```
 
-`generate` prints the address and refuses to overwrite an existing wallet.
-Only `generate` takes `--pass-file`; `address` and the other subcommands
-prompt for the password.
+`generate` prints the address **and** the seed hex plus 24-word phrase.
+It refuses to overwrite an existing wallet. Only `generate` takes
+`--pass-file`; `address` and the other subcommands prompt for the
+password. `generate --seed` restores from a phrase or hex and **prints
+the seed again**. There is no wallet subcommand that backups or restores
+without printing the seed.
+
+Offline recovery that does not print the seed: copy the encrypted
+`.sqwallet` and the mode-0600 pass file to offline storage. Restore by
+copying those two files back. Do not use `export-key` as a backup (it
+writes the raw private key). Do not copy another validator's wallet.
+Never run the same signer on two nodes at once.
 
 `--pass-file` must not be readable by other users (`chmod 600`). The node
 and `sqc-modcall` refuse a world-readable secret file (not enforced on
 Windows, which has no POSIX modes).
+
+## Fund the bond (rehearsal)
+
+`register` locks **2,500 SPLD** (`2_500 * 10^18` smallest units) from the
+caller. The protocol does not mint that balance and does not pay an APY.
+This document does not invent a funding process: the address must already
+hold the bond plus fees on the rehearsal chain. Starting the process with
+`--validator` does not transfer SPLD.
 
 ## Writes
 
@@ -99,12 +126,93 @@ at height 1, so without `--fee` every rehearsal write is refused at submit.
 `register` params: `{ "pubkey": "<hex or base64 ML-DSA-65 public key>" }`.
 `{{PUBKEY}}` expands to the signing wallet's key.
 
+HTTP 202 on submit and a row in the registry are not activation.
+
+## Launch (add to the tested follower config)
+
+Take the follower command that already syncs (see [`RPC_NODE.md`](RPC_NODE.md))
+and add the validator flags. Use this node's own wallet, not the original
+producer's.
+
+```bash
+./sqc-node \
+  --data-dir /var/sqc/data \
+  --rpc-addr 127.0.0.1:8080 \
+  --metrics-addr 127.0.0.1:9100 \
+  --chain-id "$SQC_CHAIN_ID" \
+  --genesis-hash "$GENESIS_BLOCK_HASH" \
+  --genesis-doc-hash "$GENESIS_DOC_HASH" \
+  --peer "$BOOTNODE_URL" \
+  --peer-pin "${BOOTNODE_URL}=${PEER_IDENTITY_HEX}" \
+  --require-peer-pins \
+  --validator \
+  --wallet /var/sqc/validator.sqwallet \
+  --wallet-pass-file /var/sqc/wallet.pass \
+  --log-level info
+```
+
+Prefer `--wallet-pass-file` over `--wallet-pass` (`ps` can see the latter).
+Authenticated proposal/vote delivery still needs the cluster write-plane
+token today; membership alone does not grant transport. See
+[`PEER_AUTH.md`](PEER_AUTH.md). Rehearse that on the join scripts, not by
+sharing a production token.
+
+## Confirm activation and QC
+
+Registry presence is not enough. After `register` commits with
+`status: 1`, check both the registry and the head certificate.
+
+`GET /validators` returns `{ "validators": [...], "count": N, "bond_spld": 2500 }`
+where each active row is `{ "address", "bond", "status": "active", "joined_height" }`.
+
+`GET /validators/{addr}` returns `{ "address", "bond", "bond_spld": 2500,
+"status", "joined_height", "exit_height" }`. `status` is `inactive`,
+`active`, or `exiting`.
+
+`GET /status` fields that matter here (real names):
+
+| Field | What it actually says |
+| --- | --- |
+| `local_validator` | This process's wallet address (only when `--validator` loaded a wallet) |
+| `validator_set_size` | `ListActive()` count |
+| `multi_validator` | Schedule bit: whether the rule is active at the head. Not a QC. |
+| `consensus_mode` | Engine this process is running: `follower`, `single`, or `bft` |
+| `head_qc_present` | Head block carries a certificate |
+| `head_qc_valid` | That certificate verifies against the committed set |
+| `head_qc_votes` | Vote count on the head QC |
+| `head_quorum_required` | Votes required |
+| `validator_set_height` | Height the set was taken from |
+| `head_qc_reason` | Present only when the head QC is not valid |
+
+A producing validator on a `multi_validator` chain should show
+`consensus_mode` of `bft`, `status` `active` at `/validators/{addr}`, and
+a head whose `head_qc_valid` is true with this address among the votes
+once it has been selected and a QC formed. `joined_height` is when the
+bond locked, not when the node first voted.
+
+## Restart without double-signing
+
+The last vote this validator signed is stored at
+`<data-dir>/vote-journal.json` (`height`, `round`, `block_hash`). The
+engine writes and fsyncs that file **before** the vote is signed. On
+start, the node logs `vote journal: last signed vote restored` and
+refuses a contradicting vote (`ErrDoubleSign`: different block at the
+same height and round, or any vote for a height/round already passed).
+Re-recording the identical vote is allowed.
+
+Keep the journal with the data dir. Do not delete it to “unstick” a
+restart. Do not run two processes with the same wallet. This tree has
+no validator key-rotation command and `validators_v1` does not slash;
+do not promise either. The archived pass/tier lab's `slash` action is
+not this registry.
+
 ## Reads
 
 | Route | What |
 | --- | --- |
-| `GET /validators` | Active set |
-| `GET /validators/{addr}` | One record (bond, status, exit height) |
+| `GET /validators` | Active set (`address`, `bond`, `status`, `joined_height`, `count`, `bond_spld`) |
+| `GET /validators/{addr}` | One record (`bond`, `bond_spld`, `status`, `joined_height`, `exit_height`) |
+| `GET /status` | `consensus_mode`, `head_qc_*`, `local_validator`, `validator_set_size` |
 | module read `bond` | The 2,500 SPLD figure in smallest units |
 
 ## Exiting-validator re-register (not this track)
