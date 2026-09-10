@@ -29,19 +29,23 @@ this guide.
 `genesis-production.json` in this repository is **not** mainnet's
 document. Do not derive any pin from it.
 
-## Required, unpublished
+## Required, not release-pinned
 
 A verifying follower also needs the values below. This manifest does
-**not** pin them. Fill them from a signed release / owner-published
-manifest, then cross-check as in [`RPC_NODE.md`](RPC_NODE.md). Do not
-invent a value here.
+**not** pin them as release identity. Dated values **observed** from the
+public endpoints (and re-derived on 2026-09-10 by hashing the served
+document and fingerprinting the served `node_pubkey`) are in
+[`RPC_NODE.md` § Observed public pins](RPC_NODE.md#observed-public-pins-2026-09-10).
+An observation is not a signed release manifest: cross-check it against a
+second source as that page describes, and re-derive before every use. Do
+not invent a value here.
 
-| Field | Flag / check | Why it is unpublished here |
+| Field | Flag / check | Status |
 | --- | --- | --- |
-| Genesis document hash | `--genesis-doc-hash` (`sqc-node genesis-hash <file>`) | The live document is not the repo template; publishing a guessed hash would pin the wrong allocations |
-| Bootnode URL | `--peer` | Public bootstrap endpoints are an operator/release decision |
-| Bootnode identity hex | `--peer-pin URL=HEX` | The ML-DSA-65 `node_pubkey` (hex on the flag; base64 on `/p2p/identity`) must come from the same release decision |
-| Image digest | container/runtime pin | `/status.image_tag` and `commit` name a build; a content digest is not recorded in this tree |
+| Genesis document hash | `--genesis-doc-hash` (`sqc-node genesis-hash <file>`) | Observed (mainnet `4ff37194…`, testnet `c7930eb2…`), not release-signed. The live document is not the repo template |
+| Bootnode URL | `--peer` | The tier RPC hostnames in readme §20 are what the observed pins were read from; whether they remain the public bootstrap endpoints is an operator/release decision |
+| Bootnode identity hex | `--peer-pin URL=HEX` | Observed: on the public tiers the ML-DSA-65 `node_pubkey` (hex on the flag; base64 on `/p2p/identity`) hashes to the tier's genesis validator address. Not release-signed |
+| Image digest | container/runtime pin | `/status.image_tag` and `commit` name a build (`v1.0.12` / `a3964a4` observed 2026-09-10); a content digest is not recorded in this tree |
 
 `--require-peer-pins` refuses trust-on-first-use once the identity hex is
 known. Do not use `--trust-peer-genesis` for a mainnet join.
