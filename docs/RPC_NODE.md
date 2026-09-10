@@ -9,7 +9,9 @@ to register or produce.
 ## What you must pin
 
 A follower needs four values. Take none of them from the peer you are about
-to trust without a second source. The table below and the tier table in
+to trust without a second source. Immutable mainnet identity (chain id and
+block-0 hash) is also listed in [`NETWORK_MANIFEST.md`](NETWORK_MANIFEST.md).
+The table below and the tier table in
 [readme §20](../readme.md#20-live-networks-and-endpoints) are that source.
 
 | Variable | Flag | What it is |
