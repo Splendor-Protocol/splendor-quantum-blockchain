@@ -44,6 +44,10 @@ install -m 600 /dev/null /var/sqc/wallet.pass
 ./sqc-wallet address --wallet /var/sqc/validator.sqwallet
 ```
 
+`generate` prints the address and refuses to overwrite an existing wallet.
+Only `generate` takes `--pass-file`; `address` and the other subcommands
+prompt for the password.
+
 `--pass-file` must not be readable by other users (`chmod 600`). The node
 and `sqc-modcall` refuse a world-readable secret file (not enforced on
 Windows, which has no POSIX modes).
@@ -58,28 +62,34 @@ NODE=http://127.0.0.1:8080
 CHAIN_ID="$SQC_CHAIN_ID"   # published or lab chain id; do not invent one
 WALLET=/var/sqc/validator.sqwallet
 PASS=/var/sqc/wallet.pass
+FEE=100000000000000000     # 0.1 SPLD; see the note on fees below
 
 # register — locks 2,500 SPLD and records this wallet's ML-DSA-65 pubkey
 ./sqc-modcall write \
   --node "$NODE" --wallet "$WALLET" --pass-file "$PASS" --chain-id "$CHAIN_ID" \
-  --module validators --action register \
+  --module validators --action register --fee "$FEE" \
   --params '{"pubkey":"{{PUBKEY}}"}' \
   --wait --require-success
 
 # unregister — marks exiting; starts the 32-block wait
 ./sqc-modcall write \
   --node "$NODE" --wallet "$WALLET" --pass-file "$PASS" --chain-id "$CHAIN_ID" \
-  --module validators --action unregister \
+  --module validators --action unregister --fee "$FEE" \
   --params '{}' \
   --wait --require-success
 
 # finalize_exit — after 32 blocks, returns the bond
 ./sqc-modcall write \
   --node "$NODE" --wallet "$WALLET" --pass-file "$PASS" --chain-id "$CHAIN_ID" \
-  --module validators --action finalize_exit \
+  --module validators --action finalize_exit --fee "$FEE" \
   --params '{}' \
   --wait --require-success
 ```
+
+`--fee` is required where `min_fee_v1` is active: the floor is 10^15 units
+(0.001 SPLD) and a congestion multiplier can raise it, while `sqc-modcall`
+defaults to 100,000 units. The validator-join lab genesis activates the fork
+at height 1, so without `--fee` every rehearsal write is refused at submit.
 
 `--wait` alone still exits 0 on a `status: 0` receipt (lab/test default).
 `--require-success` prints `receipt-status` (`success` / `execution_failed` /

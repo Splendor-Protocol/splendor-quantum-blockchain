@@ -108,19 +108,21 @@ listen on `--metrics-addr` (default `127.0.0.1:9100`); keep them private.
 
 ### Install as a service
 
-[`contrib/systemd/sqc-rpc.service`](../contrib/systemd/sqc-rpc.service) is
-a mainnet unit with the derived pins left as `REPLACE_*` placeholders.
+[`contrib/systemd/sqc-follower.service`](../contrib/systemd/sqc-follower.service) is
+a mainnet unit with the derived pins left as `REPLACE_*` placeholders. It
+needs `curl`. `install.sh` writes its own `sqc-rpc.service` for validators;
+that is a different contract, hence the different name.
 
 ```bash
 sudo useradd --system --home /var/sqc --shell /usr/sbin/nologin sqc
 sudo install -d -o sqc -g sqc -m 750 /var/sqc /var/sqc/data
 sudo install -d -m 755 /opt/sqc
 sudo install -m 755 sqc-node /opt/sqc/sqc-node
-sudo install -m 644 contrib/systemd/sqc-rpc.service /etc/systemd/system/sqc-rpc.service
-# fill the REPLACE_* values in /etc/systemd/system/sqc-rpc.service
+sudo install -m 644 contrib/systemd/sqc-follower.service /etc/systemd/system/sqc-follower.service
+# fill the REPLACE_* values in /etc/systemd/system/sqc-follower.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now sqc-rpc
-journalctl -u sqc-rpc -f
+sudo systemctl enable --now sqc-follower
+journalctl -u sqc-follower -f
 ```
 
 ## Auth: what a follower does and does not need
@@ -171,6 +173,14 @@ and the hashes.
 
    Matching height with a different hash means you followed the wrong
    chain.
+
+### Start-up is single-shot
+
+The node fetches the pinned block 0 and the genesis document once, shortly
+after start, and does not retry. Started while the bootnode is unreachable,
+it logs `no peer served a genesis block matching the pinned hash` or
+`genesis bootstrap from peer failed` once, stays up, and never syncs.
+Restart it. The unit's `ExecStartPre` reachability wait exists for this.
 
 ### Expected log noise
 
