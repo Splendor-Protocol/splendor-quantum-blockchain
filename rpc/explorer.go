@@ -54,6 +54,7 @@ func RegisterExplorerRoutes(
 	localHeight func() uint64,
 	writeAuth *WriteAuth,
 	guard *ExecGuard,
+	getBlock func(uint64) (*types.Block, error),
 	onPeerAnnounce ...func(addr string),
 ) {
 	var announceCallback func(addr string)
@@ -64,7 +65,7 @@ func RegisterExplorerRoutes(
 	// Receipts + tx lookup + log filter (only if txIndex is available)
 	if txIndex != nil {
 		r.HandleFunc("/tx/{hash}/receipt", makeReceiptHandler(txIndex)).Methods(http.MethodGet)
-		r.HandleFunc("/tx/{hash}", makeTxHandler(txIndex)).Methods(http.MethodGet)
+		r.HandleFunc("/tx/{hash}", makeTxHandler(txIndex, getBlock)).Methods(http.MethodGet)
 		// eth_getLogs analog. The Postgres indexer serves the scalable, unbounded
 		// version at /idx/v1/logs; this native method is for SDK/RPC-standard
 		// parity + bounded ranges (see maxLogBlockRange). Metered with the
@@ -113,7 +114,7 @@ func makeReceiptHandler(txIndex *state.TxIndexStore) http.HandlerFunc {
 }
 
 // makeTxHandler returns transaction location (+ receipt when present) by hash.
-func makeTxHandler(txIndex *state.TxIndexStore) http.HandlerFunc {
+func makeTxHandler(txIndex *state.TxIndexStore, getBlock func(uint64) (*types.Block, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hashHex := mux.Vars(r)["hash"]
 		hashBytes, err := hexToBytes32(hashHex)
@@ -133,6 +134,11 @@ func makeTxHandler(txIndex *state.TxIndexStore) http.HandlerFunc {
 			"block_height": loc.BlockHeight,
 			"block_hash":   fmt.Sprintf("%x", loc.BlockHash),
 			"tx_index":     loc.TxIndex,
+		}
+		if getBlock != nil {
+			if blk, berr := getBlock(loc.BlockHeight); berr == nil && blk != nil && int(loc.TxIndex) < len(blk.Transactions) {
+				out["tx"] = publicTx(blk.Transactions[loc.TxIndex], wantStringAmounts(r))
+			}
 		}
 		if receipt, rerr := txIndex.GetReceipt(hashBytes); rerr == nil && receipt != nil {
 			out["receipt"] = receiptResponse(r, receipt)

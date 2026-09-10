@@ -33,7 +33,7 @@ func TestDeployPoolRejectsExistingPool(t *testing.T) {
 	pool := NewLiquidityPool(sdb, poolAddr)
 
 	if _, _, _, err := pool.AddLiquidity(deployer,
-		big.NewInt(100_000), big.NewInt(100_000), big.NewInt(1), big.NewInt(1)); err != nil {
+		big.NewInt(100_000), big.NewInt(100_000), big.NewInt(1), big.NewInt(1), nil); err != nil {
 		t.Fatalf("add liquidity: %v", err)
 	}
 

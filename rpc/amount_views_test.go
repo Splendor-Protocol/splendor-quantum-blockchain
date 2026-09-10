@@ -90,9 +90,17 @@ func TestReceiptAndTxRoutesRenderAmountsAsStringsOnRequest(t *testing.T) {
 		t.Fatalf("receipt fields lost in the string view: %s", body)
 	}
 
-	txh := makeTxHandler(store)
+	txh := makeTxHandler(store, func(h uint64) (*types.Block, error) {
+		if h != 5 {
+			return nil, fmt.Errorf("unexpected height %d", h)
+		}
+		return blk, nil
+	})
 	if body := get(txh, "/tx/x"); !bytes.Contains(body, []byte(`"amount":`+hugeAmount+`,`)) {
 		t.Fatalf("default tx encoding must stay numeric: %s", body)
+	}
+	if body := get(txh, "/tx/x"); !bytes.Contains(body, []byte(`"from":"`)) || !bytes.Contains(body, []byte(`"nonce":0`)) {
+		t.Fatalf("GET /tx must include a readable tx body: %s", body)
 	}
 	if body := get(txh, "/tx/x?amounts=string"); !bytes.Contains(body, []byte(`"amount":"`+hugeAmount+`"`)) || !bytes.Contains(body, []byte(`"block_height":5`)) {
 		t.Fatalf("?amounts=string tx: %s", body)

@@ -109,6 +109,7 @@ var (
 	TopicProposalRejected    = EventTopic("ProposalRejected(uint256)")
 	TopicProposalExecuted    = EventTopic("ProposalExecuted(uint256)")
 	TopicVoteCast            = EventTopic("VoteCast(uint256,sqaddress,uint8,uint256)")
+	TopicSwap                = EventTopic("Swap(sqaddress,uint256,uint256,uint256,uint256,sqaddress)")
 )
 
 // QRC-20 v2 (qrc20_v2) lifecycle events: pause state and ownership.
@@ -385,6 +386,18 @@ func VoteCastEvent(contract qcrypto.Address, proposalID uint64, voter qcrypto.Ad
 		IndexAddr(voter).
 		DataUint256(big.NewInt(int64(option))).
 		DataUint256(votingPower).
+		Build()
+}
+
+// SwapEvent is emitted by a DEX pool after a successful swap.
+func SwapEvent(pool, sender, to qcrypto.Address, amount0In, amount1In, amount0Out, amount1Out *big.Int) *types.Log {
+	return NewEvent(pool, "Swap(sqaddress,uint256,uint256,uint256,uint256,sqaddress)").
+		IndexAddr(sender).
+		IndexAddr(to).
+		DataUint256(amount0In).
+		DataUint256(amount1In).
+		DataUint256(amount0Out).
+		DataUint256(amount1Out).
 		Build()
 }
 

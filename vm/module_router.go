@@ -855,7 +855,7 @@ func dispatchDEX(stateDB *state.StateDB, ctx ModuleContext, action string, raw j
 		}
 		min0 := parseBigOrZero(p.Amount0Min)
 		min1 := parseBigOrZero(p.Amount1Min)
-		_, _, _, err = NewLiquidityPool(stateDB, pool).AddLiquidity(caller, a0, a1, min0, min1)
+		_, _, _, err = NewLiquidityPool(stateDB, pool).AddLiquidity(caller, a0, a1, min0, min1, receipt)
 		return err
 
 	case "swap":
@@ -872,7 +872,7 @@ func dispatchDEX(stateDB *state.StateDB, ctx ModuleContext, action string, raw j
 			return fmt.Errorf("dex swap: amount_in: %w", err)
 		}
 		minOut := parseBigOrZero(p.MinAmountOut)
-		_, err = NewLiquidityPool(stateDB, pool).SwapExactIn(caller, caller, p.TokenIn, amtIn, minOut)
+		_, err = NewLiquidityPool(stateDB, pool).SwapExactIn(caller, caller, p.TokenIn, amtIn, minOut, receipt)
 		return err
 
 	case "remove_liquidity":
@@ -908,7 +908,7 @@ func dispatchDEX(stateDB *state.StateDB, ctx ModuleContext, action string, raw j
 		if t0, err := lp.Token0(); err != nil || t0 == (qcrypto.Address{}) {
 			return fmt.Errorf("dex remove_liquidity: %s is not a pool", pool)
 		}
-		_, _, err = lp.RemoveLiquidity(caller, shares, min0, min1)
+		_, _, err = lp.RemoveLiquidity(caller, shares, min0, min1, receipt)
 		return err
 
 	default:
