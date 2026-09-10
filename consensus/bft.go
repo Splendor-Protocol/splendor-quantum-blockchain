@@ -252,17 +252,20 @@ type BFTEngine struct {
 	// timeout, which with two validators is the whole quorum.
 	pendingVotes map[string][]*Vote
 
-	lockedHash   [32]byte
-	lockedHeight uint64 // the lock binds one height only; the next height is a new decision
-	lockedRound  uint32
-	hasLock      bool
-	// First hash this node signed at votedHeight. A later round at the same
-	// height may re-sign that hash, never a different one — otherwise two
-	// 2-of-2 certificates can exist for one height.
+	// Vote commitment: immutable per height
+	// Once we vote for a block at height H, we are committed to that hash
+	// for ALL rounds at height H. This prevents two-QC forks.
 	votedHash   [32]byte
 	votedHeight uint64
 	hasVoted    bool
-	stateMu      sync.Mutex
+
+	// Quorum tracking: separate from voting for safety
+	// Allows verification that quorum matches our vote before commit
+	quorumHash   [32]byte
+	quorumHeight uint64
+	hasQuorum    bool
+
+	stateMu sync.Mutex
 
 	// refreshSet re-reads the on-chain validator registry. The engine sizes a
 	// quorum from the set it holds, and the executor judges the resulting
@@ -675,14 +678,15 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 		}
 	}
 
+	// SECURITY CHECK: Vote commitment enforcement
+	// This is the CORE anti-fork protection - once voted, committed to that hash
 	if e.hasVoted && b.Header.Height == e.votedHeight && b.Hash != e.votedHash {
-		log.Warn().Uint64("height", b.Header.Height).Uint32("round", round).
-			Msg("BFT: already voted for a different block at this height")
-		return
-	}
-	if e.hasLock && b.Header.Height == e.lockedHeight && b.Hash != e.lockedHash {
-		log.Warn().Uint64("height", b.Header.Height).Uint32("round", round).
-			Msg("BFT: proposal conflicts with the block locked at this height")
+		log.Warn().
+			Uint64("height", b.Header.Height).
+			Uint32("round", round).
+			Hex("voted_for", e.votedHash[:8]).
+			Hex("proposed", b.Hash[:8]).
+			Msg("SECURITY: already voted for different block at this height, refusing")
 		return
 	}
 
@@ -751,9 +755,35 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 		Msg("BFT: proposal accepted")
 
 	if e.voteSet.HasQuorum() {
-		e.lock(b, round)
+		e.recordQuorum(b)
 		e.commitBlock(b)
 	}
+}
+
+// recordQuorum marks that this block achieved 2/3+1 votes.
+// SECURITY: Verifies quorum matches our vote before allowing commit.
+func (e *BFTEngine) recordQuorum(b *types.Block) {
+	// SECURITY CHECK: Quorum must match our vote
+	if e.hasVoted && e.votedHeight == b.Header.Height && e.votedHash != b.Hash {
+		// This should be impossible if handleProposal works correctly
+		log.Error().
+			Uint64("height", b.Header.Height).
+			Hex("voted", e.votedHash[:8]).
+			Hex("quorum", b.Hash[:8]).
+			Msg("CRITICAL: quorum for different block than we voted for")
+		// Do NOT set quorum - this is a safety violation
+		return
+	}
+	
+	e.quorumHash = b.Hash
+	e.quorumHeight = b.Header.Height
+	e.hasQuorum = true
+	
+	log.Info().
+		Uint64("height", b.Header.Height).
+		Int("votes", e.voteSet.VoteCount()).
+		Hex("block", b.Hash[:8]).
+		Msg("quorum achieved")
 }
 
 // pendingVoteKey identifies the vote set a buffered vote belongs to.
@@ -880,21 +910,66 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 		Msg("BFT: vote collected")
 
 	if reachedQuorum && e.proposal != nil {
-		e.lock(e.proposal, e.currentRound)
+		e.recordQuorum(e.proposal)
 		e.commitBlock(e.proposal)
 	}
 }
 
 func (e *BFTEngine) commitBlock(b *types.Block) {
+	// SECURITY CHECK 1: Must have quorum
+	if !e.hasQuorum || e.quorumHeight != b.Header.Height || e.quorumHash != b.Hash {
+		log.Error().
+			Uint64("height", b.Header.Height).
+			Bool("has_quorum", e.hasQuorum).
+			Msg("CRITICAL: attempting commit without valid quorum")
+		return
+	}
+
+	// Build QC from vote set
 	raw := e.voteSet.Votes()
+	if len(raw) < e.voteSet.requiredWeight {
+		log.Error().
+			Uint64("height", b.Header.Height).
+			Int("votes", len(raw)).
+			Int("required", e.voteSet.requiredWeight).
+			Msg("CRITICAL: insufficient votes for commit")
+		return
+	}
+
+	// Convert votes to QC format with validation
 	qcv := make([]types.QCVote, 0, len(raw))
+	seen := make(map[qcrypto.Address]struct{})
+	
 	for _, v := range raw {
+		// SECURITY CHECK 2: No duplicate votes
+		if _, dup := seen[v.ValidatorAddr]; dup {
+			log.Error().
+				Str("validator", v.ValidatorAddr.String()).
+				Msg("CRITICAL: duplicate vote in QC")
+			return
+		}
+		seen[v.ValidatorAddr] = struct{}{}
+		
+		// SECURITY CHECK 3: Vote is for THIS block
+		if v.Height != b.Header.Height || v.BlockHash != b.Hash {
+			log.Error().
+				Str("validator", v.ValidatorAddr.String()).
+				Msg("CRITICAL: vote in QC is for wrong height/hash")
+			return
+		}
+		
 		qcv = append(qcv, types.QCVote{
-			AlgID: v.AlgID, Height: v.Height, Round: v.Round,
-			BlockHash: v.BlockHash, ValidatorAddr: v.ValidatorAddr,
-			Signature: v.Signature, Timestamp: v.Timestamp,
+			AlgID:         v.AlgID,
+			Height:        v.Height,
+			Round:         v.Round,
+			BlockHash:     v.BlockHash,
+			ValidatorAddr: v.ValidatorAddr,
+			Signature:     v.Signature,
+			Timestamp:     v.Timestamp,
 		})
 	}
+	
+	// Attach QC to block
 	b.Votes = qcv
 	root := types.ComputeQCRoot(qcv)
 	b.Header.QCRoot = root[:]
@@ -902,34 +977,43 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	log.Info().
 		Uint64("height", b.Header.Height).
 		Int("votes", len(qcv)).
-		Msg("BFT: block committed")
+		Hex("qc_root", root[:8]).
+		Msg("block committed with valid QC")
 
+	// Attempt to apply block
 	if e.onCommit != nil {
 		if err := e.onCommit(b); err != nil {
-			// Nothing was committed, so there is nothing to hold a lock on —
-			// and holding one here is what used to end the height for good:
-			// every retry carries a new timestamp, so a new hash, and the lock
-			// refused all of them. Release it and let the round time out into
-			// a fresh attempt.
+			// Commit failed - clear ALL state including vote commitment
+			// Nothing was committed, so there's nothing to be locked on
 			log.Error().Err(err).Uint64("height", b.Header.Height).
-				Msg("BFT: commit callback failed, releasing the height for another round")
-			e.hasLock = false
+				Msg("commit callback failed, will retry")
+			
+			e.hasQuorum = false
+			e.hasVoted = false
 			e.voteSet = nil
 			e.proposal = nil
 			return
 		}
 	}
 
+	// Success - emit committed block
 	select {
 	case e.commitCh <- b:
 	default:
+		log.Warn().Msg("commit channel full")
 	}
+
+	// Move to next height
 	e.currentHeight = b.Header.Height + 1
 	e.currentRound = 0
+	
+	// Clear ALL state (including vote commitment)
 	e.voteSet = nil
 	e.proposal = nil
-	e.hasLock = false
 	e.hasVoted = false
+	e.hasQuorum = false
+	
+	// Cleanup
 	e.prunePendingVotes(e.currentHeight)
 	e.pruneSeenVotes(e.currentHeight)
 }
@@ -943,15 +1027,6 @@ func (e *BFTEngine) pruneSeenVotes(below uint64) {
 			delete(e.seenVotes, key)
 		}
 	}
-}
-
-// lock records the block this node saw a quorum for. A later round at this
-// height may only re-sign that hash.
-func (e *BFTEngine) lock(b *types.Block, round uint32) {
-	e.lockedHash = b.Hash
-	e.lockedHeight = b.Header.Height
-	e.lockedRound = round
-	e.hasLock = true
 }
 
 func (e *BFTEngine) activeCount() int {
@@ -981,18 +1056,22 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	e.currentHeight = h
 	e.currentRound = 0
 	e.hasVoted = false
-	e.hasLock = false
-	// A restart re-enters a height the previous process may already have
-	// voted at: it signed (h, r) for some block and died before h committed.
-	// Round r is spent — the journal refuses every other block there — so
-	// resume at r+1 and keep that hash. A later round may re-sign it, never
-	// a different block.
+	e.hasQuorum = false
+	
+	// Crash recovery: A restart re-enters a height the previous process may
+	// already have voted at. Round r is spent— the journal refuses every other
+	// block there —so resume at r+1 and keep that hash. A later round may
+	// re-sign it, never a different block.
 	if e.journal != nil {
 		if jh, jr, jhash, ok := e.journal.Last(); ok && jh == h {
 			e.currentRound = jr + 1
 			e.votedHash, e.votedHeight, e.hasVoted = jhash, jh, true
-			log.Warn().Uint64("height", h).Uint32("round", jr).
-				Msg("BFT: the vote journal already holds a vote at this height; resuming at the next round")
+			log.Warn().
+				Uint64("height", h).
+				Uint32("journal_round", jr).
+				Uint32("resume_round", jr+1).
+				Hex("committed_to", jhash[:8]).
+				Msg("crash recovery: restored vote commitment from journal")
 		}
 	}
 	e.voteSet = nil

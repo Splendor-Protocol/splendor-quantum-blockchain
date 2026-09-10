@@ -452,8 +452,8 @@ func TestFailedCommitDoesNotWedgeTheHeight(t *testing.T) {
 	// quorum, so the commit runs — and fails.
 	first := proposalAt(t, set, keys, 4, 0, 1)
 	eng.handleProposal(pendingProposalOf(first))
-	if eng.hasLock {
-		t.Fatal("a failed commit left the height locked: nothing was committed, so there is nothing to be locked on")
+	if eng.hasVoted {
+		t.Fatal("a failed commit left a vote commitment: nothing was committed, so the vote should be cleared")
 	}
 
 	// Retry the SAME block. A different hash at this height is a second certificate.

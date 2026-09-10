@@ -161,7 +161,7 @@ func TestFailedCommitDoesNotLockOutNextHeight(t *testing.T) {
 	}
 	time.Sleep(50 * time.Millisecond)
 	eng.stateMu.Lock()
-	locked := eng.hasLock
+	voted := eng.hasVoted
 	height := eng.currentHeight
 	eng.stateMu.Unlock()
 	// The failed commit used to leave a lock behind, and this test asserted
@@ -169,8 +169,8 @@ func TestFailedCommitDoesNotLockOutNextHeight(t *testing.T) {
 	// nothing to be locked on, and holding one wedged the height against every
 	// retry (see TestFailedCommitDoesNotWedgeTheHeight). The property this test
 	// exists for — the NEXT height is still votable — is unchanged.
-	if locked {
-		t.Fatal("a failed commit left the engine locked")
+	if voted {
+		t.Fatal("a failed commit left the engine with vote commitment")
 	}
 	if height != 1 {
 		t.Fatalf("engine moved to height %d on a commit that failed", height)
