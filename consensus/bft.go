@@ -10,6 +10,7 @@ package consensus
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -669,6 +670,20 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 		vote, verr := e.castVote(b, round)
 		if verr != nil {
 			log.Error().Err(verr).Msg("BFT: failed to cast vote")
+			// Our own proposal, refused because this round is already spent in
+			// the journal. Retrying at this round can never succeed, and our
+			// retries are what keep the round timer from firing — so take the
+			// view change now rather than wait for a timeout that never comes.
+			if p.local && errors.Is(verr, ErrDoubleSign) && round == e.currentRound {
+				e.currentRound = round + 1
+				e.voteSet = nil
+				e.proposal = nil
+				log.Warn().Uint64("height", b.Header.Height).Uint32("round", round+1).
+					Msg("BFT: own proposal refused by the vote journal, advancing the round")
+				if cb := e.onViewChange; cb != nil {
+					go cb(b.Header.Height, round+1)
+				}
+			}
 			return
 		}
 		ownVote = vote
@@ -931,6 +946,22 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	}
 	e.currentHeight = h
 	e.currentRound = 0
+	// A restart re-enters a height the previous process may already have
+	// voted at: it signed (h, r) for some block and died before h committed.
+	// Round r is spent — the journal refuses every other block there, and a
+	// fresh proposal always carries a fresh hash — so resume at r+1, which the
+	// journal treats as a new decision. Without this a sole validator
+	// re-proposed at round 0 on every tick, was refused on every tick, and,
+	// because each of its own proposals reset the round timer, never reached
+	// the view change that would have moved it on (devnet, 2026-09-10,
+	// height 79457).
+	if e.journal != nil {
+		if jh, jr, _, ok := e.journal.Last(); ok && jh == h {
+			e.currentRound = jr + 1
+			log.Warn().Uint64("height", h).Uint32("round", jr).
+				Msg("BFT: the vote journal already holds a vote at this height; resuming at the next round")
+		}
+	}
 	e.voteSet = nil
 	e.proposal = nil
 	e.prunePendingVotes(h)
