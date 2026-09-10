@@ -58,7 +58,6 @@ export function createPublicClient(opts: PublicClientOptions = {}): Connection {
       chainId: opts.chainId,
       timeoutMs: opts.timeoutMs,
       retries: opts.retries,
-      allowInsecureHttp: opts.allowInsecureHttp,
     });
   }
 
@@ -69,7 +68,6 @@ export function createPublicClient(opts: PublicClientOptions = {}): Connection {
     chainId: opts.chainId || rpc.chainId,
     timeoutMs: opts.timeoutMs ?? rpc.timeoutMs,
     retries: opts.retries ?? rpc.retries,
-    allowInsecureHttp: opts.allowInsecureHttp,
   });
 }
 
