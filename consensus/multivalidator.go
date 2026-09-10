@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -25,6 +26,8 @@ type MultiValidator struct {
 	stateDB   *state.StateDB
 
 	subscribers []chan<- *types.Block
+
+	warnedLoneRegistrant atomic.Bool
 }
 
 func NewMultiValidator(
@@ -65,22 +68,35 @@ func (m *MultiValidator) RefreshSet() {
 		log.Error().Err(err).Msg("BFT: validator registry unreadable, keeping the current set")
 		return
 	}
-	infos := make([]ValidatorInfo, 0, len(active)+1)
+	// The chain is run by whoever sealed block 0 until the registry holds at
+	// least two validators. This is the executor's rule (verifyProducerAndQC:
+	// "below two the registry is not yet the authority on who produces"), and
+	// the engine must agree with it: electing a lone registrant here while
+	// followers still accept the genesis validator's blocks let anyone with
+	// one bond replace the leader set with themselves — a stranger who cannot
+	// push a proposal to this node, so the chain simply stopped. A lone
+	// registrant that IS the genesis validator changes nothing.
+	fallback := m.cfg.GenesisValidator
+	if len(fallback.PublicKey) == 0 {
+		fallback = ValidatorInfo{Address: m.cfg.Address, PublicKey: m.cfg.PublicKey}
+	}
+	fallback.IsActive = true
+	if len(active) < 2 {
+		if len(active) == 1 && active[0].Address != fallback.Address {
+			if m.warnedLoneRegistrant.CompareAndSwap(false, true) {
+				log.Warn().Str("registrant", active[0].Address.String()).Str("producer", fallback.Address.String()).
+					Msg("BFT: registry lists one validator that is not the genesis validator; " +
+						"the genesis validator keeps producing until a second validator registers")
+			}
+		}
+		m.engine.UpdateValidatorSet([]ValidatorInfo{fallback})
+		return
+	}
+	infos := make([]ValidatorInfo, 0, len(active))
 	for _, rec := range active {
 		infos = append(infos, ValidatorInfo{
 			Address: rec.Address, PublicKey: rec.PublicKey, IsActive: true,
 		})
-	}
-	if len(infos) == 0 {
-		// Empty registry: the chain is still run by whoever sealed block 0.
-		// Every node must name the same key here, or each BFT node on such a
-		// chain is its own sole leader and they fork from each other.
-		fallback := m.cfg.GenesisValidator
-		if len(fallback.PublicKey) == 0 {
-			fallback = ValidatorInfo{Address: m.cfg.Address, PublicKey: m.cfg.PublicKey}
-		}
-		fallback.IsActive = true
-		infos = append(infos, fallback)
 	}
 	m.engine.UpdateValidatorSet(infos)
 }

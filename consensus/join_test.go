@@ -11,6 +11,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
 func newTestChain(t *testing.T) (*block.Executor, *state.StateDB, *mempool.Mempool) {
@@ -183,5 +184,55 @@ func TestFailedCommitDoesNotLockOutNextHeight(t *testing.T) {
 	eng.stateMu.Unlock()
 	if !voting {
 		t.Fatal("engine refused the next height's proposal after a failed commit")
+	}
+}
+
+// One registrant that is not the genesis validator must not become the
+// leader set: below two validators the executor still accepts the genesis
+// validator's blocks, and a lone stranger who cannot reach this node would
+// otherwise just stop the chain. The genesis validator keeps producing.
+func TestRefreshSetKeepsGenesisValidatorBelowTwoRegistrants(t *testing.T) {
+	ex, sdb, pool := newTestChain(t)
+	genPriv, genPK, genAddr := testKey(t)
+	_, strangerPK, strangerAddr := testKey(t)
+	acc := types.NewAccount(strangerAddr)
+	acc.AddBalance(vm.ValidatorBond())
+	sdb.SetAccount(acc)
+	reg := vm.NewStakingContract(sdb, vm.DeployStaking(sdb))
+	if err := reg.Register(strangerAddr, strangerPK, 1); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := reg.ValidatorCount(); n != 1 {
+		t.Fatalf("precondition: registry holds %d, want 1", n)
+	}
+
+	eng, err := NewBFTEngine(BFTConfig{LocalAddr: genAddr, LocalPubKey: genPK, LocalPrivKey: genPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mv := NewMultiValidator(Config{
+		Address: genAddr, PublicKey: genPK, PrivateKey: genPriv,
+		GenesisValidator: ValidatorInfo{Address: genAddr, PublicKey: genPK, IsActive: true},
+	}, eng, ex, pool, nil, sdb)
+	mv.RefreshSet()
+	if !eng.IsLeader(2, 0) {
+		leader, _ := eng.LeaderAddress(2, 0)
+		t.Fatalf("a lone foreign registrant took the leader set: leader = %s, want genesis %s", leader, genAddr)
+	}
+	if n := eng.ValidatorCount(); n != 1 {
+		t.Fatalf("set size %d, want 1", n)
+	}
+
+	// The genesis validator registers itself too: two members, the registry
+	// is now the authority and both are in the set.
+	gacc := types.NewAccount(genAddr)
+	gacc.AddBalance(vm.ValidatorBond())
+	sdb.SetAccount(gacc)
+	if err := reg.Register(genAddr, genPK, 2); err != nil {
+		t.Fatal(err)
+	}
+	mv.RefreshSet()
+	if n := eng.ValidatorCount(); n != 2 {
+		t.Fatalf("after the second registration set size %d, want 2", n)
 	}
 }

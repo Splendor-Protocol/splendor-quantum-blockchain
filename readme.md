@@ -602,7 +602,7 @@ may impose its own account or compliance requirements.
 She can:
 - Receive SPLD from someone who already has it
 - Use a faucet on a network where an operator provides one
-- Register as a validator by bonding 2,500 SPLD (existing supply; not a mint). The genesis validator is still pinned in the genesis document; further validators join through the `validators` module after `validators_v1`
+- Register as a validator by bonding 2,500 SPLD (existing supply; not a mint). The genesis validator is still pinned in the genesis document; further validators join through the `validators` module after `validators_v1`, and once `validators_admission_v1` is scheduled only the block producer itself or an address an active validator has `approve`d may register
 
 ---
 

@@ -12,10 +12,15 @@
 > Rehearse only on a scratch chain. Do not treat this as an invitation
 > to join production.
 
-The protocol rule is permissionless registration: one bond, no tiers.
-Anyone who can fund **2,500 SPLD** can `register`. The bond locks existing
-native supply. It does not mint SPLD. After `unregister`, the bond returns
-at `finalize_exit` once **32 blocks** have passed.
+The protocol rule is one bond, no tiers. Under `validators_v1` alone anyone
+who can fund **2,500 SPLD** can `register`. Once a tier schedules
+`validators_admission_v1`, `register` is accepted only from the block's own
+producer (the genesis validator enrolling itself) or from an address an
+active validator has `approve`d; everyone else gets a failed receipt and
+keeps the bond. See [`modules/validators.md`](modules/validators.md#admission-validators_admission_v1).
+The bond locks existing native supply. It does not mint SPLD. After
+`unregister`, the bond returns at `finalize_exit` once **32 blocks** have
+passed.
 
 Authoritative module table: [`modules/validators.md`](modules/validators.md).
 
@@ -111,6 +116,15 @@ FEE=100000000000000000     # 0.1 SPLD; see the note on fees below
   --node "$NODE" --wallet "$WALLET" --pass-file "$PASS" --chain-id "$CHAIN_ID" \
   --module validators --action finalize_exit --fee "$FEE" \
   --params '{}' \
+  --wait --require-success
+
+# approve / revoke — validators_admission_v1 only; the signer must be an
+# ACTIVE validator. Run approve from the tier's validator BEFORE a joiner
+# submits register, or the joiner's register fails with "not approved".
+./sqc-modcall write \
+  --node "$NODE" --wallet "$WALLET" --pass-file "$PASS" --chain-id "$CHAIN_ID" \
+  --module validators --action approve --fee "$FEE" \
+  --params '{"address":"SQ:<joiner>"}' \
   --wait --require-success
 ```
 

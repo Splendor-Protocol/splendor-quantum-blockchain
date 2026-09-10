@@ -365,7 +365,7 @@ func (e *Executor) applyBlockPending(b *types.Block, requireQC bool) ([]*types.R
 	var blockGas uint64
 
 	for i, tx := range b.Transactions {
-		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
+		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash, b.Header.ValidatorAddr)
 		if err != nil {
 			// The tx could not be applied at all: bad signature, wrong nonce,
 			// unaffordable, unknown type. ProduceBlock drops such txs, so a block
@@ -482,7 +482,7 @@ func (e *Executor) reapplyBlock(b *types.Block) error {
 	var blockGas uint64
 
 	for i, tx := range b.Transactions {
-		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash)
+		receipt, err := e.executeTxWithReceipt(tx, uint32(i), b.Header.Height, b.Header.Timestamp, b.Hash, b.Header.ValidatorAddr)
 		if err != nil {
 			e.state.DiscardPending()
 			return fmt.Errorf("reapply tx %d: %w", i, err)
@@ -542,7 +542,7 @@ func (e *Executor) reapplyBlock(b *types.Block) error {
 // nil error. Only the unappliable cases — bad signature, wrong nonce, unfunded,
 // unknown type, rejected by a pre-tx hook — produce an error, because
 // ProduceBlock drops exactly those and never puts them in a block.
-func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockTime int64, blockHash [32]byte) (*types.Receipt, error) {
+func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, blockHeight uint64, blockTime int64, blockHash [32]byte, producer qcrypto.Address) (*types.Receipt, error) {
 	receipt, err := types.NewReceipt(tx, txIndex, blockHeight, blockHash)
 	if err != nil {
 		return nil, fmt.Errorf("receipt init failed: %w", err)
@@ -566,7 +566,7 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 	// would reproduce. The error propagates and the caller discards the
 	// pending layer with the block.
 	snap := e.state.Snapshot()
-	if err := e.executeTx(tx, blockHeight, blockTime, receipt); err != nil {
+	if err := e.executeTx(tx, blockHeight, blockTime, producer, receipt); err != nil {
 		if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
 			return nil, fmt.Errorf("revert of unappliable tx: %w (tx error: %v)", rerr, err)
 		}
@@ -590,7 +590,7 @@ func (e *Executor) executeTxWithReceipt(tx *types.Transaction, txIndex uint32, b
 // otherwise panic and CRASH the validator + every follower — halting the chain.
 // A recovered panic becomes an error, which the caller's snapshot reverts, so the
 // tx is recorded as failed and the block continues.
-func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTime int64, receipt *types.Receipt) (err error) {
+func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTime int64, producer qcrypto.Address, receipt *types.Receipt) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("tx execution panic: %v", r)
@@ -659,7 +659,7 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTim
 	case types.TxDeploy:
 		return e.execDeploy(tx, fromAcc, receipt)
 	case types.TxCall:
-		return e.execCall(tx, fromAcc, receipt, blockHeight, blockTime)
+		return e.execCall(tx, fromAcc, receipt, blockHeight, blockTime, producer)
 	case types.TxX402:
 		return e.execX402(tx, fromAcc, receipt, blockHeight)
 	default:
@@ -752,7 +752,7 @@ func runModuleCall(stateDB *state.StateDB, ctx vm.ModuleContext, data []byte, re
 	return dispatchModuleCall(stateDB, ctx, data, receipt)
 }
 
-func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64, blockTime int64) error {
+func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64, blockTime int64, producer qcrypto.Address) error {
 	if tx.To == vm.ModuleRouterAddress {
 		if err := fromAcc.SubBalance(tx.Fee); err != nil {
 			return err
@@ -767,11 +767,12 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		// e.mu, so every tx in the block is judged under the same map.
 		schedule := e.schedule()
 		mctx := vm.ModuleContext{
-			Caller: tx.From,
-			Nonce:  tx.Nonce,
-			Height: blockHeight,
-			Time:   blockTime,
-			Forks:  schedule,
+			Caller:   tx.From,
+			Nonce:    tx.Nonce,
+			Height:   blockHeight,
+			Time:     blockTime,
+			Forks:    schedule,
+			Producer: producer,
 		}
 
 		// modules_v2: the call records gas that counts against the block
@@ -1048,7 +1049,7 @@ func (e *Executor) assembleBlock(
 		// b.Transactions. Using i made a producing node disagree with its own
 		// transaction index, and with every other node, about the same block.
 		receipt, _ := types.NewReceipt(tx, uint32(len(executed)), height, [32]byte{})
-		if err := e.executeTx(tx, height, blockTime, receipt); err != nil {
+		if err := e.executeTx(tx, height, blockTime, validatorAddr, receipt); err != nil {
 			if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
 				e.state.DiscardPending()
 				return nil, fmt.Errorf("revert of skipped tx: %w (tx error: %v)", rerr, err)
@@ -1275,6 +1276,18 @@ func (e *Executor) verifyProducerAndQC(b *types.Block, requireQC bool) error {
 		byAddr[rec.Address] = rec.PublicKey
 	}
 	pub := byAddr[b.Header.ValidatorAddr]
+	// validators_admission_v1: below two members the genesis validator is the
+	// only producer — the BFT engine elects nobody else there (RefreshSet) —
+	// so a lone registrant that is not the genesis validator cannot have
+	// sealed a canonical block, listed or not. Judge such a block on the
+	// genesis key alone. When no genesis key is known the rule cannot be
+	// applied and the pre-fork behaviour (a listed producer is accepted)
+	// stands, which the carried-key warning below already covers.
+	if len(active) < 2 && len(pub) > 0 && sched.Active(forks.ValidatorsAdmissionV1, b.Header.Height) {
+		if gk := e.genesisProducerKey(); len(gk) > 0 {
+			pub = nil
+		}
+	}
 	if len(pub) == 0 {
 		// Once a quorum is required the leader is always drawn from the active
 		// set, so a producer outside it cannot have sealed a canonical block.

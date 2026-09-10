@@ -47,7 +47,10 @@ votes to it.
    its own key. It can be submitted to any node in the cluster, including the
    joiner itself: a node relays what it admits to its peers one hop, so the
    transaction reaches whichever validator leads next. Register the producer's
-   own key first if it never registered itself.
+   own key first if it never registered itself. The lab genesis does not
+   schedule `validators_admission_v1`; on a chain that does, the producer
+   must `approve` the joiner's address before this step or the register
+   fails with `not approved` (see `modules/validators.md`).
 
 From the block after the registration the set has two members, the leader
 alternates `(height+round) % 2`, and every block carries two votes and a
