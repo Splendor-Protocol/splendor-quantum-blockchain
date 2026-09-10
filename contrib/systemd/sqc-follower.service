@@ -1,5 +1,5 @@
 [Unit]
-Description=Splendor Quantum Chain RPC follower (mainnet)
+Description=Splendor Quantum Chain follower (mainnet)
 Documentation=https://github.com/Splendor-Protocol/splendor-quantum-blockchain/blob/main/docs/RPC_NODE.md
 After=network-online.target
 Wants=network-online.target
@@ -13,7 +13,15 @@ WorkingDirectory=/opt/sqc
 # values are in docs/RPC_NODE.md. Fill the REPLACE_* placeholders from your
 # own derivation, cross-checked against that table, never from the peer alone.
 # Do not add --validator, --trust-peer-genesis, or a write-plane token merely
-# to pull-sync.
+# to pull-sync. install.sh writes its own sqc-rpc.service for validators; this
+# unit is a different contract and deliberately has a different name.
+#
+# The data dir is created here, outside the sandbox: under ProtectSystem=strict
+# the node's own mkdir cannot. The reachability wait makes systemd keep
+# retrying until the bootnode answers, because the node's genesis bootstrap
+# runs once at start and does not retry on its own.
+ExecStartPre=+/usr/bin/install -d -o sqc -g sqc -m 750 /var/sqc /var/sqc/data
+ExecStartPre=/usr/bin/curl -fsS --max-time 10 --retry 5 --retry-delay 10 --retry-all-errors -o /dev/null https://quantum-rpc.splendor.org/status
 ExecStart=/opt/sqc/sqc-node \
     --data-dir /var/sqc/data \
     --rpc-addr 127.0.0.1:8080 \
@@ -25,10 +33,10 @@ ExecStart=/opt/sqc/sqc-node \
     --require-peer-pins \
     --log-level info
 Restart=always
-RestartSec=5
+RestartSec=15
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sqc-rpc
+SyslogIdentifier=sqc-follower
 LimitNOFILE=65535
 NoNewPrivileges=yes
 PrivateTmp=yes

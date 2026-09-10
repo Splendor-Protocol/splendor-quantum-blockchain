@@ -75,6 +75,9 @@ gain one.
 Pass --pass-file to read the encryption password from a mode-0600 file
 instead of prompting. The file must not be readable by other users.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := refuseExistingWallet(outPath); err != nil {
+				return err
+			}
 			var seed [qcrypto.SeedSize]byte
 			var err error
 			if strings.TrimSpace(seedIn) != "" {
@@ -412,6 +415,9 @@ func readGeneratePassword(passFile string) ([]byte, error) {
 	if string(pass) != string(pass2) {
 		return nil, fmt.Errorf("passwords do not match")
 	}
+	if len(pass) == 0 {
+		return nil, fmt.Errorf("empty password")
+	}
 	return pass, nil
 }
 
@@ -435,7 +441,9 @@ func readPassword(prompt string) ([]byte, error) {
 	if err != nil {
 		// Fallback for non-terminal environments (e.g. piped input)
 		var line string
-		fmt.Scanln(&line)
+		if _, serr := fmt.Scanln(&line); serr != nil && line == "" {
+			return nil, fmt.Errorf("no password on stdin: %w", serr)
+		}
 		return []byte(line), nil
 	}
 	return pass, nil

@@ -6,7 +6,7 @@
 // receipts, and has one subcommand whose whole purpose is to be refused.
 //
 //	sqc-modcall write  --node URL --wallet W --pass-file P --chain-id ID \
-//	                   --module validators --action register --params '{...}' \
+//	                   --module validators --action register --params '{...}' [--fee UNITS] \
 //	                   [--wait] [--require-success]   (--require-success implies --wait)
 //	sqc-modcall read   --node URL --module validators --action validator --params '{...}'
 //	sqc-modcall forge  --node URL --wallet W --pass-file P --chain-id ID
@@ -121,7 +121,11 @@ func loadWallet(f flags) (*qcrypto.PublicKey, *qcrypto.PrivateKey, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("read pass file: %w", err)
 	}
-	return qcrypto.LoadWallet(path, bytes.TrimRight(pass, "\r\n"))
+	pass = bytes.TrimRight(pass, "\r\n")
+	if len(pass) == 0 {
+		return nil, nil, fmt.Errorf("pass file %s is empty", passFile)
+	}
+	return qcrypto.LoadWallet(path, pass)
 }
 
 // adoptChainID pins the chain id every signature commits to. Without it the
@@ -135,8 +139,12 @@ func adoptChainID(f flags) error {
 	return types.SetClientChainID(id)
 }
 
+// httpClient bounds every call: the default client has no timeout, so an RPC
+// that accepts the connection and never answers would hang the receipt wait.
+var httpClient = &http.Client{Timeout: 20 * time.Second}
+
 func getJSON(url string, out any) error {
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return err
 	}
@@ -164,7 +172,7 @@ func postJSON(url string, headers map[string]string, in any, out any) (int, stri
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return 0, "", err
 	}
