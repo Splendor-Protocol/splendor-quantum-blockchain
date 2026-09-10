@@ -255,8 +255,6 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 		return dispatchQRC1155Read(stateDB, mc.Action, mc.Params)
 	case "dex":
 		return dispatchDEXRead(stateDB, mc.Action, mc.Params)
-	case "exchange":
-		return dispatchExchangeRead(stateDB, rctx, mc.Action, mc.Params)
 	case "bridge":
 		return dispatchBridgeRead(stateDB, mc.Action, mc.Params)
 	case "verify":
@@ -720,23 +718,19 @@ type exchangeReadParams struct {
 	Maker     string             `json:"maker,omitempty"`     // nonce
 	Address   string             `json:"address,omitempty"`   // is_operator
 	Hash      string             `json:"hash,omitempty"`      // order_status: 64 lowercase hex chars
-	Order     *exchangeOrderWire `json:"order,omitempty"`     // order_remaining / order_hash
 }
 
 // exchangeSimulateParams is the simulate_match shape: exactly what match takes
 // plus `caller`, the operator that would sign the TxCall — the operator gate
 // is part of what is being simulated.
 type exchangeSimulateParams struct {
-	exchangeMatchParams
 	Caller string `json:"caller"`
 }
 
-// dispatchExchangeRead serves the exchange read set. Reads are never
 // fork-gated. simulate_match is the one read that runs module code: it
 // dry-runs Match against the head time under a snapshot that is always
 // reverted, so it reports exactly the error a real match would produce at
 // this head and leaves nothing behind — on a /call sandbox or a bare StateDB.
-func dispatchExchangeRead(stateDB *state.StateDB, rctx ReadContext, action string, raw json.RawMessage) (interface{}, error) {
 	var p exchangeReadParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("exchange read: bad params: %w", err)
@@ -920,7 +914,6 @@ func dispatchExchangeRead(stateDB *state.StateDB, rctx ReadContext, action strin
 		}
 		rc := &types.Receipt{}
 		snap := stateDB.Snapshot()
-		merr := x.Match(ModuleContext{Caller: caller, Height: rctx.Height, Time: rctx.Time}, sp.exchangeMatchParams, rc)
 		if err := stateDB.RevertToSnapshot(snap); err != nil {
 			return nil, fmt.Errorf("exchange simulate_match: %w", err)
 		}
