@@ -30,6 +30,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
+import { refreshReadmeTiers } from './readme-tiers.mjs';
 
 const INFRA = 'Splendor-Protocol/splendor-infra';
 const CHAIN = 'Splendor-Protocol/splendor-quantum-blockchain';
@@ -63,6 +64,11 @@ const TIERS = {
 };
 const HUMAN_TIER = { devnet: 'devnet', test: 'testnet', prod: 'mainnet' };
 const PROD_RESET_PHRASE = 'reset prod chain';
+/**
+ * Subject prefix of the readme.md commit this tool makes after a verified roll.
+ * releaseBase() recognises these so they do not hide the release underneath.
+ */
+const SNAPSHOT_PREFIX = 'docs: readme tiers snapshot';
 
 /**
  * Files whose change means something downstream must ship too. The tool cannot
@@ -117,6 +123,7 @@ const envFromFlag = envFlagIdx >= 0 ? argv[envFlagIdx + 1] : undefined;
 const dryRun = flags.has('--dry-run');
 const assumeYes = flags.has('--yes');
 const allowNoOp = flags.has('--allow-no-op');
+const skipReadme = flags.has('--no-readme');
 
 if (positional[0] === 'status') { await printStatus(); process.exit(0); }
 if (positional[0] === 'reset' || positional[0] === 'wipe') {
@@ -144,9 +151,15 @@ if (!bumpOrVersion || !tierArg) {
   --yes           skip the production confirmation prompt
   --allow-no-op   release even though no Go source changed since the deployed build,
                   or HEAD is already released (forces a fresh version and rebuild)
+  --no-readme     do not regenerate and push the readme.md §20 tier table afterwards
 
   A bump on a commit that is already released promotes that release instead of
-  cutting a new one, so the same commit never gets two versions.`);
+  cutting a new one, so the same commit never gets two versions.
+
+  After a verified rollout the tool regenerates the tier table in readme.md
+  from the tiers' own /status and pushes that one-file commit to main, so the
+  README describes what is actually running. \`npm run readme:tiers\` does the
+  same by hand.`);
   process.exit(64);
 }
 if (!(tierArg in TIERS)) {
@@ -171,9 +184,13 @@ async function main() {
   }
 
   // A bump on a commit that is already released is a promotion in disguise.
-  const already = explicit || allowNoOp ? null : releasedVersionAt(git('rev-parse', 'HEAD'));
+  // HEAD may sit on top of this tool's own readme snapshot commit(s); the
+  // release lives at the commit beneath them.
+  const base = releaseBase(git('rev-parse', 'HEAD'));
+  const already = explicit || allowNoOp ? null : releasedVersionAt(base);
   if (already) {
-    console.log(`\n  HEAD is already released as ${already}; promoting that image instead of`);
+    const where = base === git('rev-parse', 'HEAD') ? 'HEAD' : `HEAD (below its readme snapshot)`;
+    console.log(`\n  ${where} is already released as ${already}; promoting that image instead of`);
     console.log('  cutting a new version. (--allow-no-op forces a fresh version and rebuild.)');
   }
   const promoting = explicit || Boolean(already);
@@ -234,6 +251,78 @@ async function main() {
 ✓ ${tierArg} is running ${version} (${commit.slice(0, 12)})
   verified against ${tier.rpc}/status — not merely dispatched.
 `);
+
+  await refreshReadme(version, tierArg);
+}
+
+// ── readme snapshot ─────────────────────────────────────────────────────────
+/**
+ * readme.md §20 lists what each tier runs. It was edited by hand after a roll,
+ * which means it was edited after SOME rolls: it named v1.0.11 while every tier
+ * ran v1.0.12, and earlier carried the genesis hash of a mainnet that had been
+ * reset away. Regenerate it from the tiers' own /status now that this rollout
+ * is verified, and push the one-file commit so origin/main describes what is
+ * live.
+ *
+ * This never fails the release. The node is already running the new build;
+ * a README that could not be pushed is a follow-up, not a rollback.
+ */
+async function refreshReadme(version, tierName) {
+  if (skipReadme) { console.log('  · --no-readme: readme.md §20 left as it was'); return; }
+
+  let changed;
+  try {
+    changed = await refreshReadmeTiers({ cwd: process.cwd() });
+  } catch (e) {
+    console.log(`  ! readme.md §20 not refreshed: ${String(e.message ?? e).split('\n')[0]}`);
+    return;
+  }
+  if (!changed) { console.log('  · readme.md §20 already matches the tiers'); return; }
+
+  // Only readme.md is staged: preflight proved the tree was clean, so anything
+  // else that appeared during the roll is not ours to commit.
+  const msg = `${SNAPSHOT_PREFIX} after ${version} on ${HUMAN_TIER[tierName]}`;
+  const committed = shOk('git', ['commit', '-q', '-m', msg, '--', 'readme.md']);
+  if (!committed.ok) {
+    console.log(`  ! readme.md §20 refreshed but not committed: ${committed.out.split('\n')[0]}`);
+    console.log('    Commit it yourself; the tier is live regardless.');
+    return;
+  }
+  const pushed = shOk('git', ['push', 'origin', 'HEAD:main']);
+  if (!pushed.ok) {
+    console.log(`  ! readme.md snapshot committed (${git('rev-parse', '--short', 'HEAD')}) but not pushed:`);
+    console.log(`    ${pushed.out.split('\n').find((l) => l.trim()) ?? '(no output)'}`);
+    console.log('    main moved under you — pull --rebase, then push. The tier is live regardless.');
+    return;
+  }
+  console.log(`  ✓ readme.md §20 regenerated from the tiers and pushed (${git('rev-parse', '--short', 'HEAD')})`);
+}
+
+/**
+ * The commit a release decision should look at: HEAD, unless HEAD is one or
+ * more of this tool's own readme snapshot commits, in which case the commit
+ * beneath them.
+ *
+ * Without this, `deploy patch test` straight after `deploy patch devnet` would
+ * see an unreleased HEAD (the snapshot), propose a new version, and then die
+ * with "no Go source changed" — forcing --allow-no-op or an explicit version
+ * for the very promotion the tool exists to make easy. A snapshot commit is
+ * recognised strictly: its subject carries SNAPSHOT_PREFIX and it touches
+ * readme.md and nothing else. Anything looser is a real change and stops the
+ * walk.
+ */
+function releaseBase(commit) {
+  let c = commit;
+  for (let i = 0; i < 8; i++) {
+    const subject = shOk('git', ['log', '-1', '--format=%s', c]);
+    if (!subject.ok || !subject.out.startsWith(SNAPSHOT_PREFIX)) return c;
+    const files = shOk('git', ['diff-tree', '--no-commit-id', '--name-only', '-r', c]);
+    if (!files.ok || files.out.trim() !== 'readme.md') return c;
+    const parent = shOk('git', ['rev-parse', `${c}^`]);
+    if (!parent.ok || !parent.out) return c;
+    c = parent.out;
+  }
+  return c;
 }
 
 // ── preflight ───────────────────────────────────────────────────────────────
