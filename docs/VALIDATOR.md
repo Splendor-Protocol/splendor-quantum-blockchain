@@ -3,9 +3,9 @@
 > **Public admission has not launched.**
 > Do not register on live mainnet.
 > The chain does not enforce that. `validators_v1` and `multi_validator`
-> are active on mainnet and testnet (observed 2026-09-10), so the router
-> accepts a 2,500 SPLD `register` today; on devnet `validators_v1` is not
-> scheduled and `register` is refused. Closed means no published peer
+> are active on all three public tiers (observed 2026-09-10: mainnet and
+> testnet since height 1, devnet since 74,075), so the router accepts a
+> 2,500 SPLD `register` on each today. Closed means no signed release
 > pins, no supported join path, and no promise that today's state
 > survives a reset. Every tier has been reset before.
 > This page documents the current CLI and the 2,500 SPLD registry.
@@ -67,9 +67,10 @@ copying those two files back. Do not use `export-key` as a backup (it
 writes the raw private key). Do not copy another validator's wallet.
 Never run the same signer on two nodes at once.
 
-`--pass-file` must not be readable by other users (`chmod 600`). The node
-and `sqc-modcall` refuse a world-readable secret file (not enforced on
-Windows, which has no POSIX modes).
+`--pass-file` must not be readable by other users (`chmod 600`). The node,
+`sqc-wallet generate`, and `sqc-modcall` refuse a wallet or pass file with
+any group or other permission bit set (mode `& 077 != 0`, so `640` fails
+too); not enforced on Windows, which has no POSIX modes.
 
 ## Fund the bond (rehearsal)
 
@@ -113,10 +114,13 @@ FEE=100000000000000000     # 0.1 SPLD; see the note on fees below
   --wait --require-success
 ```
 
-`--fee` is required where `min_fee_v1` is active: the floor is 10^15 units
-(0.001 SPLD) and a congestion multiplier can raise it, while `sqc-modcall`
-defaults to 100,000 units. The validator-join lab genesis activates the fork
-at height 1, so without `--fee` every rehearsal write is refused at submit.
+`sqc-modcall` defaults `--fee` to 100,000 units. That clears the legacy
+floor of 1,000 units on the public tiers (none of them schedules
+`min_fee_v1`; see `/status.min_fee`) but not the `min_fee_v1` floor of
+10^15 units (0.001 SPLD). The validator-join lab genesis activates that
+fork at height 1, so without an explicit `--fee` every rehearsal write is
+refused at submit. On any chain the pool multiplies its floor by 2/8/32 at
+50/75/90 % occupancy, so read `/status.min_fee` before a write.
 
 `--wait` alone still exits 0 on a `status: 0` receipt (lab/test default).
 `--require-success` prints `receipt-status` (`success` / `execution_failed` /
@@ -124,7 +128,8 @@ at height 1, so without `--fee` every rehearsal write is refused at submit.
 `--wait`.
 
 `register` params: `{ "pubkey": "<hex or base64 ML-DSA-65 public key>" }`.
-`{{PUBKEY}}` expands to the signing wallet's key.
+`{{PUBKEY}}` expands to the signing wallet's key in base64. The module
+refuses a key whose derived address is not the caller.
 
 HTTP 202 on submit and a row in the registry are not activation.
 
@@ -164,16 +169,18 @@ Registry presence is not enough. After `register` commits with
 
 `GET /validators` returns `{ "validators": [...], "count": N, "bond_spld": 2500 }`
 where each active row is `{ "address", "bond", "status": "active", "joined_height" }`.
+`address` is an `SQ:` string and `bond` a decimal string in smallest units.
 
 `GET /validators/{addr}` returns `{ "address", "bond", "bond_spld": 2500,
 "status", "joined_height", "exit_height" }`. `status` is `inactive`,
-`active`, or `exiting`.
+`active`, or `exiting`; `exit_height` is `0` until `unregister`. An
+unknown address is 404.
 
 `GET /status` fields that matter here (real names):
 
 | Field | What it actually says |
 | --- | --- |
-| `local_validator` | This process's wallet address (only when `--validator` loaded a wallet) |
+| `local_validator` | Address of this process's wallet key when `--validator` loaded one; on a full node given `--validator-pubkey-hex`, the pinned key's address instead. Absent otherwise |
 | `validator_set_size` | `ListActive()` count |
 | `multi_validator` | Schedule bit: whether the rule is active at the head. Not a QC. |
 | `consensus_mode` | Engine this process is running: `follower`, `single`, or `bft` |
@@ -212,8 +219,11 @@ not this registry.
 | --- | --- |
 | `GET /validators` | Active set (`address`, `bond`, `status`, `joined_height`, `count`, `bond_spld`) |
 | `GET /validators/{addr}` | One record (`bond`, `bond_spld`, `status`, `joined_height`, `exit_height`) |
+| `GET /staking/validators/{addr}` | Same record |
+| `GET /staking/total-staked`, `GET /staking/count` | `total_staked` (decimal string), `validator_count` |
 | `GET /status` | `consensus_mode`, `head_qc_*`, `local_validator`, `validator_set_size` |
-| module read `bond` | The 2,500 SPLD figure in smallest units |
+| module read `bond` | `{ "bond": "<smallest units>", "spld": "2500" }` via `sqc-modcall read --module validators --action bond` |
+| module reads `validator`, `list`, `count` | Same registry through `POST /call` |
 
 ## Exiting-validator re-register (not this track)
 
