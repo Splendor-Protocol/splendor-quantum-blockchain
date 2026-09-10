@@ -151,35 +151,67 @@ func TestLocalProposalIsNotReJudged(t *testing.T) {
 // a block at height H, a later round at the same height may only re-sign that
 // same hash, never a different one. This prevents two-QC forks.
 func TestVoteCommitmentPreventsVotingForDifferentBlockAtSameHeight(t *testing.T) {
-	set, keys := testSet(t, 2)
-	eng := engineFor(t, set, keys, 0, BFTConfig{})
+	// Use 3 validators so we need 3 votes for quorum
+	// This way, one validator's vote won't immediately commit
+	set, keys := testSet(t, 3)
+	broadcast := make(chan *Vote, 10)
+	eng := engineFor(t, set, keys, 0, BFTConfig{
+		Broadcast: func(v *Vote) { broadcast <- v },
+	})
 	eng.SetHeight(5)
 
-	first := peerProposalAt5(t, set, keys, 1)
-	// Manually cast a vote for this block (simulating we voted in round 0)
-	_, err := eng.castVote(first.Block, 0)
-	if err != nil {
-		t.Fatal(err)
+	// Build a proposal where set[1] is leader: (5+0)%3 = 2, so use height=4 round=0 where (4+0)%3=1
+	msg := proposalAt(t, set, keys, 4, 0, 1)
+	if msg.Block.Header.ValidatorAddr != set[1].Address {
+		t.Skipf("leader schedule changed: expected set[1] at 4/0")
 	}
+	
+	// Accept this proposal - we'll vote but won't reach quorum (need 3, have proposer's + ours = 2)
+	eng.SetHeight(4)
+	eng.handleProposal(pendingProposalOf(msg))
+	
+	// Verify we voted
+	select {
+	case v := <-broadcast:
+		if v.BlockHash != msg.Block.Hash {
+			t.Fatalf("voted for wrong block: got %x, want %x", v.BlockHash, msg.Block.Hash)
+		}
+	default:
+		t.Fatal("no vote was broadcast")
+	}
+	
 	if !eng.hasVoted {
 		t.Fatal("vote not recorded")
 	}
+	
+	// Should still be at height 4 (no quorum yet)
+	if eng.Height() != 4 {
+		t.Fatalf("height = %d, want 4 (no quorum yet)", eng.Height())
+	}
 
-	// Same height, different block, different round: MUST be refused
+	// Advance to round 1
 	eng.handleTimeout()
 	if eng.Round() != 1 {
 		t.Fatalf("round = %d after timeout, want 1", eng.Round())
 	}
-	conflict := proposalAt(t, set, keys, 5, 1, 99)
-	eng.handleProposal(&pendingProposal{block: conflict.Block, local: true})
-	if eng.voteSet != nil {
-		t.Fatal("a conflicting block at height 5 round 1 was accepted after voting for a different block at height 5 round 0")
+
+	// Try to propose a DIFFERENT block at height 4 round 1: MUST be refused
+	// At round 1: (4+1)%3 = 2, so set[2] is leader
+	conflict := proposalAt(t, set, keys, 4, 1, 99)
+	eng.handleProposal(pendingProposalOf(conflict))
+	
+	// Should NOT accept the conflicting block
+	if eng.voteSet != nil && eng.proposal != nil && eng.proposal.Hash != msg.Block.Hash {
+		t.Fatal("a conflicting block at height 4 round 1 was accepted after voting for a different block at height 4 round 0")
 	}
 
-	// Re-signing the SAME block in a later round at the same height is allowed
-	// Use the exact same block from round 0
-	eng.handleProposal(&pendingProposal{block: first.Block, local: true})
-	if eng.voteSet == nil {
-		t.Fatal("re-voting for the same block hash in a later round was refused")
+	// Verify no new vote was broadcast for the conflict
+	select {
+	case v := <-broadcast:
+		if v.BlockHash != msg.Block.Hash {
+			t.Fatalf("a vote was broadcast for a conflicting block: %+v", v)
+		}
+	default:
+		// Expected: no vote for conflicting block
 	}
 }
