@@ -1788,7 +1788,7 @@ freshness or production readiness.
 
 <!-- tiers:begin -->
 Live rows were read from each tier's `/status`, `/block/0` and
-`/idx/v1/health` at **2026-09-10T12:52Z** by `npm run readme:tiers`, which
+`/idx/v1/health` at **2026-09-10T13:37Z** by `npm run readme:tiers`, which
 `npm run deploy` runs after every verified rollout. Do not edit this table by
 hand; edit `scripts/readme-tiers.mjs` and regenerate.
 
@@ -1800,15 +1800,15 @@ hand; edit `scripts/readme-tiers.mjs` and regenerate.
 | Explorer | `https://quantum-devnet-explorer.splendor.org` | `https://quantum-testnet-explorer.splendor.org` | `https://quantum-explorer.splendor.org` |
 | Faucet | `https://quantum-faucet.splendor.org` | `https://quantum-faucet.splendor.org` | none, by design |
 | Chain id | `splendor-quantum-devnet-1` | `splendor-quantum-testnet-1` | `splendor-quantum-1` |
-| Node image / commit | `sqc-node:v1.0.12` / `a3964a4259d2` | `sqc-node:v1.0.12` / `a3964a4259d2` | `sqc-node:v1.0.12` / `a3964a4259d2` |
+| Node image / commit | `sqc-node:v1.0.13` / `f599717e8cd9` | `sqc-node:v1.0.12` / `a3964a4259d2` | `sqc-node:v1.0.12` / `a3964a4259d2` |
 | Indexer image | `sqc-indexer:v0.3.1` | `sqc-indexer:v0.3.2` | `sqc-indexer:v0.3.1` |
-| Height | 77,309 | 132,846 | 148,918 |
+| Height | 78,262 | 134,398 | 151,631 |
 | Fork schedule (`/status.forks`) | `exchange_v1`, `module_revert_v1`, `qrc1155_v1`, `qrc20_v2` at 1; `modules_v2` at 25,990; `multi_validator`, `validators_v1` at 74,075; `vm_revert_v1` at 130,000 | `bridge_v1`, `exchange_v1`, `module_revert_v1`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1; `modules_v2` at 74,674 | `exchange_v1`, `module_revert_v1`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1; `modules_v2` at 79,202 |
 | Consensus (`/status.consensus_mode`, `head_qc_valid`) | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote |
 | Registered validators (`validator_set_size`) | 0 | 0 | 1 |
 | Genesis block hash (`/status.genesis_hash`) | `c341a89bb740a516ff0c3bbd703d6ebd5badaf5bec52f11e73b081c6992458b8` | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` | `ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949` |
 | Genesis validator (`/block/0`) | `SQ:8d2eeb30163d2b0b6d472fcdf14065e5d81151718ca0bcb068b0308de3cc0aa3` | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
-| Peers reported | 2 | 0 | 0 |
+| Peers reported | 0 | 0 | 0 |
 <!-- tiers:end -->
 
 Every tier has been reset at least once since the earlier snapshots in this
