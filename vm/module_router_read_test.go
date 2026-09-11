@@ -96,7 +96,7 @@ func TestModuleReadQRC20(t *testing.T) {
 func TestPreflightModuleCall(t *testing.T) {
 	// Write actions pass: they are what a signed TxCall may carry.
 	for _, tc := range []struct{ module, action string }{
-		{"qrc20", "transfer"}, {"qrc20", "deploy"}, {"dex", "swap"}, {"dex", "deploy_pool"},
+		{"qrc20", "transfer"}, {"qrc20", "deploy"}, {"qrc721", "mint"}, {"bridge", "claim"},
 	} {
 		if _, err := PreflightModuleCall(moduleData(t, tc.module, tc.action, map[string]string{}), nil, 0); err != nil {
 			t.Errorf("preflight %s:%s rejected: %v", tc.module, tc.action, err)
@@ -105,7 +105,7 @@ func TestPreflightModuleCall(t *testing.T) {
 	// A read action parses but is refused: the write dispatch would treat it
 	// as an unknown action (HARD) and the sender would be jammed at that nonce.
 	for _, tc := range []struct{ module, action string }{
-		{"qrc20", "balance_of"}, {"qrc20", "token_info"}, {"dex", "reserves"},
+		{"qrc20", "balance_of"}, {"qrc20", "token_info"}, {"qrc721", "owner_of"},
 	} {
 		_, err := PreflightModuleCall(moduleData(t, tc.module, tc.action, map[string]string{}), nil, 0)
 		if err == nil || !strings.Contains(err.Error(), "is a read action") {
