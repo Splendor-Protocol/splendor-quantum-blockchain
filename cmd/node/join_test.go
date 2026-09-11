@@ -176,3 +176,48 @@ func TestApplyCommittedBlockToleratesAlreadyApplied(t *testing.T) {
 		t.Fatalf("head = %d, want 1", h)
 	}
 }
+
+func TestCheckJoinerValidatorPubkey(t *testing.T) {
+	genesisPub, _, _ := qcrypto.GenerateKeypair()
+	localPub, _, _ := qcrypto.GenerateKeypair()
+	doc := &genesiscfg.Genesis{ValidatorPubKeyHex: hex.EncodeToString(genesisPub.Bytes())}
+	peers := []string{"http://127.0.0.1:9999"}
+	flag := hex.EncodeToString(genesisPub.Bytes())
+
+	if warn, err := checkJoinerValidatorPubkey(flag, true, true, peers, doc, localPub.Bytes()); err != nil || warn != "" {
+		t.Fatalf("flag set must pass: warn=%q err=%v", warn, err)
+	}
+	if _, err := checkJoinerValidatorPubkey("", true, true, peers, nil, localPub.Bytes()); err == nil {
+		t.Fatal("joining without flag must error")
+	}
+	if _, err := checkJoinerValidatorPubkey("", true, false, peers, doc, localPub.Bytes()); err == nil {
+		t.Fatal("genesis doc naming somebody else without flag must error")
+	}
+	warn, err := checkJoinerValidatorPubkey("", true, false, peers, doc, genesisPub.Bytes())
+	if err != nil || warn == "" {
+		t.Fatalf("producer-with-peers without flag: want warn, got warn=%q err=%v", warn, err)
+	}
+	if warn, err := checkJoinerValidatorPubkey("", false, false, peers, nil, nil); err != nil || warn != "" {
+		t.Fatalf("full node: warn=%q err=%v", warn, err)
+	}
+	if warn, err := checkJoinerValidatorPubkey("", true, false, nil, nil, localPub.Bytes()); err != nil || warn != "" {
+		t.Fatalf("solo validator: warn=%q err=%v", warn, err)
+	}
+}
+
+func TestApplyVoteOnlyDisablesPropose(t *testing.T) {
+	always := func() bool { return true }
+	if !applyVoteOnly(always, false)() {
+		t.Fatal("vote-only off must keep the base Ready")
+	}
+	if applyVoteOnly(always, true)() {
+		t.Fatal("vote-only on must refuse propose while still allowing votes via Ready=false")
+	}
+	if applyVoteOnly(nil, false) != nil {
+		t.Fatal("vote-only off must preserve a nil Ready (always-propose)")
+	}
+	if applyVoteOnly(nil, true) == nil || applyVoteOnly(nil, true)() {
+		t.Fatal("vote-only on must replace nil Ready with a refusing gate")
+	}
+}
+

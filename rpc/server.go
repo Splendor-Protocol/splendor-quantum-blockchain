@@ -57,9 +57,9 @@ type Server struct {
 	// consensusMode reports the live producer path; see Config.
 	consensusMode func() string
 	// relayTx passes a transaction this node admitted to its peers; see Config.
-	relayTx            func(tx *types.Transaction)
-	router             *mux.Router
-	httpServer         *http.Server
+	relayTx    func(tx *types.Transaction)
+	router     *mux.Router
+	httpServer *http.Server
 	// peerCount returns the number of connected peers (from peer pool)
 	peerCount func() int
 	// writeAuth gates the write plane (block ingest, peer announce). With no
@@ -347,12 +347,7 @@ func (s *Server) admitTx(w http.ResponseWriter, tx *types.Transaction) {
 	}
 	if tx.Type == types.TxCall && tx.To == vm.ModuleRouterAddress {
 		head, _ := s.executor.LatestHeight()
-		mc, err := preflightModuleCall(tx.Data, s.executor.Forks(), head+1)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
-			return
-		}
-		if err := vm.PreflightExchangeMatch(s.stateDB, mc, tx.From); err != nil {
+		if _, err := preflightModuleCall(tx.Data, s.executor.Forks(), head+1); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 			return
 		}

@@ -175,12 +175,6 @@ func (m *MultiValidator) Run(ctx context.Context) error {
 }
 
 func (m *MultiValidator) propose() error {
-	batch := m.cfg.MaxTxPerBlock
-	if m.scheduler != nil {
-		batch = m.scheduler.RecommendBatchSize(m.pool.Size())
-	}
-	txs := m.pool.Pending(batch)
-
 	prevHash := [32]byte{}
 	height := uint64(1)
 	latest, err := m.executor.LatestBlock()
@@ -192,6 +186,29 @@ func (m *MultiValidator) propose() error {
 		height = latest.Header.Height + 1
 	}
 	m.engine.SetHeight(height)
+
+	// If we already vote-locked this height, rebroadcast that exact block
+	// (same hash, possibly a higher round). Minting a fresh BuildProposal
+	// every tick is what left joiners view-changing on divergent 54703 hashes
+	// while the producer's journal stayed locked on the first one.
+	if locked := m.engine.LockedProposal(); locked != nil && locked.Header.Height == height {
+		log.Info().Uint64("height", height).Hex("hash", locked.Hash[:8]).
+			Uint32("round", m.engine.Round()).
+			Msg("BFT: rebroadcasting vote-locked proposal")
+		m.engine.ProposeBlock(locked)
+		return nil
+	}
+	if m.engine.VoteLockedAt(height) {
+		log.Warn().Uint64("height", height).
+			Msg("BFT: vote-locked at this height but proposal body missing; holding (will not mint an alternative hash)")
+		return nil
+	}
+
+	batch := m.cfg.MaxTxPerBlock
+	if m.scheduler != nil {
+		batch = m.scheduler.RecommendBatchSize(m.pool.Size())
+	}
+	txs := m.pool.Pending(batch)
 
 	b, err := m.executor.BuildProposal(
 		txs, m.cfg.Address, m.cfg.PublicKey, m.cfg.PrivateKey, prevHash, height,

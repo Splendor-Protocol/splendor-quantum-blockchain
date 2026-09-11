@@ -121,3 +121,66 @@ func TestEngineDoesNotDoubleSignAcrossRestart(t *testing.T) {
 		t.Fatalf("restarted engine refused to re-sign A at the next round: %v", err)
 	}
 }
+
+func TestVoteJournalClearAndClearIfHeight(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vote-journal.json")
+	j, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := [32]byte{9}
+	if err := j.Record(54314, 1, a); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wrong height must refuse and leave the lock in place.
+	if _, err := j.ClearIfHeight(999); err == nil {
+		t.Fatal("ClearIfHeight at the wrong height succeeded")
+	}
+	if h, _, _, ok := j.Last(); !ok || h != 54314 {
+		t.Fatalf("lock cleared on refused ClearIfHeight: ok=%v h=%d", ok, h)
+	}
+	j2, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, _, _, ok := j2.Last(); !ok || h != 54314 {
+		t.Fatal("disk lock lost after refused ClearIfHeight")
+	}
+
+	backup, err := j2.ClearIfHeight(54314)
+	if err != nil {
+		t.Fatalf("ClearIfHeight: %v", err)
+	}
+	if backup == "" {
+		t.Fatal("expected backup path")
+	}
+	if _, _, _, ok := j2.Last(); ok {
+		t.Fatal("in-memory lock survived ClearIfHeight")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("journal file still present after clear")
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("backup missing: %v", err)
+	}
+
+	// After clear, a different hash at the same height is allowed (ops recovery).
+	j3, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := [32]byte{8}
+	if err := j3.Record(54314, 0, b); err != nil {
+		t.Fatalf("post-clear vote refused: %v", err)
+	}
+
+	backup2, err := j3.Clear()
+	if err != nil || backup2 == "" {
+		t.Fatalf("Clear: backup=%q err=%v", backup2, err)
+	}
+	if _, err := j3.Clear(); err != nil {
+		t.Fatalf("Clear on empty journal: %v", err)
+	}
+}

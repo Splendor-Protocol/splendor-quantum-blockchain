@@ -86,6 +86,9 @@ var (
 	flagPeerPins           []string
 	flagRequirePeerPins    bool
 	flagStateSync          bool
+	flagClearVoteJournal   bool
+	flagClearVoteJournalAt uint64
+	flagVoteOnly           bool
 )
 
 func main() {
@@ -142,6 +145,9 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringArrayVar(&flagPeerPins, "peer-pin", nil, "Pin a peer's node identity as URL=PUBKEY_HEX (repeatable). Without a pin, peer identities are trusted on first use — set --require-peer-pins to refuse unpinned peers instead.")
 	root.Flags().BoolVar(&flagRequirePeerPins, "require-peer-pins", false, "Refuse to talk to any peer that has no --peer-pin, instead of trusting its identity on first contact. Governs who this node dials — block push, announce and catch-up pull; inbound blocks stay authenticated by the validator signature and the write-plane token. Recommended once a cluster's peers are known: trust-on-first-use hands the relationship to whoever answers first at bootstrap.")
 	root.Flags().BoolVar(&flagStateSync, "state-sync", false, "Join a chain whose history cannot be replayed. On an empty data dir: take the fork schedule, chain id and minted supply from the pinned genesis document (--genesis, or --peer with --genesis-doc-hash), then import a peer's live state snapshot — its head block authenticated by the genesis validator key — and follow from the next block. Needs --validator-pubkey-hex or --genesis-hash. A --validator may use it too, and needs at least one --peer: it holds production until the snapshot has landed and it has caught up.")
+	root.Flags().BoolVar(&flagClearVoteJournal, "clear-vote-journal", false, "Backup and clear dataDir/vote-journal.json at startup. Ops recovery for a split durable vote-lock after peers are healthy; coordinate across conflicting validators. Misuse can enable conflicting votes if a prior vote already left the node.")
+	root.Flags().Uint64Var(&flagClearVoteJournalAt, "clear-vote-journal-at-height", 0, "Like --clear-vote-journal, but only if the journal's last vote is at this height; refuse to start if it holds a different height (0 disables).")
+	root.Flags().BoolVar(&flagVoteOnly, "vote-only", false, "Participate in BFT voting but never propose or seal. Ops recovery after unlocking a split vote-journal at set≥3: start non-leader validators with this so they cannot race a divergent next-height proposal while the scheduled leader cannot solo-seal. Remove once tip advances.")
 
 	// Operators need a way to produce the value they pin, and to check that a
 	// genesis.json they were handed is the one they expect, without starting a node.
@@ -442,6 +448,15 @@ func runNode(cmd *cobra.Command, args []string) error {
 	} else if flagIsValidator && flagValidatorPKHex != "" {
 		log.Info().Str("pubkey_prefix", fmt.Sprintf("%x", trustedPK[:8])).
 			Msg("Trusted genesis validator pubkey pinned: blocks are authenticated against it and the active set, not this node's own key")
+	}
+
+	// Soft warn early: a joiner that omitted --validator-pubkey-hex will reject
+	// the real producer. Hard errors for known join roles land after genesis
+	// role detection below (and via checkJoinerValidatorPubkey with the doc).
+	if warn, err := checkJoinerValidatorPubkey(flagValidatorPKHex, flagIsValidator, false, flagPeers, nil, validatorPKBytes); err != nil {
+		return err
+	} else if warn != "" {
+		log.Warn().Msg(strings.TrimSpace(warn))
 	}
 
 	// Optional genesis pin. This is what lets a node with no pinned validator
@@ -759,6 +774,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 						"joining the running chain instead of minting block 0 — it will pull-sync " +
 						"first and produce only once it has a head and has caught up")
 			}
+			if _, err := checkJoinerValidatorPubkey(flagValidatorPKHex, true, joiningValidator, flagPeers, genesisDoc, validatorPKBytes); err != nil {
+				return err
+			}
 		}
 
 		if flagIsValidator && validatorPriv != nil && !joiningValidator {
@@ -805,6 +823,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 	readyToPropose := syncer.IsSynced
 	if joiningValidator {
 		readyToPropose = joiningValidatorReady(executor, syncer.IsSynced)
+	}
+	readyToPropose = applyVoteOnly(readyToPropose, flagVoteOnly)
+	if flagVoteOnly {
+		log.Warn().Msg("--vote-only: this validator will vote but never propose; remove the flag once tip advances past the unlocked height")
 	}
 	// bftEngine reports the engine while the producer is on the BFT path and
 	// nil otherwise — read per message, because the answer changes mid-run.
@@ -859,7 +881,30 @@ func runNode(cmd *cobra.Command, args []string) error {
 		// process that comes back mid-height cannot sign a second, conflicting
 		// vote for the same height and round. It lives beside the chain data
 		// because it is part of this validator's consensus state.
-		voteJournal, err := consensus.OpenVoteJournal(filepath.Join(flagDataDir, "vote-journal.json"))
+		voteJournalPath := filepath.Join(flagDataDir, "vote-journal.json")
+		if flagClearVoteJournal || flagClearVoteJournalAt > 0 {
+			pre, openErr := consensus.OpenVoteJournal(voteJournalPath)
+			if openErr != nil {
+				return fmt.Errorf("vote journal: %w", openErr)
+			}
+			h, r, hash, ok := pre.Last()
+			var backup string
+			var clearErr error
+			if flagClearVoteJournalAt > 0 {
+				backup, clearErr = pre.ClearIfHeight(flagClearVoteJournalAt)
+			} else {
+				backup, clearErr = pre.Clear()
+			}
+			if clearErr != nil {
+				return fmt.Errorf("clear vote journal: %w", clearErr)
+			}
+			ev := log.Warn().Str("backup", backup)
+			if ok {
+				ev = ev.Uint64("cleared_height", h).Uint32("cleared_round", r).Hex("cleared_hash", hash[:8])
+			}
+			ev.Msg("OPERATOR: vote journal cleared at startup — only safe after peer mesh is healthy and conflicting validators clear together")
+		}
+		voteJournal, err := consensus.OpenVoteJournal(voteJournalPath)
 		if err != nil {
 			return fmt.Errorf("vote journal: %w", err)
 		}
@@ -1053,17 +1098,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 				}
 				broadcaster.BroadcastSealed(network.KindTx, data)
 			},
-			PeerCount:          peerPool.Count, // wire live peer count from peerPool
-			AuthToken:          authToken,
-			AllowPlaintextP2P:  flagAllowPlaintextP2P,
-			CORSOrigins:        flagCORSOrigins,
-			SubmitRatePerSec:   flagRateLimit,
-			SubmitBurst:        flagRateBurst,
-			TrustProxy:         flagTrustProxy,
-			SimRatePerSec:      flagSimRate,
-			SimBurst:           flagSimBurst,
-			SimMaxInFlight:     flagSimMaxInFlight,
-			SimTimeout:         flagSimTimeout,
+			PeerCount:         peerPool.Count, // wire live peer count from peerPool
+			AuthToken:         authToken,
+			AllowPlaintextP2P: flagAllowPlaintextP2P,
+			CORSOrigins:       flagCORSOrigins,
+			SubmitRatePerSec:  flagRateLimit,
+			SubmitBurst:       flagRateBurst,
+			TrustProxy:        flagTrustProxy,
+			SimRatePerSec:     flagSimRate,
+			SimBurst:          flagSimBurst,
+			SimMaxInFlight:    flagSimMaxInFlight,
+			SimTimeout:        flagSimTimeout,
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)
@@ -1203,16 +1248,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// State proof routes (GET /state/root, /state/account/:addr, /state/proof/:addr)
 	rpc.RegisterStateRoutes(router, stateDB, executor)
 
-	// Governance + staking routes
-	rpc.RegisterGovRoutes(router, stateDB)
-
-	// DEX routes
-	rpc.RegisterDEXRoutes(router, stateDB)
-
-	// Exchange (settlement module) read routes — the GET mirrors of the
-	// exchange /call reads, labelled with the live chain head.
-	rpc.RegisterExchangeRoutes(router, stateDB, rpc.HeadFunc(executor))
-
 	// Migration bridge read routes — the GET mirrors of the bridge /call reads.
 	rpc.RegisterBridgeRoutes(router, stateDB)
 
@@ -1221,9 +1256,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Source verification shares the metered plane: it compiles submitted
 	// source, which is CPU spent on an anonymous caller's say-so.
 	rpc.RegisterVerifyRoutes(router, stateDB, coreRPC.SimGuard())
-
-	// Lending routes
-	rpc.RegisterLendingRoutes(router, stateDB)
 
 	// GET /genesis — serve genesis.json so RPC nodes can bootstrap genesis state.
 	// Only served if the validator has a --genesis file configured.
@@ -1247,7 +1279,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 
 	// ── Start HTTP server ──────────────────────────────────────────────────
 	// The origin policy is applied by the core RPC router; wrapping the outer
-	// router with the same policy means explorer/gov/DEX routes get identical
+	// router with the same policy means explorer/bridge/call routes get identical
 	// treatment instead of silently defaulting to permissive.
 	httpServer := &http.Server{
 		Addr:         flagRPCAddr,

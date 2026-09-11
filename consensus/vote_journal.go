@@ -8,6 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 // ErrDoubleSign is returned when a vote would contradict one this validator
@@ -132,3 +135,108 @@ func (j *VoteJournal) write(e *journalEntry) error {
 	}
 	return os.Rename(tmp, j.path)
 }
+
+// Clear removes the durable vote lock, backing up the file first.
+//
+// Operators use this after a split vote-lock stall once the peer mesh is
+// healthy — never as a substitute for fixing connectivity. Clearing while a
+// prior vote may still form a QC with other nodes can produce conflicting
+// certificates; coordinate the clear across every conflicting validator and
+// bounce them together.
+//
+// backupPath is the renamed journal (empty when there was nothing on disk).
+func (j *VoteJournal) Clear() (backupPath string, err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.clearLocked(0, false)
+}
+
+// ClearIfHeight clears only when the journal's last vote is at height h.
+// If the journal is empty, it is a no-op. If it holds a different height,
+// it returns an error and leaves the file untouched — so an operator who
+// mistypes the stalled height cannot wipe a live lock by accident.
+func (j *VoteJournal) ClearIfHeight(h uint64) (backupPath string, err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.clearLocked(h, true)
+}
+
+func (j *VoteJournal) clearLocked(h uint64, requireHeight bool) (string, error) {
+	if j.last == nil {
+		// Still remove a stray empty/corrupt-looking file if present.
+		if err := os.Remove(j.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("vote journal clear: %w", err)
+		}
+		return "", nil
+	}
+	if requireHeight && j.last.Height != h {
+		return "", fmt.Errorf("vote journal clear: journal is at height %d, not %d — refusing to clear", j.last.Height, h)
+	}
+	backup := fmt.Sprintf("%s.bak-%d", j.path, time.Now().Unix())
+	if err := os.Rename(j.path, backup); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			j.last = nil
+			j.removeProposalFile()
+			return "", nil
+		}
+		return "", fmt.Errorf("vote journal clear: backup: %w", err)
+	}
+	j.last = nil
+	j.removeProposalFile()
+	return backup, nil
+}
+
+func (j *VoteJournal) proposalPath() string { return j.path + ".proposal" }
+
+// SaveProposal persists the block body this validator locked onto, so a
+// restart (or a round timeout that dropped the in-memory proposal) can
+// rebroadcast the SAME hash instead of minting a conflicting one.
+func (j *VoteJournal) SaveProposal(b *types.Block) error {
+	if j == nil || b == nil {
+		return nil
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.last == nil || j.last.BlockHash != hex.EncodeToString(b.Hash[:]) {
+		return fmt.Errorf("vote journal: refusing to save proposal that does not match the locked hash")
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return err
+	}
+	tmp := j.proposalPath() + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, j.proposalPath())
+}
+
+// LoadProposal returns the persisted locked block when it matches Last().
+func (j *VoteJournal) LoadProposal() (*types.Block, bool) {
+	if j == nil {
+		return nil, false
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.last == nil {
+		return nil, false
+	}
+	raw, err := os.ReadFile(j.proposalPath())
+	if err != nil {
+		return nil, false
+	}
+	var b types.Block
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return nil, false
+	}
+	if hex.EncodeToString(b.Hash[:]) != j.last.BlockHash {
+		return nil, false
+	}
+	return &b, true
+}
+
+func (j *VoteJournal) removeProposalFile() {
+	_ = os.Remove(j.proposalPath())
+	_ = os.Remove(j.proposalPath() + ".tmp")
+}
+

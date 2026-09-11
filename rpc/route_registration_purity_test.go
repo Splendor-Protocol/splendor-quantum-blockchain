@@ -6,31 +6,34 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
-// No route registrar may touch consensus state — not just the lending one.
+// No route registrar may touch consensus state.
 //
-// The lending registrar called a Deploy function that wrote a storage slot, and
-// because registration happens at node startup rather than inside a block, that
-// leaf landed in whichever block the validator sealed next. The header then
-// committed to a mutation no transaction produced, so a peer replaying history
-// recomputed a different root and stopped at block 1. It stayed invisible for as
-// long as every tier ran one validator with no peers, because nothing ever
-// replayed anything.
+// The (since removed) lending registrar called a Deploy function that wrote a
+// storage slot, and because registration happens at node startup rather than
+// inside a block, that leaf landed in whichever block the validator sealed
+// next. The header then committed to a mutation no transaction produced, so a
+// peer replaying history recomputed a different root and stopped at block 1.
+// It stayed invisible for as long as every tier ran one validator with no
+// peers, because nothing ever replayed anything.
 //
-// The guard that shipped with the fix covered only lending, which leaves the
-// same mistake available to the other three registrars — and they all take a
-// *state.StateDB, so nothing about their signatures discourages it. This checks
-// the whole class instead: whether a fresh chain is replayable depends on every
-// one of them staying read-only, not on the one that happened to be caught.
+// Every registrar that takes a *state.StateDB can make the same mistake, and
+// nothing about their signatures discourages it. This checks the whole class:
+// whether a fresh chain is replayable depends on every one of them staying
+// read-only, not on the one that happened to be caught. The executor, pool and
+// guard are nil: none is consulted at registration, only per request.
 func TestNoRouteRegistrarMutatesConsensusState(t *testing.T) {
 	registrars := map[string]func(*mux.Router, *state.StateDB){
-		"lending": RegisterLendingRoutes,
-		"gov":     RegisterGovRoutes,
-		"dex":     RegisterDEXRoutes,
-		"exchange": func(r *mux.Router, sdb *state.StateDB) {
-			RegisterExchangeRoutes(r, sdb, func() vm.ReadContext { return vm.ReadContext{} })
+		"bridge": RegisterBridgeRoutes,
+		"state": func(r *mux.Router, sdb *state.StateDB) {
+			RegisterStateRoutes(r, sdb, nil)
+		},
+		"call": func(r *mux.Router, sdb *state.StateDB) {
+			RegisterCallRoutes(r, sdb, nil, nil, nil)
+		},
+		"verify": func(r *mux.Router, sdb *state.StateDB) {
+			RegisterVerifyRoutes(r, sdb, nil)
 		},
 	}
 

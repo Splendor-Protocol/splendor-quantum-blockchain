@@ -244,6 +244,10 @@ type BFTEngine struct {
 	currentRound  uint32
 	voteSet       *VoteSet
 	proposal      *types.Block
+	// lockedProposal is the block body this node voted for at votedHeight.
+	// Survives round timeouts so the leader rebroadcasts the SAME hash
+	// instead of minting a new proposal every interval while the journal is locked.
+	lockedProposal *types.Block
 	seenVotes     map[string]*Vote // validator|height|round → first vote (equivocation)
 
 	// pendingVotes holds verified votes that arrived before the proposal they
@@ -473,6 +477,13 @@ func (e *BFTEngine) castVote(b *types.Block, round uint32) (*Vote, error) {
 	}
 	e.signedHeight, e.signedRound, e.hasSigned = b.Header.Height, round, true
 	e.votedHash, e.votedHeight, e.hasVoted = b.Hash, b.Header.Height, true
+	e.lockedProposal = b
+	if e.journal != nil {
+		if err := e.journal.SaveProposal(b); err != nil {
+			log.Warn().Err(err).Uint64("height", b.Header.Height).
+				Msg("BFT: failed to persist locked proposal body for rebroadcast")
+		}
+	}
 	return vote, nil
 }
 
@@ -554,6 +565,7 @@ func (e *BFTEngine) handleTimeout() {
 	e.currentRound++
 	e.voteSet = nil
 	e.proposal = nil
+	// Keep lockedProposal: the journal still binds this height to that hash.
 	h, r := e.currentHeight, e.currentRound
 	log.Warn().Uint64("height", h).Uint32("round", r).
 		Msg("BFT: round timeout, view change")
@@ -681,12 +693,18 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 	// SECURITY CHECK: Vote commitment enforcement
 	// This is the CORE anti-fork protection - once voted, committed to that hash
 	if e.hasVoted && b.Header.Height == e.votedHeight && b.Hash != e.votedHash {
-		log.Warn().
+		ev := log.Warn().
 			Uint64("height", b.Header.Height).
 			Uint32("round", round).
 			Hex("voted_for", e.votedHash[:8]).
 			Hex("proposed", b.Hash[:8]).
-			Msg("SECURITY: already voted for different block at this height, refusing")
+			Bool("durable_journal", e.journal != nil)
+		if e.journal != nil {
+			if jh, jr, _, ok := e.journal.Last(); ok && jh == e.votedHeight {
+				ev = ev.Uint32("journal_round", jr)
+			}
+		}
+		ev.Msg("SECURITY: durable vote-lock refuses different block at this height; view-change will not unlock — align peers, then clear vote-journal on conflicting nodes (--clear-vote-journal)")
 		return
 	}
 
@@ -707,7 +725,18 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 	if e.isMember() {
 		vote, verr := e.castVote(b, round)
 		if verr != nil {
-			log.Error().Err(verr).Msg("BFT: failed to cast vote")
+			log.Error().Err(verr).
+				Uint64("height", b.Header.Height).
+				Uint32("round", round).
+				Hex("proposed", b.Hash[:8]).
+				Msg("BFT: failed to cast vote")
+			if errors.Is(verr, ErrDoubleSign) && e.hasVoted && e.votedHeight == b.Header.Height && e.votedHash != b.Hash {
+				log.Error().
+					Uint64("height", b.Header.Height).
+					Hex("voted_for", e.votedHash[:8]).
+					Hex("proposed", b.Hash[:8]).
+					Msg("BFT: split vote-lock (journal/in-memory); view-change cannot unlock — use --clear-vote-journal after peers are healthy")
+			}
 			// Our own proposal, refused because this round is already spent in
 			// the journal. Retrying at this round can never succeed, and our
 			// retries are what keep the round timer from firing — so take the
@@ -992,6 +1021,7 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 			e.hasVoted = false
 			e.voteSet = nil
 			e.proposal = nil
+			e.lockedProposal = nil
 			return
 		}
 	}
@@ -1010,6 +1040,7 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	// Clear ALL state (including vote commitment)
 	e.voteSet = nil
 	e.proposal = nil
+	e.lockedProposal = nil
 	e.hasVoted = false
 	e.hasQuorum = false
 	
@@ -1057,26 +1088,64 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	e.currentRound = 0
 	e.hasVoted = false
 	e.hasQuorum = false
-	
+	e.lockedProposal = nil
+
 	// Crash recovery: A restart re-enters a height the previous process may
 	// already have voted at. Round r is spent— the journal refuses every other
 	// block there —so resume at r+1 and keep that hash. A later round may
-	// re-sign it, never a different block.
+	// re-sign it, never a different block. Reload the locked proposal body so
+	// the leader can rebroadcast it instead of minting a new hash.
 	if e.journal != nil {
 		if jh, jr, jhash, ok := e.journal.Last(); ok && jh == h {
 			e.currentRound = jr + 1
 			e.votedHash, e.votedHeight, e.hasVoted = jhash, jh, true
+			if prop, ok := e.journal.LoadProposal(); ok {
+				e.lockedProposal = prop
+			}
 			log.Warn().
 				Uint64("height", h).
 				Uint32("journal_round", jr).
 				Uint32("resume_round", jr+1).
 				Hex("committed_to", jhash[:8]).
+				Bool("proposal_body", e.lockedProposal != nil).
 				Msg("crash recovery: restored vote commitment from journal")
 		}
 	}
 	e.voteSet = nil
 	e.proposal = nil
 	e.prunePendingVotes(h)
+}
+
+
+// LockedProposal returns the block this node is vote-locked to at the current
+// height, when the body is still available (in memory or restored from the
+// journal). Callers rebroadcast it instead of minting a new hash.
+func (e *BFTEngine) LockedProposal() *types.Block {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if e.lockedProposal == nil || !e.hasVoted {
+		return nil
+	}
+	if e.lockedProposal.Header.Height != e.votedHeight || e.lockedProposal.Hash != e.votedHash {
+		return nil
+	}
+	return e.lockedProposal
+}
+
+// VoteLockedAt reports whether this node is already committed to a hash at h
+// (in-memory or durable journal), even if the proposal body is missing.
+func (e *BFTEngine) VoteLockedAt(h uint64) bool {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if e.hasVoted && e.votedHeight == h {
+		return true
+	}
+	if e.journal != nil {
+		if jh, _, _, ok := e.journal.Last(); ok && jh == h {
+			return true
+		}
+	}
+	return false
 }
 
 // Height returns the height the engine is working on.
