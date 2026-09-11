@@ -138,6 +138,41 @@ func mustPublic(pk []byte) *qcrypto.PublicKey {
 	return pub
 }
 
+
+// checkJoinerValidatorPubkey guards the JOIN-REJECT footgun: a --validator
+// without --validator-pubkey-hex trusts its own wallet as the genesis sealer.
+// Under validators_admission_v1 with set size < 2 that makes the joiner reject
+// the real producer's blocks.
+//
+// Hard error when we already know this process is joining (roleJoin / genesis
+// document names somebody else). Soft warning when a validator lists --peer
+// but omitted the flag — the genesis producer may also list peers for mesh,
+// so that case cannot be a hard error.
+func checkJoinerValidatorPubkey(flagHex string, isValidator bool, joining bool, peers []string, doc *genesiscfg.Genesis, localPK []byte) (warn string, err error) {
+	if !isValidator || flagHex != "" {
+		return "", nil
+	}
+	if doc != nil && len(localPK) > 0 {
+		if docPub, derr := doc.ValidatorPublicKey(); derr == nil && !bytes.Equal(docPub.Bytes(), localPK) {
+			return "", fmt.Errorf(
+				"--validator with a genesis document naming %s but this wallet is %s requires --validator-pubkey-hex <genesis ML-DSA-65 hex>; "+
+					"without it this node treats its own key as genesis and rejects the real producer under validators_admission_v1",
+				qcrypto.DeriveAddress(docPub), qcrypto.DeriveAddress(mustPublic(localPK)))
+		}
+	}
+	if joining {
+		return "", fmt.Errorf(
+			"joining --validator requires --validator-pubkey-hex <genesis ML-DSA-65 public key hex>; "+
+				"omitting it makes this node trust its own wallet as the genesis sealer and reject the real producer")
+	}
+	if len(peers) > 0 {
+		return "--validator with --peer but no --validator-pubkey-hex: if this node is joining (not the genesis sealer), " +
+			"it will treat its own wallet as genesis and reject the real producer under validators_admission_v1 with set size < 2. " +
+			"Pass the genesis ML-DSA-65 hex (same as scripts/validator-join --validator-pubkey-hex).", nil
+	}
+	return "", nil
+}
+
 // joiningValidatorReady gates proposals on a validator that was pointed at
 // somebody else's chain.
 //
