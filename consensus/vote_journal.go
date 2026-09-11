@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 // ErrDoubleSign is returned when a vote would contradict one this validator
@@ -174,10 +176,67 @@ func (j *VoteJournal) clearLocked(h uint64, requireHeight bool) (string, error) 
 	if err := os.Rename(j.path, backup); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			j.last = nil
+			j.removeProposalFile()
 			return "", nil
 		}
 		return "", fmt.Errorf("vote journal clear: backup: %w", err)
 	}
 	j.last = nil
+	j.removeProposalFile()
 	return backup, nil
 }
+
+func (j *VoteJournal) proposalPath() string { return j.path + ".proposal" }
+
+// SaveProposal persists the block body this validator locked onto, so a
+// restart (or a round timeout that dropped the in-memory proposal) can
+// rebroadcast the SAME hash instead of minting a conflicting one.
+func (j *VoteJournal) SaveProposal(b *types.Block) error {
+	if j == nil || b == nil {
+		return nil
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.last == nil || j.last.BlockHash != hex.EncodeToString(b.Hash[:]) {
+		return fmt.Errorf("vote journal: refusing to save proposal that does not match the locked hash")
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return err
+	}
+	tmp := j.proposalPath() + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, j.proposalPath())
+}
+
+// LoadProposal returns the persisted locked block when it matches Last().
+func (j *VoteJournal) LoadProposal() (*types.Block, bool) {
+	if j == nil {
+		return nil, false
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.last == nil {
+		return nil, false
+	}
+	raw, err := os.ReadFile(j.proposalPath())
+	if err != nil {
+		return nil, false
+	}
+	var b types.Block
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return nil, false
+	}
+	if hex.EncodeToString(b.Hash[:]) != j.last.BlockHash {
+		return nil, false
+	}
+	return &b, true
+}
+
+func (j *VoteJournal) removeProposalFile() {
+	_ = os.Remove(j.proposalPath())
+	_ = os.Remove(j.proposalPath() + ".tmp")
+}
+
