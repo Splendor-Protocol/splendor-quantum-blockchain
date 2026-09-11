@@ -88,6 +88,7 @@ var (
 	flagStateSync          bool
 	flagClearVoteJournal   bool
 	flagClearVoteJournalAt uint64
+	flagVoteOnly           bool
 )
 
 func main() {
@@ -146,6 +147,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().BoolVar(&flagStateSync, "state-sync", false, "Join a chain whose history cannot be replayed. On an empty data dir: take the fork schedule, chain id and minted supply from the pinned genesis document (--genesis, or --peer with --genesis-doc-hash), then import a peer's live state snapshot — its head block authenticated by the genesis validator key — and follow from the next block. Needs --validator-pubkey-hex or --genesis-hash. A --validator may use it too, and needs at least one --peer: it holds production until the snapshot has landed and it has caught up.")
 	root.Flags().BoolVar(&flagClearVoteJournal, "clear-vote-journal", false, "Backup and clear dataDir/vote-journal.json at startup. Ops recovery for a split durable vote-lock after peers are healthy; coordinate across conflicting validators. Misuse can enable conflicting votes if a prior vote already left the node.")
 	root.Flags().Uint64Var(&flagClearVoteJournalAt, "clear-vote-journal-at-height", 0, "Like --clear-vote-journal, but only if the journal's last vote is at this height; refuse to start if it holds a different height (0 disables).")
+	root.Flags().BoolVar(&flagVoteOnly, "vote-only", false, "Participate in BFT voting but never propose or seal. Ops recovery after unlocking a split vote-journal at set≥3: start non-leader validators with this so they cannot race a divergent next-height proposal while the scheduled leader cannot solo-seal. Remove once tip advances.")
 
 	// Operators need a way to produce the value they pin, and to check that a
 	// genesis.json they were handed is the one they expect, without starting a node.
@@ -821,6 +823,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 	readyToPropose := syncer.IsSynced
 	if joiningValidator {
 		readyToPropose = joiningValidatorReady(executor, syncer.IsSynced)
+	}
+	readyToPropose = applyVoteOnly(readyToPropose, flagVoteOnly)
+	if flagVoteOnly {
+		log.Warn().Msg("--vote-only: this validator will vote but never propose; remove the flag once tip advances past the unlocked height")
 	}
 	// bftEngine reports the engine while the producer is on the BFT path and
 	// nil otherwise — read per message, because the answer changes mid-run.
