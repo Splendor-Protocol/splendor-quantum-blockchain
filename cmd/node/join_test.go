@@ -204,3 +204,20 @@ func TestCheckJoinerValidatorPubkey(t *testing.T) {
 		t.Fatalf("solo validator: warn=%q err=%v", warn, err)
 	}
 }
+
+func TestApplyVoteOnlyDisablesPropose(t *testing.T) {
+	always := func() bool { return true }
+	if !applyVoteOnly(always, false)() {
+		t.Fatal("vote-only off must keep the base Ready")
+	}
+	if applyVoteOnly(always, true)() {
+		t.Fatal("vote-only on must refuse propose while still allowing votes via Ready=false")
+	}
+	if applyVoteOnly(nil, false) != nil {
+		t.Fatal("vote-only off must preserve a nil Ready (always-propose)")
+	}
+	if applyVoteOnly(nil, true) == nil || applyVoteOnly(nil, true)() {
+		t.Fatal("vote-only on must replace nil Ready with a refusing gate")
+	}
+}
+

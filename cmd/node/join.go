@@ -210,3 +210,15 @@ func applyCommittedBlock(ex *block.Executor, b *types.Block) error {
 	}
 	return err
 }
+
+// applyVoteOnly wraps Ready so the node still votes on peer proposals but never
+// proposes. Used by --vote-only for ordered recovery after a split vote-journal
+// unlock at set≥3, where a follower that races a divergent next-height proposal
+// leaves the scheduled leader unable to solo-seal.
+func applyVoteOnly(ready func() bool, voteOnly bool) func() bool {
+	if !voteOnly {
+		return ready
+	}
+	return func() bool { return false }
+}
+
