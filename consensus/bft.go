@@ -681,12 +681,18 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 	// SECURITY CHECK: Vote commitment enforcement
 	// This is the CORE anti-fork protection - once voted, committed to that hash
 	if e.hasVoted && b.Header.Height == e.votedHeight && b.Hash != e.votedHash {
-		log.Warn().
+		ev := log.Warn().
 			Uint64("height", b.Header.Height).
 			Uint32("round", round).
 			Hex("voted_for", e.votedHash[:8]).
 			Hex("proposed", b.Hash[:8]).
-			Msg("SECURITY: already voted for different block at this height, refusing")
+			Bool("durable_journal", e.journal != nil)
+		if e.journal != nil {
+			if jh, jr, _, ok := e.journal.Last(); ok && jh == e.votedHeight {
+				ev = ev.Uint32("journal_round", jr)
+			}
+		}
+		ev.Msg("SECURITY: durable vote-lock refuses different block at this height; view-change will not unlock — align peers, then clear vote-journal on conflicting nodes (--clear-vote-journal)")
 		return
 	}
 
@@ -707,7 +713,18 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) {
 	if e.isMember() {
 		vote, verr := e.castVote(b, round)
 		if verr != nil {
-			log.Error().Err(verr).Msg("BFT: failed to cast vote")
+			log.Error().Err(verr).
+				Uint64("height", b.Header.Height).
+				Uint32("round", round).
+				Hex("proposed", b.Hash[:8]).
+				Msg("BFT: failed to cast vote")
+			if errors.Is(verr, ErrDoubleSign) && e.hasVoted && e.votedHeight == b.Header.Height && e.votedHash != b.Hash {
+				log.Error().
+					Uint64("height", b.Header.Height).
+					Hex("voted_for", e.votedHash[:8]).
+					Hex("proposed", b.Hash[:8]).
+					Msg("BFT: split vote-lock (journal/in-memory); view-change cannot unlock — use --clear-vote-journal after peers are healthy")
+			}
 			// Our own proposal, refused because this round is already spent in
 			// the journal. Retrying at this round can never succeed, and our
 			// retries are what keep the round timer from firing — so take the
