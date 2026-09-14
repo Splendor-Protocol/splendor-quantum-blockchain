@@ -17,6 +17,7 @@ import (
 	"fmt"
 
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/util"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -97,6 +98,85 @@ func SnapshotRoot(leaves []types.StateLeaf) [32]byte {
 		index[string(l.Key)] = qcrypto.Hash32(l.Value)
 	}
 	return merkleRoot(index)
+}
+
+// ExportSnapshotChunk returns up to maxLeaves leaves whose keys sort strictly
+// after afterKey (nil fetches the first chunk), read from one consistent
+// LevelDB snapshot, together with the height that snapshot reflects and the
+// key to resume from next.
+//
+// Unlike ExportSnapshot this never holds the whole state in memory or on the
+// wire at once — a chunk is bounded by maxLeaves regardless of total state
+// size, so serving (and later, importing) a multi-GB state does not require a
+// single multi-GB buffer on either side.
+//
+// Each call takes its OWN LevelDB snapshot rather than pinning one across the
+// whole multi-chunk transfer, so a chunk can never block a live validator's
+// writes for the transfer's duration. The tradeoff is explicit and safe: if
+// the state actually changes between two chunk calls (a validator commits a
+// new block mid-transfer), the assembled leaf set will not hash to the head
+// block's declared state_root, and the importer's existing root check refuses
+// it outright — the caller sees a clear failure and retries, never a silently
+// inconsistent import. height is returned on every chunk so a caller can also
+// abort early the moment it changes, rather than only failing at the root
+// check after the whole transfer completes.
+func (s *StateDB) ExportSnapshotChunk(afterKey []byte, maxLeaves int) (height uint64, leaves []types.StateLeaf, nextKey []byte, done bool, err error) {
+	if s.sandbox {
+		return 0, nil, nil, false, ErrSandboxCommit
+	}
+	if maxLeaves <= 0 {
+		return 0, nil, nil, false, errors.New("state: chunk size must be positive")
+	}
+	snap, err := s.db.GetSnapshot()
+	if err != nil {
+		return 0, nil, nil, false, fmt.Errorf("state: snapshot: %w", err)
+	}
+	defer snap.Release()
+
+	raw, err := snap.Get([]byte(keyStateHeight), nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		return 0, nil, nil, false, ErrSnapshotUnavailable
+	}
+	if err != nil {
+		return 0, nil, nil, false, fmt.Errorf("state: snapshot height: %w", err)
+	}
+	if err := json.Unmarshal(raw, &height); err != nil {
+		return 0, nil, nil, false, fmt.Errorf("state: snapshot height marker is corrupt: %w", err)
+	}
+
+	var iterRange *util.Range
+	if len(afterKey) > 0 {
+		iterRange = &util.Range{Start: append(append([]byte(nil), afterKey...), 0x00)}
+	}
+	iter := snap.NewIterator(iterRange, nil)
+	defer iter.Release()
+
+	for iter.Next() {
+		k := iter.Key()
+		if bytes.HasPrefix(k, []byte(prefixMeta)) {
+			continue
+		}
+		v := iter.Value()
+		leaves = append(leaves, types.StateLeaf{
+			Key:   append([]byte(nil), k...),
+			Value: append([]byte(nil), v...),
+		})
+		if len(leaves) >= maxLeaves {
+			// Peek: is there anything left after this key?
+			nextKey = append([]byte(nil), k...)
+			if !iter.Next() {
+				if err := iter.Error(); err != nil {
+					return 0, nil, nil, false, fmt.Errorf("state: snapshot chunk scan: %w", err)
+				}
+				return height, leaves, nil, true, nil
+			}
+			return height, leaves, nextKey, false, nil
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return 0, nil, nil, false, fmt.Errorf("state: snapshot chunk scan: %w", err)
+	}
+	return height, leaves, nil, true, nil
 }
 
 // IsFresh reports whether the state holds no committed leaves, no applied-

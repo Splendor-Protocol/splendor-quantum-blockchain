@@ -309,12 +309,25 @@ func (d *Discoverer) EvictStale(maxAge time.Duration) {
 	}
 }
 
-// UpdatePeerHeight updates the known chain height of a peer.
+// UpdatePeerHeight records a peer's chain height, but only ever moves it
+// forward.
+//
+// Callers report two different kinds of evidence under this one method: a
+// fresh /status poll (which really does know the peer's current height, up
+// or down) and "I just applied block h that this peer served me" (which only
+// proves the peer was AT LEAST h at some point — never that h is a ceiling).
+// Letting the second kind lower a height recorded by the first would make a
+// syncer that just pulled block 40 from a peer known to be at 100 report that
+// peer as caught-up at 40, hiding 60 blocks of real work behind its own
+// bookkeeping. A height can go stale (LastSeen still advances so eviction
+// still works) but never regress.
 func (p *PeerPool) UpdatePeerHeight(addr string, height uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if info, ok := p.peers[addr]; ok {
-		info.Height = height
+		if height > info.Height {
+			info.Height = height
+		}
 		info.LastSeen = time.Now().Unix()
 	}
 }

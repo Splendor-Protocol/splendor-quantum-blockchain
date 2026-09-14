@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 // Sealed P2P transport paths.
@@ -51,11 +53,39 @@ const (
 	// for a node joining a chain whose history it cannot replay. Public data
 	// like a block, so not token-gated; served sealed only.
 	KindGetStateSnapshot = "get_state_snapshot"
+	// KindGetStateSnapshotChunk pages through the same state one bounded
+	// slice of leaves at a time (see GetStateSnapshotChunkRequest), so a
+	// state past MaxStateSnapshotBytes does not require one node to hold the
+	// whole thing in memory and the wire body at once. Same trust and
+	// read-plane rules as KindGetStateSnapshot: sealed only, no token.
+	KindGetStateSnapshotChunk = "get_state_snapshot_chunk"
 )
 
 // IsReadKind reports whether a sealed request only reads chain data.
 func IsReadKind(kind string) bool {
-	return kind == KindGetBlock || kind == KindGetLatest || kind == KindGetStateSnapshot
+	return kind == KindGetBlock || kind == KindGetLatest ||
+		kind == KindGetStateSnapshot || kind == KindGetStateSnapshotChunk
+}
+
+// GetStateSnapshotChunkRequest is the body of a KindGetStateSnapshotChunk
+// query. AfterKey is nil/empty for the first chunk; every later request
+// carries the NextKey the previous chunk returned.
+type GetStateSnapshotChunkRequest struct {
+	AfterKey  []byte `json:"after_key,omitempty"`
+	MaxLeaves int    `json:"max_leaves"`
+}
+
+// StateSnapshotChunk is one page of a chunked state transfer. Height must be
+// identical across every chunk of one transfer; a change mid-transfer means
+// the state moved (a validator committed) and the caller must abort and
+// retry the whole thing, since a state_root check spanning two different
+// heights can never legitimately pass.
+type StateSnapshotChunk struct {
+	Height  uint64            `json:"height"`
+	Block   *types.Block      `json:"block,omitempty"` // set only on the first chunk
+	Leaves  []types.StateLeaf `json:"leaves"`
+	NextKey []byte            `json:"next_key,omitempty"`
+	Done    bool              `json:"done"`
 }
 
 // SealedRequest is the plaintext inside an Envelope.

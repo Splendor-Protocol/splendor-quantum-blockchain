@@ -26,6 +26,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -58,6 +59,19 @@ type SyncConfig struct {
 	// MaxBlocksPerBatch is how many blocks to download per peer before switching.
 	MaxBlocksPerBatch int
 
+	// MaxParallelFetch bounds how many blocks SyncOnce downloads concurrently
+	// within a batch. Fetching is safe to parallelise — FetchBlock only reads
+	// from a peer and validates the block against keys already trusted, it
+	// never touches local state — but APPLYING blocks is not: ExecuteBlock
+	// must see height h-1 committed before h, since h's state root is computed
+	// over the account set h-1 left behind. SyncOnce therefore fetches with up
+	// to this many workers in flight but always calls applyBlock strictly in
+	// ascending height order, so a fast peer cannot let a later block apply
+	// before an earlier one.
+	//
+	// 0 or 1 preserves the original one-at-a-time behaviour.
+	MaxParallelFetch int
+
 	// RequestTimeout is the timeout for individual block download requests.
 	RequestTimeout time.Duration
 
@@ -85,6 +99,7 @@ func DefaultSyncConfig(validatorPubKey []byte) SyncConfig {
 	return SyncConfig{
 		ValidatorPubKey:   validatorPubKey,
 		MaxBlocksPerBatch: 100,
+		MaxParallelFetch:  8,
 		RequestTimeout:    15 * time.Second,
 		RetryDelay:        2 * time.Second,
 	}
@@ -402,8 +417,25 @@ func (s *Syncer) TrustedPubKey() []byte {
 	return s.fetcher.TrustedPubKey()
 }
 
+// fetchResult carries one height's outcome back to the ordered applier.
+type fetchResult struct {
+	height uint64
+	block  *types.Block
+	peer   string
+	err    error
+}
+
 // SyncOnce performs one sync pass: check peers, download missing blocks.
 // Returns the number of blocks applied, and any error.
+//
+// RESUME: SyncOnce always starts from s.localHeight()+1, which only advances
+// once applyBlock has actually committed a block. A call that returns early —
+// whether from a fetch error, an apply error, or the process dying mid-batch —
+// leaves localHeight exactly where the last successful apply left it, so the
+// very next call (the next tick, or the next process on restart) resumes at
+// the same height with no bookkeeping of its own. There is no separate résumé
+// marker to go stale or need reconciling: the chain's own head IS the résumé
+// point.
 func (s *Syncer) SyncOnce() (int, error) {
 	localH := s.localHeight()
 	bestH := s.pool.BestPeerHeight()
@@ -418,52 +450,136 @@ func (s *Syncer) SyncOnce() (int, error) {
 		Uint64("behind_by", bestH-localH).
 		Msg("sync: starting catchup")
 
-	// Find best peer
 	peers := s.pool.PeersAboveHeight(localH)
 	if len(peers) == 0 {
 		return 0, fmt.Errorf("sync: no peers above local height %d", localH)
 	}
-	peerAddr := peers[0] // pick first (TODO: pick fastest)
 
-	applied := 0
-	for h := localH + 1; h <= bestH; h++ {
-		block, err := s.fetcher.FetchBlock(peerAddr, h)
-		if err != nil {
-			log.Warn().Err(err).Uint64("height", h).Str("peer", peerAddr).
-				Msg("sync: block fetch failed, will retry")
-			time.Sleep(s.fetcher.cfg.RetryDelay)
-			// Try next peer if available
-			if len(peers) > 1 {
-				peerAddr = peers[1]
-				peers = peers[1:]
-			}
-			block, err = s.fetcher.FetchBlock(peerAddr, h)
-			if err != nil {
-				return applied, fmt.Errorf("sync: failed to fetch block %d: %w", h, err)
-			}
-		}
+	// Bound this pass to MaxBlocksPerBatch, same ceiling as before, and cap
+	// concurrency to MaxParallelFetch (0/1 = the original sequential path).
+	target := bestH
+	if s.fetcher.cfg.MaxBlocksPerBatch > 0 && target-localH > uint64(s.fetcher.cfg.MaxBlocksPerBatch) {
+		target = localH + uint64(s.fetcher.cfg.MaxBlocksPerBatch)
+	}
+	workers := s.fetcher.cfg.MaxParallelFetch
+	if workers < 1 {
+		workers = 1
+	}
+	if span := target - localH; uint64(workers) > span {
+		workers = int(span)
+	}
 
-		if err := s.applyBlock(block); err != nil {
-			return applied, fmt.Errorf("sync: failed to apply block %d: %w", h, err)
-		}
-
-		// Update peer's known height
-		s.pool.UpdatePeerHeight(peerAddr, h)
-		applied++
-
-		if applied%10 == 0 {
-			log.Info().
-				Uint64("height", h).
-				Uint64("target", bestH).
-				Int("applied", applied).
-				Msg("sync: progress")
-		}
+	applied, err := s.pipelineFetchAndApply(localH, target, peers, workers)
+	if err != nil {
+		return applied, err
 	}
 
 	log.Info().
 		Int("applied", applied).
-		Uint64("final_height", bestH).
+		Uint64("final_height", target).
 		Msg("sync: catchup complete")
+
+	return applied, nil
+}
+
+// pipelineFetchAndApply downloads (localH, target] with up to `workers`
+// concurrent fetchers, then applies every block strictly in ascending height
+// order. Fetching overlaps network latency across many in-flight requests;
+// applying never does, because ExecuteBlock at height h depends on the state
+// h-1 committed.
+func (s *Syncer) pipelineFetchAndApply(localH, target uint64, peers []string, workers int) (int, error) {
+	heights := make(chan uint64)
+	results := make(chan fetchResult, workers)
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		defer close(heights)
+		for h := localH + 1; h <= target; h++ {
+			select {
+			case heights <- h:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// peerAt gives each worker a peer to try, round-robining across the known
+	// list; a worker that fails retries once against the next one, mirroring
+	// the single-peer failover the sequential path used.
+	var peerIdx int32 = -1
+	peerAt := func() string {
+		i := atomic.AddInt32(&peerIdx, 1)
+		return peers[int(i)%len(peers)]
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for h := range heights {
+				peerAddr := peerAt()
+				block, err := s.fetcher.FetchBlock(peerAddr, h)
+				if err != nil {
+					log.Warn().Err(err).Uint64("height", h).Str("peer", peerAddr).
+						Msg("sync: block fetch failed, will retry")
+					time.Sleep(s.fetcher.cfg.RetryDelay)
+					retryPeer := peerAt()
+					block, err = s.fetcher.FetchBlock(retryPeer, h)
+					peerAddr = retryPeer
+				}
+				select {
+				case results <- fetchResult{height: h, block: block, peer: peerAddr, err: err}:
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Buffer out-of-order arrivals until the next height in sequence shows up.
+	pending := make(map[uint64]fetchResult)
+	next := localH + 1
+	applied := 0
+
+	for next <= target {
+		res, haveBuffered := pending[next]
+		if !haveBuffered {
+			r, ok := <-results
+			if !ok {
+				return applied, fmt.Errorf("sync: fetch pipeline closed before height %d arrived", next)
+			}
+			if r.height != next {
+				pending[r.height] = r
+				continue
+			}
+			res = r
+		} else {
+			delete(pending, next)
+		}
+
+		if res.err != nil {
+			return applied, fmt.Errorf("sync: failed to fetch block %d: %w", next, res.err)
+		}
+		if err := s.applyBlock(res.block); err != nil {
+			return applied, fmt.Errorf("sync: failed to apply block %d: %w", next, err)
+		}
+		s.pool.UpdatePeerHeight(res.peer, next)
+		applied++
+		if applied%10 == 0 {
+			log.Info().
+				Uint64("height", next).
+				Uint64("target", target).
+				Int("applied", applied).
+				Msg("sync: progress")
+		}
+		next++
+	}
 
 	return applied, nil
 }

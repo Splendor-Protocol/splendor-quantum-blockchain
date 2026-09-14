@@ -20,3 +20,15 @@ type StateSnapshot struct {
 	Block  *Block      `json:"block"`
 	Leaves []StateLeaf `json:"leaves"`
 }
+
+// StateSnapshotChunkResult is one page of a chunked state export, returned by
+// the executor to whatever transport serves it (currently the sealed P2P
+// read plane). Block is populated only for the first page of a transfer —
+// see Executor.ExportStateSnapshotChunk.
+type StateSnapshotChunkResult struct {
+	Height  uint64      `json:"height"`
+	Block   *Block      `json:"block,omitempty"`
+	Leaves  []StateLeaf `json:"leaves"`
+	NextKey []byte      `json:"next_key,omitempty"`
+	Done    bool        `json:"done"`
+}

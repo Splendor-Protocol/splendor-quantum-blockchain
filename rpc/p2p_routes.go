@@ -56,6 +56,12 @@ type P2PConfig struct {
 	// types.StateSnapshot JSON, for a peer joining a chain it cannot replay.
 	// nil means the node serves none.
 	ServeStateSnapshot func() ([]byte, error)
+	// ServeStateSnapshotChunk returns one page of this node's committed state
+	// as a network.StateSnapshotChunk JSON — the chunked counterpart of
+	// ServeStateSnapshot for a state too large to hold whole in memory. nil
+	// means the node does not support chunked transfer (only the single-shot
+	// form above).
+	ServeStateSnapshotChunk func(afterKey []byte, maxLeaves int) ([]byte, error)
 }
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
@@ -265,6 +271,17 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			return
 		}
 		payload, err = cfg.ServeStateSnapshot()
+	case network.KindGetStateSnapshotChunk:
+		if cfg.ServeStateSnapshotChunk == nil {
+			writeError(w, http.StatusNotImplemented, "sealed chunked state snapshot reads not available")
+			return
+		}
+		var q network.GetStateSnapshotChunkRequest
+		if jsonErr := json.Unmarshal(req.Body, &q); jsonErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid get_state_snapshot_chunk body")
+			return
+		}
+		payload, err = cfg.ServeStateSnapshotChunk(q.AfterKey, q.MaxLeaves)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown sealed read kind")
 		return
