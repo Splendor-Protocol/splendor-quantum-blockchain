@@ -77,6 +77,12 @@ var (
 	CtxBridge = []byte("SPLENDOR-QC-BRIDGE-v1")
 	// CtxVerify domain-separates SQVL instructions and operator attestations.
 	CtxVerify = []byte("SPLENDOR-QC-VERIFY-v1")
+	// CtxObjectManifest domain-separates network/objects manifests: the
+	// signed, Merkle-committed descriptor that authenticates an RLNC-coded
+	// (or uncoded/erasure-coded) large-object transfer BEFORE any symbol is
+	// trusted enough to spend decode work on. See the Sept 2026 improvement
+	// plan Section 8.3. Appended after CtxVerify: the block is append-only.
+	CtxObjectManifest = []byte("SPLENDOR-QC-OBJMANIFEST-v1")
 )
 
 // maxContextSize is the FIPS 204 limit on the signing context string.
