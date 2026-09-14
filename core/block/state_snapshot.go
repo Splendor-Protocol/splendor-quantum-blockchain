@@ -46,11 +46,13 @@ func (e *Executor) ExportStateSnapshot() (*types.StateSnapshot, error) {
 // Trust: the caller has verified the head block's signature against the
 // pinned genesis validator key. Here the block is checked structurally and
 // for this chain, and the leaves must hash to its header's state_root — so
-// the state is exactly what that authenticated block committed to. Then the
-// executor's own write order: the block first (head before state), the state
-// second. A crash between the two leaves a head with no state marker, which
-// ReconcileState cannot repair; the recovery is to wipe the data dir and run
-// state sync again.
+// the state is exactly what that authenticated block committed to.
+//
+// RECOVERY: Uses staged import with explicit boundaries. A crash at any point
+// can be recovered deterministically on restart:
+//   - Before commit: staged data discarded, import retried
+//   - After commit: partial state completed automatically
+// No manual wipe-and-retry needed. See ReconcileSnapshotImport().
 //
 // The certificate is deliberately NOT re-verified against the imported
 // registry: the set after block H is not the set that certified H (a register
