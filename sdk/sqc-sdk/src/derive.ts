@@ -269,8 +269,30 @@ export function signDerivationMessage(
   return r + s + v;
 }
 
-/** seed = SHA3-256(evmSignatureBytes) as hex (64 chars). */
+/**
+ * seed = SHA3-256(evmSignatureBytes) as hex (64 chars).
+ * 
+ * @deprecated SECURITY WARNING: This function compromises post-quantum security!
+ * 
+ * Deriving PQ keys from classical ECDSA signatures means your quantum-resistant
+ * security depends on a classical key. If someone obtains the EVM signature used
+ * for derivation, they can derive the same seed and reconstruct your ML-DSA keys.
+ * This defeats the entire purpose of post-quantum cryptography.
+ * 
+ * RECOMMENDED: Use native random seed generation instead:
+ * - Go: Use core/crypto wallet_store.go (already secure)
+ * - SDK: Use crypto.getRandomValues() or equivalent for 32-byte seed
+ * 
+ * This function remains for backward compatibility with existing wallets only.
+ * NEW WALLETS SHOULD NOT USE THIS PATH.
+ * 
+ * See: Splendor Chain Improvement Plan (Sept 2026), Section 6 - Wallet Security
+ */
 export function seedFromEvmSignature(signatureHex: string): string {
+  console.warn(
+    '⚠️  SECURITY: Creating PQ wallet from EVM signature compromises quantum resistance. ' +
+    'Use native random seed generation for new wallets.'
+  );
   const sig = hexToBytes(strip0x(signatureHex));
   return bytesToHex(sha3_256(sig));
 }
