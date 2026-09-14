@@ -140,16 +140,45 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 			return
 		}
 
-		// Authenticate AFTER decryption: the token is inside the envelope.
-		if cfg.Token == "" {
-			writeError(w, http.StatusServiceUnavailable,
-				"write plane disabled: this node has no --rpc-auth-token configured")
-			return
-		}
-		if subtle.ConstantTimeCompare([]byte(req.Token), []byte(cfg.Token)) != 1 {
-			log.Warn().Str("remote", r.RemoteAddr).Str("kind", req.Kind).
-				Msg("p2p: sealed request carried an invalid write-plane token")
-			writeError(w, http.StatusUnauthorized, "invalid write-plane token")
+		// AUTHORIZATION: Message-specific policies replace the monolithic token check.
+		// Transactions validate their own signatures; consensus messages check
+		// validator membership; admin operations require the cluster token.
+		switch req.Kind {
+		case network.KindTx:
+			// Public transaction relay: any node can submit a validly-signed
+			// transaction. The HandleTx implementation validates the signature,
+			// nonce and fee; the relay will reject invalid transactions without
+			// needing a shared secret. This enables public RPC nodes and
+			// independent transaction submission.
+			// NO TOKEN CHECK HERE - signature validation happens in HandleTx
+		
+		case network.KindVote, network.KindProposal:
+			// Consensus messages: the signature inside the vote/proposal proves
+			// it came from a validator. HandleVote/HandleProposal check the
+			// signer is in the validator set for the applicable height.
+			// NO TOKEN CHECK HERE - validator membership checked in handlers
+		
+		case network.KindBlock, network.KindAnnounce:
+			// Block delivery and peer announcements: these are signed by their
+			// producers and carry validator/peer proofs. For defense in depth
+			// during rollout, retain the token check until the signatures are
+			// independently verified in the handlers.
+			// TEMPORARY TOKEN CHECK - will migrate to signature-based auth
+			if cfg.Token == "" {
+				writeError(w, http.StatusServiceUnavailable,
+					"write plane disabled: this node has no --rpc-auth-token configured")
+				return
+			}
+			if subtle.ConstantTimeCompare([]byte(req.Token), []byte(cfg.Token)) != 1 {
+				log.Warn().Str("remote", r.RemoteAddr).Str("kind", req.Kind).
+					Msg("p2p: sealed request carried an invalid write-plane token")
+				writeError(w, http.StatusUnauthorized, "invalid write-plane token")
+				return
+			}
+		
+		default:
+			// Unknown message kinds are rejected before any handler.
+			writeError(w, http.StatusBadRequest, "unknown sealed request kind")
 			return
 		}
 

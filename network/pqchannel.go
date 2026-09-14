@@ -55,6 +55,15 @@ const (
 	// channelKeyDomain separates the AES key derivation from every other use of
 	// SHA3-256 on this chain.
 	channelKeyDomain = "SPLENDOR-QC-P2P-KEY-v1"
+
+	// gcmNonceSize is the standard GCM nonce length. Validating this before
+	// passing to aead.Open prevents panic attacks where a malformed envelope
+	// crashes the node.
+	gcmNonceSize = 12
+
+	// gcmTagSize is the GCM authentication tag length. A ciphertext shorter
+	// than this cannot possibly be valid.
+	gcmTagSize = 16
 )
 
 // IdentityDocument is a node's signed, publicly fetchable key material.
@@ -294,6 +303,17 @@ func (n *NodeIdentity) Open(env *Envelope) ([]byte, error) {
 
 // openWith decapsulates and authenticates an envelope under one ML-KEM key.
 func openWith(dk *mlkem.DecapsulationKey768, env *Envelope) ([]byte, error) {
+	// SECURITY: Validate envelope structure BEFORE any cryptographic operations.
+	// Invalid nonce length causes aead.Open to panic; rejecting it here converts
+	// a node-crash DOS into a bounded error return.
+	if len(env.Nonce) != gcmNonceSize {
+		return nil, fmt.Errorf("invalid nonce length %d, expected %d", len(env.Nonce), gcmNonceSize)
+	}
+	// Ciphertext must be at least as long as the authentication tag.
+	if len(env.Ciphertext) < gcmTagSize {
+		return nil, fmt.Errorf("ciphertext too short: %d bytes, minimum %d", len(env.Ciphertext), gcmTagSize)
+	}
+
 	sharedSecret, err := dk.Decapsulate(env.KEMCiphertext)
 	if err != nil {
 		return nil, err
