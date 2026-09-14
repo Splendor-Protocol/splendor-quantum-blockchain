@@ -8,7 +8,23 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 )
+
+// newTestIdentity creates a test node identity
+func newTestIdentity(t *testing.T) *NodeIdentity {
+	t.Helper()
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	id, err := NewNodeIdentity(pub, priv)
+	if err != nil {
+		t.Fatalf("create node identity: %v", err)
+	}
+	return id
+}
 
 // sealedPeer stands up a peer that serves a signed identity document and
 // accepts sealed envelopes, so a send that gets past the pin gate really
