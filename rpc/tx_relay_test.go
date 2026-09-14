@@ -108,9 +108,13 @@ func TestRejectedTransactionIsNotRelayed(t *testing.T) {
 	}
 }
 
-// The relay rides the sealed write plane, so it needs the write-plane token
-// like every other mutating kind, and it is refused without one.
-func TestSealedTransactionRelayIsTokenGated(t *testing.T) {
+// Transaction relay (KindTx) is deliberately public: any node can forward a
+// transaction over the sealed channel without the cluster write-plane token,
+// because HandleTx itself validates the transaction's signature, nonce and
+// fee before admitting it. This is what lets an independent RPC node (which
+// never holds the validator's write-plane secret) still relay transactions
+// it receives from clients. See rpc/p2p_routes.go's per-kind authorization.
+func TestSealedTransactionRelayIsPublic(t *testing.T) {
 	pub, priv, err := qcrypto.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
@@ -142,12 +146,75 @@ func TestSealedTransactionRelayIsTokenGated(t *testing.T) {
 		t.Fatal("the sealed relay never reached the handler")
 	}
 
-	if err := network.NewIdentityCache().SendSealed(srv.URL, "wrong", network.KindTx, []byte(`{}`)); err == nil {
-		t.Fatal("a relayed transaction was accepted without the write-plane token")
+	// No token at all (empty string) still reaches HandleTx: KindTx is public.
+	if err := network.NewIdentityCache().SendSealed(srv.URL, "", network.KindTx, []byte(`{"hello":2}`)); err != nil {
+		t.Fatalf("sealed tx relay without any write-plane token: %v", err)
+	}
+	select {
+	case got := <-seen:
+		if string(got) != `{"hello":2}` {
+			t.Fatalf("handler got %q", got)
+		}
+	default:
+		t.Fatal("a tokenless tx relay never reached the handler")
+	}
+
+	// A wrong token also still reaches HandleTx: the token is simply not
+	// consulted for KindTx. Signature validation, not the token, is the gate.
+	if err := network.NewIdentityCache().SendSealed(srv.URL, "wrong", network.KindTx, []byte(`{"hello":3}`)); err != nil {
+		t.Fatalf("sealed tx relay with a wrong token: %v", err)
+	}
+	select {
+	case got := <-seen:
+		if string(got) != `{"hello":3}` {
+			t.Fatalf("handler got %q", got)
+		}
+	default:
+		t.Fatal("a wrong-token tx relay never reached the handler")
+	}
+}
+
+// Block delivery (KindBlock) is the still-gated counterpart to KindTx: during
+// the migration window it retains the shared write-plane token, so a relay
+// without (or with a wrong) token must be refused before HandleBlock runs.
+func TestSealedBlockRelayIsStillTokenGated(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := network.NewNodeIdentity(pub, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(chan []byte, 4)
+	router := mux.NewRouter()
+	RegisterP2PRoutes(router, P2PConfig{
+		Identity:    identity,
+		Token:       "write-secret",
+		HandleBlock: func(b []byte) error { seen <- b; return nil },
+	})
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+
+	cache := network.NewIdentityCache()
+	if err := cache.SendSealed(srv.URL, "write-secret", network.KindBlock, []byte(`{"hello":1}`)); err != nil {
+		t.Fatalf("sealed block relay with the token: %v", err)
+	}
+	select {
+	case got := <-seen:
+		if string(got) != `{"hello":1}` {
+			t.Fatalf("handler got %q", got)
+		}
+	default:
+		t.Fatal("the sealed relay never reached the handler")
+	}
+
+	if err := network.NewIdentityCache().SendSealed(srv.URL, "wrong", network.KindBlock, []byte(`{}`)); err == nil {
+		t.Fatal("a relayed block was accepted without the write-plane token")
 	}
 	select {
 	case <-seen:
-		t.Fatal("an unauthenticated relay reached the handler")
+		t.Fatal("an unauthenticated block relay reached the handler")
 	default:
 	}
 }
