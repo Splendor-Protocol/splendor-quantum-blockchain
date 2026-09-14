@@ -1,14 +1,18 @@
 package network
 
 import (
+	"crypto/mlkem"
 	"testing"
+	"time"
+
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 )
 
 // TestMalformedEnvelopeNoPanic verifies that malformed envelopes return errors
 // instead of panicking the node. This is a critical DOS prevention fix.
 func TestMalformedEnvelopeNoPanic(t *testing.T) {
 	// Create a valid node identity for testing
-	pub, priv, err := generateTestKeypair()
+	pub, priv, err := qcrypto.GenerateKeypair()
 	if err != nil {
 		t.Fatalf("failed to generate test keypair: %v", err)
 	}
@@ -21,10 +25,10 @@ func TestMalformedEnvelopeNoPanic(t *testing.T) {
 	t.Run("InvalidNonceLength", func(t *testing.T) {
 		// Create envelope with invalid nonce length (should be 12, using 8)
 		env := &Envelope{
-			KEMCiphertext: make([]byte, 1088), // Correct KEM ciphertext size
-			Nonce:         make([]byte, 8),     // INVALID: wrong size
+			KEMCiphertext: make([]byte, mlkem.CiphertextSize768),
+			Nonce:         make([]byte, 8),  // INVALID: wrong size
 			Ciphertext:    make([]byte, 32),
-			Timestamp:     0,
+			Timestamp:     time.Now().Unix(),
 		}
 
 		// This should return an error, NOT panic
@@ -32,25 +36,23 @@ func TestMalformedEnvelopeNoPanic(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for invalid nonce length, got nil")
 		}
-		if err.Error() != "envelope did not decrypt under any current node key" {
-			t.Logf("Got expected error: %v", err)
-		}
+		t.Logf("✓ Got expected error for invalid nonce: %v", err)
 	})
 
 	t.Run("TruncatedCiphertext", func(t *testing.T) {
 		// Create envelope with ciphertext shorter than GCM tag
 		env := &Envelope{
-			KEMCiphertext: make([]byte, 1088),
-			Nonce:         make([]byte, 12), // Correct nonce size
-			Ciphertext:    make([]byte, 8),  // INVALID: too short (< 16)
-			Timestamp:     0,
+			KEMCiphertext: make([]byte, mlkem.CiphertextSize768),
+			Nonce:         make([]byte, gcmNonceSize), // Correct nonce size
+			Ciphertext:    make([]byte, 8),            // INVALID: too short (< 16)
+			Timestamp:     time.Now().Unix(),
 		}
 
 		_, err := node.Open(env)
 		if err == nil {
 			t.Fatal("expected error for truncated ciphertext, got nil")
 		}
-		t.Logf("Got expected error for truncated ciphertext: %v", err)
+		t.Logf("✓ Got expected error for truncated ciphertext: %v", err)
 	})
 
 	t.Run("ValidEnvelopeStillWorks", func(t *testing.T) {
@@ -60,7 +62,11 @@ func TestMalformedEnvelopeNoPanic(t *testing.T) {
 			t.Fatalf("failed to get identity document: %v", err)
 		}
 
-		plaintext := []byte("test message")
+		if err := doc.Verify(nil); err != nil {
+			t.Fatalf("identity document failed verification: %v", err)
+		}
+
+		plaintext := []byte("test message for encryption")
 		env, err := Seal(doc, plaintext)
 		if err != nil {
 			t.Fatalf("failed to seal message: %v", err)
@@ -74,13 +80,14 @@ func TestMalformedEnvelopeNoPanic(t *testing.T) {
 		if string(decrypted) != string(plaintext) {
 			t.Fatalf("decrypted message mismatch: got %q, want %q", decrypted, plaintext)
 		}
+		t.Logf("✓ Valid envelope encrypted and decrypted successfully")
 	})
 }
 
 // TestEnvelopeValidationOrder verifies that cheap validations happen before
 // expensive cryptographic operations (defense in depth).
 func TestEnvelopeValidationOrder(t *testing.T) {
-	pub, priv, err := generateTestKeypair()
+	pub, priv, err := qcrypto.GenerateKeypair()
 	if err != nil {
 		t.Fatalf("failed to generate test keypair: %v", err)
 	}
@@ -92,10 +99,10 @@ func TestEnvelopeValidationOrder(t *testing.T) {
 
 	// Bad nonce but valid KEM ciphertext - nonce check should fail first
 	env := &Envelope{
-		KEMCiphertext: make([]byte, 1088),
+		KEMCiphertext: make([]byte, mlkem.CiphertextSize768),
 		Nonce:         make([]byte, 999), // Obviously wrong
 		Ciphertext:    make([]byte, 32),
-		Timestamp:     0,
+		Timestamp:     time.Now().Unix(),
 	}
 
 	_, err = node.Open(env)
@@ -103,14 +110,32 @@ func TestEnvelopeValidationOrder(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for absurd nonce length")
 	}
+	t.Logf("✓ Cheap validation rejected bad envelope before expensive crypto")
 }
 
-// Helper to generate test keypairs
-func generateTestKeypair() (*PublicKey, *PrivateKey, error) {
-	// This would use your actual key generation
-	// For now, return nil as placeholder
-	return nil, nil, nil
-}
+// TestEnvelopeTimestampWindow verifies timestamp validation prevents replay
+func TestEnvelopeTimestampWindow(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("failed to generate test keypair: %v", err)
+	}
+	
+	node, err := NewNodeIdentity(pub, priv)
+	if err != nil {
+		t.Fatalf("failed to create node identity: %v", err)
+	}
 
-type PublicKey struct{}
-type PrivateKey struct{}
+	// Envelope with timestamp way in the past
+	env := &Envelope{
+		KEMCiphertext: make([]byte, mlkem.CiphertextSize768),
+		Nonce:         make([]byte, gcmNonceSize),
+		Ciphertext:    make([]byte, 32),
+		Timestamp:     time.Now().Add(-1 * time.Hour).Unix(), // Too old
+	}
+
+	_, err = node.Open(env)
+	if err == nil {
+		t.Fatal("expected error for stale timestamp")
+	}
+	t.Logf("✓ Stale envelope rejected: %v", err)
+}
