@@ -83,6 +83,12 @@ type Executor struct {
 	hooks    *HookRegistry // optional; nil = no hooks
 	txIndex  receiptStorer // optional; nil = don't store receipts
 
+	// dataDir is the node's data directory, used to place the snapshot-import
+	// recovery marker (see state_snapshot.go) alongside chaindata. Derived
+	// from chainDBPath in NewExecutor; empty only in tests that skip it, in
+	// which case snapshot-import recovery marker writes are skipped.
+	dataDir string
+
 	// genesisHash pins the hash of block 0 when the operator supplied one.
 	// nil = unpinned, which is the pre-existing behaviour.
 	genesisHash *[32]byte
@@ -143,6 +149,11 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 		state:    stateDB,
 		chainDB:  db,
 		vmEngine: vm.NewEngine(stateDB),
+		// The chain DB itself is the most durable place to root the recovery
+		// marker: it is the store this executor is opened against, so a
+		// marker written here always shares the same data directory as the
+		// blocks and state it is guarding an import into.
+		dataDir: chainDBPath,
 	}, nil
 }
 

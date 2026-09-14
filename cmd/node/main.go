@@ -358,6 +358,14 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 	defer executor.Close()
 
+	// A prior --state-sync import that was interrupted mid-flight leaves a
+	// recovery marker on disk; resolve it before anything else touches the
+	// chain or state DB so the node never runs consensus on a half-imported
+	// snapshot. See core/block/state_snapshot.go for the recovery phases.
+	if err := executor.ReconcileSnapshotImport(); err != nil {
+		return fmt.Errorf("snapshot import recovery: %w", err)
+	}
+
 	// Optional: TX index + receipt store
 	txIndex, txErr := state.NewTxIndexStore(flagDataDir + "/txindex")
 	if txErr != nil {
