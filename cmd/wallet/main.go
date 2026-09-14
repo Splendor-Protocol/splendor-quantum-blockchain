@@ -50,6 +50,7 @@ Addresses are derived as SHA3-256(ml_dsa_65_public_key) — no ECDSA.`,
 		cmdBalance(),
 		cmdSend(),
 		cmdExportKey(),
+		cmdMigrate(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -335,6 +336,57 @@ func cmdSend() *cobra.Command {
 	cmd.Flags().StringVar(&memo, "memo", "", "Optional memo")
 	cmd.MarkFlagRequired("to")
 	cmd.MarkFlagRequired("amount")
+	return cmd
+}
+
+// ── migrate ───────────────────────────────────────────────────────────────
+//
+// Splendor's original onboarding path let a wallet derive its ML-DSA-65 seed
+// from an EVM personal_sign signature (seed = SHA3-256(sig)) so a MetaMask
+// user could get an SQ: address without any new key material. The improvement
+// plan (Sept 2026, Section 6) calls that out as a real weakness: the
+// post-quantum key's security is then bounded by classical secp256k1 — break
+// or leak the EVM key (or the signature itself, which travels in the
+// derivation flow) and the ML-DSA-65 key is recomputed trivially, no quantum
+// computer required, defeating the entire point of a PQ chain.
+//
+// This command does not try to detect whether an existing wallet file was
+// EVM-derived — the .sqwallet format has no such marker, deliberately, since
+// derivation happens client-side and the file only ever holds the resulting
+// ML-DSA-65 key, indistinguishable from one made with `generate --seed`. What
+// it DOES give any holder of a wallet they no longer trust is a concrete,
+// one-command path off it: a brand-new wallet from fresh CSPRNG entropy
+// (never accepts --seed — that would defeat the purpose) and, optionally, a
+// move of the old wallet's entire balance to it in one signed transfer.
+func cmdMigrate() *cobra.Command {
+	var oldWalletPath, newWalletPath, nodeAddr, chainID string
+	var feeUnits int64
+	var doTransfer bool
+
+	cmd := &cobra.Command{
+		Use:   "migrate",
+		Short: "Create a fresh, natively-random wallet and (optionally) move funds off an old one",
+		Long: `Generates a brand-new ML-DSA-65 wallet from fresh CSPRNG entropy — never
+derived from an EVM signature — and prints its address.
+
+This is the recommended move for any wallet created via EVM-signature
+derivation (the SQDP-1 "evm-derived" path, or the SDK's seedFromEvmSignature):
+that key's post-quantum security is only as strong as the classical
+secp256k1 key that produced it. See Splendor Chain Improvement Plan
+(Sept 2026), Section 6 - Wallet Security.
+
+With --transfer and --node, the ENTIRE balance of --old-wallet is moved to
+the new wallet's address in one signed transfer (amount = balance - fee).
+Without --transfer, only the new wallet is created; move funds yourself with
+'sqc-wallet send' once you are ready.`,
+		RunE: runMigrate(&oldWalletPath, &newWalletPath, &nodeAddr, &chainID, &feeUnits, &doTransfer),
+	}
+	cmd.Flags().StringVar(&oldWalletPath, "old-wallet", "wallet.sqwallet", "Wallet file to migrate away from")
+	cmd.Flags().StringVar(&newWalletPath, "new-wallet", "wallet.migrated.sqwallet", "Output path for the new, natively-random wallet")
+	cmd.Flags().StringVar(&nodeAddr, "node", "http://localhost:8080", "Node RPC address (needed for --transfer)")
+	cmd.Flags().StringVar(&chainID, "chain-id", "", "Chain ID to sign for (e.g. splendor-quantum-testnet-1); defaults to mainnet")
+	cmd.Flags().Int64Var(&feeUnits, "fee", 1000, "Transaction fee in smallest SPLD units, subtracted from the transferred balance")
+	cmd.Flags().BoolVar(&doTransfer, "transfer", false, "Also move the old wallet's entire balance to the new address")
 	return cmd
 }
 

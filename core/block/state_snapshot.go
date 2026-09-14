@@ -162,6 +162,43 @@ func (e *Executor) ExportStateSnapshot() (*types.StateSnapshot, error) {
 	return &types.StateSnapshot{Height: height, Block: b, Leaves: leaves}, nil
 }
 
+// MaxSnapshotChunkLeaves bounds one chunk of a chunked snapshot transfer.
+// Chosen so a chunk of full-size leaves stays a small fraction of
+// maxSyncBodyBytes-class limits even before base64 and envelope overhead —
+// the whole point of chunking is that neither side ever needs a buffer
+// anywhere near MaxStateSnapshotBytes.
+const MaxSnapshotChunkLeaves = 5000
+
+// ExportStateSnapshotChunk returns one page of this node's committed state,
+// the chunked counterpart of ExportStateSnapshot. The head block is attached
+// only to the first chunk (afterKey == nil) — it is what the receiver
+// authenticates the whole transfer against, and re-sending it on every page
+// would be pure overhead. maxLeaves <= 0 falls back to
+// MaxSnapshotChunkLeaves.
+func (e *Executor) ExportStateSnapshotChunk(afterKey []byte, maxLeaves int) (*types.StateSnapshotChunkResult, error) {
+	if maxLeaves <= 0 {
+		maxLeaves = MaxSnapshotChunkLeaves
+	}
+	height, leaves, nextKey, done, err := e.state.ExportSnapshotChunk(afterKey, maxLeaves)
+	if err != nil {
+		return nil, err
+	}
+	result := &types.StateSnapshotChunkResult{
+		Height:  height,
+		Leaves:  leaves,
+		NextKey: nextKey,
+		Done:    done,
+	}
+	if len(afterKey) == 0 {
+		b, err := e.GetBlockByHeight(height)
+		if err != nil {
+			return nil, fmt.Errorf("state snapshot chunk at height %d has no stored block: %w", height, err)
+		}
+		result.Block = b
+	}
+	return result, nil
+}
+
 // ImportStateSnapshot adopts a peer's state at its head block on a node with
 // no blocks and no state.
 //
