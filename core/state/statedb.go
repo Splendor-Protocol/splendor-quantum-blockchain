@@ -102,6 +102,37 @@ type StateDB struct {
 	// layer is private, so speculative execution cannot be committed and cannot
 	// disturb the consensus state db it was derived from.
 	sandbox bool
+
+	// nativeSum is the native balance total of the COMMITTED state, kept
+	// current by commit, or nil until it is first needed. It lets
+	// SumNativeBalances answer from the pending layer alone. The full scan it
+	// used to do — every account record read from LevelDB and decoded, twice
+	// per block on every node — was the whole apply cost of a one-transaction
+	// block once the chain held tens of thousands of accounts.
+	nativeSum *big.Int
+
+	// gen counts changes to the pending layer and the leaf index; touchLocked
+	// advances it. pendingRoot is the root PendingStateRoot computed at
+	// generation pendingRootGen, so a commit that follows with the generation
+	// unchanged returns it instead of hashing the whole state a second time.
+	gen            uint64
+	pendingRoot    [32]byte
+	pendingRootGen uint64
+}
+
+// touchLocked records a change to the pending layer or the leaf index, which
+// retires the cached pending root. Caller holds s.mu.
+func (s *StateDB) touchLocked() {
+	s.gen++
+}
+
+// cachedRootLocked returns the root PendingStateRoot computed for the
+// current generation, if there is one. Caller holds s.mu.
+func (s *StateDB) cachedRootLocked() ([32]byte, bool) {
+	if s.pendingRootGen != 0 && s.pendingRootGen == s.gen {
+		return s.pendingRoot, true
+	}
+	return [32]byte{}, false
 }
 
 // ErrSandboxCommit is returned when a caller tries to persist a simulation.
@@ -138,6 +169,10 @@ func (s *StateDB) Simulate() *StateDB {
 		leaves:     nil, // state roots are meaningless for a simulation
 		snapshots:  make(map[uint64]int),
 		sandbox:    true,
+		gen:        1,
+	}
+	if s.nativeSum != nil {
+		sim.nativeSum = new(big.Int).Set(s.nativeSum)
 	}
 	for k, v := range s.dirty {
 		sim.dirty[k] = v
@@ -167,6 +202,7 @@ func NewStateDB(path string) (*StateDB, error) {
 		pendingRaw: make(map[string][]byte),
 		leaves:     make(map[string][32]byte),
 		snapshots:  make(map[uint64]int),
+		gen:        1,
 	}
 	if err := s.loadLeaves(); err != nil {
 		db.Close()
@@ -203,31 +239,74 @@ func (s *StateDB) loadLeaves() error {
 // SumNativeBalances totals every account's native SPLD balance, overlaying
 // uncommitted dirty writes on committed state. This is the circulating native
 // supply a block apply must not raise above the genesis-minted cap.
+//
+// The committed total is scanned once and then carried forward by commit, so
+// a call costs one committed-record read per dirty account rather than one
+// per account in the chain.
 func (s *StateDB) SumNativeBalances() (*big.Int, error) {
-	sum := new(big.Int)
-	seen := make(map[qcrypto.Address]struct{})
-
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nativeSum == nil {
+		sum, err := s.scanNativeBalances()
+		if err != nil {
+			return nil, err
+		}
+		s.nativeSum = sum
+	}
+	total := new(big.Int).Set(s.nativeSum)
 	for addr, acc := range s.dirty {
-		seen[addr] = struct{}{}
+		was, err := s.committedBalance(addr)
+		if err != nil {
+			return nil, err
+		}
+		total.Sub(total, was)
 		if acc != nil && acc.Balance != nil {
+			total.Add(total, acc.Balance)
+		}
+	}
+	return total, nil
+}
+
+// scanNativeBalances totals the committed native balances by reading every
+// account record: the slow path, run once per process and again after a
+// snapshot import. Caller holds s.mu.
+func (s *StateDB) scanNativeBalances() (*big.Int, error) {
+	sum := new(big.Int)
+	iter := s.db.NewIterator(util.BytesPrefix([]byte(prefixAccount)), nil)
+	defer iter.Release()
+	for iter.Next() {
+		var acc types.Account
+		if err := json.Unmarshal(iter.Value(), &acc); err != nil {
+			return nil, fmt.Errorf("decode account at key %q: %w", iter.Key(), err)
+		}
+		if acc.Balance != nil {
 			sum.Add(sum, acc.Balance)
 		}
 	}
-	s.mu.RUnlock()
-
-	if err := s.ForEachAccount(func(a *types.Account) error {
-		if _, ok := seen[a.Address]; ok {
-			return nil
-		}
-		if a.Balance != nil {
-			sum.Add(sum, a.Balance)
-		}
-		return nil
-	}); err != nil {
+	if err := iter.Error(); err != nil {
 		return nil, err
 	}
 	return sum, nil
+}
+
+// committedBalance reads an account's native balance as committed — zero for
+// an account the committed state does not hold. Caller holds s.mu.
+func (s *StateDB) committedBalance(addr qcrypto.Address) (*big.Int, error) {
+	data, err := s.db.Get([]byte(prefixAccount+addr.String()), nil)
+	if err == leveldb.ErrNotFound {
+		return new(big.Int), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("state read error for %s: %w", addr, err)
+	}
+	var acc types.Account
+	if err := json.Unmarshal(data, &acc); err != nil {
+		return nil, fmt.Errorf("failed to decode account %s: %w", addr, err)
+	}
+	if acc.Balance == nil {
+		return new(big.Int), nil
+	}
+	return acc.Balance, nil
 }
 
 // Close closes the underlying LevelDB.
@@ -352,6 +431,7 @@ func (s *StateDB) SetAccount(acc *types.Account) {
 		}
 	})
 	s.dirty[addr] = acc.Copy()
+	s.touchLocked()
 }
 
 // GetBalance returns the SPLD balance of an account (in smallest unit).
@@ -451,6 +531,7 @@ func (s *StateDB) SetCode(codeHash [32]byte, code []byte) {
 		}
 	})
 	s.codeCache[codeHash] = code
+	s.touchLocked()
 }
 
 // GetCode retrieves contract bytecode by its hash.
@@ -495,6 +576,7 @@ func (s *StateDB) SetStorageValue(contract qcrypto.Address, slot [32]byte, value
 	defer s.mu.Unlock()
 	s.journalRaw(k)
 	s.pendingRaw[k] = cp
+	s.touchLocked()
 	return nil
 }
 
@@ -542,6 +624,7 @@ func (s *StateDB) MarkX402NonceUsed(nonceKey [32]byte, blockHeight uint64) error
 	defer s.mu.Unlock()
 	s.journalRaw(k)
 	s.pendingRaw[k] = val
+	s.touchLocked()
 	return nil
 }
 
@@ -604,6 +687,18 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	}
 	updates := make([]leafUpd, 0, len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
 
+	// The root this commit will produce, if PendingStateRoot computed it over
+	// exactly this pending layer. Decided before anything moves.
+	root, haveRoot := s.cachedRootLocked()
+
+	// What this commit does to the committed native total, taken BEFORE the
+	// write while the committed records still hold the old balances. Only
+	// tracked once the total is known; before that a scan answers.
+	var sumDelta *big.Int
+	if s.nativeSum != nil {
+		sumDelta = new(big.Int)
+	}
+
 	// Dirty accounts.
 	for addr, acc := range s.dirty {
 		data, err := json.Marshal(acc)
@@ -613,6 +708,16 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 		key := prefixAccount + addr.String()
 		batch.Put([]byte(key), data)
 		updates = append(updates, leafUpd{key, qcrypto.Hash32(data)})
+		if sumDelta != nil {
+			was, err := s.committedBalance(addr)
+			if err != nil {
+				return [32]byte{}, err
+			}
+			sumDelta.Sub(sumDelta, was)
+			if acc != nil && acc.Balance != nil {
+				sumDelta.Add(sumDelta, acc.Balance)
+			}
+		}
 	}
 
 	// Contract code.
@@ -645,6 +750,9 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	for _, u := range updates {
 		s.leaves[u.key] = u.hash
 	}
+	if sumDelta != nil {
+		s.nativeSum.Add(s.nativeSum, sumDelta)
+	}
 	if setHeight {
 		s.appliedHeight = height
 		s.heightKnown = true
@@ -654,8 +762,12 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	s.pendingRaw = make(map[string][]byte)
 	s.journal = nil
 	s.snapshots = make(map[uint64]int)
+	s.touchLocked()
 
-	return merkleRoot(s.leaves), nil
+	if !haveRoot {
+		root = merkleRoot(s.leaves)
+	}
+	return root, nil
 }
 
 // AppliedHeight returns the block height the committed state reflects, and
@@ -814,12 +926,30 @@ func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error
 // This lets a caller verify a block's declared state root BEFORE durably
 // committing: on a mismatch it can DiscardPending() and leave nothing on disk.
 func (s *StateDB) PendingStateRoot() ([32]byte, error) {
+	root, gen, err := s.pendingStateRoot()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	// Remember it for the commit that follows, unless something changed
+	// while the lock was released.
+	s.mu.Lock()
+	if s.gen == gen {
+		s.pendingRoot, s.pendingRootGen = root, gen
+	}
+	s.mu.Unlock()
+	return root, nil
+}
+
+// pendingStateRoot computes the pending root under the read lock and reports
+// the generation it was computed at.
+func (s *StateDB) pendingStateRoot() ([32]byte, uint64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.sandbox {
-		return [32]byte{}, ErrSandboxCommit
+		return [32]byte{}, 0, ErrSandboxCommit
 	}
+	gen := s.gen
 
 	eff := make(map[string][32]byte, len(s.leaves)+len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
 	for k, v := range s.leaves {
@@ -828,7 +958,7 @@ func (s *StateDB) PendingStateRoot() ([32]byte, error) {
 	for addr, acc := range s.dirty {
 		data, err := json.Marshal(acc)
 		if err != nil {
-			return [32]byte{}, fmt.Errorf("failed to marshal account %s: %w", addr, err)
+			return [32]byte{}, 0, fmt.Errorf("failed to marshal account %s: %w", addr, err)
 		}
 		eff[prefixAccount+addr.String()] = qcrypto.Hash32(data)
 	}
@@ -838,7 +968,7 @@ func (s *StateDB) PendingStateRoot() ([32]byte, error) {
 	for k, v := range s.pendingRaw {
 		eff[k] = qcrypto.Hash32(v)
 	}
-	return merkleRoot(eff), nil
+	return merkleRoot(eff), gen, nil
 }
 
 // DiscardPending drops all uncommitted writes (accounts, code, storage/nonce)
@@ -853,4 +983,5 @@ func (s *StateDB) DiscardPending() {
 	s.pendingRaw = make(map[string][]byte)
 	s.journal = nil
 	s.snapshots = make(map[uint64]int)
+	s.touchLocked()
 }

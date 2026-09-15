@@ -616,6 +616,23 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTim
 		return err
 	}
 
+	// The nonce and the balance are judged BEFORE the signature. A transaction
+	// applies only if every check passes, so the order changes no outcome —
+	// only which refusal is reported when several apply — and these two are
+	// cheap reads where a signature is an ML-DSA-65 verification. It matters
+	// because the producer is handed every pool entry on every block: each
+	// one it could not pack yet (a nonce ahead of the sender's next, funds
+	// spent by an earlier transaction in the same block) paid for a
+	// verification here only to be refused on the nonce, on every block,
+	// for as long as it stayed in the pool.
+	if tx.Nonce != fromAcc.Nonce {
+		return fmt.Errorf("%w: want %d got %d", types.ErrInvalidNonce, fromAcc.Nonce, tx.Nonce)
+	}
+	total := new(types.BigInt).Add(tx.Amount, tx.Fee)
+	if fromAcc.Balance.Cmp(total) < 0 {
+		return types.ErrInsufficientBalance
+	}
+
 	// An account's public key is the only thing that can ever authorise spending
 	// from it, so it is recorded only once it has actually verified a signature
 	// — never merely because a transaction presented it.
@@ -653,15 +670,6 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTim
 	if registerKey {
 		fromAcc.PublicKey = tx.PublicKey
 		e.state.SetAccount(fromAcc)
-	}
-
-	if tx.Nonce != fromAcc.Nonce {
-		return fmt.Errorf("%w: want %d got %d", types.ErrInvalidNonce, fromAcc.Nonce, tx.Nonce)
-	}
-
-	total := new(types.BigInt).Add(tx.Amount, tx.Fee)
-	if fromAcc.Balance.Cmp(total) < 0 {
-		return types.ErrInsufficientBalance
 	}
 
 	switch tx.Type {
@@ -960,6 +968,24 @@ func (e *Executor) execX402(tx *types.Transaction, fromAcc *types.Account, recei
 	return nil
 }
 
+// SkippedTx is a candidate the producer left out of the block it built, and
+// why, so the pool can drop what will never apply and keep what may.
+type SkippedTx struct {
+	Tx  *types.Transaction
+	Err error
+}
+
+// ErrNonceGap marks a candidate whose nonce is ahead of the sender's next.
+// Nothing is wrong with it; it cannot apply until the nonces before it have,
+// so the producer skips it without executing it and the pool keeps it.
+var ErrNonceGap = errors.New("nonce ahead of the sender's next nonce")
+
+// Unappliable reports whether the skip means the transaction can never apply
+// from the pool as it stands: a stale nonce, a signature that does not verify,
+// funds it no longer has, a hook that refuses it. ErrNonceGap is the one
+// reason that clears by itself.
+func (s SkippedTx) Unappliable() bool { return !errors.Is(s.Err, ErrNonceGap) }
+
 // ProduceBlock creates, executes, and signs a new block.
 func (e *Executor) ProduceBlock(
 	txs []*types.Transaction,
@@ -969,6 +995,20 @@ func (e *Executor) ProduceBlock(
 	prevHash [32]byte,
 	height uint64,
 ) (*types.Block, error) {
+	b, _, err := e.assembleBlock(txs, validatorAddr, validatorPubKey, validatorPrivKey, prevHash, height, true)
+	return b, err
+}
+
+// ProduceBlockReport is ProduceBlock that also returns the candidates it left
+// out of the block, with the reason for each.
+func (e *Executor) ProduceBlockReport(
+	txs []*types.Transaction,
+	validatorAddr qcrypto.Address,
+	validatorPubKey []byte,
+	validatorPrivKey *qcrypto.PrivateKey,
+	prevHash [32]byte,
+	height uint64,
+) (*types.Block, []SkippedTx, error) {
 	return e.assembleBlock(txs, validatorAddr, validatorPubKey, validatorPrivKey, prevHash, height, true)
 }
 
@@ -982,6 +1022,20 @@ func (e *Executor) BuildProposal(
 	prevHash [32]byte,
 	height uint64,
 ) (*types.Block, error) {
+	b, _, err := e.assembleBlock(txs, validatorAddr, validatorPubKey, validatorPrivKey, prevHash, height, false)
+	return b, err
+}
+
+// BuildProposalReport is BuildProposal that also returns the candidates it
+// left out of the block, with the reason for each.
+func (e *Executor) BuildProposalReport(
+	txs []*types.Transaction,
+	validatorAddr qcrypto.Address,
+	validatorPubKey []byte,
+	validatorPrivKey *qcrypto.PrivateKey,
+	prevHash [32]byte,
+	height uint64,
+) (*types.Block, []SkippedTx, error) {
 	return e.assembleBlock(txs, validatorAddr, validatorPubKey, validatorPrivKey, prevHash, height, false)
 }
 
@@ -993,7 +1047,7 @@ func (e *Executor) assembleBlock(
 	prevHash [32]byte,
 	height uint64,
 	persist bool,
-) (*types.Block, error) {
+) (*types.Block, []SkippedTx, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1002,7 +1056,7 @@ func (e *Executor) assembleBlock(
 	// follower reads at the top of ExecuteBlock: the parent's committed state.
 	if persist {
 		if err := e.refuseSinglePathIfQuorumRequired(height); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -1022,7 +1076,21 @@ func (e *Executor) assembleBlock(
 		receipts  []*types.Receipt
 		blockGas  uint64
 		blockSize int
+		skipped   []SkippedTx
 	)
+	skip := func(tx *types.Transaction, err error) {
+		skipped = append(skipped, SkippedTx{Tx: tx, Err: err})
+	}
+
+	// The nonce each sender must present next, read once per sender from the
+	// state and advanced as its transactions are packed. A candidate that
+	// does not present it is left out on this alone — no hook, no signature,
+	// no execution — because it could not apply anyway: the executor demands
+	// exactly this nonce. The pool hands a sender's entries out in nonce
+	// order, so once one of them is left out, every later one of that
+	// sender's is a gap and costs a map lookup. Every such entry used to be
+	// executed to the point of a signature verification on every block.
+	nextNonce := make(map[qcrypto.Address]uint64)
 
 	for _, tx := range txs {
 		// Snapshot so a skipped (failed) tx leaves NO residue: executeTx deducts
@@ -1037,6 +1105,28 @@ func (e *Executor) assembleBlock(
 			break
 		}
 
+		next, known := nextNonce[tx.From]
+		if !known {
+			acc, err := e.state.GetAccount(tx.From)
+			if err != nil {
+				log.Warn().Err(err).Str("from", tx.From.String()).Msg("skipping tx: sender account unreadable")
+				skip(tx, err)
+				continue
+			}
+			next = acc.Nonce
+			nextNonce[tx.From] = next
+		}
+		switch {
+		case tx.Nonce > next:
+			skip(tx, ErrNonceGap)
+			continue
+		case tx.Nonce < next:
+			log.Debug().Str("from", tx.From.String()).Uint64("nonce", tx.Nonce).Uint64("want", next).
+				Msg("skipping tx with a stale nonce")
+			skip(tx, fmt.Errorf("%w: want %d got %d", types.ErrInvalidNonce, next, tx.Nonce))
+			continue
+		}
+
 		// Run the SAME pre-tx hooks a follower will run when it replays this
 		// block. Producing without them means the producer can pack a transaction
 		// every follower then rejects — the block is unappliable everywhere but
@@ -1045,6 +1135,7 @@ func (e *Executor) assembleBlock(
 		if e.hooks != nil {
 			if err := e.hooks.RunPreTx(tx, height); err != nil {
 				log.Warn().Err(err).Msg("skipping tx a follower would reject")
+				skip(tx, err)
 				continue
 			}
 		}
@@ -1063,9 +1154,10 @@ func (e *Executor) assembleBlock(
 		if err := e.executeTx(tx, height, blockTime, validatorAddr, receipt); err != nil {
 			if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
 				e.state.DiscardPending()
-				return nil, fmt.Errorf("revert of skipped tx: %w (tx error: %v)", rerr, err)
+				return nil, nil, fmt.Errorf("revert of skipped tx: %w (tx error: %v)", rerr, err)
 			}
 			log.Warn().Err(err).Msg("skipping invalid tx")
+			skip(tx, err)
 			continue
 		}
 		// Stop packing once the block gas budget is reached (txs are fee-sorted,
@@ -1073,13 +1165,21 @@ func (e *Executor) assembleBlock(
 		if blockGas+receipt.GasUsed > MaxBlockGas {
 			if err := e.state.RevertToSnapshot(snap); err != nil {
 				e.state.DiscardPending()
-				return nil, fmt.Errorf("revert of over-budget tx: %w", err)
+				return nil, nil, fmt.Errorf("revert of over-budget tx: %w", err)
 			}
 			break
 		}
 		if err := e.state.CommitSnapshot(snap); err != nil {
 			e.state.DiscardPending()
-			return nil, fmt.Errorf("commit of tx snapshot: %w", err)
+			return nil, nil, fmt.Errorf("commit of tx snapshot: %w", err)
+		}
+		// The nonce the sender must present next is read back rather than
+		// assumed: every applying path bumps it exactly once today, and the
+		// state is the authority if that ever changes.
+		if acc, err := e.state.GetAccount(tx.From); err == nil {
+			nextNonce[tx.From] = acc.Nonce
+		} else {
+			nextNonce[tx.From] = tx.Nonce + 1
 		}
 		blockGas += receipt.GasUsed
 		blockSize += txSize
@@ -1092,7 +1192,7 @@ func (e *Executor) assembleBlock(
 	if totalFees.Sign() > 0 {
 		va, err := e.state.GetAccount(validatorAddr)
 		if err != nil {
-			return nil, fmt.Errorf("validator account: %w", err)
+			return nil, nil, fmt.Errorf("validator account: %w", err)
 		}
 		va.AddBalance(totalFees)
 		e.state.SetAccount(va)
@@ -1100,7 +1200,7 @@ func (e *Executor) assembleBlock(
 
 	if err := genesis.CheckNativeSupply(e.state); err != nil {
 		e.state.DiscardPending()
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Compute the root the pending writes WOULD commit to (for the header), but do
@@ -1108,12 +1208,12 @@ func (e *Executor) assembleBlock(
 	// crash leaves the head ahead of state (replayable), never the reverse.
 	stateRoot, err := e.state.PendingStateRoot()
 	if err != nil {
-		return nil, fmt.Errorf("pending state root: %w", err)
+		return nil, nil, fmt.Errorf("pending state root: %w", err)
 	}
 
 	txMerkleRoot, err := types.ComputeTxMerkleRoot(executed)
 	if err != nil {
-		return nil, fmt.Errorf("merkle root: %w", err)
+		return nil, nil, fmt.Errorf("merkle root: %w", err)
 	}
 
 	header := types.BlockHeader{
@@ -1132,12 +1232,12 @@ func (e *Executor) assembleBlock(
 
 	hash, err := b.ComputeHash()
 	if err != nil {
-		return nil, fmt.Errorf("block hash: %w", err)
+		return nil, nil, fmt.Errorf("block hash: %w", err)
 	}
 	b.Hash = hash
 
 	if err := b.SignBlock(validatorPrivKey); err != nil {
-		return nil, fmt.Errorf("block sign: %w", err)
+		return nil, nil, fmt.Errorf("block sign: %w", err)
 	}
 	if len(validatorPubKey) > 0 {
 		b.ValidatorPubKey = validatorPubKey
@@ -1145,15 +1245,15 @@ func (e *Executor) assembleBlock(
 
 	if !persist {
 		e.state.DiscardPending()
-		return b, nil
+		return b, skipped, nil
 	}
 
 	if err := e.storeBlock(b); err != nil {
 		e.state.DiscardPending()
-		return nil, fmt.Errorf("store block: %w", err)
+		return nil, nil, fmt.Errorf("store block: %w", err)
 	}
 	if _, err := e.state.CommitWithHeight(height); err != nil {
-		return nil, fmt.Errorf("state commit: %w", err)
+		return nil, nil, fmt.Errorf("state commit: %w", err)
 	}
 
 	if e.txIndex != nil {
@@ -1170,7 +1270,7 @@ func (e *Executor) assembleBlock(
 		Str("hash", fmt.Sprintf("%x", hash[:8])).
 		Msg("block produced and signed")
 
-	return b, nil
+	return b, skipped, nil
 }
 
 // ── Chain DB helpers ──────────────────────────────────────────────────────────
