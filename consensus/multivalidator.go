@@ -124,6 +124,10 @@ func (m *MultiValidator) Run(ctx context.Context) error {
 	// up to one interval — the window a registration lands in — and a quorum of
 	// one where the chain wants two is a commit that can only fail.
 	m.engine.refreshSet = m.RefreshSet
+	// A remote leader proposes on its own tick after applying the previous
+	// block, so a follower waiting for that proposal allows one interval on
+	// top of the round timeout before it rotates the leader away.
+	m.engine.proposalWait = m.cfg.BlockInterval
 	m.engine.onViewChange = func(height uint64, round uint32) {
 		if m.engine.IsLeader(height, round) {
 			if !m.ready() {
@@ -210,17 +214,37 @@ func (m *MultiValidator) propose() error {
 	}
 	txs := m.pool.Pending(batch)
 
-	b, err := m.executor.BuildProposal(
+	b, skipped, err := m.executor.BuildProposalReport(
 		txs, m.cfg.Address, m.cfg.PublicKey, m.cfg.PrivateKey, prevHash, height,
 	)
 	if err != nil {
 		return err
+	}
+	// What the builder could not apply at its turn will not apply next tick
+	// either; it is dropped now rather than handed back on every block until
+	// PruneStale happened to catch its nonce. A nonce gap is kept: it clears
+	// by itself once the sender's earlier transactions land.
+	if dead := unappliable(skipped); len(dead) > 0 {
+		log.Info().Uint64("height", height).Int("dropped", m.pool.Drop(dead)).Int("skipped", len(skipped)).
+			Msg("BFT: dropped pool entries the proposal could not apply")
 	}
 	// The engine broadcasts, once its own vote set exists. Sending from here —
 	// immediately after handing the block to a buffered channel — let a peer's
 	// vote reach this node before it could count one, and the vote was dropped.
 	m.engine.ProposeBlock(b)
 	return nil
+}
+
+// unappliable picks out of the builder's report the candidates that can
+// never apply as they are.
+func unappliable(skipped []block.SkippedTx) []*types.Transaction {
+	var out []*types.Transaction
+	for _, s := range skipped {
+		if s.Unappliable() {
+			out = append(out, s.Tx)
+		}
+	}
+	return out
 }
 
 func (m *MultiValidator) NotifyCommit(b *types.Block) {

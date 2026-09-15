@@ -269,6 +269,8 @@ func (s *StateDB) ImportSnapshot(leaves []types.StateLeaf, height uint64, wantRo
 	}
 
 	s.leaves = index
+	s.nativeSum = nil // the committed total is whatever the snapshot holds; scan it when asked
+	s.touchLocked()
 	s.appliedHeight = height
 	s.heightKnown = true
 	return nil
