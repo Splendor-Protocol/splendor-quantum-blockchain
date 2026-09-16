@@ -229,6 +229,29 @@ func TestErasureRejectsOversizedGeneration(t *testing.T) {
 	}
 }
 
+// The systematic Cauchy construction needs y_r = k+1+r to stay a distinct
+// nonzero element disjoint from X={1..k}; at the maximum source count (254)
+// only one parity row fits (y_0 = 255), and Repair must stop there rather
+// than wrap byte(k+1+r) past the field and emit a colliding/wrong row.
+func TestErasureRepairStopsAtFieldLimit(t *testing.T) {
+	const k = maxErasureSources // 254
+	source := make([][]byte, k)
+	for i := range source {
+		source[i] = make([]byte, 8)
+	}
+	enc, err := NewErasureCodec().NewEncoder(source, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := enc.Repair(5)
+	if len(rep) != 1 {
+		t.Fatalf("Repair(5) at k=%d returned %d rows, want 1 (k+n <= 255 cap)", k, len(rep))
+	}
+	if rep[0].Index != k {
+		t.Fatalf("first repair index = %d, want %d", rep[0].Index, k)
+	}
+}
+
 // indexCombinations returns every k-element subset of {0..n-1}, so an MDS
 // property can be checked over every erasure pattern rather than a few samples.
 func indexCombinations(n, k int) [][]int {

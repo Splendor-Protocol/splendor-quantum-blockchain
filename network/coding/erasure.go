@@ -107,7 +107,17 @@ func (e *erasureEncoder) Repair(n int) []Symbol {
 	out := make([]Symbol, 0, n)
 	k := len(e.source)
 	for r := 0; r < n; r++ {
-		y := byte(k + 1 + r) // y_r: nonzero, and > all x_i while k+n <= 255
+		// The systematic Cauchy construction needs y_r = k+1+r to be a distinct
+		// nonzero element disjoint from X = {1..k}, which holds exactly while
+		// k+1+r <= 255. Past that, byte(k+1+r) would wrap (to 0, then onto 1..,
+		// colliding with source points and — when y_r equals some x_i — yielding
+		// a zero denominator). NewEncoder bounds k <= 254 and the benchmark's
+		// repair budget keeps k+n well under 255, but stop rather than emit a
+		// wrong row if a caller ever exceeds the field's capacity.
+		if k+1+r > 255 {
+			break
+		}
+		y := byte(k + 1 + r)
 		coeffs := make([]byte, k)
 		for i := 0; i < k; i++ {
 			// 1/(x_i + y_r); x_i != y_r by construction, so denom is nonzero.
