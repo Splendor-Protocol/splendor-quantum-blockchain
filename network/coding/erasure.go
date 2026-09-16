@@ -5,11 +5,11 @@ import "fmt"
 // ErasureCodec is the "conventional erasure code" comparator the plan's
 // benchmark gate (Section 9) requires RLNC to be measured against, not just
 // against uncoded transfer. Unlike RLNC's randomly generated repair
-// symbols, this codec's parity rows are FIXED (a Vandermonde-style matrix
+// symbols, this codec's parity rows are FIXED (a systematic Cauchy matrix
 // over GF(256)): the same repair symbol index always carries the same
 // linear combination for a given source count. This is the defining
 // difference from RLNC worth measuring — deterministic, systematic parity
-// (classic Reed-Solomon-style erasure coding) versus randomized coding.
+// (a maximum-distance-separable Reed-Solomon code) versus randomized coding.
 //
 // Decoding reuses exactly the same Gaussian-elimination absorb/decode
 // machinery as RLNC (rlncDecoder), because "given enough independent
@@ -21,11 +21,22 @@ type ErasureCodec struct{}
 // NewErasureCodec returns the deterministic-parity comparator codec.
 func NewErasureCodec() *ErasureCodec { return &ErasureCodec{} }
 
-func (ErasureCodec) Name() string { return "erasure-vandermonde-v1" }
+// maxErasureSources bounds a generation so the systematic Cauchy construction
+// always has room for its source evaluation points (X = {1..k}) plus at least
+// one distinct parity evaluation point (Y = {k+1..}) within GF(256)'s 255
+// nonzero elements, keeping X and Y disjoint as the Cauchy MDS argument
+// requires. k+n <= 255, so k <= 254 guarantees at least one repair is possible.
+const maxErasureSources = 254
+
+func (ErasureCodec) Name() string { return "erasure-rs-v1" }
 
 func (ErasureCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder, error) {
 	if len(sourceSymbols) == 0 {
 		return nil, ErrEmptyGeneration
+	}
+	if len(sourceSymbols) > maxErasureSources {
+		return nil, fmt.Errorf("coding: erasure generation of %d sources exceeds the %d-source GF(256) limit",
+			len(sourceSymbols), maxErasureSources)
 	}
 	for i, s := range sourceSymbols {
 		if len(s) != symbolSize {
@@ -43,6 +54,10 @@ func (ErasureCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder,
 func (ErasureCodec) NewDecoder(sourceCount, symbolSize int) (Decoder, error) {
 	if sourceCount <= 0 {
 		return nil, ErrEmptyGeneration
+	}
+	if sourceCount > maxErasureSources {
+		return nil, fmt.Errorf("coding: erasure generation of %d sources exceeds the %d-source GF(256) limit",
+			sourceCount, maxErasureSources)
 	}
 	// The decoder is identical to RLNC's: absorb reduces any linearly
 	// independent row, whatever generated it.
@@ -72,29 +87,31 @@ func (e *erasureEncoder) Systematic() []Symbol {
 	return out
 }
 
-// Repair generates n deterministic Vandermonde parity rows: row r's
-// coefficient for source symbol i is x_r^i in GF(256), where x_r is a
-// distinct nonzero field element per repair index. This is the classical
-// systematic Reed-Solomon parity construction: any k of the n+k systematic-
-// plus-parity symbols recover the k source symbols, PROVIDED the resulting
-// coefficient matrix is invertible — Vandermonde matrices with distinct
-// evaluation points guarantee that over a field this size for the
-// generation sizes this codec targets (a stronger, deterministic guarantee
-// RLNC's random coefficients only hold with high, not certain, probability).
+// Repair generates n deterministic parity rows from a systematic Cauchy
+// Reed-Solomon construction. The generator matrix is [I_k ; C], where C's
+// row r / column i entry is 1/(x_i + y_r) with x_i = i+1 (the k source
+// columns) and y_r = k+1+r (the parity rows): two disjoint sets of distinct
+// nonzero field elements, valid while k+n <= 255 (addition is XOR in
+// GF(256), and disjointness is what guarantees no denominator is zero).
+//
+// Why Cauchy, and not the earlier raw Vandermonde evaluation rows: a Cauchy
+// matrix is MDS — every square submatrix is invertible — so [I_k ; C] has
+// the property that ANY k of its k+n rows are linearly independent. A
+// Vandermonde-evaluation matrix only keeps that property when the selected
+// rows are ALL evaluation rows; mixing systematic identity rows with a few
+// evaluation rows loses it, and the concrete counterexample (k=32, losing
+// sources 0 and 17, the first two repairs both reducing to [1,13] -> rank
+// 31) proved the old construction was not MDS. This restores the
+// deterministic "any k of n recover k" guarantee this codec represents.
 func (e *erasureEncoder) Repair(n int) []Symbol {
 	out := make([]Symbol, 0, n)
 	k := len(e.source)
 	for r := 0; r < n; r++ {
-		// Distinct nonzero evaluation point per repair row: k+r+1, wrapped
-		// into GF(256)'s nonzero range (1..255). Collisions beyond 255
-		// repair rows are a known, documented limit of GF(256)-based
-		// Vandermonde codes, not a bug — a real deployment would size
-		// generations well under this.
-		x := byte((k+r)%255 + 1)
+		y := byte(k + 1 + r) // y_r: nonzero, and > all x_i while k+n <= 255
 		coeffs := make([]byte, k)
-		coeffs[0] = 1 // x^0 = 1
-		for i := 1; i < k; i++ {
-			coeffs[i] = gfMul(coeffs[i-1], x)
+		for i := 0; i < k; i++ {
+			// 1/(x_i + y_r); x_i != y_r by construction, so denom is nonzero.
+			coeffs[i] = gfInvNonzero(byte(i+1) ^ y)
 		}
 		payload := make([]byte, e.symbolSize)
 		for i, c := range coeffs {

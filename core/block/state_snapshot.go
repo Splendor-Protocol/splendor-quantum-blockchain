@@ -60,18 +60,18 @@ func (e *Executor) writeSnapshotMarker(marker *snapshotImportMarker) error {
 	if path == "" {
 		return errors.New("no data directory configured for snapshot marker")
 	}
-	
+
 	data, err := json.Marshal(marker)
 	if err != nil {
 		return fmt.Errorf("marshal snapshot marker: %w", err)
 	}
-	
+
 	// Write to temp file first, then atomic rename
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return fmt.Errorf("write snapshot marker: %w", err)
 	}
-	
+
 	// Fsync the file before rename
 	f, err := os.OpenFile(tmpPath, os.O_RDWR, 0600)
 	if err != nil {
@@ -82,19 +82,19 @@ func (e *Executor) writeSnapshotMarker(marker *snapshotImportMarker) error {
 		return fmt.Errorf("sync marker: %w", err)
 	}
 	f.Close()
-	
+
 	// Atomic rename
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("rename marker: %w", err)
 	}
-	
+
 	// Fsync parent directory to ensure rename is durable
 	dir, err := os.Open(filepath.Dir(path))
 	if err == nil {
 		dir.Sync()
 		dir.Close()
 	}
-	
+
 	return nil
 }
 
@@ -104,7 +104,7 @@ func (e *Executor) readSnapshotMarker() (*snapshotImportMarker, error) {
 	if path == "" {
 		return nil, nil
 	}
-	
+
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil // No marker = no import in progress
@@ -112,12 +112,12 @@ func (e *Executor) readSnapshotMarker() (*snapshotImportMarker, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read snapshot marker: %w", err)
 	}
-	
+
 	var marker snapshotImportMarker
 	if err := json.Unmarshal(data, &marker); err != nil {
 		return nil, fmt.Errorf("unmarshal snapshot marker: %w", err)
 	}
-	
+
 	return &marker, nil
 }
 
@@ -127,18 +127,18 @@ func (e *Executor) deleteSnapshotMarker() error {
 	if path == "" {
 		return nil
 	}
-	
+
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete snapshot marker: %w", err)
 	}
-	
+
 	// Fsync parent directory
 	dir, err := os.Open(filepath.Dir(path))
 	if err == nil {
 		dir.Sync()
 		dir.Close()
 	}
-	
+
 	return nil
 }
 
@@ -167,16 +167,17 @@ func (e *Executor) ExportStateSnapshot() (*types.StateSnapshot, error) {
 // maxSyncBodyBytes-class limits even before base64 and envelope overhead —
 // the whole point of chunking is that neither side ever needs a buffer
 // anywhere near MaxStateSnapshotBytes.
-const MaxSnapshotChunkLeaves = 5000
+const MaxSnapshotChunkLeaves = state.MaxChunkLeaves
 
 // ExportStateSnapshotChunk returns one page of this node's committed state,
 // the chunked counterpart of ExportStateSnapshot. The head block is attached
 // only to the first chunk (afterKey == nil) — it is what the receiver
 // authenticates the whole transfer against, and re-sending it on every page
-// would be pure overhead. maxLeaves <= 0 falls back to
-// MaxSnapshotChunkLeaves.
+// would be pure overhead. maxLeaves <= 0 requests a default page, and any
+// value above MaxSnapshotChunkLeaves is clamped down — no caller can widen a
+// single export beyond the budget the state layer enforces.
 func (e *Executor) ExportStateSnapshotChunk(afterKey []byte, maxLeaves int) (*types.StateSnapshotChunkResult, error) {
-	if maxLeaves <= 0 {
+	if maxLeaves <= 0 || maxLeaves > MaxSnapshotChunkLeaves {
 		maxLeaves = MaxSnapshotChunkLeaves
 	}
 	height, leaves, nextKey, done, err := e.state.ExportSnapshotChunk(afterKey, maxLeaves)
@@ -211,6 +212,7 @@ func (e *Executor) ExportStateSnapshotChunk(afterKey []byte, maxLeaves int) (*ty
 // can be recovered deterministically on restart:
 //   - Before commit: staged data discarded, import retried
 //   - After commit: partial state completed automatically
+//
 // No manual wipe-and-retry needed. See ReconcileSnapshotImport().
 //
 // The certificate is deliberately NOT re-verified against the imported
@@ -276,7 +278,7 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 		e.deleteSnapshotMarker()
 		return fmt.Errorf("store snapshot head block: %w", err)
 	}
-	
+
 	// Update marker: block is stored
 	marker.Phase = phaseBlockStored
 	if err := e.writeSnapshotMarker(marker); err != nil {
@@ -298,7 +300,7 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 		log.Warn().Err(err).Msg("failed to delete recovery marker after successful import")
 		// Not fatal - import succeeded
 	}
-	
+
 	log.Info().Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).
 		Str("hash", fmt.Sprintf("%x", b.Hash[:8])).Msg("state snapshot imported successfully")
 	return nil

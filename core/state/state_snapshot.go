@@ -23,6 +23,27 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
+// MaxChunkLeaves and MaxChunkBytes are hard bounds on a single chunk of a
+// chunked snapshot export. They are enforced here, at the scan boundary, on
+// every caller: a caller-supplied maxLeaves above MaxChunkLeaves is clamped,
+// and the scan stops once either the leaf count or the raw byte total is
+// reached. This is what keeps a hostile or buggy "small" page request from
+// making the serving node collect, allocate and serialize an unbounded
+// fraction of its state in one call.
+const (
+	// MaxChunkLeaves caps one chunk at this many leaves. The executor's
+	// exported MaxSnapshotChunkLeaves mirrors it; the scan itself is the
+	// authoritative enforcement point because it is what actually allocates.
+	MaxChunkLeaves = 5000
+
+	// MaxChunkBytes caps the raw key+value bytes a single chunk may carry.
+	// Chosen well under the chunked reply cap (16 MiB) so base64 and
+	// envelope overhead cannot push a chunk over the wire limit. It also
+	// bounds the pathological case where fewer than MaxChunkLeaves leaves
+	// have individually huge values.
+	MaxChunkBytes = 4 << 20
+)
+
 var (
 	// ErrSnapshotUnavailable means the state carries no applied-height marker,
 	// so nothing ties it to a block and it cannot be served.
@@ -127,6 +148,14 @@ func (s *StateDB) ExportSnapshotChunk(afterKey []byte, maxLeaves int) (height ui
 	if maxLeaves <= 0 {
 		return 0, nil, nil, false, errors.New("state: chunk size must be positive")
 	}
+	// A caller asking for more than one chunk's worth gets one chunk's worth.
+	// The cap is enforced here — not just by the executor's public constant —
+	// because this is the code that actually allocates; trusting a
+	// caller-supplied value would let one small request scan and serialize an
+	// unbounded fraction of state.
+	if maxLeaves > MaxChunkLeaves {
+		maxLeaves = MaxChunkLeaves
+	}
 	snap, err := s.db.GetSnapshot()
 	if err != nil {
 		return 0, nil, nil, false, fmt.Errorf("state: snapshot: %w", err)
@@ -151,6 +180,7 @@ func (s *StateDB) ExportSnapshotChunk(afterKey []byte, maxLeaves int) (height ui
 	iter := snap.NewIterator(iterRange, nil)
 	defer iter.Release()
 
+	var size int
 	for iter.Next() {
 		k := iter.Key()
 		if bytes.HasPrefix(k, []byte(prefixMeta)) {
@@ -161,7 +191,8 @@ func (s *StateDB) ExportSnapshotChunk(afterKey []byte, maxLeaves int) (height ui
 			Key:   append([]byte(nil), k...),
 			Value: append([]byte(nil), v...),
 		})
-		if len(leaves) >= maxLeaves {
+		size += len(k) + len(v)
+		if len(leaves) >= maxLeaves || size >= MaxChunkBytes {
 			// Peek: is there anything left after this key?
 			nextKey = append([]byte(nil), k...)
 			if !iter.Next() {

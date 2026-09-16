@@ -7,6 +7,7 @@ import (
 	"sort"
 	"testing"
 
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -173,5 +174,89 @@ func sprintChunk(n int) string {
 		return "chunk=64"
 	default:
 		return "chunk=big"
+	}
+}
+
+// addrI returns a distinct address for a counter, so a test can build more
+// than the 256 leaves addr(byte) can express.
+func addrI(i int) qcrypto.Address {
+	var a qcrypto.Address
+	for j := range a {
+		a[j] = byte(i >> (8 * j))
+	}
+	return a
+}
+
+// The executor clamps an oversized maxLeaves, and the state layer must too,
+// so no caller (client bug or abuse) can scan and serialize more than one
+// chunk of state in a single export.
+func TestExportSnapshotChunkClampsOversizedRequest(t *testing.T) {
+	sdb, _ := openState(t)
+	total := MaxChunkLeaves + 50
+	for i := 0; i < total; i++ {
+		acc := types.NewAccount(addrI(i))
+		acc.AddBalance(big.NewInt(1))
+		sdb.SetAccount(acc)
+	}
+	if _, err := sdb.CommitWithHeight(1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ask for far more than one chunk; the server must serve at most one.
+	_, leaves, nextKey, done, err := sdb.ExportSnapshotChunk(nil, total*10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leaves) != MaxChunkLeaves {
+		t.Fatalf("oversized request returned %d leaves, want exactly %d", len(leaves), MaxChunkLeaves)
+	}
+	if done {
+		t.Fatal("oversized request reported done even though leaves remain")
+	}
+	if len(nextKey) == 0 {
+		t.Fatal("oversized request returned no resume cursor")
+	}
+
+	// The remainder must be retrievable with a follow-up, proving nothing was
+	// skipped or duplicated by the clamp.
+	_, rest, _, done2, err := sdb.ExportSnapshotChunk(nextKey, total*10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !done2 {
+		t.Fatal("second chunk should have drained the remaining leaves")
+	}
+	if len(rest) != total-MaxChunkLeaves {
+		t.Fatalf("second chunk returned %d leaves, want %d", len(rest), total-MaxChunkLeaves)
+	}
+}
+
+// The raw-byte budget bounds a chunk independently of the leaf-count budget,
+// so a few unusually large leaves cannot make one page arbitrarily big even
+// with maxLeaves clamped.
+func TestExportSnapshotChunkStopsAtByteBudget(t *testing.T) {
+	sdb, _ := openState(t)
+	if _, err := sdb.CommitWithHeight(1); err != nil {
+		t.Fatal(err)
+	}
+	// Three leaves whose values are each about half the byte budget: the scan
+	// must stop after two, well before the 3-leaf total is reached, even though
+	// the leaf-count budget is far larger than the whole state.
+	big := bytes.Repeat([]byte{0xAB}, MaxChunkBytes/2)
+	for _, key := range []string{"acc:a", "acc:b", "acc:c"} {
+		if err := sdb.db.Put([]byte(key), big, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, leaves, _, done, err := sdb.ExportSnapshotChunk(nil, MaxChunkLeaves)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done {
+		t.Fatal("chunk reported done while a leaf remains unserved past the byte budget")
+	}
+	if len(leaves) != 2 {
+		t.Fatalf("byte-budgeted chunk returned %d leaves, want 2 (the third must wait for the next page)", len(leaves))
 	}
 }
