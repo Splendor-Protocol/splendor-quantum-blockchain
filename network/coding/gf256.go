@@ -71,6 +71,14 @@ func gfInv(a byte) (byte, error) {
 	return gfExp[255-int(gfLog[a])], nil
 }
 
+// gfInvNonzero is gfInv for a caller that has already proven a != 0: the
+// Cauchy parity encode loop computes the inverse of a denominator that is
+// nonzero by construction, so it wants the fast, error-free form rather than
+// an error branch it can never take.
+func gfInvNonzero(a byte) byte {
+	return gfExp[255-int(gfLog[a])]
+}
+
 // gfDiv computes a/b in GF(256); b must be nonzero.
 func gfDiv(a, b byte) (byte, error) {
 	inv, err := gfInv(b)
