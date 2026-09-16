@@ -166,3 +166,38 @@ func TestManifestVerifyEnforcesBounds(t *testing.T) {
 		t.Fatal("manifest with source count over the cap was accepted")
 	}
 }
+
+// Signing needs a real codebook; a nil one is a caller bug and must error,
+// not panic partway through the manifest construction.
+func TestSignManifestRejectsNilCodebook(t *testing.T) {
+	_, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SignManifest(testDescriptor(), nil, priv); err == nil {
+		t.Fatal("SignManifest accepted a nil codebook")
+	}
+}
+
+// The codebook commits to symbol leaves bound to one descriptorID; signing a
+// manifest whose Descriptor derives a different descriptorID would commit to a
+// codebook this manifest's own proofs can never match. Refused at sign time.
+func TestSignManifestRejectsMismatchedCodebook(t *testing.T) {
+	_, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(5))
+	codebookDesc := testDescriptor()
+	symbols := genSymbols(rng, 8)
+	codebook, err := BuildCodebook(codebookDesc.descriptorID(), symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := testDescriptor()
+	other.ObjectSize++ // different descriptorID, still a valid shape
+	if _, err := SignManifest(other, codebook, priv); err == nil {
+		t.Fatal("SignManifest accepted a codebook built for a different descriptor")
+	}
+}

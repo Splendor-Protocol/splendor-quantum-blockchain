@@ -57,6 +57,17 @@ func SignManifest(desc Descriptor, codebook *Codebook, signer *qcrypto.PrivateKe
 	if signer == nil {
 		return nil, errors.New("objects: nil signer")
 	}
+	if codebook == nil {
+		return nil, errors.New("objects: nil codebook")
+	}
+	// The codebook must have been built for exactly this descriptor: its root
+	// commits to symbol leaves bound to a descriptorID, and signing a manifest
+	// whose Descriptor derives a different descriptorID would commit to symbols
+	// this manifest's own proof verification can never match. Reject rather
+	// than let a caller sign an internally inconsistent manifest.
+	if codebook.descID != desc.descriptorID() {
+		return nil, errors.New("objects: codebook was built for a different descriptor")
+	}
 	m := &Manifest{
 		Descriptor:   desc,
 		CodebookRoot: codebook.Root(),
