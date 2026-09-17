@@ -308,6 +308,40 @@ func TestSnapshotChunkSessionQuota(t *testing.T) {
 	} else if first.Done {
 		t.Fatal("peer-b session already done")
 	}
+
+	exB, _, _, _, _, _ := threeBlockChain(t)
+	for i := 0; i < maxSnapshotChunkSessions; i++ {
+		_, first, err := exB.StartSnapshotChunkSessionFrom("", 1)
+		if err != nil {
+			t.Fatalf("global session %d: %v", i, err)
+		}
+		if first.Done {
+			t.Fatal("global quota test needs retained sessions")
+		}
+	}
+	if _, _, err := exB.StartSnapshotChunkSessionFrom("", 1); err == nil {
+		t.Fatal("global session quota did not refuse")
+	}
+}
+
+func TestSinglePageSnapshotSessionIsNotRetained(t *testing.T) {
+	ex, _, _, _, _, _ := threeBlockChain(t)
+	id, first, err := ex.StartSnapshotChunkSession(MaxSnapshotChunkLeaves)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Done {
+		t.Fatal("expected a single-page snapshot at default page size")
+	}
+	ex.snapshotChunkMu.Lock()
+	_, kept := ex.snapshotChunkSessions[id]
+	ex.snapshotChunkMu.Unlock()
+	if kept {
+		t.Fatal("a completed first page must not retain a session")
+	}
+	if _, err := ex.PageSnapshotChunkSession(id, nil, 1); err == nil {
+		t.Fatal("single-page session was still resolvable")
+	}
 }
 
 func TestSnapshotChunkSessionExpiryOnLookup(t *testing.T) {
@@ -344,7 +378,7 @@ func TestSnapshotChunkSessionsReleasedOnClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	if first.Done {
-		// still exercise Close
+		t.Fatal("Close test needs a retained session")
 	}
 	if err := ex.Close(); err != nil {
 		t.Fatal(err)
@@ -352,4 +386,27 @@ func TestSnapshotChunkSessionsReleasedOnClose(t *testing.T) {
 	if _, err := ex.PageSnapshotChunkSession(id, first.NextKey, 1); err == nil {
 		t.Fatal("session survived Close")
 	}
+}
+
+func TestSnapshotChunkPageDuringCloseDoesNotPanic(t *testing.T) {
+	ex, _, _, _, _, _ := threeBlockChain(t)
+	id, first, err := ex.StartSnapshotChunkSession(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Done {
+		t.Fatal("need a retained session")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 32; i++ {
+			_, _ = ex.PageSnapshotChunkSession(id, first.NextKey, 1)
+		}
+	}()
+	time.Sleep(time.Millisecond)
+	if err := ex.Close(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
 }

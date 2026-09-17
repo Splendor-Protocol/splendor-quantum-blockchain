@@ -311,13 +311,12 @@ func normalizeSnapshotChunkLeaves(n int) int {
 // snapshotChunkSession is one in-flight immutable chunk transfer: a pinned
 // state snapshot plus the head block it was begun at.
 type snapshotChunkSession struct {
-	mu       sync.Mutex
-	session  *state.SnapshotSession
-	block    *types.Block
-	expires  time.Time
-	source   string
-	final    *types.StateSnapshotChunkResult
-	replayed bool
+	mu      sync.Mutex
+	session *state.SnapshotSession
+	block   *types.Block
+	expires time.Time
+	source  string
+	final   *types.StateSnapshotChunkResult
 }
 
 // StartSnapshotChunkSession pins the state at its current height and returns an
@@ -407,21 +406,21 @@ func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, m
 	e.snapshotChunkMu.Unlock()
 
 	sc.mu.Lock()
-	defer sc.mu.Unlock()
+	if sc.session == nil {
+		sc.mu.Unlock()
+		return nil, fmt.Errorf("unknown or expired snapshot session %q; start a new transfer", sessionID)
+	}
 	if sc.final != nil {
-		if sc.replayed {
-			e.snapshotChunkMu.Lock()
-			e.releaseSnapshotChunkSessionLocked(sessionID, sc)
-			e.snapshotChunkMu.Unlock()
-			return nil, fmt.Errorf("unknown or expired snapshot session %q; start a new transfer", sessionID)
-		}
-		sc.replayed = true
 		cp := *sc.final
+		e.unpinSnapshotChunkSession(sc)
+		sc.mu.Unlock()
+		e.forgetSnapshotChunkSession(sessionID, sc)
 		return &cp, nil
 	}
 
 	leaves, nextKey, done, err := sc.session.Page(afterKey, maxLeaves)
 	if err != nil {
+		sc.mu.Unlock()
 		return nil, err
 	}
 	result := &types.StateSnapshotChunkResult{
@@ -434,8 +433,8 @@ func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, m
 	if done {
 		cp := *result
 		sc.final = &cp
-		// Keep the session so a lost final page can be replayed once.
 	}
+	sc.mu.Unlock()
 	return result, nil
 }
 
@@ -451,11 +450,27 @@ func (e *Executor) sweepSnapshotChunkSessionsLocked() {
 }
 
 func (e *Executor) releaseSnapshotChunkSessionLocked(id string, sc *snapshotChunkSession) {
-	if sc != nil && sc.session != nil {
+	if sc != nil {
+		sc.mu.Lock()
+		e.unpinSnapshotChunkSession(sc)
+		sc.mu.Unlock()
+	}
+	delete(e.snapshotChunkSessions, id)
+}
+
+func (e *Executor) unpinSnapshotChunkSession(sc *snapshotChunkSession) {
+	if sc.session != nil {
 		sc.session.Release()
 		sc.session = nil
 	}
-	delete(e.snapshotChunkSessions, id)
+}
+
+func (e *Executor) forgetSnapshotChunkSession(id string, sc *snapshotChunkSession) {
+	e.snapshotChunkMu.Lock()
+	defer e.snapshotChunkMu.Unlock()
+	if cur, ok := e.snapshotChunkSessions[id]; ok && cur == sc {
+		delete(e.snapshotChunkSessions, id)
+	}
 }
 
 func (e *Executor) reserveSnapshotChunkSessionLocked(source string) error {
