@@ -39,12 +39,12 @@ const (
 
 // ValidatorRecord is stored on-chain for each registered validator.
 type ValidatorRecord struct {
-	Address       qcrypto.Address `json:"address"`
-	PublicKey     []byte          `json:"public_key"`
-	Bond          *big.Int        `json:"bond"`
-	Status        ValidatorStatus `json:"status"`
-	JoinedHeight  uint64          `json:"joined_height"`
-	ExitHeight    uint64          `json:"exit_height,omitempty"`
+	Address      qcrypto.Address `json:"address"`
+	PublicKey    []byte          `json:"public_key"`
+	Bond         *big.Int        `json:"bond"`
+	Status       ValidatorStatus `json:"status"`
+	JoinedHeight uint64          `json:"joined_height"`
+	ExitHeight   uint64          `json:"exit_height,omitempty"`
 }
 
 var (
@@ -65,12 +65,29 @@ func stakingApprovalSlot(addr qcrypto.Address) [32]byte {
 
 // StakingContract is the validator registry (name kept so existing RPC compiles).
 type StakingContract struct {
-	stateDB  *state.StateDB
-	contract qcrypto.Address
+	stateDB       *state.StateDB
+	contract      qcrypto.Address
+	committedOnly bool
 }
 
 func NewStakingContract(stateDB *state.StateDB, contract qcrypto.Address) *StakingContract {
 	return &StakingContract{stateDB: stateDB, contract: contract}
+}
+
+// CommittedView returns a registry reader that ignores the pending overlay.
+// Consensus (RefreshSet, producer lookup, QC checks) must use this so a
+// discarded proposal cannot change the effective validator set.
+func (s *StakingContract) CommittedView() *StakingContract {
+	out := *s
+	out.committedOnly = true
+	return &out
+}
+
+func (s *StakingContract) readSlot(slot [32]byte) ([]byte, error) {
+	if s.committedOnly {
+		return s.stateDB.GetCommittedStorageValue(s.contract, slot)
+	}
+	return s.stateDB.GetStorageValue(s.contract, slot)
 }
 
 func DeployStaking(stateDB *state.StateDB) qcrypto.Address {
@@ -282,13 +299,16 @@ func (s *StakingContract) FinalizeExit(caller qcrypto.Address, currentHeight uin
 }
 
 func (s *StakingContract) GetValidator(addr qcrypto.Address) (*ValidatorRecord, error) {
-	b, err := s.stateDB.GetStorageValue(s.contract, stakingValidatorSlot(addr))
-	if err != nil || len(b) == 0 {
+	b, err := s.readSlot(stakingValidatorSlot(addr))
+	if err != nil {
+		return nil, fmt.Errorf("validators: read %s: %w", addr, err)
+	}
+	if len(b) == 0 {
 		return nil, nil
 	}
 	var rec ValidatorRecord
 	if err := json.Unmarshal(b, &rec); err != nil {
-		return nil, fmt.Errorf("validators: decode: %w", err)
+		return nil, fmt.Errorf("validators: decode %s: %w", addr, err)
 	}
 	if rec.Bond == nil {
 		rec.Bond = big.NewInt(0)
@@ -317,19 +337,31 @@ func (s *StakingContract) ValidatorCount() (uint64, error) {
 }
 
 // ListActive returns every active validator (for BFT).
+//
+// An empty index is "no validators", not an error. An unreadable index or
+// record is an error so callers fail closed instead of shrinking the set.
 func (s *StakingContract) ListActive() ([]ValidatorRecord, error) {
-	raw, err := s.stateDB.GetStorageValue(s.contract, slotStakingIndex)
-	if err != nil || len(raw) == 0 {
+	raw, err := s.readSlot(slotStakingIndex)
+	if err != nil {
+		return nil, fmt.Errorf("validators: read index: %w", err)
+	}
+	if len(raw) == 0 {
 		return nil, nil
 	}
 	var addrs []qcrypto.Address
 	if err := json.Unmarshal(raw, &addrs); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validators: decode index: %w", err)
 	}
 	var out []ValidatorRecord
 	for _, a := range addrs {
 		rec, err := s.GetValidator(a)
-		if err != nil || rec == nil || rec.Status != ValidatorActive {
+		if err != nil {
+			return nil, err
+		}
+		if rec == nil {
+			return nil, fmt.Errorf("validators: index lists %s but the record is missing", a)
+		}
+		if rec.Status != ValidatorActive {
 			continue
 		}
 		out = append(out, *rec)
