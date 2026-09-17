@@ -46,7 +46,7 @@ func TestSignManifestEndToEndVerifies(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	desc := testDescriptor()
 	symbols := genSymbols(rng, 20)
-	codebook, err := BuildCodebook(desc.descriptorID(), symbols)
+	codebook, err := BuildCodebook(desc.DescriptorID(), symbols)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestManifestSignatureCoversEveryField(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
 	desc := testDescriptor()
 	symbols := genSymbols(rng, 10)
-	codebook, err := BuildCodebook(desc.descriptorID(), symbols)
+	codebook, err := BuildCodebook(desc.DescriptorID(), symbols)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestManifestRejectsSignerSubstitution(t *testing.T) {
 	rng := rand.New(rand.NewSource(3))
 	desc := testDescriptor()
 	symbols := genSymbols(rng, 10)
-	codebook, err := BuildCodebook(desc.descriptorID(), symbols)
+	codebook, err := BuildCodebook(desc.DescriptorID(), symbols)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestManifestVerifyEnforcesBounds(t *testing.T) {
 	desc := testDescriptor()
 	desc.SourceCount = 10000
 	symbols := genSymbols(rng, 5)
-	codebook, err := BuildCodebook(desc.descriptorID(), symbols)
+	codebook, err := BuildCodebook(desc.DescriptorID(), symbols)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestSignManifestRejectsMismatchedCodebook(t *testing.T) {
 	rng := rand.New(rand.NewSource(5))
 	codebookDesc := testDescriptor()
 	symbols := genSymbols(rng, 8)
-	codebook, err := BuildCodebook(codebookDesc.descriptorID(), symbols)
+	codebook, err := BuildCodebook(codebookDesc.DescriptorID(), symbols)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,5 +199,59 @@ func TestSignManifestRejectsMismatchedCodebook(t *testing.T) {
 	other.ObjectSize++ // different descriptorID, still a valid shape
 	if _, err := SignManifest(other, codebook, priv); err == nil {
 		t.Fatal("SignManifest accepted a codebook built for a different descriptor")
+	}
+}
+
+// The binding identifier must be the same value whether asked of the
+// Descriptor or of a ratified Manifest — that single value is what symbol
+// proofs are verified against, so any divergence would break proof checks.
+func TestDescriptorIDMatchesManifest(t *testing.T) {
+	desc := testDescriptor()
+	if desc.DescriptorID() == [32]byte{} {
+		t.Fatal("DescriptorID is the zero value — descriptor fields are not being bound")
+	}
+	m := Manifest{Descriptor: desc}
+	if m.DescriptorID() != desc.DescriptorID() {
+		t.Fatal("Manifest.DescriptorID differs from Descriptor.DescriptorID")
+	}
+	changed := desc
+	changed.Anchor.Kind = "snapshot"
+	if changed.DescriptorID() == desc.DescriptorID() {
+		t.Fatal("a changed descriptor field did not change DescriptorID")
+	}
+}
+
+// A descriptor naming a codec no receiver can resolve must be rejected at
+// validation time — the exact fail-closed behaviour the Codec field documents.
+func TestValidateRejectsUnknownCodec(t *testing.T) {
+	desc := testDescriptor()
+	desc.Codec = "rlnc-over-fancy-future-field-v99"
+	if err := desc.Validate(1024, 1<<20); err == nil {
+		t.Fatal("descriptor with an unresolvable codec name passed validation")
+	}
+	for _, name := range []string{"uncoded-v1", "erasure-rs-v1", "rlnc-gf256-v1"} {
+		ok := testDescriptor()
+		ok.Codec = name
+		if err := ok.Validate(1024, 1<<20); err != nil {
+			t.Fatalf("known codec %q rejected: %v", name, err)
+		}
+	}
+}
+
+// A codebook must refuse a symbol whose index cannot be encoded on the wire:
+// the leaf hash casts index through uint32, and a negative index would wrap
+// instead of being distinct.
+func TestBuildCodebookRejectsInvalidSymbolIndex(t *testing.T) {
+	rng := rand.New(rand.NewSource(6))
+	desc := testDescriptor()
+	symbols := genSymbols(rng, 3)
+	symbols[1].Index = -1
+	if _, err := BuildCodebook(desc.DescriptorID(), symbols); err == nil {
+		t.Fatal("codebook accepted a symbol with a negative index")
+	}
+	tooBig := genSymbols(rng, 3)
+	tooBig[2].Index = 1 << 33 // requires more than 32 bits on the wire
+	if _, err := BuildCodebook(desc.DescriptorID(), tooBig); err == nil {
+		t.Fatal("codebook accepted a symbol index that does not fit in uint32")
 	}
 }

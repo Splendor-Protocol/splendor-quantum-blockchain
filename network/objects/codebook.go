@@ -18,6 +18,12 @@ const (
 	internalDomain = 0x01
 )
 
+// validSymbolIndex reports whether a symbol index survives its uint32 wire
+// encoding without wrapping: a negative index, or one that does not fit in
+// uint32, must never be hashed into a leaf, because uint32(i) would silently
+// wrap and let two different indices bind to the same leaf.
+func validSymbolIndex(i int) bool { return i >= 0 && uint64(i) <= ^uint64(0)>>32 }
+
 // symbolLeaf hashes one complete symbol record: descriptor binding, symbol
 // index, coefficients and payload — everything Section 8.3 step 4 requires
 // ("manifest/object identity, generation, symbol index, coefficient
@@ -73,6 +79,9 @@ func BuildCodebook(descID [32]byte, symbols []coding.Symbol) (*Codebook, error) 
 	}
 	leaves := make([][32]byte, len(symbols))
 	for i, s := range symbols {
+		if !validSymbolIndex(s.Index) {
+			return nil, fmt.Errorf("objects: symbol %d has index %d, out of the uint32 wire range", i, s.Index)
+		}
 		leaves[i] = symbolLeaf(descID, s)
 	}
 	levels := [][][32]byte{leaves}
@@ -150,6 +159,11 @@ func (c *Codebook) BuildProof(leafIndex int) (SymbolProof, error) {
 // is orders of magnitude cheaper than the GF(256) matrix work a malicious
 // symbol could otherwise trigger.
 func VerifySymbolProof(root, descID [32]byte, proof SymbolProof) bool {
+	// Reject an out-of-range index before it can wrap in symbolLeaf's uint32
+	// encoding, which would otherwise let a forged proof bind a wrong index.
+	if !validSymbolIndex(proof.Symbol.Index) {
+		return false
+	}
 	h := symbolLeaf(descID, proof.Symbol)
 	if len(proof.Siblings) != len(proof.SiblingIsRight) {
 		return false

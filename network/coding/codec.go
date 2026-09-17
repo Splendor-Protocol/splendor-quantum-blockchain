@@ -1,6 +1,9 @@
 package coding
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrNotEnoughSymbols means a decoder was asked to reconstruct a
@@ -112,4 +115,23 @@ type Codec interface {
 	// NewDecoder builds an empty Decoder for a generation of the given
 	// shape, ready to Absorb symbols.
 	NewDecoder(sourceCount, symbolSize int) (Decoder, error)
+}
+
+// Resolve maps a canonical codec name (a Codec.Name() value) to the codec a
+// receiver must use. This is the negotiation primitive for the object layer:
+// a manifest names a codec by string, and this is the single place that maps
+// that string to the codec — a receiver NEVER infers a codec from an unknown
+// name. Unknown names fail closed so a future/foreign codec cannot be
+// silently mis-decoded.
+func Resolve(name string) (Codec, error) {
+	switch name {
+	case NewUncodedCodec().Name():
+		return NewUncodedCodec(), nil
+	case NewErasureCodec().Name():
+		return NewErasureCodec(), nil
+	case NewRLNCCodec().Name():
+		return NewRLNCCodec(), nil
+	default:
+		return nil, fmt.Errorf("coding: unrecognised codec name %q", name)
+	}
 }

@@ -32,9 +32,10 @@ type Manifest struct {
 	Signature    []byte
 }
 
-// descriptorID is exposed so codebook construction and proof verification
-// agree on the exact binding value with the signed manifest.
-func (m Manifest) descriptorID() [32]byte { return m.Descriptor.descriptorID() }
+// DescriptorID returns the manifest's binding identifier, so external
+// callers can verify per-symbol Merkle proofs against the exact value the
+// signed manifest commits to.
+func (m Manifest) DescriptorID() [32]byte { return m.Descriptor.DescriptorID() }
 
 // signedBytes is the exact preimage Sign/Verify operate over: descriptorID
 // (not the raw Descriptor fields again — one canonical binding) plus the
@@ -43,7 +44,7 @@ func (m Manifest) descriptorID() [32]byte { return m.Descriptor.descriptorID() }
 // verifies under the key that made it), and folding it into the signed
 // bytes would add nothing but exposure to an unrelated encoding bug.
 func (m Manifest) signedBytes() []byte {
-	descID := m.descriptorID()
+	descID := m.DescriptorID()
 	buf := make([]byte, 0, 64)
 	buf = append(buf, descID[:]...)
 	buf = append(buf, m.CodebookRoot[:]...)
@@ -65,7 +66,7 @@ func SignManifest(desc Descriptor, codebook *Codebook, signer *qcrypto.PrivateKe
 	// whose Descriptor derives a different descriptorID would commit to symbols
 	// this manifest's own proof verification can never match. Reject rather
 	// than let a caller sign an internally inconsistent manifest.
-	if codebook.descID != desc.descriptorID() {
+	if codebook.descID != desc.DescriptorID() {
 		return nil, errors.New("objects: codebook was built for a different descriptor")
 	}
 	m := &Manifest{
