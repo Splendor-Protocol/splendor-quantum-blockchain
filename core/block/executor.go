@@ -1432,7 +1432,7 @@ func (e *Executor) refuseSinglePathIfQuorumRequired(height uint64) error {
 	if !e.schedule().Active(forks.MultiValidator, height) {
 		return nil
 	}
-	active, err := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).ListActive()
+	active, err := e.committedActiveValidatorsLocked()
 	if err != nil {
 		return fmt.Errorf("validator set: %w", err)
 	}
@@ -1453,11 +1453,30 @@ func (e *Executor) refuseSinglePathIfQuorumRequired(height uint64) error {
 // state — the same set verifyProducerAndQC judges the block against.
 // ExecuteBlock remains the authority: it still verifies the certificate.
 func (e *Executor) ActiveValidatorKey(addr qcrypto.Address) []byte {
-	rec, err := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).GetValidator(addr)
+	rec, err := e.CommittedValidator(addr)
 	if err != nil || rec == nil || rec.Status != vm.ValidatorActive || len(rec.PublicKey) == 0 {
 		return nil
 	}
 	return append([]byte(nil), rec.PublicKey...)
+}
+
+// CommittedActiveValidators is the consensus validator set: committed parent
+// state only, taken under the block lock so a discarded proposal cannot change it.
+func (e *Executor) CommittedActiveValidators() ([]vm.ValidatorRecord, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.committedActiveValidatorsLocked()
+}
+
+// CommittedValidator reads one committed registry record under the block lock.
+func (e *Executor) CommittedValidator(addr qcrypto.Address) (*vm.ValidatorRecord, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return vm.NewStakingContract(e.state, vm.DeployStaking(nil)).CommittedView().GetValidator(addr)
+}
+
+func (e *Executor) committedActiveValidatorsLocked() ([]vm.ValidatorRecord, error) {
+	return vm.NewStakingContract(e.state, vm.DeployStaking(nil)).CommittedView().ListActive()
 }
 
 // genesisProducerKey returns the key that sealed block 0, or nil when this
@@ -1487,8 +1506,7 @@ func (e *Executor) verifyProducerAndQC(b *types.Block, requireQC bool) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
-	reg := vm.NewStakingContract(e.state, vm.DeployStaking(nil))
-	active, err := reg.ListActive()
+	active, err := e.committedActiveValidatorsLocked()
 	if err != nil {
 		// Fail closed. An unreadable registry is not an empty registry: the
 		// latter has a defined meaning (the genesis validator runs the chain),
@@ -1728,7 +1746,7 @@ func (e *Executor) HeadConsensus() HeadConsensus {
 		QCVotes:              len(head.Votes),
 		ValidatorSetHeight:   head.Header.Height,
 	}
-	active, err := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).ListActive()
+	active, err := e.CommittedActiveValidators()
 	if err != nil {
 		hc.Reason = "validator set unreadable: " + err.Error()
 		return hc

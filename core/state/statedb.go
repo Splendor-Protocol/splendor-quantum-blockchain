@@ -123,6 +123,12 @@ type StateDB struct {
 	// cleared. Tests use it to inject a state-write failure after the caller
 	// has already persisted the block/head (C2).
 	failNextCommit error
+
+	// failNextStorage, when set, is returned by the next storage get and then
+	// cleared. Tests inject an unreadable registry (C4). Guarded by injectMu
+	// so a consume does not race GetStorageValue's read lock.
+	injectMu        sync.Mutex
+	failNextStorage error
 }
 
 // touchLocked records a change to the pending layer or the leaf index, which
@@ -599,14 +605,36 @@ func (s *StateDB) journalRaw(k string) {
 
 // GetStorageValue retrieves a contract storage slot value (pending overlay first).
 func (s *StateDB) GetStorageValue(contract qcrypto.Address, slot [32]byte) ([]byte, error) {
+	return s.getStorageValue(contract, slot, true)
+}
+
+// GetCommittedStorageValue reads a slot from durable state only, ignoring the
+// pending overlay. Consensus set reads use this so a discarded proposal cannot
+// change the validator set (C4).
+func (s *StateDB) GetCommittedStorageValue(contract qcrypto.Address, slot [32]byte) ([]byte, error) {
+	return s.getStorageValue(contract, slot, false)
+}
+
+func (s *StateDB) getStorageValue(contract qcrypto.Address, slot [32]byte, includePending bool) ([]byte, error) {
 	k := storageKey(contract, slot)
 
+	s.injectMu.Lock()
+	if s.failNextStorage != nil {
+		err := s.failNextStorage
+		s.failNextStorage = nil
+		s.injectMu.Unlock()
+		return nil, err
+	}
+	s.injectMu.Unlock()
+
 	s.mu.RLock()
-	if v, ok := s.pendingRaw[k]; ok {
-		cp := make([]byte, len(v))
-		copy(cp, v)
-		s.mu.RUnlock()
-		return cp, nil
+	if includePending {
+		if v, ok := s.pendingRaw[k]; ok {
+			cp := make([]byte, len(v))
+			copy(cp, v)
+			s.mu.RUnlock()
+			return cp, nil
+		}
 	}
 	s.mu.RUnlock()
 
@@ -615,6 +643,14 @@ func (s *StateDB) GetStorageValue(contract qcrypto.Address, slot [32]byte) ([]by
 		return nil, nil
 	}
 	return data, err
+}
+
+// FailNextStorageRead makes the next GetStorageValue / GetCommittedStorageValue
+// return err without reading. Consumed once.
+func (s *StateDB) FailNextStorageRead(err error) {
+	s.injectMu.Lock()
+	defer s.injectMu.Unlock()
+	s.failNextStorage = err
 }
 
 // MarkX402NonceUsed stages an X402 payment nonce as used on the pending layer.

@@ -12,7 +12,6 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
-	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
 // MultiValidator drives BFT production: the local node proposes only when it
@@ -57,8 +56,7 @@ func (m *MultiValidator) Subscribe(ch chan<- *types.Block) {
 }
 
 func (m *MultiValidator) RefreshSet() {
-	reg := vm.NewStakingContract(m.stateDB, vm.DeployStaking(nil))
-	active, err := reg.ListActive()
+	active, err := m.executor.CommittedActiveValidators()
 	if err != nil {
 		// Fail closed: keep the set the engine already holds. An unreadable
 		// registry used to be indistinguishable from an empty one, and an

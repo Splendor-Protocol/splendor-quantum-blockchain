@@ -3,11 +3,13 @@ package consensus
 import (
 	"context"
 	"errors"
+	"math/big"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/mempool"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -69,6 +71,76 @@ func TestRefreshSetUsesLocalWhenNoGenesisValidatorKnown(t *testing.T) {
 	mv.RefreshSet()
 	if !eng.IsLeader(1, 0) {
 		t.Fatal("with no genesis validator configured the local fallback must hold")
+	}
+}
+
+// C4: a storage error must keep the current engine set, not shrink it to the
+// genesis fallback as if the index were empty.
+func TestRefreshSetKeepsCurrentSetOnRegistryError(t *testing.T) {
+	ex, sdb, pool := newTestChain(t)
+	localPriv, localPK, localAddr := testKey(t)
+	_, genPK, genAddr := testKey(t)
+	eng, err := NewBFTEngine(BFTConfig{LocalAddr: localAddr, LocalPubKey: localPK, LocalPrivKey: localPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.UpdateValidatorSet([]ValidatorInfo{
+		{Address: localAddr, PublicKey: localPK, IsActive: true},
+		{Address: genAddr, PublicKey: genPK, IsActive: true},
+	})
+	mv := NewMultiValidator(Config{
+		Address: localAddr, PublicKey: localPK, PrivateKey: localPriv,
+		GenesisValidator: ValidatorInfo{Address: genAddr, PublicKey: genPK, IsActive: true},
+	}, eng, ex, pool, nil, sdb)
+	sdb.FailNextStorageRead(errors.New("injected registry read"))
+	mv.RefreshSet()
+	if n := eng.ValidatorCount(); n != 2 {
+		t.Fatalf("registry error shrank the set to %d, want keep 2", n)
+	}
+}
+
+// C4: a registration that exists only on the pending overlay must not change
+// RefreshSet. Genesis fallback remains until the record is committed.
+func TestRefreshSetIgnoresPendingRegistration(t *testing.T) {
+	ex, sdb, pool := newTestChain(t)
+	localPriv, localPK, localAddr := testKey(t)
+	_, genPK, genAddr := testKey(t)
+	eng, err := NewBFTEngine(BFTConfig{LocalAddr: localAddr, LocalPubKey: localPK, LocalPrivKey: localPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mv := NewMultiValidator(Config{
+		Address: localAddr, PublicKey: localPK, PrivateKey: localPriv,
+		GenesisValidator: ValidatorInfo{Address: genAddr, PublicKey: genPK, IsActive: true},
+	}, eng, ex, pool, nil, sdb)
+
+	pub, _, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := qcrypto.DeriveAddress(pub)
+	acc := types.NewAccount(v)
+	acc.AddBalance(new(big.Int).Mul(vm.ValidatorBond(), big.NewInt(2)))
+	sdb.SetAccount(acc)
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	reg := vm.NewStakingContract(sdb, vm.DeployStaking(nil))
+	if err := reg.Register(v, pub.Bytes(), 1); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := reg.ListActive()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending set = %d err=%v", len(pending), err)
+	}
+
+	mv.RefreshSet()
+	leader, ok := eng.LeaderAddress(1, 0)
+	if !ok || leader != genAddr {
+		t.Fatalf("pending registration changed the leader to %s ok=%v, want genesis %s", leader, ok, genAddr)
+	}
+	if n := eng.ValidatorCount(); n != 1 {
+		t.Fatalf("set size %d after a pending-only register, want genesis fallback 1", n)
 	}
 }
 
@@ -202,6 +274,9 @@ func TestRefreshSetKeepsGenesisValidatorBelowTwoRegistrants(t *testing.T) {
 	if err := reg.Register(strangerAddr, strangerPK, 1); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	if n, _ := reg.ValidatorCount(); n != 1 {
 		t.Fatalf("precondition: registry holds %d, want 1", n)
 	}
@@ -229,6 +304,9 @@ func TestRefreshSetKeepsGenesisValidatorBelowTwoRegistrants(t *testing.T) {
 	gacc.AddBalance(vm.ValidatorBond())
 	sdb.SetAccount(gacc)
 	if err := reg.Register(genAddr, genPK, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdb.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	mv.RefreshSet()
