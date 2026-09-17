@@ -4,10 +4,8 @@
 // GET /state/account/{address}  — account state (balance, nonce, public key)
 // GET /state/proof/{address}    — Merkle inclusion proof for an account
 //
-// These routes implement the "Sparse Merkle proof API" listed as not-built
-// in the README verification brief. The proof endpoint returns the state root
-// committed in the latest block header plus the account leaf, allowing external
-// verifiers to confirm account data without downloading the full state.
+// Account, proof, root and height come from one committed StateDB view so a
+// verifier never mixes pending overlay with a later head.
 package rpc
 
 import (
@@ -21,6 +19,7 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 // RegisterStateRoutes mounts the state proof endpoints on r.
@@ -39,57 +38,50 @@ func writeStateJSON(w http.ResponseWriter, code int, v interface{}) {
 	json.NewEncoder(w).Encode(v) //nolint:errcheck
 }
 
+func committedHead(stateDB *state.StateDB, executor *block.Executor) (root [32]byte, height uint64, blockHash string) {
+	root, _ = stateDB.StateRoot()
+	if h, ok := stateDB.AppliedHeight(); ok {
+		height = h
+	}
+	if executor != nil {
+		if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil && latest.Header.Height == height {
+			blockHash = hex.EncodeToString(latest.Hash[:])
+		}
+	}
+	return root, height, blockHash
+}
+
+func decodeCommittedAccount(preimage []byte) (*types.Account, error) {
+	var acc types.Account
+	if err := json.Unmarshal(preimage, &acc); err != nil {
+		return nil, err
+	}
+	if acc.Balance == nil {
+		acc.Balance = types.NewAccount(acc.Address).Balance
+	}
+	return &acc, nil
+}
+
 // stateRootHandler returns the current committed state root and block context.
-//
-//	GET /state/root
-//	{
-//	  "state_root":   "<hex>",
-//	  "block_height": N,
-//	  "block_hash":   "<hex>",
-//	  "chain_id":     "splendor-quantum-1"
-//	}
 func stateRootHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		root, err := stateDB.StateRoot()
-		if err != nil {
-			writeStateJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "state root unavailable: " + err.Error(),
-			})
-			return
-		}
-
+		root, height, blockHash := committedHead(stateDB, executor)
 		resp := map[string]interface{}{
 			"state_root":   hex.EncodeToString(root[:]),
-			"block_height": uint64(0),
+			"block_height": height,
 		}
-
+		if blockHash != "" {
+			resp["block_hash"] = blockHash
+		}
 		if executor != nil {
 			if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
-				resp["block_height"] = latest.Header.Height
-				resp["block_hash"] = hex.EncodeToString(latest.Hash[:])
 				resp["chain_id"] = latest.Header.ChainID
-				// Use the state root committed in the block header, which is the
-				// canonical value rather than the live (possibly pending) state root.
-				resp["state_root"] = hex.EncodeToString(latest.Header.StateRoot[:])
 			}
 		}
-
 		writeStateJSON(w, http.StatusOK, resp)
 	}
 }
 
-// accountStateHandler returns the full account state for a given address.
-//
-//	GET /state/account/SQ:abc123
-//	{
-//	  "address":        "SQ:...",
-//	  "balance":        "26000000000000000000000000000",
-//	  "nonce":          5,
-//	  "has_public_key": true,
-//	  "public_key_hex": "<hex>",
-//	  "state_root":     "<hex>",
-//	  "block_height":   N
-//	}
 func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		addrStr := mux.Vars(r)["address"]
@@ -101,66 +93,43 @@ func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 			return
 		}
 
-		acc, err := stateDB.GetAccount(addr)
+		proof, err := stateDB.AccountProofContext(r.Context(), addr)
 		if err != nil {
 			writeStateJSON(w, http.StatusNotFound, map[string]string{
 				"error": fmt.Sprintf("account %s not found: %s", addrStr, err.Error()),
 			})
 			return
 		}
-
-		root, _ := stateDB.StateRoot()
-		var blockHeight uint64
-		if executor != nil {
-			if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
-				blockHeight = latest.Header.Height
-				root = latest.Header.StateRoot
-			}
+		acc, err := decodeCommittedAccount(proof.LeafPreimage)
+		if err != nil {
+			writeStateJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "committed account preimage: " + err.Error(),
+			})
+			return
 		}
 
+		_, _, blockHash := committedHead(stateDB, executor)
 		resp := map[string]interface{}{
 			"address":        addrStr,
 			"balance":        acc.Balance.String(),
 			"nonce":          acc.Nonce,
 			"has_public_key": acc.HasPublicKey(),
-			"state_root":     hex.EncodeToString(root[:]),
-			"block_height":   blockHeight,
+			"state_root":     hex.EncodeToString(proof.Root[:]),
+			"block_height":   proof.Height,
 		}
-
+		if blockHash != "" {
+			resp["block_hash"] = blockHash
+		}
 		if acc.HasPublicKey() {
 			resp["public_key_hex"] = hex.EncodeToString(acc.PublicKey)
-			// Sanity check: rederive the address and confirm it matches.
 			if pk, kerr := qcrypto.PublicKeyFromBytes(acc.PublicKey); kerr == nil {
 				resp["address_verified"] = qcrypto.DeriveAddress(pk) == addr
 			}
 		}
-
 		writeStateJSON(w, http.StatusOK, resp)
 	}
 }
 
-// merkleProofHandler returns Merkle inclusion evidence for an account.
-//
-// The state root in every block header is a binary SHA3-256 Merkle commitment
-// over all accounts, contracts, and X402 nonces. This endpoint returns that
-// root (from the latest committed block) together with the account's data, so
-// an external verifier can confirm the account exists without the full state.
-//
-// Full Merkle path proofs (sibling-hash list) require a MerkleProof() method
-// on StateDB; if not available the endpoint falls back to returning the root
-// and account data only.
-//
-//	GET /state/proof/SQ:abc123
-//	{
-//	  "address":         "SQ:...",
-//	  "state_root":      "<hex>",
-//	  "block_height":    N,
-//	  "block_hash":      "<hex>",
-//	  "balance":         "...",
-//	  "nonce":           N,
-//	  "proof_available": false,
-//	  "note":            "..."
-//	}
 func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		addrStr := mux.Vars(r)["address"]
@@ -172,67 +141,60 @@ func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.H
 			return
 		}
 
-		acc, err := stateDB.GetAccount(addr)
+		proof, err := stateDB.AccountProofContext(r.Context(), addr)
 		if err != nil {
+			if r.Context().Err() != nil {
+				writeStateJSON(w, http.StatusRequestTimeout, map[string]string{
+					"error": "proof generation cancelled",
+				})
+				return
+			}
 			writeStateJSON(w, http.StatusNotFound, map[string]string{
 				"error": fmt.Sprintf("account %s not found", addrStr),
 			})
 			return
 		}
-
-		// Get the state root committed in the latest block header.
-		var stateRoot [32]byte
-		var blockHeight uint64
-		var blockHash string
-		if executor != nil {
-			if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
-				stateRoot = latest.Header.StateRoot
-				blockHeight = latest.Header.Height
-				blockHash = hex.EncodeToString(latest.Hash[:])
-			} else {
-				stateRoot, _ = stateDB.StateRoot()
-			}
-		} else {
-			stateRoot, _ = stateDB.StateRoot()
-		}
-
-		leafHash, siblings, proofErr := stateDB.MerkleProofContext(r.Context(), addr)
-		if proofErr != nil && r.Context().Err() != nil {
-			writeStateJSON(w, http.StatusRequestTimeout, map[string]string{
-				"error": "proof generation cancelled",
+		if vErr := state.VerifyAccountProof(proof); vErr != nil {
+			writeStateJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "proof failed local verify: " + vErr.Error(),
 			})
 			return
 		}
 
-		resp := map[string]interface{}{
-			"address":      addrStr,
-			"state_root":   hex.EncodeToString(stateRoot[:]),
-			"block_height": blockHeight,
-			"block_hash":   blockHash,
-			"balance":      acc.Balance.String(),
-			"nonce":        acc.Nonce,
+		acc, err := decodeCommittedAccount(proof.LeafPreimage)
+		if err != nil {
+			writeStateJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "committed account preimage: " + err.Error(),
+			})
+			return
 		}
+		_, _, blockHash := committedHead(stateDB, executor)
 
-		if proofErr == nil {
-			proofHex := make([]string, len(siblings))
-			for i, s := range siblings {
-				proofHex[i] = hex.EncodeToString(s[:])
+		steps := make([]map[string]interface{}, len(proof.Steps))
+		for i, step := range proof.Steps {
+			steps[i] = map[string]interface{}{
+				"sibling": hex.EncodeToString(step.Sibling[:]),
+				"left":    step.Left,
 			}
-			resp["proof_available"] = true
-			resp["account_hash"] = hex.EncodeToString(leafHash[:])
-			resp["proof"] = proofHex
-			resp["proof_depth"] = len(proofHex)
-			resp["verify_instruction"] = fmt.Sprintf(
-				"1. leafHash = leafDigest(\"acc:%s\", SHA3-256(account_json)). "+
-					"2. For each sibling at index i: if (leafIndex >> i) & 1 == 0 "+
-					"then node = internalHash(node, sibling), else node = internalHash(sibling, node). "+
-					"3. Final node must equal state_root.",
-				addrStr)
-		} else {
-			resp["proof_available"] = false
-			resp["note"] = fmt.Sprintf("Proof generation failed: %s", proofErr.Error())
 		}
 
+		resp := map[string]interface{}{
+			"address":         addrStr,
+			"state_root":      hex.EncodeToString(proof.Root[:]),
+			"block_height":    proof.Height,
+			"block_hash":      blockHash,
+			"balance":         acc.Balance.String(),
+			"nonce":           acc.Nonce,
+			"proof_available": true,
+			"leaf_key":        proof.LeafKey,
+			"leaf_preimage":   hex.EncodeToString(proof.LeafPreimage),
+			"account_hash":    hex.EncodeToString(proof.LeafHash[:]),
+			"proof_steps":     steps,
+			"proof_depth":     len(steps),
+			"verify_instruction": "1. leafHash = leafDigest(leaf_key, SHA3-256(leaf_preimage)). " +
+				"2. For each proof_steps[i]: if left then node=internalHash(sibling,node) else node=internalHash(node,sibling). " +
+				"3. Final node must equal state_root. Odd carried-up nodes have no step.",
+		}
 		writeStateJSON(w, http.StatusOK, resp)
 	}
 }

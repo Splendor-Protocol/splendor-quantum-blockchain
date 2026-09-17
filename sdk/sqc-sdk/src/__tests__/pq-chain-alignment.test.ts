@@ -4,6 +4,7 @@ import { MODULE_ROUTER_ADDRESS } from '../addresses/index.js';
 import {
   assertQSolSignature,
   encodeFunctionData,
+  functionSelectorHex,
 } from '../abi.js';
 import { BridgeError } from '../errors.js';
 import golden from '../../testdata/golden-vectors.json' with { type: 'json' };
@@ -69,14 +70,20 @@ describe('PQ chain alignment', () => {
     expect(signed.chain_id).toBe(devnetId);
   }, 30_000);
 
-  it('rejects Solidity address in QSol ABI signatures', () => {
-    expect(() => assertQSolSignature('transfer(address,uint256)')).toThrow(BridgeError);
-    expect(() =>
-      encodeFunctionData('transfer(address,uint256)', [
-        'SQ:' + 'ab'.repeat(32),
-        1n,
-      ]),
-    ).toThrow(BridgeError);
+  it('accepts canonical address and preserves legacy sqaddress selectors', () => {
+    expect(() => assertQSolSignature('transfer(address,uint256)')).not.toThrow();
+    const canonical = encodeFunctionData('transfer(address,uint256)', [
+      'SQ:' + 'ab'.repeat(32),
+      1n,
+    ]);
+    expect(functionSelectorHex('transfer(address,uint256)')).toBe('4b40e901');
+    expect(canonical[0]).toBe(0x4b);
+    const legacy = encodeFunctionData('transfer(sqaddress,uint256)', [
+      'SQ:' + 'ab'.repeat(32),
+      1n,
+    ]);
+    expect(functionSelectorHex('transfer(sqaddress,uint256)')).toBe('14cde9ab');
+    expect(legacy[0]).toBe(0x14);
   });
 
   it('rejects EVM 0x addresses as ABI args', () => {

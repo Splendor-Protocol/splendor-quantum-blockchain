@@ -129,3 +129,52 @@ func TestSimulateReadsCommittedState(t *testing.T) {
 		t.Fatalf("sandbox balance = %s, want 555", got)
 	}
 }
+
+// Simulate must pin a LevelDB snapshot. A later parent Commit cannot change
+// what the sandbox reads for committed account bytes.
+func TestSimulateDoesNotSeeLaterParentCommit(t *testing.T) {
+	s := newSimStateDB(t)
+
+	addr := simAddr(0xd1)
+	acc := types.NewAccount(addr)
+	acc.Balance = big.NewInt(100)
+	s.SetAccount(acc)
+	if _, err := s.Commit(); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+
+	sim := s.Simulate()
+	t.Cleanup(func() { _ = sim.Close() })
+
+	next := types.NewAccount(addr)
+	next.Balance = big.NewInt(200)
+	s.SetAccount(next)
+	if _, err := s.Commit(); err != nil {
+		t.Fatalf("parent commit: %v", err)
+	}
+
+	if got := mustBalance(t, s, addr); got.Cmp(big.NewInt(200)) != 0 {
+		t.Fatalf("parent balance = %s, want 200", got)
+	}
+	if got := mustBalance(t, sim, addr); got.Cmp(big.NewInt(100)) != 0 {
+		t.Fatalf("sandbox saw mutated parent DB: balance = %s, want 100", got)
+	}
+}
+
+func TestSimulateCloseDoesNotCloseParent(t *testing.T) {
+	s := newSimStateDB(t)
+	addr := simAddr(0xd2)
+	acc := types.NewAccount(addr)
+	acc.Balance = big.NewInt(7)
+	s.SetAccount(acc)
+	if _, err := s.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	sim := s.Simulate()
+	if err := sim.Close(); err != nil {
+		t.Fatalf("sandbox Close: %v", err)
+	}
+	if got := mustBalance(t, s, addr); got.Cmp(big.NewInt(7)) != 0 {
+		t.Fatalf("parent unreadable after sandbox Close: %s", got)
+	}
+}

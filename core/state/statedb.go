@@ -104,6 +104,9 @@ type StateDB struct {
 	// layer is private, so speculative execution cannot be committed and cannot
 	// disturb the consensus state db it was derived from.
 	sandbox bool
+	// snap is a LevelDB snapshot taken at Simulate() so the sandbox cannot
+	// observe later parent commits through the live handle.
+	snap *leveldb.Snapshot
 
 	// nativeSum is the native balance total of the COMMITTED state, kept
 	// current by commit, or nil until it is first needed. It lets
@@ -131,6 +134,7 @@ type StateDB struct {
 	// so a consume does not race GetStorageValue's read lock.
 	injectMu        sync.Mutex
 	failNextStorage error
+	failNextAccount error
 }
 
 // touchLocked records a change to the pending layer or the leaf index, which
@@ -183,6 +187,9 @@ func (s *StateDB) Simulate() *StateDB {
 		snapshots:  make(map[uint64]int),
 		sandbox:    true,
 		gen:        1,
+	}
+	if snap, err := s.db.GetSnapshot(); err == nil {
+		sim.snap = snap
 	}
 	if s.nativeSum != nil {
 		sim.nativeSum = new(big.Int).Set(s.nativeSum)
@@ -305,7 +312,7 @@ func (s *StateDB) scanNativeBalances() (*big.Int, error) {
 // committedBalance reads an account's native balance as committed — zero for
 // an account the committed state does not hold. Caller holds s.mu.
 func (s *StateDB) committedBalance(addr qcrypto.Address) (*big.Int, error) {
-	data, err := s.db.Get([]byte(prefixAccount+addr.String()), nil)
+	data, err := s.rawGet([]byte(prefixAccount + addr.String()))
 	if err == leveldb.ErrNotFound {
 		return new(big.Int), nil
 	}
@@ -322,9 +329,30 @@ func (s *StateDB) committedBalance(addr qcrypto.Address) (*big.Int, error) {
 	return acc.Balance, nil
 }
 
-// Close closes the underlying LevelDB.
+// Close closes the underlying LevelDB. A Simulate() sandbox only releases its
+// frozen snapshot; it must not close the parent database.
 func (s *StateDB) Close() error {
+	if s.snap != nil {
+		s.snap.Release()
+		s.snap = nil
+	}
+	if s.sandbox {
+		return nil
+	}
+	if s.db == nil {
+		return nil
+	}
 	return s.db.Close()
+}
+
+func (s *StateDB) rawGet(key []byte) ([]byte, error) {
+	if s.snap != nil {
+		return s.snap.Get(key, nil)
+	}
+	if s.sandbox {
+		return nil, fmt.Errorf("state: sandbox has no frozen snapshot")
+	}
+	return s.db.Get(key, nil)
 }
 
 // PutMeta records node-local bookkeeping under the meta: namespace, next to
@@ -411,7 +439,16 @@ func (s *StateDB) GetAccount(addr qcrypto.Address) (*types.Account, error) {
 
 	// Load from LevelDB
 	key := []byte(prefixAccount + addr.String())
-	data, err := s.db.Get(key, nil)
+	s.injectMu.Lock()
+	if s.failNextAccount != nil {
+		err := s.failNextAccount
+		s.failNextAccount = nil
+		s.injectMu.Unlock()
+		return nil, err
+	}
+	s.injectMu.Unlock()
+
+	data, err := s.rawGet(key)
 	if err == leveldb.ErrNotFound {
 		return types.NewAccount(addr), nil
 	}
@@ -557,7 +594,7 @@ func (s *StateDB) GetCode(codeHash [32]byte) ([]byte, error) {
 	s.mu.RUnlock()
 
 	key := append([]byte(prefixCode), codeHash[:]...)
-	data, err := s.db.Get(key, nil)
+	data, err := s.rawGet(key)
 	if err == leveldb.ErrNotFound {
 		return nil, types.ErrContractNotFound
 	}
@@ -640,7 +677,7 @@ func (s *StateDB) getStorageValue(contract qcrypto.Address, slot [32]byte, inclu
 	}
 	s.mu.RUnlock()
 
-	data, err := s.db.Get([]byte(k), nil)
+	data, err := s.rawGet([]byte(k))
 	if err == leveldb.ErrNotFound {
 		return nil, nil
 	}
@@ -653,6 +690,14 @@ func (s *StateDB) FailNextStorageRead(err error) {
 	s.injectMu.Lock()
 	defer s.injectMu.Unlock()
 	s.failNextStorage = err
+}
+
+// FailNextAccountRead makes the next GetAccount return err without reading.
+// Consumed once. Tests use it for fail-closed deploy/CREATE checks (I3).
+func (s *StateDB) FailNextAccountRead(err error) {
+	s.injectMu.Lock()
+	defer s.injectMu.Unlock()
+	s.failNextAccount = err
 }
 
 // MarkX402NonceUsed stages an X402 payment nonce as used on the pending layer.
@@ -683,7 +728,7 @@ func (s *StateDB) IsX402NonceUsed(nonceKey [32]byte) (bool, error) {
 	}
 	s.mu.RUnlock()
 
-	_, err := s.db.Get([]byte(k), nil)
+	_, err := s.rawGet([]byte(k))
 	if err == leveldb.ErrNotFound {
 		return false, nil
 	}
@@ -930,6 +975,40 @@ func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error
 // guarded /state/proof cannot hold an execution slot for a full tree walk
 // after the caller has gone away.
 func (s *StateDB) MerkleProofContext(ctx context.Context, addr qcrypto.Address) ([32]byte, [][32]byte, error) {
+	p, err := s.AccountProofContext(ctx, addr)
+	if err != nil {
+		return [32]byte{}, nil, err
+	}
+	siblings := make([][32]byte, len(p.Steps))
+	for i, step := range p.Steps {
+		siblings[i] = step.Sibling
+	}
+	return p.LeafHash, siblings, nil
+}
+
+// MerkleStep is one level of an account inclusion proof. Left is true when
+// Sibling is the left child (the reconstructed node is the right child).
+// Odd nodes carried upward produce no step.
+type MerkleStep struct {
+	Sibling [32]byte
+	Left    bool
+}
+
+// AccountProof is a complete inclusion proof against one committed state view.
+type AccountProof struct {
+	Address      qcrypto.Address
+	LeafKey      string
+	LeafPreimage []byte
+	LeafHash     [32]byte
+	Steps        []MerkleStep
+	Root         [32]byte
+	Height       uint64
+	HeightKnown  bool
+}
+
+// AccountProofContext returns account bytes, sibling directions, leaf encoding
+// and the committed root/height under one lock so they are one view.
+func (s *StateDB) AccountProofContext(ctx context.Context, addr qcrypto.Address) (*AccountProof, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -937,28 +1016,32 @@ func (s *StateDB) MerkleProofContext(ctx context.Context, addr qcrypto.Address) 
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return [32]byte{}, nil, err
+		return nil, err
 	}
 
 	targetKey := prefixAccount + addr.String()
-	if _, ok := s.leaves[targetKey]; !ok {
-		return [32]byte{}, nil, fmt.Errorf("account %s not in committed state", addr)
+	valueHash, ok := s.leaves[targetKey]
+	if !ok {
+		return nil, fmt.Errorf("account %s not in committed state", addr)
 	}
 
-	// Build sorted key list — same iteration order as merkleRoot.
+	preimage, err := s.rawGet([]byte(targetKey))
+	if err != nil {
+		return nil, fmt.Errorf("committed account preimage: %w", err)
+	}
+
 	keys := make([]string, 0, len(s.leaves))
 	for k := range s.leaves {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	// Compute leaf digests and find the index of the target.
 	level := make([][32]byte, len(keys))
 	targetIdx := -1
 	for i, k := range keys {
 		if i&63 == 0 {
 			if err := ctx.Err(); err != nil {
-				return [32]byte{}, nil, err
+				return nil, err
 			}
 		}
 		level[i] = leafDigest(k, s.leaves[k])
@@ -967,37 +1050,69 @@ func (s *StateDB) MerkleProofContext(ctx context.Context, addr qcrypto.Address) 
 		}
 	}
 	if targetIdx < 0 {
-		return [32]byte{}, nil, fmt.Errorf("account %s vanished from leaves during proof generation", addr)
+		return nil, fmt.Errorf("account %s vanished from leaves during proof generation", addr)
 	}
 
-	leafHash := level[targetIdx]
-	var siblings [][32]byte
+	var steps []MerkleStep
 	idx := targetIdx
-
-	// Walk up the binary tree, collecting one sibling per level.
-	// Odd nodes at any level are carried up unchanged and have no sibling.
 	for len(level) > 1 {
 		next := make([][32]byte, 0, (len(level)+1)/2)
 		for i := 0; i < len(level); i += 2 {
 			if i+1 == len(level) {
-				// Odd node: carried up unchanged — matches merkleRoot behaviour.
 				next = append(next, level[i])
 				break
 			}
 			left, right := level[i], level[i+1]
 			next = append(next, internalHash(left, right))
-			// Collect the sibling for our proof path.
 			if idx == i {
-				siblings = append(siblings, right)
+				steps = append(steps, MerkleStep{Sibling: right, Left: false})
 			} else if idx == i+1 {
-				siblings = append(siblings, left)
+				steps = append(steps, MerkleStep{Sibling: left, Left: true})
 			}
 		}
 		idx /= 2
 		level = next
 	}
 
-	return leafHash, siblings, nil
+	return &AccountProof{
+		Address:      addr,
+		LeafKey:      targetKey,
+		LeafPreimage: append([]byte(nil), preimage...),
+		LeafHash:     leafDigest(targetKey, valueHash),
+		Steps:        steps,
+		Root:         merkleRoot(s.leaves),
+		Height:       s.appliedHeight,
+		HeightKnown:  s.heightKnown,
+	}, nil
+}
+
+// VerifyAccountProof reconstructs the state root from the leaf preimage and
+// explicit sibling directions. It is the working verifier for /state/proof.
+func VerifyAccountProof(p *AccountProof) error {
+	if p == nil {
+		return fmt.Errorf("nil account proof")
+	}
+	gotHash := qcrypto.Hash32(p.LeafPreimage)
+	wantKey := prefixAccount + p.Address.String()
+	if p.LeafKey != "" && p.LeafKey != wantKey {
+		return fmt.Errorf("leaf key %q does not match address", p.LeafKey)
+	}
+	leaf := leafDigest(wantKey, gotHash)
+	if leaf != p.LeafHash {
+		return fmt.Errorf("leaf hash does not match canonical encoding")
+	}
+	node := leaf
+	for _, step := range p.Steps {
+		if step.Left {
+			node = internalHash(step.Sibling, node)
+		} else {
+			node = internalHash(node, step.Sibling)
+		}
+	}
+	if node != p.Root {
+		return fmt.Errorf("reconstructed root does not match proof root")
+	}
+	return nil
 }
 
 // PendingStateRoot computes the state root that Commit() WOULD produce, without

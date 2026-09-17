@@ -325,7 +325,9 @@ func FunctionSelector(sig string) [4]byte {
 	return s
 }
 
-// signature renders a function's canonical signature, e.g. "transfer(address,uint256)".
+// signature renders a function's canonical ABI signature, e.g.
+// "transfer(address,uint256)". `address` is the canonical spelling (I2);
+// `sqaddress` is a legacy SDK alias that hashes to a different selector.
 func signature(fn *funcNode) string {
 	sig := fn.name + "("
 	for i, p := range fn.params {

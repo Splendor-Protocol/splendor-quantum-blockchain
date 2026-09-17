@@ -11,15 +11,24 @@ import { BridgeError } from './errors.js';
 export type AbiArg = string | number | bigint | Uint8Array;
 
 /**
- * Reject Solidity-style signatures on Splendor PQ chain.
- * QSol ABI uses `sqaddress`, not Ethereum `address`.
+ * Canonical QSol ABI spelling is `address` (compiler / I2).
+ * `sqaddress` is a legacy alias that hashes as-written to a different selector.
+ * Both are accepted; encoding never rewrites the signature string.
  */
 export function assertQSolSignature(signature: string): void {
-  if (/\baddress\b/.test(signature) && !/\bsqaddress\b/.test(signature)) {
-    throw BridgeError.rpc(
-      `QSol ABI requires sqaddress, not Solidity address. Signature: ${signature}`,
-    );
+  if (typeof signature !== 'string' || signature.length === 0) {
+    throw BridgeError.rpc('QSol ABI signature must be a non-empty string');
   }
+}
+
+/**
+ * Opt-in rewrite of the legacy `sqaddress` alias to compiler-canonical `address`.
+ * encodeFunctionData does not call this — already-deployed `sqaddress` selectors
+ * stay `14cde9ab` when hashed as written.
+ */
+export function canonicalizeAbiSignature(signature: string): string {
+  assertQSolSignature(signature);
+  return signature.replace(/\bsqaddress\b/g, 'address');
 }
 
 /** SHA3-256(signature) first 4 bytes — same as Go vm.SelectorFromSignature. */
@@ -73,8 +82,10 @@ function encodeArg(arg: AbiArg): Uint8Array {
 }
 
 /**
- * encodeFunctionData('transfer(sqaddress,uint256)', [toAddr, amount])
- * Returns Uint8Array: selector || arg0 || arg1 || ...
+ * encodeFunctionData('transfer(address,uint256)', [toAddr, amount])
+ * Selector is SHA3-256 of the signature as written:
+ *   transfer(address,uint256)  → 4b40e901  (compiler-canonical)
+ *   transfer(sqaddress,uint256) → 14cde9ab  (legacy compatibility)
  */
 export function encodeFunctionData(signature: string, args: AbiArg[] = []): Uint8Array {
   assertQSolSignature(signature);

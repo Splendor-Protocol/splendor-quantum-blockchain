@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -235,6 +236,36 @@ func TestUnknownSelectorReverts(t *testing.T) {
 }
 
 // ── ABI / selectors ───────────────────────────────────────────────────────────
+
+func TestCanonicalAddressSelectorGolden(t *testing.T) {
+	// Independently: SHA3-256("transfer(address,uint256)")[:4] = 4b40e901
+	// SHA3-256("transfer(sqaddress,uint256)")[:4] = 14cde9ab
+	got := FunctionSelector("transfer(address,uint256)")
+	if hex := fmt.Sprintf("%x", got[:]); hex != "4b40e901" {
+		t.Fatalf("canonical transfer(address,uint256) selector = %s, want 4b40e901", hex)
+	}
+	legacy := FunctionSelector("transfer(sqaddress,uint256)")
+	if hex := fmt.Sprintf("%x", legacy[:]); hex != "14cde9ab" {
+		t.Fatalf("legacy transfer(sqaddress,uint256) selector = %s, want 14cde9ab", hex)
+	}
+	c, err := Compile(tokenSrc)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	found := false
+	for _, f := range c.Functions {
+		if f.Name != "transfer" {
+			continue
+		}
+		found = true
+		if f.Signature != "transfer(address,uint256)" {
+			t.Fatalf("compiler ABI spelling = %q, want transfer(address,uint256)", f.Signature)
+		}
+	}
+	if !found {
+		t.Fatal("compiled Token has no transfer function")
+	}
+}
 
 func TestSelectorsAreSha3Based(t *testing.T) {
 	c, err := Compile(tokenSrc)
