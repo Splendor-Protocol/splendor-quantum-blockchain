@@ -26,9 +26,12 @@ type StateSnapshot struct {
 // read plane). Block is populated only for the first page of a transfer —
 // see Executor.ExportStateSnapshotChunk.
 type StateSnapshotChunkResult struct {
-	Height  uint64      `json:"height"`
-	Block   *Block      `json:"block,omitempty"`
-	Leaves  []StateLeaf `json:"leaves"`
-	NextKey []byte      `json:"next_key,omitempty"`
-	Done    bool        `json:"done"`
+	// SessionID identifies the immutable serving session; empty only when the
+	// node serves stateless pages. The client echoes it back on later pages.
+	SessionID string      `json:"session_id,omitempty"`
+	Height    uint64      `json:"height"`
+	Block     *Block      `json:"block,omitempty"`
+	Leaves    []StateLeaf `json:"leaves"`
+	NextKey   []byte      `json:"next_key,omitempty"`
+	Done      bool        `json:"done"`
 }

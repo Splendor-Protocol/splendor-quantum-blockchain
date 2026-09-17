@@ -1,11 +1,14 @@
 package block
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/rs/zerolog/log"
 
@@ -286,6 +289,119 @@ func (e *Executor) ExportStateSnapshotChunk(afterKey []byte, maxLeaves int) (*ty
 		result.Block = b
 	}
 	return result, nil
+}
+
+// snapshotSessionTTL bounds how long an immutable chunk session survives before
+// its pinned LevelDB snapshot is released and its id stops resolving.
+const snapshotSessionTTL = 10 * time.Minute
+
+// snapshotChunkSession is one in-flight immutable chunk transfer: a pinned
+// state snapshot plus the head block it was begun at.
+type snapshotChunkSession struct {
+	session *state.SnapshotSession
+	block   *types.Block
+	expires time.Time
+}
+
+// StartSnapshotChunkSession pins the state at its current height and returns an
+// opaque session id plus the FIRST page (which carries the head block). Every
+// later page uses the same id so the whole transfer reads one immutable
+// snapshot, immune to blocks committed in between. maxLeaves <= 0 requests the
+// default page size; larger values are clamped to MaxSnapshotChunkLeaves.
+func (e *Executor) StartSnapshotChunkSession(maxLeaves int) (string, *types.StateSnapshotChunkResult, error) {
+	if maxLeaves <= 0 || maxLeaves > MaxSnapshotChunkLeaves {
+		maxLeaves = MaxSnapshotChunkLeaves
+	}
+	sess, err := e.state.BeginSnapshotChunkSession()
+	if err != nil {
+		return "", nil, err
+	}
+	height := sess.Height()
+	block, err := e.GetBlockByHeight(height)
+	if err != nil {
+		sess.Release()
+		return "", nil, fmt.Errorf("state snapshot chunk at height %d has no stored block: %w", height, err)
+	}
+	leaves, nextKey, done, err := sess.Page(nil, maxLeaves)
+	if err != nil {
+		sess.Release()
+		return "", nil, err
+	}
+	id, err := randomSessionID()
+	if err != nil {
+		sess.Release()
+		return "", nil, err
+	}
+
+	e.snapshotChunkMu.Lock()
+	if e.snapshotChunkSessions == nil {
+		e.snapshotChunkSessions = make(map[string]*snapshotChunkSession)
+	}
+	e.snapshotChunkSessions[id] = &snapshotChunkSession{session: sess, block: block, expires: time.Now().Add(snapshotSessionTTL)}
+	e.sweepSnapshotChunkSessionsLocked()
+	e.snapshotChunkMu.Unlock()
+
+	return id, &types.StateSnapshotChunkResult{
+		SessionID: id,
+		Height:    height,
+		Block:     block,
+		Leaves:    leaves,
+		NextKey:   nextKey,
+		Done:      done,
+	}, nil
+}
+
+// PageSnapshotChunkSession serves one page from an existing immutable session.
+// The head block is only attached to the first page; the final page releases
+// the pinned snapshot.
+func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, maxLeaves int) (*types.StateSnapshotChunkResult, error) {
+	e.snapshotChunkMu.Lock()
+	sc := e.snapshotChunkSessions[sessionID]
+	e.snapshotChunkMu.Unlock()
+	if sc == nil {
+		return nil, fmt.Errorf("unknown or expired snapshot session %q; start a new transfer", sessionID)
+	}
+
+	leaves, nextKey, done, err := sc.session.Page(afterKey, maxLeaves)
+	if err != nil {
+		return nil, err
+	}
+	result := &types.StateSnapshotChunkResult{
+		SessionID: sessionID,
+		Height:    sc.session.Height(),
+		Leaves:    leaves,
+		NextKey:   nextKey,
+		Done:      done,
+	}
+	if done {
+		e.snapshotChunkMu.Lock()
+		if cur, ok := e.snapshotChunkSessions[sessionID]; ok && cur == sc {
+			delete(e.snapshotChunkSessions, sessionID)
+			sc.session.Release()
+		}
+		e.snapshotChunkMu.Unlock()
+	}
+	return result, nil
+}
+
+// sweepSnapshotChunkSessionsLocked releases expired sessions. Caller holds
+// snapshotChunkMu.
+func (e *Executor) sweepSnapshotChunkSessionsLocked() {
+	now := time.Now()
+	for id, sc := range e.snapshotChunkSessions {
+		if now.After(sc.expires) {
+			sc.session.Release()
+			delete(e.snapshotChunkSessions, id)
+		}
+	}
+}
+
+func randomSessionID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("snapshot session id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // ImportStateSnapshot adopts a peer's state at its head block on a node with

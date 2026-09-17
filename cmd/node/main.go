@@ -1251,18 +1251,24 @@ func runNode(cmd *cobra.Command, args []string) error {
 			}
 			return json.Marshal(snap)
 		},
-		// Chunked counterpart of ServeStateSnapshot: pages through the state
-		// MaxSnapshotChunkLeaves at a time instead of scanning and buffering
-		// it whole, so a state near MaxStateSnapshotBytes does not require
-		// this node to hold the entire thing (and its base64 form) in memory
-		// to serve a single joiner. Guarded by the same single-flight gate:
-		// a full chunked transfer still counts as one export in progress.
-		ServeStateSnapshotChunk: func(afterKey []byte, maxLeaves int) ([]byte, error) {
+		// Chunked counterpart of ServeStateSnapshot. The first page (empty
+		// sessionID and cursor) pins one immutable snapshot session and returns
+		// its id; later pages echo it back so every page reads the same state.
+		// Guarded by the same single-flight gate as the single-shot form.
+		ServeStateSnapshotChunk: func(sessionID string, afterKey []byte, maxLeaves int) ([]byte, error) {
 			if !snapshotInFlight.CompareAndSwap(false, true) {
 				return nil, errors.New("a state snapshot export is already in progress, retry shortly")
 			}
 			defer snapshotInFlight.Store(false)
-			chunk, err := executor.ExportStateSnapshotChunk(afterKey, maxLeaves)
+			var (
+				chunk *types.StateSnapshotChunkResult
+				err   error
+			)
+			if sessionID == "" && len(afterKey) == 0 {
+				_, chunk, err = executor.StartSnapshotChunkSession(maxLeaves)
+			} else {
+				chunk, err = executor.PageSnapshotChunkSession(sessionID, afterKey, maxLeaves)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("state snapshot chunk not available: %w", err)
 			}

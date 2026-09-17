@@ -71,6 +71,9 @@ func IsReadKind(kind string) bool {
 // query. AfterKey is nil/empty for the first chunk; every later request
 // carries the NextKey the previous chunk returned.
 type GetStateSnapshotChunkRequest struct {
+	// SessionID pins all pages to one immutable snapshot; a client sends it
+	// back on every page after the first.
+	SessionID string `json:"session_id,omitempty"`
 	AfterKey  []byte `json:"after_key,omitempty"`
 	MaxLeaves int    `json:"max_leaves"`
 }
@@ -81,11 +84,12 @@ type GetStateSnapshotChunkRequest struct {
 // retry the whole thing, since a state_root check spanning two different
 // heights can never legitimately pass.
 type StateSnapshotChunk struct {
-	Height  uint64            `json:"height"`
-	Block   *types.Block      `json:"block,omitempty"` // set only on the first chunk
-	Leaves  []types.StateLeaf `json:"leaves"`
-	NextKey []byte            `json:"next_key,omitempty"`
-	Done    bool              `json:"done"`
+	SessionID string            `json:"session_id,omitempty"`
+	Height    uint64            `json:"height"`
+	Block     *types.Block      `json:"block,omitempty"` // set only on the first chunk
+	Leaves    []types.StateLeaf `json:"leaves"`
+	NextKey   []byte            `json:"next_key,omitempty"`
+	Done      bool              `json:"done"`
 }
 
 // SealedRequest is the plaintext inside an Envelope.

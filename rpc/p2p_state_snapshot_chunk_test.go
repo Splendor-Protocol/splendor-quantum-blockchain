@@ -31,7 +31,7 @@ func chunkedSnapshotPeer(t *testing.T, head *types.Block, allLeaves []types.Stat
 	RegisterP2PRoutes(router, P2PConfig{
 		Identity: identity,
 		Token:    "write-secret",
-		ServeStateSnapshotChunk: func(afterKey []byte, maxLeaves int) ([]byte, error) {
+		ServeStateSnapshotChunk: func(sessionID string, afterKey []byte, maxLeaves int) ([]byte, error) {
 			if maxLeaves <= 0 {
 				maxLeaves = 2
 			}
@@ -50,9 +50,10 @@ func chunkedSnapshotPeer(t *testing.T, head *types.Block, allLeaves []types.Stat
 				end = len(allLeaves)
 			}
 			chunk := network.StateSnapshotChunk{
-				Height: head.Header.Height,
-				Leaves: allLeaves[start:end],
-				Done:   done,
+				Height:    head.Header.Height,
+				Leaves:    allLeaves[start:end],
+				Done:      done,
+				SessionID: sessionID,
 			}
 			if !done {
 				chunk.NextKey = allLeaves[end-1].Key

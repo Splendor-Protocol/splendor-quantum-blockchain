@@ -154,6 +154,7 @@ func (f *BlockFetcher) FetchStateSnapshotChunked(peerAddr string, chunkSize int)
 		haveHeight bool
 		leaves     []types.StateLeaf
 		afterKey   []byte
+		sessionID  string
 		totalBytes int
 	)
 	const maxPages = 1 << 16 // far above any real state; a hard stop against a loop bug
@@ -166,7 +167,7 @@ func (f *BlockFetcher) FetchStateSnapshotChunked(peerAddr string, chunkSize int)
 			return nil, fmt.Errorf("state snapshot from %s: transfer exceeded %s", peerAddr, snapshotFetchTimeout)
 		}
 
-		reqBody, err := json.Marshal(GetStateSnapshotChunkRequest{AfterKey: afterKey, MaxLeaves: chunkSize})
+		reqBody, err := json.Marshal(GetStateSnapshotChunkRequest{SessionID: sessionID, AfterKey: afterKey, MaxLeaves: chunkSize})
 		if err != nil {
 			return nil, fmt.Errorf("marshal chunk request: %w", err)
 		}
@@ -187,6 +188,9 @@ func (f *BlockFetcher) FetchStateSnapshotChunked(peerAddr string, chunkSize int)
 				return nil, fmt.Errorf("state snapshot chunk from %s carries no head block on its first page", peerAddr)
 			}
 			head = chunk.Block
+			// Carry the server's session across pages so the whole transfer
+			// reads one immutable snapshot (empty if the peer is pre-session).
+			sessionID = chunk.SessionID
 			// Authenticate the head NOW, before requesting any further page:
 			// do not keep downloading a snapshot whose head we reject anyway.
 			if err := authenticateSnapshotHead(peerAddr, trusted, head, height); err != nil {
@@ -243,6 +247,12 @@ func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
 	var refusals []string
 	for _, peer := range peers {
 		snap, err := s.fetcher.FetchStateSnapshot(peer)
+		if err != nil {
+			// Bounded legacy fallback: the chunked path covers states too large
+			// to serve in one reply and carries the same trust rules.
+			log.Debug().Err(err).Str("peer", peer).Msg("state sync: single-shot snapshot unavailable, trying chunked")
+			snap, err = s.fetcher.FetchStateSnapshotChunked(peer, 0)
+		}
 		if err != nil {
 			log.Warn().Err(err).Str("peer", peer).Msg("state sync: snapshot not usable")
 			refusals = append(refusals, fmt.Sprintf("%s: %v", peer, err))

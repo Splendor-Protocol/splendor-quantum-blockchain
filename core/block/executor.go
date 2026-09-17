@@ -115,6 +115,12 @@ type Executor struct {
 	// the pointer cannot change while a block is in flight: every in-block
 	// read (execCall) sees the schedule installed when the block began.
 	forks atomic.Pointer[forks.Schedule]
+
+	// snapshotChunkSessions holds in-flight immutable chunked-snapshot serving
+	// sessions, keyed by an opaque session id handed to the client on the first
+	// page (see StartSnapshotChunkSession / PageSnapshotChunkSession).
+	snapshotChunkMu       sync.Mutex
+	snapshotChunkSessions map[string]*snapshotChunkSession
 }
 
 // ErrQuorumRequired is returned by ProduceBlock when multi_validator is active

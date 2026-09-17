@@ -60,6 +60,61 @@ func TestExportStateSnapshotRefusesEmptyChain(t *testing.T) {
 	}
 }
 
+// SnapshotChunkSession must stay pinned at the height it was begun at even
+// after the chain advances: every page reports the START height, and the final
+// page releases the session so its id stops resolving.
+func TestSnapshotChunkSessionIsImmutableAcrossCommits(t *testing.T) {
+	ex, _, vpub, vpriv, _, _ := threeBlockChain(t)
+	vaddr := qcrypto.DeriveAddress(vpub)
+	headBefore, _ := ex.LatestBlock()
+
+	id, first, err := ex.StartSnapshotChunkSession(1)
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if id == "" || first.SessionID != id {
+		t.Fatalf("session id %q not echoed in first page %q", id, first.SessionID)
+	}
+	if first.Block == nil || first.Height != headBefore.Header.Height {
+		t.Fatalf("first page height %d block %v, want head %d with a block", first.Height, first.Block == nil, headBefore.Header.Height)
+	}
+	if first.Done {
+		t.Fatalf("state produced only one page (leaves=%d); cannot exercise multi-page immutability", len(first.Leaves))
+	}
+
+	// Advance the chain while the session is open.
+	if _, err := ex.ProduceBlock(nil, vaddr, vpub.Bytes(), vpriv, headBefore.Hash, headBefore.Header.Height+1); err != nil {
+		t.Fatalf("produce block %d: %v", headBefore.Header.Height+1, err)
+	}
+
+	collected := len(first.Leaves)
+	page := first
+	after := first.NextKey
+	for !page.Done {
+		next, err := ex.PageSnapshotChunkSession(id, after, 1)
+		if err != nil {
+			t.Fatalf("page after %x: %v", after, err)
+		}
+		if next.Height != headBefore.Header.Height {
+			t.Fatalf("page height %d, want pinned session height %d", next.Height, headBefore.Header.Height)
+		}
+		if next.SessionID != id {
+			t.Fatalf("page session id %q, want %q", next.SessionID, id)
+		}
+		collected += len(next.Leaves)
+		page = next
+		after = next.NextKey
+	}
+	if collected == 0 {
+		t.Fatal("collected no leaves across the whole session")
+	}
+
+	// The final page released the session; the same id must now be unknown.
+	if _, err := ex.PageSnapshotChunkSession(id, nil, 1); err == nil {
+		t.Fatal("session still resolvable after the final page; it should have been released")
+	}
+}
+
 // Export from A after three blocks, import into a fresh B, and B applies A's
 // block 4 — the whole point: B never replayed 1..3.
 func TestImportStateSnapshotRoundTrip(t *testing.T) {
