@@ -1,5 +1,26 @@
 # Splendor Quantum Chain
 
+## Connect to a node
+
+| Network | Chain id | Node RPC | Explorer |
+|---|---|---|---|
+| **Mainnet** | `splendor-quantum-1` | `https://quantum-rpc.splendor.org` | `https://quantum-explorer.splendor.org` |
+| Testnet | `splendor-quantum-testnet-1` | `https://quantum-rpc-testnet.splendor.org` | `https://quantum-testnet-explorer.splendor.org` |
+| Devnet | `splendor-quantum-devnet-1` | `https://quantum-rpc-devnet.splendor.org` | `https://quantum-devnet-explorer.splendor.org` |
+
+Every tier runs node release `v1.1.0` (commit `b8e31a0`). Mainnet was
+re-minted on 17 September 2026 (22:21 UTC); its genesis hash is
+`d865193d3bd88fb4446626940e63b5658275342a0153638079cf9e962332a257`, the
+value to pin with `--genesis-hash` when you follow the chain. Test coins for testnet
+and devnet: `https://quantum-faucet.splendor.org`. Indexer read API:
+`<rpc>/idx/v1`. Live heights, fork schedules and the rest of the tier
+table are in [§20](#20-live-networks-and-endpoints); running your own
+node is in [docs/RPC_NODE.md](docs/RPC_NODE.md).
+
+```bash
+curl -s https://quantum-rpc.splendor.org/status | jq '{chain_id, height, image_tag, genesis_hash}'
+```
+
 ### Post-quantum account and validator cryptography from genesis.
 
 > **Splendor Quantum Chain is a new Layer-1 whose native accounts,
@@ -1834,7 +1855,7 @@ freshness or production readiness.
 
 <!-- tiers:begin -->
 Live rows were read from each tier's `/status`, `/block/0` and
-`/idx/v1/health` at **2026-09-10T15:14Z** by `npm run readme:tiers`, which
+`/idx/v1/health` at **2026-09-17T22:21Z** by `npm run readme:tiers`, which
 `npm run deploy` runs after every verified rollout. Do not edit this table by
 hand; edit `scripts/readme-tiers.mjs` and regenerate.
 
@@ -1846,14 +1867,14 @@ hand; edit `scripts/readme-tiers.mjs` and regenerate.
 | Explorer | `https://quantum-devnet-explorer.splendor.org` | `https://quantum-testnet-explorer.splendor.org` | `https://quantum-explorer.splendor.org` |
 | Faucet | `https://quantum-faucet.splendor.org` | `https://quantum-faucet.splendor.org` | none, by design |
 | Chain id | `splendor-quantum-devnet-1` | `splendor-quantum-testnet-1` | `splendor-quantum-1` |
-| Node image / commit | `sqc-node:v1.0.16` / `9037eee0e3d6` | `sqc-node:v1.0.12` / `a3964a4259d2` | `sqc-node:v1.0.16` / `9037eee0e3d6` |
+| Node image / commit | `sqc-node:v1.1.0` / `b8e31a0c0d96` | `sqc-node:v1.1.0` / `b8e31a0c0d96` | `sqc-node:v1.1.0` / `b8e31a0c0d96` |
 | Indexer image | `sqc-indexer:v0.3.3-56d5e27` | `sqc-indexer:v0.3.3-56d5e27` | `sqc-indexer:v0.3.3-56d5e27` |
-| Height | 79,775 | 137,631 | 5,680 |
-| Fork schedule (`/status.forks`) | `exchange_v1`, `module_revert_v1`, `qrc1155_v1`, `qrc20_v2` at 1; `modules_v2` at 25,990; `multi_validator`, `validators_v1` at 74,075; `validators_admission_v1` at 80,056; `vm_revert_v1` at 130,000 | `bridge_v1`, `exchange_v1`, `module_revert_v1`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1; `modules_v2` at 74,674 | `exchange_v1`, `module_revert_v1`, `modules_v2`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1 |
+| Height | 107,299 | 435,017 | 88 |
+| Fork schedule (`/status.forks`) | `exchange_v1`, `module_revert_v1`, `modules_v2`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_admission_v1`, `validators_v1` at 1; `vm_revert_v1` at 130,000 | `bridge_v1`, `exchange_v1`, `module_revert_v1`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1; `modules_v2` at 74,674 | `module_revert_v1`, `modules_v2`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_admission_v1`, `validators_v1` at 1 |
 | Consensus (`/status.consensus_mode`, `head_qc_valid`) | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote |
 | Registered validators (`validator_set_size`) | 0 | 0 | 0 |
-| Genesis block hash (`/status.genesis_hash`) | `c341a89bb740a516ff0c3bbd703d6ebd5badaf5bec52f11e73b081c6992458b8` | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` | `ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949` |
-| Genesis validator (`/block/0`) | `SQ:8d2eeb30163d2b0b6d472fcdf14065e5d81151718ca0bcb068b0308de3cc0aa3` | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
+| Genesis block hash (`/status.genesis_hash`) | `1062b1ff435ef047906cf2c1e3f282eee670817d20157969749d2aaf6d23e87d` | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` | `d865193d3bd88fb4446626940e63b5658275342a0153638079cf9e962332a257` |
+| Genesis validator (`/block/0`) | `SQ:bcc5a8257f479089528bc144df5a2fad69752c089747cd7798325467ac7e2229` | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
 | Peers reported | 0 | 0 | 0 |
 <!-- tiers:end -->
 
