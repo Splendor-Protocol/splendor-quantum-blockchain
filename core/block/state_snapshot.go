@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -295,12 +296,28 @@ func (e *Executor) ExportStateSnapshotChunk(afterKey []byte, maxLeaves int) (*ty
 // its pinned LevelDB snapshot is released and its id stops resolving.
 const snapshotSessionTTL = 10 * time.Minute
 
+const (
+	maxSnapshotChunkSessions          = 32
+	maxSnapshotChunkSessionsPerSource = 4
+)
+
+func normalizeSnapshotChunkLeaves(n int) int {
+	if n <= 0 || n > MaxSnapshotChunkLeaves {
+		return MaxSnapshotChunkLeaves
+	}
+	return n
+}
+
 // snapshotChunkSession is one in-flight immutable chunk transfer: a pinned
 // state snapshot plus the head block it was begun at.
 type snapshotChunkSession struct {
-	session *state.SnapshotSession
-	block   *types.Block
-	expires time.Time
+	mu       sync.Mutex
+	session  *state.SnapshotSession
+	block    *types.Block
+	expires  time.Time
+	source   string
+	final    *types.StateSnapshotChunkResult
+	replayed bool
 }
 
 // StartSnapshotChunkSession pins the state at its current height and returns an
@@ -309,9 +326,13 @@ type snapshotChunkSession struct {
 // snapshot, immune to blocks committed in between. maxLeaves <= 0 requests the
 // default page size; larger values are clamped to MaxSnapshotChunkLeaves.
 func (e *Executor) StartSnapshotChunkSession(maxLeaves int) (string, *types.StateSnapshotChunkResult, error) {
-	if maxLeaves <= 0 || maxLeaves > MaxSnapshotChunkLeaves {
-		maxLeaves = MaxSnapshotChunkLeaves
-	}
+	return e.StartSnapshotChunkSessionFrom("", maxLeaves)
+}
+
+// StartSnapshotChunkSessionFrom is StartSnapshotChunkSession keyed by source
+// for the per-peer session quota. Empty source still counts toward the global cap.
+func (e *Executor) StartSnapshotChunkSessionFrom(source string, maxLeaves int) (string, *types.StateSnapshotChunkResult, error) {
+	maxLeaves = normalizeSnapshotChunkLeaves(maxLeaves)
 	sess, err := e.state.BeginSnapshotChunkSession()
 	if err != nil {
 		return "", nil, err
@@ -333,33 +354,70 @@ func (e *Executor) StartSnapshotChunkSession(maxLeaves int) (string, *types.Stat
 		return "", nil, err
 	}
 
-	e.snapshotChunkMu.Lock()
-	if e.snapshotChunkSessions == nil {
-		e.snapshotChunkSessions = make(map[string]*snapshotChunkSession)
-	}
-	e.snapshotChunkSessions[id] = &snapshotChunkSession{session: sess, block: block, expires: time.Now().Add(snapshotSessionTTL)}
-	e.sweepSnapshotChunkSessionsLocked()
-	e.snapshotChunkMu.Unlock()
-
-	return id, &types.StateSnapshotChunkResult{
+	result := &types.StateSnapshotChunkResult{
 		SessionID: id,
 		Height:    height,
 		Block:     block,
 		Leaves:    leaves,
 		NextKey:   nextKey,
 		Done:      done,
-	}, nil
+	}
+	// A first page that is already the whole snapshot does not need a
+	// retained session — the client retries by starting again.
+	if done {
+		sess.Release()
+		return id, result, nil
+	}
+
+	e.snapshotChunkMu.Lock()
+	if e.snapshotChunkSessions == nil {
+		e.snapshotChunkSessions = make(map[string]*snapshotChunkSession)
+	}
+	e.sweepSnapshotChunkSessionsLocked()
+	if err := e.reserveSnapshotChunkSessionLocked(source); err != nil {
+		e.snapshotChunkMu.Unlock()
+		sess.Release()
+		return "", nil, err
+	}
+	e.snapshotChunkSessions[id] = &snapshotChunkSession{
+		session: sess, block: block, expires: time.Now().Add(snapshotSessionTTL), source: source,
+	}
+	e.snapshotChunkMu.Unlock()
+
+	return id, result, nil
 }
 
 // PageSnapshotChunkSession serves one page from an existing immutable session.
 // The head block is only attached to the first page; the final page releases
 // the pinned snapshot.
 func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, maxLeaves int) (*types.StateSnapshotChunkResult, error) {
+	maxLeaves = normalizeSnapshotChunkLeaves(maxLeaves)
 	e.snapshotChunkMu.Lock()
+	e.sweepSnapshotChunkSessionsLocked()
 	sc := e.snapshotChunkSessions[sessionID]
-	e.snapshotChunkMu.Unlock()
 	if sc == nil {
+		e.snapshotChunkMu.Unlock()
 		return nil, fmt.Errorf("unknown or expired snapshot session %q; start a new transfer", sessionID)
+	}
+	if time.Now().After(sc.expires) {
+		e.releaseSnapshotChunkSessionLocked(sessionID, sc)
+		e.snapshotChunkMu.Unlock()
+		return nil, fmt.Errorf("unknown or expired snapshot session %q; start a new transfer", sessionID)
+	}
+	e.snapshotChunkMu.Unlock()
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.final != nil {
+		if sc.replayed {
+			e.snapshotChunkMu.Lock()
+			e.releaseSnapshotChunkSessionLocked(sessionID, sc)
+			e.snapshotChunkMu.Unlock()
+			return nil, fmt.Errorf("unknown or expired snapshot session %q; start a new transfer", sessionID)
+		}
+		sc.replayed = true
+		cp := *sc.final
+		return &cp, nil
 	}
 
 	leaves, nextKey, done, err := sc.session.Page(afterKey, maxLeaves)
@@ -374,12 +432,9 @@ func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, m
 		Done:      done,
 	}
 	if done {
-		e.snapshotChunkMu.Lock()
-		if cur, ok := e.snapshotChunkSessions[sessionID]; ok && cur == sc {
-			delete(e.snapshotChunkSessions, sessionID)
-			sc.session.Release()
-		}
-		e.snapshotChunkMu.Unlock()
+		cp := *result
+		sc.final = &cp
+		// Keep the session so a lost final page can be replayed once.
 	}
 	return result, nil
 }
@@ -390,9 +445,43 @@ func (e *Executor) sweepSnapshotChunkSessionsLocked() {
 	now := time.Now()
 	for id, sc := range e.snapshotChunkSessions {
 		if now.After(sc.expires) {
-			sc.session.Release()
-			delete(e.snapshotChunkSessions, id)
+			e.releaseSnapshotChunkSessionLocked(id, sc)
 		}
+	}
+}
+
+func (e *Executor) releaseSnapshotChunkSessionLocked(id string, sc *snapshotChunkSession) {
+	if sc != nil && sc.session != nil {
+		sc.session.Release()
+		sc.session = nil
+	}
+	delete(e.snapshotChunkSessions, id)
+}
+
+func (e *Executor) reserveSnapshotChunkSessionLocked(source string) error {
+	if len(e.snapshotChunkSessions) >= maxSnapshotChunkSessions {
+		return fmt.Errorf("too many snapshot chunk sessions in flight (max %d)", maxSnapshotChunkSessions)
+	}
+	if source == "" {
+		return nil
+	}
+	n := 0
+	for _, sc := range e.snapshotChunkSessions {
+		if sc.source == source {
+			n++
+		}
+	}
+	if n >= maxSnapshotChunkSessionsPerSource {
+		return fmt.Errorf("too many snapshot chunk sessions from this source (max %d)", maxSnapshotChunkSessionsPerSource)
+	}
+	return nil
+}
+
+func (e *Executor) releaseAllSnapshotChunkSessions() {
+	e.snapshotChunkMu.Lock()
+	defer e.snapshotChunkMu.Unlock()
+	for id, sc := range e.snapshotChunkSessions {
+		e.releaseSnapshotChunkSessionLocked(id, sc)
 	}
 }
 

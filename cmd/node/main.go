@@ -1278,7 +1278,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 		// sessionID and cursor) pins one immutable snapshot session and returns
 		// its id; later pages echo it back so every page reads the same state.
 		// Guarded by the same single-flight gate as the single-shot form.
-		ServeStateSnapshotChunk: func(sessionID string, afterKey []byte, maxLeaves int) ([]byte, error) {
+		ServeStateSnapshotChunk: func(sessionID string, afterKey []byte, maxLeaves int, source string) ([]byte, error) {
 			if !snapshotInFlight.CompareAndSwap(false, true) {
 				return nil, errors.New("a state snapshot export is already in progress, retry shortly")
 			}
@@ -1288,7 +1288,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 				err   error
 			)
 			if sessionID == "" && len(afterKey) == 0 {
-				_, chunk, err = executor.StartSnapshotChunkSession(maxLeaves)
+				_, chunk, err = executor.StartSnapshotChunkSessionFrom(source, maxLeaves)
 			} else {
 				chunk, err = executor.PageSnapshotChunkSession(sessionID, afterKey, maxLeaves)
 			}

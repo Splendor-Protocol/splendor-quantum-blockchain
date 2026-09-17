@@ -298,8 +298,9 @@ func (e *Executor) Forks() forks.Schedule {
 	return cloneSchedule(s)
 }
 
-// Close closes the chain database.
+// Close closes the chain database and releases pinned snapshot sessions.
 func (e *Executor) Close() error {
+	e.releaseAllSnapshotChunkSessions()
 	return e.chainDB.Close()
 }
 

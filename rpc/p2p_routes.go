@@ -74,7 +74,7 @@ type P2PConfig struct {
 	// means the node does not support chunked transfer (only the single-shot
 	// form above). sessionID is empty on the first page and echoes the session
 	// the first page returned thereafter.
-	ServeStateSnapshotChunk func(sessionID string, afterKey []byte, maxLeaves int) ([]byte, error)
+	ServeStateSnapshotChunk func(sessionID string, afterKey []byte, maxLeaves int, source string) ([]byte, error)
 }
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
@@ -327,7 +327,7 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			writeError(w, http.StatusBadRequest, "invalid get_state_snapshot_chunk body")
 			return
 		}
-		payload, err = cfg.ServeStateSnapshotChunk(q.SessionID, q.AfterKey, q.MaxLeaves)
+		payload, err = cfg.ServeStateSnapshotChunk(q.SessionID, q.AfterKey, q.MaxLeaves, sealedClientKey(r))
 	default:
 		writeError(w, http.StatusBadRequest, "unknown sealed read kind")
 		return

@@ -282,10 +282,7 @@ func (ss *SnapshotSession) Height() uint64 { return ss.height }
 // Page returns up to maxLeaves leaves whose keys sort strictly after afterKey,
 // from the pinned snapshot — every call in a transfer sees the same state.
 func (ss *SnapshotSession) Page(afterKey []byte, maxLeaves int) ([]types.StateLeaf, []byte, bool, error) {
-	if maxLeaves <= 0 {
-		return nil, nil, false, errors.New("state: chunk size must be positive")
-	}
-	if maxLeaves > MaxChunkLeaves {
+	if maxLeaves <= 0 || maxLeaves > MaxChunkLeaves {
 		maxLeaves = MaxChunkLeaves
 	}
 	return pageSnapshot(ss.snapshot, afterKey, maxLeaves)
