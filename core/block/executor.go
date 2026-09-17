@@ -85,6 +85,15 @@ type Executor struct {
 	hooks    *HookRegistry // optional; nil = no hooks
 	txIndex  receiptStorer // optional; nil = don't store receipts
 
+	// txIndexHole is set once a live reconcile finds a historical height whose
+	// receipts exist nowhere on this node (state.ErrTxIndexIncomplete). The
+	// watermark can never pass it, so recordTxIndex stops re-walking to it on
+	// every block. Cleared only by a restart, which re-checks once.
+	txIndexHole atomic.Bool
+	// txIndexWalking is true while StartTxIndexReconcile's walk runs, so the
+	// per-block hole reconcile does not start a second one beside it.
+	txIndexWalking atomic.Bool
+
 	// dataDir is the node's data directory, used to place the snapshot-import
 	// recovery marker (see state_snapshot.go) alongside chaindata. Derived
 	// from chainDBPath in NewExecutor; empty only in tests that skip it, in
@@ -219,6 +228,11 @@ func (e *Executor) recordTxIndex(b *types.Block, receipts []*types.Receipt) {
 			log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: record failed; retrying before reconcile")
 			if err := prog.RecordBlock(b, receipts); err != nil {
 				log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: retry failed; reconciling now")
+				if e.txIndexWalking.Load() {
+					// The boot walk is a second walker over the same store;
+					// the first reconcile after it ends repairs this height.
+					return
+				}
 				if rerr := e.ReconcileTxIndex(); rerr != nil {
 					log.Warn().Err(rerr).Msg("tx index: live reconcile failed")
 				}
@@ -227,7 +241,19 @@ func (e *Executor) recordTxIndex(b *types.Block, receipts []*types.Receipt) {
 		}
 		if applied, ok := e.state.AppliedHeight(); ok {
 			if ih, iok := prog.IndexedHeight(); !iok || ih < applied {
+				if e.txIndexWalking.Load() || e.txIndexHole.Load() {
+					// The boot-time walk is still running and will reach this
+					// height, or a historical height nothing here can complete
+					// keeps the watermark down for good; walking up to it again
+					// on every block buys nothing.
+					return
+				}
 				if rerr := e.ReconcileTxIndex(); rerr != nil {
+					if errors.Is(rerr, state.ErrTxIndexIncomplete) {
+						log.Warn().Err(rerr).Uint64("indexed", ih).Uint64("applied", applied).
+							Msg("tx index: a historical height has receipts nowhere on this node; the watermark stays below it, /readyz reports the index behind, and this is not retried per block")
+						return
+					}
 					log.Warn().Err(rerr).Msg("tx index: hole reconcile failed")
 				}
 			}
@@ -292,7 +318,7 @@ func (e *Executor) ReconcileTxIndex() error {
 	if start > applied {
 		return nil
 	}
-	return prog.Backfill(start, applied, func(h uint64) (*types.Block, []*types.Receipt, error) {
+	err := prog.Backfill(start, applied, func(h uint64) (*types.Block, []*types.Receipt, error) {
 		b, err := e.GetBlockByHeight(h)
 		if errors.Is(err, types.ErrBlockNotFound) {
 			return nil, nil, nil
@@ -306,6 +332,34 @@ func (e *Executor) ReconcileTxIndex() error {
 		}
 		return b, receipts, nil
 	})
+	if errors.Is(err, state.ErrTxIndexIncomplete) {
+		e.txIndexHole.Store(true)
+	}
+	return err
+}
+
+// StartTxIndexReconcile runs ReconcileTxIndex on its own goroutine and
+// reports the result to done. A node upgraded from a build with no index
+// watermark walks its whole chain once; doing that before the listener is up
+// and before sealing left a tier silent for the length of its history, so
+// the walk runs beside the node instead. While it runs, recordTxIndex does
+// not start a second walk; /readyz keeps reporting the index behind until
+// the watermark catches up.
+func (e *Executor) StartTxIndexReconcile(done func(error)) {
+	if e.txIndex == nil {
+		if done != nil {
+			done(nil)
+		}
+		return
+	}
+	e.txIndexWalking.Store(true)
+	go func() {
+		err := e.ReconcileTxIndex()
+		e.txIndexWalking.Store(false)
+		if done != nil {
+			done(err)
+		}
+	}()
 }
 
 // snapshotIndexGapStart reports the first stored height when block 1 is

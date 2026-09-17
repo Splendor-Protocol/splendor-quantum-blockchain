@@ -707,8 +707,20 @@ func runNode(cmd *cobra.Command, args []string) error {
 		log.Warn().Msg("skipping ReconcileState until snapshot import completes; the snapshot head is not a replayable chain prefix")
 	} else if err := executor.ReconcileState(); err != nil {
 		return fmt.Errorf("state reconciliation failed: %w", err)
-	} else if err := executor.ReconcileTxIndex(); err != nil {
-		log.Warn().Err(err).Msg("tx index backfill failed; /readyz will stay not-ready until it catches up")
+	} else {
+		// The tx-index walk is not a precondition for serving or sealing: it
+		// only moves /readyz, and on a node upgraded from a build with no
+		// index watermark it reads the whole chain once. It runs beside the
+		// node rather than in front of it.
+		indexWalkStarted := time.Now()
+		executor.StartTxIndexReconcile(func(err error) {
+			if err != nil {
+				log.Warn().Err(err).Dur("took", time.Since(indexWalkStarted)).
+					Msg("tx index backfill failed; /readyz will stay not-ready until it catches up")
+				return
+			}
+			log.Info().Dur("took", time.Since(indexWalkStarted)).Msg("tx index reconciled")
+		})
 	}
 
 	// ── Genesis (if chain is empty) ────────────────────────────────────────
