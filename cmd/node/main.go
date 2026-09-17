@@ -361,9 +361,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// A prior --state-sync import that was interrupted mid-flight leaves a
 	// recovery marker on disk; resolve it before anything else touches the
 	// chain or state DB so the node never runs consensus on a half-imported
-	// snapshot. See core/block/state_snapshot.go for the recovery phases.
-	if err := executor.ReconcileSnapshotImport(); err != nil {
-		return fmt.Errorf("snapshot import recovery: %w", err)
+	// snapshot. A retryable incomplete import is not fatal when --state-sync
+	// is set: the retry path below can resume. See core/block/state_snapshot.go.
+	if err := reconcileSnapshotImportAtStartup(executor, flagStateSync); err != nil {
+		return err
 	}
 
 	// Optional: TX index + receipt store
@@ -625,6 +626,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 	syncCfg := network.DefaultSyncConfig(trustedPK)
 	syncCfg.Identities = broadcaster.Identities()
 	syncCfg.AllowPlaintext = flagAllowPlaintextP2P
+	syncCfg.SnapshotStagingDir = filepath.Join(flagDataDir, "chain", "snapshot_download")
+	syncCfg.AdoptSnapshotDownload = executor.ImportSnapshotDownload
 	// Under a rotating BFT leader most blocks are sealed by a registered
 	// validator other than the genesis one; the registry is the second key
 	// ring. ExecuteBlock still verifies the certificate.
@@ -712,7 +715,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// not mint. It must take a block from the network before it produces one,
 	// and it pull-syncs on every path — see the Ready gate and pullsBlocks.
 	var joiningValidator bool
-	if latestBlock, _ := executor.LatestBlock(); latestBlock == nil && flagStateSync {
+	latestBlock, _ := executor.LatestBlock()
+	if shouldRunStateSync(flagStateSync, latestBlock, executor.HasIncompleteSnapshotImport()) {
 		if err := validateStateSyncFlags(flagIsValidator, trustedPK, genesisHashPin, flagGenesisPath, flagPeers); err != nil {
 			return err
 		}
@@ -724,7 +728,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 			syncer:   syncer,
 			retry:    syncCfg.RetryDelay,
 		}
-		if flagGenesisPath != "" {
+		if latestBlock != nil {
+			// A previous attempt already stored the snapshot head (and the
+			// genesis bookkeeping). Do not re-prepare; Import resumes state.
+			deps.genesisPrepared = true
+		} else if flagGenesisPath != "" {
 			g, err := genesiscfg.LoadFile(flagGenesisPath)
 			if err != nil {
 				return fmt.Errorf("load genesis %q: %w", flagGenesisPath, err)
@@ -1287,8 +1295,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 				chunk *types.StateSnapshotChunkResult
 				err   error
 			)
-			if sessionID == "" && len(afterKey) == 0 {
-				_, chunk, err = executor.StartSnapshotChunkSessionFrom(source, maxLeaves)
+			if sessionID == "" {
+				_, chunk, err = executor.StartSnapshotChunkSessionFromAt(source, afterKey, maxLeaves)
 			} else {
 				chunk, err = executor.PageSnapshotChunkSession(sessionID, afterKey, maxLeaves)
 			}

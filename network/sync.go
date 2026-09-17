@@ -92,6 +92,20 @@ type SyncConfig struct {
 	// can be authenticated (see VerifyBlockProducer). nil keeps the single
 	// pinned-key rule. Block 0 is never resolved through it.
 	LookupProducerKey ProducerKeyLookup
+
+	// SnapshotStagingDir is the on-disk staging area for a chunked state
+	// snapshot download. Empty uses a temporary directory (no resume).
+	SnapshotStagingDir string
+
+	// MaxSnapshotDiskBytes caps the whole staged snapshot (raw key+value
+	// bytes), separate from the per-page wire cap. Zero uses
+	// state.DefaultMaxSnapshotDiskBytes.
+	MaxSnapshotDiskBytes int64
+
+	// AdoptSnapshotDownload imports a completed staging directory without
+	// assembling every leaf in RAM. When nil, StateSync assembles and calls
+	// the supplied importer.
+	AdoptSnapshotDownload func(dir string) error
 }
 
 // DefaultSyncConfig returns sensible defaults.

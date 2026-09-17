@@ -12,9 +12,37 @@ import (
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
 )
+
+// reconcileSnapshotImportAtStartup runs ReconcileSnapshotImport. A retryable
+// incomplete import is not fatal when allowRetry is set (--state-sync), so
+// the normal retry path can repair a legacy interrupted import.
+func reconcileSnapshotImportAtStartup(ex *block.Executor, allowRetry bool) error {
+	if err := classifyReconcileStartupError(ex.ReconcileSnapshotImport(), allowRetry); err != nil {
+		return err
+	}
+	return nil
+}
+
+func classifyReconcileStartupError(err error, allowRetry bool) error {
+	if err == nil {
+		return nil
+	}
+	if allowRetry && errors.Is(err, block.ErrSnapshotImportIncomplete) {
+		log.Warn().Err(err).Msg("snapshot import recovery needs a retry; continuing so --state-sync can resume")
+		return nil
+	}
+	return fmt.Errorf("snapshot import recovery: %w", err)
+}
+
+// shouldRunStateSync is true when --state-sync is set and the chain is empty
+// or a previous snapshot import is still incomplete (head stored, state not).
+func shouldRunStateSync(flagStateSync bool, latest *types.Block, incomplete bool) bool {
+	return flagStateSync && (latest == nil || incomplete)
+}
 
 // validateStateSyncFlags refuses --state-sync configurations that cannot work,
 // at start-up, naming the flag that fixes each.

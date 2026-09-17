@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
@@ -91,5 +93,35 @@ func TestPrepareStateSyncGenesisWritesBookkeepingOnly(t *testing.T) {
 	sdb2, ex2 := newBootstrapNode(t)
 	if err := prepareStateSyncGenesis(g, &wrong, "test", sdb2, ex2); err == nil {
 		t.Fatal("a document that does not match the pin was accepted")
+	}
+}
+
+func TestShouldRunStateSync(t *testing.T) {
+	if !shouldRunStateSync(true, nil, false) {
+		t.Fatal("empty chain + --state-sync must run")
+	}
+	if shouldRunStateSync(false, nil, false) {
+		t.Fatal("empty chain without --state-sync must not run")
+	}
+	if !shouldRunStateSync(true, &types.Block{}, true) {
+		t.Fatal("incomplete import + --state-sync must run even with a stored head")
+	}
+	if shouldRunStateSync(true, &types.Block{}, false) {
+		t.Fatal("a fully imported head must not re-enter state sync")
+	}
+}
+
+func TestReconcileSnapshotImportAtStartupAllowsRetry(t *testing.T) {
+	if err := classifyReconcileStartupError(nil, true); err != nil {
+		t.Fatalf("nil: %v", err)
+	}
+	if err := classifyReconcileStartupError(block.ErrSnapshotImportIncomplete, true); err != nil {
+		t.Fatalf("incomplete with retry: %v", err)
+	}
+	if err := classifyReconcileStartupError(block.ErrSnapshotImportIncomplete, false); err == nil {
+		t.Fatal("incomplete without --state-sync must stay fatal")
+	}
+	if err := classifyReconcileStartupError(errors.New("stores disagree"), true); err == nil {
+		t.Fatal("hard recovery errors must stay fatal")
 	}
 }
