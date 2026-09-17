@@ -60,8 +60,9 @@ type P2PConfig struct {
 	// as a network.StateSnapshotChunk JSON — the chunked counterpart of
 	// ServeStateSnapshot for a state too large to hold whole in memory. nil
 	// means the node does not support chunked transfer (only the single-shot
-	// form above).
-	ServeStateSnapshotChunk func(afterKey []byte, maxLeaves int) ([]byte, error)
+	// form above). sessionID is empty on the first page and echoes the session
+	// the first page returned thereafter.
+	ServeStateSnapshotChunk func(sessionID string, afterKey []byte, maxLeaves int) ([]byte, error)
 }
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
@@ -157,13 +158,13 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 			// needing a shared secret. This enables public RPC nodes and
 			// independent transaction submission.
 			// NO TOKEN CHECK HERE - signature validation happens in HandleTx
-		
+
 		case network.KindVote, network.KindProposal:
 			// Consensus messages: the signature inside the vote/proposal proves
 			// it came from a validator. HandleVote/HandleProposal check the
 			// signer is in the validator set for the applicable height.
 			// NO TOKEN CHECK HERE - validator membership checked in handlers
-		
+
 		case network.KindBlock, network.KindAnnounce:
 			// Block delivery and peer announcements: these are signed by their
 			// producers and carry validator/peer proofs. For defense in depth
@@ -181,7 +182,7 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 				writeError(w, http.StatusUnauthorized, "invalid write-plane token")
 				return
 			}
-		
+
 		default:
 			// Unknown message kinds are rejected before any handler.
 			writeError(w, http.StatusBadRequest, "unknown sealed request kind")
@@ -281,7 +282,7 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			writeError(w, http.StatusBadRequest, "invalid get_state_snapshot_chunk body")
 			return
 		}
-		payload, err = cfg.ServeStateSnapshotChunk(q.AfterKey, q.MaxLeaves)
+		payload, err = cfg.ServeStateSnapshotChunk(q.SessionID, q.AfterKey, q.MaxLeaves)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown sealed read kind")
 		return
