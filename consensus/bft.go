@@ -439,6 +439,12 @@ func (e *BFTEngine) activeLocked() []ValidatorInfo {
 
 // SubmitVote processes an incoming vote from a peer.
 func (e *BFTEngine) SubmitVote(vote *Vote) {
+	// Reject a nil vote before it can occupy a bounded vote-channel slot: the
+	// slot is one of a small number of liveness resources, and a nil vote can
+	// never contribute to a quorum.
+	if vote == nil {
+		return
+	}
 	select {
 	case e.voteCh <- vote:
 	default:
