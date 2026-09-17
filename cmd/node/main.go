@@ -45,6 +45,8 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/rpc"
 )
 
@@ -89,6 +91,7 @@ var (
 	flagClearVoteJournal   bool
 	flagClearVoteJournalAt uint64
 	flagVoteOnly           bool
+	flagObjectCodec        string
 )
 
 func main() {
@@ -148,6 +151,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().BoolVar(&flagClearVoteJournal, "clear-vote-journal", false, "Backup and clear dataDir/vote-journal.json at startup. Ops recovery for a split durable vote-lock after peers are healthy; coordinate across conflicting validators. Misuse can enable conflicting votes if a prior vote already left the node.")
 	root.Flags().Uint64Var(&flagClearVoteJournalAt, "clear-vote-journal-at-height", 0, "Like --clear-vote-journal, but only if the journal's last vote is at this height; refuse to start if it holds a different height (0 disables).")
 	root.Flags().BoolVar(&flagVoteOnly, "vote-only", false, "Participate in BFT voting but never propose or seal. Ops recovery after unlocking a split vote-journal at set≥3: start non-leader validators with this so they cannot race a divergent next-height proposal while the scheduled leader cannot solo-seal. Remove once tip advances.")
+	root.Flags().StringVar(&flagObjectCodec, "object-codec", "", "Optional coded-object live path (uncoded-v1, erasure-rs-v1, or rlnc-gf256-v1). Empty keeps the default JSON/chunked snapshot and block sync. When set, this node may serve get_object_manifest_v1 / get_object_symbol_v1 over the sealed channel; it does not replace snapshot sync.")
 
 	// Operators need a way to produce the value they pin, and to check that a
 	// genesis.json they were handed is the one they expect, without starting a node.
@@ -329,6 +333,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--require-peer-pins cannot be combined with --allow-plaintext-p2p: " +
 			"the plaintext fallback carries no peer identity, so it would readmit the unpinned " +
 			"peers that the pin requirement exists to refuse")
+	}
+	if flagObjectCodec != "" {
+		if _, err := coding.Resolve(flagObjectCodec); err != nil {
+			return fmt.Errorf("--object-codec: %w", err)
+		}
 	}
 
 	log.Info().
@@ -1181,6 +1190,16 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// same block-ingest and peer-announce operations as the plaintext write
 	// plane, but encrypted and with the write token inside the envelope.
 	var snapshotInFlight atomic.Bool
+	objectHub := objects.NewHub()
+	var objectCodec coding.Codec
+	if flagObjectCodec != "" {
+		var err error
+		objectCodec, err = coding.Resolve(flagObjectCodec)
+		if err != nil {
+			return fmt.Errorf("--object-codec: %w", err)
+		}
+	}
+	var objectPublish atomic.Bool
 	rpc.RegisterP2PRoutes(router, rpc.P2PConfig{
 		Identity:    nodeIdentity,
 		Token:       authToken,
@@ -1329,6 +1348,24 @@ func runNode(cmd *cobra.Command, args []string) error {
 				return nil, fmt.Errorf("state snapshot chunk not available: %w", err)
 			}
 			return json.Marshal(chunk)
+		},
+		ServeObjectManifest: func(descriptorID []byte) ([]byte, error) {
+			if objectCodec == nil {
+				return nil, errors.New("coded-object live path is not enabled")
+			}
+			if err := ensurePublishedSnapshot(objectHub, objectCodec, executor, nodeIdentity, &objectPublish); err != nil {
+				return nil, err
+			}
+			return objectHub.ServeManifest(descriptorID)
+		},
+		ServeObjectSymbol: func(descriptorID []byte, index uint32) ([]byte, error) {
+			if objectCodec == nil {
+				return nil, errors.New("coded-object live path is not enabled")
+			}
+			if err := ensurePublishedSnapshot(objectHub, objectCodec, executor, nodeIdentity, &objectPublish); err != nil {
+				return nil, err
+			}
+			return objectHub.ServeSymbol(descriptorID, index)
 		},
 	})
 

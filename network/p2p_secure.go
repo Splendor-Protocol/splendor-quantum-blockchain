@@ -61,12 +61,32 @@ const (
 	// whole thing in memory and the wire body at once. Same trust and
 	// read-plane rules as KindGetStateSnapshot: sealed only, no token.
 	KindGetStateSnapshotChunk = "get_state_snapshot_chunk"
+	// KindGetObjectManifest asks for the SQCO encoding of a coded object's
+	// signed manifest (opt-in live path behind --object-codec). Public
+	// once published, so sealed but not token-gated.
+	KindGetObjectManifest = "get_object_manifest_v1"
+	// KindGetObjectSymbol asks for one authenticated symbol proof of that
+	// object. Same trust and read-plane rules as KindGetObjectManifest.
+	KindGetObjectSymbol = "get_object_symbol_v1"
 )
 
 // IsReadKind reports whether a sealed request only reads chain data.
 func IsReadKind(kind string) bool {
 	return kind == KindGetBlock || kind == KindGetLatest ||
-		kind == KindGetStateSnapshot || kind == KindGetStateSnapshotChunk
+		kind == KindGetStateSnapshot || kind == KindGetStateSnapshotChunk ||
+		kind == KindGetObjectManifest || kind == KindGetObjectSymbol
+}
+
+// GetObjectManifestRequest is the body of a KindGetObjectManifest query.
+// DescriptorID empty means the peer's current object.
+type GetObjectManifestRequest struct {
+	DescriptorID []byte `json:"descriptor_id,omitempty"`
+}
+
+// GetObjectSymbolRequest is the body of a KindGetObjectSymbol query.
+type GetObjectSymbolRequest struct {
+	DescriptorID []byte `json:"descriptor_id"`
+	Index        uint32 `json:"index"`
 }
 
 // GetStateSnapshotChunkRequest is the body of a KindGetStateSnapshotChunk

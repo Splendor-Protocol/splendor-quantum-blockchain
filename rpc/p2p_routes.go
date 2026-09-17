@@ -75,6 +75,13 @@ type P2PConfig struct {
 	// form above). sessionID is empty on the first page and echoes the session
 	// the first page returned thereafter.
 	ServeStateSnapshotChunk func(sessionID string, afterKey []byte, maxLeaves int, source string) ([]byte, error)
+	// ServeObjectManifest returns the SQCO encoding of a coded-object
+	// manifest. Empty descriptorID means the currently published object.
+	// nil means the node does not serve coded objects (default).
+	ServeObjectManifest func(descriptorID []byte) ([]byte, error)
+	// ServeObjectSymbol returns the SQCO encoding of one authenticated
+	// symbol proof. nil means the node does not serve coded objects.
+	ServeObjectSymbol func(descriptorID []byte, index uint32) ([]byte, error)
 }
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
@@ -328,6 +335,30 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			return
 		}
 		payload, err = cfg.ServeStateSnapshotChunk(q.SessionID, q.AfterKey, q.MaxLeaves, sealedClientKey(r))
+	case network.KindGetObjectManifest:
+		if cfg.ServeObjectManifest == nil {
+			writeError(w, http.StatusNotImplemented, "sealed coded-object reads not available")
+			return
+		}
+		var q network.GetObjectManifestRequest
+		if len(req.Body) > 0 && string(req.Body) != "null" {
+			if jsonErr := json.Unmarshal(req.Body, &q); jsonErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid get_object_manifest_v1 body")
+				return
+			}
+		}
+		payload, err = cfg.ServeObjectManifest(q.DescriptorID)
+	case network.KindGetObjectSymbol:
+		if cfg.ServeObjectSymbol == nil {
+			writeError(w, http.StatusNotImplemented, "sealed coded-object reads not available")
+			return
+		}
+		var q network.GetObjectSymbolRequest
+		if jsonErr := json.Unmarshal(req.Body, &q); jsonErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid get_object_symbol_v1 body")
+			return
+		}
+		payload, err = cfg.ServeObjectSymbol(q.DescriptorID, q.Index)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown sealed read kind")
 		return
