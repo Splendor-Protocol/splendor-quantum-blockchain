@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "start": "node --import tsx server.ts",
-    "start:js": "node server.mjs",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
