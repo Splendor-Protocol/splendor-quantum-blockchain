@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist/filesync"
 )
 
 // WalletFile is the on-disk format for an encrypted Splendor QC wallet.
@@ -78,13 +78,13 @@ const (
 
 	// Ceilings so a crafted file cannot turn LoadWallet into an unbounded
 	// KDF or GCM panic. SaveWallet still writes the constants above.
-	maxArgon2Time      = 8
-	maxArgon2Memory    = 256 * 1024 // 256 MB
-	maxArgon2Threads   = 16
-	maxWalletFileBytes = 256 << 10
+	maxArgon2Time       = 8
+	maxArgon2Memory     = 256 * 1024 // 256 MB
+	maxArgon2Threads    = 16
+	maxWalletFileBytes  = 256 << 10
 	maxWalletCiphertext = 8 << 10
-	walletGCMNonceSize = 12
-	walletGCMTagSize   = 16
+	walletGCMNonceSize  = 12
+	walletGCMTagSize    = 16
 )
 
 // KeyFilePermissionsEnforced reports whether CheckKeyFilePermissions can
@@ -168,7 +168,7 @@ func SaveWallet(path string, pub *PublicKey, priv *PrivateKey, password []byte) 
 	if err != nil {
 		return fmt.Errorf("failed to marshal wallet: %w", err)
 	}
-	return persist.WriteFileAtomic(path, data, 0o600)
+	return filesync.WriteFileAtomic(path, data, 0o600)
 }
 
 // LoadWallet reads a wallet file, decrypts the private key using the password,

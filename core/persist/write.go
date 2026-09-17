@@ -8,10 +8,11 @@ package persist
 import (
 	"errors"
 	"os"
-	"path/filepath"
 
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/opt"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist/filesync"
 )
 
 // SyncWrite is the WriteOptions every recoverable chain/state batch must use.
@@ -33,49 +34,12 @@ func Write(db BatchWriter, batch *leveldb.Batch) error {
 }
 
 // SyncDir fsyncs a directory so a rename or unlink inside it is durable.
-func SyncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
-}
+// The implementation lives in core/persist/filesync, which is leveldb-free
+// so packages linked into the WASM signer (core/crypto) can use it.
+func SyncDir(dir string) error { return filesync.SyncDir(dir) }
 
 // WriteFileAtomic replaces path with data: temp file, fsync, close, rename,
-// then fsync the parent directory. A crash leaves the old file or the new
-// one, never a torn destination, and the directory entry itself survives
-// power loss.
+// then fsync the parent directory. See filesync.WriteFileAtomic.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if path == "" {
-		return errors.New("persist: empty path")
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return SyncDir(dir)
+	return filesync.WriteFileAtomic(path, data, perm)
 }
