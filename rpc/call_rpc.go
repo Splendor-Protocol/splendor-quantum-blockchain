@@ -90,6 +90,9 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 		// shared with block execution — so simulating on it lets an anonymous
 		// caller roll back the block being assembled.
 		sim := stateDB.Simulate()
+		// The sandbox pins a LevelDB snapshot; release it with the request
+		// rather than at GC, or every /call defers compaction for a while.
+		defer sim.Close()
 
 		// Native-module read (token / DEX view calls). Routed explicitly: the
 		// module-router address is not a bytecode contract, and a write action
@@ -265,7 +268,9 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 				if executor != nil {
 					height, _ = executor.LatestHeight()
 				}
-				res, err := vm.NewEngine(stateDB.Simulate()).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
+				sim := stateDB.Simulate()
+				res, err := vm.NewEngine(sim).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
+				sim.Close() // releases the pinned LevelDB snapshot; res is a value copy
 				if writeSimCancel(w, err) {
 					return
 				}
