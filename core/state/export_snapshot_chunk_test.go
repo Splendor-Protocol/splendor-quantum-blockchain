@@ -231,17 +231,18 @@ func TestExportSnapshotChunkClampsOversizedRequest(t *testing.T) {
 	}
 }
 
-// The raw-byte budget bounds a chunk independently of the leaf-count budget,
-// so a few unusually large leaves cannot make one page arbitrarily big even
-// with maxLeaves clamped.
+// The raw-byte budget is a hard maximum, not a stopping threshold: a page must
+// never exceed it, and a leaf that would push a non-empty page over is deferred
+// to the next page rather than copied and then left oversized. Walk the whole
+// three-leaf state and confirm every leaf is served exactly once — no loss, no
+// duplication — and no single page ever crosses the cap.
 func TestExportSnapshotChunkStopsAtByteBudget(t *testing.T) {
 	sdb, _ := openState(t)
 	if _, err := sdb.CommitWithHeight(1); err != nil {
 		t.Fatal(err)
 	}
-	// Three leaves whose values are each about half the byte budget: the scan
-	// must stop after two, well before the 3-leaf total is reached, even though
-	// the leaf-count budget is far larger than the whole state.
+	// Each leaf is 5-byte key + MaxChunkBytes/2 value: two leaves exceed the
+	// budget, so a strict budget must serve them one per page.
 	big := bytes.Repeat([]byte{0xAB}, MaxChunkBytes/2)
 	for _, key := range []string{"acc:a", "acc:b", "acc:c"} {
 		if err := sdb.db.Put([]byte(key), big, nil); err != nil {
@@ -249,14 +250,49 @@ func TestExportSnapshotChunkStopsAtByteBudget(t *testing.T) {
 		}
 	}
 
-	_, leaves, _, done, err := sdb.ExportSnapshotChunk(nil, MaxChunkLeaves)
-	if err != nil {
+	var (
+		got   []string
+		after []byte
+	)
+	for i := 0; i < 10; i++ { // hard stop against a cursor bug
+		_, leaves, next, done, err := sdb.ExportSnapshotChunk(after, MaxChunkLeaves)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total := 0
+		for _, l := range leaves {
+			total += len(l.Key) + len(l.Value)
+			got = append(got, string(l.Key))
+		}
+		if total > MaxChunkBytes {
+			t.Fatalf("chunk %d carried %d raw bytes, exceeding the %d-byte budget", i, total, MaxChunkBytes)
+		}
+		if done {
+			break
+		}
+		if len(next) == 0 {
+			t.Fatalf("chunk %d: not done but no resume cursor", i)
+		}
+		after = next
+	}
+	if len(got) != 3 || got[0] != "acc:a" || got[1] != "acc:b" || got[2] != "acc:c" {
+		t.Fatalf("served leaves = %v, want [acc:a acc:b acc:c] exactly once each", got)
+	}
+}
+
+// A single leaf larger than the whole budget cannot be paginated without a
+// fragmentation protocol that does not exist, so it must be refused explicitly
+// rather than silently emitted over the cap.
+func TestExportSnapshotChunkRejectsOversizedSingleLeaf(t *testing.T) {
+	sdb, _ := openState(t)
+	if _, err := sdb.CommitWithHeight(1); err != nil {
 		t.Fatal(err)
 	}
-	if done {
-		t.Fatal("chunk reported done while a leaf remains unserved past the byte budget")
+	big := bytes.Repeat([]byte{0x01}, MaxChunkBytes+1)
+	if err := sdb.db.Put([]byte("acc:big"), big, nil); err != nil {
+		t.Fatal(err)
 	}
-	if len(leaves) != 2 {
-		t.Fatalf("byte-budgeted chunk returned %d leaves, want 2 (the third must wait for the next page)", len(leaves))
+	if _, _, _, _, err := sdb.ExportSnapshotChunk(nil, MaxChunkLeaves); err == nil {
+		t.Fatal("a single leaf exceeding the byte budget was served without error")
 	}
 }

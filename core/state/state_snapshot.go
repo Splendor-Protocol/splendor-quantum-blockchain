@@ -180,19 +180,43 @@ func (s *StateDB) ExportSnapshotChunk(afterKey []byte, maxLeaves int) (height ui
 	iter := snap.NewIterator(iterRange, nil)
 	defer iter.Release()
 
-	var size int
+	var (
+		size    int
+		lastKey []byte
+	)
 	for iter.Next() {
 		k := iter.Key()
 		if bytes.HasPrefix(k, []byte(prefixMeta)) {
 			continue
 		}
 		v := iter.Value()
+		leafBytes := len(k) + len(v)
+
+		// A single leaf larger than the whole budget cannot be paginated; there
+		// is no fragmentation protocol, so refuse explicitly rather than hand
+		// back a page that exceeds the cap the caller was promised.
+		if len(leaves) == 0 && leafBytes > MaxChunkBytes {
+			return 0, nil, nil, false, fmt.Errorf(
+				"state: snapshot leaf of %d bytes exceeds the %d-byte chunk budget; leaf fragmentation is not implemented",
+				leafBytes, MaxChunkBytes)
+		}
+		// The byte budget is a hard maximum, not a stopping threshold: once the
+		// page has content, a leaf that would push it over is NOT copied into
+		// this page. The resume cursor is the last key actually included, so the
+		// over-budget leaf is fetched again on the next page with no loss.
+		if len(leaves) > 0 && size+leafBytes > MaxChunkBytes {
+			nextKey = append([]byte(nil), lastKey...)
+			return height, leaves, nextKey, false, nil
+		}
+
 		leaves = append(leaves, types.StateLeaf{
 			Key:   append([]byte(nil), k...),
 			Value: append([]byte(nil), v...),
 		})
-		size += len(k) + len(v)
-		if len(leaves) >= maxLeaves || size >= MaxChunkBytes {
+		size += leafBytes
+		lastKey = append([]byte(nil), k...)
+
+		if len(leaves) >= maxLeaves {
 			// Peek: is there anything left after this key?
 			nextKey = append([]byte(nil), k...)
 			if !iter.Next() {
