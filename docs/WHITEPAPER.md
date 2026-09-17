@@ -290,9 +290,10 @@ Standard transactions are transparent: sender, recipient, and amount are public.
 - The proof is verified on-chain; the blockchain records only the proof, not sender/recipient.
 - Amounts can be hidden (Pedersen commitments) or revealed (range proofs).
 
-**Compliance**: X402 is _opt-in_. Validators must accept X402 transactions (cannot censor), but:
-- Governance can impose reporting requirements (e.g., transactions >$10K must disclose to a regulator-controlled contract)
-- Users in restricted jurisdictions can be blocked from generating X402 proofs (geofencing via offchain identity)
+**Compliance**: The implemented X402 path is payer-authorized settlement
+(`submitted` vs `confirmed`), not a shielded ZK product and not a
+governance-controlled reporting module. Those reporting and geofencing
+ideas are unimplemented application work.
 
 This balance preserves privacy for law-abiding users while providing a path for legal compliance.
 
@@ -518,9 +519,9 @@ Splendor Quantum Blockchain reimagines Layer-1 design for a post-quantum, AI-nat
 - **AI-powered economics**: Validators are autonomous agents bidding on transaction fees, not plutocratic stakers.
 - **Transparent and verifiable**: Global Merkle tree with cryptographic inclusion proofs; no "trust the RPC.
 - **Developer-friendly**: QSol language, TypeScript SDKs, React hooks, WASM bridge.
-- **Permissionless by default, governable when necessary**: Open participation with a safety valve for existential threats.
+- **Admission is explicit, not a governance vote**: `validators_admission_v1` is approval/producer-based. There is no routed on-chain governance safety valve.
 
-As quantum computers advance and centralization threatens blockchain's core promise, Splendor offers a path forward: **security through mathematics, decentralization through economics, and resilience through governance**.
+As quantum computers advance and centralization threatens blockchain's core promise, Splendor offers a path forward: **security through mathematics and explicit admission rules**, not a live governance module.
 
 **Join the quantum-resistant revolution.**
 
