@@ -19,10 +19,12 @@ package rpc
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/buildinfo"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -75,6 +77,9 @@ type Server struct {
 	simGuard *ExecGuard
 	// allowPlaintextP2P registers the cleartext peer routes. Off = sealed only.
 	allowPlaintextP2P bool
+	// lookupReceipt returns an indexed receipt when this node has a tx index.
+	// Used by /x402/settle to distinguish confirmed payment from a queued tx.
+	lookupReceipt func(hash [32]byte) (*types.Receipt, error)
 }
 
 // Config holds server configuration.
@@ -136,6 +141,11 @@ type Config struct {
 	SimBurst       float64
 	SimMaxInFlight int
 	SimTimeout     time.Duration
+
+	// LookupReceipt returns an indexed receipt by transaction hash. Optional;
+	// without it /x402/settle can still report submitted vs confirmed via the
+	// X402 nonce registry after the payment has been applied.
+	LookupReceipt func(hash [32]byte) (*types.Receipt, error)
 }
 
 // Values of /status.consensus_mode.
@@ -197,6 +207,7 @@ func New(
 		cors:               NewCORSPolicy(cfg.CORSOrigins),
 		submitLimiter:      NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
 		simGuard:           newSimGuard(cfg),
+		lookupReceipt:      cfg.LookupReceipt,
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -610,8 +621,11 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := s.x402proc.Verify(&req.Requirements, &req.Payload)
-	if !result.Valid {
-		writeJSON(w, http.StatusPaymentRequired, x402.SettleResult{Error: result.Reason})
+	if !result.Valid && !result.NonceUsed {
+		writeJSON(w, http.StatusPaymentRequired, x402.SettleResult{
+			Status: x402.SettleFailed,
+			Error:  result.Reason,
+		})
 		return
 	}
 
@@ -625,25 +639,106 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The mempool verifies the payer's signature, account nonce, fee floor, and
-	// balance. The executor re-checks the X402 replay registry at block time.
-	if err := s.pool.Add(req.SettlementTx); err != nil {
-		writeJSON(w, http.StatusBadRequest, x402.SettleResult{
-			Error: fmt.Sprintf("settlement rejected: %v", err),
-		})
-		return
-	}
-
 	hash, err := req.SettlementTx.FullHash()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to hash settlement tx")
 		return
 	}
+	hashHex := fmt.Sprintf("%x", hash[:])
+
+	// Idempotent confirmed path: a successful receipt, or a consumed X402
+	// nonce, means this payment already settled. A queued tx is never
+	// described as confirmed.
+	if rec := s.settlementReceipt(hash); rec != nil {
+		if rec.Status == types.TxStatusSuccess {
+			writeJSON(w, http.StatusOK, x402.SettleResult{
+				Success: true,
+				Status:  x402.SettleConfirmed,
+				TxHash:  hashHex,
+			})
+			return
+		}
+		errMsg := rec.Error
+		if errMsg == "" {
+			errMsg = "settlement transaction failed"
+		}
+		writeJSON(w, http.StatusBadRequest, x402.SettleResult{
+			Status: x402.SettleFailed,
+			TxHash: hashHex,
+			Error:  errMsg,
+		})
+		return
+	}
+
+	nonceKey := x402.NonceKey(req.Payload.From, req.Payload.Nonce)
+	used, err := s.stateDB.IsX402NonceUsed(nonceKey)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, x402.SettleResult{
+			Status: x402.SettleFailed,
+			Error:  fmt.Sprintf("nonce registry error: %v", err),
+		})
+		return
+	}
+	if used || result.NonceUsed {
+		writeJSON(w, http.StatusOK, x402.SettleResult{
+			Success: true,
+			Status:  x402.SettleConfirmed,
+			TxHash:  hashHex,
+		})
+		return
+	}
+	if !result.Valid {
+		writeJSON(w, http.StatusPaymentRequired, x402.SettleResult{
+			Status: x402.SettleFailed,
+			Error:  result.Reason,
+		})
+		return
+	}
+
+	// The mempool verifies the payer's signature, account nonce, fee floor, and
+	// balance. The executor re-checks the X402 replay registry at block time.
+	if err := s.pool.Add(req.SettlementTx); err != nil {
+		if settlementAlreadyQueued(err) {
+			writeJSON(w, http.StatusAccepted, x402.SettleResult{
+				Success: false,
+				Status:  x402.SettleSubmitted,
+				TxHash:  hashHex,
+			})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, x402.SettleResult{
+			Status: x402.SettleFailed,
+			Error:  fmt.Sprintf("settlement rejected: %v", err),
+		})
+		return
+	}
 
 	writeJSON(w, http.StatusAccepted, x402.SettleResult{
-		Success: true,
-		TxHash:  fmt.Sprintf("%x", hash[:]),
+		Success: false,
+		Status:  x402.SettleSubmitted,
+		TxHash:  hashHex,
 	})
+}
+
+func (s *Server) settlementReceipt(hash [32]byte) *types.Receipt {
+	if s == nil || s.lookupReceipt == nil {
+		return nil
+	}
+	rec, err := s.lookupReceipt(hash)
+	if err != nil || rec == nil {
+		return nil
+	}
+	return rec
+}
+
+func settlementAlreadyQueued(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, types.ErrDuplicateTx) {
+		return true
+	}
+	return strings.Contains(err.Error(), "duplicate pending nonce")
 }
 
 func (s *Server) handleAIStats(w http.ResponseWriter, r *http.Request) {

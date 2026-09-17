@@ -159,7 +159,13 @@ export { withSigner } from './bound.js';
 export type { BoundClient, WalletLike } from './bound.js';
 export { fromUnits, toUnits } from './units.js';
 export { X402Client, createX402Middleware } from './x402/client.js';
-export type { PaymentRequirements, PaymentPayload } from './x402/client.js';
+export type {
+  PaymentRequirements,
+  PaymentPayload,
+  X402SettleResult,
+  X402SettlementPolicy,
+  X402MiddlewareConfig,
+} from './x402/client.js';
 export { subscribe } from './core/subscribe.js';
 export type {
   EstimateGasRequest,

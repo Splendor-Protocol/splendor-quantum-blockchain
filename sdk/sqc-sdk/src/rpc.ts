@@ -204,7 +204,10 @@ export class SqRpc {
     return this.get(`/validators/${encodeURIComponent(address)}`);
   }
 
-  async x402Verify(requirements: object, payload: object): Promise<{ valid: boolean; reason?: string }> {
+  async x402Verify(
+    requirements: object,
+    payload: object,
+  ): Promise<{ valid: boolean; reason?: string; nonce_used?: boolean }> {
     return this.post('/x402/verify', { requirements, payload }, false);
   }
 
@@ -222,6 +225,7 @@ export class SqRpc {
     settlementTx: object,
   ): Promise<{
     success?: boolean;
+    status?: 'submitted' | 'confirmed' | 'failed' | string;
     tx_hash?: string;
     error?: string;
   }> {

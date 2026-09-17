@@ -86,7 +86,11 @@ export class X402Client {
     return this.connection.x402Verify(requirements, payload);
   }
 
-  async settle(requirements: PaymentRequirements, payload: PaymentPayload, settlementTx: object) {
+  async settle(
+    requirements: PaymentRequirements,
+    payload: PaymentPayload,
+    settlementTx: object,
+  ): Promise<X402SettleResult> {
     return this.connection.x402Settle(requirements, payload, settlementTx);
   }
 
@@ -95,6 +99,16 @@ export class X402Client {
     return wallet.payX402(opts);
   }
 }
+
+export type X402SettleResult = {
+  success?: boolean;
+  status?: 'submitted' | 'confirmed' | 'failed' | string;
+  tx_hash?: string;
+  error?: string;
+};
+
+/** Named policy for payment-gated next(). Default is receipt confirmation. */
+export type X402SettlementPolicy = 'receipt' | 'optimistic-submitted';
 
 export type X402MiddlewareConfig = {
   payTo: string;
@@ -107,6 +121,15 @@ export type X402MiddlewareConfig = {
    * Prefer wallet.payX402 on the client to produce a settled payment.
    */
   requireSettlement?: boolean;
+  /**
+   * How a queued settlement is treated for payment-gated access.
+   * - `receipt` (default): call next() only after a successful on-chain receipt
+   * - `optimistic-submitted`: call next() after mempool admission (named
+   *   optimistic policy; a queued tx is still not described as confirmed)
+   */
+  settlementPolicy?: X402SettlementPolicy;
+  confirmTimeoutMs?: number;
+  confirmPollMs?: number;
 };
 
 type ReqLike = { path: string; headers: Record<string, string | string[] | undefined> };
@@ -140,6 +163,7 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
   }
   const client = X402Client.fromConnection(config.connection);
   const requireSettlement = config.requireSettlement !== false;
+  const settlementPolicy: X402SettlementPolicy = config.settlementPolicy ?? 'receipt';
 
   return async function x402Middleware(req: ReqLike, res: ResLike, next: NextFn) {
     const header = req.headers['x-payment'];
@@ -155,8 +179,14 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
       const payload = JSON.parse(paymentHeader) as PaymentPayload;
       const price = resolvePrice(config.price, req.path);
       const requirements = client.buildRequirements(config.payTo, price);
-      const verifyResult = await client.verify(requirements, payload);
-      if (!verifyResult.valid) {
+      const verifyResult = (await client.verify(requirements, payload)) as {
+        valid?: boolean;
+        reason?: string;
+        nonce_used?: boolean;
+      };
+      const nonceUsed = verifyResult.nonce_used === true || isNonceAlreadyUsed(verifyResult.reason);
+
+      if (!verifyResult.valid && !(nonceUsed && requireSettlement)) {
         return res.status(402).json({
           error: 'Invalid Payment',
           reason: verifyResult.reason,
@@ -174,18 +204,83 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
           });
         }
         const settleResult = await client.settle(requirements, payload, settlementTx);
-        if (settleResult.error || settleResult.success === false) {
-          return res.status(402).json({
-            error: 'Settlement Failed',
-            reason: settleResult.error || 'settle returned unsuccessful',
-          });
+        const granted = await grantAfterSettle(config, payload, settleResult, settlementPolicy);
+        if (granted === true) {
+          next();
+          return;
         }
+        return res.status(402).json(granted);
       }
 
       next();
     } catch {
       return res.status(400).json({ error: 'Malformed X-Payment header' });
     }
+  };
+}
+
+function isNonceAlreadyUsed(reason?: string): boolean {
+  return typeof reason === 'string' && /nonce already used/i.test(reason);
+}
+
+function settleConfirmed(result: X402SettleResult): boolean {
+  return result.status === 'confirmed' || (result.success === true && result.status !== 'submitted');
+}
+
+function settleSubmitted(result: X402SettleResult): boolean {
+  return result.status === 'submitted';
+}
+
+async function grantAfterSettle(
+  config: X402MiddlewareConfig,
+  payload: PaymentPayload,
+  settleResult: X402SettleResult,
+  policy: X402SettlementPolicy,
+): Promise<true | { error: string; reason: string; status?: string }> {
+  if (settleResult.status === 'failed' || (settleResult.error && !settleConfirmed(settleResult) && !settleSubmitted(settleResult))) {
+    return {
+      error: 'Settlement Failed',
+      reason: settleResult.error || 'settle returned unsuccessful',
+      status: settleResult.status,
+    };
+  }
+  if (settleConfirmed(settleResult)) {
+    return true;
+  }
+  if (settleSubmitted(settleResult) || settleResult.success === false) {
+    if (policy === 'optimistic-submitted') {
+      return true;
+    }
+    const wait = config.connection.waitForConfirmation;
+    if (typeof wait !== 'function' || !settleResult.tx_hash || !payload.from) {
+      return {
+        error: 'Settlement Unconfirmed',
+        reason:
+          'settlement is only submitted (queued); payment-gated access requires a successful receipt unless settlementPolicy is optimistic-submitted',
+        status: 'submitted',
+      };
+    }
+    try {
+      await wait.call(config.connection, {
+        from: String(payload.from),
+        nonceBefore: 0,
+        hash: settleResult.tx_hash,
+        timeoutMs: config.confirmTimeoutMs,
+        pollMs: config.confirmPollMs,
+      });
+      return true;
+    } catch (e) {
+      return {
+        error: 'Settlement Unconfirmed',
+        reason: e instanceof Error ? e.message : 'settlement receipt not confirmed',
+        status: 'submitted',
+      };
+    }
+  }
+  return {
+    error: 'Settlement Failed',
+    reason: settleResult.error || 'settle returned unsuccessful',
+    status: settleResult.status,
   };
 }
 

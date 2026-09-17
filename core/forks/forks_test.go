@@ -74,6 +74,21 @@ func TestVMGasV1UnscheduledMeansNever(t *testing.T) {
 	}
 }
 
+func TestVerifyIdentityV1UnscheduledMeansNever(t *testing.T) {
+	if !isKnown(VerifyIdentityV1) {
+		t.Fatal("verify_identity_v1 must be a known name so a genesis can schedule it")
+	}
+	if (Schedule{}).Active(VerifyIdentityV1, 1) || (Schedule{VerifyIdentityV1: 0}).Active(VerifyIdentityV1, 1) {
+		t.Fatal("unscheduled verify_identity_v1 must keep unbound SLH and no-op x402 spend")
+	}
+	if err := (Schedule{VerifyIdentityV1: 100, VerifyV1: 1, ModuleRevertV1: 1}).Validate(); err != nil {
+		t.Fatalf("scheduling verify_identity_v1 must be accepted: %v", err)
+	}
+	if err := (Schedule{VerifyIdentityV1: 1}).Validate(); err == nil {
+		t.Fatal("scheduling verify_identity_v1 without verify_v1 must be refused")
+	}
+}
+
 func TestUnknownNameRefused(t *testing.T) {
 	if err := (Schedule{"nope": 1}).Validate(); err == nil {
 		t.Fatal("unknown upgrade names must be refused")

@@ -117,6 +117,13 @@ const (
 	// execution failures (OOG, VM errors) into failed receipts that consume
 	// nonce/fee and count toward block gas. Unscheduled on live genesis.
 	VMGasV1 = "vm_gas_v1"
+	// VerifyIdentityV1 binds SQVL operator identity to both ML-DSA and
+	// SLH-DSA keys, ties attestations to the verify instance and attestor
+	// role, links x402 settlement to a consumed payment nonce, and
+	// propagates record-read errors. Unscheduled on live genesis; the
+	// verify_v1 no-op x402 path and unbound SLH remain until operators
+	// extend.
+	VerifyIdentityV1 = "verify_identity_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -128,7 +135,7 @@ const (
 var Known = []string{
 	MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1,
 	VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1, MinFeeV1,
-	ModulesV2, ValidatorsAdmissionV1, BFTRoundsV1, VMGasV1,
+	ModulesV2, ValidatorsAdmissionV1, BFTRoundsV1, VMGasV1, VerifyIdentityV1,
 }
 
 // Schedule maps an upgrade name to the height at which it takes effect.
@@ -184,7 +191,7 @@ func (s Schedule) Validate() error {
 	for _, name := range []string{
 		BridgeV1, ExchangeV1, QRC1155V1, QRC20V2,
 		VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1,
-		ModulesV2, ValidatorsAdmissionV1,
+		ModulesV2, ValidatorsAdmissionV1, VerifyIdentityV1,
 	} {
 		at, ok := s.At(name)
 		if !ok {
@@ -204,6 +211,18 @@ func (s Schedule) Validate() error {
 	// The admission gate qualifies register; a schedule that gates a call
 	// the chain never accepts, or gates it only after the open window has
 	// already run, is a misconfiguration and is refused rather than honoured.
+	if at, ok := s.At(VerifyIdentityV1); ok {
+		vAt, vok := s.At(VerifyV1)
+		if !vok {
+			return fmt.Errorf("genesis schedules %s at height %d but never schedules %s, which it depends on",
+				VerifyIdentityV1, at, VerifyV1)
+		}
+		if vAt > at {
+			return fmt.Errorf("genesis schedules %s at height %d but %s only at height %d: "+
+				"the dependency must be in force no later than the upgrade that needs it",
+				VerifyIdentityV1, at, VerifyV1, vAt)
+		}
+	}
 	if at, ok := s.At(ValidatorsAdmissionV1); ok {
 		vAt, vok := s.At(ValidatorsV1)
 		if !vok {

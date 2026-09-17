@@ -133,6 +133,10 @@ func NewProcessor(stateDB *state.StateDB) *Processor {
 type VerifyResult struct {
 	Valid  bool   `json:"valid"`
 	Reason string `json:"reason,omitempty"`
+	// NonceUsed is set when the payment nonce is already in the on-chain
+	// registry. Middleware uses it for idempotent consumption of a payment
+	// that already settled; it is never treated as a fresh authorisation.
+	NonceUsed bool `json:"nonce_used,omitempty"`
 }
 
 // Verify validates a signed payment payload against current chain state.
@@ -170,13 +174,13 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 	}
 
 	// 5. Nonce not already used
-	nonceKey := buildNonceKey(payload.From, payload.Nonce)
+	nonceKey := NonceKey(payload.From, payload.Nonce)
 	used, err := p.state.IsX402NonceUsed(nonceKey)
 	if err != nil {
 		return &VerifyResult{Reason: fmt.Sprintf("nonce registry error: %v", err)}
 	}
 	if used {
-		return &VerifyResult{Reason: "payment nonce already used"}
+		return &VerifyResult{Reason: "payment nonce already used", NonceUsed: true}
 	}
 
 	// 6. Sender has sufficient balance
@@ -241,9 +245,26 @@ func (p *Processor) resolvePayerKey(payload *PaymentPayload) (*qcrypto.PublicKey
 	}
 }
 
+// Settlement status values returned by POST /x402/settle.
+const (
+	// SettleSubmitted means the payer-signed TxX402 was admitted to the
+	// mempool (or is already queued). It is not confirmed payment.
+	SettleSubmitted = "submitted"
+	// SettleConfirmed means a successful receipt exists, or the payment
+	// nonce has already been consumed on-chain.
+	SettleConfirmed = "confirmed"
+	// SettleFailed means verification, binding, admission, or execution failed.
+	SettleFailed = "failed"
+)
+
 // SettleResult is returned by Settle.
+//
+// Success is true only when Status is SettleConfirmed. A queued transaction
+// is reported as Status=submitted with Success=false so callers cannot treat
+// mempool admission as payment confirmation.
 type SettleResult struct {
 	Success bool   `json:"success"`
+	Status  string `json:"status,omitempty"`
 	TxHash  string `json:"tx_hash,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
@@ -304,9 +325,9 @@ func BindSettlementTx(payload *PaymentPayload, tx *types.Transaction) error {
 	return nil
 }
 
-// buildNonceKey derives the on-chain nonce registry key.
+// NonceKey derives the on-chain nonce registry key.
 // key = SHA3-256(from_address || nonce_bytes)
-func buildNonceKey(from qcrypto.Address, nonce [32]byte) [32]byte {
+func NonceKey(from qcrypto.Address, nonce [32]byte) [32]byte {
 	combined := append(from[:], nonce[:]...)
 	return qcrypto.Hash32(combined)
 }

@@ -38,14 +38,21 @@ export type MockTransportHandlers = {
   x402Verify?: (
     requirements: object,
     payload: object,
-  ) => Promise<{ valid: boolean; reason?: string }> | { valid: boolean; reason?: string };
+  ) =>
+    | Promise<{ valid: boolean; reason?: string; nonce_used?: boolean }>
+    | { valid: boolean; reason?: string; nonce_used?: boolean };
   x402Settle?: (
     requirements: object,
     payload: object,
     settlementTx: object,
   ) =>
-    | Promise<{ success?: boolean; tx_hash?: string; error?: string }>
-    | { success?: boolean; tx_hash?: string; error?: string };
+    | Promise<{
+        success?: boolean;
+        status?: string;
+        tx_hash?: string;
+        error?: string;
+      }>
+    | { success?: boolean; status?: string; tx_hash?: string; error?: string };
 };
 
 function missing(method: string): never {
