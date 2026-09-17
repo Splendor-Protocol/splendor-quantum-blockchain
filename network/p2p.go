@@ -53,6 +53,10 @@ type ProducerKeyLookup func(addr qcrypto.Address) []byte
 // Nothing here trusts the key a block carries: verifying a block against its
 // own embedded key always succeeds and proves nothing. ExecuteBlock remains
 // the authority and still verifies the certificate.
+// ErrProducerNotYetKnown means the sealer is not the genesis pin and is not
+// in the local active set. Fetch may defer this until parent state is applied.
+var ErrProducerNotYetKnown = errors.New("block producer is not yet in the local validator set")
+
 func VerifyBlockProducer(b *types.Block, trustedPK []byte, lookup ProducerKeyLookup) error {
 	if len(trustedPK) == 0 {
 		return fmt.Errorf("block %d: no trusted validator pubkey configured — refusing to authenticate it "+
@@ -67,8 +71,7 @@ func VerifyBlockProducer(b *types.Block, trustedPK []byte, lookup ProducerKeyLoo
 	}
 	key := lookup(b.Header.ValidatorAddr)
 	if len(key) == 0 {
-		return fmt.Errorf("block %d: producer %s is neither the trusted genesis validator nor in the active validator set",
-			b.Header.Height, b.Header.ValidatorAddr)
+		return fmt.Errorf("%w: block %d producer %s", ErrProducerNotYetKnown, b.Header.Height, b.Header.ValidatorAddr)
 	}
 	pub, err := qcrypto.PublicKeyFromBytes(key)
 	if err != nil {

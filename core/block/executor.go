@@ -161,6 +161,15 @@ type receiptStorer interface {
 	IndexBlock(b *types.Block) error
 }
 
+// txIndexProgress is the durable height/backfill surface on TxIndexStore.
+type txIndexProgress interface {
+	IndexedHeight() (uint64, bool)
+	CoverageFrom() (uint64, bool)
+	MarkSnapshotCoverage(height uint64) error
+	RecordBlock(b *types.Block, receipts []*types.Receipt) error
+	Backfill(from, to uint64, getBlock func(uint64) (*types.Block, error)) error
+}
+
 // NewExecutor creates a new block executor with default settings.
 func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) {
 	db, err := leveldb.OpenFile(chainDBPath, nil)
@@ -193,6 +202,92 @@ func (e *Executor) WithHooks(h *HookRegistry) *Executor {
 func (e *Executor) WithTxIndex(idx receiptStorer) *Executor {
 	e.txIndex = idx
 	return e
+}
+
+func (e *Executor) recordTxIndex(b *types.Block, receipts []*types.Receipt) {
+	if e.txIndex == nil || b == nil {
+		return
+	}
+	if prog, ok := e.txIndex.(txIndexProgress); ok {
+		if err := prog.RecordBlock(b, receipts); err != nil {
+			log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: record failed; will backfill on reconcile")
+		}
+		return
+	}
+	if err := e.txIndex.IndexBlock(b); err != nil {
+		log.Warn().Err(err).Msg("tx index: failed to index block")
+	}
+	if err := e.txIndex.StoreBlockReceipts(receipts); err != nil {
+		log.Warn().Err(err).Msg("tx index: failed to store receipts")
+	}
+}
+
+// HasTxIndex reports whether a receipt/tx index is attached.
+func (e *Executor) HasTxIndex() bool { return e.txIndex != nil }
+
+// TxIndexStatus is the durable index progress used by /readyz.
+func (e *Executor) TxIndexStatus() (height uint64, heightOK bool, coverageFrom uint64, coverageOK bool) {
+	prog, ok := e.txIndex.(txIndexProgress)
+	if !ok || e.txIndex == nil {
+		return 0, false, 0, false
+	}
+	height, heightOK = prog.IndexedHeight()
+	coverageFrom, coverageOK = prog.CoverageFrom()
+	return
+}
+
+// ReconcileTxIndex backfills a durable index that lagged a successful state
+// commit (or a snapshot join with no pre-checkpoint receipts).
+func (e *Executor) ReconcileTxIndex() error {
+	if e.txIndex == nil {
+		return nil
+	}
+	prog, ok := e.txIndex.(txIndexProgress)
+	if !ok {
+		return nil
+	}
+	applied, appliedOK := e.state.AppliedHeight()
+	if !appliedOK {
+		return nil
+	}
+	start := uint64(0)
+	if h, known := prog.IndexedHeight(); known {
+		start = h + 1
+	}
+	if cov, cok := prog.CoverageFrom(); cok && start < cov {
+		start = cov
+	}
+	if head, err := e.LatestBlock(); err == nil && head != nil && head.Header.Height > 0 {
+		if _, berr := e.GetBlockByHeight(head.Header.Height - 1); errors.Is(berr, types.ErrBlockNotFound) {
+			if err := prog.MarkSnapshotCoverage(head.Header.Height); err != nil {
+				return err
+			}
+			if start < head.Header.Height {
+				start = head.Header.Height
+			}
+		}
+	}
+	if start > applied {
+		return nil
+	}
+	return prog.Backfill(start, applied, func(h uint64) (*types.Block, error) {
+		b, err := e.GetBlockByHeight(h)
+		if errors.Is(err, types.ErrBlockNotFound) {
+			return nil, nil
+		}
+		return b, err
+	})
+}
+
+func (e *Executor) markSnapshotIndexCoverage(height uint64) {
+	if e.txIndex == nil {
+		return
+	}
+	if prog, ok := e.txIndex.(txIndexProgress); ok {
+		if err := prog.MarkSnapshotCoverage(height); err != nil {
+			log.Warn().Err(err).Uint64("height", height).Msg("tx index: failed to mark snapshot coverage")
+		}
+	}
 }
 
 // WithGenesisHash pins the hash of block 0.
@@ -414,15 +509,9 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		return fmt.Errorf("state commit failed: %w", err)
 	}
 
-	// Index block transactions and store receipts
-	if e.txIndex != nil {
-		if err := e.txIndex.IndexBlock(b); err != nil {
-			log.Warn().Err(err).Msg("tx index: failed to index block")
-		}
-		if err := e.txIndex.StoreBlockReceipts(receipts); err != nil {
-			log.Warn().Err(err).Msg("tx index: failed to store receipts")
-		}
-	}
+	// Index block transactions and store receipts. Failures are not consensus
+	// fatal; IndexedHeight stays behind so ReconcileTxIndex can backfill.
+	e.recordTxIndex(b, receipts)
 
 	// Run post-block hooks (non-fatal)
 	if e.hooks != nil {
@@ -670,10 +759,7 @@ func (e *Executor) reapplyBlock(b *types.Block) error {
 		return fmt.Errorf("reapply commit: %w", err)
 	}
 
-	if e.txIndex != nil {
-		_ = e.txIndex.IndexBlock(b)
-		_ = e.txIndex.StoreBlockReceipts(receipts)
-	}
+	e.recordTxIndex(b, receipts)
 	return nil
 }
 
@@ -1424,9 +1510,8 @@ func (e *Executor) assembleBlock(
 		for _, r := range receipts {
 			r.BlockHash = hash
 		}
-		_ = e.txIndex.IndexBlock(b)
-		_ = e.txIndex.StoreBlockReceipts(receipts)
 	}
+	e.recordTxIndex(b, receipts)
 
 	log.Info().
 		Uint64("height", height).

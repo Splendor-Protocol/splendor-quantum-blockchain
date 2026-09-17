@@ -706,6 +706,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 		log.Warn().Msg("skipping ReconcileState until snapshot import completes; the snapshot head is not a replayable chain prefix")
 	} else if err := executor.ReconcileState(); err != nil {
 		return fmt.Errorf("state reconciliation failed: %w", err)
+	} else if err := executor.ReconcileTxIndex(); err != nil {
+		log.Warn().Err(err).Msg("tx index backfill failed; /readyz will stay not-ready until it catches up")
 	}
 
 	// ── Genesis (if chain is empty) ────────────────────────────────────────
@@ -1070,7 +1072,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 						peerPool.UpdatePeerHeight(addr, h)
 					}
 				}
-				if n, err := syncer.SyncOnce(); err != nil {
+				if n, err := syncer.SyncOnceContext(ctx); err != nil {
 					log.Warn().Err(err).Msg("sync failed")
 				} else if n > 0 {
 					log.Debug().Int("blocks", n).Msg("synced blocks")
@@ -1105,7 +1107,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// ── Build HTTP router ──────────────────────────────────────────────────
 	router := mux.NewRouter()
 
-	isReady := func() bool { h, _ := executor.LatestHeight(); return h > 0 }
+	isReady := func() rpc.ReadyStatus {
+		return nodeReadyStatus(executor, stateDB, syncer, stateSyncPending.Load())
+	}
 
 	// Core RPC server (handles /tx/submit, /block/*, /balance/*, /status, etc.)
 	coreRPC := rpc.New(

@@ -534,10 +534,11 @@ func randomSessionID() (string, error) {
 // ImportStateSnapshot adopts a peer's state at its head block on a node with
 // no blocks and no state.
 //
-// Trust: the caller has verified the head block's signature against the
-// pinned genesis validator key. Here the block is checked structurally and
-// for this chain, and the leaves must hash to its header's state_root — so
-// the state is exactly what that authenticated block committed to.
+// Trust (R5, genesis-checkpoint): the caller has verified the head against
+// the pinned genesis validator key. This function never consults a validator
+// registry inside snap.Leaves — that set is untrusted until the root check
+// binds it to the already-authenticated header. Here the block is checked
+// structurally and for this chain, and the leaves must hash to state_root.
 //
 // RECOVERY: Uses staged import with explicit boundaries. A crash at any point
 // can be recovered deterministically on restart:
@@ -656,6 +657,8 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 		log.Warn().Err(err).Msg("failed to delete snapshot evidence after successful import")
 	}
 
+	e.markSnapshotIndexCoverage(snap.Height)
+	e.recordTxIndex(b, nil)
 	log.Info().Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).
 		Str("hash", fmt.Sprintf("%x", b.Hash[:8])).Msg("state snapshot imported successfully")
 	return nil
@@ -711,6 +714,7 @@ func (e *Executor) ReconcileSnapshotImport() error {
 		if err := e.completeSnapshotStateFromEvidence(marker); err != nil {
 			return err
 		}
+		e.markSnapshotIndexCoverage(marker.Height)
 		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: state import completed from retained snapshot")
 		return e.deleteSnapshotEvidence()
 
@@ -729,6 +733,7 @@ func (e *Executor) ReconcileSnapshotImport() error {
 			if err := e.completeSnapshotStateFromEvidence(marker); err != nil {
 				return err
 			}
+			e.markSnapshotIndexCoverage(marker.Height)
 			log.Info().Uint64("height", marker.Height).Msg("RECOVERY: both stores restored from verified staging")
 			return e.deleteSnapshotEvidence()
 		}
@@ -986,6 +991,8 @@ func (e *Executor) ImportSnapshotDownload(dir string) error {
 	if err := e.deleteSnapshotEvidence(); err != nil {
 		log.Warn().Err(err).Msg("failed to delete snapshot evidence after successful import")
 	}
+	e.markSnapshotIndexCoverage(d.Height())
+	e.recordTxIndex(b, nil)
 	log.Info().Uint64("height", d.Height()).
 		Str("hash", fmt.Sprintf("%x", b.Hash[:8])).Msg("state snapshot imported from disk staging")
 	return nil

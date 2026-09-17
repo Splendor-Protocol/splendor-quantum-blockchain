@@ -6,19 +6,23 @@ import (
 
 	"github.com/syndtr/goleveldb/leveldb"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 const (
-	prefixTxIndex    = "txi:"    // txHash → block height + index
-	prefixReceipt    = "rcpt:"   // txHash → Receipt
-	prefixBlockTxs   = "btxs:"  // blockHeight → []txHash
-	prefixLogByAddr  = "log:"   // address+logIdx → Log
+	prefixTxIndex   = "txi:"  // txHash → block height + index
+	prefixReceipt   = "rcpt:" // txHash → Receipt
+	prefixBlockTxs  = "btxs:" // blockHeight → []txHash
+	prefixLogByAddr = "log:"  // address+logIdx → Log
+
+	keyIndexHeight  = "meta:txindex_height"
+	keyCoverageFrom = "meta:txindex_coverage_from"
 )
 
 // TxLocation records where a transaction can be found on chain.
 type TxLocation struct {
-	BlockHeight uint64 `json:"block_height"`
+	BlockHeight uint64   `json:"block_height"`
 	BlockHash   [32]byte `json:"block_hash"`
 	TxIndex     uint32   `json:"tx_index"`
 }
@@ -79,7 +83,7 @@ func (s *TxIndexStore) IndexBlock(b *types.Block) error {
 	}
 	batch.Put(blockTxsKey(b.Header.Height), hashData)
 
-	return s.db.Write(batch, nil)
+	return persist.Write(s.db, batch)
 }
 
 // GetTxLocation returns the block location of a transaction by hash.
@@ -159,7 +163,106 @@ func (s *TxIndexStore) StoreBlockReceipts(receipts []*types.Receipt) error {
 			batch.Put(logKey, logData)
 		}
 	}
-	return s.db.Write(batch, nil)
+	return persist.Write(s.db, batch)
+}
+
+// IndexedHeight is the highest block whose txs/receipts were durably indexed.
+func (s *TxIndexStore) IndexedHeight() (uint64, bool) {
+	h, ok, err := s.readMetaUint64(keyIndexHeight)
+	if err != nil || !ok {
+		return 0, false
+	}
+	return h, true
+}
+
+// CoverageFrom is the first height this index claims to cover. After a
+// snapshot import it equals the snapshot height: earlier receipts do not exist
+// on this node.
+func (s *TxIndexStore) CoverageFrom() (uint64, bool) {
+	h, ok, err := s.readMetaUint64(keyCoverageFrom)
+	if err != nil || !ok {
+		return 0, false
+	}
+	return h, true
+}
+
+// MarkSnapshotCoverage records that historical receipts below height are
+// unavailable (state-sync join) and sets the indexed height to that point.
+func (s *TxIndexStore) MarkSnapshotCoverage(height uint64) error {
+	batch := new(leveldb.Batch)
+	putIndexMeta(batch, keyCoverageFrom, height)
+	putIndexMeta(batch, keyIndexHeight, height)
+	return persist.Write(s.db, batch)
+}
+
+// RecordBlock indexes txs, stores receipts, and advances IndexedHeight in one
+// durable batch. A lost write after state commit is repaired by Backfill.
+func (s *TxIndexStore) RecordBlock(b *types.Block, receipts []*types.Receipt) error {
+	if b == nil {
+		return nil
+	}
+	if err := s.IndexBlock(b); err != nil {
+		return err
+	}
+	if len(receipts) > 0 {
+		if err := s.StoreBlockReceipts(receipts); err != nil {
+			return err
+		}
+	}
+	return s.setIndexedHeight(b.Header.Height)
+}
+
+// Backfill indexes stored blocks in [from, to] and advances IndexedHeight.
+// getBlock may return (nil, nil) to skip a missing ancestor (snapshot gap).
+func (s *TxIndexStore) Backfill(from, to uint64, getBlock func(uint64) (*types.Block, error)) error {
+	if getBlock == nil || from > to {
+		return nil
+	}
+	for h := from; h <= to; h++ {
+		b, err := getBlock(h)
+		if err != nil {
+			return fmt.Errorf("tx index backfill at %d: %w", h, err)
+		}
+		if b != nil {
+			if err := s.IndexBlock(b); err != nil {
+				return fmt.Errorf("tx index backfill index %d: %w", h, err)
+			}
+		}
+		if err := s.setIndexedHeight(h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *TxIndexStore) setIndexedHeight(h uint64) error {
+	cur, ok := s.IndexedHeight()
+	if ok && cur >= h {
+		return nil
+	}
+	batch := new(leveldb.Batch)
+	putIndexMeta(batch, keyIndexHeight, h)
+	return persist.Write(s.db, batch)
+}
+
+func (s *TxIndexStore) readMetaUint64(key string) (uint64, bool, error) {
+	raw, err := s.db.Get([]byte(key), nil)
+	if err == leveldb.ErrNotFound {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	var h uint64
+	if err := json.Unmarshal(raw, &h); err != nil {
+		return 0, false, err
+	}
+	return h, true, nil
+}
+
+func putIndexMeta(batch *leveldb.Batch, key string, h uint64) {
+	raw, _ := json.Marshal(h)
+	batch.Put([]byte(key), raw)
 }
 
 // ── Key builders ──────────────────────────────────────────────────────────────
