@@ -832,6 +832,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	if joiningValidator {
 		readyToPropose = joiningValidatorReady(executor, syncer.IsSynced)
 	}
+	readyToPropose = applyStoresReady(executor, readyToPropose)
 	readyToPropose = applyVoteOnly(readyToPropose, flagVoteOnly)
 	if flagVoteOnly {
 		log.Warn().Msg("--vote-only: this validator will vote but never propose; remove the flag once tip advances past the unlocked height")
@@ -934,6 +935,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			OnCommit: func(b *types.Block) error {
 				return applyCommittedBlock(executor, b)
 			},
+			CanProgress: executor.CanProgress,
 			// A peer's proposal is applied to a discarded pending layer
 			// before this node votes on it, so a quorum cannot form on a
 			// block this node could never commit.

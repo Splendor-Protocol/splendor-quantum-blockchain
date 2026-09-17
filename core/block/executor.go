@@ -121,7 +121,16 @@ type Executor struct {
 	// page (see StartSnapshotChunkSession / PageSnapshotChunkSession).
 	snapshotChunkMu       sync.Mutex
 	snapshotChunkSessions map[string]*snapshotChunkSession
+
+	// applyHalt is set when the chain head was stored but the matching state
+	// commit failed. New execution and voting must wait until RecoverPartialApply
+	// brings applied height/root in line with the head (review C2).
+	applyHalt atomic.Bool
 }
+
+// ErrApplyHalted is returned when the executor refuses new work because a
+// previous persist left the chain head ahead of committed state.
+var ErrApplyHalted = errors.New("executor: apply halted until state is reconciled with the stored head")
 
 // ErrQuorumRequired is returned by ProduceBlock when multi_validator is active
 // at the height being produced and the registry lists two or more active
@@ -276,6 +285,77 @@ func (e *Executor) Close() error {
 	return e.chainDB.Close()
 }
 
+func (e *Executor) notePartialPersist() {
+	e.applyHalt.Store(true)
+	log.Error().Msg("executor: state commit failed after the head was stored; apply halted until reconciliation")
+}
+
+// CanProgress reports whether the node may produce, vote, or apply a new block.
+// False after a partial persist until RecoverPartialApply succeeds.
+func (e *Executor) CanProgress() bool {
+	return !e.applyHalt.Load()
+}
+
+// ApplyHalted reports the C2 halt flag. Prefer CanProgress at call sites.
+func (e *Executor) ApplyHalted() bool {
+	return e.applyHalt.Load()
+}
+
+// BlockFullyApplied is the only condition under which a failed ExecuteBlock
+// may still be acknowledged as a successful commit: the stored head is this
+// block, the committed applied height is this height, and the committed state
+// root matches the header. Head-hash alone is not enough — storeBlock writes
+// that hash before CommitWithHeight.
+func (e *Executor) BlockFullyApplied(b *types.Block) bool {
+	if b == nil {
+		return false
+	}
+	head, err := e.LatestBlock()
+	if err != nil || head == nil || head.Hash != b.Hash {
+		return false
+	}
+	applied, ok := e.state.AppliedHeight()
+	if !ok || applied != b.Header.Height {
+		return false
+	}
+	root, err := e.state.StateRoot()
+	if err != nil || root != b.Header.StateRoot {
+		return false
+	}
+	return true
+}
+
+func (e *Executor) storesAligned() bool {
+	head, err := e.LatestBlock()
+	if err != nil {
+		return false
+	}
+	applied, known := e.state.AppliedHeight()
+	if head == nil {
+		return !known || applied == 0
+	}
+	if !known || applied != head.Header.Height {
+		return false
+	}
+	root, err := e.state.StateRoot()
+	if err != nil {
+		return false
+	}
+	return root == head.Header.StateRoot
+}
+
+// RecoverPartialApply replays stored blocks onto stale state (ReconcileState)
+// and clears the apply halt only when head height/root and applied state match.
+func (e *Executor) RecoverPartialApply() error {
+	if err := e.ReconcileState(); err != nil {
+		return err
+	}
+	if e.storesAligned() {
+		e.applyHalt.Store(false)
+	}
+	return nil
+}
+
 // ExecuteBlock applies all transactions in a block to the state.
 // It verifies signatures, nonces, balances, runs hooks, generates receipts,
 // and stores the block.
@@ -286,6 +366,9 @@ func (e *Executor) Close() error {
 func (e *Executor) ExecuteBlock(b *types.Block) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.applyHalt.Load() {
+		return ErrApplyHalted
+	}
 
 	log.Info().
 		Uint64("height", b.Header.Height).
@@ -307,6 +390,8 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		return fmt.Errorf("block store failed: %w", err)
 	}
 	if _, err := e.state.CommitWithHeight(b.Header.Height); err != nil {
+		e.state.DiscardPending()
+		e.notePartialPersist()
 		return fmt.Errorf("state commit failed: %w", err)
 	}
 
@@ -346,6 +431,9 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 func (e *Executor) ValidateProposal(b *types.Block) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.applyHalt.Load() {
+		return ErrApplyHalted
+	}
 	_, _, err := e.applyBlockPending(b, false)
 	// Success leaves the block's writes in the pending layer; they must not
 	// survive into the next transition.
@@ -460,19 +548,28 @@ func (e *Executor) ReconcileState() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	stateH, known := e.state.AppliedHeight()
-	if !known {
-		// No height marker: a fresh DB (chain head also absent), or legacy state
-		// written before markers existed. Either way there is nothing to
-		// reconcile against — trust the durable chain DB and return.
-		return nil
-	}
-
 	chainH, err := e.LatestHeight()
 	if err != nil {
 		return fmt.Errorf("reconcile: read chain head: %w", err)
 	}
-	if stateH > chainH {
+	stateH, known := e.state.AppliedHeight()
+	if !known {
+		// No height marker. An empty chain is fine. A stored head with no
+		// marker is the C2 split on the first persist (or a legacy DB):
+		// replay every stored block so applied height/root catch the head.
+		if chainH == 0 {
+			if b0, gerr := e.GetBlockByHeight(0); gerr == nil && b0 != nil {
+				if err := e.reapplyBlock(b0); err != nil {
+					return fmt.Errorf("reconcile: replay block 0: %w", err)
+				}
+			}
+			if e.storesAligned() {
+				e.applyHalt.Store(false)
+			}
+			return nil
+		}
+		stateH = 0
+	} else if stateH > chainH {
 		return fmt.Errorf("reconcile: state height %d is ahead of chain head %d — corrupt state", stateH, chainH)
 	}
 	for h := stateH + 1; h <= chainH; h++ {
@@ -484,6 +581,9 @@ func (e *Executor) ReconcileState() error {
 			return fmt.Errorf("reconcile: replay block %d: %w", h, err)
 		}
 		log.Warn().Uint64("height", h).Msg("reconcile: replayed stored block to catch state up to chain head after crash")
+	}
+	if e.storesAligned() {
+		e.applyHalt.Store(false)
 	}
 	return nil
 }
@@ -1053,9 +1153,17 @@ func (e *Executor) assembleBlock(
 	prevHash [32]byte,
 	height uint64,
 	persist bool,
-) (*types.Block, []SkippedTx, error) {
+) (b *types.Block, skipped []SkippedTx, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.applyHalt.Load() {
+		return nil, nil, ErrApplyHalted
+	}
+	defer func() {
+		if err != nil {
+			e.state.DiscardPending()
+		}
+	}()
 
 	// The single path (persist) has no certificate rule of its own, so it is
 	// judged here, before any state mutation, against the same registry a
@@ -1082,7 +1190,6 @@ func (e *Executor) assembleBlock(
 		receipts  []*types.Receipt
 		blockGas  uint64
 		blockSize int
-		skipped   []SkippedTx
 	)
 	skip := func(tx *types.Transaction, err error) {
 		skipped = append(skipped, SkippedTx{Tx: tx, Err: err})
@@ -1234,7 +1341,7 @@ func (e *Executor) assembleBlock(
 		TxCount:       uint32(len(executed)),
 	}
 
-	b := &types.Block{Header: header, Transactions: executed}
+	b = &types.Block{Header: header, Transactions: executed}
 
 	hash, err := b.ComputeHash()
 	if err != nil {
@@ -1255,10 +1362,10 @@ func (e *Executor) assembleBlock(
 	}
 
 	if err := e.storeBlock(b); err != nil {
-		e.state.DiscardPending()
 		return nil, nil, fmt.Errorf("store block: %w", err)
 	}
 	if _, err := e.state.CommitWithHeight(height); err != nil {
+		e.notePartialPersist()
 		return nil, nil, fmt.Errorf("state commit: %w", err)
 	}
 

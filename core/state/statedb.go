@@ -118,6 +118,11 @@ type StateDB struct {
 	gen            uint64
 	pendingRoot    [32]byte
 	pendingRootGen uint64
+
+	// failNextCommit, when set, is returned by the next commit() and then
+	// cleared. Tests use it to inject a state-write failure after the caller
+	// has already persisted the block/head (C2).
+	failNextCommit error
 }
 
 // touchLocked records a change to the pending layer or the leaf index, which
@@ -678,6 +683,11 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	if s.sandbox {
 		return [32]byte{}, ErrSandboxCommit
 	}
+	if s.failNextCommit != nil {
+		err := s.failNextCommit
+		s.failNextCommit = nil
+		return [32]byte{}, err
+	}
 
 	batch := new(leveldb.Batch)
 
@@ -777,6 +787,22 @@ func (s *StateDB) AppliedHeight() (uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.appliedHeight, s.heightKnown
+}
+
+// FailNextCommit makes the next Commit/CommitWithHeight return err without
+// writing. The injection is consumed once. Tests use it to reproduce a
+// block-stored / state-not-committed split.
+func (s *StateDB) FailNextCommit(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNextCommit = err
+}
+
+// HasPendingWrites reports whether the in-memory overlay still holds uncommitted writes.
+func (s *StateDB) HasPendingWrites() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.dirty) > 0 || len(s.codeCache) > 0 || len(s.pendingRaw) > 0
 }
 
 // leafDigest hashes one state leaf with a length-prefixed, domain-separated

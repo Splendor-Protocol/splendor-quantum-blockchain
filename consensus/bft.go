@@ -299,6 +299,9 @@ type BFTEngine struct {
 
 	onCommit     func(*types.Block) error
 	onViewChange func(height uint64, round uint32)
+	// canProgress, when set, must be true before this node casts a vote or
+	// adopts a proposal. Used to halt consensus after a partial state persist.
+	canProgress func() bool
 	// The last vote THIS process signed, so a journal refusal can be told
 	// apart: one for a vote a previous process cast (a restart landed
 	// mid-height; the round is spent, move on) versus one for a vote this
@@ -338,6 +341,10 @@ type BFTConfig struct {
 	// vote for a height and round it already voted in. nil (tests) keeps
 	// only the in-memory lock.
 	VoteJournal *VoteJournal
+	// CanProgress, when set, must return true before this node votes on or
+	// adopts a proposal. nil (tests) means always. Wired to the executor's
+	// apply-halt so a failed state commit cannot be followed by a new vote.
+	CanProgress func() bool
 }
 
 // NewBFTEngine creates a working multi-validator BFT engine.
@@ -358,6 +365,7 @@ func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
 		onViewChange:     cfg.OnViewChange,
 		validateProposal: cfg.ValidateProposal,
 		journal:          cfg.VoteJournal,
+		canProgress:      cfg.CanProgress,
 		broadcast:        cfg.Broadcast,
 		broadcastP:       cfg.BroadcastProposal,
 		voteCh:           make(chan *Vote, 1000),
@@ -785,6 +793,11 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) bool {
 	if nValidators == 0 {
 		log.Error().Uint64("height", b.Header.Height).
 			Msg("BFT: no validator set, cannot form a quorum for this proposal")
+		return false
+	}
+	if e.isMember() && e.canProgress != nil && !e.canProgress() {
+		log.Warn().Uint64("height", b.Header.Height).
+			Msg("BFT: refusing to vote while apply is halted pending state reconciliation")
 		return false
 	}
 
