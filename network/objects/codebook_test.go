@@ -133,3 +133,41 @@ func TestBuildCodebookRejectsEmptySymbolSet(t *testing.T) {
 		t.Fatal("empty symbol set accepted")
 	}
 }
+
+// Caller mutation of the input slices after BuildCodebook must not change
+// stored symbol buffers or invalidate proofs built from the committed root.
+func TestBuildCodebookDeepCopiesSymbolBuffers(t *testing.T) {
+	descID := qcrypto.Hash32([]byte("deep-copy"))
+	rng := rand.New(rand.NewSource(7))
+	symbols := genSymbols(rng, 8)
+	cb, err := BuildCodebook(descID, symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := cb.Root()
+
+	symbols[3].Payload[0] ^= 0xff
+	symbols[3].Coefficients[0] ^= 0xff
+	symbols[3].Index = 99
+
+	proof, err := cb.BuildProof(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifySymbolProof(root, descID, proof) {
+		t.Fatal("proof failed after the caller mutated the input symbol buffers")
+	}
+	if proof.Symbol.Index != 3 {
+		t.Fatalf("stored index = %d, want 3", proof.Symbol.Index)
+	}
+
+	// Mutating a returned proof must not alias the codebook's stored buffers.
+	proof.Symbol.Payload[0] ^= 0xff
+	proof2, err := cb.BuildProof(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifySymbolProof(root, descID, proof2) {
+		t.Fatal("codebook buffers were aliased through BuildProof")
+	}
+}

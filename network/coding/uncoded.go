@@ -15,8 +15,8 @@ func NewUncodedCodec() *UncodedCodec { return &UncodedCodec{} }
 func (UncodedCodec) Name() string { return "uncoded-v1" }
 
 func (UncodedCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder, error) {
-	if len(sourceSymbols) == 0 {
-		return nil, ErrEmptyGeneration
+	if err := validateGenerationShape(len(sourceSymbols), symbolSize); err != nil {
+		return nil, err
 	}
 	for i, s := range sourceSymbols {
 		if len(s) != symbolSize {
@@ -32,8 +32,8 @@ func (UncodedCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder,
 }
 
 func (UncodedCodec) NewDecoder(sourceCount, symbolSize int) (Decoder, error) {
-	if sourceCount <= 0 {
-		return nil, ErrEmptyGeneration
+	if err := validateGenerationShape(sourceCount, symbolSize); err != nil {
+		return nil, err
 	}
 	return &uncodedDecoder{
 		sourceCount: sourceCount,
@@ -61,7 +61,7 @@ func (e *uncodedEncoder) Systematic() []Symbol {
 // Repair has nothing to offer: there is no coding, so there is no new
 // combination to send. A caller needing recovery must re-request specific
 // missing indices from Systematic() (or from an alternate peer).
-func (e *uncodedEncoder) Repair(int) []Symbol { return nil }
+func (e *uncodedEncoder) Repair(int) ([]Symbol, error) { return nil, nil }
 
 type uncodedDecoder struct {
 	sourceCount int

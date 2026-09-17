@@ -5,6 +5,21 @@ import (
 	"fmt"
 )
 
+const (
+	// MaxSourceSymbols is the library-wide generation-width cap, applied
+	// before any encoder/decoder allocation. Erasure coding additionally
+	// requires k <= 254 so Cauchy evaluation points stay inside GF(256).
+	MaxSourceSymbols = 256
+	// MaxSymbolSize is the per-symbol payload cap (64 KiB is the larger
+	// netbench / plan candidate). Applied before source copies or decoder
+	// buffers are reserved.
+	MaxSymbolSize = 64 << 10
+	// MaxRepairSymbols is the per-call Repair emit cap, applied before
+	// capacity is reserved so Repair(n) cannot allocate an attacker-chosen
+	// buffer.
+	MaxRepairSymbols = 1024
+)
+
 var (
 	// ErrNotEnoughSymbols means a decoder was asked to reconstruct a
 	// generation before it held enough independent (full-rank) symbols.
@@ -17,12 +32,51 @@ var (
 	// ErrEmptyGeneration means an encoder was asked to encode zero source
 	// symbols, which has no well-defined coded output.
 	ErrEmptyGeneration = errors.New("coding: generation has no source symbols")
+	// ErrInvalidDimension means a constructor received a non-positive
+	// symbol size (source count <= 0 is ErrEmptyGeneration).
+	ErrInvalidDimension = errors.New("coding: generation dimension must be positive")
+	// ErrGenerationTooLarge means source count or symbol size exceeds the
+	// library caps (MaxSourceSymbols / MaxSymbolSize).
+	ErrGenerationTooLarge = errors.New("coding: generation exceeds library size limits")
+	// ErrRepairCountTooLarge means Repair was asked for more than
+	// MaxRepairSymbols symbols in one call.
+	ErrRepairCountTooLarge = errors.New("coding: repair count exceeds library limit")
+	// ErrRepairRandomness means Repair could not obtain a complete
+	// coefficient vector from its randomness source.
+	ErrRepairRandomness = errors.New("coding: failed to read repair coefficients")
 	// ErrDuplicateSymbol means a decoder was handed a symbol whose
 	// coefficient vector is already a linear combination of rows already
 	// absorbed (rank did not increase) — not useful, and MUST NOT be
 	// silently accepted as progress.
 	ErrDuplicateSymbol = errors.New("coding: symbol did not increase decoder rank (dependent or duplicate)")
 )
+
+// validateGenerationShape rejects non-positive or oversized dimensions
+// before the caller allocates source copies or decoder row buffers.
+func validateGenerationShape(sourceCount, symbolSize int) error {
+	if sourceCount <= 0 {
+		return ErrEmptyGeneration
+	}
+	if symbolSize <= 0 {
+		return fmt.Errorf("%w: symbol size must be positive, got %d", ErrInvalidDimension, symbolSize)
+	}
+	if sourceCount > MaxSourceSymbols {
+		return fmt.Errorf("%w: %d source symbols exceeds %d", ErrGenerationTooLarge, sourceCount, MaxSourceSymbols)
+	}
+	if symbolSize > MaxSymbolSize {
+		return fmt.Errorf("%w: symbol size %d exceeds %d", ErrGenerationTooLarge, symbolSize, MaxSymbolSize)
+	}
+	return nil
+}
+
+// validateRepairCount rejects an emit count that would reserve more than
+// MaxRepairSymbols slots. n <= 0 is handled by Repair as a no-op.
+func validateRepairCount(n int) error {
+	if n > MaxRepairSymbols {
+		return fmt.Errorf("%w: requested %d, max %d", ErrRepairCountTooLarge, n, MaxRepairSymbols)
+	}
+	return nil
+}
 
 // Symbol is one coded (or, for the uncoded baseline, systematic) unit of a
 // generation. Coefficients is empty for genuinely uncoded chunks; RLNC
@@ -64,10 +118,14 @@ type Encoder interface {
 	// plan: a receiver with a clean channel needs no repair symbols at all.
 	Systematic() []Symbol
 	// Repair returns up to n freshly generated coded symbols beyond the
-	// systematic set. For RLNC these are new random linear combinations;
-	// for the uncoded baseline this returns nothing (there is no repair
-	// concept without coding — a lost chunk must be re-requested).
-	Repair(n int) []Symbol
+	// systematic set. n <= 0 returns an empty slice. n larger than
+	// MaxRepairSymbols fails before allocation. For RLNC these are new
+	// random linear combinations and a randomness failure is returned as
+	// an error (never a panic); successful repair indices are stable
+	// across calls, starting at SourceCount. For the uncoded baseline
+	// this returns nothing (there is no repair concept without coding — a
+	// lost chunk must be re-requested).
+	Repair(n int) ([]Symbol, error)
 }
 
 // Decoder absorbs symbols until it holds a full-rank generation, then

@@ -31,8 +31,8 @@ const maxErasureSources = 254
 func (ErasureCodec) Name() string { return "erasure-rs-v1" }
 
 func (ErasureCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder, error) {
-	if len(sourceSymbols) == 0 {
-		return nil, ErrEmptyGeneration
+	if err := validateGenerationShape(len(sourceSymbols), symbolSize); err != nil {
+		return nil, err
 	}
 	if len(sourceSymbols) > maxErasureSources {
 		return nil, fmt.Errorf("coding: erasure generation of %d sources exceeds the %d-source GF(256) limit",
@@ -52,8 +52,8 @@ func (ErasureCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder,
 }
 
 func (ErasureCodec) NewDecoder(sourceCount, symbolSize int) (Decoder, error) {
-	if sourceCount <= 0 {
-		return nil, ErrEmptyGeneration
+	if err := validateGenerationShape(sourceCount, symbolSize); err != nil {
+		return nil, err
 	}
 	if sourceCount > maxErasureSources {
 		return nil, fmt.Errorf("coding: erasure generation of %d sources exceeds the %d-source GF(256) limit",
@@ -103,9 +103,12 @@ func (e *erasureEncoder) Systematic() []Symbol {
 // sources 0 and 17, the first two repairs both reducing to [1,13] -> rank
 // 31) proved the old construction was not MDS. This restores the
 // deterministic "any k of n recover k" guarantee this codec represents.
-func (e *erasureEncoder) Repair(n int) []Symbol {
+func (e *erasureEncoder) Repair(n int) ([]Symbol, error) {
 	if n <= 0 {
-		return []Symbol{}
+		return []Symbol{}, nil
+	}
+	if err := validateRepairCount(n); err != nil {
+		return nil, err
 	}
 	k := len(e.source)
 	// The systematic Cauchy construction needs y_r = k+1+r to be a distinct
@@ -120,7 +123,7 @@ func (e *erasureEncoder) Repair(n int) []Symbol {
 		limit = room
 	}
 	if limit <= 0 {
-		return []Symbol{}
+		return []Symbol{}, nil
 	}
 	out := make([]Symbol, 0, limit)
 	for r := 0; r < limit; r++ {
@@ -136,5 +139,5 @@ func (e *erasureEncoder) Repair(n int) []Symbol {
 		}
 		out = append(out, Symbol{Index: k + r, Coefficients: coeffs, Payload: payload})
 	}
-	return out
+	return out, nil
 }
