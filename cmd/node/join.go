@@ -196,19 +196,33 @@ func joiningValidatorReady(ex *block.Executor, synced func() bool) func() bool {
 //
 // The pull-sync loop and the block push both race the engine for the same
 // block: whichever lands first makes the other's ExecuteBlock fail on
-// linkage. When the block that failed is already the head — same hash, so
-// the same header and transactions — the commit still happened, and the
-// engine must advance rather than report a failed commit and hold the height
-// open.
+// linkage. A duplicate is success only when the block is fully applied —
+// stored head hash, applied height, and committed state root all match.
+// Head-hash alone is not enough: ExecuteBlock writes the head before
+// CommitWithHeight, so a failed state write already satisfies the old check.
 func applyCommittedBlock(ex *block.Executor, b *types.Block) error {
 	err := ex.ExecuteBlock(b)
 	if err == nil {
 		return nil
 	}
-	if head, herr := ex.LatestBlock(); herr == nil && head != nil && head.Hash == b.Hash {
+	if ex.BlockFullyApplied(b) {
 		return nil
 	}
 	return err
+}
+
+// applyStoresReady stops produce (and, with BFT CanProgress, vote) after a
+// partial persist. It tries deterministic reconciliation first so a recoverable
+// split does not need a process restart.
+func applyStoresReady(ex *block.Executor, ready func() bool) func() bool {
+	return func() bool {
+		if !ex.CanProgress() {
+			if err := ex.RecoverPartialApply(); err != nil || !ex.CanProgress() {
+				return false
+			}
+		}
+		return ready == nil || ready()
+	}
 }
 
 // applyVoteOnly wraps Ready so the node still votes on peer proposals but never

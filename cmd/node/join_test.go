@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/hex"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,6 +176,67 @@ func TestApplyCommittedBlockToleratesAlreadyApplied(t *testing.T) {
 	}
 	if h, _ := ex.LatestHeight(); h != 1 {
 		t.Fatalf("head = %d, want 1", h)
+	}
+}
+
+// C2: storeBlock then a failed CommitWithHeight used to be acknowledged as
+// success because the head hash already matched. The commit callback must
+// keep returning the error until applied height and root match too.
+func TestApplyCommittedBlockDoesNotAckPartialPersist(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	vaddr := qcrypto.DeriveAddress(vpub)
+	b1, err := ex.BuildProposal(nil, vaddr, vpub.Bytes(), vpriv, [32]byte{}, 1)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	sdb.FailNextCommit(errors.New("injected state write failure"))
+	err = applyCommittedBlock(ex, b1)
+	if err == nil {
+		t.Fatal("partial persist was acknowledged as a successful commit")
+	}
+	if !strings.Contains(err.Error(), "state commit failed") {
+		t.Fatalf("got %v, want a state commit failure", err)
+	}
+	if ex.BlockFullyApplied(b1) || ex.CanProgress() {
+		t.Fatal("executor treated the partial persist as applied/progressable")
+	}
+
+	ready := applyStoresReady(ex, func() bool { return true })
+	if !ready() {
+		t.Fatal("stores-ready should reconcile a recoverable split and then pass")
+	}
+	if !ex.CanProgress() || !ex.BlockFullyApplied(b1) {
+		t.Fatal("reconciliation did not finish the apply")
+	}
+	if err := applyCommittedBlock(ex, b1); err != nil {
+		t.Fatalf("fully applied duplicate must still be success: %v", err)
+	}
+}
+
+func TestApplyStoresReadyBlocksUntilReconcile(t *testing.T) {
+	sdb, ex := newBootstrapNode(t)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	sdb.FailNextCommit(errors.New("injected"))
+	if _, err := ex.ProduceBlock(nil, qcrypto.DeriveAddress(vpub), vpub.Bytes(), vpriv, [32]byte{}, 1); err == nil {
+		t.Fatal("expected produce to fail")
+	}
+
+	blocked := applyStoresReady(ex, func() bool { return true })
+	// RecoverPartialApply is invoked by the gate itself.
+	if !blocked() {
+		t.Fatal("gate should succeed after it reconciles")
+	}
+
+	sdb.FailNextCommit(errors.New("injected again"))
+	if _, err := ex.ProduceBlock(nil, qcrypto.DeriveAddress(vpub), vpub.Bytes(), vpriv, [32]byte{}, 2); err == nil {
+		t.Fatal("expected second produce to fail")
+	}
+	// Break recovery by closing state? Instead, force halt without a matching
+	// stored body: apply halt is already set; recover should still run.
+	if !ex.ApplyHalted() {
+		t.Fatal("expected halt after the second partial persist")
 	}
 }
 

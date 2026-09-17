@@ -29,6 +29,37 @@ func peerProposalAt5(t *testing.T, set []ValidatorInfo, keys []*qcrypto.PrivateK
 // Tampering with the block signature after the leader's own vote was made
 // leaves the vote valid and the block forged. proposalRound alone accepted
 // that: it checks the vote, not the block.
+// C2: a halted apply must not be able to cast a new vote or adopt a proposal.
+func TestHaltedApplyGetsNoVote(t *testing.T) {
+	set, keys := testSet(t, 2)
+	broadcast := make(chan *Vote, 4)
+	progress := false
+	eng := engineFor(t, set, keys, 0, BFTConfig{
+		Broadcast:   func(v *Vote) { broadcast <- v },
+		CanProgress: func() bool { return progress },
+	})
+	eng.SetHeight(5)
+
+	msg := peerProposalAt5(t, set, keys, 1)
+	eng.handleProposal(pendingProposalOf(msg))
+	if eng.voteSet != nil || eng.proposal != nil || eng.hasVoted {
+		t.Fatal("a proposal was adopted while CanProgress was false")
+	}
+	select {
+	case <-broadcast:
+		t.Fatal("a vote was broadcast while apply was halted")
+	default:
+	}
+
+	progress = true
+	eng.handleProposal(pendingProposalOf(msg))
+	select {
+	case <-broadcast:
+	default:
+		t.Fatal("the same proposal was not voted once progress resumed")
+	}
+}
+
 func TestProposalWithInvalidBlockSignatureGetsNoVote(t *testing.T) {
 	set, keys := testSet(t, 2)
 	broadcast := make(chan *Vote, 4)
