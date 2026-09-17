@@ -3,6 +3,8 @@ package block
 import (
 	"os"
 	"testing"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 // TestSnapshotMarkerWriteReadDelete exercises the basic marker lifecycle:
@@ -103,11 +105,12 @@ func TestReconcileSnapshotImportPhaseStarted(t *testing.T) {
 	}
 }
 
-// TestReconcileSnapshotImportPhaseBlockStored simulates a crash after the
-// block was durably stored but before state import completed. Recovery
-// cannot safely auto-complete without the original snapshot leaves, so it
-// must surface an actionable error and MUST NOT delete the marker (which
-// would erase the only on-disk evidence that state is missing).
+// TestReconcileSnapshotImportPhaseBlockStored simulates a stale "block_stored"
+// marker whose block never actually landed (e.g. storeBlock was the crash
+// point, or the disk state was rolled back). Recovery reconciles from the
+// ACTUAL stores, not the phase: with neither block nor state present it treats
+// the import as never started and returns to a clean slate, deleting the
+// marker rather than trusting a phase that no longer matches reality.
 func TestReconcileSnapshotImportPhaseBlockStored(t *testing.T) {
 	ex, sdb := newTestExecutor(t)
 	defer ex.Close()
@@ -121,15 +124,16 @@ func TestReconcileSnapshotImportPhaseBlockStored(t *testing.T) {
 		t.Fatalf("writeSnapshotMarker: %v", err)
 	}
 
-	err := ex.ReconcileSnapshotImport()
-	if err == nil {
-		t.Fatal("ReconcileSnapshotImport(phaseBlockStored) = nil, want an error demanding a retry")
+	if err := ex.ReconcileSnapshotImport(); err != nil {
+		t.Fatalf("ReconcileSnapshotImport(stale block_stored marker) = %v, want nil (clean slate)", err)
 	}
 
-	// The marker must survive: it is the only record that state is missing.
 	got, rerr := ex.readSnapshotMarker()
-	if rerr != nil || got == nil || got.Phase != phaseBlockStored {
-		t.Fatalf("marker after failed recovery = (%+v, %v), want unchanged phase=%s", got, rerr, phaseBlockStored)
+	if rerr != nil || got != nil {
+		t.Fatalf("marker after recovery = (%+v, %v), want (nil, nil)", got, rerr)
+	}
+	if head, err := ex.LatestBlock(); err != nil || head != nil {
+		t.Fatalf("chain head after recovery = (%v, %v), want (nil, nil)", head, err)
 	}
 }
 
@@ -226,5 +230,191 @@ func TestImportStateSnapshotLeavesNoMarkerOnRootMismatch(t *testing.T) {
 	}
 	if got, err := exB.readSnapshotMarker(); err != nil || got != nil {
 		t.Fatalf("marker left behind by a rejected import: (%+v, %v)", got, err)
+	}
+}
+
+// TestReconcileCompletesBlockStoredImportFromStaging simulates a crash after
+// the head block landed but before the state import: marker (still stuck at
+// "started" because the advancing write was itself the crash point), the
+// retained snapshot, and the block are all on disk, with state empty. Recovery
+// must complete the state from the retained snapshot and leave both stores
+// consistent, with marker and retention cleaned up.
+func TestReconcileCompletesBlockStoredImportFromStaging(t *testing.T) {
+	exA, _, _, _, _, _ := threeBlockChain(t)
+	snap, err := exA.ExportStateSnapshot()
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+
+	marker := &snapshotImportMarker{
+		Height: snap.Height, BlockHash: snap.Block.Hash, StateRoot: snap.Block.Header.StateRoot,
+		ChainID: snap.Block.Header.ChainID, Phase: phaseStarted,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.writeSnapshotStaging(snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.storeBlock(snap.Block); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := exB.ReconcileSnapshotImport(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if got, err := exB.GetBlockByHeight(snap.Height); err != nil || got.Hash != snap.Block.Hash {
+		t.Fatalf("block after recovery = (hash %x, err %v), want %x", got.Hash[:8], err, snap.Block.Hash[:8])
+	}
+	if h, ok := sdbB.AppliedHeight(); !ok || h != snap.Height {
+		t.Fatalf("applied height after recovery = (%d,%v), want (%d,true)", h, ok, snap.Height)
+	}
+	if root, _ := sdbB.StateRoot(); root != snap.Block.Header.StateRoot {
+		t.Fatalf("state root after recovery = %x, want %x", root[:8], snap.Block.Header.StateRoot[:8])
+	}
+	if got, err := exB.readSnapshotMarker(); err != nil || got != nil {
+		t.Fatalf("marker after recovery = (%v,%v), want (nil,nil)", got, err)
+	}
+	if _, err := os.Stat(exB.snapshotStagingPath()); !os.IsNotExist(err) {
+		t.Fatalf("retained snapshot still present after recovery: %v", err)
+	}
+}
+
+// TestReconcileRecognizesAlreadyCompletedImport simulates a crash after the
+// state commit but before the marker/retention deletion: block AND state are
+// both present and correct. Recovery must recognise the import as done and just
+// drop the marker/retention, leaving the stores untouched.
+func TestReconcileRecognizesAlreadyCompletedImport(t *testing.T) {
+	exA, _, _, _, _, _ := threeBlockChain(t)
+	snap, err := exA.ExportStateSnapshot()
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+
+	marker := &snapshotImportMarker{
+		Height: snap.Height, BlockHash: snap.Block.Hash, StateRoot: snap.Block.Header.StateRoot,
+		ChainID: snap.Block.Header.ChainID, Phase: phaseBlockStored,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.writeSnapshotStaging(snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.storeBlock(snap.Block); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.state.ImportSnapshot(snap.Leaves, snap.Height, snap.Block.Header.StateRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := exB.ReconcileSnapshotImport(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if root, _ := sdbB.StateRoot(); root != snap.Block.Header.StateRoot {
+		t.Fatalf("state root changed by recovery: %x, want %x", root[:8], snap.Block.Header.StateRoot[:8])
+	}
+	if got, err := exB.readSnapshotMarker(); err != nil || got != nil {
+		t.Fatalf("marker after recovery = (%v,%v), want (nil,nil)", got, err)
+	}
+	if _, err := os.Stat(exB.snapshotStagingPath()); !os.IsNotExist(err) {
+		t.Fatalf("retained snapshot still present after recovery: %v", err)
+	}
+}
+
+// TestReconcileDiscardsNothingPersisted simulates a crash before the block
+// landed: marker and retained snapshot exist, but neither block nor state did.
+// Recovery must discard both and leave a clean slate for a retry.
+func TestReconcileDiscardsNothingPersisted(t *testing.T) {
+	exA, _, _, _, _, _ := threeBlockChain(t)
+	snap, err := exA.ExportStateSnapshot()
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+
+	marker := &snapshotImportMarker{
+		Height: snap.Height, BlockHash: snap.Block.Hash, StateRoot: snap.Block.Header.StateRoot,
+		ChainID: snap.Block.Header.ChainID, Phase: phaseStarted,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.writeSnapshotStaging(snap); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := exB.ReconcileSnapshotImport(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, err := exB.GetBlockByHeight(snap.Height); err == nil {
+		t.Fatal("block appeared during recovery although nothing was persisted before the crash")
+	}
+	if h, ok := sdbB.AppliedHeight(); ok {
+		t.Fatalf("state appeared during recovery: applied height = %d", h)
+	}
+	if got, err := exB.readSnapshotMarker(); err != nil || got != nil {
+		t.Fatalf("marker after recovery = (%v,%v), want (nil,nil)", got, err)
+	}
+	if _, err := os.Stat(exB.snapshotStagingPath()); !os.IsNotExist(err) {
+		t.Fatalf("retained snapshot still present after recovery: %v", err)
+	}
+}
+
+// TestReconcileRefusesCorruptedStaging simulates a crash after the block
+// landed, but the retained snapshot has been corrupted. Recovery must refuse
+// rather than import leaves that no longer hash to the committed root.
+func TestReconcileRefusesCorruptedStaging(t *testing.T) {
+	exA, _, _, _, _, _ := threeBlockChain(t)
+	snap, err := exA.ExportStateSnapshot()
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+
+	staged := *snap
+	staged.Leaves = append([]types.StateLeaf(nil), snap.Leaves...)
+	staged.Leaves[0].Value = append([]byte(nil), staged.Leaves[0].Value...)
+	staged.Leaves[0].Value[0] ^= 0x01
+
+	marker := &snapshotImportMarker{
+		Height: snap.Height, BlockHash: snap.Block.Hash, StateRoot: snap.Block.Header.StateRoot,
+		ChainID: snap.Block.Header.ChainID, Phase: phaseBlockStored,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.writeSnapshotStaging(&staged); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.storeBlock(snap.Block); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := exB.ReconcileSnapshotImport(); err == nil {
+		t.Fatal("reconcile accepted a corrupted retained snapshot")
+	}
+	if h, ok := sdbB.AppliedHeight(); ok {
+		t.Fatalf("corrupted snapshot was imported anyway: applied height = %d", h)
+	}
+	if got, err := exB.readSnapshotMarker(); err != nil || got == nil {
+		t.Fatalf("marker should still be present after refused recovery, got (%v,%v)", got, err)
 	}
 }
