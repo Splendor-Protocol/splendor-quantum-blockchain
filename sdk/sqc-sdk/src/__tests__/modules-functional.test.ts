@@ -129,9 +129,9 @@ describe('module clients functional', () => {
   it('modules factory returns typed clients', () => {
     const conn = { moduleCall: vi.fn() } as unknown as Connection;
     expect(modules.qrc20(conn, A).getAddress()).toBe(A);
-    expect(modules.exchange(conn, A).getAddress()).toBe(A);
-    expect(modules.dex(conn, A).getAddress()).toBe(A);
     expect(modules.bridge(conn, A).getAddress()).toBe(A);
     expect(modules.qrc1155(conn, A).getAddress()).toBe(A);
+    expect(() => modules.exchange(conn, A)).toThrow(/unsupported application adapter/i);
+    expect(() => modules.dex(conn, A)).toThrow(/unsupported application adapter/i);
   });
 });

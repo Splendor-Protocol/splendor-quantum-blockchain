@@ -1,5 +1,5 @@
 /**
- * Base Program class for native module clients (QRC-20, DEX, Exchange, etc.).
+ * Base Program class for module clients (routed native modules and adapters).
  */
 import type { Connection } from './connection.js';
 import { buildModuleCall, type ModuleCall } from './module-call.js';

@@ -1,5 +1,7 @@
 /**
- * DEX (constant-product AMM) Program client.
+ * Unsupported DEX adapter (constant-product AMM client).
+ * Not routed by DispatchModuleCall — opt in via registerUnsupportedApplicationAdapters()
+ * or import this file directly. Node calls with module "dex" are unknown-module errors.
  */
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';

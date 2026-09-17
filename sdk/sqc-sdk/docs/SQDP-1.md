@@ -77,9 +77,10 @@ and submits calls against this ABI; it does not embed a compile-from-source API.
 
 1. Function selector MUST be the first **4 bytes** of `SHA3-256(UTF-8 signature)` — **not** Keccak-256.
 2. Arguments MUST be packed as 32-byte big-endian words after the selector.
-3. Address-typed parameters in signatures MUST use the type name **`sqaddress`** (not `address`).
-4. Golden test: `transfer(sqaddress,uint256)` selector = `14cde9ab`.
-5. Encoding an `SQ:` address into a word MUST use the 32 raw bytes (strip `SQ:`), right-aligned in the 32-byte slot (full 32 bytes occupied).
+3. Address-typed parameters in **new** signatures MUST use the compiler-canonical type name **`address`**. The legacy alias **`sqaddress`** is hashed as written so already-deployed selectors keep working.
+4. Canonical golden: `transfer(address,uint256)` selector = `4b40e901` (`PROTOCOL.canonicalTransferSelector`).
+5. Legacy pin: `transfer(sqaddress,uint256)` selector = `14cde9ab` (`PROTOCOL.goldenTransferSelector`).
+6. Encoding an `SQ:` address into a word MUST use the 32 raw bytes (strip `SQ:`), right-aligned in the 32-byte slot (full 32 bytes occupied).
 
 Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
 

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { ROUTED_NATIVE_MODULE_IDS } from '../modules.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GOLDEN = JSON.parse(
@@ -54,42 +55,6 @@ const SDK_COVERAGE: Record<string, { writes: string[]; reads: string[]; allowlis
     ],
     reads: ['balance_of', 'balance_of_batch', 'is_approved_for_all', 'uri', 'total_supply', 'token_info'],
   },
-  dex: {
-    writes: ['deploy_pool', 'add_liquidity', 'swap'],
-    reads: ['reserves', 'pool_info'],
-  },
-  exchange: {
-    writes: [
-      'deploy',
-      'create_condition',
-      'split',
-      'merge',
-      'match',
-      'cancel_order',
-      'increment_nonce',
-      'resolve',
-      'redeem',
-      'redeem_for',
-      'pause',
-      'unpause',
-      'set_operator',
-      'transfer_ownership',
-      'set_redeem_fee_bps',
-      'set_fee_recipient',
-    ],
-    reads: [
-      'exchange_info',
-      'condition_info',
-      'order_status',
-      'order_remaining',
-      'order_hash',
-      'nonce',
-      'is_operator',
-      'position',
-      'position_id',
-      'simulate_match',
-    ],
-  },
   bridge: {
     writes: [
       'deploy',
@@ -110,33 +75,18 @@ const SDK_COVERAGE: Record<string, { writes: string[]; reads: string[]; allowlis
     writes: ['register', 'unregister', 'finalize_exit', 'approve', 'revoke'],
     reads: ['validator', 'list', 'count', 'bond', 'approved'],
   },
-  lending: {
-    writes: ['deploy', 'enable_asset', 'set_oracle', 'deposit', 'withdraw', 'borrow', 'repay'],
-    reads: ['pool', 'deposit_balance'],
-  },
-  oracle: {
-    writes: ['deploy', 'register_feeder', 'submit_price'],
-    reads: ['price', 'feeder'],
-  },
-  multisig: {
-    writes: ['deploy', 'submit'],
-    reads: ['threshold', 'proposal'],
-  },
-  governance: {
-    writes: ['submit', 'vote'],
-    reads: ['proposal', 'count'],
-  },
   qrc721: {
     writes: ['deploy', 'mint', 'transfer', 'burn'],
     reads: ['owner_of', 'balance_of', 'token_info'],
-  },
-  qrc4626: {
-    writes: ['deploy', 'deposit'],
-    reads: ['total_assets', 'name'],
+    // Routed on-chain; no dedicated SDK Program client yet (sendModuleCall).
   },
 };
 
 describe('KnownModuleActions sync', () => {
+  it('golden lists only the routed catalog', () => {
+    expect(Object.keys(GOLDEN).sort()).toEqual([...ROUTED_NATIVE_MODULE_IDS].sort());
+  });
+
   it('golden matches Go KnownModuleActions for routed modules', () => {
     for (const [module, acts] of Object.entries(GOLDEN)) {
       expect(SDK_COVERAGE[module], `SDK_COVERAGE missing module ${module}`).toBeTruthy();

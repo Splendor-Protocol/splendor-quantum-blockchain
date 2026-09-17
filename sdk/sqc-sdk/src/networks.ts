@@ -39,6 +39,9 @@ export type ProtocolConfig = {
   addressHexLen: number;
   confirmation: string;
   abiHash: string;
+  /** Compiler-canonical `transfer(address,uint256)` selector. */
+  canonicalTransferSelector: string;
+  /** Legacy hash-as-written `transfer(sqaddress,uint256)` selector. */
   goldenTransferSelector: string;
   derivationDomainVersion: string;
   bridgeClientVersion: string;

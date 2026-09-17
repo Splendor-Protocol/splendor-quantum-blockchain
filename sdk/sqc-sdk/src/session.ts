@@ -10,7 +10,12 @@ import { getContract, deployBytecode, type Contract } from './contracts/contract
 import { getPool, deployPool, type DEX } from './defi/dex.js';
 import { getExchange, deployExchange, type Exchange, type ExchangeDeployParams } from './defi/exchange.js';
 import { getBridge, deployBridge, type BridgeModule, type BridgeDeployParams } from './bridge/module.js';
-import { modules, bindModules, type SignedBoundModules } from './modules.js';
+import {
+  modules,
+  bindModules,
+  assertUnsupportedApplicationAdaptersEnabled,
+  type SignedBoundModules,
+} from './modules.js';
 import type { BoundClient } from './bound.js';
 import type { DeployOpts } from './types.js';
 
@@ -38,10 +43,10 @@ export type Session = ConnectResult & {
   /** Wallet-bound QRC-1155. */
   collection: (addr: string) => BoundClient<QRC1155>;
   qrc1155: (addr: string) => BoundClient<QRC1155>;
-  /** Wallet-bound DEX pool. */
+  /** Wallet-bound DEX pool (unsupported adapter; opt in first). */
   pool: (addr: string) => BoundClient<DEX>;
   dex: (addr: string) => BoundClient<DEX>;
-  /** Wallet-bound Exchange. */
+  /** Wallet-bound Exchange (unsupported adapter; opt in first). */
   exchange: (addr: string) => BoundClient<Exchange>;
   /** Wallet-bound Bridge module. */
   bridge: (addr: string) => BoundClient<BridgeModule>;
@@ -86,14 +91,16 @@ export type Session = ConnectResult & {
 };
 
 /**
- * One-touch session with bound helpers for balance, SPLD, and every native module.
+ * One-touch session with bound helpers for balance, SPLD, and routed native modules.
  *
  * ```ts
  * const s = await createSession({ network: 'local', mode: 'seed', seed });
  * await s.sendSPLD(to, '0.01');
  * await s.token(tokenAddr).transfer(to, '100');
- * await s.modules.dex(pool).swap({ tokenIn: 0, amountIn: '100', minAmountOut: '1' });
+ * await s.bridge(bridgeAddr).claim({ ... });
  * ```
+ *
+ * DEX/exchange helpers throw unless registerUnsupportedApplicationAdapters() ran.
  */
 export async function createSession(opts: ConnectOptions = {}): Promise<Session> {
   const s = await connect(opts);
@@ -115,9 +122,18 @@ export async function createSession(opts: ConnectOptions = {}): Promise<Session>
     qrc20: (addr) => getToken(s.connection, addr).withSigner(s.wallet),
     collection: (addr) => getCollection(s.connection, addr).withSigner(s.wallet),
     qrc1155: (addr) => getCollection(s.connection, addr).withSigner(s.wallet),
-    pool: (addr) => getPool(s.connection, addr).withSigner(s.wallet),
-    dex: (addr) => getPool(s.connection, addr).withSigner(s.wallet),
-    exchange: (addr) => getExchange(s.connection, addr).withSigner(s.wallet),
+    pool: (addr) => {
+      assertUnsupportedApplicationAdaptersEnabled();
+      return getPool(s.connection, addr).withSigner(s.wallet);
+    },
+    dex: (addr) => {
+      assertUnsupportedApplicationAdaptersEnabled();
+      return getPool(s.connection, addr).withSigner(s.wallet);
+    },
+    exchange: (addr) => {
+      assertUnsupportedApplicationAdaptersEnabled();
+      return getExchange(s.connection, addr).withSigner(s.wallet);
+    },
     bridge: (addr) => getBridge(s.connection, addr).withSigner(s.wallet),
     contract: (addr) => getContract(s.connection, addr).withSigner(s.wallet),
 
@@ -143,6 +159,7 @@ export async function createSession(opts: ConnectOptions = {}): Promise<Session>
       };
     },
     async deployPool(token0, token1, deployOpts) {
+      assertUnsupportedApplicationAdaptersEnabled();
       const { address, result } = await deployPool(s.wallet, token0, token1, deployOpts);
       return {
         address,
@@ -151,6 +168,7 @@ export async function createSession(opts: ConnectOptions = {}): Promise<Session>
       };
     },
     async deployExchange(params, deployOpts) {
+      assertUnsupportedApplicationAdaptersEnabled();
       const { address, height, result } = await deployExchange(s.wallet, params, deployOpts);
       return {
         address,

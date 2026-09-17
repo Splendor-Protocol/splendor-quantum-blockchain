@@ -61,8 +61,11 @@ unimplemented, the compiler defines the calling convention itself:
 
 ## Known limits
 
-No internal function calls, arrays/structs/strings, constructor (use a guarded
-`init()`), or `break`/`continue`.
+Internal (private) function calls are **inlined**. `break` / `continue` jump
+to the innermost loop. Arrays, structs, and strings are not implemented.
+
+A `constructor` AST node may parse; it is **not executed** on deploy. Use a
+guarded `init()`. This is not full Solidity compatibility.
 
 Two optimisation passes. **Parameter-copy elision**: a parameter is copied into
 memory only when the function assigns to it, since a calldata read costs the

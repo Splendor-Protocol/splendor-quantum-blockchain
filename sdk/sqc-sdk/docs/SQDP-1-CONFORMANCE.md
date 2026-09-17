@@ -16,7 +16,7 @@ Automated coverage (run from `sdk/sqc-sdk`): `npm test` (Vitest including `secur
 - [x] Uses `createSplendorClient` / `connectSplendor({ network })` or equivalent config-driven RPC URLs — `config-connect.test.ts`
 - [x] Derivation uses the exact SQDP-1 domain message (`DERIVATION_DOMAIN_MESSAGE`) — `security-derive.test.ts` / Go `TestDomainMessageConstant` / `testdata/golden-vectors.json`
 - [x] Fees ≥ config `minFee` (`PROTOCOL.minFee`) — `security-wasm.test.ts` / Go `TestSignTransferRejectsFeeBelowMin`
-- [x] Contract call signatures use `sqaddress`; selector matches SHA3-256 first 4 bytes — `phase2.test.ts` / Go ABI golden (`vm.SelectorFromSignature`)
+- [x] Contract call signatures use compiler-canonical `address` (`4b40e901`); legacy `sqaddress` hashes as written (`14cde9ab`) — `phase2.test.ts` / `protocol.test.ts` / Go ABI golden (`vm.SelectorFromSignature`)
 
 ## SDK / signing
 

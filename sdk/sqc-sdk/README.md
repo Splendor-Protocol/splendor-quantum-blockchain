@@ -68,10 +68,10 @@ const s = await createSession({ network: 'local', mode: 'seed', seed: process.en
 await s.sendSPLD(recipient, '0.01');
 await s.token(tokenAddr).transfer(recipient, '100');
 await s.token(tokenAddr).transferHuman(recipient, '1.5'); // uses on-chain decimals
-await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
+await s.bridge(bridgeAddr).claim({ id, asset, amount, recipient, evmTx, attestations });
 ```
 
-**Browser demo:** [`examples/web-dapp`](examples/web-dapp) — connect, SPLD, QRC-20, DEX swap, Bridge claim.
+**Browser demo:** [`examples/web-dapp`](examples/web-dapp) — connect, SPLD, QRC-20, Bridge claim. DEX/exchange helpers are unsupported adapters (opt-in only).
 
 ### Recipes (bound session)
 
@@ -81,7 +81,6 @@ await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
 | QRC-20 transfer | `await s.token(addr).transfer(to, '100')` |
 | Human token amount | `await s.token(addr).transferHuman(to, '1.5')` |
 | Deploy + use token | `const { token } = await s.deployToken({ name, symbol, decimals: 18, totalSupply })` |
-| DEX swap | `await s.dex(pool).swap({ tokenIn, amountIn, minAmountOut })` |
 | Bridge claim | `await s.bridge(addr).claim({ id, asset, amount, recipient, evmTx, attestations })` |
 | QRC-1155 mint | `await s.collection(addr).mint(to, id, amount)` |
 | Raw units helper | `fromUnits('1.5', 18)` / `toUnits(raw, 18)` |
@@ -96,8 +95,10 @@ Native modules are also on subpaths `/tokens`, `/defi`, `/bridge`. See [SDK_ARCH
 |------------|--------|
 | Native ML-DSA-65 seed wallet (WASM) | Built |
 | Transfers, deploy, call (Tx types 0x01–0x03) | Built |
-| QRC-20 / QRC-1155 module clients | Built |
-| DEX + Exchange Program clients | Built |
+| QRC-20 / QRC-1155 module clients | Built (routed native modules) |
+| Verify / Validators clients | Built (`getVerify` / `getValidators`; routed) |
+| QRC-721 | Routed on-chain; use `sendModuleCall` (no dedicated Program client yet) |
+| DEX + Exchange leftover clients | Unsupported adapters — `registerUnsupportedApplicationAdapters()` or `@splendor/sqc-sdk/defi`. Not routed by the node |
 | On-chain Bridge module client | Built (`/bridge`; ≠ `@splendor/pq-bridge` shim) |
 | Bytecode contracts (`/contracts`) | Built |
 | Explorer reads + `/ws` subscribe | Built |
@@ -345,7 +346,7 @@ the create/import UI and the legacy labelling. See `examples/demo.html`.
 
 ## Contracts and QSol ABI
 
-- **Calling convention:** SHA3-256 selectors, `sqaddress` (not Solidity `address`), 32-byte words — see SQDP-1 §5.
+- **Calling convention:** SHA3-256 selectors, compiler-canonical `address` (`4b40e901` for `transfer(address,uint256)`). Legacy `sqaddress` hashes as written (`14cde9ab`) — see SQDP-1 §5.
 - **Deploy/call:** `@splendor/sqc-sdk/contracts` (`Contract`, `deployBytecode`, `getContract`).
 - **Compiler:** A prototype QSol-subset compiler (`compiler/`, `cmd/sqc-solc`) lives in the monorepo and emits SQC-VM bytecode. This SDK does **not** embed a compile API yet — deploy pre-built bytecode or use `sqc-solc` offline.
 
@@ -420,7 +421,7 @@ sdk/sqc-sdk/
 - **SQDP-1** — normative protocol + `PROTOCOL` / `SQDP_VERSION` exports
 - **`Connection`** — preferred read client (Transport-backed); `SqcProvider` deprecated alias
 - **`Wallet` / `SplendorPQBridge`** — signing wallet (`Wallet` preferred name)
-- **QSol ABI** — `encodeFunctionData` / decode helpers (SHA3-256 selectors, `sqaddress`)
+- **QSol ABI** — `encodeFunctionData` / decode helpers (SHA3-256 selectors; canonical `address`, legacy `sqaddress`)
 - **Events** — `connect` / `disconnect` / `accountsChanged` / `error` / `lock`
 - **`rpcUrls` + retries** — failover; sticky submit URL
 - Guide: [`docs/DAPP_INTEGRATION.md`](docs/DAPP_INTEGRATION.md) · Protocol: [`docs/SQDP-1.md`](docs/SQDP-1.md)

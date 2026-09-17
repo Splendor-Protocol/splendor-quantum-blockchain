@@ -34,10 +34,10 @@ describe('createSession', () => {
     expect(token.getAddress()).toBe(tokenAddr);
     expect(session.modules.qrc20(tokenAddr).getAddress()).toBe(tokenAddr);
     expect(session.qrc20(tokenAddr).getAddress()).toBe(tokenAddr);
-    expect(session.dex(tokenAddr).getAddress()).toBe(tokenAddr);
     expect(session.bridge(tokenAddr).getAddress()).toBe(tokenAddr);
     expect(session.collection(tokenAddr).getAddress()).toBe(tokenAddr);
-    expect(session.exchange(tokenAddr).getAddress()).toBe(tokenAddr);
+    expect(() => session.dex(tokenAddr)).toThrow(/unsupported application adapter/i);
+    expect(() => session.exchange(tokenAddr)).toThrow(/unsupported application adapter/i);
 
     const contract = session.contract(tokenAddr);
     expect(contract.getAddress()).toBe(tokenAddr);

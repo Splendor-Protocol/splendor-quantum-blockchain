@@ -34,11 +34,11 @@ Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plug
 | ML-DSA Sign-In | Yes — `useSignIn` / `createAuthMessage` |
 | Tx toasts | Yes — `<TxToastHost />` + `useTxToast` |
 | Wrong-network banner | Yes — `<WrongNetworkBanner expectedNetworkId="…" />` |
-| Module hooks | Yes — DEX/bridge/exchange hooks for app-level UI (no Swap/Bridge widgets) |
+| Module hooks | Yes — bridge plus leftover DEX/exchange adapter hooks (not routed native modules) |
 
 ### Widget scope
 
-Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. DEX, bridge, exchange, and QRC-1155 are available as **hooks** for app-built UI — not as packaged AppKit widgets. WalletConnect remains deferred.
+Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Routed QRC-1155 and bridge are available as **hooks** for app-built UI. DEX and exchange hooks wrap unsupported leftover adapters — the node router does not dispatch those modules. WalletConnect remains deferred.
 
 ### Hook coverage matrix
 
@@ -49,8 +49,8 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. DEX, bridge, 
 | QRC-20 read / transfer / approve | `useQRC20` |
 | Deploy QRC-20 | `useDeployToken` |
 | QRC-1155 | `useQRC1155`, `useDeployCollection` |
-| DEX swap / liquidity | `useDex`, `useDeployPool` |
-| Exchange | `useExchange`, `useDeployExchange` |
+| DEX swap / liquidity | `useDex`, `useDeployPool` — **unsupported adapter**, not a routed module |
+| Exchange | `useExchange`, `useDeployExchange` — **unsupported adapter**, not a routed module |
 | Bridge claim | `useBridge`, `useDeployBridge` |
 | Bytecode contract | `useContract`, `useDeployBytecode` (`useDeployContract` deprecated alias) |
 | Bound module factory | `useModules()` |

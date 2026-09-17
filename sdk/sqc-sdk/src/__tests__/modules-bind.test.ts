@@ -24,9 +24,9 @@ describe('modules.bind / bindModules', () => {
     const connection = fakeConnection();
     const bound = modules.bind(connection);
     expect(bound.qrc20(ADDR).getAddress()).toBe(ADDR);
-    expect(bound.dex(POOL).getAddress()).toBe(POOL);
     expect(bound.bridge(ADDR).getAddress()).toBe(ADDR);
     expect(bound.contract(ADDR).getAddress()).toBe(ADDR);
+    expect(() => bound.dex(POOL)).toThrow(/unsupported application adapter/i);
   });
 
   it('with wallet injects signer on writes', async () => {
@@ -39,23 +39,8 @@ describe('modules.bind / bindModules', () => {
       })),
     };
     const signed = bindModules(connection, wallet);
-    await signed.dex(POOL).swap({
-      tokenIn: 0,
-      amountIn: '100',
-      minAmountOut: '1',
-    });
-    expect(wallet.sendModuleCall).toHaveBeenCalledWith(
-      expect.objectContaining({
-        module: 'dex',
-        action: 'swap',
-        params: expect.objectContaining({
-          pool: POOL,
-          token_in: 0,
-          amount_in: '100',
-          min_amount_out: '1',
-        }),
-      }),
-    );
+    expect(() => signed.dex(POOL)).toThrow(/unsupported application adapter/i);
+    expect(wallet.sendModuleCall).not.toHaveBeenCalled();
   });
 });
 

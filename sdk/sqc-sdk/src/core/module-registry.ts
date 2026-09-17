@@ -39,6 +39,10 @@ export function getModule(id: string): ModuleDefinition | undefined {
   return registry.get(id);
 }
 
+export function unregisterModule(id: string): void {
+  registry.delete(id);
+}
+
 export function listModules(): ModuleDefinition[] {
   return [...registry.values()];
 }

@@ -4,10 +4,13 @@
  * Unbound (advanced): `modules.qrc20(connection, addr).transfer(wallet, to, amt)`
  * Bound (beginner):   `modules.bind(connection, wallet).qrc20(addr).transfer(to, amt)`
  *
- * Built-in clients: qrc20, qrc1155, exchange, dex, bridge, contract.
- * On-chain modules without dedicated Program clients (use sendModuleCall / registerModule):
- * lending, oracle, multisig, governance, qrc721, qrc4626.
- * Verify/Validators helpers exist as VerifyClient / ValidatorsClient (not bindModules Programs).
+ * Automatic native clients: qrc20, qrc1155, bridge, contract.
+ * Routed on-chain modules without a dedicated Program client (use sendModuleCall):
+ * verify, validators, qrc721. Authority: vm.KnownModuleActions / DispatchModuleCall.
+ *
+ * DEX and exchange leftover clients are unsupported application adapters.
+ * They are not routed by the node and are not registered until
+ * registerUnsupportedApplicationAdapters() is called.
  *
  * Addons: `registerModule({ id, create })` then use `createModuleClient` / `bindRegisteredModules`.
  */
@@ -17,6 +20,7 @@ import {
   defineModule,
   bindRegisteredModules,
   listModules,
+  unregisterModule,
 } from './core/module-registry.js';
 import { getToken } from './tokens/qrc20.js';
 import type { QRC20 } from './tokens/qrc20.js';
@@ -32,29 +36,94 @@ import { getContract } from './contracts/contract.js';
 import type { Contract } from './contracts/contract.js';
 import type { BoundClient, WalletLike } from './bound.js';
 
-let builtInsRegistered = false;
+/** Matches vm.KnownModuleActions / DispatchModuleCall. */
+export const ROUTED_NATIVE_MODULE_IDS = [
+  'qrc20',
+  'qrc1155',
+  'bridge',
+  'verify',
+  'validators',
+  'qrc721',
+] as const;
 
-/** Idempotent registration of first-party Programs. */
+export const UNSUPPORTED_APPLICATION_ADAPTER_IDS = ['dex', 'exchange'] as const;
+
+export const UNSUPPORTED_ADAPTER_MESSAGE =
+  'DEX and exchange are unsupported application adapters, not routed native modules. ' +
+  'The node router only dispatches qrc20, qrc1155, bridge, verify, validators, and qrc721. ' +
+  'Call registerUnsupportedApplicationAdapters() to opt in, or import clients from @splendor/sqc-sdk/defi.';
+
+let builtInsRegistered = false;
+let unsupportedAdaptersRegistered = false;
+
+/** Idempotent registration of routed first-party Programs (not DEX/exchange). */
 export function ensureBuiltInModulesRegistered(): void {
   if (builtInsRegistered) return;
   registerModule(defineModule({ id: 'qrc20', create: getToken, label: 'QRC-20' }));
   registerModule(defineModule({ id: 'qrc1155', create: getCollection, label: 'QRC-1155' }));
-  registerModule(defineModule({ id: 'exchange', create: getExchange, label: 'Exchange' }));
-  registerModule(defineModule({ id: 'dex', create: getPool, label: 'DEX' }));
   registerModule(defineModule({ id: 'bridge', create: getBridge, label: 'Bridge' }));
   registerModule(defineModule({ id: 'contract', create: getContract, label: 'Contract' }));
   builtInsRegistered = true;
+}
+
+/**
+ * Opt-in leftover DEX/exchange clients. These are not native chain modules;
+ * DispatchModuleCall rejects them as unknown.
+ */
+export function registerUnsupportedApplicationAdapters(): void {
+  if (unsupportedAdaptersRegistered) return;
+  registerModule(
+    defineModule({
+      id: 'exchange',
+      create: getExchange,
+      label: 'Exchange (unsupported adapter)',
+    }),
+  );
+  registerModule(
+    defineModule({
+      id: 'dex',
+      create: getPool,
+      label: 'DEX (unsupported adapter)',
+    }),
+  );
+  unsupportedAdaptersRegistered = true;
+}
+
+export function unsupportedApplicationAdaptersEnabled(): boolean {
+  return unsupportedAdaptersRegistered;
+}
+
+export function assertUnsupportedApplicationAdaptersEnabled(): void {
+  if (!unsupportedAdaptersRegistered) {
+    throw new Error(UNSUPPORTED_ADAPTER_MESSAGE);
+  }
+}
+
+/** Test helper — drop adapter registration without clearing built-ins. */
+export function _resetUnsupportedAdaptersForTests(): void {
+  unsupportedAdaptersRegistered = false;
+  unregisterModule('dex');
+  unregisterModule('exchange');
 }
 
 ensureBuiltInModulesRegistered();
 
 export const modules = {
   qrc20: (connection: Connection, address: string): QRC20 => getToken(connection, address),
-  qrc1155: (connection: Connection, address: string): QRC1155 => getCollection(connection, address),
-  exchange: (connection: Connection, address: string): Exchange => getExchange(connection, address),
-  dex: (connection: Connection, address: string): DEX => getPool(connection, address),
-  bridge: (connection: Connection, address: string): BridgeModule => getBridge(connection, address),
-  contract: (connection: Connection, address: string): Contract => getContract(connection, address),
+  qrc1155: (connection: Connection, address: string): QRC1155 =>
+    getCollection(connection, address),
+  exchange: (connection: Connection, address: string): Exchange => {
+    assertUnsupportedApplicationAdaptersEnabled();
+    return getExchange(connection, address);
+  },
+  dex: (connection: Connection, address: string): DEX => {
+    assertUnsupportedApplicationAdaptersEnabled();
+    return getPool(connection, address);
+  },
+  bridge: (connection: Connection, address: string): BridgeModule =>
+    getBridge(connection, address),
+  contract: (connection: Connection, address: string): Contract =>
+    getContract(connection, address),
 
   /**
    * Connection-bound (and optionally wallet-bound) factories — address-only lookup.
@@ -68,8 +137,14 @@ export const modules = {
     return {
       qrc20: (address: string) => maybeSign(getToken(connection, address)),
       qrc1155: (address: string) => maybeSign(getCollection(connection, address)),
-      exchange: (address: string) => maybeSign(getExchange(connection, address)),
-      dex: (address: string) => maybeSign(getPool(connection, address)),
+      exchange: (address: string) => {
+        assertUnsupportedApplicationAdaptersEnabled();
+        return maybeSign(getExchange(connection, address));
+      },
+      dex: (address: string) => {
+        assertUnsupportedApplicationAdaptersEnabled();
+        return maybeSign(getPool(connection, address));
+      },
       bridge: (address: string) => maybeSign(getBridge(connection, address)),
       contract: (address: string) => maybeSign(getContract(connection, address)),
       /** All registered modules (built-ins + addons). */
@@ -111,8 +186,14 @@ export function bindModules(
   return {
     qrc20: (address) => getToken(connection, address).withSigner(wallet),
     qrc1155: (address) => getCollection(connection, address).withSigner(wallet),
-    exchange: (address) => getExchange(connection, address).withSigner(wallet),
-    dex: (address) => getPool(connection, address).withSigner(wallet),
+    exchange: (address) => {
+      assertUnsupportedApplicationAdaptersEnabled();
+      return getExchange(connection, address).withSigner(wallet);
+    },
+    dex: (address) => {
+      assertUnsupportedApplicationAdaptersEnabled();
+      return getPool(connection, address).withSigner(wallet);
+    },
     bridge: (address) => getBridge(connection, address).withSigner(wallet),
     contract: (address) => getContract(connection, address).withSigner(wallet),
     registered: bindRegisteredModules(connection, wallet),
