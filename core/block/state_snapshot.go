@@ -45,6 +45,19 @@ const (
 	phaseComplete    = "complete"
 )
 
+// syncDir fsyncs a directory so a rename or unlink inside it is durable.
+// Marker and staging writes/deletes call this because a crash between the
+// rename/unlink and the directory flush would otherwise resurrect or lose the
+// very file whose whole job is to survive a crash.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
 // snapshotMarkerPath returns the path to the recovery marker file
 func (e *Executor) snapshotMarkerPath() string {
 	// Store in the data directory alongside chaindata
@@ -88,11 +101,8 @@ func (e *Executor) writeSnapshotMarker(marker *snapshotImportMarker) error {
 		return fmt.Errorf("rename marker: %w", err)
 	}
 
-	// Fsync parent directory to ensure rename is durable
-	dir, err := os.Open(filepath.Dir(path))
-	if err == nil {
-		dir.Sync()
-		dir.Close()
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync marker directory: %w", err)
 	}
 
 	return nil
@@ -132,13 +142,91 @@ func (e *Executor) deleteSnapshotMarker() error {
 		return fmt.Errorf("delete snapshot marker: %w", err)
 	}
 
-	// Fsync parent directory
-	dir, err := os.Open(filepath.Dir(path))
-	if err == nil {
-		dir.Sync()
-		dir.Close()
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync marker directory: %w", err)
 	}
 
+	return nil
+}
+
+// snapshotStagingPath returns the path to the retained snapshot staging file.
+// The verified snapshot (block + leaves) is written here before the block is
+// stored, so a crash after the block lands can complete the state import from
+// this file instead of re-asking the peer.
+func (e *Executor) snapshotStagingPath() string {
+	if e.dataDir == "" {
+		return ""
+	}
+	return filepath.Join(e.dataDir, "snapshot_import.staged")
+}
+
+// writeSnapshotStaging durably retains the verified snapshot. Same discipline
+// as the marker: write a temp file, fsync it, atomic rename, fsync the dir.
+func (e *Executor) writeSnapshotStaging(snap *types.StateSnapshot) error {
+	path := e.snapshotStagingPath()
+	if path == "" {
+		return errors.New("no data directory configured for snapshot staging")
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return fmt.Errorf("marshal snapshot staging: %w", err)
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		return fmt.Errorf("write snapshot staging: %w", err)
+	}
+	f, err := os.OpenFile(tmpPath, os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("open snapshot staging for sync: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync snapshot staging: %w", err)
+	}
+	f.Close()
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename snapshot staging: %w", err)
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync staging directory: %w", err)
+	}
+	return nil
+}
+
+// readSnapshotStaging loads the retained snapshot, or returns nil when there
+// is no staging file (either never written or already cleaned up).
+func (e *Executor) readSnapshotStaging() (*types.StateSnapshot, error) {
+	path := e.snapshotStagingPath()
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read snapshot staging: %w", err)
+	}
+	var snap types.StateSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil, fmt.Errorf("unmarshal snapshot staging: %w", err)
+	}
+	return &snap, nil
+}
+
+// deleteSnapshotStaging removes the retained snapshot and fsyncs its
+// directory. An absent file is not an error.
+func (e *Executor) deleteSnapshotStaging() error {
+	path := e.snapshotStagingPath()
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete snapshot staging: %w", err)
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync staging directory: %w", err)
+	}
 	return nil
 }
 
@@ -258,8 +346,15 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 		return fmt.Errorf("state snapshot's block 0 hashes to %x, pinned --genesis-hash is %x", b.Hash[:8], e.genesisHash[:8])
 	}
 
-	// STAGED IMPORT WITH RECOVERY MARKERS
-	// Step 1: Write recovery marker BEFORE any modifications
+	// STAGED IMPORT WITH RECOVERY MARKERS.
+	//
+	// Order matters: the verified snapshot is retained to disk BEFORE the block
+	// is stored, so a crash at any later point can complete the state import
+	// from the retained bytes without re-asking the peer. The marker says "an
+	// import is in progress, reconcile it"; the actual blockstore and committed
+	// state decide HOW to reconcile — never the marker phase alone, which can be
+	// stale if the write that would have advanced it was itself the crash point.
+	// See ReconcileSnapshotImport.
 	marker := &snapshotImportMarker{
 		Height:    snap.Height,
 		BlockHash: b.Hash,
@@ -270,35 +365,45 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 	if err := e.writeSnapshotMarker(marker); err != nil {
 		return fmt.Errorf("write recovery marker: %w", err)
 	}
-	log.Info().Uint64("height", snap.Height).Msg("snapshot import: recovery marker written")
 
-	// Step 2: Store block
-	if err := e.storeBlock(b); err != nil {
-		// Clean up marker on failure
+	// Retain the verified snapshot durably: the data recovery completes with.
+	if err := e.writeSnapshotStaging(snap); err != nil {
 		e.deleteSnapshotMarker()
+		return fmt.Errorf("write snapshot staging: %w", err)
+	}
+	log.Info().Uint64("height", snap.Height).Msg("snapshot import: marker and staging written")
+
+	// Store block.
+	if err := e.storeBlock(b); err != nil {
+		e.deleteSnapshotMarker()
+		e.deleteSnapshotStaging()
 		return fmt.Errorf("store snapshot head block: %w", err)
 	}
 
-	// Update marker: block is stored
+	// Advance the marker. A failure here is survivable: reconciliation judges
+	// progress from the blockstore/state, not from this phase, so a stale
+	// "started" marker still recovers correctly.
 	marker.Phase = phaseBlockStored
 	if err := e.writeSnapshotMarker(marker); err != nil {
-		log.Warn().Err(err).Msg("failed to update recovery marker after block store")
-		// Continue anyway - block is stored, we can recover
+		log.Warn().Err(err).Msg("failed to update recovery marker after block store; recovery will reconcile from the stores")
 	}
 	log.Info().Uint64("height", snap.Height).Msg("snapshot import: block stored")
 
-	// Step 3: Import state
+	// Import state.
 	if err := e.state.ImportSnapshot(snap.Leaves, snap.Height, b.Header.StateRoot); err != nil {
 		log.Error().Err(err).Uint64("height", snap.Height).
-			Msg("state snapshot: head block stored but state import failed — restart to retry or wipe data dir")
+			Msg("state snapshot: head block stored but state import failed; recovery will complete it on restart")
 		return fmt.Errorf("import snapshot state: %w", err)
 	}
 	log.Info().Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).Msg("snapshot import: state imported")
 
-	// Step 4: Delete marker - import complete
+	// Import complete: drop the marker first (recovery that finds no marker
+	// treats the import as done), then the retained staging.
 	if err := e.deleteSnapshotMarker(); err != nil {
 		log.Warn().Err(err).Msg("failed to delete recovery marker after successful import")
-		// Not fatal - import succeeded
+	}
+	if err := e.deleteSnapshotStaging(); err != nil {
+		log.Warn().Err(err).Msg("failed to delete snapshot staging after successful import")
 	}
 
 	log.Info().Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).
@@ -307,59 +412,110 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 }
 
 // ReconcileSnapshotImport checks for an interrupted snapshot import at startup
-// and completes or rolls it back. Called before normal operations begin.
+// and completes it, recognises it as done, or rolls back only what that import
+// left behind. Called before normal operations begin.
 //
-// Recovery logic:
-//   - No marker: normal startup, nothing to do
-//   - Marker phase="started": nothing persisted yet, delete marker and retry
-//   - Marker phase="block_stored": block is in DB but state isn't, complete state import
+// It never trusts the marker phase alone: the marker's job is only to say "an
+// import may be in progress". Recovery decides from the actual stores —
+// whether the block at the marker's height is present with the recorded hash,
+// and whether the committed state is present with the recorded root — because
+// a crash can land at any point, including between writing the block and
+// rewriting the marker. The outcome is always one of:
+//   - both block and state present  → import actually completed, drop marker/retained snapshot
+//   - block present, state absent   → complete the state from the retained verified snapshot
+//   - nothing present               → nothing durable happened, drop marker/retained snapshot
 //
-// This ensures every startup either has a complete snapshot or a clean slate,
-// never a half-imported state that would corrupt the chain.
+// If the stores disagree with the marker, or the retained snapshot was
+// corrupted, it returns an error rather than guessing.
 func (e *Executor) ReconcileSnapshotImport() error {
 	marker, err := e.readSnapshotMarker()
 	if err != nil {
 		return fmt.Errorf("read snapshot marker: %w", err)
 	}
 	if marker == nil {
-		// No import in progress
 		return nil
+	}
+
+	switch marker.Phase {
+	case phaseStarted, phaseBlockStored, phaseComplete:
+	default:
+		return fmt.Errorf("unknown recovery phase: %s", marker.Phase)
 	}
 
 	log.Warn().
 		Uint64("height", marker.Height).
 		Str("phase", marker.Phase).
 		Str("block_hash", fmt.Sprintf("%x", marker.BlockHash[:8])).
+		Str("state_root", fmt.Sprintf("%x", marker.StateRoot[:8])).
 		Msg("RECOVERY: interrupted snapshot import detected")
 
-	switch marker.Phase {
-	case phaseStarted:
-		// Nothing was persisted yet - just clean up marker
-		log.Info().Msg("RECOVERY: import never started, cleaning up marker")
-		if err := e.deleteSnapshotMarker(); err != nil {
-			return fmt.Errorf("delete stale marker: %w", err)
+	// What actually got persisted?
+	block, blockErr := e.GetBlockByHeight(marker.Height)
+	if blockErr != nil && !errors.Is(blockErr, types.ErrBlockNotFound) {
+		return fmt.Errorf("recovery: read block at height %d: %w", marker.Height, blockErr)
+	}
+	if blockErr == nil && block.Hash != marker.BlockHash {
+		return fmt.Errorf("recovery: block at height %d has hash %x, marker expects %x — refusing to reconcile mismatched stores",
+			marker.Height, block.Hash[:8], marker.BlockHash[:8])
+	}
+	blockStored := blockErr == nil
+
+	stateDone := false
+	if h, ok := e.state.AppliedHeight(); ok && h == marker.Height {
+		if root, err := e.state.StateRoot(); err == nil && root == marker.StateRoot {
+			stateDone = true
 		}
-		log.Info().Msg("RECOVERY: clean startup, ready to retry import")
+	}
+
+	switch {
+	case stateDone:
+		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: state already committed; dropping marker and retained snapshot")
+		if err := e.deleteSnapshotMarker(); err != nil {
+			return fmt.Errorf("recovery: delete completed marker: %w", err)
+		}
+		if err := e.deleteSnapshotStaging(); err != nil {
+			return fmt.Errorf("recovery: delete completed staging: %w", err)
+		}
 		return nil
 
-	case phaseBlockStored:
-		// Block is stored but state import didn't complete
-		// We need the original snapshot to complete import
-		log.Error().
-			Uint64("height", marker.Height).
-			Msg("RECOVERY: block stored but state incomplete - operator must retry state sync to provide snapshot again")
-		// Don't delete marker - it proves import was interrupted
-		return fmt.Errorf("incomplete snapshot import at height %d: block stored but state missing - retry state sync", marker.Height)
-
-	case phaseComplete:
-		// Both are done, just need to delete marker
-		log.Info().Msg("RECOVERY: import was complete, removing marker")
+	case blockStored:
+		if !e.state.IsFresh() {
+			return fmt.Errorf("recovery: block %d stored but state is neither imported nor fresh — refusing to overwrite", marker.Height)
+		}
+		staged, err := e.readSnapshotStaging()
+		if err != nil {
+			return fmt.Errorf("recovery: block %d stored but staging unreadable: %w", marker.Height, err)
+		}
+		if staged == nil {
+			return fmt.Errorf("recovery: block %d stored but no retained snapshot to complete the import — retry state sync", marker.Height)
+		}
+		// Re-verify the retained leaves against the marker's committed root
+		// before importing, so a torn or corrupted staging file cannot poison
+		// state.
+		if got := state.SnapshotRoot(staged.Leaves); got != marker.StateRoot {
+			return fmt.Errorf("recovery: retained snapshot leaves hash to %x, marker commits to %x — staging corrupted",
+				got[:8], marker.StateRoot[:8])
+		}
+		if err := e.state.ImportSnapshot(staged.Leaves, marker.Height, marker.StateRoot); err != nil {
+			return fmt.Errorf("recovery: complete state import at height %d: %w", marker.Height, err)
+		}
+		log.Info().Uint64("height", marker.Height).Int("leaves", len(staged.Leaves)).Msg("RECOVERY: state import completed from retained snapshot")
 		if err := e.deleteSnapshotMarker(); err != nil {
-			return fmt.Errorf("delete completed marker: %w", err)
+			return fmt.Errorf("recovery: delete marker after completing import: %w", err)
+		}
+		if err := e.deleteSnapshotStaging(); err != nil {
+			return fmt.Errorf("recovery: delete staging after completing import: %w", err)
 		}
 		return nil
 
 	default:
-		return fmt.Errorf("unknown recovery phase: %s", marker.Phase)
+		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: nothing persisted yet; discarding marker and retained snapshot")
+		if err := e.deleteSnapshotMarker(); err != nil {
+			return fmt.Errorf("recovery: delete stale marker: %w", err)
+		}
+		if err := e.deleteSnapshotStaging(); err != nil {
+			return fmt.Errorf("recovery: delete stale staging: %w", err)
+		}
+		return nil
 	}
 }
