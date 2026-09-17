@@ -57,6 +57,9 @@ func TestSignManifestEndToEndVerifies(t *testing.T) {
 	if err := manifest.Verify(1024, 1<<20); err != nil {
 		t.Fatalf("manifest failed to verify: %v", err)
 	}
+	if manifest.CodebookSize != uint32(codebook.Len()) {
+		t.Fatalf("CodebookSize = %d, want %d", manifest.CodebookSize, codebook.Len())
+	}
 	addr, err := manifest.VerifiedSignerAddress()
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +79,7 @@ func TestManifestSignatureCoversEveryField(t *testing.T) {
 	}
 	rng := rand.New(rand.NewSource(2))
 	desc := testDescriptor()
-	symbols := genSymbols(rng, 10)
+	symbols := genSymbols(rng, 20)
 	codebook, err := BuildCodebook(desc.DescriptorID(), symbols)
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +106,7 @@ func TestManifestSignatureCoversEveryField(t *testing.T) {
 		"symbol size":   mutate(func(m *Manifest) { m.Descriptor.SymbolSize++ }),
 		"source count":  mutate(func(m *Manifest) { m.Descriptor.SourceCount++ }),
 		"codebook root": mutate(func(m *Manifest) { m.CodebookRoot[0] ^= 0xff }),
+		"codebook size": mutate(func(m *Manifest) { m.CodebookSize++ }),
 	}
 	for name, m := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -127,7 +131,7 @@ func TestManifestRejectsSignerSubstitution(t *testing.T) {
 	}
 	rng := rand.New(rand.NewSource(3))
 	desc := testDescriptor()
-	symbols := genSymbols(rng, 10)
+	symbols := genSymbols(rng, 20)
 	codebook, err := BuildCodebook(desc.DescriptorID(), symbols)
 	if err != nil {
 		t.Fatal(err)
@@ -152,8 +156,7 @@ func TestManifestVerifyEnforcesBounds(t *testing.T) {
 	}
 	rng := rand.New(rand.NewSource(4))
 	desc := testDescriptor()
-	desc.SourceCount = 10000
-	symbols := genSymbols(rng, 5)
+	symbols := genSymbols(rng, int(desc.SourceCount))
 	codebook, err := BuildCodebook(desc.DescriptorID(), symbols)
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +165,7 @@ func TestManifestVerifyEnforcesBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	manifest.Descriptor.SourceCount = 10000
 	if err := manifest.Verify(1024, 1<<20); err == nil {
 		t.Fatal("manifest with source count over the cap was accepted")
 	}
@@ -202,6 +206,25 @@ func TestSignManifestRejectsMismatchedCodebook(t *testing.T) {
 	}
 }
 
+// A codebook smaller than the descriptor's source count can never supply a
+// full-rank generation; refusing it at sign time keeps CodebookSize honest.
+func TestSignManifestRejectsUndersizedCodebook(t *testing.T) {
+	_, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(8))
+	desc := testDescriptor()
+	symbols := genSymbols(rng, 3) // source count is 16
+	codebook, err := BuildCodebook(desc.DescriptorID(), symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SignManifest(desc, codebook, priv); err == nil {
+		t.Fatal("SignManifest accepted a codebook smaller than source count")
+	}
+}
+
 // The binding identifier must be the same value whether asked of the
 // Descriptor or of a ratified Manifest — that single value is what symbol
 // proofs are verified against, so any divergence would break proof checks.
@@ -235,6 +258,19 @@ func TestValidateRejectsUnknownCodec(t *testing.T) {
 		if err := ok.Validate(1024, 1<<20); err != nil {
 			t.Fatalf("known codec %q rejected: %v", name, err)
 		}
+	}
+}
+
+func TestValidateRejectsOversizedKindOrCodec(t *testing.T) {
+	kind := testDescriptor()
+	kind.Anchor.Kind = string(make([]byte, MaxAnchorKindLen+1))
+	if err := kind.Validate(1024, 1<<20); err == nil {
+		t.Fatal("oversized anchor kind passed validation")
+	}
+	codec := testDescriptor()
+	codec.Codec = "uncoded-v1" + string(make([]byte, MaxCodecNameLen))
+	if err := codec.Validate(1024, 1<<20); err == nil {
+		t.Fatal("oversized codec name passed validation")
 	}
 }
 

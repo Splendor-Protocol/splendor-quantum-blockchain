@@ -1,10 +1,12 @@
 package objects
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
 )
 
 // Manifest is the complete, signed, transmissible description of one coded
@@ -22,6 +24,11 @@ import (
 type Manifest struct {
 	Descriptor   Descriptor
 	CodebookRoot [32]byte
+	// CodebookSize is the number of committed symbols (systematic plus the
+	// finite repair set). Signed with the root so a receiver knows the
+	// legal leaf-index range without holding the codebook, and a source
+	// cannot advertise a larger set than it actually committed.
+	CodebookSize uint32
 	// SignerPubKey is the ML-DSA-65 public key of whoever produced this
 	// manifest — the "source" in Section 8.3's terms. A receiver checks
 	// this key against whatever authorises it for the manifest's Anchor
@@ -38,16 +45,20 @@ type Manifest struct {
 func (m Manifest) DescriptorID() [32]byte { return m.Descriptor.DescriptorID() }
 
 // signedBytes is the exact preimage Sign/Verify operate over: descriptorID
-// (not the raw Descriptor fields again — one canonical binding) plus the
-// codebook root. The signer's public key is deliberately NOT included here:
-// it is authenticated by the ML-DSA-65 signature itself (a signature only
-// verifies under the key that made it), and folding it into the signed
-// bytes would add nothing but exposure to an unrelated encoding bug.
+// (not the raw Descriptor fields again — one canonical binding), the
+// codebook root, and the committed codebook size. The signer's public key is
+// deliberately NOT included here: it is authenticated by the ML-DSA-65
+// signature itself (a signature only verifies under the key that made it),
+// and folding it into the signed bytes would add nothing but exposure to an
+// unrelated encoding bug.
 func (m Manifest) signedBytes() []byte {
 	descID := m.DescriptorID()
-	buf := make([]byte, 0, 64)
+	buf := make([]byte, 0, 68)
 	buf = append(buf, descID[:]...)
 	buf = append(buf, m.CodebookRoot[:]...)
+	var n [4]byte
+	binary.BigEndian.PutUint32(n[:], m.CodebookSize)
+	buf = append(buf, n[:]...)
 	return buf
 }
 
@@ -69,9 +80,18 @@ func SignManifest(desc Descriptor, codebook *Codebook, signer *qcrypto.PrivateKe
 	if codebook.descID != desc.DescriptorID() {
 		return nil, errors.New("objects: codebook was built for a different descriptor")
 	}
+	n := codebook.Len()
+	if n < int(desc.SourceCount) {
+		return nil, fmt.Errorf("objects: codebook size %d is smaller than source count %d", n, desc.SourceCount)
+	}
+	if n > int(desc.SourceCount)+coding.MaxRepairSymbols {
+		return nil, fmt.Errorf("objects: codebook size %d exceeds source count %d plus the %d repair cap",
+			n, desc.SourceCount, coding.MaxRepairSymbols)
+	}
 	m := &Manifest{
 		Descriptor:   desc,
 		CodebookRoot: codebook.Root(),
+		CodebookSize: uint32(n),
 		SignerPubKey: signer.Public().Bytes(),
 	}
 	sig, err := qcrypto.Sign(signer, m.signedBytes(), qcrypto.CtxObjectManifest)
@@ -93,6 +113,13 @@ func SignManifest(desc Descriptor, codebook *Codebook, signer *qcrypto.PrivateKe
 func (m *Manifest) Verify(maxSourceCount, maxSymbolSize uint32) error {
 	if err := m.Descriptor.Validate(maxSourceCount, maxSymbolSize); err != nil {
 		return err
+	}
+	if m.CodebookSize < m.Descriptor.SourceCount {
+		return fmt.Errorf("objects: codebook size %d is smaller than source count %d", m.CodebookSize, m.Descriptor.SourceCount)
+	}
+	if int(m.CodebookSize) > int(m.Descriptor.SourceCount)+coding.MaxRepairSymbols {
+		return fmt.Errorf("objects: codebook size %d exceeds source count %d plus the %d repair cap",
+			m.CodebookSize, m.Descriptor.SourceCount, coding.MaxRepairSymbols)
 	}
 	pub, err := qcrypto.PublicKeyFromBytes(m.SignerPubKey)
 	if err != nil {

@@ -28,6 +28,21 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
 )
 
+// Wire-format bounds. These cap length prefixes before any allocation so a
+// hostile frame cannot force a multi-gigabyte buffer from a lying u32.
+const (
+	// WireVersion is the SQCO envelope version this package emits and accepts.
+	WireVersion = 1
+	// MaxAnchorKindLen is the maximum Anchor.Kind string on the wire.
+	MaxAnchorKindLen = 32
+	// MaxCodecNameLen is the maximum Descriptor.Codec string on the wire.
+	MaxCodecNameLen = 64
+	// MaxMerkleSiblings caps a SymbolProof's Merkle path. A codebook of
+	// MaxSourceSymbols+MaxRepairSymbols leaves needs fewer than 16 hashes;
+	// 32 leaves room without letting a frame demand an unbounded path.
+	MaxMerkleSiblings = 32
+)
+
 // Anchor identifies the already-authenticated object a manifest describes:
 // a block hash, a snapshot's state root at a given height, or an authorized
 // model manifest hash. The manifest's authentication is only as strong as
@@ -105,8 +120,14 @@ func (d Descriptor) Validate(maxSourceCount uint32, maxSymbolSize uint32) error 
 	if d.Anchor.Kind == "" {
 		return errors.New("objects: descriptor anchor kind is empty")
 	}
+	if len(d.Anchor.Kind) > MaxAnchorKindLen {
+		return fmt.Errorf("objects: descriptor anchor kind is %d bytes, max %d", len(d.Anchor.Kind), MaxAnchorKindLen)
+	}
 	if d.Codec == "" {
 		return errors.New("objects: descriptor codec name is empty")
+	}
+	if len(d.Codec) > MaxCodecNameLen {
+		return fmt.Errorf("objects: descriptor codec name is %d bytes, max %d", len(d.Codec), MaxCodecNameLen)
 	}
 	// A receiver refuses an unrecognised codec name outright rather than
 	// guessing how to decode payloads; this is enforced against the canonical
