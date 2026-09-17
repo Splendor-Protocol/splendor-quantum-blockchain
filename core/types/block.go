@@ -84,6 +84,14 @@ type Block struct {
 	Votes []QCVote `json:"votes,omitempty"`
 }
 
+const (
+	// VoteKindPrevote and VoteKindPrecommit are the bft_rounds_v1 ballot
+	// kinds. Empty Kind is the pre-fork single vote, and its digest must
+	// stay bit-identical so existing certificates still verify.
+	VoteKindPrevote   = "prevote"
+	VoteKindPrecommit = "precommit"
+)
+
 // QCVote is a validator vote stored with a block as a quorum certificate.
 type QCVote struct {
 	AlgID         string          `json:"alg_id"`
@@ -93,23 +101,44 @@ type QCVote struct {
 	ValidatorAddr qcrypto.Address `json:"validator_addr"`
 	Signature     []byte          `json:"signature"`
 	Timestamp     int64           `json:"timestamp"`
+	Kind          string          `json:"kind,omitempty"`
 }
 
-// Hash is the signed vote body (excludes Signature), matching consensus.Vote.
-func (v QCVote) Hash() ([32]byte, error) {
-	body := struct {
-		AlgID         string          `json:"alg_id"`
-		Height        uint64          `json:"height"`
-		Round         uint32          `json:"round"`
-		BlockHash     [32]byte        `json:"block_hash"`
-		ValidatorAddr qcrypto.Address `json:"validator_addr"`
-		Timestamp     int64           `json:"timestamp"`
-	}{v.AlgID, v.Height, v.Round, v.BlockHash, v.ValidatorAddr, v.Timestamp}
-	b, err := json.Marshal(body)
+// VoteDigest is the signed vote body. Empty kind is the legacy body.
+func VoteDigest(algID string, height uint64, round uint32, blockHash [32]byte, addr qcrypto.Address, ts int64, kind string) ([32]byte, error) {
+	var (
+		b   []byte
+		err error
+	)
+	if kind == "" {
+		b, err = json.Marshal(struct {
+			AlgID         string          `json:"alg_id"`
+			Height        uint64          `json:"height"`
+			Round         uint32          `json:"round"`
+			BlockHash     [32]byte        `json:"block_hash"`
+			ValidatorAddr qcrypto.Address `json:"validator_addr"`
+			Timestamp     int64           `json:"timestamp"`
+		}{algID, height, round, blockHash, addr, ts})
+	} else {
+		b, err = json.Marshal(struct {
+			AlgID         string          `json:"alg_id"`
+			Height        uint64          `json:"height"`
+			Round         uint32          `json:"round"`
+			BlockHash     [32]byte        `json:"block_hash"`
+			ValidatorAddr qcrypto.Address `json:"validator_addr"`
+			Timestamp     int64           `json:"timestamp"`
+			Kind          string          `json:"kind"`
+		}{algID, height, round, blockHash, addr, ts, kind})
+	}
 	if err != nil {
 		return [32]byte{}, err
 	}
 	return qcrypto.Hash32(b), nil
+}
+
+// Hash is the signed vote body (excludes Signature), matching consensus.Vote.
+func (v QCVote) Hash() ([32]byte, error) {
+	return VoteDigest(v.AlgID, v.Height, v.Round, v.BlockHash, v.ValidatorAddr, v.Timestamp, v.Kind)
 }
 
 // Verify checks the ML-DSA-65 vote signature against pubKeyBytes.

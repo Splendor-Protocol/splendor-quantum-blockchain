@@ -36,6 +36,11 @@ const MaxRoundAdvance = 32
 type ProposalMsg struct {
 	Block *types.Block `json:"block"`
 	Vote  *Vote        `json:"vote,omitempty"`
+	// Envelope is signed by the current-round leader (bft_rounds_v1). The
+	// block's ValidatorAddr may be the original producer of a locked value.
+	Envelope *ProposalEnvelope `json:"envelope,omitempty"`
+	// POL is the prevote quorum that justifies a locked or re-proposed value.
+	POL []*Vote `json:"pol,omitempty"`
 }
 
 // Encode serialises the envelope for the sealed proposal channel.
@@ -71,6 +76,9 @@ type pendingProposal struct {
 	// engine casts it) and for a bare block from an older peer.
 	vote *Vote
 
+	envelope *ProposalEnvelope
+	pol      []*Vote
+
 	// local marks a proposal this node is making, which is proposed in this
 	// node's current round rather than one read off the wire.
 	local bool
@@ -82,5 +90,5 @@ func pendingProposalOf(msg *ProposalMsg) *pendingProposal {
 	if msg == nil {
 		return nil
 	}
-	return &pendingProposal{block: msg.Block, vote: msg.Vote}
+	return &pendingProposal{block: msg.Block, vote: msg.Vote, envelope: msg.Envelope, pol: msg.POL}
 }

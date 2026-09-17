@@ -39,6 +39,7 @@ type journalEntry struct {
 	Height    uint64 `json:"height"`
 	Round     uint32 `json:"round"`
 	BlockHash string `json:"block_hash"`
+	POLRound  uint32 `json:"pol_round,omitempty"`
 }
 
 // OpenVoteJournal loads the journal at path, creating the parent directory.
@@ -103,6 +104,33 @@ func (j *VoteJournal) Record(height uint64, round uint32, blockHash [32]byte) er
 		}
 	}
 	e := &journalEntry{Height: height, Round: round, BlockHash: want}
+	if err := j.write(e); err != nil {
+		return fmt.Errorf("vote journal: %w", err)
+	}
+	j.last = e
+	return nil
+}
+
+// RecordWithPOL records a precommit. A different hash at the same height is
+// admitted only when polRound is strictly later than the last locked round
+// (an authenticated prevote QC the caller already verified).
+func (j *VoteJournal) RecordWithPOL(height uint64, round uint32, blockHash [32]byte, polRound uint32) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	want := hex.EncodeToString(blockHash[:])
+	if l := j.last; l != nil {
+		switch {
+		case height < l.Height:
+			return fmt.Errorf("%w: already voted at height %d, asked to vote at %d", ErrDoubleSign, l.Height, height)
+		case height == l.Height && l.BlockHash != want && polRound <= l.Round:
+			return fmt.Errorf("%w: conflicting precommit without a later POL", ErrDoubleSign)
+		case height == l.Height && l.BlockHash == want && round < l.Round:
+			return fmt.Errorf("%w: already precommitted at height %d round %d, asked to vote at round %d", ErrDoubleSign, l.Height, l.Round, round)
+		case height == l.Height && l.BlockHash == want && round == l.Round:
+			return nil
+		}
+	}
+	e := &journalEntry{Height: height, Round: round, BlockHash: want, POLRound: polRound}
 	if err := j.write(e); err != nil {
 		return fmt.Errorf("vote journal: %w", err)
 	}

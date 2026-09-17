@@ -45,6 +45,8 @@ type P2PConfig struct {
 	HandleVote func(body []byte) error
 	// HandleProposal processes a sealed block proposal (raw JSON).
 	HandleProposal func(body []byte) error
+	// HandleRoundChange processes a sealed bft_rounds_v1 round-change.
+	HandleRoundChange func(body []byte) error
 	// HandleTx admits a transaction relayed by a peer (raw JSON). The
 	// implementation must NOT relay it onwards: relaying is one hop.
 	HandleTx func(body []byte) error
@@ -159,7 +161,7 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 			// independent transaction submission.
 			// NO TOKEN CHECK HERE - signature validation happens in HandleTx
 
-		case network.KindVote, network.KindProposal:
+		case network.KindVote, network.KindProposal, network.KindRoundChange:
 			// Consensus messages: the signature inside the vote/proposal proves
 			// it came from a validator. HandleVote/HandleProposal check the
 			// signer is in the validator set for the applicable height.
@@ -215,6 +217,12 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 				return
 			}
 			handleErr = cfg.HandleProposal(req.Body)
+		case network.KindRoundChange:
+			if cfg.HandleRoundChange == nil {
+				writeError(w, http.StatusNotImplemented, "round-change ingest not available")
+				return
+			}
+			handleErr = cfg.HandleRoundChange(req.Body)
 		case network.KindTx:
 			if cfg.HandleTx == nil {
 				writeError(w, http.StatusNotImplemented, "transaction relay not available")

@@ -107,6 +107,11 @@ const (
 	// registry the leader set the moment it is non-empty — and stop the
 	// chain. Requires ValidatorsV1 no later than itself (see Validate).
 	ValidatorsAdmissionV1 = "validators_admission_v1"
+	// BFTRoundsV1 is Tendermint-lite two-phase BFT: prevote freely, lock
+	// only on a prevote QC (POL), precommit after that, and a later leader
+	// re-proposes a locked body under a new envelope. Unscheduled on live
+	// genesis; the single-vote path remains until operators extend.
+	BFTRoundsV1 = "bft_rounds_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -118,7 +123,7 @@ const (
 var Known = []string{
 	MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1,
 	VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1, MinFeeV1,
-	ModulesV2, ValidatorsAdmissionV1,
+	ModulesV2, ValidatorsAdmissionV1, BFTRoundsV1,
 }
 
 // Schedule maps an upgrade name to the height at which it takes effect.

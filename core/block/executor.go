@@ -1622,6 +1622,9 @@ func (e *Executor) verifyProducerAndQC(b *types.Block, requireQC bool) error {
 			return fmt.Errorf("vote from %s is for height %d, block is %d",
 				v.ValidatorAddr, v.Height, b.Header.Height)
 		}
+		if sched.Active(forks.BFTRoundsV1, b.Header.Height) && v.Kind != types.VoteKindPrecommit {
+			return fmt.Errorf("bft_rounds_v1: vote from %s is %q, want precommit", v.ValidatorAddr, v.Kind)
+		}
 		if err := v.Verify(pk); err != nil {
 			return err
 		}
