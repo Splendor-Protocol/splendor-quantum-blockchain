@@ -252,6 +252,25 @@ func TestErasureRepairStopsAtFieldLimit(t *testing.T) {
 	}
 }
 
+// A caller asking for an absurd repair count must not cause a large
+// allocation: the emit count is capped to the field limit before any capacity
+// is reserved, so Repair(1<<25) returns exactly (255-k) rows, not an attempt
+// to reserve 33M slots.
+func TestErasureRepairCapsAllocation(t *testing.T) {
+	source := make([][]byte, 8)
+	for i := range source {
+		source[i] = make([]byte, 16)
+	}
+	enc, err := NewErasureCodec().NewEncoder(source, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := enc.Repair(1 << 25)
+	if len(rep) != 255-8 {
+		t.Fatalf("Repair(1<<25) returned %d rows, want %d", len(rep), 255-8)
+	}
+}
+
 // indexCombinations returns every k-element subset of {0..n-1}, so an MDS
 // property can be checked over every erasure pattern rather than a few samples.
 func indexCombinations(n, k int) [][]int {

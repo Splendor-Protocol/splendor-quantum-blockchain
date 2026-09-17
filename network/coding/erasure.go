@@ -104,19 +104,26 @@ func (e *erasureEncoder) Systematic() []Symbol {
 // 31) proved the old construction was not MDS. This restores the
 // deterministic "any k of n recover k" guarantee this codec represents.
 func (e *erasureEncoder) Repair(n int) []Symbol {
-	out := make([]Symbol, 0, n)
+	if n <= 0 {
+		return []Symbol{}
+	}
 	k := len(e.source)
-	for r := 0; r < n; r++ {
-		// The systematic Cauchy construction needs y_r = k+1+r to be a distinct
-		// nonzero element disjoint from X = {1..k}, which holds exactly while
-		// k+1+r <= 255. Past that, byte(k+1+r) would wrap (to 0, then onto 1..,
-		// colliding with source points and — when y_r equals some x_i — yielding
-		// a zero denominator). NewEncoder bounds k <= 254 and the benchmark's
-		// repair budget keeps k+n well under 255, but stop rather than emit a
-		// wrong row if a caller ever exceeds the field's capacity.
-		if k+1+r > 255 {
-			break
-		}
+	// The systematic Cauchy construction needs y_r = k+1+r to be a distinct
+	// nonzero element disjoint from X = {1..k}, which holds exactly while
+	// k+1+r <= 255 — i.e. for r < 255-k. Cap the emit count BEFORE allocating so
+	// a caller cannot make Repair reserve n slots only to have the field limit
+	// discard most of them; past the cap, byte(k+1+r) would wrap onto the source
+	// points (and, for y_r equal to some x_i, produce a zero denominator).
+	// NewEncoder bounds k <= 254, so at least one row always fits.
+	limit := n
+	if room := 255 - k; limit > room {
+		limit = room
+	}
+	if limit <= 0 {
+		return []Symbol{}
+	}
+	out := make([]Symbol, 0, limit)
+	for r := 0; r < limit; r++ {
 		y := byte(k + 1 + r)
 		coeffs := make([]byte, k)
 		for i := 0; i < k; i++ {
