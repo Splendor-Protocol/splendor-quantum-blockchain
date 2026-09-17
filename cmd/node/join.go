@@ -138,7 +138,6 @@ func mustPublic(pk []byte) *qcrypto.PublicKey {
 	return pub
 }
 
-
 // checkJoinerValidatorPubkey guards the JOIN-REJECT footgun: a --validator
 // without --validator-pubkey-hex trusts its own wallet as the genesis sealer.
 // Under validators_admission_v1 with set size < 2 that makes the joiner reject
@@ -162,7 +161,7 @@ func checkJoinerValidatorPubkey(flagHex string, isValidator bool, joining bool, 
 	}
 	if joining {
 		return "", fmt.Errorf(
-			"joining --validator requires --validator-pubkey-hex <genesis ML-DSA-65 public key hex>; "+
+			"joining --validator requires --validator-pubkey-hex <genesis ML-DSA-65 public key hex>; " +
 				"omitting it makes this node trust its own wallet as the genesis sealer and reject the real producer")
 	}
 	if len(peers) > 0 {
@@ -235,4 +234,3 @@ func applyVoteOnly(ready func() bool, voteOnly bool) func() bool {
 	}
 	return func() bool { return false }
 }
-

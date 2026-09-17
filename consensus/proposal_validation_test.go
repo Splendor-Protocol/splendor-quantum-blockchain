@@ -196,11 +196,11 @@ func TestVoteCommitmentPreventsVotingForDifferentBlockAtSameHeight(t *testing.T)
 	if msg.Block.Header.ValidatorAddr != set[1].Address {
 		t.Skipf("leader schedule changed: expected set[1] at 4/0")
 	}
-	
+
 	// Accept this proposal - we'll vote but won't reach quorum (need 3, have proposer's + ours = 2)
 	eng.SetHeight(4)
 	eng.handleProposal(pendingProposalOf(msg))
-	
+
 	// Verify we voted
 	select {
 	case v := <-broadcast:
@@ -210,11 +210,11 @@ func TestVoteCommitmentPreventsVotingForDifferentBlockAtSameHeight(t *testing.T)
 	default:
 		t.Fatal("no vote was broadcast")
 	}
-	
+
 	if !eng.hasVoted {
 		t.Fatal("vote not recorded")
 	}
-	
+
 	// Should still be at height 4 (no quorum yet)
 	if eng.Height() != 4 {
 		t.Fatalf("height = %d, want 4 (no quorum yet)", eng.Height())
@@ -230,7 +230,7 @@ func TestVoteCommitmentPreventsVotingForDifferentBlockAtSameHeight(t *testing.T)
 	// At round 1: (4+1)%3 = 2, so set[2] is leader
 	conflict := proposalAt(t, set, keys, 4, 1, 99)
 	eng.handleProposal(pendingProposalOf(conflict))
-	
+
 	// Should NOT accept the conflicting block
 	if eng.voteSet != nil && eng.proposal != nil && eng.proposal.Hash != msg.Block.Hash {
 		t.Fatal("a conflicting block at height 4 round 1 was accepted after voting for a different block at height 4 round 0")
