@@ -128,6 +128,14 @@ func (c *Codebook) Root() [32]byte {
 	return top[0]
 }
 
+// Len is the number of committed symbols (systematic plus the finite repair
+// set). A receiver uses the signed Manifest.CodebookSize, not this, so it
+// never needs the whole codebook on the wire.
+func (c *Codebook) Len() int { return len(c.symbols) }
+
+// DescriptorID is the binding the codebook's leaves were hashed under.
+func (c *Codebook) DescriptorID() [32]byte { return c.descID }
+
 // SymbolProof is everything a receiver needs to check one symbol against a
 // codebook root without holding the whole codebook.
 type SymbolProof struct {
