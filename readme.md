@@ -195,6 +195,7 @@ certification boundaries are separate claims.
 | Transaction hashes, block hashes, Merkle nodes, contract storage slot keys | SHA3-256 ([NIST FIPS 202](https://csrc.nist.gov/pubs/fips/202/final)) | native ledger paths |
 | Node-to-node block push, peer announce, **and catch-up sync** | ML-KEM-768 ([NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)) + AES-256-GCM; plaintext refused unless `--allow-plaintext-p2p` | `network/pqchannel.go`, `network/sync.go` |
 | RPC/WebSocket transport **on the hop the node terminates itself** | TLS 1.3 can offer `X25519MLKEM768`; `--tls-require-hybrid` is required to refuse classical fallback | `rpc/tls.go`, `cmd/node/main.go` |
+| SDK gateway TLS (when the gateway terminates TLS) | Probe must negotiate `X25519MLKEM768`; then that group is the only one served. `ALLOW_CLASSICAL_TLS=1` is an explicit classical opt-in (`X25519:P-256`) | `sdk/sqc-sdk/gateway/tls-policy.ts` |
 | Wallet file at rest | AES-256-GCM with an Argon2id-derived key, minimum parameters enforced at startup | `core/crypto/wallet_store.go` |
 
 ### Not post-quantum
@@ -204,6 +205,11 @@ certification boundaries are separate claims.
   the client, which today means classical ECDHE. The hybrid group applies only
   to a connection the node serves directly via `--tls-cert`. Every deployment
   that terminates TLS at a proxy has a classical key exchange in front of it.
+  Signature security (ML-DSA-65), sealed P2P (ML-KEM-768), and the TLS group
+  a gateway client actually negotiated are three different claims.
+- **RLNC.** `network/coding` is a library plus `cmd/netbench`. There is no
+  live P2P transfer path. Random linear mixing is not encryption and does
+  not supply quantum confidentiality.
 - **An unpinned first P2P contact.** P2P payloads are sealed by default, but an
   unpinned peer identity is initially accepted using trust on first use.
   Authenticated production clusters should supply `--peer-pin` values and set
@@ -879,15 +885,17 @@ the real VM.
 
 The implemented subset supports scalar `uint256`, `address`, and `bool` state;
 mappings; functions and parameters; local variables; checked arithmetic;
-conditions; gas-bounded `for` and `while` loops; events; `msg.sender`;
-`msg.value`; and common control flow. It does **not** yet provide constructors,
-internal function calls, arrays, structs, strings, inheritance, package
-management, source-verification integration, IDE tooling, audits, or full
-Solidity compatibility. Use a guarded `init()` in place of a constructor.
+conditions; gas-bounded `for` and `while` loops; `break` / `continue`;
+internal-call inlining; events; `msg.sender`; `msg.value`; and common control
+flow. A `constructor` AST node may parse; it is **not executed** on deploy.
+Use a guarded `init()`. The subset does **not** provide arrays, structs,
+strings, inheritance, package management, a complete Solidity toolchain, or
+full Solidity compatibility.
 
-One integration mismatch remains before this can be called a complete
-toolchain: the compiler currently emits selectors using the Solidity type name
-`address`, while the canonical SDK's QSol ABI guard expects `sqaddress`.
+Canonical ABI spelling is Solidity `address`. The compiler and SDK hash
+`transfer(address,uint256)` to selector `4b40e901`. The legacy alias
+`sqaddress` is hashed as written (`transfer(sqaddress,uint256)` = `14cde9ab`)
+so already-deployed selectors keep working.
 
 The execution surface has two layers:
 
@@ -897,46 +905,45 @@ SQC-VM bytecode in its `data` field. `POST /vm/disasm`, `POST /vm/validate`,
 `POST /vm/estimate-gas` and `GET /vm/opcodes` let you inspect and check that
 bytecode.
 
-**2. Native Go modules (`vm/`).** Token standards, a DEX, lending, staking,
-multisig and an oracle are implemented in Go inside the node rather than
-compiled from user source. This is how the fork-gated token, exchange, and
-bridge actions are implemented.
+**2. Native Go modules (`vm/`).** A small catalog writes state directly
+through StateDB instead of compiled user bytecode. Presence of a `vm/*.go`
+file, a genesis fork name, or an SDK adapter does **not** make a module
+reachable. Only `DispatchModuleCall` / `vm.KnownModuleActions` is the live
+write surface.
 
-Be precise about which of them a transaction can actually drive.
-`DispatchModuleCall` (`vm/module_router.go`) routes five modules; the
-authoritative action list is `vm.KnownModuleActions`
-(`vm/module_router_read.go`), and every write that arrived after a module
-first shipped is gated by a fork the genesis document schedules (`forks` in
-`genesis.json`, see `DEPLOY.md` — "Fork Schedule"). Before that height the
-action is a hard "fork not active" error: refused at `/tx/submit`,
-unappliable in a block.
+`DispatchModuleCall` (`vm/module_router.go`) routes **six** modules. Every
+write that arrived after a module first shipped is gated by a fork the
+genesis document schedules (`forks` in `genesis.json`, see `DEPLOY.md` —
+"Fork Schedule"). Before that height the action is a hard "fork not active"
+error: refused at `/tx/submit`, unappliable in a block. A scheduled fork for
+an unrouted name (for example `exchange_v1` or `lending_v1` in some genesis
+documents) does not add a router case.
 
 | Module | Writes | Fork gate | Reads (`POST /call`) |
 |---|---|---|---|
 | `qrc20` | `deploy`, `mint`, `transfer`, `approve`, `burn` | — (since launch) | `balance_of`, `total_supply`, `allowance`, `token_info`, `permit_nonce`, `paused`, `owner` |
 | `qrc20` | `permit`, `transfer_from`, `increase_allowance`, `decrease_allowance`, `burn_from`, `transfer_ownership`, `pause`, `unpause` | `qrc20_v2` | (as above) |
 | `qrc1155` | `deploy`, `mint`, `mint_batch`, `transfer`, `batch_transfer`, `set_approval_for_all`, `burn`, `burn_batch`, `transfer_ownership` | `qrc1155_v1` | `balance_of`, `balance_of_batch`, `is_approved_for_all`, `uri`, `total_supply`, `token_info` |
-| `dex` | `deploy_pool`, `add_liquidity`, `swap` | — (since launch) | `reserves`, `pool_info` (also `GET /dex/pool/...`) |
-| `exchange` | `deploy`, `create_condition`, `split`, `merge`, `match`, `cancel_order`, `increment_nonce`, `resolve`, `redeem`, `redeem_for`, `pause`, `unpause`, `set_redeem_fee_bps`, `set_fee_recipient`, `set_operator`, `transfer_ownership` | `exchange_v1` (requires `module_revert_v1`) | `exchange_info`, `condition_info`, `order_status`, `order_remaining`, `order_hash`, `nonce`, `is_operator`, `position`, `position_id`, `simulate_match` (also `GET /exchange/...`) |
 | `bridge` | `deploy`, `claim` (M-of-N attested), `set_operator`, `set_threshold`, `pause`, `unpause`, `transfer_ownership` | `bridge_v1` (requires `module_revert_v1`) | `bridge_info`, `claim_status` (also `GET /bridge/...`) — see `docs/modules/bridge.md` |
+| `verify` | `deploy`, `register`, `attest`, `finalize`, `spend`, `set_operator`, `set_threshold`, `pause`, `unpause` | `verify_v1` | `proof`, `instance` |
+| `validators` | `register`, `unregister`, `finalize_exit` | `validators_v1` | `validator`, `list`, `count`, `bond`, `approved` |
+| `validators` | `approve`, `revoke` | `validators_admission_v1` | (as above) |
+| `qrc721` | `deploy`, `mint`, `transfer`, `burn` | `qrc721_v1` | `owner_of`, `balance_of`, `token_info` |
 
-A fifth name, `module_revert_v1`, is not a module but the failure rule: under
-it a module call that errors is included with a failed receipt (fee kept,
-nonce consumed) instead of being dropped, so a relayer whose call fails cannot
-jam its own account. The wire formats are in `docs/modules/qrc20-permit.md`
-and `docs/modules/exchange.md`.
+`module_revert_v1` is not a module but the failure rule: under it a module
+call that errors is included with a failed receipt (fee kept, nonce
+consumed) instead of being dropped. Wire formats for routed modules are in
+`docs/modules/qrc20-permit.md`, `docs/modules/bridge.md`,
+`docs/modules/verify.md`, `docs/modules/validators.md`, and
+`docs/modules/qrc721.md`.
 
-`vm/lending.go`, `vm/staking.go`, `vm/governance.go`, `vm/oracle.go`,
-`vm/multisig.go`, `vm/qrc721.go` and `vm/qrc4626.go` are written and tested,
-and their `/lending/*`, `/staking/*` and `/gov/*` RPC routes read their state,
-but no transaction reaches them: until the router learns those module names,
-they are library code, not a live surface.
-
-The source tree proves that these modules are implemented and reachable when
-their fork gates are active; it does not prove that every live tier has
-activated them. The dated deployment snapshot in
-[`docs/readme-claim-evidence.md`](docs/readme-claim-evidence.md) records the
-fork schedules observed on the public tiers.
+DEX, exchange, lending, governance, oracle, multisig, and QRC-4626 are not
+routed native modules. A leftover SDK adapter or a genesis fork name does
+not add a router case. `vm/staking.go` is the `validators` implementation,
+not a separate lending-style staking product. The dated deployment snapshot
+in [`docs/readme-claim-evidence.md`](docs/readme-claim-evidence.md) records
+fork schedules observed on public tiers; a listed fork is not the same as a
+routed action.
 
 ### Contract state commitment
 
@@ -947,7 +954,10 @@ domain-separated to avoid concatenation ambiguity.
 
 Committing storage and code (not just balances) is what stops a silent fork: if the root covered accounts only, two nodes with byte-different token balances or DEX reserves could hash to the same root and "agree" while diverging.
 
-A full Sparse Merkle Tree, adding per-account inclusion proofs so a light client can verify one account without the whole state, is planned but not yet implemented.
+`GET /state/proof/{address}` serves a current-state account inclusion proof
+(sibling directions and leaf preimage) that `state.VerifyAccountProof`
+checks. That is not a full incremental Sparse Merkle Tree and not a
+historical-state API.
 
 The native ledger commitment path uses SHA3-256. Browser integrity pins and
 other off-chain surfaces may use SHA-256 as described at the top of this file.
@@ -970,10 +980,13 @@ configured exit period, then `finalize_exit` returns the bond.
 5. Timeout triggers a view change and the next leader
 6. Equivocation (two signed votes for the same height/round) is dropped
 
-**Who may operate a validator?** Anyone who can fund the 2,500 SPLD bond and
-keep a node online. The genesis validator public key remains in the genesis
-document so every node can verify block 0. Later producers are the registered
-set, checked on every block via the quorum certificate.
+**Who may operate a validator?** After `validators_v1`, an address that can
+fund the 2,500 SPLD bond may `register`. After `validators_admission_v1`
+is scheduled, register is approval/producer-based: only the block producer
+or an address an active validator has `approve`d may join. That is not
+unconditional permissionless entry. The genesis validator public key remains
+in the genesis document so every node can verify block 0. Later producers
+are the registered set, checked on every block via the quorum certificate.
 
 **How blocks are signed**
 
@@ -1057,10 +1070,11 @@ The same `instruction_id` cannot settle twice.
 
 ### Native standards vs your own contracts
 
-Anyone can deploy QRC-20 / QRC-721 / QRC-1155 / QRC-4626. Mint on **that**
-contract is owner-only (the deployer), same idea as a normal token
-collection. QSol bytecode you write is your contract; these modules are the
-chain’s standard. Details: [`docs/modules/standards.md`](docs/modules/standards.md).
+Anyone can deploy routed QRC-20 / QRC-721 / QRC-1155 collections (subject to
+the module's fork). Mint on **that** contract is owner-only (the deployer).
+QRC-4626 is library code and is not routed. QSol bytecode you write is your
+contract; these routed modules are the chain's standard. Details:
+[`docs/modules/standards.md`](docs/modules/standards.md).
 Validators: [`docs/modules/validators.md`](docs/modules/validators.md).
 
 ---
@@ -1114,11 +1128,16 @@ assumption, this means:
   assumptions stated at the top of this file
 - Blocks and receipts are queryable at any height; **state is not**. `/balance`, `/nonce` and the contract routes read current state only, and no endpoint accepts a height, so “the balance at block N” cannot be asked of a node today
 
-Not yet built: a **proof API**. The tree would support per-account inclusion proofs, but no endpoint serves them, so a light client cannot today verify one account without trusting a full node. That is what the planned Sparse Merkle Tree work is for.
+Current-state account proofs exist: `GET /state/proof/{address}` (behind the
+same sim/proof work guard as `/call`) returns sibling directions and the
+leaf preimage; `state.VerifyAccountProof` checks the branch against the
+committed root. This is not historical state, not a full incremental Sparse
+Merkle Tree, and not a substitute for trusting a full node for anything
+outside that one account snapshot.
 
 **Transaction Merkle tree:**
 
-All transactions in a block are hashed into a Merkle tree (SHA-3) whose root sits in the block header. That is the structure a light client would use to check inclusion without the full block — but as with state proofs, no endpoint serves a branch, so a client fetches the block and recomputes the root itself.
+All transactions in a block are hashed into a Merkle tree (SHA-3) whose root sits in the block header. That is the structure a light client would use to check inclusion without the full block. Account proofs are the served branch for current state; there is still no height-parameterized historical-state query.
 
 ---
 
@@ -1179,6 +1198,9 @@ and a `settlement_tx` — a `TxX402` signed by the *payer*. The node:
    signature, nonce, fee floor, and balance are checked like any other
    transaction
 4. Re-checks the X402 replay registry during block execution
+5. Answers `submitted` when the settlement is only mempool-admitted
+   (`HTTP 202`, `success=false`). `confirmed` is a later receipt, not the
+   settle HTTP response alone
 
 The server cannot debit the payer on its own; only the payer can produce the
 settlement transaction, because it consumes the payer's nonce. That is
@@ -1210,7 +1232,8 @@ processor percentage.
 | Chain transaction fee | Required |
 | Expected settlement | Next produced block under normal operation; not a latency or inclusion guarantee |
 | Deprecated `sdk/sqc-sdk.js` automatic settlement | Incomplete; omits `settlement_tx` |
-| Current `createX402Middleware` automatic settlement | Not implemented; verification/access gate only |
+| Current `createX402Middleware` automatic settlement | Access gate only; payment-gated `next()` waits for a `confirmed` receipt unless `settlementPolicy` is the named `optimistic-submitted` policy |
+| Settle HTTP vs paid | `POST /x402/settle` reports `submitted` after mempool admission; `confirmed` requires a successful receipt. SQVL `x402` settlement_action is proof-only unless identity/payment linkage is bound |
 
 ---
 
@@ -1221,15 +1244,16 @@ This section separates reachable code from product direction.
 ### Reachable application surfaces in the source tree
 
 - SQC-VM deployment and calls
-- QRC-20 and DEX actions available from the launch rules
-- Fork-gated QRC-1155, exchange, and migration-bridge actions
-- X402 authorization and payer-signed settlement
-- Contract events and current-state reads
+- Routed native modules: `qrc20`, `qrc1155`, `bridge`, `verify`,
+  `validators`, `qrc721` (each write still needs its fork)
+- X402 authorization and payer-signed settlement (`submitted` vs `confirmed`)
+- Contract events, current-state reads, and current-state account proofs
 
 The live availability of a fork-gated action depends on the tier's persisted
-fork schedule. Lending, staking, governance, oracle, multisig, QRC-721, and
-QRC-4626 files exist, but the transaction router does not expose them. They are
-not product features merely because library code and read routes exist.
+fork schedule. DEX, exchange, lending, governance, oracle, multisig, and
+QRC-4626 are not routed. They are not product features because a leftover
+SDK adapter, a planned application, or a genesis fork name exists. QRC-721
+**is** routed (`qrc721_v1`).
 
 ### Product directions, not current deployments
 
@@ -1331,19 +1355,24 @@ require separately maintained evidence and owner review.
 - Optional node-terminated hybrid TLS and hybrid-only policy
 - AES-256-GCM + Argon2id `.sqwallet` CLI wallet format
 - SQC-VM bytecode interpreter
-- Reachable QRC-20, QRC-1155, QRC-721, QRC-4626, DEX, exchange, bridge,
-  lending, oracle, multisig, governance, SQVL (`verify`), and validators
-  router paths, subject to fork activation
+- Routed native modules only: QRC-20, QRC-1155, QRC-721, migration bridge,
+  SQVL (`verify`), and validators — each write still subject to its fork
 - Native 26 billion SPLD hard cap: genesis refuses a larger allocation;
   every block apply refuses a circulating supply above the minted amount
-- Permissionless validator register (2,500 SPLD bond) and BFT quorum
-  certificates after `validators_v1` / `multi_validator`
+- Validator register (2,500 SPLD bond) after `validators_v1`; approval /
+  producer admission after `validators_admission_v1`; BFT quorum
+  certificates after `multi_validator`
 - SQVL dual-signed instructions (ML-DSA-65 + SLH-DSA) with attest/settle
 - X402 payment authorization and payer-signed settlement transaction
 - Canonical `@splendor/sqc-sdk`, WASM signer (including SLH-DSA), and browser
   Connect components
 - Prototype QSol-subset compiler and `sqc-solc` CLI
-- Adaptive mempool-depth scheduler
+- Adaptive mempool-depth scheduler (local statistical loop; not a model
+  marketplace)
+- Optional snapshot fast-sync: immutable page sessions, retained import
+  staging until block and applied height/root reconcile, genesis-checkpoint
+  / authenticated-set trust (not the snapshot's own registry)
+- Current-state account proofs at `GET /state/proof/{address}`
 - 0.001 SPLD minimum fee after `min_fee_v1`
 
 ### Tested or measured, with a narrower claim
@@ -1383,7 +1412,8 @@ production-readiness claim.
 - X402 middleware settlement policy and confirmation; the deprecated JS path
   omits `settlement_tx`, while the current middleware verifies but does not
   automatically settle
-- QSol language completeness and `address`/`sqaddress` ABI alignment
+- QSol language completeness (constructors still do not run; not Solidity)
+- Snapshot fast-sync operational limits (optional; see recovery notes)
 - Per-tier fork activation and migration-bridge deployment
 - Explicit peer pinning where peers are deployed
 - Hybrid-only TLS where the node terminates TLS; proxy-fronted deployments have
@@ -1394,7 +1424,10 @@ production-readiness claim.
 ### Not built or not production-ready
 
 - Decentralized economic finality at global scale, or an HSM/remote signer
-- Historical-state queries or a Merkle inclusion-proof API
+- Historical-state queries (current-state `GET /state/proof/{address}` exists)
+- DEX, exchange, lending, oracle, multisig, governance, or QRC-4626 as
+  routed native modules
+- A live RLNC object-transfer path (library and benchmark only)
 - Sanctions screening, KYC attestation, AML monitoring, or regulator dashboards
 - Packaged desktop or mobile wallet applications, NFC hardware signing, or a QR
   air-gapped signing application
@@ -1497,7 +1530,7 @@ elsewhere; it is not a banking license, KYC product, or sanctions screen.
 | KYC attestation registry | Not built |
 | Regulator dashboards and formal reports | Not built |
 | Historical-state API | Not built |
-| Merkle inclusion-proof API | Not built |
+| Merkle inclusion-proof API | Current-state account proofs at `GET /state/proof/{address}`; no historical-state proof API |
 | HSM or remote validator signer | Not built |
 | Multi-validator fault tolerance | Not built in the running node |
 | Institutional scale and resilience | Not established by the single-host benchmark or the current single-validator deployments |
@@ -1770,7 +1803,7 @@ signing device.
   `mainnet-rpc.splendor.org`, chain 2691) are separate products; the bridge is
   the only place this chain touches them.
 - `blockpeak-credits` and the Blockpeak settlement plan in `docs/plans/` are
-  applications being built on the exchange module, not part of the chain.
+  future application work, not a routed native module on this chain.
 
 ---
 
@@ -1810,6 +1843,10 @@ hand; edit `scripts/readme-tiers.mjs` and regenerate.
 | Genesis validator (`/block/0`) | `SQ:8d2eeb30163d2b0b6d472fcdf14065e5d81151718ca0bcb068b0308de3cc0aa3` | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
 | Peers reported | 0 | 0 | 0 |
 <!-- tiers:end -->
+
+A name in `/status.forks` is a scheduled rule change, not proof the module is
+routed. `exchange_v1` on a live tier does not make `module: "exchange"` a
+valid `DispatchModuleCall`. The write catalog remains §8.
 
 Every tier has been reset at least once since the earlier snapshots in this
 file, so the genesis block hashes above are the ones a `--genesis-hash` pin
@@ -1883,14 +1920,11 @@ section matter for anyone not using the SDK.
 | `GET /contract/{address}`, `…/code`, `…/storage/{slot}` | Contract record, bytecode, one storage slot |
 | `POST /contract/verify` | Compile a QSol source and compare byte-for-byte with deployed code |
 | `POST /vm/validate`, `POST /vm/disasm`, `POST /vm/estimate-gas`, `GET /vm/opcodes` | Bytecode inspection; 133 opcodes today |
-| **Native modules with a write path (fork-gated, §8)** | |
-| `GET /dex/pool/{t0}/{t1}`, `…/quote`, `…/lp/{addr}`, `GET /dex/price/{t0}/{t1}`, `GET /dex/amount-in`, `GET /dex/amount-out` | DEX pools, reserves and quotes |
-| `GET /exchange/{addr}`, `…/condition/{id}`, `…/order/{hash}`, `…/nonce/{maker}`, `…/position/{condition}/{holder}` | Exchange instance, conditions, orders, positions |
+| **Routed native modules (fork-gated, §8)** | |
+| `GET /state/proof/{address}` | Current-state account Merkle proof (sibling directions + leaf preimage) |
 | `GET /bridge/{addr}`, `GET /bridge/{addr}/claim/{id}` | Migration-bridge instance and claim status |
-| `GET /validators`, `GET /validators/{addr}` | Active validator set (2,500 SPLD bond) |
+| `GET /validators`, `GET /validators/{addr}` | Active validator set (2,500 SPLD bond; admission rule in §9) |
 | `POST /verify/check`, `POST /verify/attest`, `POST /verify/settle`, `GET /verify/proof/{id}` | SQVL dual-sig check, attestation, settlement, on-chain proof |
-| **Module reads** | |
-| `GET /gov/*`, `GET /lending/*` | Governance and lending state after their forks activate |
 | **Node-to-node, not for clients** | |
 | `POST /block`, `POST /peers/announce`, `GET /sync`, `GET /p2p/identity` | The sealed write plane. `POST` routes require the `X-Node-Auth` shared token (401 without it); a node with no `--rpc-auth-token` answers 503; with plaintext P2P off, as on the public tiers, `POST /block` answers 410 and only the sealed transport is accepted |
 
@@ -2172,8 +2206,8 @@ rule to a running chain is an extension, never an edit: the new upgrade must
 activate above the current head, the deploy workflow must be dispatched with
 `allow_fork_extension=true` once, and the tier's `SQC_GENESIS_FORKS` variable
 must carry the full schedule. Testnet's `bridge_v1` at height 11,000 was
-activated this way. Mainnet reports no optional forks and, by decision, omits
-`exchange_v1`.
+activated this way. A scheduled `exchange_v1` still does not route an
+exchange module; see §8.
 
 ---
 
@@ -2194,7 +2228,7 @@ activated this way. Mainnet reports no optional forks and, by decision, omits
 | `consensus` | BFT multi-validator: leader rotation, QC votes, view-change; `multivalidator.go` drives production |
 | `network` | ML-KEM-768 + AES-256-GCM sealed P2P, peer pins, announce signatures, SSRF guards, sealed vote/proposal kinds |
 | `rpc` | The REST/SSE surface in §20, TLS with the `X25519MLKEM768` hybrid group, rate limits, metrics, `/verify/*`, `/validators` |
-| `vm` | SQC-VM interpreter plus routed native modules: QRC-20/1155/721/4626, DEX, exchange, bridge, SQVL (`verify`), validators, lending (oracle-priced), oracle, multisig, governance |
+| `vm` | SQC-VM interpreter plus **routed** native modules only: QRC-20, QRC-1155, QRC-721, bridge, SQVL (`verify`), validators |
 | `compiler` | The QSol-subset compiler (lexer, parser, codegen, assembler) and `examples/*.qsol` |
 | `x402` | X402 payment authorization and settlement binding |
 | `genesis` | Signed height-zero genesis builder and fork-schedule validation |
@@ -2204,7 +2238,7 @@ activated this way. Mainnet reports no optional forks and, by decision, omits
 | `sdk/bridge` | `@splendor/pq-bridge`: deprecated re-export shim, nothing else |
 | `sdk/sqc-sdk.js` | Legacy single-file SDK, deprecated; its X402 middleware omits `settlement_tx` (§11) |
 | `contracts/legacy-burn` | `QuantumMigrationBurn`, the Solidity burn gate on the legacy Splendor mainnet (chain 2691) |
-| `docs/modules` | Wire formats: `verify.md` (SQVL), `validators.md`, `standards.md`, `qrc20-permit.md`, `exchange.md`, `bridge.md` |
+| `docs/modules` | Wire formats for routed modules (`verify`, `validators`, `qrc20-permit`, `bridge`, `qrc721`, `standards`). `exchange.md` is historical/unrouted library design |
 | `docs/performance` | The dated TPS/GPU experiment behind every throughput number in this file |
 | `docs/plans` | Design documents: compiler, migration bridge, Blockpeak settlement module |
 | `docs/readme-claim-evidence.md` | The claim–evidence matrix and dated deployment snapshots behind this README |

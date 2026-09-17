@@ -28,10 +28,14 @@ describe('SQDP-1 protocol constants', () => {
     expect(PROTOCOL.derivationDomainMessage).toBe(DERIVATION_DOMAIN_MESSAGE);
     expect(PROTOCOL.bridgeClientHeader).toBe(BRIDGE_CLIENT_VERSION);
     expect(PROTOCOL.addressPrefix).toBe(ADDRESS_PREFIX);
+    expect(PROTOCOL.canonicalTransferSelector).toBe('4b40e901');
     expect(PROTOCOL.goldenTransferSelector).toBe('14cde9ab');
   });
 
   it('ABI golden matches PROTOCOL', () => {
+    expect(functionSelectorHex('transfer(address,uint256)')).toBe(
+      PROTOCOL.canonicalTransferSelector,
+    );
     expect(functionSelectorHex('transfer(sqaddress,uint256)')).toBe(
       PROTOCOL.goldenTransferSelector,
     );

@@ -7,8 +7,8 @@ Small Vite + React app that exercises `@splendor/sqc-sdk` + `@splendor/connect-r
 3. **Balance** — native SPLD with refresh  
 4. **Send** — native SPLD transfer  
 5. **QRC-20** — paste token address; read + transfer / approve  
-6. **DEX** — paste pool address; read reserves + swap  
-7. **Bridge** — paste bridge address; read info + claim  
+6. **Bridge** — paste bridge address; read info + claim  
+7. **DEX (unsupported adapter)** — leftover client only; the node does not route `module: "dex"`  
 
 ## Prerequisites
 
@@ -39,8 +39,7 @@ Optional: `VITE_SQC_NETWORK=local` (default).
 2. Fund the address (faucet / CLI) → **Refresh** balance  
 3. **Send** SPLD to another `SQ:` → hash + balance drop  
 4. Paste a deployed **QRC-20** → Load → transfer / approve  
-5. Paste a **DEX pool** → reserves + swap  
-6. Paste a **Bridge** → info + claim (needs valid attestations on real nets)  
+5. Paste a **Bridge** → info + claim (needs valid attestations on real nets)  
 
 ## Headless equivalent (no UI)
 
@@ -50,7 +49,6 @@ import { createSession } from '@splendor/sqc-sdk';
 const s = await createSession({ network: 'local', mode: 'seed', seed: process.env.SEED });
 await s.sendSPLD('SQ:…', '0.01');
 await s.token('SQ:…token').transfer('SQ:…', '100');
-await s.modules.dex('SQ:…pool').swap({ tokenIn: 0, amountIn: '100', minAmountOut: '1' });
 ```
 
 ## Notes

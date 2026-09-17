@@ -146,7 +146,7 @@ export type PreflightResult = {
   sufficient: boolean;
 };
 
-/** Native module call write (qrc20, dex, etc.). */
+/** Native module call write (qrc20, qrc1155, bridge, verify, validators, qrc721). */
 export type ModuleCallOpts = {
   module: string;
   action: string;

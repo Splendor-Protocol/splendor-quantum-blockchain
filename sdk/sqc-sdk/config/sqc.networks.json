@@ -7,6 +7,7 @@
     "addressHexLen": 64,
     "confirmation": "nonce",
     "abiHash": "sha3-256",
+    "canonicalTransferSelector": "4b40e901",
     "goldenTransferSelector": "14cde9ab",
     "derivationDomainVersion": "v1",
     "bridgeClientVersion": "1.4.0",

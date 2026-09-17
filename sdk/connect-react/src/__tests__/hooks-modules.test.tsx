@@ -205,7 +205,9 @@ describe('useModules', () => {
     const ctrl = makeController(makeState());
     const { result } = renderHook(() => useModules(), { wrapper: wrapperFor(ctrl) });
     expect(result.current).not.toBeNull();
-    expect(result.current!.dex(POOL).getAddress()).toBe(POOL);
+    expect(result.current!.qrc20(ADDR).getAddress()).toBe(ADDR);
+    expect(result.current!.bridge(ADDR).getAddress()).toBe(ADDR);
+    expect(() => result.current!.dex(POOL)).toThrow(/unsupported application adapter/i);
   });
 
   it('returns null when wallet missing', () => {

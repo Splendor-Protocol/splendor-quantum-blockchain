@@ -29,9 +29,11 @@ Deprecated root exports (still present one minor): `connectSplendor`, `createSpl
 
 ### Built-in Program clients vs on-chain modules
 
-Typed `modules.*` / `bindModules` clients ship for: **qrc20**, **qrc1155**, **exchange**, **dex**, **bridge**, **contract**.
+Automatic `modules.*` / `bindModules` clients ship for: **qrc20**, **qrc1155**, **bridge**, **contract**.
 
-On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall` / `registerModule` — do not stub fake Programs): **lending**, **oracle**, **multisig**, **governance**, **qrc721**, **qrc4626**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient` (Connection/Transport-backed).
+Routed on-chain modules **without** a dedicated Program client (use `sendModuleCall`): **verify**, **validators**, **qrc721**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient`.
+
+DEX and exchange leftover clients are **unsupported application adapters**. They are not routed by `DispatchModuleCall`. Call `registerUnsupportedApplicationAdapters()` or import `@splendor/sqc-sdk/defi`. Lending, oracle, multisig, governance, and QRC-4626 are not routed and have no native SDK capability.
 
 ## Package layout
 
@@ -44,7 +46,7 @@ On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall`
 ├── /tokens/qrc20
 ├── /tokens/qrc1155
 ├── /contracts           # bytecode deploy/call
-├── /defi                # DEX + Exchange
+├── /defi                # unsupported DEX + Exchange adapters (not routed)
 ├── /bridge              # on-chain bridge_v1 (≠ pq-bridge shim)
 ├── /x402                # payment protocol helpers
 ├── /addresses           # MODULE_ROUTER, qrc20/1155/exchange/dex/bridge addresses
@@ -92,14 +94,15 @@ registerModule(
 
 | Module | SDK Program | Notes |
 |--------|-------------|--------|
-| QRC-20 | Built | deploy, transfer, approve, permit |
-| QRC-1155 | Built | deploy, mint, transfer, burn |
-| DEX | Built | deploy_pool, add_liquidity, swap, pool_info |
-| Exchange | Built | deploy, conditions, match, cancel, signing, position_id, order_hash |
-| Bridge (`bridge_v1`) | Built | deploy, claim, operators |
+| QRC-20 | Built | deploy, transfer, approve, permit (routed) |
+| QRC-1155 | Built | deploy, mint, transfer, burn (routed) |
+| Bridge (`bridge_v1`) | Built | deploy, claim, operators (routed) |
+| Verify / Validators | Built helpers | `getVerify` / `getValidators` (routed) |
+| QRC-721 | Routed, no Program | `sendModuleCall({ module: 'qrc721', … })` |
 | Bytecode contracts | Built | QSol ABI call + deployBytecode |
 | QSol compile-in-SDK | Not built | use monorepo `sqc-solc` offline |
-| QRC-721 / lending / oracle | Roadmap | no stubs until on-chain ABI stable |
+| DEX / Exchange | Unsupported adapters | not routed; opt-in only |
+| Lending / oracle / multisig / governance / QRC-4626 | Not routed | no native capability |
 | WalletConnect / mobile | Deferred | ConnectKit is browser-injected first |
 | ABI/codegen for QSol | Roadmap | viem-like typed contracts later |
 

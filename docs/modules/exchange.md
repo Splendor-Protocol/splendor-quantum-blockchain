@@ -1,6 +1,11 @@
 # Exchange: the settlement module (`exchange_v1`)
 
-The `exchange` native module is the chain's app-agnostic, Polymarket-shaped
+> **Not a routed native module.** `DispatchModuleCall` does not accept
+> `module: "exchange"`. This page is the historical/library design. Do not
+> treat exchange as a live chain capability. The routed catalog is `qrc20`,
+> `qrc1155`, `bridge`, `verify`, `validators`, `qrc721`.
+
+The `exchange` library is an app-agnostic, Polymarket-shaped
 settlement layer: **conditions** (a collateral token, a resolver, an end time,
 two outcomes), **complete sets** (split collateral into YES+NO positions and
 merge them back), and **operator-submitted atomic settlement of orders users

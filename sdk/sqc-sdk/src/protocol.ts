@@ -37,6 +37,9 @@ export const PROTOCOL = {
   confirmation: proto.confirmation,
   bridgeClientHeader: BRIDGE_CLIENT_VERSION,
   abiHash: proto.abiHash,
+  /** Compiler-canonical `transfer(address,uint256)` = 4b40e901. */
+  canonicalTransferSelector: proto.canonicalTransferSelector,
+  /** Legacy hash-as-written `transfer(sqaddress,uint256)` = 14cde9ab. */
   goldenTransferSelector: proto.goldenTransferSelector,
   defaultNetwork: file.defaultNetwork,
   /**

@@ -984,7 +984,7 @@ export class SplendorPQBridge {
   }
 
   /**
-   * Submit a native module call (qrc20, dex, etc.) via the module router.
+   * Submit a native module call (qrc20, qrc1155, bridge, verify, validators, qrc721) via the module router.
    */
   async sendModuleCall(opts: ModuleCallOpts): Promise<{
     status: string;

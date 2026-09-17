@@ -1,7 +1,10 @@
-// Package vm — permissionless validator registry.
+// Package vm — validator registry (validators module).
 //
 // One bond: 2,500 SPLD. No Bronze / Silver / Gold / Platinum.
 // Register locks the bond; unregister returns it after UnbondingBlocks.
+// After validators_v1 anyone with the bond may register. After
+// validators_admission_v1 only the block producer or an address an active
+// validator has approved may register — not unconditional permissionless entry.
 package vm
 
 import (

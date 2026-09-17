@@ -29,7 +29,9 @@ Connect → fund → transfer → wait. Use a read-only `Connection` / `SqcProvi
 | No bridge markup fee | Only chain `minFee` (`PROTOCOL.minFee`); under congestion node may require higher — handle reject and retry |
 | Deploy QRC-20 token | `deployQRC20(wallet, …)` or `useDeployToken()` / `DeployTokenWidget` |
 | Token balance / transfer | `modules.qrc20(connection, addr)` / `useQRC20(addr)` / `TokenPanel` |
-| QRC-1155 / DEX / Exchange / Bridge | `modules.qrc1155` / `modules.dex` / `modules.exchange` / `modules.bridge` |
+| QRC-1155 / Bridge | `modules.qrc1155` / `modules.bridge` |
+| Verify / Validators | `getVerify` / `getValidators` |
+| DEX / Exchange leftover adapters | `registerUnsupportedApplicationAdapters()` then `modules.dex` / `modules.exchange`, or import `@splendor/sqc-sdk/defi` |
 | Confirmation that is not fake | `waitForConfirmation` / `waitForConfirmation: true` — receipt-first, nonce fallback ([SQDP §7](./SQDP-1.md)) |
 
 **Out of scope (documented):** WalletConnect v2, Ethereum `eth_*` / wagmi EIP-1193 adapters, CDN-hosted WASM.
@@ -62,7 +64,7 @@ import {
 
 Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
 
-**Runnable demo:** [`../examples/web-dapp`](../examples/web-dapp) — ConnectKit + balance + send SPLD + QRC-20 / 1155 + DEX + Exchange + Bridge + Contract.
+**Runnable demo:** [`../examples/web-dapp`](../examples/web-dapp) — ConnectKit + balance + send SPLD + QRC-20 / 1155 + Bridge + Contract. DEX/exchange UI is leftover adapter code, not a routed native module.
 
 ### Minimal React checklist
 
@@ -75,7 +77,7 @@ Lower-level (no UI): `createSession` / `createWalletClient` / `connect` from `@s
 
 ```ts
 import { PROTOCOL, SQDP_VERSION, createSession, createWalletClient, createPublicClient } from '@splendor/sqc-sdk';
-// createSession → bound sendSPLD / token / dex / bridge / modules (no wallet args on writes)
+// createSession → bound sendSPLD / token / bridge / modules (no wallet args on writes)
 // createWalletClient → wallet.connect({ mode: 'seed', seed }) / signAndSendTransaction
 // PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.signMessageDomain, PROTOCOL.confirmationCaveat
 ```
@@ -86,7 +88,7 @@ import { PROTOCOL, SQDP_VERSION, createSession, createWalletClient, createPublic
 const s = await createSession({ network: 'local', mode: 'seed', seed });
 await s.sendSPLD(to, '0.01');
 await s.token(token).transfer(to, '100');
-await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
+await s.bridge(bridge).claim({ id, asset, amount, recipient, evmTx, attestations });
 ```
 
 ### WalletClient (alternative headless)
@@ -208,9 +210,10 @@ const res = await wallet.sendTransfer({
 
 ## 5. Contract calls
 
-Use QSol ABI (`sqaddress`, SHA3-256 selectors). Deploy pre-built SQC-VM bytecode
+Use QSol ABI (compiler-canonical `address`, SHA3-256 selectors). Legacy
+`sqaddress` hashes as written. Deploy pre-built SQC-VM bytecode
 via `@splendor/sqc-sdk/contracts`, or compile offline with the monorepo
-`sqc-solc` prototype (not embedded in this SDK).
+`sqc-solc` prototype (not embedded in this SDK; not full Solidity).
 
 ```ts
 import { encodeFunctionData, decodeArgUint256 } from '@splendor/sqc-sdk';
@@ -218,12 +221,13 @@ import { deployBytecode, getContract } from '@splendor/sqc-sdk/contracts';
 
 await wallet.callContract({
   contract: 'SQ:…',
-  function: 'transfer(sqaddress,uint256)',
+  function: 'transfer(address,uint256)',
   args: ['SQ:…', 1_000_000_000_000_000_000n],
 });
 
 // or build calldata yourself:
-const data = encodeFunctionData('balanceOf(sqaddress)', [addr]);
+const data = encodeFunctionData('balanceOf(address)', [addr]);
+// Legacy deployed selectors: encodeFunctionData('transfer(sqaddress,uint256)', …) → 14cde9ab
 ```
 
 Selector = `SHA3-256(signature)[0:4]` (same as Go `vm.SelectorFromSignature`).

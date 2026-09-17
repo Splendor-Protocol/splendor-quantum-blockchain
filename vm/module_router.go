@@ -1,12 +1,11 @@
 // Package vm — native module router.
 //
-// The chain ships fully-implemented native modules (QRC-20 tokens, the DEX
-// liquidity pool, …) that write state directly through StateDB. Until this
-// router existed they were unreachable: executeTx had no branch that invoked
-// them, and the bytecode VM cannot (its persistent-storage opcodes are shadowed
-// by the PUSH range on sqc-vm-v3). This router wires them to the existing
-// TxCall (0x02) path via a single reserved address, with no new tx type and no
-// VM change.
+// DispatchModuleCall is the only write path for native modules. The live
+// catalog is KnownModuleActions in module_router_read.go: qrc20, qrc1155,
+// bridge, verify, validators, qrc721. DEX, exchange, lending, oracle,
+// multisig, governance, and QRC-4626 are not in this switch. This router
+// wires the catalog to the existing TxCall (0x02) path via a single reserved
+// address, with no new tx type and no VM change.
 //
 // Invocation: a TxCall whose `To` equals ModuleRouterAddress carries a JSON
 // ModuleCall in its Data field. The executor detects that address and calls
@@ -39,7 +38,7 @@ func deriveModuleRouterAddress() qcrypto.Address {
 
 // ModuleCall is the JSON envelope in a module TxCall's Data field.
 type ModuleCall struct {
-	Module string          `json:"module"` // "qrc20" | "qrc1155" | "dex" | "exchange" | "bridge"
+	Module string          `json:"module"` // "qrc20" | "qrc1155" | "bridge" | "verify" | "validators" | "qrc721"
 	Action string          `json:"action"` // e.g. "deploy", "mint", "transfer"
 	Params json.RawMessage `json:"params"`
 }
@@ -111,11 +110,11 @@ func DispatchModuleCall(stateDB *state.StateDB, ctx ModuleContext, data []byte, 
 // the flat MinFee whatever it writes, so an unbounded name or uri was
 // ~128 KiB of state per transaction at the minimum price. SOFT, checked in
 // the router before the module runs. The qrc20 caps apply only once qrc20_v2
-// is active so a pre-fork replay is unchanged; qrc1155_v1 and exchange_v1
-// actions are new under their own forks and carry the cap from the start.
+// is active so a pre-fork replay is unchanged; qrc1155_v1 actions are new
+// under their own fork and carry the cap from the start.
 const (
-	MaxModuleNameBytes = 64   // qrc20 name and symbol, qrc1155 and exchange name
-	MaxModuleURIBytes  = 2048 // qrc1155 uri and uri_prefix, exchange uri_prefix
+	MaxModuleNameBytes = 64   // qrc20 name and symbol, qrc1155 name
+	MaxModuleURIBytes  = 2048 // qrc1155 uri and uri_prefix
 )
 
 // capString refuses v when it is longer than max bytes.

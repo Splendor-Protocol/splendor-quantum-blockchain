@@ -1,5 +1,7 @@
 /**
- * Exchange settlement Program client (Polymarket-shaped CTF + orders).
+ * Unsupported exchange adapter (CTF + orders client).
+ * Not routed by DispatchModuleCall — opt in via registerUnsupportedApplicationAdapters()
+ * or import this file directly. Node calls with module "exchange" are unknown-module errors.
  */
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';

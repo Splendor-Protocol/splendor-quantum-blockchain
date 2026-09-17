@@ -146,7 +146,17 @@ export { BridgeModule, deployBridge, getBridge } from './bridge/module.js';
 export { VerifyClient, getVerify } from './verify.js';
 export type { VerifyInstruction } from './verify.js';
 export { ValidatorsClient, getValidators, VALIDATOR_BOND_SPLD } from './validators.js';
-export { modules, bindModules, ensureBuiltInModulesRegistered } from './modules.js';
+export {
+  modules,
+  bindModules,
+  ensureBuiltInModulesRegistered,
+  registerUnsupportedApplicationAdapters,
+  unsupportedApplicationAdaptersEnabled,
+  assertUnsupportedApplicationAdaptersEnabled,
+  ROUTED_NATIVE_MODULE_IDS,
+  UNSUPPORTED_APPLICATION_ADAPTER_IDS,
+  UNSUPPORTED_ADAPTER_MESSAGE,
+} from './modules.js';
 export type { Modules, BoundModules, SignedBoundModules } from './modules.js';
 export {
   registerModule,
