@@ -96,6 +96,20 @@ func TestPrepareStateSyncGenesisWritesBookkeepingOnly(t *testing.T) {
 	}
 }
 
+func TestNodeReadyStatusRequiresAppliedAndIndex(t *testing.T) {
+	st := nodeReadyStatus(nil, nil, nil, false)
+	if st.Ready {
+		t.Fatal("empty node must not be ready")
+	}
+	if st.Reason == "" {
+		t.Fatal("not-ready must name a reason")
+	}
+	st = nodeReadyStatus(nil, nil, nil, true)
+	if st.Ready || st.Reason != "state sync in progress" {
+		t.Fatalf("pending state sync = %+v", st)
+	}
+}
+
 func TestShouldRunStateSync(t *testing.T) {
 	if !shouldRunStateSync(true, nil, false) {
 		t.Fatal("empty chain + --state-sync must run")

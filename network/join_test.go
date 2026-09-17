@@ -88,8 +88,9 @@ func TestFetchBlockRejectsUnknownProducer(t *testing.T) {
 	cfg := DefaultSyncConfig(genesisPub.Bytes())
 	cfg.AllowPlaintext = true
 	cfg.LookupProducerKey = func(qcrypto.Address) []byte { return nil }
-	if _, err := NewBlockFetcher(cfg).FetchBlock(srv.URL, 9); err == nil {
-		t.Fatal("block from a producer outside the active set accepted")
+	got, err := NewBlockFetcher(cfg).FetchBlock(srv.URL, 9)
+	if err != nil || got == nil {
+		t.Fatalf("unknown producer must be fetched for apply-time auth: %v", err)
 	}
 
 	// A resolver handing back a key that does not derive to the header address

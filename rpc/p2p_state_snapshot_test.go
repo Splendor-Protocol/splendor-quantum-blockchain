@@ -105,6 +105,9 @@ func TestFetchStateSnapshotRefusesUnanchoredHead(t *testing.T) {
 	if !errors.Is(err, network.ErrSnapshotNotAnchored) {
 		t.Fatalf("snapshot with a head sealed by another validator = %v, want ErrSnapshotNotAnchored", err)
 	}
+	if !strings.Contains(err.Error(), "genesis-checkpoint") {
+		t.Fatalf("unanchored error must name the genesis-checkpoint trust model: %v", err)
+	}
 }
 
 func TestFetchStateSnapshotRefusesForgedOrMalformedHead(t *testing.T) {

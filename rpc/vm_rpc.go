@@ -26,14 +26,27 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
-// RegisterVMRoutes adds VM inspection endpoints to an existing router.
-func RegisterVMRoutes(r *mux.Router, nodeStartTime time.Time, isReady func() bool) {
+// ReadyStatus is the /readyz payload. Process liveness stays on /healthz.
+type ReadyStatus struct {
+	Ready             bool   `json:"ready"`
+	Reason            string `json:"reason,omitempty"`
+	AppliedHeight     uint64 `json:"applied_height"`
+	AppliedKnown      bool   `json:"applied_known"`
+	IndexHeight       uint64 `json:"index_height"`
+	IndexKnown        bool   `json:"index_known"`
+	IndexCoverageFrom uint64 `json:"index_coverage_from"`
+	Syncing           bool   `json:"syncing"`
+	Recovering        bool   `json:"recovering"`
+	ValidatorLocked   bool   `json:"validator_locked"`
+}
+
+func RegisterVMRoutes(r *mux.Router, nodeStartTime time.Time, ready func() ReadyStatus) {
 	r.HandleFunc("/vm/disasm", handleVMDisasm).Methods(http.MethodPost)
 	r.HandleFunc("/vm/validate", handleVMValidate).Methods(http.MethodPost)
 	r.HandleFunc("/vm/estimate-gas", handleVMEstimateGas).Methods(http.MethodPost)
 	r.HandleFunc("/vm/opcodes", handleVMOpcodes).Methods(http.MethodGet)
 	r.HandleFunc("/healthz", makeHealthzHandler(nodeStartTime)).Methods(http.MethodGet)
-	r.HandleFunc("/readyz", makeReadyzHandler(isReady)).Methods(http.MethodGet)
+	r.HandleFunc("/readyz", makeReadyzHandler(ready)).Methods(http.MethodGet)
 
 	log.Debug().Msg("VM RPC routes registered")
 }
@@ -213,16 +226,17 @@ func makeHealthzHandler(startTime time.Time) http.HandlerFunc {
 	}
 }
 
-func makeReadyzHandler(isReady func() bool) http.HandlerFunc {
+func makeReadyzHandler(ready func() ReadyStatus) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if isReady == nil || isReady() {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
-		} else {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"status": "not_ready",
-				"reason": "chain not yet synced",
-			})
+		st := ReadyStatus{Ready: true}
+		if ready != nil {
+			st = ready()
 		}
+		code := http.StatusOK
+		if !st.Ready {
+			code = http.StatusServiceUnavailable
+		}
+		writeJSON(w, code, st)
 	}
 }
 

@@ -1,11 +1,13 @@
 // Package network — state sync: joining a chain whose history cannot be
 // replayed by taking a peer's live state at its head block.
 //
-// Trust model, unchanged in kind from block sync: the pinned genesis validator
+// Trust model (R5): genesis-checkpoint only. The pinned genesis validator
 // key authenticates the head block, and the header's state_root authenticates
-// the leaves (checked by the importer). Nothing a peer serves is believed on
-// its own say-so; a node with no pinned key cannot state-sync, exactly as it
-// cannot block-sync.
+// the leaves (checked by the importer). A current head sealed by a later
+// rotating leader is refused (ErrSnapshotNotAnchored) until a genesis-sealed
+// checkpoint is available — the join has no authenticated validator history
+// on empty state. The snapshot's own registry is never used as a trust
+// source. Nothing a peer serves is believed on its own say-so.
 package network
 
 import (
@@ -30,7 +32,7 @@ import (
 // used — but it is not evidence of a hostile peer: under leader rotation the
 // next head may well be the genesis validator's, so callers retry rather than
 // give up.
-var ErrSnapshotNotAnchored = errors.New("state snapshot head was not sealed by the trusted genesis validator")
+var ErrSnapshotNotAnchored = errors.New("state snapshot head was not sealed by the trusted genesis validator (genesis-checkpoint trust: retry until a genesis-sealed head is available; the snapshot registry is not a trust source)")
 
 const (
 	// snapshotFetchTimeout bounds one snapshot query (single-shot or one

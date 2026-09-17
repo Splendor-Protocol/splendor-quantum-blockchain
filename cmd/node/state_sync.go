@@ -15,7 +15,50 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/rpc"
 )
+
+// nodeReadyStatus is /readyz: applied height, index coverage, and not-in-recovery.
+// /healthz stays process liveness only.
+func nodeReadyStatus(ex *block.Executor, sdb *state.StateDB, syncer *network.Syncer, stateSyncPending bool) rpc.ReadyStatus {
+	st := rpc.ReadyStatus{}
+	if sdb != nil {
+		h, ok := sdb.AppliedHeight()
+		st.AppliedHeight = h
+		st.AppliedKnown = ok
+	}
+	if ex != nil {
+		ih, iok, cov, cok := ex.TxIndexStatus()
+		st.IndexHeight = ih
+		st.IndexKnown = iok
+		if cok {
+			st.IndexCoverageFrom = cov
+		}
+		st.Recovering = ex.HasIncompleteSnapshotImport() || !ex.CanProgress()
+		st.ValidatorLocked = !ex.CanProgress()
+	}
+	var head uint64
+	if ex != nil {
+		head, _ = ex.LatestHeight()
+	}
+	st.Syncing = stateSyncPending || (syncer != nil && !syncer.IsSynced())
+
+	switch {
+	case st.Recovering:
+		st.Reason = "recovery in progress"
+	case stateSyncPending:
+		st.Reason = "state sync in progress"
+	case !st.AppliedKnown && head == 0:
+		st.Reason = "no applied state"
+	case head == 0:
+		st.Reason = "chain not yet synced"
+	case ex != nil && ex.HasTxIndex() && st.AppliedKnown && (!st.IndexKnown || st.IndexHeight < st.AppliedHeight):
+		st.Reason = "transaction index behind applied height"
+	default:
+		st.Ready = true
+	}
+	return st
+}
 
 // reconcileSnapshotImportAtStartup runs ReconcileSnapshotImport. A retryable
 // incomplete import is not fatal when allowRetry is set (--state-sync), so
