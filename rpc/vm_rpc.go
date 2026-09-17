@@ -6,7 +6,7 @@
 //	POST /vm/validate        — validate bytecode structure, report warnings/errors
 //	POST /vm/estimate-gas    — estimate gas for a bytecode sequence
 //	GET  /healthz            — node health check (liveness probe)
-//	GET  /readyz             — node readiness check (has committed at least 1 block)
+//	GET  /readyz             — readiness: applied height, index coverage, not recovering/syncing
 package rpc
 
 import (

@@ -2,13 +2,18 @@ package main
 
 import (
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
 )
 
 // --state-sync has three preconditions, each refused at start-up with the
@@ -107,6 +112,80 @@ func TestNodeReadyStatusRequiresAppliedAndIndex(t *testing.T) {
 	st = nodeReadyStatus(nil, nil, nil, true)
 	if st.Ready || st.Reason != "state sync in progress" {
 		t.Fatalf("pending state sync = %+v", st)
+	}
+}
+
+func TestNodeReadyStatusWithExecutorIndexAndSync(t *testing.T) {
+	withCleanChainID(t)
+	sdb, ex := newBootstrapNode(t)
+	idx, err := state.NewTxIndexStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	ex.WithTxIndex(idx)
+
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := qcrypto.DeriveAddress(pub)
+	acc := types.NewAccount(from)
+	acc.AddBalance(big.NewInt(1_000_000))
+	sdb.SetAccount(acc)
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	vpub, vpriv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := types.NewTransfer(from, qcrypto.Address{0x51}, big.NewInt(100), big.NewInt(1000), 0, time.Now().Unix())
+	if err := tx.Sign(priv, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.ProduceBlock([]*types.Transaction{tx}, qcrypto.DeriveAddress(vpub), vpub.Bytes(), vpriv, [32]byte{}, 1); err != nil {
+		t.Fatalf("produce: %v", err)
+	}
+
+	st := nodeReadyStatus(ex, sdb, nil, false)
+	if !st.Ready || st.IndexCoverageFrom != 0 {
+		t.Fatalf("caught-up node = %+v", st)
+	}
+
+	empty, err := state.NewTxIndexStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { empty.Close() })
+	ex.WithTxIndex(empty)
+	st = nodeReadyStatus(ex, sdb, nil, false)
+	if st.Ready || st.Reason != "transaction index behind applied height" {
+		t.Fatalf("index behind = %+v", st)
+	}
+
+	ex.WithTxIndex(idx)
+	pool := network.NewPeerPool("http://self", 10)
+	pool.Add(&network.PeerInfo{Addr: "http://peer"})
+	pool.UpdatePeerHeight("http://peer", 10)
+	cfg := network.DefaultSyncConfig([]byte{1})
+	syncer := network.NewSyncer(cfg, pool, func() uint64 { return 1 }, func(*types.Block) error { return nil })
+	st = nodeReadyStatus(ex, sdb, syncer, false)
+	if st.Ready || !st.Syncing || st.Reason != "sync in progress" {
+		t.Fatalf("catch-up sync = %+v", st)
+	}
+
+	sdb.FailNextCommit(errors.New("injected commit failure"))
+	tx2 := types.NewTransfer(from, qcrypto.Address{0x52}, big.NewInt(50), big.NewInt(1000), 1, time.Now().Unix())
+	if err := tx2.Sign(priv, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.ProduceBlock([]*types.Transaction{tx2}, qcrypto.DeriveAddress(vpub), vpub.Bytes(), vpriv, [32]byte{}, 2); err == nil {
+		t.Fatal("expected injected commit failure")
+	}
+	st = nodeReadyStatus(ex, sdb, nil, false)
+	if st.Ready || !st.Recovering || !st.ValidatorLocked {
+		t.Fatalf("halted producer = %+v", st)
 	}
 }
 

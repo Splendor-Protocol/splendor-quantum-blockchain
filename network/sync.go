@@ -78,8 +78,9 @@ type SyncConfig struct {
 	MaxFetchLookahead int
 
 	// MaxFetchBufferBytes caps the reserved size of in-flight + pending
-	// fetched blocks. 0 uses 16 MiB. Together with lookahead this is a
-	// byte window, not only a batch-count cap.
+	// fetched blocks. 0 uses 16 MiB. The pipeline reserves bytes before
+	// issuing a fetch and accounts the measured body after it returns,
+	// so this is a byte window, not only a batch-count cap.
 	MaxFetchBufferBytes int64
 
 	// RequestTimeout is the timeout for individual block download requests.
@@ -178,9 +179,12 @@ func (f *BlockFetcher) setTrustedPubKey(pk []byte) {
 // The sealed ML-KEM channel is tried first. Falling back to plaintext is opt-in
 // because an attacker who can silence /p2p/identity would otherwise be able to
 // downgrade every sync to cleartext just by refusing to answer.
-func (f *BlockFetcher) fetchBlockJSON(peerAddr, kind string, body []byte, plainPath string) ([]byte, error) {
+func (f *BlockFetcher) fetchBlockJSON(ctx context.Context, peerAddr, kind string, body []byte, plainPath string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if f.cfg.Identities != nil {
-		raw, err := f.cfg.Identities.QuerySealed(peerAddr, kind, body, maxSyncBodyBytes)
+		raw, err := f.cfg.Identities.QuerySealedContext(ctx, peerAddr, kind, body, maxSyncBodyBytes)
 		if err == nil {
 			return raw, nil
 		}
@@ -202,7 +206,11 @@ func (f *BlockFetcher) fetchBlockJSON(peerAddr, kind string, body []byte, plainP
 			"plaintext sync is disabled", peerAddr)
 	}
 
-	resp, err := f.client.Get(peerAddr + plainPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, peerAddr+plainPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s from %s: %w", plainPath, peerAddr, err)
 	}
@@ -241,7 +249,7 @@ func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	raw, err := f.fetchBlockJSON(peerAddr, KindGetBlock, req, "/block/0")
+	raw, err := f.fetchBlockJSON(context.Background(), peerAddr, KindGetBlock, req, "/block/0")
 	if err != nil {
 		return nil, fmt.Errorf("fetch genesis block from %s: %w", peerAddr, err)
 	}
@@ -308,11 +316,16 @@ func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, err
 // (the block will still be structurally validated).
 // SECURITY: Always set ValidatorPubKey in production.
 func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block, error) {
+	return f.FetchBlockContext(context.Background(), peerAddr, height)
+}
+
+// FetchBlockContext is FetchBlock with a cancellable in-flight request.
+func (f *BlockFetcher) FetchBlockContext(ctx context.Context, peerAddr string, height uint64) (*types.Block, error) {
 	req, err := json.Marshal(GetBlockRequest{Height: height})
 	if err != nil {
 		return nil, err
 	}
-	raw, err := f.fetchBlockJSON(peerAddr, KindGetBlock, req, fmt.Sprintf("/block/%d", height))
+	raw, err := f.fetchBlockJSON(ctx, peerAddr, KindGetBlock, req, fmt.Sprintf("/block/%d", height))
 	if err != nil {
 		return nil, fmt.Errorf("fetch block %d from %s: %w", height, peerAddr, err)
 	}
@@ -370,7 +383,7 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 
 // FetchLatestBlock fetches the latest block from a peer.
 func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
-	raw, err := f.fetchBlockJSON(peerAddr, KindGetLatest, []byte(`{}`), "/block/latest")
+	raw, err := f.fetchBlockJSON(context.Background(), peerAddr, KindGetLatest, []byte(`{}`), "/block/latest")
 	if err != nil {
 		return nil, fmt.Errorf("fetch latest block from %s: %w", peerAddr, err)
 	}
@@ -457,10 +470,97 @@ func (s *Syncer) TrustedPubKey() []byte {
 
 // fetchResult carries one height's outcome back to the ordered applier.
 type fetchResult struct {
-	height uint64
-	block  *types.Block
-	peer   string
-	err    error
+	height   uint64
+	block    *types.Block
+	peer     string
+	err      error
+	reserved int64
+	held     int64
+}
+
+const defaultFetchReserveBytes int64 = 2 << 20
+const typicalFetchBlockBytes int64 = 4 << 20
+
+type syncByteBudget struct {
+	mu   sync.Mutex
+	cond *sync.Cond
+	used int64
+	max  int64
+}
+
+func newSyncByteBudget(max int64) *syncByteBudget {
+	if max < 1 {
+		max = 16 << 20
+	}
+	b := &syncByteBudget{max: max}
+	b.cond = sync.NewCond(&b.mu)
+	return b
+}
+
+func (b *syncByteBudget) acquire(ctx context.Context, n int64) error {
+	if n < 1 {
+		n = 1
+	}
+	stop := context.AfterFunc(ctx, func() {
+		b.mu.Lock()
+		b.cond.Broadcast()
+		b.mu.Unlock()
+	})
+	defer stop()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for b.used > 0 && b.used+n > b.max {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		b.cond.Wait()
+	}
+	b.used += n
+	return nil
+}
+
+func (b *syncByteBudget) adjust(old, new int64) {
+	if old < 1 {
+		old = 1
+	}
+	if new < 1 {
+		new = 1
+	}
+	b.mu.Lock()
+	b.used += new - old
+	if b.used < 0 {
+		b.used = 0
+	}
+	b.cond.Broadcast()
+	b.mu.Unlock()
+}
+
+func (b *syncByteBudget) release(n int64) {
+	if n < 1 {
+		n = 1
+	}
+	b.mu.Lock()
+	b.used -= n
+	if b.used < 0 {
+		b.used = 0
+	}
+	b.cond.Broadcast()
+	b.mu.Unlock()
+}
+
+func blockHeldBytes(b *types.Block) int64 {
+	if b == nil {
+		return 1
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return 1
+	}
+	if len(raw) == 0 {
+		return 1
+	}
+	return int64(len(raw))
 }
 
 // SyncOnce performs one sync pass: check peers, download missing blocks.
@@ -479,7 +579,8 @@ func (s *Syncer) SyncOnce() (int, error) {
 }
 
 // SyncOnceContext is SyncOnce with a cancellable context. Cancellation
-// stops issuing new heights and interrupts retry sleeps.
+// stops issuing new heights, interrupts retry sleeps, and cancels
+// in-flight block fetches.
 func (s *Syncer) SyncOnceContext(ctx context.Context) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -545,12 +646,20 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 	if maxBytes < 1 {
 		maxBytes = 16 << 20
 	}
-	if est := int(maxBytes / (2 << 20)); est > 0 && lookahead > est {
+	if est := int(maxBytes / typicalFetchBlockBytes); est > 0 && lookahead > est {
 		lookahead = est
-		if lookahead < 2 {
-			lookahead = 2
-		}
 	}
+	if lookahead < 1 {
+		lookahead = 1
+	}
+	preReserve := defaultFetchReserveBytes
+	if preReserve > maxBytes {
+		preReserve = maxBytes
+	}
+	if preReserve < 1 {
+		preReserve = 1
+	}
+	budget := newSyncByteBudget(maxBytes)
 	window := make(chan struct{}, lookahead)
 	for i := 0; i < lookahead; i++ {
 		window <- struct{}{}
@@ -564,8 +673,12 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 				return
 			case <-window:
 			}
+			if err := budget.acquire(ctx, preReserve); err != nil {
+				return
+			}
 			select {
 			case <-ctx.Done():
+				budget.release(preReserve)
 				return
 			case heights <- h:
 			}
@@ -596,13 +709,14 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 			for h := range heights {
 				if err := ctx.Err(); err != nil {
 					select {
-					case results <- fetchResult{height: h, err: err}:
+					case results <- fetchResult{height: h, err: err, reserved: preReserve, held: preReserve}:
 					default:
+						budget.release(preReserve)
 					}
 					return
 				}
 				peerAddr := peerFor(h)
-				block, err := s.fetcher.FetchBlock(peerAddr, h)
+				block, err := s.fetcher.FetchBlockContext(ctx, peerAddr, h)
 				if err != nil {
 					log.Warn().Err(err).Uint64("height", h).Str("peer", peerAddr).
 						Msg("sync: block fetch failed, will retry")
@@ -611,13 +725,18 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 						err = ctx.Err()
 					case <-time.After(s.fetcher.cfg.RetryDelay):
 						retryPeer := peerFor(h)
-						block, err = s.fetcher.FetchBlock(retryPeer, h)
+						block, err = s.fetcher.FetchBlockContext(ctx, retryPeer, h)
 						peerAddr = retryPeer
 					}
 				}
+				held := preReserve
+				if block != nil {
+					held = blockHeldBytes(block)
+				}
 				select {
-				case results <- fetchResult{height: h, block: block, peer: peerAddr, err: err}:
+				case results <- fetchResult{height: h, block: block, peer: peerAddr, err: err, reserved: preReserve, held: held}:
 				case <-ctx.Done():
+					budget.release(preReserve)
 					return
 				}
 			}
@@ -651,12 +770,20 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 			delete(pending, next)
 		}
 
+		budget.adjust(res.reserved, res.held)
 		if res.err != nil {
+			budget.release(res.held)
 			return applied, fmt.Errorf("sync: failed to fetch block %d: %w", next, res.err)
 		}
+		if err := VerifyBlockProducer(res.block, s.fetcher.TrustedPubKey(), s.fetcher.cfg.LookupProducerKey); err != nil {
+			budget.release(res.held)
+			return applied, fmt.Errorf("sync: apply authentication failed for block %d: %w", next, err)
+		}
 		if err := s.applyBlock(res.block); err != nil {
+			budget.release(res.held)
 			return applied, fmt.Errorf("sync: failed to apply block %d: %w", next, err)
 		}
+		budget.release(res.held)
 		s.pool.UpdatePeerHeight(res.peer, next)
 		applied++
 		select {

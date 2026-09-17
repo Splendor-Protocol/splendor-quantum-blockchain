@@ -53,36 +53,9 @@ func (s *TxIndexStore) Close() error {
 //   - The list of tx hashes for the block height
 func (s *TxIndexStore) IndexBlock(b *types.Block) error {
 	batch := new(leveldb.Batch)
-
-	hashes := make([][32]byte, 0, len(b.Transactions))
-
-	for i, tx := range b.Transactions {
-		hash, err := tx.FullHash()
-		if err != nil {
-			return fmt.Errorf("failed to hash tx %d in block %d: %w", i, b.Header.Height, err)
-		}
-
-		loc := TxLocation{
-			BlockHeight: b.Header.Height,
-			BlockHash:   b.Hash,
-			TxIndex:     uint32(i),
-		}
-		locData, err := json.Marshal(loc)
-		if err != nil {
-			return fmt.Errorf("failed to marshal tx location: %w", err)
-		}
-
-		batch.Put(txIndexKey(hash), locData)
-		hashes = append(hashes, hash)
+	if err := appendIndexBlock(batch, b); err != nil {
+		return err
 	}
-
-	// Store list of tx hashes for this block
-	hashData, err := json.Marshal(hashes)
-	if err != nil {
-		return fmt.Errorf("failed to marshal block tx list: %w", err)
-	}
-	batch.Put(blockTxsKey(b.Header.Height), hashData)
-
 	return persist.Write(s.db, batch)
 }
 
@@ -146,24 +119,62 @@ func (s *TxIndexStore) GetReceipt(txHash [32]byte) (*types.Receipt, error) {
 // StoreBlockReceipts stores all receipts for a block atomically.
 func (s *TxIndexStore) StoreBlockReceipts(receipts []*types.Receipt) error {
 	batch := new(leveldb.Batch)
+	if err := appendReceipts(batch, receipts); err != nil {
+		return err
+	}
+	return persist.Write(s.db, batch)
+}
+
+func appendReceipts(batch *leveldb.Batch, receipts []*types.Receipt) error {
 	for _, r := range receipts {
+		if r == nil {
+			continue
+		}
 		data, err := json.Marshal(r)
 		if err != nil {
 			return err
 		}
 		batch.Put(receiptKey(r.TxHash), data)
-
-		// Index logs by address for filtering
-		for _, log := range r.Logs {
-			logKey := logByAddrKey(log.Address, r.BlockHeight, log.TxIndex, log.LogIndex)
-			logData, err := json.Marshal(log)
+		for _, lg := range r.Logs {
+			logKey := logByAddrKey(lg.Address, r.BlockHeight, lg.TxIndex, lg.LogIndex)
+			logData, err := json.Marshal(lg)
 			if err != nil {
 				return err
 			}
 			batch.Put(logKey, logData)
 		}
 	}
-	return persist.Write(s.db, batch)
+	return nil
+}
+
+func appendIndexBlock(batch *leveldb.Batch, b *types.Block) error {
+	if b == nil {
+		return nil
+	}
+	hashes := make([][32]byte, 0, len(b.Transactions))
+	for i, tx := range b.Transactions {
+		hash, err := tx.FullHash()
+		if err != nil {
+			return fmt.Errorf("failed to hash tx %d in block %d: %w", i, b.Header.Height, err)
+		}
+		loc := TxLocation{
+			BlockHeight: b.Header.Height,
+			BlockHash:   b.Hash,
+			TxIndex:     uint32(i),
+		}
+		locData, err := json.Marshal(loc)
+		if err != nil {
+			return fmt.Errorf("failed to marshal tx location: %w", err)
+		}
+		batch.Put(txIndexKey(hash), locData)
+		hashes = append(hashes, hash)
+	}
+	hashData, err := json.Marshal(hashes)
+	if err != nil {
+		return fmt.Errorf("failed to marshal block tx list: %w", err)
+	}
+	batch.Put(blockTxsKey(b.Header.Height), hashData)
+	return nil
 }
 
 // IndexedHeight is the highest block whose txs/receipts were durably indexed.
@@ -201,32 +212,36 @@ func (s *TxIndexStore) RecordBlock(b *types.Block, receipts []*types.Receipt) er
 	if b == nil {
 		return nil
 	}
-	if err := s.IndexBlock(b); err != nil {
+	batch := new(leveldb.Batch)
+	if err := appendIndexBlock(batch, b); err != nil {
 		return err
 	}
-	if len(receipts) > 0 {
-		if err := s.StoreBlockReceipts(receipts); err != nil {
-			return err
-		}
+	if err := appendReceipts(batch, receipts); err != nil {
+		return err
 	}
-	return s.setIndexedHeight(b.Header.Height)
+	if cur, ok := s.IndexedHeight(); !ok || cur < b.Header.Height {
+		putIndexMeta(batch, keyIndexHeight, b.Header.Height)
+	}
+	return persist.Write(s.db, batch)
 }
 
-// Backfill indexes stored blocks in [from, to] and advances IndexedHeight.
-// getBlock may return (nil, nil) to skip a missing ancestor (snapshot gap).
-func (s *TxIndexStore) Backfill(from, to uint64, getBlock func(uint64) (*types.Block, error)) error {
-	if getBlock == nil || from > to {
+// Backfill indexes stored blocks in [from, to], restores receipts, and
+// advances IndexedHeight. load may return a nil block to skip a missing
+// ancestor (snapshot gap). Each height is one durable batch.
+func (s *TxIndexStore) Backfill(from, to uint64, load func(uint64) (*types.Block, []*types.Receipt, error)) error {
+	if load == nil || from > to {
 		return nil
 	}
 	for h := from; h <= to; h++ {
-		b, err := getBlock(h)
+		b, receipts, err := load(h)
 		if err != nil {
 			return fmt.Errorf("tx index backfill at %d: %w", h, err)
 		}
 		if b != nil {
-			if err := s.IndexBlock(b); err != nil {
-				return fmt.Errorf("tx index backfill index %d: %w", h, err)
+			if err := s.RecordBlock(b, receipts); err != nil {
+				return fmt.Errorf("tx index backfill record %d: %w", h, err)
 			}
+			continue
 		}
 		if err := s.setIndexedHeight(h); err != nil {
 			return err
