@@ -333,10 +333,10 @@ func TestReconcileRecognizesAlreadyCompletedImport(t *testing.T) {
 	}
 }
 
-// TestReconcileDiscardsNothingPersisted simulates a crash before the block
-// landed: marker and retained snapshot exist, but neither block nor state did.
-// Recovery must discard both and leave a clean slate for a retry.
-func TestReconcileDiscardsNothingPersisted(t *testing.T) {
+// TestReconcileCompletesNothingPersistedFromStaging: marker and verified
+// staging exist, but neither store does. Recovery must restore both from
+// staging rather than discard evidence that can finish the import.
+func TestReconcileCompletesNothingPersistedFromStaging(t *testing.T) {
 	exA, _, _, _, _, _ := threeBlockChain(t)
 	snap, err := exA.ExportStateSnapshot()
 	if err != nil {
@@ -362,17 +362,41 @@ func TestReconcileDiscardsNothingPersisted(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	if _, err := exB.GetBlockByHeight(snap.Height); err == nil {
-		t.Fatal("block appeared during recovery although nothing was persisted before the crash")
+	if got, err := exB.GetBlockByHeight(snap.Height); err != nil || got.Hash != snap.Block.Hash {
+		t.Fatalf("block after recovery = (%v, %v), want %x", got, err, snap.Block.Hash[:8])
 	}
-	if h, ok := sdbB.AppliedHeight(); ok {
-		t.Fatalf("state appeared during recovery: applied height = %d", h)
+	if h, ok := sdbB.AppliedHeight(); !ok || h != snap.Height {
+		t.Fatalf("applied height after recovery = (%d,%v), want %d", h, ok, snap.Height)
 	}
 	if got, err := exB.readSnapshotMarker(); err != nil || got != nil {
 		t.Fatalf("marker after recovery = (%v,%v), want (nil,nil)", got, err)
 	}
 	if _, err := os.Stat(exB.snapshotStagingPath()); !os.IsNotExist(err) {
 		t.Fatalf("retained snapshot still present after recovery: %v", err)
+	}
+}
+
+// TestReconcileDiscardsNothingPersisted is the no-staging counterpart: a stale
+// marker with empty stores and no verified snapshot must be dropped so retry
+// can start clean.
+func TestReconcileDiscardsNothingPersisted(t *testing.T) {
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+
+	marker := &snapshotImportMarker{
+		Height: 5, BlockHash: [32]byte{0x01}, StateRoot: [32]byte{0x02},
+		ChainID: "test-chain", Phase: phaseStarted,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := exB.ReconcileSnapshotImport(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got, err := exB.readSnapshotMarker(); err != nil || got != nil {
+		t.Fatalf("marker after recovery = (%v,%v), want (nil,nil)", got, err)
 	}
 }
 
@@ -534,6 +558,12 @@ func TestReconcileLegacyNoStagingIsIncomplete(t *testing.T) {
 	}
 	if !exB.HasIncompleteSnapshotImport() {
 		t.Fatal("HasIncompleteSnapshotImport = false")
+	}
+	if err := exB.ReconcileState(); err != nil {
+		t.Fatalf("ReconcileState during incomplete snapshot import = %v, want nil (must not replay the snapshot head)", err)
+	}
+	if h, ok := sdbB.AppliedHeight(); ok {
+		t.Fatalf("ReconcileState applied height %d; it must not replay a snapshot head", h)
 	}
 	if err := exB.ImportStateSnapshot(snap); err != nil {
 		t.Fatalf("resume import: %v", err)

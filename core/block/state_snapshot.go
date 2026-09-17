@@ -722,6 +722,16 @@ func (e *Executor) ReconcileSnapshotImport() error {
 		return e.deleteSnapshotEvidence()
 
 	case blockClass == snapAbsent && stateClass == snapAbsent:
+		if e.hasVerifiedSnapshotEvidence(marker) {
+			if err := e.restoreSnapshotBlockFromEvidence(marker); err != nil {
+				return err
+			}
+			if err := e.completeSnapshotStateFromEvidence(marker); err != nil {
+				return err
+			}
+			log.Info().Uint64("height", marker.Height).Msg("RECOVERY: both stores restored from verified staging")
+			return e.deleteSnapshotEvidence()
+		}
 		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: nothing persisted yet; discarding marker and retained snapshot")
 		return e.deleteSnapshotEvidence()
 
@@ -796,6 +806,18 @@ func (e *Executor) completeSnapshotStateFromEvidence(marker *snapshotImportMarke
 		return fmt.Errorf("recovery: complete state import at height %d: %w", marker.Height, err)
 	}
 	return nil
+}
+
+func (e *Executor) hasVerifiedSnapshotEvidence(marker *snapshotImportMarker) bool {
+	if d, err := e.openSnapshotDownload(); err == nil && d != nil && d.Head() != nil &&
+		d.Head().Hash == marker.BlockHash && d.VerifyRoot() == nil && d.StateRoot() == marker.StateRoot {
+		return true
+	}
+	staged, err := e.readSnapshotStaging()
+	if err != nil || staged == nil || staged.Block == nil || staged.Block.Hash != marker.BlockHash {
+		return false
+	}
+	return state.SnapshotRoot(staged.Leaves) == marker.StateRoot
 }
 
 func (e *Executor) restoreSnapshotBlockFromEvidence(marker *snapshotImportMarker) error {

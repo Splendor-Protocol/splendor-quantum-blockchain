@@ -567,6 +567,15 @@ func (e *Executor) ReconcileState() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// A snapshot import in progress stored the head without the ancestor
+	// chain. Replaying from height 1 would fail (those blocks were never
+	// stored) and would also be the wrong recovery: the applied state must
+	// come from the snapshot, not from re-executing an incomplete history.
+	if e.HasIncompleteSnapshotImport() {
+		log.Warn().Msg("reconcile: snapshot import still incomplete; skipping replay of the snapshot head")
+		return nil
+	}
+
 	chainH, err := e.LatestHeight()
 	if err != nil {
 		return fmt.Errorf("reconcile: read chain head: %w", err)
