@@ -297,6 +297,15 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 	if err := json.Unmarshal(raw, &block); err != nil {
 		return nil, fmt.Errorf("decode block %d: %w", height, err)
 	}
+	// The peer must serve the block we asked for. A real, validly-signed block
+	// at the WRONG height passes the structural and producer checks below, and
+	// the pipeline applies by requested height — so without this, a peer could
+	// hand back height 7 for a request of height 5 and the applier would run
+	// it into slot 5. Reject the mismatch here, before any of that.
+	if block.Header.Height != height {
+		return nil, fmt.Errorf("peer %s served height %d in place of requested height %d",
+			peerAddr, block.Header.Height, height)
+	}
 
 	// Validate structural integrity
 	if err := block.Validate(); err != nil {
