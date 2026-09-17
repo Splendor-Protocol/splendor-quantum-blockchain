@@ -27,7 +27,7 @@ func TestNoRouteRegistrarMutatesConsensusState(t *testing.T) {
 	registrars := map[string]func(*mux.Router, *state.StateDB){
 		"bridge": RegisterBridgeRoutes,
 		"state": func(r *mux.Router, sdb *state.StateDB) {
-			RegisterStateRoutes(r, sdb, nil)
+			RegisterStateRoutes(r, sdb, nil, nil)
 		},
 		"call": func(r *mux.Router, sdb *state.StateDB) {
 			RegisterCallRoutes(r, sdb, nil, nil, nil)

@@ -470,10 +470,11 @@ func (e *BFTEngine) activeLocked() []ValidatorInfo {
 
 // SubmitVote processes an incoming vote from a peer.
 func (e *BFTEngine) SubmitVote(vote *Vote) {
-	// Reject a nil vote before it can occupy a bounded vote-channel slot: the
-	// slot is one of a small number of liveness resources, and a nil vote can
-	// never contribute to a quorum.
-	if vote == nil {
+	// Membership and signature are checked BEFORE the vote occupies a
+	// voteCh slot. Junk from an anonymous sealed sender used to fill the
+	// 1000-deep queue and starve authenticated consensus traffic.
+	if err := e.admitVote(vote); err != nil {
+		log.Debug().Err(err).Msg("BFT: dropping unauthenticated vote")
 		return
 	}
 	select {
@@ -482,6 +483,20 @@ func (e *BFTEngine) SubmitVote(vote *Vote) {
 		log.Warn().Msg("BFT: vote channel full, dropping vote")
 	}
 }
+
+func (e *BFTEngine) admitVote(vote *Vote) error {
+	if vote == nil {
+		return fmt.Errorf("nil vote")
+	}
+	pubKey := e.findValidatorPubKey(vote.ValidatorAddr)
+	if pubKey == nil {
+		return fmt.Errorf("vote from unknown validator %s", vote.ValidatorAddr)
+	}
+	return vote.Verify(pubKey)
+}
+
+// voteQueueLen is the number of admitted votes waiting on voteCh.
+func (e *BFTEngine) voteQueueLen() int { return len(e.voteCh) }
 
 // ProposeBlock submits a block this node is proposing. The engine stamps it
 // with the round it is on, casts and attaches this node's vote, and only then
@@ -497,6 +512,15 @@ func (e *BFTEngine) ProposeBlock(b *types.Block) {
 // SubmitRoundChange queues an authenticated round-change from a peer.
 func (e *BFTEngine) SubmitRoundChange(rc *RoundChange) {
 	if rc == nil {
+		return
+	}
+	pubKey := e.findValidatorPubKey(rc.ValidatorAddr)
+	if pubKey == nil {
+		log.Debug().Str("from", rc.ValidatorAddr.String()).Msg("BFT: dropping unknown-validator round-change")
+		return
+	}
+	if err := rc.Verify(pubKey); err != nil {
+		log.Debug().Err(err).Msg("BFT: dropping unauthenticated round-change")
 		return
 	}
 	select {

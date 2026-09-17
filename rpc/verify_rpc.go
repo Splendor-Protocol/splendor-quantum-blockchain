@@ -137,7 +137,11 @@ func makeVerifyHandler(stateDB *state.StateDB) http.HandlerFunc {
 			return
 		}
 
-		c, cerr := compiler.Compile(req.Source)
+		c, cerr := compiler.CompileContext(r.Context(), req.Source)
+		if cerr != nil && r.Context().Err() != nil {
+			writeError(w, http.StatusRequestTimeout, "verification cancelled")
+			return
+		}
 		if cerr != nil {
 			// The submitter's own mistake, and the compiler's message is the
 			// only useful thing to say about it — passed through verbatim.

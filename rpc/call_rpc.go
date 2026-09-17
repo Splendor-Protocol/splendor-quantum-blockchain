@@ -14,7 +14,9 @@
 package rpc
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -123,7 +125,10 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 		if executor != nil {
 			height, _ = executor.LatestHeight()
 		}
-		res, cerr := vm.NewEngine(sim).CallWithContext(from, from, to, calldata, value, height, time.Now().Unix(), true)
+		res, cerr := vm.NewEngine(sim).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
+		if writeSimCancel(w, cerr) {
+			return
+		}
 		if res == nil {
 			msg := "call failed"
 			if cerr != nil {
@@ -260,7 +265,10 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 				if executor != nil {
 					height, _ = executor.LatestHeight()
 				}
-				res, _ := vm.NewEngine(stateDB.Simulate()).CallWithContext(from, from, to, calldata, value, height, time.Now().Unix(), true)
+				res, err := vm.NewEngine(stateDB.Simulate()).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
+				if writeSimCancel(w, err) {
+					return
+				}
 				if res != nil {
 					resp.Gas = res.GasUsed
 					if res.Reverted || res.Err != nil {
@@ -312,6 +320,21 @@ func decodeCallData(data, encoding string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unknown encoding %q (want \"hex\" or \"base64\")", encoding)
 	}
+}
+
+func writeSimCancel(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeError(w, http.StatusGatewayTimeout, "simulation deadline exceeded")
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
+		writeError(w, http.StatusRequestTimeout, "simulation cancelled")
+		return true
+	}
+	return false
 }
 
 // parseValue parses an optional non-negative decimal SPLD value (default 0).
