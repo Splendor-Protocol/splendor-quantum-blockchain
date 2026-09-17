@@ -25,6 +25,7 @@ import (
 	"fmt"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
 )
 
 // Anchor identifies the already-authenticated object a manifest describes:
@@ -70,11 +71,13 @@ type Descriptor struct {
 	SourceCount uint32
 }
 
-// descriptorID derives the binding identifier from every Descriptor field
+// DescriptorID derives the binding identifier from every Descriptor field
 // EXCEPT the codebook roots and signature (which do not exist yet at this
 // point) — this is the anchor symbol leaves bind to, and what the final
 // signed manifest also commits to, closing the loop without a circular hash.
-func (d Descriptor) descriptorID() [32]byte {
+// Exported so the transport layer can compute the same value a receiver needs
+// to verify per-symbol Merkle proofs (VerifySymbolProof) against a manifest.
+func (d Descriptor) DescriptorID() [32]byte {
 	buf := make([]byte, 0, 64+len(d.Anchor.Kind)+len(d.Codec))
 	buf = append(buf, []byte(d.Anchor.Kind)...)
 	buf = append(buf, 0x00) // separator: Kind is variable-length
@@ -104,6 +107,12 @@ func (d Descriptor) Validate(maxSourceCount uint32, maxSymbolSize uint32) error 
 	}
 	if d.Codec == "" {
 		return errors.New("objects: descriptor codec name is empty")
+	}
+	// A receiver refuses an unrecognised codec name outright rather than
+	// guessing how to decode payloads; this is enforced against the canonical
+	// codec registry so a manifest can never name a codec nobody can resolve.
+	if _, err := coding.Resolve(d.Codec); err != nil {
+		return fmt.Errorf("objects: %w", err)
 	}
 	if d.SourceCount == 0 {
 		return errors.New("objects: descriptor source count is zero")
