@@ -169,6 +169,8 @@ type txIndexProgress interface {
 	MarkSnapshotCoverage(height uint64) error
 	RecordBlock(b *types.Block, receipts []*types.Receipt) error
 	Backfill(from, to uint64, load func(uint64) (*types.Block, []*types.Receipt, error)) error
+	IndexComplete(b *types.Block) bool
+	ClearCoverageFrom() error
 }
 
 // NewExecutor creates a new block executor with default settings.
@@ -213,7 +215,18 @@ func (e *Executor) recordTxIndex(b *types.Block, receipts []*types.Receipt) {
 		if err := prog.RecordBlock(b, receipts); err != nil {
 			log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: record failed; retrying before reconcile")
 			if err := prog.RecordBlock(b, receipts); err != nil {
-				log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: retry failed; ReconcileTxIndex will backfill")
+				log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: retry failed; reconciling now")
+				if rerr := e.ReconcileTxIndex(); rerr != nil {
+					log.Warn().Err(rerr).Msg("tx index: live reconcile failed")
+				}
+				return
+			}
+		}
+		if applied, ok := e.state.AppliedHeight(); ok {
+			if ih, iok := prog.IndexedHeight(); !iok || ih < applied {
+				if rerr := e.ReconcileTxIndex(); rerr != nil {
+					log.Warn().Err(rerr).Msg("tx index: hole reconcile failed")
+				}
 			}
 		}
 		return
@@ -255,27 +268,20 @@ func (e *Executor) ReconcileTxIndex() error {
 		return nil
 	}
 	start := uint64(0)
-	if h, known := prog.IndexedHeight(); known {
-		start = h + 1
-	}
-	if cov, cok := prog.CoverageFrom(); cok && start < cov {
+	if cov, cok := prog.CoverageFrom(); cok {
 		start = cov
-	} else if !cok {
-		if first, ok := e.snapshotIndexGapStart(); ok {
-			if err := prog.MarkSnapshotCoverage(first); err != nil {
-				return err
-			}
-			if start < first {
-				start = first
-			}
+	} else if first, ok := e.snapshotIndexGapStart(); ok {
+		if err := prog.MarkSnapshotCoverage(first); err != nil {
+			return err
 		}
+		start = first
 	}
 	if head, err := e.LatestBlock(); err == nil && head != nil && head.Header.Height > 0 {
 		if _, berr := e.GetBlockByHeight(head.Header.Height - 1); errors.Is(berr, types.ErrBlockNotFound) {
 			if err := prog.MarkSnapshotCoverage(head.Header.Height); err != nil {
 				return err
 			}
-			if start < head.Header.Height {
+			if start == 0 || start > head.Header.Height {
 				start = head.Header.Height
 			}
 		}
@@ -1524,6 +1530,9 @@ func (e *Executor) assembleBlock(
 		return nil, nil, fmt.Errorf("block hash: %w", err)
 	}
 	b.Hash = hash
+	for _, r := range receipts {
+		r.BlockHash = hash
+	}
 
 	if err := b.SignBlock(validatorPrivKey); err != nil {
 		return nil, nil, fmt.Errorf("block sign: %w", err)
@@ -1545,11 +1554,6 @@ func (e *Executor) assembleBlock(
 		return nil, nil, fmt.Errorf("state commit: %w", err)
 	}
 
-	if e.txIndex != nil {
-		for _, r := range receipts {
-			r.BlockHash = hash
-		}
-	}
 	e.recordTxIndex(b, receipts)
 
 	log.Info().
