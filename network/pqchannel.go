@@ -30,6 +30,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -64,7 +65,19 @@ const (
 	// gcmTagSize is the GCM authentication tag length. A ciphertext shorter
 	// than this cannot possibly be valid.
 	gcmTagSize = 16
+
+	// kemPreviousGrace is how long the just-rotated-out KEM key still opens
+	// in-flight envelopes. After this the previous private key is dropped.
+	kemPreviousGrace = 2 * time.Minute
+
+	// maxEnvelopeReplayCache bounds remembered envelope IDs inside the
+	// timestamp window so a capture cannot be reused as a new message.
+	maxEnvelopeReplayCache = 4096
 )
+
+// ErrEnvelopeReplay means this exact envelope was already opened. A
+// retransmission is distinct from a new message (different nonce/ciphertext).
+var ErrEnvelopeReplay = errors.New("envelope already opened (retransmission)")
 
 // IdentityDocument is a node's signed, publicly fetchable key material.
 type IdentityDocument struct {
@@ -111,7 +124,12 @@ type NodeIdentity struct {
 	// previous keeps the just-rotated key alive briefly so messages already in
 	// flight against the old document still open. Without it, every rotation
 	// would drop a burst of legitimate blocks.
-	previous *mlkem.DecapsulationKey768
+	previous      *mlkem.DecapsulationKey768
+	previousUntil time.Time
+
+	replayMu      sync.Mutex
+	seenEnvelopes map[[32]byte]time.Time
+	seenOrder     [][32]byte
 }
 
 // NewNodeIdentity creates a node identity from an existing ML-DSA keypair,
@@ -129,16 +147,32 @@ func NewNodeIdentity(pub *qcrypto.PublicKey, priv *qcrypto.PrivateKey) (*NodeIde
 
 // rotate generates a fresh ML-KEM-768 keypair and retires the current one.
 func (n *NodeIdentity) rotate() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.rotateLocked()
+}
+
+func (n *NodeIdentity) rotateLocked() error {
 	dk, err := mlkem.GenerateKey768()
 	if err != nil {
 		return fmt.Errorf("generate ML-KEM-768 key: %w", err)
 	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	n.previous = n.kemPriv
+	if n.kemPriv != nil {
+		n.previousUntil = time.Now().Add(kemPreviousGrace)
+	} else {
+		n.previousUntil = time.Time{}
+	}
 	n.kemPriv = dk
 	n.notAfter = time.Now().Add(kemKeyLifetime)
 	return nil
+}
+
+func (n *NodeIdentity) retirePreviousLocked() {
+	if n.previous != nil && !n.previousUntil.IsZero() && time.Now().After(n.previousUntil) {
+		n.previous = nil
+		n.previousUntil = time.Time{}
+	}
 }
 
 // Document returns the current signed identity document, rotating the KEM key
@@ -152,29 +186,28 @@ func (n *NodeIdentity) SigningKeys() (*qcrypto.PublicKey, *qcrypto.PrivateKey) {
 }
 
 func (n *NodeIdentity) Document() (*IdentityDocument, error) {
-	n.mu.RLock()
-	expired := time.Now().After(n.notAfter)
-	n.mu.RUnlock()
-	if expired {
-		if err := n.rotate(); err != nil {
+	n.mu.Lock()
+	n.retirePreviousLocked()
+	if time.Now().After(n.notAfter) {
+		if err := n.rotateLocked(); err != nil {
+			n.mu.Unlock()
 			return nil, err
 		}
 	}
-
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
 	kemPub := n.kemPriv.EncapsulationKey().Bytes()
 	notAfter := n.notAfter.Unix()
+	sigPub := n.sigPub
+	sigPriv := n.sigPriv
+	n.mu.Unlock()
 
-	sig, err := qcrypto.Sign(n.sigPriv, identityDigest(kemPub, notAfter), qcrypto.CtxPeerHandshake)
+	sig, err := qcrypto.Sign(sigPriv, identityDigest(kemPub, notAfter), qcrypto.CtxPeerHandshake)
 	if err != nil {
 		return nil, fmt.Errorf("sign identity document: %w", err)
 	}
 	return &IdentityDocument{
 		SigAlg:     qcrypto.AlgMLDSA65,
 		KEMAlg:     "ML-KEM-768",
-		NodePubKey: n.sigPub.Bytes(),
+		NodePubKey: sigPub.Bytes(),
 		KEMPubKey:  kemPub,
 		NotAfter:   notAfter,
 		Signature:  sig,
@@ -284,9 +317,10 @@ func (n *NodeIdentity) Open(env *Envelope) ([]byte, error) {
 		return nil, fmt.Errorf("envelope timestamp outside the ±%s replay window", maxEnvelopeAge)
 	}
 
-	n.mu.RLock()
+	n.mu.Lock()
+	n.retirePreviousLocked()
 	current, previous := n.kemPriv, n.previous
-	n.mu.RUnlock()
+	n.mu.Unlock()
 
 	// Try the current key, then the just-rotated one, so a rotation mid-flight
 	// does not drop legitimate traffic.
@@ -295,10 +329,56 @@ func (n *NodeIdentity) Open(env *Envelope) ([]byte, error) {
 			continue
 		}
 		if pt, err := openWith(dk, env); err == nil {
+			if rerr := n.rememberEnvelope(env); rerr != nil {
+				return nil, rerr
+			}
 			return pt, nil
 		}
 	}
 	return nil, fmt.Errorf("envelope did not decrypt under any current node key")
+}
+
+func envelopeReplayID(env *Envelope) [32]byte {
+	buf := make([]byte, 0, len(env.KEMCiphertext)+len(env.Nonce)+8+len(env.Ciphertext))
+	buf = append(buf, env.KEMCiphertext...)
+	buf = append(buf, env.Nonce...)
+	ts := env.Timestamp
+	for i := 0; i < 8; i++ {
+		buf = append(buf, byte(ts>>(8*i)))
+	}
+	buf = append(buf, env.Ciphertext...)
+	return qcrypto.Hash32(buf)
+}
+
+func (n *NodeIdentity) rememberEnvelope(env *Envelope) error {
+	id := envelopeReplayID(env)
+	now := time.Now()
+	n.replayMu.Lock()
+	defer n.replayMu.Unlock()
+	if n.seenEnvelopes == nil {
+		n.seenEnvelopes = make(map[[32]byte]time.Time)
+	}
+	cutoff := now.Add(-maxEnvelopeAge)
+	kept := n.seenOrder[:0]
+	for _, old := range n.seenOrder {
+		if exp, ok := n.seenEnvelopes[old]; ok && exp.After(cutoff) {
+			kept = append(kept, old)
+			continue
+		}
+		delete(n.seenEnvelopes, old)
+	}
+	n.seenOrder = kept
+	if exp, ok := n.seenEnvelopes[id]; ok && exp.After(cutoff) {
+		return ErrEnvelopeReplay
+	}
+	n.seenEnvelopes[id] = now
+	n.seenOrder = append(n.seenOrder, id)
+	if len(n.seenOrder) > maxEnvelopeReplayCache {
+		old := n.seenOrder[0]
+		n.seenOrder = n.seenOrder[1:]
+		delete(n.seenEnvelopes, old)
+	}
+	return nil
 }
 
 // openWith decapsulates and authenticates an envelope under one ML-KEM key.

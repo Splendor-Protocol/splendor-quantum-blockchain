@@ -2,6 +2,8 @@ package network
 
 import (
 	"crypto/mlkem"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,30 +171,43 @@ func TestChannelRotationGrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("document: %v", err)
 	}
-	env1 := sealRoundTrip(t, node, doc1, "sealed to the first key")
+	sealRoundTrip(t, node, doc1, "sealed to the first key")
+	env1held, err := Seal(doc1, []byte("held for after rotate"))
+	if err != nil {
+		t.Fatalf("seal held: %v", err)
+	}
+	env1late, err := Seal(doc1, []byte("opened only after two rotations"))
+	if err != nil {
+		t.Fatalf("seal late: %v", err)
+	}
 
-	// One rotation: the first key becomes `previous` and still opens env1.
+	// One rotation: the first key becomes `previous` and still opens a
+	// message sealed to it that has not been opened yet.
 	if err := node.rotate(); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
-	if _, err := node.Open(env1); err != nil {
+	if _, err := node.Open(env1held); err != nil {
 		t.Fatalf("envelope sealed to key1 failed to open after one rotation: %v", err)
 	}
 	doc2, err := node.Document()
 	if err != nil {
 		t.Fatalf("document: %v", err)
 	}
-	env2 := sealRoundTrip(t, node, doc2, "sealed to the second key")
+	sealRoundTrip(t, node, doc2, "sealed to the second key")
+	env2held, err := Seal(doc2, []byte("held for second rotate"))
+	if err != nil {
+		t.Fatalf("seal env2: %v", err)
+	}
 
 	// A second rotation retires key1 for good.
 	if err := node.rotate(); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
-	if _, err := node.Open(env1); err == nil {
+	if _, err := node.Open(env1late); err == nil {
 		t.Fatal("envelope sealed to key1 still opened after two rotations")
 	}
 	// key2 is still within the grace window after exactly one subsequent rotation.
-	if _, err := node.Open(env2); err != nil {
+	if _, err := node.Open(env2held); err != nil {
 		t.Fatalf("envelope sealed to key2 failed to open after the rotation that retired key1: %v", err)
 	}
 }
@@ -265,4 +280,89 @@ func TestEnvelopeTimestampWindow(t *testing.T) {
 		t.Fatal("expected error for stale timestamp")
 	}
 	t.Logf("✓ Stale envelope rejected: %v", err)
+}
+
+func TestDocumentRotatesOnceUnderLock(t *testing.T) {
+	node := newTestNode(t)
+	node.mu.Lock()
+	node.notAfter = time.Now().Add(-time.Second)
+	node.mu.Unlock()
+
+	const n = 8
+	docs := make([]*IdentityDocument, n)
+	errc := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			doc, err := node.Document()
+			if err != nil {
+				errc <- err
+				return
+			}
+			docs[i] = doc
+		}(i)
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Fatalf("document: %v", err)
+	}
+	first := docs[0].KEMPubKey
+	for i, doc := range docs {
+		if doc == nil || !bytesEqualConstantTime(doc.KEMPubKey, first) {
+			t.Fatalf("concurrent expiry rotated more than once: doc %d diverged", i)
+		}
+	}
+}
+
+func TestPreviousKeyRetiresAfterGrace(t *testing.T) {
+	node := newTestNode(t)
+	doc1, err := node.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := Seal(doc1, []byte("grace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node.rotate(); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	node.previousUntil = time.Now().Add(-time.Second)
+	node.mu.Unlock()
+	if _, err := node.Open(env); err == nil {
+		t.Fatal("previous key still opened after its grace period")
+	}
+}
+
+func TestEnvelopeReplayIsDistinctFromNewMessage(t *testing.T) {
+	node := newTestNode(t)
+	doc, err := node.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := Seal(doc, []byte("once"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.Open(env); err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	if _, err := node.Open(env); !errors.Is(err, ErrEnvelopeReplay) {
+		t.Fatalf("retransmission = %v, want ErrEnvelopeReplay", err)
+	}
+	env2, err := Seal(doc, []byte("once"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt, err := node.Open(env2)
+	if err != nil {
+		t.Fatalf("new envelope with same plaintext: %v", err)
+	}
+	if string(pt) != "once" {
+		t.Fatalf("new message = %q", pt)
+	}
 }

@@ -389,3 +389,47 @@ func TestLoadWalletAcceptsKDFParamsExactlyAtTheFloor(t *testing.T) {
 		t.Fatalf("parameters at the documented floor were rejected by the floor check: %v", err)
 	}
 }
+
+
+func TestLoadWalletRefusesMalformedNonce(t *testing.T) {
+	path, pass, _ := writeTestWallet(t)
+	rewriteWallet(t, path, func(wf *WalletFile) { wf.Encrypted.Nonce = wf.Encrypted.Nonce[:8] })
+	if _, _, err := LoadWallet(path, pass); err == nil {
+		t.Fatal("short nonce was accepted; GCM would panic")
+	}
+}
+
+func TestLoadWalletRefusesTruncatedCiphertext(t *testing.T) {
+	path, pass, _ := writeTestWallet(t)
+	rewriteWallet(t, path, func(wf *WalletFile) { wf.Encrypted.Ciphertext = wf.Encrypted.Ciphertext[:8] })
+	if _, _, err := LoadWallet(path, pass); err == nil {
+		t.Fatal("truncated ciphertext was accepted")
+	}
+}
+
+func TestLoadWalletRefusesZeroOrExcessiveThreads(t *testing.T) {
+	for _, th := range []uint8{0, maxArgon2Threads + 1} {
+		path, pass, _ := writeTestWallet(t)
+		rewriteWallet(t, path, func(wf *WalletFile) { wf.Encrypted.Threads = th })
+		if _, _, err := LoadWallet(path, pass); err == nil {
+			t.Fatalf("threads=%d was accepted", th)
+		}
+	}
+}
+
+func TestLoadWalletRefusesExcessiveKDF(t *testing.T) {
+	path, pass, _ := writeTestWallet(t)
+	rewriteWallet(t, path, func(wf *WalletFile) { wf.Encrypted.Memory = maxArgon2Memory + 1 })
+	_, _, err := LoadWallet(path, pass)
+	requireErrContains(t, err, "excessive key-derivation parameters")
+}
+
+func TestSaveWalletIsAtomicAndLeavesNoTemp(t *testing.T) {
+	path, _, _ := writeTestWallet(t)
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatal("atomic save left a temp file")
+	}
+	if _, _, err := LoadWallet(path, []byte("correct horse battery staple")); err != nil {
+		t.Fatalf("atomic wallet did not load: %v", err)
+	}
+}
