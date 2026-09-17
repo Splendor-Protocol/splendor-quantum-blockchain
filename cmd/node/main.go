@@ -358,6 +358,16 @@ func runNode(cmd *cobra.Command, args []string) error {
 	}
 	defer executor.Close()
 
+	// Attach the tx index before snapshot reconcile so a completed import
+	// can mark coverage (R6). Receipts are not consensus-critical.
+	txIndex, txErr := state.NewTxIndexStore(flagDataDir + "/txindex")
+	if txErr != nil {
+		log.Warn().Err(txErr).Msg("TX index unavailable — receipts will not be stored")
+	} else {
+		executor.WithTxIndex(txIndex)
+		defer txIndex.Close()
+	}
+
 	// A prior --state-sync import that was interrupted mid-flight leaves a
 	// recovery marker on disk; resolve it before anything else touches the
 	// chain or state DB so the node never runs consensus on a half-imported
@@ -365,15 +375,6 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// is set: the retry path below can resume. See core/block/state_snapshot.go.
 	if err := reconcileSnapshotImportAtStartup(executor, flagStateSync); err != nil {
 		return err
-	}
-
-	// Optional: TX index + receipt store
-	txIndex, txErr := state.NewTxIndexStore(flagDataDir + "/txindex")
-	if txErr != nil {
-		log.Warn().Err(txErr).Msg("TX index unavailable — receipts will not be stored")
-	} else {
-		executor.WithTxIndex(txIndex)
-		defer txIndex.Close()
 	}
 
 	// ── Hook registry ──────────────────────────────────────────────────────

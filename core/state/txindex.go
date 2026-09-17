@@ -198,16 +198,30 @@ func (s *TxIndexStore) CoverageFrom() (uint64, bool) {
 }
 
 // MarkSnapshotCoverage records that historical receipts below height are
-// unavailable (state-sync join) and sets the indexed height to that point.
+// unavailable (state-sync join). IndexedHeight is set to that point only
+// when it is missing or behind — a remake must not clobber later progress.
 func (s *TxIndexStore) MarkSnapshotCoverage(height uint64) error {
 	batch := new(leveldb.Batch)
 	putIndexMeta(batch, keyCoverageFrom, height)
-	putIndexMeta(batch, keyIndexHeight, height)
+	cur, ok := s.IndexedHeight()
+	if !ok || cur < height {
+		putIndexMeta(batch, keyIndexHeight, height)
+	}
 	return persist.Write(s.db, batch)
 }
 
+// ClearCoverageFrom drops the coverage mark so reconcile can remake it.
+func (s *TxIndexStore) ClearCoverageFrom() error {
+	err := s.db.Delete([]byte(keyCoverageFrom), persist.SyncWrite)
+	if err == leveldb.ErrNotFound {
+		return nil
+	}
+	return err
+}
+
 // RecordBlock indexes txs, stores receipts, and advances IndexedHeight in one
-// durable batch. A lost write after state commit is repaired by Backfill.
+// durable batch when the new height is contiguous. A lost write after state
+// commit is repaired by Backfill / ReconcileTxIndex.
 func (s *TxIndexStore) RecordBlock(b *types.Block, receipts []*types.Receipt) error {
 	if b == nil {
 		return nil
@@ -219,15 +233,36 @@ func (s *TxIndexStore) RecordBlock(b *types.Block, receipts []*types.Receipt) er
 	if err := appendReceipts(batch, receipts); err != nil {
 		return err
 	}
-	if cur, ok := s.IndexedHeight(); !ok || cur < b.Header.Height {
+	if s.canAdvanceIndexedHeight(b.Header.Height) {
 		putIndexMeta(batch, keyIndexHeight, b.Header.Height)
 	}
 	return persist.Write(s.db, batch)
 }
 
+// IndexComplete reports whether this height has its tx list and receipts.
+func (s *TxIndexStore) IndexComplete(b *types.Block) bool {
+	if b == nil {
+		return false
+	}
+	_, err := s.db.Get(blockTxsKey(b.Header.Height), nil)
+	if err != nil {
+		return false
+	}
+	for _, tx := range b.Transactions {
+		hash, herr := tx.FullHash()
+		if herr != nil {
+			return false
+		}
+		if _, rerr := s.GetReceipt(hash); rerr != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // Backfill indexes stored blocks in [from, to], restores receipts, and
-// advances IndexedHeight. load may return a nil block to skip a missing
-// ancestor (snapshot gap). Each height is one durable batch.
+// advances IndexedHeight only contiguously. load may return a nil block to
+// skip a missing ancestor (snapshot gap).
 func (s *TxIndexStore) Backfill(from, to uint64, load func(uint64) (*types.Block, []*types.Receipt, error)) error {
 	if load == nil || from > to {
 		return nil
@@ -237,22 +272,36 @@ func (s *TxIndexStore) Backfill(from, to uint64, load func(uint64) (*types.Block
 		if err != nil {
 			return fmt.Errorf("tx index backfill at %d: %w", h, err)
 		}
-		if b != nil {
+		if b == nil {
+			continue
+		}
+		if !s.IndexComplete(b) {
 			if err := s.RecordBlock(b, receipts); err != nil {
 				return fmt.Errorf("tx index backfill record %d: %w", h, err)
 			}
-			continue
 		}
-		if err := s.setIndexedHeight(h); err != nil {
-			return err
+		if s.IndexComplete(b) {
+			if err := s.setIndexedHeight(h); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func (s *TxIndexStore) setIndexedHeight(h uint64) error {
+func (s *TxIndexStore) canAdvanceIndexedHeight(h uint64) bool {
 	cur, ok := s.IndexedHeight()
-	if ok && cur >= h {
+	if ok {
+		return h == cur+1
+	}
+	if cov, cok := s.CoverageFrom(); cok {
+		return h == cov
+	}
+	return h <= 1
+}
+
+func (s *TxIndexStore) setIndexedHeight(h uint64) error {
+	if !s.canAdvanceIndexedHeight(h) {
 		return nil
 	}
 	batch := new(leveldb.Batch)
