@@ -85,12 +85,20 @@ export interface Transport {
   verifyContract(address: string, source: string): Promise<VerifyContractResponse>;
   getAiStats(): Promise<Record<string, unknown>>;
   submitTransaction(signedTx: string | object): Promise<SubmitResult>;
-  x402Verify(requirements: object, payload: object): Promise<{ valid: boolean; reason?: string }>;
+  x402Verify(
+    requirements: object,
+    payload: object,
+  ): Promise<{ valid: boolean; reason?: string; nonce_used?: boolean }>;
   x402Settle(
     requirements: object,
     payload: object,
     settlementTx: object,
-  ): Promise<{ success?: boolean; tx_hash?: string; error?: string }>;
+  ): Promise<{
+    success?: boolean;
+    status?: 'submitted' | 'confirmed' | 'failed' | string;
+    tx_hash?: string;
+    error?: string;
+  }>;
   waitForConfirmation(opts: ConfirmationOpts): Promise<ConfirmationResult>;
   subscribe(
     events: WsEventType | WsEventType[],

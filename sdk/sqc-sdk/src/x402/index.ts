@@ -9,5 +9,7 @@ export type {
   PaymentPayload,
   X402ClientOptions,
   X402MiddlewareConfig,
+  X402SettleResult,
+  X402SettlementPolicy,
 } from './client.js';
 export type { X402PayOpts } from '../types.js';

@@ -3,6 +3,7 @@ package rpc
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -176,6 +177,13 @@ func TestX402SettleRequiresSignedTxAndNeverMutatesState(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("valid settlement: got %d (%s), want 202", rec.Code, rec.Body.String())
 	}
+	var queued x402.SettleResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &queued); err != nil {
+		t.Fatalf("decode settle result: %v", err)
+	}
+	if queued.Success || queued.Status != x402.SettleSubmitted {
+		t.Fatalf("queued settlement described as confirmed: %+v", queued)
+	}
 	if s.pool.Size() != 1 {
 		t.Fatalf("settlement tx not queued: mempool size %d", s.pool.Size())
 	}
@@ -275,6 +283,13 @@ func TestX402VerifyAcceptsNeverSeenPayer(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("never-seen payer settlement: got %d (%s), want 202", rec.Code, rec.Body.String())
 	}
+	var queued x402.SettleResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &queued); err != nil {
+		t.Fatalf("decode settle result: %v", err)
+	}
+	if queued.Success || queued.Status != x402.SettleSubmitted {
+		t.Fatalf("queued settlement described as confirmed: %+v", queued)
+	}
 	if s.pool.Size() != 1 {
 		t.Fatalf("settlement tx not queued: mempool size %d", s.pool.Size())
 	}
@@ -355,5 +370,128 @@ func TestRateLimiterBounds(t *testing.T) {
 	// A different client has its own bucket.
 	if !rl.Allow("5.6.7.8") {
 		t.Fatal("second client was limited by the first client's bucket")
+	}
+}
+
+func TestX402SettleReportsConfirmedWhenReceiptExists(t *testing.T) {
+	payerPub, payerPriv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	payee := qcrypto.Address{0x55}
+	payer := qcrypto.DeriveAddress(payerPub)
+	s := newTestServer(t, "secret")
+
+	acc := types.NewAccount(payer)
+	acc.AddBalance(big.NewInt(1_000_000))
+	acc.PublicKey = payerPub.Bytes()
+	s.stateDB.SetAccount(acc)
+	if _, err := s.stateDB.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var nonce [32]byte
+	nonce[0] = 0xCC
+	now := time.Now().Unix()
+	payload := &x402.PaymentPayload{
+		Version: 1, ChainID: types.ChainID,
+		From: payer, To: payee, Amount: big.NewInt(500),
+		ValidAfter: now - 30, ValidBefore: now + 300, Nonce: nonce,
+	}
+	if err := payload.Sign(payerPriv); err != nil {
+		t.Fatalf("sign payload: %v", err)
+	}
+	reqs := &x402.PaymentRequirements{
+		PayTo: payee, Amount: big.NewInt(500),
+		ValidAfter: now - 30, ValidBefore: now + 300,
+	}
+	settle := x402.NewSettlementTx(payload, big.NewInt(1000), 0)
+	if err := settle.Sign(payerPriv, true); err != nil {
+		t.Fatalf("sign settlement: %v", err)
+	}
+	hash, err := settle.FullHash()
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	s.lookupReceipt = func(h [32]byte) (*types.Receipt, error) {
+		if h != hash {
+			return nil, errors.New("unknown")
+		}
+		return &types.Receipt{Status: types.TxStatusSuccess, TxHash: hash}, nil
+	}
+
+	raw, _ := json.Marshal(map[string]any{"requirements": reqs, "payload": payload, "settlement_tx": settle})
+	rec := httptest.NewRecorder()
+	s.handleX402Settle(rec, httptest.NewRequest(http.MethodPost, "/x402/settle", bytes.NewReader(raw)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirmed settlement: got %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	var out x402.SettleResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Success || out.Status != x402.SettleConfirmed {
+		t.Fatalf("want confirmed success, got %+v", out)
+	}
+}
+
+func TestX402SettleIdempotentWhenNonceUsed(t *testing.T) {
+	payerPub, payerPriv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	payee := qcrypto.Address{0x55}
+	payer := qcrypto.DeriveAddress(payerPub)
+	s := newTestServer(t, "secret")
+
+	acc := types.NewAccount(payer)
+	acc.AddBalance(big.NewInt(1_000_000))
+	acc.PublicKey = payerPub.Bytes()
+	s.stateDB.SetAccount(acc)
+	if _, err := s.stateDB.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var nonce [32]byte
+	nonce[0] = 0xDD
+	now := time.Now().Unix()
+	payload := &x402.PaymentPayload{
+		Version: 1, ChainID: types.ChainID,
+		From: payer, To: payee, Amount: big.NewInt(500),
+		ValidAfter: now - 30, ValidBefore: now + 300, Nonce: nonce,
+	}
+	if err := payload.Sign(payerPriv); err != nil {
+		t.Fatalf("sign payload: %v", err)
+	}
+	if err := s.stateDB.MarkX402NonceUsed(x402.NonceKey(payer, nonce), 3); err != nil {
+		t.Fatalf("mark nonce: %v", err)
+	}
+	if _, err := s.stateDB.Commit(); err != nil {
+		t.Fatalf("commit nonce: %v", err)
+	}
+
+	reqs := &x402.PaymentRequirements{
+		PayTo: payee, Amount: big.NewInt(500),
+		ValidAfter: now - 30, ValidBefore: now + 300,
+	}
+	settle := x402.NewSettlementTx(payload, big.NewInt(1000), 0)
+	if err := settle.Sign(payerPriv, true); err != nil {
+		t.Fatalf("sign settlement: %v", err)
+	}
+	raw, _ := json.Marshal(map[string]any{"requirements": reqs, "payload": payload, "settlement_tx": settle})
+	rec := httptest.NewRecorder()
+	s.handleX402Settle(rec, httptest.NewRequest(http.MethodPost, "/x402/settle", bytes.NewReader(raw)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("consumed payment: got %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	var out x402.SettleResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Success || out.Status != x402.SettleConfirmed {
+		t.Fatalf("want idempotent confirmed, got %+v", out)
+	}
+	if s.pool.Size() != 0 {
+		t.Fatalf("already-consumed payment was re-queued: pool %d", s.pool.Size())
 	}
 }

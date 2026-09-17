@@ -1143,6 +1143,12 @@ func runNode(cmd *cobra.Command, args []string) error {
 			SimBurst:          flagSimBurst,
 			SimMaxInFlight:    flagSimMaxInFlight,
 			SimTimeout:        flagSimTimeout,
+			LookupReceipt: func(hash [32]byte) (*types.Receipt, error) {
+				if txIndex == nil {
+					return nil, nil
+				}
+				return txIndex.GetReceipt(hash)
+			},
 		},
 		stateDB, executor, pool, nil, scheduler,
 	)

@@ -1,9 +1,11 @@
 package vm
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -12,16 +14,43 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/x402"
 )
 
 const MaxVerifyOperators = 16
 
+var errVerifyNotFound = errors.New("not found")
+
+const (
+	verifyAttestPrefix = "sqvl:attest:v1:"
+	verifyAttestRole   = "attestor"
+)
+
+type verifyOperator struct {
+	Address   qcrypto.Address `json:"address"`
+	SLHPubKey []byte          `json:"slh_pubkey"`
+}
+
 type verifyInstance struct {
-	Address   qcrypto.Address   `json:"address"`
-	Owner     qcrypto.Address   `json:"owner"`
-	Threshold int               `json:"threshold"`
-	Operators []qcrypto.Address `json:"operators"`
-	Paused    bool              `json:"paused"`
+	Address            qcrypto.Address   `json:"address"`
+	Owner              qcrypto.Address   `json:"owner"`
+	Threshold          int               `json:"threshold"`
+	Operators          []qcrypto.Address `json:"operators"`
+	OperatorIdentities []verifyOperator  `json:"operator_identities,omitempty"`
+	Paused             bool              `json:"paused"`
+}
+
+func verifyIdentityActive(ctx ModuleContext) bool {
+	return ctx.Forks.Active(forks.VerifyIdentityV1, ctx.Height)
+}
+
+func verifyAttestDigest(inst qcrypto.Address, instructionDigest [32]byte) [32]byte {
+	msg := make([]byte, 0, len(verifyAttestPrefix)+len(inst)+len(verifyAttestRole)+len(instructionDigest))
+	msg = append(msg, verifyAttestPrefix...)
+	msg = append(msg, inst[:]...)
+	msg = append(msg, verifyAttestRole...)
+	msg = append(msg, instructionDigest[:]...)
+	return qcrypto.Hash32(msg)
 }
 
 type verifyRecord struct {
@@ -79,9 +108,15 @@ func dispatchVerify(stateDB *state.StateDB, ctx ModuleContext, action string, ra
 	}
 }
 
+type verifyOperatorWire struct {
+	Operator string `json:"operator"`
+	SLHPub   string `json:"slh_pubkey"`
+}
+
 type verifyDeployParams struct {
-	Threshold int      `json:"threshold"`
-	Operators []string `json:"operators"`
+	Threshold          int                  `json:"threshold"`
+	Operators          []string             `json:"operators"`
+	OperatorIdentities []verifyOperatorWire `json:"operator_identities,omitempty"`
 }
 
 func verifyDeploy(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage, receipt *types.Receipt) error {
@@ -100,6 +135,23 @@ func verifyDeploy(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage
 		}
 		ops = append(ops, a)
 	}
+	identities, err := parseOperatorIdentities(p.OperatorIdentities)
+	if err != nil {
+		return fmt.Errorf("verify deploy: %w", err)
+	}
+	if verifyIdentityActive(ctx) {
+		if len(identities) == 0 && len(ops) > 0 {
+			return fmt.Errorf("verify deploy: operator_identities with slh_pubkey required under %s", forks.VerifyIdentityV1)
+		}
+		if len(ops) == 0 && len(identities) > 0 {
+			for _, id := range identities {
+				ops = append(ops, id.Address)
+			}
+		}
+		if err := identitiesCoverOperators(identities, ops); err != nil {
+			return fmt.Errorf("verify deploy: %w", err)
+		}
+	}
 	if len(ops) > MaxVerifyOperators {
 		return fmt.Errorf("verify deploy: too many operators")
 	}
@@ -110,7 +162,13 @@ func verifyDeploy(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage
 		p.Threshold = 1
 	}
 	addr := verifyDeployAddr(ctx.Caller, ctx.Nonce, ctx.Height)
-	inst := verifyInstance{Address: addr, Owner: ctx.Caller, Threshold: p.Threshold, Operators: ops}
+	inst := verifyInstance{
+		Address:            addr,
+		Owner:              ctx.Caller,
+		Threshold:          p.Threshold,
+		Operators:          ops,
+		OperatorIdentities: identities,
+	}
 	if err := putJSON(stateDB, addr, verifyInstanceSlot(addr), inst); err != nil {
 		return err
 	}
@@ -167,7 +225,10 @@ func verifyRegister(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessa
 	if err != nil {
 		return fmt.Errorf("verify register: %w", err)
 	}
-	existing := loadRecord(stateDB, instAddr, ins.InstructionID)
+	existing, err := loadRecord(stateDB, instAddr, ins.InstructionID)
+	if err != nil {
+		return fmt.Errorf("verify register: %w", err)
+	}
 	if existing != nil {
 		return fmt.Errorf("verify register: instruction already registered")
 	}
@@ -222,9 +283,6 @@ func verifyAttest(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage
 	if err != nil {
 		return err
 	}
-	if !qcrypto.Verify(pub, rec.Digest[:], qcrypto.CtxVerify, sigM) {
-		return fmt.Errorf("verify attest: invalid ML-DSA signature")
-	}
 	slhRaw, err := b64orHex(p.Attestation.SLHPub)
 	if err != nil {
 		return err
@@ -237,7 +295,21 @@ func verifyAttest(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage
 	if err != nil {
 		return err
 	}
-	if !qcrypto.VerifySLH(slhPub, rec.Digest[:], qcrypto.CtxVerify, sigS) {
+	msg := rec.Digest
+	if verifyIdentityActive(ctx) {
+		bound, ok := operatorSLH(inst, addr)
+		if !ok {
+			return fmt.Errorf("verify attest: operator has no registered SLH-DSA key")
+		}
+		if !bytes.Equal(bound, slhRaw) {
+			return fmt.Errorf("verify attest: SLH-DSA key is not bound to this operator")
+		}
+		msg = verifyAttestDigest(instAddr, rec.Digest)
+	}
+	if !qcrypto.Verify(pub, msg[:], qcrypto.CtxVerify, sigM) {
+		return fmt.Errorf("verify attest: invalid ML-DSA signature")
+	}
+	if !qcrypto.VerifySLH(slhPub, msg[:], qcrypto.CtxVerify, sigS) {
 		return fmt.Errorf("verify attest: invalid SLH-DSA signature")
 	}
 	rec.Attestors = append(rec.Attestors, addr)
@@ -365,16 +437,44 @@ func applyVerifySettlement(stateDB *state.StateDB, ctx ModuleContext, ins *types
 		tok := NewQRC20Token(stateDB, token)
 		return tok.Transfer(from, to, amt)
 	case "x402":
-		return nil
+		// Pre-verify_identity_v1 this was a silent success that marked the
+		// instruction spent without moving funds or checking a payment.
+		// Under the fork it is proof-only: the named X402 nonce must already
+		// have been consumed by a TxX402. It does not transfer again.
+		if !verifyIdentityActive(ctx) {
+			return nil
+		}
+		return applyX402SettlementLinkage(stateDB, ins)
 	default:
 		return fmt.Errorf("verify settle: unknown action %q", action)
 	}
+}
+
+func applyX402SettlementLinkage(stateDB *state.StateDB, ins *types.VerifyInstruction) error {
+	from, err := qcrypto.AddressFromString(ins.From)
+	if err != nil {
+		return fmt.Errorf("verify settle: x402 from: %w", err)
+	}
+	if len(ins.Payload) != 32 {
+		return fmt.Errorf("verify settle: x402 payload must be the 32-byte payment nonce")
+	}
+	var nonce [32]byte
+	copy(nonce[:], ins.Payload)
+	used, err := stateDB.IsX402NonceUsed(x402.NonceKey(from, nonce))
+	if err != nil {
+		return fmt.Errorf("verify settle: x402 nonce: %w", err)
+	}
+	if !used {
+		return fmt.Errorf("verify settle: x402 payment not settled (nonce unused)")
+	}
+	return nil
 }
 
 func verifySetOperator(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage) error {
 	var p struct {
 		Verify   string `json:"verify"`
 		Operator string `json:"operator"`
+		SLHPub   string `json:"slh_pubkey"`
 		Active   bool   `json:"active"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -396,11 +496,32 @@ func verifySetOperator(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMe
 		return err
 	}
 	if p.Active {
+		var slh []byte
+		if verifyIdentityActive(ctx) {
+			if p.SLHPub == "" {
+				return fmt.Errorf("verify set_operator: slh_pubkey required under %s", forks.VerifyIdentityV1)
+			}
+			slh, err = b64orHex(p.SLHPub)
+			if err != nil {
+				return fmt.Errorf("verify set_operator: slh_pubkey: %w", err)
+			}
+			if _, err := qcrypto.SLHPublicKeyFromBytes(slh); err != nil {
+				return fmt.Errorf("verify set_operator: slh_pubkey: %w", err)
+			}
+		} else if p.SLHPub != "" {
+			slh, err = b64orHex(p.SLHPub)
+			if err != nil {
+				return fmt.Errorf("verify set_operator: slh_pubkey: %w", err)
+			}
+		}
 		if !isOperator(inst, op) {
 			if len(inst.Operators) >= MaxVerifyOperators {
 				return fmt.Errorf("verify: operator cap")
 			}
 			inst.Operators = append(inst.Operators, op)
+		}
+		if len(slh) > 0 {
+			upsertOperatorIdentity(inst, op, slh)
 		}
 	} else {
 		next := inst.Operators[:0]
@@ -410,6 +531,13 @@ func verifySetOperator(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMe
 			}
 		}
 		inst.Operators = next
+		ident := inst.OperatorIdentities[:0]
+		for _, id := range inst.OperatorIdentities {
+			if id.Address != op {
+				ident = append(ident, id)
+			}
+		}
+		inst.OperatorIdentities = ident
 	}
 	return putJSON(stateDB, addr, verifyInstanceSlot(addr), inst)
 }
@@ -476,11 +604,11 @@ func dispatchVerifyRead(stateDB *state.StateDB, action string, raw json.RawMessa
 		if err != nil {
 			return nil, err
 		}
-		inst, _ := loadInstance(stateDB, instAddr)
-		threshold := 1
-		if inst != nil {
-			threshold = inst.Threshold
+		inst, err := loadInstance(stateDB, instAddr)
+		if err != nil {
+			return nil, err
 		}
+		threshold := inst.Threshold
 		return map[string]interface{}{
 			"instruction":   rec.Instruction,
 			"digest":        hex.EncodeToString(rec.Digest[:]),
@@ -508,15 +636,18 @@ func dispatchVerifyRead(stateDB *state.StateDB, action string, raw json.RawMessa
 	}
 }
 
-func loadRecord(stateDB *state.StateDB, inst qcrypto.Address, id [32]byte) *verifyRecord {
+func loadRecord(stateDB *state.StateDB, inst qcrypto.Address, id [32]byte) (*verifyRecord, error) {
 	var rec verifyRecord
 	if err := getJSON(stateDB, inst, verifyRecordSlot(inst, id), &rec); err != nil {
-		return nil
+		if errors.Is(err, errVerifyNotFound) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	if rec.Digest == ([32]byte{}) {
-		return nil
+		return nil, nil
 	}
-	return &rec
+	return &rec, nil
 }
 
 func loadInstRec(stateDB *state.StateDB, verifyStr, idHex string) (qcrypto.Address, *verifyRecord, error) {
@@ -530,7 +661,10 @@ func loadInstRec(stateDB *state.StateDB, verifyStr, idHex string) (qcrypto.Addre
 	}
 	var id [32]byte
 	copy(id[:], raw)
-	rec := loadRecord(stateDB, instAddr, id)
+	rec, err := loadRecord(stateDB, instAddr, id)
+	if err != nil {
+		return instAddr, nil, err
+	}
 	if rec == nil {
 		return instAddr, nil, fmt.Errorf("verify: instruction not found")
 	}
@@ -559,10 +693,72 @@ func putJSON(stateDB *state.StateDB, contract qcrypto.Address, slot [32]byte, v 
 
 func getJSON(stateDB *state.StateDB, contract qcrypto.Address, slot [32]byte, v interface{}) error {
 	b, err := stateDB.GetStorageValue(contract, slot)
-	if err != nil || len(b) == 0 {
-		return fmt.Errorf("not found")
+	if err != nil {
+		return err
 	}
-	return json.Unmarshal(b, v)
+	if len(b) == 0 {
+		return errVerifyNotFound
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return fmt.Errorf("corrupt record: %w", err)
+	}
+	return nil
+}
+
+func parseOperatorIdentities(wires []verifyOperatorWire) ([]verifyOperator, error) {
+	out := make([]verifyOperator, 0, len(wires))
+	seen := make(map[qcrypto.Address]struct{}, len(wires))
+	for i, w := range wires {
+		a, err := qcrypto.AddressFromString(w.Operator)
+		if err != nil {
+			return nil, fmt.Errorf("operator_identities[%d]: operator: %w", i, err)
+		}
+		if _, dup := seen[a]; dup {
+			return nil, fmt.Errorf("operator_identities[%d]: duplicate operator", i)
+		}
+		slh, err := b64orHex(w.SLHPub)
+		if err != nil {
+			return nil, fmt.Errorf("operator_identities[%d]: slh_pubkey: %w", i, err)
+		}
+		if _, err := qcrypto.SLHPublicKeyFromBytes(slh); err != nil {
+			return nil, fmt.Errorf("operator_identities[%d]: slh_pubkey: %w", i, err)
+		}
+		seen[a] = struct{}{}
+		out = append(out, verifyOperator{Address: a, SLHPubKey: slh})
+	}
+	return out, nil
+}
+
+func identitiesCoverOperators(identities []verifyOperator, ops []qcrypto.Address) error {
+	have := make(map[qcrypto.Address]struct{}, len(identities))
+	for _, id := range identities {
+		have[id.Address] = struct{}{}
+	}
+	for _, op := range ops {
+		if _, ok := have[op]; !ok {
+			return fmt.Errorf("operator %s has no registered SLH-DSA key", op)
+		}
+	}
+	return nil
+}
+
+func upsertOperatorIdentity(inst *verifyInstance, addr qcrypto.Address, slh []byte) {
+	for i, id := range inst.OperatorIdentities {
+		if id.Address == addr {
+			inst.OperatorIdentities[i].SLHPubKey = slh
+			return
+		}
+	}
+	inst.OperatorIdentities = append(inst.OperatorIdentities, verifyOperator{Address: addr, SLHPubKey: slh})
+}
+
+func operatorSLH(inst *verifyInstance, addr qcrypto.Address) ([]byte, bool) {
+	for _, id := range inst.OperatorIdentities {
+		if id.Address == addr && len(id.SLHPubKey) > 0 {
+			return id.SLHPubKey, true
+		}
+	}
+	return nil, false
 }
 
 func b64orHex(s string) ([]byte, error) {

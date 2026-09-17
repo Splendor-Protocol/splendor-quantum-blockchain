@@ -161,6 +161,21 @@ func TestVerifyRegisteredKeyWinsOverSuppliedKey(t *testing.T) {
 	}
 }
 
+func TestVerifyMarksNonceUsed(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	proc, payload, reqs := newVerifyFixture(t, pub, priv, true)
+	if err := proc.state.MarkX402NonceUsed(NonceKey(payload.From, payload.Nonce), 4); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	res := proc.Verify(reqs, payload)
+	if res.Valid || !res.NonceUsed {
+		t.Fatalf("used nonce: valid=%v nonce_used=%v reason=%q", res.Valid, res.NonceUsed, res.Reason)
+	}
+}
+
 // PublicKey lives outside the signed body: attaching or dropping it must not
 // change the hash, and the wire field is omitted when empty so payloads from
 // older clients are byte-identical.
