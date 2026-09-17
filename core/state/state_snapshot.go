@@ -173,6 +173,17 @@ func (s *StateDB) ExportSnapshotChunk(afterKey []byte, maxLeaves int) (height ui
 		return 0, nil, nil, false, fmt.Errorf("state: snapshot height marker is corrupt: %w", err)
 	}
 
+	leaves, nextKey, done, err = pageSnapshot(snap, afterKey, maxLeaves)
+	return height, leaves, nextKey, done, err
+}
+
+// pageSnapshot walks one LevelDB snapshot's leaves whose keys sort strictly
+// after afterKey, returning up to maxLeaves leaves (enforcing the lead-count
+// and raw-byte budgets) plus the cursor to resume from and whether the walk is
+// done. Shared by the stateless ExportSnapshotChunk and a pinned
+// SnapshotSession, so a multi-page transfer can serve every page from the SAME
+// immutable snapshot.
+func pageSnapshot(snap *leveldb.Snapshot, afterKey []byte, maxLeaves int) (leaves []types.StateLeaf, nextKey []byte, done bool, err error) {
 	var iterRange *util.Range
 	if len(afterKey) > 0 {
 		iterRange = &util.Range{Start: append(append([]byte(nil), afterKey...), 0x00)}
@@ -196,17 +207,14 @@ func (s *StateDB) ExportSnapshotChunk(afterKey []byte, maxLeaves int) (height ui
 		// is no fragmentation protocol, so refuse explicitly rather than hand
 		// back a page that exceeds the cap the caller was promised.
 		if len(leaves) == 0 && leafBytes > MaxChunkBytes {
-			return 0, nil, nil, false, fmt.Errorf(
+			return nil, nil, false, fmt.Errorf(
 				"state: snapshot leaf of %d bytes exceeds the %d-byte chunk budget; leaf fragmentation is not implemented",
 				leafBytes, MaxChunkBytes)
 		}
-		// The byte budget is a hard maximum, not a stopping threshold: once the
-		// page has content, a leaf that would push it over is NOT copied into
-		// this page. The resume cursor is the last key actually included, so the
-		// over-budget leaf is fetched again on the next page with no loss.
+		// The byte budget is a hard maximum, not a stopping threshold.
 		if len(leaves) > 0 && size+leafBytes > MaxChunkBytes {
 			nextKey = append([]byte(nil), lastKey...)
-			return height, leaves, nextKey, false, nil
+			return leaves, nextKey, false, nil
 		}
 
 		leaves = append(leaves, types.StateLeaf{
@@ -217,22 +225,73 @@ func (s *StateDB) ExportSnapshotChunk(afterKey []byte, maxLeaves int) (height ui
 		lastKey = append([]byte(nil), k...)
 
 		if len(leaves) >= maxLeaves {
-			// Peek: is there anything left after this key?
 			nextKey = append([]byte(nil), k...)
 			if !iter.Next() {
 				if err := iter.Error(); err != nil {
-					return 0, nil, nil, false, fmt.Errorf("state: snapshot chunk scan: %w", err)
+					return nil, nil, false, fmt.Errorf("state: snapshot chunk scan: %w", err)
 				}
-				return height, leaves, nil, true, nil
+				return leaves, nil, true, nil
 			}
-			return height, leaves, nextKey, false, nil
+			return leaves, nextKey, false, nil
 		}
 	}
 	if err := iter.Error(); err != nil {
-		return 0, nil, nil, false, fmt.Errorf("state: snapshot chunk scan: %w", err)
+		return nil, nil, false, fmt.Errorf("state: snapshot chunk scan: %w", err)
 	}
-	return height, leaves, nil, true, nil
+	return leaves, nil, true, nil
 }
+
+// SnapshotSession pins one LevelDB snapshot so a chunked transfer serves every
+// page from the SAME height even while a validator commits new blocks in
+// between. The caller must Release it when done.
+type SnapshotSession struct {
+	snapshot *leveldb.Snapshot
+	height   uint64
+}
+
+// BeginSnapshotChunkSession pins a snapshot and reads the height it reflects.
+func (s *StateDB) BeginSnapshotChunkSession() (*SnapshotSession, error) {
+	if s.sandbox {
+		return nil, ErrSandboxCommit
+	}
+	snap, err := s.db.GetSnapshot()
+	if err != nil {
+		return nil, fmt.Errorf("state: snapshot: %w", err)
+	}
+	raw, err := snap.Get([]byte(keyStateHeight), nil)
+	if errors.Is(err, leveldb.ErrNotFound) {
+		snap.Release()
+		return nil, ErrSnapshotUnavailable
+	}
+	if err != nil {
+		snap.Release()
+		return nil, fmt.Errorf("state: snapshot height: %w", err)
+	}
+	var height uint64
+	if err := json.Unmarshal(raw, &height); err != nil {
+		snap.Release()
+		return nil, fmt.Errorf("state: snapshot height marker is corrupt: %w", err)
+	}
+	return &SnapshotSession{snapshot: snap, height: height}, nil
+}
+
+// Height returns the height the pinned snapshot reflects.
+func (ss *SnapshotSession) Height() uint64 { return ss.height }
+
+// Page returns up to maxLeaves leaves whose keys sort strictly after afterKey,
+// from the pinned snapshot — every call in a transfer sees the same state.
+func (ss *SnapshotSession) Page(afterKey []byte, maxLeaves int) ([]types.StateLeaf, []byte, bool, error) {
+	if maxLeaves <= 0 {
+		return nil, nil, false, errors.New("state: chunk size must be positive")
+	}
+	if maxLeaves > MaxChunkLeaves {
+		maxLeaves = MaxChunkLeaves
+	}
+	return pageSnapshot(ss.snapshot, afterKey, maxLeaves)
+}
+
+// Release releases the pinned LevelDB snapshot.
+func (ss *SnapshotSession) Release() { ss.snapshot.Release() }
 
 // IsFresh reports whether the state holds no committed leaves, no applied-
 // height marker and no pending writes — the only state ImportSnapshot may

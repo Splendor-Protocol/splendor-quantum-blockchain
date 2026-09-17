@@ -296,3 +296,72 @@ func TestExportSnapshotChunkRejectsOversizedSingleLeaf(t *testing.T) {
 		t.Fatal("a single leaf exceeding the byte budget was served without error")
 	}
 }
+
+// A pinned session serves every page from the SAME LevelDB snapshot: a commit
+// that lands mid-transfer changes a fresh export's height, but the session
+// keeps returning the state it was begun at, so a multi-page transfer never
+// spans two different states.
+func TestSnapshotSessionIsImmutableAcrossCommits(t *testing.T) {
+	sdb, _ := openState(t)
+	for i := 0; i < 5; i++ {
+		acc := types.NewAccount(addr(byte(i)))
+		acc.AddBalance(big.NewInt(1))
+		sdb.SetAccount(acc)
+	}
+	if _, err := sdb.CommitWithHeight(1); err != nil {
+		t.Fatal(err)
+	}
+	root1, err := sdb.StateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := sdb.BeginSnapshotChunkSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Release()
+	if sess.Height() != 1 {
+		t.Fatalf("session height = %d, want 1", sess.Height())
+	}
+
+	// The chain advances while the session is pinned.
+	acc := types.NewAccount(addr(0xAA))
+	acc.AddBalance(big.NewInt(9))
+	sdb.SetAccount(acc)
+	if _, err := sdb.CommitWithHeight(2); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh export now sees height 2; the pinned session still sees 1.
+	if h, _, err := sdb.ExportSnapshot(64 << 20); err != nil || h != 2 {
+		t.Fatalf("fresh export height = (%d, %v), want 2", h, err)
+	}
+
+	var (
+		all   []types.StateLeaf
+		after []byte
+	)
+	for i := 0; i < 100; i++ {
+		leaves, next, done, err := sess.Page(after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, leaves...)
+		if done {
+			break
+		}
+		if len(next) == 0 {
+			t.Fatalf("page %d: not done but no cursor", i)
+		}
+		after = next
+	}
+
+	// The pinned session must still hash to the height-1 root, and only that.
+	if got := SnapshotRoot(all); got != root1 {
+		t.Fatalf("pinned session leaves hash to %x, want the height-1 root %x", got[:8], root1[:8])
+	}
+	if len(all) != 5 {
+		t.Fatalf("pinned session yielded %d leaves, want the 5 committed at height 1", len(all))
+	}
+}
