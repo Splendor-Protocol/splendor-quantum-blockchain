@@ -58,8 +58,41 @@ func TestRunTrialsAllFailedReportsZeroAverages(t *testing.T) {
 		t.Skip("test relies on high loss causing failures; got lucky with this seed, not a real failure")
 	}
 	if res.failed == 5 {
-		if res.avgSymbolsUsed != 0 || res.avgBytesMoved != 0 || res.avgDecodeTime != 0 {
+		if res.avgSymbolsUsed != 0 || res.avgBytesTotal != 0 || res.avgBytesUseful != 0 || res.avgDecodeTime != 0 {
 			t.Fatalf("all trials failed but averages are nonzero: %+v", res)
 		}
+	}
+}
+
+// Under loss, the transmitted-byte total must exceed the useful-byte count:
+// dropped symbols and dependent symbols still cost the sender bandwidth but
+// never contribute to reconstruction. This is the accounting split the
+// benchmark reports as avg_bytes_total vs avg_bytes_useful.
+func TestRunTrialsBytesTotalExceedsUsefulUnderLoss(t *testing.T) {
+	for _, c := range []coding.Codec{coding.NewErasureCodec(), coding.NewRLNCCodec()} {
+		res := runTrials(c, 16, 64, 30, 50, 50, 9)
+		if res.recovered == 0 {
+			t.Skipf("%s: no trials recovered at 30%% loss; cannot compare byte totals", c.Name())
+		}
+		if res.avgBytesTotal <= res.avgBytesUseful {
+			t.Fatalf("%s: avg total bytes %.0f not greater than useful bytes %.0f under loss",
+				c.Name(), res.avgBytesTotal, res.avgBytesUseful)
+		}
+	}
+}
+
+// The content-equality helper must distinguish a correct reconstruction from
+// one that returned the wrong bytes — the difference between "recovered" and
+// "actually correct".
+func TestEqualBytes(t *testing.T) {
+	src := [][]byte{[]byte("abc"), []byte("def")}
+	if !equalBytes(src, [][]byte{[]byte("abc"), []byte("def")}) {
+		t.Fatal("identical slices reported unequal")
+	}
+	if equalBytes(src, [][]byte{[]byte("abc"), []byte("deX")}) {
+		t.Fatal("differing last byte reported equal")
+	}
+	if equalBytes(src, [][]byte{[]byte("abc")}) {
+		t.Fatal("different length reported equal")
 	}
 }

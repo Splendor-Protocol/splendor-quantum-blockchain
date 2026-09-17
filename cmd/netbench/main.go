@@ -22,6 +22,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -50,22 +51,28 @@ func main() {
 		os.Exit(2)
 	}
 
+	// RLNC repair coefficients are crypto/rand in production, which would make
+	// the RLNC column differ run-to-run even with a fixed --seed. Inject a
+	// deterministic reader seeded from --seed so the whole run — source data,
+	// loss pattern AND RLNC coefficients — is reproducible. This is benchmark
+	// only; production never uses a deterministic coefficient source.
+	rng := rand.New(rand.NewSource(*seed))
 	codecs := []coding.Codec{
 		coding.NewUncodedCodec(),
 		coding.NewErasureCodec(),
-		coding.NewRLNCCodec(),
+		coding.NewRLNCCodecWithReader(rng),
 	}
 
 	fmt.Printf("netbench: source_count=%d symbol_size=%d loss_pct=%.1f repair_overhead_pct=%.1f trials=%d seed=%d\n\n",
 		*sourceCount, *symbolSize, *lossPct, *repairOverheadPct, *trials, *seed)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "codec\trecovered\tfailed\tavg_symbols_used\tavg_bytes_moved\tavg_decode_time")
+	fmt.Fprintln(w, "codec\trecovered\tfailed\tavg_symbols_used\tavg_bytes_total\tavg_bytes_useful\tavg_decode_time")
 	for _, c := range codecs {
 		res := runTrials(c, *sourceCount, *symbolSize, *lossPct, *repairOverheadPct, *trials, *seed)
-		fmt.Fprintf(w, "%s\t%d/%d\t%d\t%.1f\t%.0f\t%s\n",
+		fmt.Fprintf(w, "%s\t%d/%d\t%d\t%.1f\t%.0f\t%.0f\t%s\n",
 			c.Name(), res.recovered, *trials, res.failed,
-			res.avgSymbolsUsed, res.avgBytesMoved, res.avgDecodeTime)
+			res.avgSymbolsUsed, res.avgBytesTotal, res.avgBytesUseful, res.avgDecodeTime)
 	}
 	w.Flush()
 }
@@ -74,14 +81,20 @@ type trialResult struct {
 	recovered      int
 	failed         int
 	avgSymbolsUsed float64
-	avgBytesMoved  float64
+	// avgBytesTotal is every byte the sender put on the wire (delivered or
+	// lost), the real bandwidth cost. avgBytesUseful is the subset of those
+	// bytes that reached the decoder and increased its rank — the fraction
+	// comparing them gives the scheme's useful-bandwidth efficiency.
+	avgBytesTotal  float64
+	avgBytesUseful float64
 	avgDecodeTime  time.Duration
 }
 
 func runTrials(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairOverheadPct float64, trials int, seed int64) trialResult {
 	var (
 		totalSymbolsUsed int
-		totalBytesMoved  int64
+		totalBytesTotal  int64
+		totalBytesUseful int64
 		totalDecodeTime  time.Duration
 		recovered        int
 	)
@@ -102,15 +115,33 @@ func runTrials(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairO
 		}
 
 		symbolsUsed := 0
-		bytesMoved := int64(0)
-		for _, s := range enc.Systematic() {
+		bytesTotal := int64(0)
+		bytesUseful := int64(0)
+		var decodeCPU time.Duration
+
+		// deliver simulates one symbol crossing the link: its bytes are added
+		// to the transmitted total first (the sender paid for them whether or
+		// not they arrive), then loss is applied, and only a delivered symbol
+		// reaches Absorb. Decoder CPU (elimination + final solve) is timed
+		// here so the reported decode time reflects the work that actually
+		// reconstructs the object, not just the final Decode() call.
+		deliver := func(s coding.Symbol) {
+			bytesTotal += int64(len(s.Payload) + len(s.Coefficients))
 			if rng.Float64()*100 < lossPct {
-				continue // simulated loss: never delivered
+				return // lost in transit
 			}
-			if _, err := dec.Absorb(s); err == nil {
-				symbolsUsed++
-				bytesMoved += int64(len(s.Payload) + len(s.Coefficients))
+			start := time.Now()
+			increased, err := dec.Absorb(s)
+			decodeCPU += time.Since(start)
+			if err != nil || !increased {
+				return // delivered but redundant/independent-of-progress
 			}
+			symbolsUsed++
+			bytesUseful += int64(len(s.Payload) + len(s.Coefficients))
+		}
+
+		for _, s := range enc.Systematic() {
+			deliver(s)
 		}
 		if dec.Rank() < sourceCount {
 			repairBudget := int(float64(sourceCount) * repairOverheadPct / 100)
@@ -121,10 +152,7 @@ func runTrials(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairO
 				if dec.Rank() == sourceCount {
 					break
 				}
-				if _, err := dec.Absorb(s); err == nil {
-					symbolsUsed++
-				}
-				bytesMoved += int64(len(s.Payload) + len(s.Coefficients))
+				deliver(s)
 			}
 		}
 
@@ -132,20 +160,42 @@ func runTrials(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairO
 			continue // this trial did not recover — counted as failed below
 		}
 		start := time.Now()
-		if _, err := dec.Decode(); err != nil {
+		decoded, err := dec.Decode()
+		decodeCPU += time.Since(start)
+		if err != nil {
 			continue
 		}
-		totalDecodeTime += time.Since(start)
+		if !equalBytes(source, decoded) {
+			continue // decoder returned wrong bytes: recovered is NOT the same as correct
+		}
+		totalDecodeTime += decodeCPU
 		totalSymbolsUsed += symbolsUsed
-		totalBytesMoved += bytesMoved
+		totalBytesTotal += bytesTotal
+		totalBytesUseful += bytesUseful
 		recovered++
 	}
 
 	res := trialResult{recovered: recovered, failed: trials - recovered}
 	if recovered > 0 {
 		res.avgSymbolsUsed = float64(totalSymbolsUsed) / float64(recovered)
-		res.avgBytesMoved = float64(totalBytesMoved) / float64(recovered)
+		res.avgBytesTotal = float64(totalBytesTotal) / float64(recovered)
+		res.avgBytesUseful = float64(totalBytesUseful) / float64(recovered)
 		res.avgDecodeTime = totalDecodeTime / time.Duration(recovered)
 	}
 	return res
+}
+
+// equalBytes reports whether two symbol slices carry identical bytes, used to
+// verify that a successful Decode actually reproduced the source — recovery
+// that returns the wrong object is not recovery.
+func equalBytes(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !bytes.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
