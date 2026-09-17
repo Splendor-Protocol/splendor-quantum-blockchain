@@ -127,8 +127,8 @@ Smart contracts compile to a stack-based bytecode executed by the SQC-VM. Key fe
 
 - **Checked Arithmetic**: Overflow/underflow/division-by-zero revert via `REQUIRE` opcode
 - **Gas Metering**: Every opcode costs gas; blocks have a ceiling to prevent infinite loops
-- **QRC Token Standards**: QRC-20 (fungible), QRC-721 (NFT), QRC-1155 (multi-token), QRC-4626 (vault)
-- **Native Modules**: DEX, lending, governance, staking—precompiled for efficiency
+- **QRC Token Standards**: Routed QRC-20, QRC-721, and QRC-1155. QRC-4626 is not a routed native module.
+- **Native modules**: Routed catalog is QRC-20, QRC-1155, QRC-721, bridge, SQVL (`verify`), and validators. DEX, lending, and application governance are not routed native modules.
 - **Privacy Layer (X402)**: Shielded payments using ZK-SNARK-like constructions (optional)
 
 **QSol Compiler**: A Solidity-subset compiler (`compiler/`) turns `.qsol` source into SQC-VM bytecode. Supported features:

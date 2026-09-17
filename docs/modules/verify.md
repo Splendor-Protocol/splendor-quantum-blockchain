@@ -20,13 +20,17 @@ SQVL instructions and operator attestations require **both**:
 - ML-DSA-65 under context `SPLENDOR-QC-VERIFY-v1`
 - SLH-DSA-SHA2-128s under the same context
 
-Ordinary transactions, blocks, X402, and DEX stay ML-DSA-65 only. P2P stays
-ML-KEM-768.
+Ordinary transactions, blocks, and X402 stay ML-DSA-65 only. P2P stays
+ML-KEM-768. DEX is not a routed native module and is not a live ML-DSA
+surface.
 
 `origin` and `settlement_hint` are free-form (`bitcoin`, `eip155:1`,
 `bank:swift`, `splendor-qc`, `external:…`). Settlement on Splendor QC uses
 `settlement_action`: `native_transfer` | `qrc20_transfer` | `finalize_only` |
-`x402`. The same `instruction_id` cannot settle twice.
+`x402`. `native_transfer` and `qrc20_transfer` move funds. `finalize_only`
+is proof-only. `x402` is not a second debit: before `verify_identity_v1` it
+is a no-op success; under that fork it is proof-only linkage to an already
+consumed X402 payment nonce. The same `instruction_id` cannot settle twice.
 
 ## Product API (existing quantum RPC)
 

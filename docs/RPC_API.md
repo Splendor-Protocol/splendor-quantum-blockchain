@@ -67,32 +67,12 @@ fields in block, tx, and receipt bodies (Go `encoding/json` defaults):
 | GET | `/staking/validators/{addr}` | Same record via staking prefix |
 | GET | `/staking/total-staked` | `total_staked` (decimal string) |
 | GET | `/staking/count` | `validator_count` |
-| GET | `/gov/proposals` | Governance list |
-| GET | `/gov/proposals/{id}` | One proposal |
-| GET | `/gov/proposals/{id}/votes/{addr}` | One vote |
-| GET | `/gov/power/{addr}` | Voting power |
-| GET | `/gov/total-power` | Total voting power |
 | GET | `/contract/{address}` | Contract metadata |
 | GET | `/contract/{address}/code` | Bytecode |
 | GET | `/contract/{address}/storage/{slot}` | Storage slot |
 | GET | `/verify/proof/{id}` | Verify-module proof |
 | GET | `/bridge/{addr}` | Bridge instance |
 | GET | `/bridge/{addr}/claim/{id}` | Claim status |
-| GET | `/exchange/{addr}` | Exchange instance |
-| GET | `/exchange/{addr}/condition/{id}` | Condition |
-| GET | `/exchange/{addr}/order/{hash}` | Order status |
-| GET | `/exchange/{addr}/nonce/{maker}` | Maker nonce |
-| GET | `/exchange/{addr}/position/{condition}/{holder}` | Position |
-| GET | `/dex/pool/{token0}/{token1}` | Pool |
-| GET | `/dex/pool/{token0}/{token1}/quote` | Quote |
-| GET | `/dex/pool/{token0}/{token1}/lp/{addr}` | LP position |
-| GET | `/dex/price/{token0}/{token1}` | Price |
-| GET | `/dex/amount-out`, `/dex/amount-in` | Swap math |
-| GET | `/lending/pool/{asset}` | Lending pool |
-| GET | `/lending/position/{user}/{asset}` | Supply position |
-| GET | `/lending/borrow/{user}/{asset}` | Borrow position |
-| GET | `/lending/utilisation/{asset}` | Utilisation |
-| GET | `/lending/rates/{asset}` | Rates |
 | GET | `/vm/opcodes` | Opcode catalog |
 | GET | `/p2p/identity` | This node's signed ML-DSA-65 node key plus its rotating ML-KEM-768 key |
 | GET | `/peers` | Known peers |
@@ -102,6 +82,9 @@ fields in block, tx, and receipt bodies (Go `encoding/json` defaults):
 | GET | `/healthz` | Liveness with build identity (`status`, `chain_id`, `commit`, `image_tag`, `node_version`, `uptime_seconds`) |
 | GET | `/readyz` | Readiness: `{"status":"ready"}` once height is above 0 |
 | GET | `/ai/stats` | AI-stats snapshot |
+
+`/dex/*`, `/exchange/*`, `/lending/*`, and `/gov/*` are **not registered**.
+Those names are not routed native modules.
 
 ## Examples
 

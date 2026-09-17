@@ -84,7 +84,7 @@ move funds. The chain is the only place the ledger lives.
 |---|---|
 | **Native supply** | 26 billion SPLD, minted once at genesis, to one treasury allocation. The node refuses a larger genesis and refuses any later circulating supply above the minted amount. QRC-20/721/1155 mints are separate tokens, owner-gated. Validator bonds lock existing SPLD; they do not mint. |
 | **Products** | **Splendor QC** — the L1. **SPLD** — the native asset and fee token. **SQVL** — native verification and settlement layer (dual-sig ML-DSA-65 + SLH-DSA). See [§9a](#9a-sqvl--settlement-layer) and [`docs/modules/verify.md`](docs/modules/verify.md). |
-| **Validators** | Permissionless. One bond: **2,500 SPLD**. No tiers. BFT quorum after `multi_validator`. |
+| **Validators** | One bond: **2,500 SPLD**. No tiers. After `validators_v1` the bond is required; after `validators_admission_v1` only the block producer or an approved address may `register`. Not unconditional permissionless entry. BFT quorum after `multi_validator`. |
 | **Fees** | Floor **0.001 SPLD** after `min_fee_v1`, plus the existing mempool congestion multiplier. |
 | **Run a node** | [`DEPLOY.md`](DEPLOY.md). Local multi-validator: [`docs/multi-validator-local.md`](docs/multi-validator-local.md). Fresh genesis template: `genesis-production.json`. |
 | **Ship a release** | `npm run deploy:devnet` then promote (§21). A running chain adds new forks with `--allow-fork-extension`; a reset uses the full schedule in genesis. |
@@ -190,7 +190,7 @@ certification boundaries are separate claims.
 
 | Surface | Mechanism | Where in the code |
 |---|---|---|
-| Transaction, block, X402, vote, oracle, permit and multisig signatures | ML-DSA-65 ([NIST FIPS 204](https://csrc.nist.gov/pubs/fips/204/final)) via CIRCL, each with its own domain-separation context | `core/crypto/mldsa.go` |
+| Transaction, block, X402, vote, and QRC-20 permit signatures | ML-DSA-65 ([NIST FIPS 204](https://csrc.nist.gov/pubs/fips/204/final)) via CIRCL, each with its own domain-separation context | `core/crypto/mldsa.go` |
 | Addresses | `SQ:` + hex(SHA3-256(ML-DSA-65 public key)) | `core/crypto/` |
 | Transaction hashes, block hashes, Merkle nodes, contract storage slot keys | SHA3-256 ([NIST FIPS 202](https://csrc.nist.gov/pubs/fips/202/final)) | native ledger paths |
 | Node-to-node block push, peer announce, **and catch-up sync** | ML-KEM-768 ([NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)) + AES-256-GCM; plaintext refused unless `--allow-plaintext-p2p` | `network/pqchannel.go`, `network/sync.go` |
@@ -967,10 +967,12 @@ other off-chain surfaces may use SHA-256 as described at the top of this file.
 ## 9. Consensus — BFT Multi-Validator
 
 Consensus is native BFT in `sqc-node`. A single genesis validator still
-produces block 0. After `validators_v1` and `multi_validator` activate, anyone
-can register by bonding **2,500 SPLD** (one fixed bond, no tiers). The bond is
-a lock of existing supply — it does not mint SPLD. Unbonding waits out the
-configured exit period, then `finalize_exit` returns the bond.
+produces block 0. After `validators_v1` and `multi_validator` activate, the
+registry uses one fixed **2,500 SPLD** bond (no tiers). The bond is a lock of
+existing supply — it does not mint SPLD. Unbonding waits out the configured
+exit period, then `finalize_exit` returns the bond. `validators_v1` alone
+required only that bond; once `validators_admission_v1` is scheduled (as on
+observed devnet), `register` is approval/producer-based, not open entry.
 
 **What the validator set does:**
 1. The current leader pulls transactions from the mempool
@@ -1012,9 +1014,8 @@ to rewrite the chain once the set is larger than one.
 Local multi-validator setup: [`docs/multi-validator-local.md`](docs/multi-validator-local.md).
 SQVL settlement proofs sit on this same ledger: [`docs/modules/verify.md`](docs/modules/verify.md).
 
-On-chain governance can mark a proposal executed; it still cannot rewrite
-consensus rules by itself. Rule changes remain a genesis schedule or an
-operator `--allow-fork-extension`.
+There is no routed on-chain governance module. Rule changes remain a genesis
+schedule or an operator `--allow-fork-extension`.
 
 ---
 
@@ -1371,9 +1372,20 @@ require separately maintained evidence and owner review.
   marketplace)
 - Optional snapshot fast-sync: immutable page sessions, retained import
   staging until block and applied height/root reconcile, genesis-checkpoint
-  / authenticated-set trust (not the snapshot's own registry)
+  trust (not the snapshot's own registry). Limits: [snapshot recovery notes](#snapshot-recovery-notes)
 - Current-state account proofs at `GET /state/proof/{address}`
 - 0.001 SPLD minimum fee after `min_fee_v1`
+
+### Snapshot recovery notes
+
+Optional fast-sync, not a substitute for recovering a node's own committed
+data. Sessions are immutable after start; import staging is retained until
+the stored block hash and applied height/root reconcile. Remaining limits
+after that work: a served snapshot is capped at 64 MiB of raw leaves
+(`MaxStateSnapshotBytes`); trust is genesis-checkpoint only, so a head
+sealed by a later rotating leader is refused until a genesis-sealed
+checkpoint is available; the snapshot's own validator registry is never the
+trust source.
 
 ### Tested or measured, with a narrower claim
 
@@ -1413,7 +1425,7 @@ production-readiness claim.
   omits `settlement_tx`, while the current middleware verifies but does not
   automatically settle
 - QSol language completeness (constructors still do not run; not Solidity)
-- Snapshot fast-sync operational limits (optional; see recovery notes)
+- Snapshot fast-sync operational limits (optional; [snapshot recovery notes](#snapshot-recovery-notes))
 - Per-tier fork activation and migration-bridge deployment
 - Explicit peer pinning where peers are deployed
 - Hybrid-only TLS where the node terminates TLS; proxy-fronted deployments have
@@ -1513,10 +1525,11 @@ preserve its exact scope.
 
 X402 provides a native payer-authorized settlement transaction. It does not
 eliminate chain fees, operational intermediaries, counterparty risk, legal
-obligations, application integration, or confirmation policy. After
-`validators_v1`, an independent operator can join by bonding 2,500 SPLD.
-SQVL can attest an instruction and produce a proof for settlement here or
-elsewhere; it is not a banking license, KYC product, or sanctions screen.
+obligations, application integration, or confirmation policy. Validator
+join still requires the 2,500 SPLD bond; after `validators_admission_v1`
+only the producer or an approved address may `register`. SQVL can attest
+an instruction and produce a proof for settlement here or elsewhere; it is
+not a banking license, KYC product, or sanctions screen.
 
 ### Compliance and institutional capabilities
 
