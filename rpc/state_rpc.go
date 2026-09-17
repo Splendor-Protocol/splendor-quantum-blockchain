@@ -18,16 +18,19 @@ import (
 
 	"github.com/gorilla/mux"
 
-	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 )
 
 // RegisterStateRoutes mounts the state proof endpoints on r.
-func RegisterStateRoutes(r *mux.Router, stateDB *state.StateDB, executor *block.Executor) {
+//
+// guard may be nil in tests. /state/proof walks and sorts the committed leaf
+// set, so production must pass Server.SimGuard() — the same meter as /call.
+func RegisterStateRoutes(r *mux.Router, stateDB *state.StateDB, executor *block.Executor, guard *ExecGuard) {
 	r.HandleFunc("/state/root", stateRootHandler(stateDB, executor)).Methods(http.MethodGet)
 	r.HandleFunc("/state/account/{address}", accountStateHandler(stateDB, executor)).Methods(http.MethodGet)
-	r.HandleFunc("/state/proof/{address}", merkleProofHandler(stateDB, executor)).Methods(http.MethodGet)
+	r.Handle("/state/proof/{address}", guard.Wrap(merkleProofHandler(stateDB, executor))).Methods(http.MethodGet)
 }
 
 func writeStateJSON(w http.ResponseWriter, code int, v interface{}) {
@@ -60,13 +63,15 @@ func stateRootHandler(stateDB *state.StateDB, executor *block.Executor) http.Han
 			"block_height": uint64(0),
 		}
 
-		if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
-			resp["block_height"] = latest.Header.Height
-			resp["block_hash"] = hex.EncodeToString(latest.Hash[:])
-			resp["chain_id"] = latest.Header.ChainID
-			// Use the state root committed in the block header, which is the
-			// canonical value rather than the live (possibly pending) state root.
-			resp["state_root"] = hex.EncodeToString(latest.Header.StateRoot[:])
+		if executor != nil {
+			if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
+				resp["block_height"] = latest.Header.Height
+				resp["block_hash"] = hex.EncodeToString(latest.Hash[:])
+				resp["chain_id"] = latest.Header.ChainID
+				// Use the state root committed in the block header, which is the
+				// canonical value rather than the live (possibly pending) state root.
+				resp["state_root"] = hex.EncodeToString(latest.Header.StateRoot[:])
+			}
 		}
 
 		writeStateJSON(w, http.StatusOK, resp)
@@ -106,9 +111,11 @@ func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 
 		root, _ := stateDB.StateRoot()
 		var blockHeight uint64
-		if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
-			blockHeight = latest.Header.Height
-			root = latest.Header.StateRoot
+		if executor != nil {
+			if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
+				blockHeight = latest.Header.Height
+				root = latest.Header.StateRoot
+			}
 		}
 
 		resp := map[string]interface{}{
@@ -177,16 +184,25 @@ func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.H
 		var stateRoot [32]byte
 		var blockHeight uint64
 		var blockHash string
-		if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
-			stateRoot = latest.Header.StateRoot
-			blockHeight = latest.Header.Height
-			blockHash = hex.EncodeToString(latest.Hash[:])
+		if executor != nil {
+			if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil {
+				stateRoot = latest.Header.StateRoot
+				blockHeight = latest.Header.Height
+				blockHash = hex.EncodeToString(latest.Hash[:])
+			} else {
+				stateRoot, _ = stateDB.StateRoot()
+			}
 		} else {
 			stateRoot, _ = stateDB.StateRoot()
 		}
 
-		// Full Merkle path proof via StateDB.MerkleProof().
-		leafHash, siblings, proofErr := stateDB.MerkleProof(addr)
+		leafHash, siblings, proofErr := stateDB.MerkleProofContext(r.Context(), addr)
+		if proofErr != nil && r.Context().Err() != nil {
+			writeStateJSON(w, http.StatusRequestTimeout, map[string]string{
+				"error": "proof generation cancelled",
+			})
+			return
+		}
 
 		resp := map[string]interface{}{
 			"address":      addrStr,

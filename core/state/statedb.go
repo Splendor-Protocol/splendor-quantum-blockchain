@@ -15,6 +15,7 @@
 package state
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -922,8 +923,22 @@ func (s *StateDB) StateRoot() ([32]byte, error) {
 // account is not in committed state. Odd-count levels carry the unpaired node
 // up without a sibling (len(siblings) may be < tree depth).
 func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error) {
+	return s.MerkleProofContext(context.Background(), addr)
+}
+
+// MerkleProofContext is MerkleProof that stops when ctx is cancelled, so a
+// guarded /state/proof cannot hold an execution slot for a full tree walk
+// after the caller has gone away.
+func (s *StateDB) MerkleProofContext(ctx context.Context, addr qcrypto.Address) ([32]byte, [][32]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return [32]byte{}, nil, err
+	}
 
 	targetKey := prefixAccount + addr.String()
 	if _, ok := s.leaves[targetKey]; !ok {
@@ -941,6 +956,11 @@ func (s *StateDB) MerkleProof(addr qcrypto.Address) ([32]byte, [][32]byte, error
 	level := make([][32]byte, len(keys))
 	targetIdx := -1
 	for i, k := range keys {
+		if i&63 == 0 {
+			if err := ctx.Err(); err != nil {
+				return [32]byte{}, nil, err
+			}
+		}
 		level[i] = leafDigest(k, s.leaves[k])
 		if k == targetKey {
 			targetIdx = i

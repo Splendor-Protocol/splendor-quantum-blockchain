@@ -48,6 +48,7 @@
 package vm
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math/big"
@@ -225,6 +226,10 @@ type ExecutionContext struct {
 	// ExplicitGas means Gas is the caller-supplied remaining allocation,
 	// including 0. Without it, Gas==0 still means "use MaxGasPerCall".
 	ExplicitGas bool
+	// Ctx is the optional request deadline. The interpreter polls it so a
+	// cancelled /call frees its execution slot instead of running out the
+	// HTTP timeout with the VM still spinning.
+	Ctx context.Context
 	// Return data from most recent sub-call
 	returnData []byte
 }
@@ -497,6 +502,11 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 	}
 
 	for pc < len(code) {
+		if ctx.Ctx != nil {
+			if err := ctx.Ctx.Err(); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed, Logs: ctx.Logs}
+			}
+		}
 		op := code[pc]
 		pc++
 
@@ -1248,7 +1258,7 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 					if e.gasV1(ctx.BlockHeight) {
 						childGas, explicit = callGas, true
 					}
-					subResult, callErr = e.callAtDepthWithCode(caller, origin, toAddr, codeSource, calldata, value, ctx.BlockHeight, ctx.Timestamp, isStatic, ctx.Depth+1, childGas, explicit)
+					subResult, callErr = e.callAtDepthWithCode(ctx.Ctx, caller, origin, toAddr, codeSource, calldata, value, ctx.BlockHeight, ctx.Timestamp, isStatic, ctx.Depth+1, childGas, explicit)
 					if callErr != nil && subResult == nil {
 						subResult = &ExecutionResult{Err: callErr}
 					}
@@ -1533,21 +1543,18 @@ func (e *Engine) Call(caller, contract qcrypto.Address, calldata []byte, value *
 }
 
 func (e *Engine) CallWithContext(caller, origin, contract qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool) (*ExecutionResult, error) {
-	return e.callAtDepth(caller, origin, contract, calldata, value, blockHeight, timestamp, isStatic, 0)
+	return e.CallWithCancel(nil, caller, origin, contract, calldata, value, blockHeight, timestamp, isStatic)
 }
 
-// callAtDepth runs a (sub)call at an explicit call depth so recursion is bounded
-// by MaxCallDepth. The CALL opcode passes ctx.Depth+1; top-level entries pass 0.
-// Previously every subcall built a fresh Depth=0 context, so MaxCallDepth never
-// triggered and a self-recursive contract exhausted the node's stack/heap.
-func (e *Engine) callAtDepth(caller, origin, contract qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int) (*ExecutionResult, error) {
-	return e.callAtDepthWithCode(caller, origin, contract, contract, calldata, value, blockHeight, timestamp, isStatic, depth, 0, false)
+// CallWithCancel is CallWithContext that stops when ctx is cancelled.
+func (e *Engine) CallWithCancel(ctx context.Context, caller, origin, contract qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool) (*ExecutionResult, error) {
+	return e.callAtDepthWithCode(ctx, caller, origin, contract, contract, calldata, value, blockHeight, timestamp, isStatic, 0, 0, false)
 }
 
 // callAtDepthWithCode runs codeSource's bytecode in contract's storage and
 // identity context. The two addresses are equal for CALL and STATICCALL; they
 // differ only for DELEGATECALL, which is the whole point of that instruction.
-func (e *Engine) callAtDepthWithCode(caller, origin, contract, codeSource qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int, gasLimit uint64, explicitGas bool) (*ExecutionResult, error) {
+func (e *Engine) callAtDepthWithCode(reqCtx context.Context, caller, origin, contract, codeSource qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int, gasLimit uint64, explicitGas bool) (*ExecutionResult, error) {
 	if depth > MaxCallDepth {
 		return &ExecutionResult{Err: fmt.Errorf("max call depth exceeded")}, fmt.Errorf("max call depth exceeded")
 	}
@@ -1576,7 +1583,7 @@ func (e *Engine) callAtDepthWithCode(caller, origin, contract, codeSource qcrypt
 		Caller: caller, Origin: origin, Contract: contract,
 		CallValue: value, Input: calldata, Code: code,
 		BlockHeight: blockHeight, Timestamp: timestamp,
-		IsStatic: isStatic, Gas: childGas, ExplicitGas: e.gasV1(blockHeight) && explicitGas, Depth: depth,
+		IsStatic: isStatic, Gas: childGas, ExplicitGas: e.gasV1(blockHeight) && explicitGas, Depth: depth, Ctx: reqCtx,
 		Logs: make([]*types.Log, 0),
 	}
 	result := e.Execute(ctx)

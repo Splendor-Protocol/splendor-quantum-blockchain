@@ -1300,7 +1300,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	})
 
 	// State proof routes (GET /state/root, /state/account/:addr, /state/proof/:addr)
-	rpc.RegisterStateRoutes(router, stateDB, executor)
+	rpc.RegisterStateRoutes(router, stateDB, executor, coreRPC.SimGuard())
 
 	// Migration bridge read routes — the GET mirrors of the bridge /call reads.
 	rpc.RegisterBridgeRoutes(router, stateDB)

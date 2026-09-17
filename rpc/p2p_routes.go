@@ -4,7 +4,9 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
@@ -27,6 +29,11 @@ const maxSealedBody = (block.MaxBlockWireBytes * 4 / 3) + (64 * 1024)
 // generous for real peers and cheap to shed for everyone else.
 const defaultSealedMaxInFlight = 64
 
+// defaultSealedMaxPerSource is how many of those global slots one client IP
+// may hold. Without it a single source can occupy the whole 64-cap and starve
+// every honest peer of decrypt capacity.
+const defaultSealedMaxPerSource = 4
+
 // P2PConfig wires the sealed transport to the node's handlers.
 type P2PConfig struct {
 	// Identity is this node's ML-DSA + ML-KEM key material.
@@ -37,6 +44,9 @@ type P2PConfig struct {
 	// body is read until the handler returns. 0 uses defaultSealedMaxInFlight;
 	// a negative value disables the cap (tests only).
 	MaxInFlight int
+	// MaxPerSource caps concurrent sealed requests from one client IP.
+	// 0 uses defaultSealedMaxPerSource; a negative value disables the cap.
+	MaxPerSource int
 	// HandleBlock applies a received block body (raw JSON).
 	HandleBlock func(body []byte) error
 	// HandleAnnounce processes a peer announcement body (raw JSON).
@@ -96,11 +106,38 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 	case cfg.MaxInFlight > 0:
 		slots = make(chan struct{}, cfg.MaxInFlight)
 	}
+	perSource := defaultSealedMaxPerSource
+	switch {
+	case cfg.MaxPerSource > 0:
+		perSource = cfg.MaxPerSource
+	case cfg.MaxPerSource < 0:
+		perSource = 0
+	}
+	var srcSlots *sealedSourceSlots
+	if perSource > 0 {
+		srcSlots = newSealedSourceSlots(perSource)
+	}
 
 	r.HandleFunc(network.PathSealed, func(w http.ResponseWriter, r *http.Request) {
-		// Take the slot before touching the body: reading and decrypting is
-		// the cost this cap exists to bound. Shed rather than queue — a queued
-		// request still holds its connection and goroutine.
+		// Refuse an advertised oversize body before taking a slot or reading.
+		if r.ContentLength > maxSealedBody {
+			writeError(w, http.StatusRequestEntityTooLarge, "sealed body too large")
+			return
+		}
+
+		src := sealedClientKey(r)
+		if srcSlots != nil && !srcSlots.acquire(src) {
+			log.Debug().Str("remote", r.RemoteAddr).Msg("p2p: sealed request shed, per-source cap")
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusServiceUnavailable, "node busy: too many sealed requests from this source")
+			return
+		}
+		if srcSlots != nil {
+			defer srcSlots.release(src)
+		}
+
+		// Take the global slot before touching the body: reading and decrypting
+		// is the cost this cap exists to bound. Shed rather than queue.
 		if slots != nil {
 			select {
 			case slots <- struct{}{}:
@@ -314,4 +351,42 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(wire)
+}
+
+func sealedClientKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// sealedSourceSlots bounds concurrent sealed work per client IP.
+type sealedSourceSlots struct {
+	mu       sync.Mutex
+	inflight map[string]int
+	max      int
+}
+
+func newSealedSourceSlots(max int) *sealedSourceSlots {
+	return &sealedSourceSlots{inflight: make(map[string]int), max: max}
+}
+
+func (s *sealedSourceSlots) acquire(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inflight[key] >= s.max {
+		return false
+	}
+	s.inflight[key]++
+	return true
+}
+
+func (s *sealedSourceSlots) release(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inflight[key]--
+	if s.inflight[key] <= 0 {
+		delete(s.inflight, key)
+	}
 }

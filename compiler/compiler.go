@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math/big"
@@ -37,15 +38,35 @@ type Contract struct {
 // ABI describing how to call it. It is a pure function of the source text —
 // deterministic, no I/O — so the same source always yields identical bytecode.
 func Compile(src string) (*Contract, error) {
+	return CompileContext(context.Background(), src)
+}
+
+// CompileContext is Compile that stops when ctx is cancelled.
+func CompileContext(ctx context.Context, src string) (*Contract, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	toks, err := newLexer(src).tokenize()
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	node, err := newParser(toks).parseContract()
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := check(node); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	code, err := newCodegen(node).generate()
