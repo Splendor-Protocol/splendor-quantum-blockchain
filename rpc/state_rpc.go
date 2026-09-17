@@ -93,29 +93,28 @@ func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 			return
 		}
 
-		proof, err := stateDB.AccountProofContext(r.Context(), addr)
+		// A point read, as before this route existed alongside /state/proof.
+		// Building the proof here would walk and hash every committed leaf
+		// under the state read lock for an unauthenticated, unguarded route,
+		// and each in-flight request would hold block commit off for the
+		// length of that walk. Proofs come from /state/proof, behind the
+		// simulation guard.
+		acc, err := stateDB.GetAccount(addr)
 		if err != nil {
 			writeStateJSON(w, http.StatusNotFound, map[string]string{
 				"error": fmt.Sprintf("account %s not found: %s", addrStr, err.Error()),
 			})
 			return
 		}
-		acc, err := decodeCommittedAccount(proof.LeafPreimage)
-		if err != nil {
-			writeStateJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "committed account preimage: " + err.Error(),
-			})
-			return
-		}
 
-		_, _, blockHash := committedHead(stateDB, executor)
+		root, height, blockHash := committedHead(stateDB, executor)
 		resp := map[string]interface{}{
 			"address":        addrStr,
 			"balance":        acc.Balance.String(),
 			"nonce":          acc.Nonce,
 			"has_public_key": acc.HasPublicKey(),
-			"state_root":     hex.EncodeToString(proof.Root[:]),
-			"block_height":   proof.Height,
+			"state_root":     hex.EncodeToString(root[:]),
+			"block_height":   height,
 		}
 		if blockHash != "" {
 			resp["block_hash"] = blockHash
