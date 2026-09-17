@@ -9,6 +9,7 @@
 package network
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -94,21 +96,46 @@ func (f *BlockFetcher) FetchStateSnapshot(peerAddr string) (*types.StateSnapshot
 // block.MaxSnapshotChunkLeaves leaves, not the whole state.
 const maxSnapshotChunkReplyBytes = 16 << 20
 
-// FetchStateSnapshotChunked pulls a peer's state page by page instead of in
-// one reply, so this node's own memory footprint for the transfer is bounded
-// by chunkSize rather than by the peer's total state size. It is the
-// "chunked snapshot transfer" and "improved memory management" the sync
-// roadmap calls for.
-//
-// Correctness is identical to FetchStateSnapshot: the head block (attached
-// to the first chunk) is authenticated against the pinned genesis validator
-// key exactly as before, and every leaf from every chunk is still hashed and
-// checked against that block's declared state_root before anything is
-// returned to the caller — chunking changes how the bytes move over the
-// wire, never what is trusted. If the reported height changes between two
-// chunks (the peer's state moved under the transfer, most likely because it
-// committed a new block), the transfer is aborted rather than silently
-// assembled from two different states.
+// maxChunkedLeafBytes bounds the total raw key+value bytes a chunked transfer
+// may accumulate on this node: the same 64 MiB the single-shot snapshot caps
+// its leaves at (block.MaxStateSnapshotBytes). It keeps this node's memory
+// bounded to one snapshot's worth of leaves no matter how many pages a peer
+// serves.
+const maxChunkedLeafBytes = 64 << 20
+
+// authenticateSnapshotHead binds the served hash to the header and checks the
+// head's seal against the trusted validator key. Call it as soon as the head is
+// known, before any further (potentially expensive) transfer work.
+func authenticateSnapshotHead(peerAddr string, trusted []byte, head *types.Block, height uint64) error {
+	if head.Header.Height != height {
+		return fmt.Errorf("state snapshot from %s says height %d but its block is at %d",
+			peerAddr, height, head.Header.Height)
+	}
+	if err := head.Validate(); err != nil {
+		return fmt.Errorf("state snapshot head from %s: %w", peerAddr, err)
+	}
+	pub, err := qcrypto.PublicKeyFromBytes(trusted)
+	if err != nil {
+		return fmt.Errorf("trusted validator pubkey: %w", err)
+	}
+	if head.Header.ValidatorAddr != qcrypto.DeriveAddress(pub) {
+		return fmt.Errorf("%w: head %d from %s was sealed by %s",
+			ErrSnapshotNotAnchored, height, peerAddr, head.Header.ValidatorAddr)
+	}
+	if err := head.VerifySignature(trusted); err != nil {
+		return fmt.Errorf("state snapshot head from %s: %w", peerAddr, err)
+	}
+	return nil
+}
+
+// FetchStateSnapshotChunked pulls a peer's state page by page. The head block
+// (attached to the first chunk) is authenticated against the pinned genesis
+// validator key BEFORE any further page is requested, and the fully assembled
+// leaves are checked against that block's declared state_root before anything
+// is returned — chunking changes how the bytes move over the wire, never what
+// is trusted. A height change mid-transfer aborts, as does a cursor that fails
+// to advance, a page-count/deadline breach, or raw leaves past the byte budget,
+// so a hostile or buggy peer cannot keep this node accumulating.
 //
 // chunkSize <= 0 lets the peer choose its own default page size.
 func (f *BlockFetcher) FetchStateSnapshotChunked(peerAddr string, chunkSize int) (*types.StateSnapshot, error) {
@@ -127,8 +154,18 @@ func (f *BlockFetcher) FetchStateSnapshotChunked(peerAddr string, chunkSize int)
 		haveHeight bool
 		leaves     []types.StateLeaf
 		afterKey   []byte
+		totalBytes int
 	)
-	for {
+	const maxPages = 1 << 16 // far above any real state; a hard stop against a loop bug
+	deadline := time.Now().Add(snapshotFetchTimeout)
+	for page := 0; ; page++ {
+		if page >= maxPages {
+			return nil, fmt.Errorf("state snapshot from %s: exceeded %d pages", peerAddr, maxPages)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("state snapshot from %s: transfer exceeded %s", peerAddr, snapshotFetchTimeout)
+		}
+
 		reqBody, err := json.Marshal(GetStateSnapshotChunkRequest{AfterKey: afterKey, MaxLeaves: chunkSize})
 		if err != nil {
 			return nil, fmt.Errorf("marshal chunk request: %w", err)
@@ -142,6 +179,7 @@ func (f *BlockFetcher) FetchStateSnapshotChunked(peerAddr string, chunkSize int)
 		if err := json.Unmarshal(raw, &chunk); err != nil {
 			return nil, fmt.Errorf("decode state snapshot chunk from %s: %w", peerAddr, err)
 		}
+
 		if !haveHeight {
 			height = chunk.Height
 			haveHeight = true
@@ -149,37 +187,46 @@ func (f *BlockFetcher) FetchStateSnapshotChunked(peerAddr string, chunkSize int)
 				return nil, fmt.Errorf("state snapshot chunk from %s carries no head block on its first page", peerAddr)
 			}
 			head = chunk.Block
+			// Authenticate the head NOW, before requesting any further page:
+			// do not keep downloading a snapshot whose head we reject anyway.
+			if err := authenticateSnapshotHead(peerAddr, trusted, head, height); err != nil {
+				return nil, err
+			}
 		} else if chunk.Height != height {
 			return nil, fmt.Errorf("state snapshot from %s changed height mid-transfer (%d -> %d); the peer's "+
 				"state moved during the transfer, retry from scratch", peerAddr, height, chunk.Height)
+		}
+
+		// Every non-final page must carry a cursor strictly past the one that
+		// produced it, so a hostile or buggy peer cannot loop us on one page.
+		if !chunk.Done {
+			if len(chunk.NextKey) == 0 {
+				return nil, fmt.Errorf("state snapshot chunk from %s: not done but carries no next key", peerAddr)
+			}
+			if len(afterKey) > 0 && bytes.Compare(chunk.NextKey, afterKey) <= 0 {
+				return nil, fmt.Errorf("state snapshot chunk from %s: cursor did not advance", peerAddr)
+			}
+			afterKey = chunk.NextKey
+		}
+
+		for _, l := range chunk.Leaves {
+			totalBytes += len(l.Key) + len(l.Value)
+		}
+		if totalBytes > maxChunkedLeafBytes {
+			return nil, fmt.Errorf("state snapshot from %s: raw leaves exceed the %d-byte budget", peerAddr, maxChunkedLeafBytes)
 		}
 		leaves = append(leaves, chunk.Leaves...)
 		if chunk.Done {
 			break
 		}
-		if len(chunk.NextKey) == 0 {
-			return nil, fmt.Errorf("state snapshot chunk from %s: not done but carries no next key", peerAddr)
-		}
-		afterKey = chunk.NextKey
 	}
 
-	if head.Header.Height != height {
-		return nil, fmt.Errorf("state snapshot from %s says height %d but its block is at %d",
-			peerAddr, height, head.Header.Height)
-	}
-	if err := head.Validate(); err != nil {
-		return nil, fmt.Errorf("state snapshot head from %s: %w", peerAddr, err)
-	}
-	pub, err := qcrypto.PublicKeyFromBytes(trusted)
-	if err != nil {
-		return nil, fmt.Errorf("trusted validator pubkey: %w", err)
-	}
-	if head.Header.ValidatorAddr != qcrypto.DeriveAddress(pub) {
-		return nil, fmt.Errorf("%w: head %d from %s was sealed by %s",
-			ErrSnapshotNotAnchored, height, peerAddr, head.Header.ValidatorAddr)
-	}
-	if err := head.VerifySignature(trusted); err != nil {
-		return nil, fmt.Errorf("state snapshot head from %s: %w", peerAddr, err)
+	// Final integrity: the assembled leaves must hash to the head's committed
+	// root, so a peer that serves pages from a different state is caught here
+	// before anything is handed to the importer.
+	if got := state.SnapshotRoot(leaves); got != head.Header.StateRoot {
+		return nil, fmt.Errorf("state snapshot from %s: assembled leaves hash to %x, head %d commits to %x",
+			peerAddr, got[:8], height, head.Header.StateRoot[:8])
 	}
 	return &types.StateSnapshot{Height: height, Block: head, Leaves: leaves}, nil
 }
