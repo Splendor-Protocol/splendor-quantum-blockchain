@@ -30,5 +30,6 @@ export type {
   Subscription,
 } from './explorer-types.js';
 export { subscribe } from './subscribe.js';
+export type { SubscribeOptions } from './subscribe.js';
 export { SqRpc, fromSPLD, toSPLD } from '../rpc.js';
 export type { RpcOptions } from '../rpc.js';

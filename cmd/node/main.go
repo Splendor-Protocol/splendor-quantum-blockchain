@@ -1357,9 +1357,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// router with the same policy means explorer/bridge/call routes get identical
 	// treatment instead of silently defaulting to permissive.
 	httpServer := &http.Server{
-		Addr:         flagRPCAddr,
-		Handler:      coreRPC.CORS().Middleware(router),
-		ReadTimeout:  10 * time.Second,
+		Addr:        flagRPCAddr,
+		Handler:     coreRPC.CORS().Middleware(router),
+		ReadTimeout: 10 * time.Second,
+		// Ordinary RPC writes must finish in 60s. /ws slides this deadline
+		// on every event and heartbeat via ResponseController.
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}

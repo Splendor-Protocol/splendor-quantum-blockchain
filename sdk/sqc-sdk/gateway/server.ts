@@ -22,6 +22,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import helmet from '@fastify/helmet';
+import { HYBRID_TLS_GROUP, decideTlsGroups } from './tls-policy.ts';
+
+export { CLASSICAL_TLS_GROUPS, HYBRID_TLS_GROUP, decideTlsGroups } from './tls-policy.ts';
+export type { TlsGroupDecision } from './tls-policy.ts';
 import {
   SplendorPQBridge,
   fromSPLD,
@@ -74,7 +78,7 @@ export type GatewayConfig = {
 };
 
 /**
- * TLS key-exchange groups, most preferred first.
+ * TLS key-exchange policy.
  *
  * X25519MLKEM768 is a hybrid: the session key is safe unless BOTH X25519 and
  * ML-KEM-768 are broken, so it is never weaker than plain X25519. It matters
@@ -83,10 +87,10 @@ export type GatewayConfig = {
  * decrypt it later under a classical-only handshake, exposing pre-broadcast
  * transactions and API keys.
  *
- * Requires an OpenSSL 3.5+ Node build. Without one the gateway refuses to
- * start; see ALLOW_CLASSICAL_TLS.
+ * A successful probe handshake is required before the hybrid group is served,
+ * and then it is the only group offered. OpenSSL 3.5+ is necessary but not
+ * sufficient. See ALLOW_CLASSICAL_TLS for an explicit classical opt-in.
  */
-const PQ_TLS_GROUPS = 'X25519MLKEM768:X25519:P-256';
 
 /**
  * Opt out of the hybrid requirement and serve classical TLS anyway.
@@ -180,7 +184,7 @@ function negotiatedGroup(cert: Buffer, key: Buffer): Promise<string | null> {
 }
 
 /** The hybrid group on its own, for the capability probe. */
-const HYBRID_GROUP = 'X25519MLKEM768';
+const HYBRID_GROUP = HYBRID_TLS_GROUP;
 
 /**
  * Build Fastify's https options with post-quantum hybrid key exchange, or
@@ -210,39 +214,37 @@ async function buildHttpsOptions(
   };
 
   const group = await negotiatedGroup(base.cert, base.key);
-  // Accept either signal. The handshake is the direct evidence, but it is read
-  // through a group name whose exact spelling is Node's to choose, so a build
-  // with the capability is not refused over a label; and the version gate alone
-  // cannot see a 3.5 build compiled without the group.
-  const hybrid = /mlkem|kyber/i.test(group ?? '') || opensslHasMlkem();
-
-  if (hybrid) {
+  const detail =
+    `OpenSSL ${process.versions.openssl} (mlkem-capable=${opensslHasMlkem()}); ` +
+    `a hybrid-only handshake negotiated ${group ?? 'nothing'} instead of X25519MLKEM768`;
+  const decision = decideTlsGroups({
+    probeGroup: group,
+    allowClassical: classicalTlsAllowed(),
+  });
+  if (!decision.ok) {
+    throw new Error(
+      `TLS refused: ${decision.reason}. ${detail}. ` +
+        'OpenSSL version alone is not treated as proof the group exists, and unknown group ' +
+        'names are dropped rather than rejected. Serving the hybrid name plus classical ' +
+        'fallbacks would advertise post-quantum key exchange while connections could stay ' +
+        'classical. Upgrade Node so a probe handshake negotiates X25519MLKEM768, or set ' +
+        'ALLOW_CLASSICAL_TLS=1 to accept classical key exchange deliberately.',
+    );
+  }
+  if (decision.mode === 'hybrid-enforced') {
     if (logger) {
       console.log(
-        `[gateway] TLS 1.3 enabled, key exchange: ${PQ_TLS_GROUPS} (probe negotiated ${group ?? 'unknown'})`,
+        `[gateway] TLS 1.3 enabled, key exchange enforced: ${decision.groups} (probe negotiated ${group})`,
       );
     }
-    return { ...base, groups: PQ_TLS_GROUPS };
-  }
-
-  const detail =
-    `OpenSSL ${process.versions.openssl}; a hybrid-only handshake negotiated ` +
-    `${group ?? 'nothing'} instead of X25519MLKEM768`;
-  if (!classicalTlsAllowed()) {
-    throw new Error(
-      `TLS refused: this Node build does not support X25519MLKEM768 (needs OpenSSL 3.5+). ${detail}. ` +
-        'Unknown group names are dropped rather than rejected, so serving anyway would advertise ' +
-        'post-quantum key exchange while every connection stayed classical, leaving recorded ' +
-        'traffic decryptable by a future quantum adversary. Upgrade Node to restore post-quantum ' +
-        'confidentiality, or set ALLOW_CLASSICAL_TLS=1 to accept classical key exchange deliberately.',
-    );
+    return { ...base, groups: decision.groups };
   }
   console.warn(
     `[gateway] WARNING: ALLOW_CLASSICAL_TLS is set and this build cannot do X25519MLKEM768 (${detail}). ` +
-      'Serving TLS with classical key exchange only — recorded traffic is decryptable by a future ' +
-      'quantum adversary.',
+      `Serving TLS with classical groups only (${decision.groups}) — recorded traffic is decryptable ` +
+      'by a future quantum adversary. This is opportunistic TLS, not post-quantum confidentiality.',
   );
-  return base;
+  return { ...base, groups: decision.groups };
 }
 
 const signedTxSchema = {

@@ -168,6 +168,7 @@ export type {
   X402MiddlewareConfig,
 } from './x402/client.js';
 export { subscribe } from './core/subscribe.js';
+export type { SubscribeOptions } from './core/subscribe.js';
 export type {
   EstimateGasRequest,
   EstimateGasResponse,
