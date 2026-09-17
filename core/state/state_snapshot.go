@@ -20,6 +20,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/util"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -347,7 +348,7 @@ func (s *StateDB) ImportSnapshot(leaves []types.StateLeaf, height uint64, wantRo
 		return fmt.Errorf("marshal height marker: %w", err)
 	}
 	batch.Put([]byte(keyStateHeight), hb)
-	if err := s.db.Write(batch, nil); err != nil {
+	if err := persist.Write(s.db, batch); err != nil {
 		return fmt.Errorf("state: snapshot import failed: %w", err)
 	}
 

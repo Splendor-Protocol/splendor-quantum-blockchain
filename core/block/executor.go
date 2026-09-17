@@ -15,6 +15,7 @@ import (
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
@@ -1409,7 +1410,9 @@ func (e *Executor) storeBlock(b *types.Block) error {
 		})
 		batch.Put([]byte(keyLatest), latestData)
 	}
-	return e.chainDB.Write(batch, nil)
+	// Durable before the matching state commit (C3). Sync=false can lose the
+	// head across a machine failure while state survives — or the reverse.
+	return persist.Write(e.chainDB, batch)
 }
 
 func (e *Executor) latestHeightRaw() (uint64, bool) {

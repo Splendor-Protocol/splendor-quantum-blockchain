@@ -27,6 +27,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/util"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -788,7 +789,7 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 		batch.Put([]byte(keyStateHeight), hb)
 	}
 
-	if err := s.db.Write(batch, nil); err != nil {
+	if err := persist.Write(s.db, batch); err != nil {
 		return [32]byte{}, fmt.Errorf("state commit failed: %w", err)
 	}
 
