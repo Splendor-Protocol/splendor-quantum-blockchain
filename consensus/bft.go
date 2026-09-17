@@ -10,7 +10,6 @@ package consensus
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -67,6 +66,11 @@ type Vote struct {
 
 	// Timestamp when this vote was created.
 	Timestamp int64 `json:"timestamp"`
+
+	// Kind is empty for the pre-bft_rounds_v1 single vote. Under
+	// bft_rounds_v1 it is types.VoteKindPrevote or VoteKindPrecommit and
+	// is inside the signed digest.
+	Kind string `json:"kind,omitempty"`
 }
 
 // VoteBody is the canonical signable subset of Vote (excludes Signature).
@@ -77,6 +81,7 @@ type VoteBody struct {
 	BlockHash     [32]byte        `json:"block_hash"`
 	ValidatorAddr qcrypto.Address `json:"validator_addr"`
 	Timestamp     int64           `json:"timestamp"`
+	Kind          string          `json:"kind,omitempty"`
 }
 
 // Hash computes SHA3-256 of the canonical vote body.
@@ -84,19 +89,7 @@ type VoteBody struct {
 // AlgID is inside the signed body, so an attacker cannot downgrade a vote by
 // rewriting the algorithm label on the wire.
 func (v *Vote) Hash() ([32]byte, error) {
-	body := VoteBody{
-		AlgID:         v.AlgID,
-		Height:        v.Height,
-		Round:         v.Round,
-		BlockHash:     v.BlockHash,
-		ValidatorAddr: v.ValidatorAddr,
-		Timestamp:     v.Timestamp,
-	}
-	b, err := json.Marshal(body)
-	if err != nil {
-		return [32]byte{}, err
-	}
-	return qcrypto.Hash32(b), nil
+	return types.VoteDigest(v.AlgID, v.Height, v.Round, v.BlockHash, v.ValidatorAddr, v.Timestamp, v.Kind)
 }
 
 // Sign signs the vote with the given ML-DSA-65 private key, under the vote
@@ -153,10 +146,15 @@ type VoteSet struct {
 	votes          map[qcrypto.Address]*Vote // one vote per validator
 	totalWeight    int                       // total number of validators
 	requiredWeight int                       // 2/3 + 1 threshold
+	kind           string                    // empty, prevote, or precommit
 }
 
 // NewVoteSet creates a new vote set for a block at height/round.
 func NewVoteSet(height uint64, round uint32, blockHash [32]byte, validatorCount int) *VoteSet {
+	return newVoteSet(height, round, blockHash, validatorCount, "")
+}
+
+func newVoteSet(height uint64, round uint32, blockHash [32]byte, validatorCount int, kind string) *VoteSet {
 	required := (validatorCount*2)/3 + 1
 	return &VoteSet{
 		height:         height,
@@ -165,6 +163,7 @@ func NewVoteSet(height uint64, round uint32, blockHash [32]byte, validatorCount 
 		votes:          make(map[qcrypto.Address]*Vote),
 		totalWeight:    validatorCount,
 		requiredWeight: required,
+		kind:           kind,
 	}
 }
 
@@ -183,6 +182,9 @@ func (vs *VoteSet) AddVote(vote *Vote) (bool, error) {
 	}
 	if vote.BlockHash != vs.blockHash {
 		return false, fmt.Errorf("wrong block hash in vote from %s", vote.ValidatorAddr)
+	}
+	if vs.kind != "" && vote.Kind != vs.kind {
+		return false, fmt.Errorf("wrong vote kind: want %s got %s", vs.kind, vote.Kind)
 	}
 
 	// Check for duplicate vote
@@ -314,6 +316,16 @@ type BFTEngine struct {
 	journal          *VoteJournal
 	broadcast        VoteBroadcaster
 	broadcastP       ProposalBroadcaster
+	broadcastRC      func(*RoundChange)
+	roundsActive     func(uint64) bool
+	rcCh             chan *RoundChange
+	precommits       *VoteSet
+	hasPOL           bool
+	polHash          [32]byte
+	polRound         uint32
+	polHeight        uint64
+	rcByRound        map[uint32]map[qcrypto.Address]*RoundChange
+	rcQCRound        int32
 }
 
 // BFTConfig configures the BFT engine.
@@ -345,6 +357,12 @@ type BFTConfig struct {
 	// adopts a proposal. nil (tests) means always. Wired to the executor's
 	// apply-halt so a failed state commit cannot be followed by a new vote.
 	CanProgress func() bool
+	// RoundsV1 reports whether two-phase BFT is active at height. nil keeps
+	// the pre-fork single-vote path.
+	RoundsV1 func(height uint64) bool
+	// BroadcastRoundChange sends an authenticated round-change. nil (tests)
+	// still records the local message so a solo validator can form a QC.
+	BroadcastRoundChange func(*RoundChange)
 }
 
 // NewBFTEngine creates a working multi-validator BFT engine.
@@ -368,12 +386,17 @@ func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
 		canProgress:      cfg.CanProgress,
 		broadcast:        cfg.Broadcast,
 		broadcastP:       cfg.BroadcastProposal,
+		broadcastRC:      cfg.BroadcastRoundChange,
+		roundsActive:     cfg.RoundsV1,
 		voteCh:           make(chan *Vote, 1000),
 		commitCh:         make(chan *types.Block, 16),
 		proposeCh:        make(chan *pendingProposal, 16),
 		wakeCh:           make(chan struct{}, 1),
+		rcCh:             make(chan *RoundChange, 256),
 		seenVotes:        make(map[string]*Vote),
 		pendingVotes:     make(map[string][]*Vote),
+		rcByRound:        make(map[uint32]map[qcrypto.Address]*RoundChange),
+		rcQCRound:        -1,
 	}, nil
 }
 
@@ -468,6 +491,18 @@ func (e *BFTEngine) ProposeBlock(b *types.Block) {
 	select {
 	case e.proposeCh <- &pendingProposal{block: b, local: true}:
 	default:
+	}
+}
+
+// SubmitRoundChange queues an authenticated round-change from a peer.
+func (e *BFTEngine) SubmitRoundChange(rc *RoundChange) {
+	if rc == nil {
+		return
+	}
+	select {
+	case e.rcCh <- rc:
+	default:
+		log.Warn().Msg("BFT: round-change channel full, dropping")
 	}
 }
 
@@ -586,6 +621,9 @@ func (e *BFTEngine) Run(ctx context.Context) error {
 			e.syncRoundTimer(rt, accepted)
 		case vote := <-e.voteCh:
 			e.handleVote(vote)
+			e.syncRoundTimer(rt, false)
+		case rc := <-e.rcCh:
+			e.handleRoundChange(rc)
 			e.syncRoundTimer(rt, false)
 		case <-e.wakeCh:
 			e.syncRoundTimer(rt, false)
@@ -718,6 +756,9 @@ func (e *BFTEngine) viewChangeLocked() bool {
 	if e.ValidatorCount() == 0 {
 		return false
 	}
+	if e.roundsV1(e.currentHeight) {
+		return e.viewChangeTwoPhaseLocked()
+	}
 	e.currentRound++
 	e.voteSet = nil
 	e.proposal = nil
@@ -781,6 +822,9 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) bool {
 
 	if p == nil || p.block == nil {
 		return false
+	}
+	if e.roundsV1(p.block.Header.Height) {
+		return e.handleProposalTwoPhase(p)
 	}
 	b := p.block
 	// Size the quorum from the registry as it is NOW, not as it was at the
@@ -980,6 +1024,13 @@ func (e *BFTEngine) recordQuorum(b *types.Block) {
 		Msg("quorum achieved")
 }
 
+func voteSeenKey(v *Vote) string {
+	if v.Kind == "" {
+		return v.ValidatorAddr.String() + "|" + fmt.Sprintf("%d|%d", v.Height, v.Round)
+	}
+	return v.ValidatorAddr.String() + "|" + fmt.Sprintf("%d|%d|%s", v.Height, v.Round, v.Kind)
+}
+
 // pendingVoteKey identifies the vote set a buffered vote belongs to.
 func pendingVoteKey(height uint64, round uint32) string {
 	return fmt.Sprintf("%d|%d", height, round)
@@ -1009,11 +1060,28 @@ func (e *BFTEngine) bufferVote(v *Vote) {
 func (e *BFTEngine) drainPendingVotes() {
 	key := pendingVoteKey(e.currentHeight, e.currentRound)
 	held := e.pendingVotes[key]
-	delete(e.pendingVotes, key)
+	var rest []*Vote
 	for _, v := range held {
-		if _, err := e.voteSet.AddVote(v); err != nil {
-			log.Debug().Err(err).Msg("BFT: early vote not counted")
+		added := false
+		if e.precommits != nil && v.Kind == types.VoteKindPrecommit {
+			if _, err := e.precommits.AddVote(v); err != nil {
+				log.Debug().Err(err).Msg("BFT: early precommit not counted")
+			}
+			added = true
+		} else if e.voteSet != nil && (e.voteSet.kind == "" || v.Kind == e.voteSet.kind) {
+			if _, err := e.voteSet.AddVote(v); err != nil {
+				log.Debug().Err(err).Msg("BFT: early vote not counted")
+			}
+			added = true
 		}
+		if !added {
+			rest = append(rest, v)
+		}
+	}
+	if len(rest) == 0 {
+		delete(e.pendingVotes, key)
+	} else {
+		e.pendingVotes[key] = rest
 	}
 	e.prunePendingVotes(e.currentHeight)
 }
@@ -1050,6 +1118,10 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 	if vote == nil {
 		return
 	}
+	if vote.Kind != "" || e.roundsV1(vote.Height) {
+		e.handleVoteTwoPhase(vote)
+		return
+	}
 	pubKey := e.findValidatorPubKey(vote.ValidatorAddr)
 	if pubKey == nil {
 		log.Warn().Str("from", vote.ValidatorAddr.String()).Msg("BFT: vote from unknown validator")
@@ -1060,7 +1132,7 @@ func (e *BFTEngine) handleVote(vote *Vote) {
 		return
 	}
 
-	key := vote.ValidatorAddr.String() + "|" + fmt.Sprintf("%d|%d", vote.Height, vote.Round)
+	key := voteSeenKey(vote)
 	if prev, ok := e.seenVotes[key]; ok {
 		if prev.BlockHash != vote.BlockHash {
 			log.Warn().
@@ -1119,9 +1191,13 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 		return
 	}
 
-	// Build QC from vote set
-	raw := e.voteSet.Votes()
-	if len(raw) < e.voteSet.requiredWeight {
+	// Build QC from vote set. Two-phase commits on precommits.
+	vs := e.voteSet
+	if e.precommits != nil {
+		vs = e.precommits
+	}
+	raw := vs.Votes()
+	if len(raw) < vs.requiredWeight {
 		log.Error().
 			Uint64("height", b.Header.Height).
 			Int("votes", len(raw)).
@@ -1160,6 +1236,7 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 			ValidatorAddr: v.ValidatorAddr,
 			Signature:     v.Signature,
 			Timestamp:     v.Timestamp,
+			Kind:          v.Kind,
 		})
 	}
 
@@ -1185,8 +1262,11 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 			e.hasQuorum = false
 			e.hasVoted = false
 			e.voteSet = nil
+			e.precommits = nil
 			e.proposal = nil
 			e.lockedProposal = nil
+			e.hasPOL = false
+			e.rcQCRound = -1
 			return
 		}
 	}
@@ -1204,10 +1284,14 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 
 	// Clear ALL state (including vote commitment)
 	e.voteSet = nil
+	e.precommits = nil
 	e.proposal = nil
 	e.lockedProposal = nil
 	e.hasVoted = false
 	e.hasQuorum = false
+	e.hasPOL = false
+	e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
+	e.rcQCRound = -1
 
 	// Cleanup
 	e.prunePendingVotes(e.currentHeight)
@@ -1253,6 +1337,10 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	e.currentRound = 0
 	e.hasVoted = false
 	e.hasQuorum = false
+	e.hasPOL = false
+	e.precommits = nil
+	e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
+	e.rcQCRound = -1
 	e.lockedProposal = nil
 
 	// Crash recovery: A restart re-enters a height the previous process may
@@ -1288,13 +1376,16 @@ func (e *BFTEngine) SetHeight(h uint64) {
 func (e *BFTEngine) LockedProposal() *types.Block {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
-	if e.lockedProposal == nil || !e.hasVoted {
+	if e.lockedProposal == nil {
 		return nil
 	}
-	if e.lockedProposal.Header.Height != e.votedHeight || e.lockedProposal.Hash != e.votedHash {
-		return nil
+	if e.hasVoted && e.lockedProposal.Header.Height == e.votedHeight && e.lockedProposal.Hash == e.votedHash {
+		return e.lockedProposal
 	}
-	return e.lockedProposal
+	if e.hasPOL && e.lockedProposal.Header.Height == e.polHeight && e.lockedProposal.Hash == e.polHash {
+		return e.lockedProposal
+	}
+	return nil
 }
 
 // VoteLockedAt reports whether this node is already committed to a hash at h
@@ -1303,6 +1394,9 @@ func (e *BFTEngine) VoteLockedAt(h uint64) bool {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 	if e.hasVoted && e.votedHeight == h {
+		return true
+	}
+	if e.hasPOL && e.polHeight == h {
 		return true
 	}
 	if e.journal != nil {

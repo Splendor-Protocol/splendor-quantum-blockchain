@@ -940,10 +940,19 @@ func runNode(cmd *cobra.Command, args []string) error {
 			// before this node votes on it, so a quorum cannot form on a
 			// block this node could never commit.
 			ValidateProposal: executor.ValidateProposal,
+			RoundsV1: func(h uint64) bool {
+				return executor.Forks().Active(forks.BFTRoundsV1, h)
+			},
 			Broadcast: func(vote *consensus.Vote) {
 				data, err := json.Marshal(vote)
 				if err == nil {
 					broadcaster.BroadcastSealed(network.KindVote, data)
+				}
+			},
+			BroadcastRoundChange: func(rc *consensus.RoundChange) {
+				data, err := json.Marshal(rc)
+				if err == nil {
+					broadcaster.BroadcastSealed(network.KindRoundChange, data)
 				}
 			},
 			// The envelope, not a bare block: it carries the round the
@@ -1187,6 +1196,18 @@ func runNode(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("proposal rejected: %w", err)
 			}
 			eng.SubmitProposal(msg)
+			return nil
+		},
+		HandleRoundChange: func(body []byte) error {
+			eng := bftEngine()
+			if eng == nil {
+				return fmt.Errorf("this node is not running BFT")
+			}
+			var rc consensus.RoundChange
+			if err := json.Unmarshal(body, &rc); err != nil {
+				return fmt.Errorf("invalid round-change: %w", err)
+			}
+			eng.SubmitRoundChange(&rc)
 			return nil
 		},
 		// A transaction relayed by a peer. It is admitted under exactly the

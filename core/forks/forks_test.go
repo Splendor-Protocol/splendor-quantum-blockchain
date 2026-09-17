@@ -50,6 +50,18 @@ func TestAtReportsScheduling(t *testing.T) {
 	}
 }
 
+func TestBFTRoundsV1UnscheduledMeansNever(t *testing.T) {
+	if !isKnown(BFTRoundsV1) {
+		t.Fatal("bft_rounds_v1 must be a known name so a genesis can schedule it")
+	}
+	if (Schedule{}).Active(BFTRoundsV1, 1) || (Schedule{BFTRoundsV1: 0}).Active(BFTRoundsV1, 1) {
+		t.Fatal("unscheduled bft_rounds_v1 must keep the single-vote path")
+	}
+	if err := (Schedule{BFTRoundsV1: 100}).Validate(); err != nil {
+		t.Fatalf("scheduling bft_rounds_v1 must be accepted: %v", err)
+	}
+}
+
 func TestUnknownNameRefused(t *testing.T) {
 	if err := (Schedule{"nope": 1}).Validate(); err == nil {
 		t.Fatal("unknown upgrade names must be refused")
@@ -159,13 +171,13 @@ func TestValidatorsAdmissionRequiresValidatorsV1NoLaterThanItself(t *testing.T) 
 		s  Schedule
 		ok bool
 	}{
-		"all at 1":               {Schedule{ValidatorsAdmissionV1: 1, ValidatorsV1: 1, ModuleRevertV1: 1}, true},
-		"validators earlier":     {Schedule{ValidatorsAdmissionV1: 10, ValidatorsV1: 5, ModuleRevertV1: 1}, true},
-		"validators alone":       {Schedule{ValidatorsV1: 1, ModuleRevertV1: 1}, true},
-		"admission alone":        {Schedule{ValidatorsAdmissionV1: 1, ModuleRevertV1: 1}, false},
-		"validators later":       {Schedule{ValidatorsAdmissionV1: 5, ValidatorsV1: 6, ModuleRevertV1: 1}, false},
-		"no module_revert":       {Schedule{ValidatorsAdmissionV1: 1, ValidatorsV1: 1}, false},
-		"admission never (0)":    {Schedule{ValidatorsAdmissionV1: 0, ValidatorsV1: 1, ModuleRevertV1: 1}, true},
+		"all at 1":            {Schedule{ValidatorsAdmissionV1: 1, ValidatorsV1: 1, ModuleRevertV1: 1}, true},
+		"validators earlier":  {Schedule{ValidatorsAdmissionV1: 10, ValidatorsV1: 5, ModuleRevertV1: 1}, true},
+		"validators alone":    {Schedule{ValidatorsV1: 1, ModuleRevertV1: 1}, true},
+		"admission alone":     {Schedule{ValidatorsAdmissionV1: 1, ModuleRevertV1: 1}, false},
+		"validators later":    {Schedule{ValidatorsAdmissionV1: 5, ValidatorsV1: 6, ModuleRevertV1: 1}, false},
+		"no module_revert":    {Schedule{ValidatorsAdmissionV1: 1, ValidatorsV1: 1}, false},
+		"admission never (0)": {Schedule{ValidatorsAdmissionV1: 0, ValidatorsV1: 1, ModuleRevertV1: 1}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := tc.s.Validate()

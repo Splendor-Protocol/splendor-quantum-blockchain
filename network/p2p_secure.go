@@ -32,10 +32,11 @@ const (
 // confidentiality and peer authentication but are not token-gated: a syncing
 // RPC node must be able to catch up without holding the validator's secret.
 const (
-	KindBlock    = "block"
-	KindAnnounce = "announce"
-	KindVote     = "vote"
-	KindProposal = "proposal"
+	KindBlock       = "block"
+	KindAnnounce    = "announce"
+	KindVote        = "vote"
+	KindProposal    = "proposal"
+	KindRoundChange = "round_change"
 	// KindTx relays a transaction one hop to the node's peers.
 	//
 	// Only the leader of a height puts transactions into a block, and there
