@@ -777,8 +777,8 @@ func (e *Executor) completeSnapshotStateFromEvidence(marker *snapshotImportMarke
 		return fmt.Errorf("recovery: block %d stored but state is neither imported nor fresh — refusing to overwrite", marker.Height)
 	}
 	if d, err := e.openSnapshotDownload(); err != nil {
-		return fmt.Errorf("recovery: download staging unreadable: %w", err)
-	} else if d != nil {
+		log.Warn().Err(err).Msg("recovery: download staging unreadable; trying legacy staging")
+	} else if d != nil && d.Done() {
 		if err := d.VerifyRoot(); err != nil {
 			return fmt.Errorf("recovery: download staging failed integrity: %w", err)
 		}
@@ -809,7 +809,7 @@ func (e *Executor) completeSnapshotStateFromEvidence(marker *snapshotImportMarke
 }
 
 func (e *Executor) hasVerifiedSnapshotEvidence(marker *snapshotImportMarker) bool {
-	if d, err := e.openSnapshotDownload(); err == nil && d != nil && d.Head() != nil &&
+	if d, err := e.openSnapshotDownload(); err == nil && d != nil && d.Done() && d.Head() != nil &&
 		d.Head().Hash == marker.BlockHash && d.VerifyRoot() == nil && d.StateRoot() == marker.StateRoot {
 		return true
 	}
@@ -822,7 +822,7 @@ func (e *Executor) hasVerifiedSnapshotEvidence(marker *snapshotImportMarker) boo
 
 func (e *Executor) restoreSnapshotBlockFromEvidence(marker *snapshotImportMarker) error {
 	if d, err := e.openSnapshotDownload(); err != nil {
-		return fmt.Errorf("recovery: download staging unreadable: %w", err)
+		log.Warn().Err(err).Msg("recovery: download staging unreadable; trying legacy staging")
 	} else if d != nil && d.Head() != nil && d.Head().Hash == marker.BlockHash {
 		if err := e.storeBlock(d.Head()); err != nil {
 			return fmt.Errorf("recovery: restore snapshot head: %w", err)
