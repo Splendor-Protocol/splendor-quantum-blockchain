@@ -62,6 +62,18 @@ func TestBFTRoundsV1UnscheduledMeansNever(t *testing.T) {
 	}
 }
 
+func TestVMGasV1UnscheduledMeansNever(t *testing.T) {
+	if !isKnown(VMGasV1) {
+		t.Fatal("vm_gas_v1 must be a known name so a genesis can schedule it")
+	}
+	if (Schedule{}).Active(VMGasV1, 1) || (Schedule{VMGasV1: 0}).Active(VMGasV1, 1) {
+		t.Fatal("unscheduled vm_gas_v1 must keep pre-fork child gas and drop OOG txs")
+	}
+	if err := (Schedule{VMGasV1: 100}).Validate(); err != nil {
+		t.Fatalf("scheduling vm_gas_v1 must be accepted: %v", err)
+	}
+}
+
 func TestUnknownNameRefused(t *testing.T) {
 	if err := (Schedule{"nope": 1}).Validate(); err == nil {
 		t.Fatal("unknown upgrade names must be refused")
