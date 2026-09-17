@@ -1,0 +1,72 @@
+package network
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
+)
+
+const (
+	// maxObjectManifestReplyBytes bounds a sealed manifest reply. An ML-DSA-65
+	// public key plus signature plus a small descriptor is well under 8 KiB;
+	// 16 KiB leaves room without approaching a symbol payload.
+	maxObjectManifestReplyBytes = 16 << 10
+	// maxObjectSymbolReplyBytes bounds one proof: MaxSymbolSize payload plus
+	// coefficients, Merkle siblings, and SQCO headers.
+	maxObjectSymbolReplyBytes = coding.MaxSymbolSize + coding.MaxSourceSymbols + (objects.MaxMerkleSiblings * 32) + 1024
+	objectFetchTimeout        = 1 * time.Minute
+)
+
+// FetchCodedObject pulls a peer's currently published coded object over the
+// sealed channel: verify the manifest against the peer's pinned node identity,
+// then authenticate-before-decode every symbol. Default snapshot/block sync
+// does not call this; it is the opt-in live path behind --object-codec.
+func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) ([]byte, error) {
+	if f.cfg.Identities == nil {
+		return nil, fmt.Errorf("coded object from %s: no sealed transport configured", peerAddr)
+	}
+	doc, err := f.cfg.Identities.Get(peerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("coded object from %s: peer identity: %w", peerAddr, err)
+	}
+	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetObjectManifest, []byte(`{}`),
+		maxObjectManifestReplyBytes, objectFetchTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("fetch object manifest from %s: %w", peerAddr, err)
+	}
+	manifest, err := objects.DecodeManifest(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode object manifest from %s: %w", peerAddr, err)
+	}
+	recv, err := objects.NewReceiver(manifest, limits, objects.AllowSignerBytes(doc.NodePubKey))
+	if err != nil {
+		return nil, fmt.Errorf("object manifest from %s: %w", peerAddr, err)
+	}
+	descID := manifest.DescriptorID()
+	for i := uint32(0); i < manifest.CodebookSize && !recv.Ready(); i++ {
+		reqBody, err := json.Marshal(GetObjectSymbolRequest{DescriptorID: descID[:], Index: i})
+		if err != nil {
+			return nil, err
+		}
+		proofRaw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetObjectSymbol, reqBody,
+			int64(maxObjectSymbolReplyBytes), objectFetchTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("fetch object symbol %d from %s: %w", i, peerAddr, err)
+		}
+		proof, err := objects.DecodeSymbolProof(proofRaw)
+		if err != nil {
+			return nil, fmt.Errorf("decode object symbol %d from %s: %w", i, peerAddr, err)
+		}
+		if _, err := recv.AbsorbProof(proof); err != nil {
+			return nil, fmt.Errorf("object symbol %d from %s: %w", i, peerAddr, err)
+		}
+	}
+	got, err := recv.Decode()
+	if err != nil {
+		return nil, fmt.Errorf("decode coded object from %s: %w", peerAddr, err)
+	}
+	return got, nil
+}
