@@ -2,6 +2,7 @@ package network
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -398,7 +399,12 @@ func (c *IdentityCache) SendSealed(peerURL, token, kind string, body []byte) err
 // still content-verified by the caller — encryption authenticates the channel,
 // not the chain data travelling over it.
 func (c *IdentityCache) QuerySealed(peerURL, kind string, body []byte, maxReply int64) ([]byte, error) {
-	return c.querySealed(c.client, peerURL, kind, body, maxReply)
+	return c.QuerySealedContext(context.Background(), peerURL, kind, body, maxReply)
+}
+
+// QuerySealedContext is QuerySealed with a cancellable request context.
+func (c *IdentityCache) QuerySealedContext(ctx context.Context, peerURL, kind string, body []byte, maxReply int64) ([]byte, error) {
+	return c.querySealed(ctx, c.client, peerURL, kind, body, maxReply)
 }
 
 // QuerySealedTimeout is QuerySealed with its own request timeout, for the one
@@ -410,10 +416,13 @@ func (c *IdentityCache) QuerySealedTimeout(peerURL, kind string, body []byte, ma
 		CheckRedirect: noRedirect,
 		Transport:     SafeTransport(timeout),
 	}
-	return c.querySealed(client, peerURL, kind, body, maxReply)
+	return c.querySealed(context.Background(), client, peerURL, kind, body, maxReply)
 }
 
-func (c *IdentityCache) querySealed(client *http.Client, peerURL, kind string, body []byte, maxReply int64) ([]byte, error) {
+func (c *IdentityCache) querySealed(ctx context.Context, client *http.Client, peerURL, kind string, body []byte, maxReply int64) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	peerURL = canonicalPeerURL(peerURL)
 	doc, err := c.Get(peerURL)
 	if err != nil {
@@ -442,7 +451,12 @@ func (c *IdentityCache) querySealed(client *http.Client, peerURL, kind string, b
 		return nil, fmt.Errorf("marshal envelope: %w", err)
 	}
 
-	resp, err := client.Post(peerURL+PathSealed, "application/json", bytes.NewReader(wire))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, peerURL+PathSealed, bytes.NewReader(wire))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
 		c.Forget(peerURL)
 		return nil, fmt.Errorf("POST %s: %w", PathSealed, err)

@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	MaxTxPerBlock = 10_000
-	prefixBlock   = "block:"
-	prefixHeight  = "height:"
-	keyLatest     = "latest"
+	MaxTxPerBlock       = 10_000
+	prefixBlock         = "block:"
+	prefixHeight        = "height:"
+	prefixChainReceipts = "rcpts:"
+	keyLatest           = "latest"
 
 	// MaxBlockGas caps the total VM gas a block may consume (mirrors
 	// config.MaxBlockGas). Without enforcement, 10k txs * MaxGasPerCall (10M) =
@@ -167,7 +168,7 @@ type txIndexProgress interface {
 	CoverageFrom() (uint64, bool)
 	MarkSnapshotCoverage(height uint64) error
 	RecordBlock(b *types.Block, receipts []*types.Receipt) error
-	Backfill(from, to uint64, getBlock func(uint64) (*types.Block, error)) error
+	Backfill(from, to uint64, load func(uint64) (*types.Block, []*types.Receipt, error)) error
 }
 
 // NewExecutor creates a new block executor with default settings.
@@ -210,7 +211,10 @@ func (e *Executor) recordTxIndex(b *types.Block, receipts []*types.Receipt) {
 	}
 	if prog, ok := e.txIndex.(txIndexProgress); ok {
 		if err := prog.RecordBlock(b, receipts); err != nil {
-			log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: record failed; will backfill on reconcile")
+			log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: record failed; retrying before reconcile")
+			if err := prog.RecordBlock(b, receipts); err != nil {
+				log.Warn().Err(err).Uint64("height", b.Header.Height).Msg("tx index: retry failed; ReconcileTxIndex will backfill")
+			}
 		}
 		return
 	}
@@ -256,6 +260,15 @@ func (e *Executor) ReconcileTxIndex() error {
 	}
 	if cov, cok := prog.CoverageFrom(); cok && start < cov {
 		start = cov
+	} else if !cok {
+		if first, ok := e.snapshotIndexGapStart(); ok {
+			if err := prog.MarkSnapshotCoverage(first); err != nil {
+				return err
+			}
+			if start < first {
+				start = first
+			}
+		}
 	}
 	if head, err := e.LatestBlock(); err == nil && head != nil && head.Header.Height > 0 {
 		if _, berr := e.GetBlockByHeight(head.Header.Height - 1); errors.Is(berr, types.ErrBlockNotFound) {
@@ -270,13 +283,39 @@ func (e *Executor) ReconcileTxIndex() error {
 	if start > applied {
 		return nil
 	}
-	return prog.Backfill(start, applied, func(h uint64) (*types.Block, error) {
+	return prog.Backfill(start, applied, func(h uint64) (*types.Block, []*types.Receipt, error) {
 		b, err := e.GetBlockByHeight(h)
 		if errors.Is(err, types.ErrBlockNotFound) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return b, err
+		if err != nil {
+			return nil, nil, err
+		}
+		receipts, rerr := e.loadChainReceipts(h)
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		return b, receipts, nil
 	})
+}
+
+// snapshotIndexGapStart reports the first stored height when block 1 is
+// missing — the snapshot-join shape — so a lost CoverageFrom mark can be
+// rewritten after later blocks have already been applied.
+func (e *Executor) snapshotIndexGapStart() (uint64, bool) {
+	head, err := e.LatestBlock()
+	if err != nil || head == nil || head.Header.Height <= 1 {
+		return 0, false
+	}
+	if _, err := e.GetBlockByHeight(1); !errors.Is(err, types.ErrBlockNotFound) {
+		return 0, false
+	}
+	for h := uint64(2); h <= head.Header.Height; h++ {
+		if b, err := e.GetBlockByHeight(h); err == nil && b != nil {
+			return h, true
+		}
+	}
+	return head.Header.Height, true
 }
 
 func (e *Executor) markSnapshotIndexCoverage(height uint64) {
@@ -499,7 +538,7 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 	// marker. A crash between the two leaves the head ahead of the state by one
 	// block, which boot reconciliation replays from the already-stored block. The
 	// reverse order (state ahead of a head with no stored block) is unrecoverable.
-	if err := e.storeBlock(b); err != nil {
+	if err := e.storeBlockAndReceipts(b, receipts); err != nil {
 		e.state.DiscardPending()
 		return fmt.Errorf("block store failed: %w", err)
 	}
@@ -1498,7 +1537,7 @@ func (e *Executor) assembleBlock(
 		return b, skipped, nil
 	}
 
-	if err := e.storeBlock(b); err != nil {
+	if err := e.storeBlockAndReceipts(b, receipts); err != nil {
 		return nil, nil, fmt.Errorf("store block: %w", err)
 	}
 	if _, err := e.state.CommitWithHeight(height); err != nil {
@@ -1525,6 +1564,10 @@ func (e *Executor) assembleBlock(
 // ── Chain DB helpers ──────────────────────────────────────────────────────────
 
 func (e *Executor) storeBlock(b *types.Block) error {
+	return e.storeBlockAndReceipts(b, nil)
+}
+
+func (e *Executor) storeBlockAndReceipts(b *types.Block, receipts []*types.Receipt) error {
 	data, err := json.Marshal(b)
 	if err != nil {
 		return err
@@ -1535,6 +1578,13 @@ func (e *Executor) storeBlock(b *types.Block) error {
 	batch := new(leveldb.Batch)
 	batch.Put([]byte(prefixBlock+hashHex), data)
 	batch.Put([]byte(heightKey), []byte(hashHex))
+	if len(receipts) > 0 {
+		rcpt, err := json.Marshal(receipts)
+		if err != nil {
+			return err
+		}
+		batch.Put([]byte(fmt.Sprintf("%s%d", prefixChainReceipts, b.Header.Height)), rcpt)
+	}
 	// Advance the chain head in the SAME atomic batch as the block body, and only
 	// ever forward. Folding the head write into the batch means a block body can
 	// never be persisted without its head (or vice-versa) — the two move together.
@@ -1959,6 +2009,21 @@ func (e *Executor) GetBlock(hashHex string) (*types.Block, error) {
 	}
 	var b types.Block
 	return &b, json.Unmarshal(data, &b)
+}
+
+func (e *Executor) loadChainReceipts(height uint64) ([]*types.Receipt, error) {
+	raw, err := e.chainDB.Get([]byte(fmt.Sprintf("%s%d", prefixChainReceipts, height)), nil)
+	if err == leveldb.ErrNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var receipts []*types.Receipt
+	if err := json.Unmarshal(raw, &receipts); err != nil {
+		return nil, err
+	}
+	return receipts, nil
 }
 
 func (e *Executor) GetBlockByHeight(height uint64) (*types.Block, error) {

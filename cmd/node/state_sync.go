@@ -48,8 +48,10 @@ func nodeReadyStatus(ex *block.Executor, sdb *state.StateDB, syncer *network.Syn
 		st.Reason = "recovery in progress"
 	case stateSyncPending:
 		st.Reason = "state sync in progress"
-	case !st.AppliedKnown && head == 0:
-		st.Reason = "no applied state"
+	case st.Syncing:
+		st.Reason = "sync in progress"
+	case !st.AppliedKnown:
+		st.Reason = "applied height unknown"
 	case head == 0:
 		st.Reason = "chain not yet synced"
 	case ex != nil && ex.HasTxIndex() && st.AppliedKnown && (!st.IndexKnown || st.IndexHeight < st.AppliedHeight):
