@@ -64,7 +64,7 @@ func TestErasureRecoversFromLossUsingParitySymbols(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, s := range enc.Repair(lost) {
+	for _, s := range mustRepair(t, enc, lost) {
 		if dec.Rank() == k {
 			break
 		}
@@ -94,7 +94,7 @@ func TestErasureParityRowsAreDistinct(t *testing.T) {
 	source := genSourceSymbols(rng, 8, 32)
 	codec := NewErasureCodec()
 	enc, _ := codec.NewEncoder(source, 32)
-	repair := enc.Repair(5)
+	repair := mustRepair(t, enc, 5)
 	seen := make(map[string]bool)
 	for _, s := range repair {
 		key := string(s.Coefficients)
@@ -149,7 +149,7 @@ func TestErasureRecoversAuditCounterexample(t *testing.T) {
 		t.Fatalf("rank after 30 systematic symbols = %d, want %d", dec.Rank(), k-2)
 	}
 
-	for _, s := range enc.Repair(2) {
+	for _, s := range mustRepair(t, enc, 2) {
 		if _, err := dec.Absorb(s); err != nil {
 			t.Fatalf("absorb repair %d: %v", s.Index, err)
 		}
@@ -182,7 +182,7 @@ func TestErasureAnyKRecoverSmall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	all := append(enc.Systematic(), enc.Repair(parity)...)
+	all := append(enc.Systematic(), mustRepair(t, enc, parity)...)
 	if len(all) != k+parity {
 		t.Fatalf("have %d symbols, want %d", len(all), k+parity)
 	}
@@ -243,7 +243,7 @@ func TestErasureRepairStopsAtFieldLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := enc.Repair(5)
+	rep := mustRepair(t, enc, 5)
 	if len(rep) != 1 {
 		t.Fatalf("Repair(5) at k=%d returned %d rows, want 1 (k+n <= 255 cap)", k, len(rep))
 	}
@@ -252,11 +252,9 @@ func TestErasureRepairStopsAtFieldLimit(t *testing.T) {
 	}
 }
 
-// A caller asking for an absurd repair count must not cause a large
-// allocation: the emit count is capped to the field limit before any capacity
-// is reserved, so Repair(1<<25) returns exactly (255-k) rows, not an attempt
-// to reserve 33M slots.
-func TestErasureRepairCapsAllocation(t *testing.T) {
+// A caller asking for an absurd repair count must fail before any capacity
+// is reserved — Repair(1<<25) is an error, not an attempt to reserve 33M slots.
+func TestErasureRepairRejectsHugeN(t *testing.T) {
 	source := make([][]byte, 8)
 	for i := range source {
 		source[i] = make([]byte, 16)
@@ -265,9 +263,25 @@ func TestErasureRepairCapsAllocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := enc.Repair(1 << 25)
+	if _, err := enc.Repair(1 << 25); !errors.Is(err, ErrRepairCountTooLarge) {
+		t.Fatalf("Repair(1<<25) = %v, want ErrRepairCountTooLarge", err)
+	}
+}
+
+// Within the library emit cap, Repair still cannot emit more parity rows
+// than GF(256) has room for (k+n <= 255).
+func TestErasureRepairCapsToFieldRoom(t *testing.T) {
+	source := make([][]byte, 8)
+	for i := range source {
+		source[i] = make([]byte, 16)
+	}
+	enc, err := NewErasureCodec().NewEncoder(source, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := mustRepair(t, enc, 300)
 	if len(rep) != 255-8 {
-		t.Fatalf("Repair(1<<25) returned %d rows, want %d", len(rep), 255-8)
+		t.Fatalf("Repair(300) returned %d rows, want %d", len(rep), 255-8)
 	}
 }
 

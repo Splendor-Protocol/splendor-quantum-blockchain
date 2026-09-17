@@ -148,7 +148,11 @@ func runTrials(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairO
 			if repairBudget < 1 {
 				repairBudget = 1
 			}
-			for _, s := range enc.Repair(repairBudget) {
+			repairs, err := enc.Repair(repairBudget)
+			if err != nil {
+				continue
+			}
+			for _, s := range repairs {
 				if dec.Rank() == sourceCount {
 					break
 				}

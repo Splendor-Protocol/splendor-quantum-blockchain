@@ -71,14 +71,35 @@ type Codebook struct {
 	levels [][][32]byte
 }
 
+func cloneSymbol(s coding.Symbol) coding.Symbol {
+	return coding.Symbol{
+		Index:        s.Index,
+		Coefficients: append([]byte(nil), s.Coefficients...),
+		Payload:      append([]byte(nil), s.Payload...),
+	}
+}
+
+func cloneSymbols(symbols []coding.Symbol) []coding.Symbol {
+	out := make([]coding.Symbol, len(symbols))
+	for i, s := range symbols {
+		out[i] = cloneSymbol(s)
+	}
+	return out
+}
+
 // BuildCodebook commits to every symbol in a generation (systematic plus a
-// finite repair set) under one descriptor ID.
+// finite repair set) under one descriptor ID. Coefficient and payload
+// buffers are deep-copied so later caller mutation cannot invalidate the
+// committed proofs.
 func BuildCodebook(descID [32]byte, symbols []coding.Symbol) (*Codebook, error) {
 	if len(symbols) == 0 {
 		return nil, errors.New("objects: codebook has no symbols")
 	}
-	leaves := make([][32]byte, len(symbols))
-	for i, s := range symbols {
+	// Copy first so the committed leaves and the stored symbols come from
+	// the same independent buffers; later caller mutation cannot desync them.
+	cp := cloneSymbols(symbols)
+	leaves := make([][32]byte, len(cp))
+	for i, s := range cp {
 		if !validSymbolIndex(s.Index) {
 			return nil, fmt.Errorf("objects: symbol %d has index %d, out of the uint32 wire range", i, s.Index)
 		}
@@ -98,8 +119,6 @@ func BuildCodebook(descID [32]byte, symbols []coding.Symbol) (*Codebook, error) 
 		levels = append(levels, next)
 		level = next
 	}
-	cp := make([]coding.Symbol, len(symbols))
-	copy(cp, symbols)
 	return &Codebook{descID: descID, symbols: cp, leaves: leaves, levels: levels}, nil
 }
 
@@ -125,7 +144,7 @@ func (c *Codebook) BuildProof(leafIndex int) (SymbolProof, error) {
 	if leafIndex < 0 || leafIndex >= len(c.symbols) {
 		return SymbolProof{}, fmt.Errorf("objects: leaf index %d out of range [0,%d)", leafIndex, len(c.symbols))
 	}
-	proof := SymbolProof{Symbol: c.symbols[leafIndex]}
+	proof := SymbolProof{Symbol: cloneSymbol(c.symbols[leafIndex])}
 	idx := leafIndex
 	for level := 0; level < len(c.levels)-1; level++ {
 		nodes := c.levels[level]

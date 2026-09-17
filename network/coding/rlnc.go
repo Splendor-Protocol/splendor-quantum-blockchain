@@ -33,8 +33,8 @@ func NewRLNCCodecWithReader(r io.Reader) *RLNCCodec { return &RLNCCodec{rnd: r} 
 func (c RLNCCodec) Name() string { return "rlnc-gf256-v1" }
 
 func (c RLNCCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder, error) {
-	if len(sourceSymbols) == 0 {
-		return nil, ErrEmptyGeneration
+	if err := validateGenerationShape(len(sourceSymbols), symbolSize); err != nil {
+		return nil, err
 	}
 	for i, s := range sourceSymbols {
 		if len(s) != symbolSize {
@@ -46,12 +46,12 @@ func (c RLNCCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder, 
 	for i, s := range sourceSymbols {
 		cp[i] = append([]byte(nil), s...)
 	}
-	return &rlncEncoder{source: cp, symbolSize: symbolSize, rnd: c.rnd}, nil
+	return &rlncEncoder{source: cp, symbolSize: symbolSize, rnd: c.rnd, nextIndex: len(cp)}, nil
 }
 
 func (RLNCCodec) NewDecoder(sourceCount, symbolSize int) (Decoder, error) {
-	if sourceCount <= 0 {
-		return nil, ErrEmptyGeneration
+	if err := validateGenerationShape(sourceCount, symbolSize); err != nil {
+		return nil, err
 	}
 	return &rlncDecoder{
 		sourceCount: sourceCount,
@@ -65,6 +65,10 @@ type rlncEncoder struct {
 	source     [][]byte
 	symbolSize int
 	rnd        io.Reader
+	// nextIndex is the next repair symbol ID, starting at SourceCount so
+	// repeated Repair calls never reuse an index while emitting new
+	// coefficient rows.
+	nextIndex int
 }
 
 func (e *rlncEncoder) SourceCount() int { return len(e.source) }
@@ -87,21 +91,29 @@ func (e *rlncEncoder) Systematic() []Symbol {
 // Repair generates n new random linear combinations of every source symbol.
 // Each call's symbols are freshly randomized: a repair symbol is never
 // reused verbatim, which is what makes requesting "one more" symbol after a
-// loss useful rather than a repeat of something already seen.
-func (e *rlncEncoder) Repair(n int) []Symbol {
-	out := make([]Symbol, 0, n)
+// loss useful rather than a repeat of something already seen. Indices are
+// assigned from nextIndex (starting at SourceCount) and only advance after
+// the full batch succeeds, so a failed call does not skip or reuse IDs.
+func (e *rlncEncoder) Repair(n int) ([]Symbol, error) {
+	if n <= 0 {
+		return []Symbol{}, nil
+	}
+	if err := validateRepairCount(n); err != nil {
+		return nil, err
+	}
 	k := len(e.source)
 	src := e.rnd
 	if src == nil {
 		src = rand.Reader
 	}
+	out := make([]Symbol, 0, n)
+	start := e.nextIndex
 	for r := 0; r < n; r++ {
 		coeffs := make([]byte, k)
-		if _, err := src.Read(coeffs); err != nil {
-			// A failed coefficient read is a fatal platform condition; the
-			// plan requires bounded, predictable failure rather than silently
-			// emitting a zero (all-zero-coefficient, i.e. useless) symbol.
-			panic(fmt.Sprintf("coding: rlnc repair symbol generation: %v", err))
+		if _, err := io.ReadFull(src, coeffs); err != nil {
+			// Incomplete or failed coefficient reads must not emit a
+			// zero-padded (all-zero / biased) symbol, and must not panic.
+			return nil, fmt.Errorf("%w: %v", ErrRepairRandomness, err)
 		}
 		payload := make([]byte, e.symbolSize)
 		for i, c := range coeffs {
@@ -110,7 +122,8 @@ func (e *rlncEncoder) Repair(n int) []Symbol {
 			}
 			gfAddScaledVec(payload, c, e.source[i])
 		}
-		out = append(out, Symbol{Index: k + r, Coefficients: coeffs, Payload: payload})
+		out = append(out, Symbol{Index: start + r, Coefficients: coeffs, Payload: payload})
 	}
-	return out
+	e.nextIndex = start + n
+	return out, nil
 }

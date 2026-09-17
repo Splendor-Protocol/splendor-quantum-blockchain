@@ -46,7 +46,11 @@ func TestUncodedHasNoRepairAndFailsOnLoss(t *testing.T) {
 	codec := NewUncodedCodec()
 	enc, _ := codec.NewEncoder(source, 16)
 
-	if r := enc.Repair(5); len(r) != 0 {
+	r, err := enc.Repair(5)
+	if err != nil {
+		t.Fatalf("uncoded Repair error: %v", err)
+	}
+	if len(r) != 0 {
 		t.Fatalf("uncoded Repair returned %d symbols, want 0", len(r))
 	}
 
