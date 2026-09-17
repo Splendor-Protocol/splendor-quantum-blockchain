@@ -5,24 +5,18 @@
 > treat exchange as a live chain capability. The routed catalog is `qrc20`,
 > `qrc1155`, `bridge`, `verify`, `validators`, `qrc721`.
 
-The `exchange` library is an app-agnostic, Polymarket-shaped
+The leftover `exchange` design was an app-agnostic, Polymarket-shaped
 settlement layer: **conditions** (a collateral token, a resolver, an end time,
 two outcomes), **complete sets** (split collateral into YES+NO positions and
 merge them back), and **operator-submitted atomic settlement of orders users
-signed off-chain**. Matching, pricing and market metadata live in an off-chain
-ledger (the gateway); what reaches consensus is *authorisation* (a maker's
-ML-DSA-65 signature over an order) and *settlement* (moving exactly what that
-order allows). There is no market logic in consensus.
+signed off-chain**. Matching, pricing and market metadata were meant to live
+in an off-chain ledger. This page is that design. It is not a live write
+path.
 
-Every write is a `TxCall` to `vm.ModuleRouterAddress` carrying the JSON
-envelope `{"module":"exchange","action":…,"params":{…}}`, gated by the
-`exchange_v1` fork: before its scheduled height every action is a HARD
-"fork not active" error (refused at `/tx/submit`, unappliable in a block), so
-a node lacking the fork rejects a block carrying one instead of diverging.
-`exchange_v1` requires `module_revert_v1` scheduled at the same or an earlier
-height (`forks.Schedule.Validate` refuses a document that gets this wrong): a
-failed `match` must be a failed receipt, never a dropped transaction that jams
-the operator's nonce.
+A `TxCall` with `{"module":"exchange",…}` is an **unknown module** at
+`DispatchModuleCall`, even if a genesis document schedules `exchange_v1`.
+Do not treat a scheduled fork name as a routed action. The rest of this
+file is historical parameter and event shape only.
 
 ## Custody model
 

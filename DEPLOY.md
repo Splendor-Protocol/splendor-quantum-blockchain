@@ -55,7 +55,7 @@
    │                    CONSENSUS LAYER                                 │
    │                                                                    │
    │  BFT multi-validator (native)                                      │
-   │    - Permissionless register: 2,500 SPLD bond, no tiers            │
+   │    - Register: 2,500 SPLD bond; admission is approval/producer     │
    │    - Leader rotation, QC votes, view-change on timeout             │
    │    - Quorum (2/3+1) required to commit a block                     │
    │    - All votes and blocks signed with ML-DSA-65                    │
@@ -380,8 +380,9 @@ refuses a circulating supply above the minted amount. The validator wallet
 signs blocks and must receive **0**. A second allocation is how a chain
 ends up with more than 26B. `install.sh --validator` defaults to that genesis
 address (`SQC_GENESIS_ADDR` overrides) and refuses a genesis that credits the
-validator or splits supply. Permissionless validators later bond 2,500 SPLD
-from existing supply — that is a lock, not a mint.
+validator or splits supply. Later validators bond 2,500 SPLD from existing
+supply — that is a lock, not a mint. After `validators_admission_v1`,
+`register` is approval/producer-based, not unconditional permissionless entry.
 
 ### Run Validator Node
 
@@ -652,26 +653,30 @@ before the field existed.
 
 Not every name in that list is live on mainnet. As of 2026-09-09 mainnet
 schedules `module_revert_v1`, `qrc20_v2`, `qrc1155_v1`, `exchange_v1`,
-`validators_v1`, `multi_validator` (all at 1) and `modules_v2` (at 79,202);
-`lending_v1`, `oracle_v1`, `multisig_v1`, `governance_v1`, `qrc721_v1`,
-`qrc4626_v1`, `verify_v1`, `bridge_v1`, `vm_revert_v1` and `min_fee_v1` are
-implemented but unscheduled there, and each needs its own reviewed activation.
-The full list above is a NEW-network template, not mainnet's schedule.
+`validators_v1`, `multi_validator` (all at 1) and `modules_v2` (at 79,202).
+A scheduled fork is not a routed module. The live write catalog is `qrc20`,
+`qrc1155`, `bridge`, `verify`, `validators`, `qrc721`. `lending_v1`,
+`oracle_v1`, `multisig_v1`, `governance_v1`, `qrc4626_v1`, and `exchange_v1`
+do not add router cases. Other names still need their own reviewed
+activation. The full list above is a NEW-network template, not mainnet's
+schedule.
 
 - **A height is the first block produced under the new rules.** `0` or an absent
   name means *never* — genesis is block 0, so `0` cannot mean "from genesis".
   The convention for a fresh chain is to schedule every rule it starts with at
   height **1**.
 - **Names.** A new deploy (`genesis-production.json`, `genesis-local.json`)
-  schedules every implemented rule at height 1: settlement (`module_revert_v1`,
-  `qrc20_v2`, `qrc1155_v1`, `exchange_v1`), `bridge_v1`, SQVL (`verify_v1`),
-  permissionless validators (`validators_v1`, 2,500 SPLD bond), lending,
-  oracle, multisig, governance, QRC-721, QRC-4626, the 0.001 SPLD fee floor
-  (`min_fee_v1`), BFT (`multi_validator`), and `modules_v2` (dex
-  `remove_liquidity`, the validator re-register guard, module gas). Routed modules require
-  `module_revert_v1` at the same or an earlier height. A chain already running
-  keeps its stored schedule and adds missing names with
-  `--allow-fork-extension` at a height above the current head.
+  may list many fork names at height 1. Only the routed catalog is a live
+  write surface: `qrc20`, `qrc1155`, `bridge`, `verify`, `validators`,
+  `qrc721` (plus `module_revert_v1`, `qrc20_v2`, `min_fee_v1`,
+  `multi_validator`, `modules_v2` as rule changes). `validators_v1` is the
+  2,500 SPLD bond; `validators_admission_v1` is approval/producer-based, not
+  unconditional permissionless entry. `exchange_v1`, `lending_v1`,
+  `oracle_v1`, `multisig_v1`, `governance_v1`, and `qrc4626_v1` may appear in
+  a template without a router case. Routed modules require `module_revert_v1`
+  at the same or an earlier height. A chain already running keeps its stored
+  schedule and adds missing names with `--allow-fork-extension` at a height
+  above the current head.
 - **A running chain's schedule can be EXTENDED, never edited.**
   `loadForkSchedule` (`cmd/node/main.go`) persists the genesis schedule to
   `meta:forks` at block 0 and treats that stored copy as authoritative on every

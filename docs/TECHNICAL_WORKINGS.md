@@ -59,7 +59,7 @@
 | Module | Path | Responsibility |
 |--------|------|----------------|
 | **State DB** | `core/state/` | LevelDB wrapper, account/storage CRUD, Merkle root computation |
-| **VM** | `vm/` | Bytecode execution, gas metering, precompiles (DEX, lending, staking) |
+| **VM** | `vm/` | Bytecode execution, gas metering, routed native modules (qrc20, qrc1155, qrc721, bridge, verify, validators) |
 | **Consensus** | `consensus/` | BFT validator coordination, AI agent bidding, block finalization |
 | **Network** | `network/` | P2P gossip, peer discovery, block/tx propagation, TLS+PQ handshakes |
 | **RPC** | `rpc/` | HTTP/WebSocket endpoints, middleware (rate limiting, CORS, auth) |

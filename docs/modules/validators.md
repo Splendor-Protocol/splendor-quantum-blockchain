@@ -1,14 +1,16 @@
 # Validators (`validators_v1`)
 
-> Permissionless registration is the protocol rule (one bond, no tiers).
-> Public admission has not launched: there is no supported public join
-> path. Operator lifecycle: [`VALIDATOR.md`](../VALIDATOR.md).
+> One bond, no tiers. After `validators_v1` the bond is required. After
+> `validators_admission_v1` only the block producer or an address an active
+> validator has `approve`d may `register`. That is not unconditional
+> permissionless entry. Operator lifecycle: [`VALIDATOR.md`](../VALIDATOR.md).
 
-Permissionless block-producer registration. One bond, no tiers.
+Block-producer registration. One bond: **2,500 SPLD**. No tiers.
 
-Anyone who can fund **2,500 SPLD** can register. The bond is a lock of
-existing native supply. It does not mint SPLD. After `unregister`, the bond
-returns at `finalize_exit` once **32 blocks** have passed.
+The bond is a lock of existing native supply. It does not mint SPLD. After
+`unregister`, the bond returns at `finalize_exit` once **32 blocks** have
+passed. `validators_v1` alone required only that bond. Once
+`validators_admission_v1` is scheduled, `register` is approval/producer-based.
 
 ## Writes
 
