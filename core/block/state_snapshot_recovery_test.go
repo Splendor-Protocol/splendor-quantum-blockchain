@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -549,9 +550,24 @@ func TestReconcileLegacyNoStagingIsIncomplete(t *testing.T) {
 	if err := exB.storeBlock(snap.Block); err != nil {
 		t.Fatal(err)
 	}
+	// An incomplete R3 download must not make reconcile fatal: the retry
+	// path still owns that directory.
+	dl, err := state.OpenSnapshotDownload(exB.snapshotDownloadPath(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dl.AcceptHead(snap.Block, snap.Height); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Leaves) == 0 {
+		t.Fatal("need leaves")
+	}
+	if err := dl.AppendPage(snap.Leaves[:1], snap.Leaves[0].Key, false, "partial"); err != nil {
+		t.Fatal(err)
+	}
 	err = exB.ReconcileSnapshotImport()
 	if err == nil || !errors.Is(err, ErrSnapshotImportIncomplete) {
-		t.Fatalf("legacy no-staging = %v, want ErrSnapshotImportIncomplete", err)
+		t.Fatalf("legacy no-staging / partial download = %v, want ErrSnapshotImportIncomplete", err)
 	}
 	if m, _ := exB.readSnapshotMarker(); m == nil {
 		t.Fatal("marker dropped on a retryable incomplete import")
@@ -559,6 +575,7 @@ func TestReconcileLegacyNoStagingIsIncomplete(t *testing.T) {
 	if !exB.HasIncompleteSnapshotImport() {
 		t.Fatal("HasIncompleteSnapshotImport = false")
 	}
+
 	if err := exB.ReconcileState(); err != nil {
 		t.Fatalf("ReconcileState during incomplete snapshot import = %v, want nil (must not replay the snapshot head)", err)
 	}
