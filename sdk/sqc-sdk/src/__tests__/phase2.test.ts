@@ -7,6 +7,7 @@ import {
   decodeUint256,
   decodeArgAddress,
   decodeArgUint256,
+  canonicalizeAbiSignature,
 } from '../abi.js';
 import { BridgeEmitter } from '../events.js';
 import { SqcProvider } from '../provider.js';
@@ -15,9 +16,12 @@ import { bytesToHex } from '../encoding.js';
 
 describe('QSol ABI', () => {
   it('selector is SHA3-256 first 4 bytes', () => {
-    // Golden must match Go vm.SelectorFromSignature (sdk/sqc-sdk/signer TestQSolSelectorGolden)
+    // Hash-as-written: compiler-canonical address vs legacy sqaddress alias.
+    expect(functionSelectorHex('transfer(address,uint256)')).toBe('4b40e901');
     expect(functionSelectorHex('transfer(sqaddress,uint256)')).toBe('14cde9ab');
-    expect(functionSelectorHex('transfer(address,uint256)')).not.toBe('14cde9ab');
+    expect(canonicalizeAbiSignature('transfer(sqaddress,uint256)')).toBe(
+      'transfer(address,uint256)',
+    );
   });
 
   it('encodes selector + 32-byte words', () => {

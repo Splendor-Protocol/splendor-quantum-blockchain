@@ -423,6 +423,7 @@ type Engine struct {
 	gasTable    GasTable
 	precompiles *PrecompileRegistry
 	gasRules    func(uint64) bool
+	callRules   func(uint64) bool
 }
 
 // SetGasRules installs the vm_gas_v1 predicate. nil keeps pre-fork gas.
@@ -432,6 +433,16 @@ func (e *Engine) SetGasRules(fn func(uint64) bool) {
 
 func (e *Engine) gasV1(height uint64) bool {
 	return e.gasRules != nil && e.gasRules(height)
+}
+
+// SetCallRules installs the vm_call_v1 predicate. nil keeps pre-fork call
+// semantics (post-exec entry value, zero DELEGATECALL value, PC CREATE nonce).
+func (e *Engine) SetCallRules(fn func(uint64) bool) {
+	e.callRules = fn
+}
+
+func (e *Engine) callV1(height uint64) bool {
+	return e.callRules != nil && e.callRules(height)
 }
 
 // NewEngine creates a new VM engine with default gas table and precompile registry.
@@ -1172,6 +1183,12 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			var value *big.Int
 			if op == OpCALL {
 				value, _ = stk.pop()
+			} else if op == OpDELEGATECALL && e.callV1(ctx.BlockHeight) {
+				if ctx.CallValue != nil {
+					value = new(big.Int).Set(ctx.CallValue)
+				} else {
+					value = big.NewInt(0)
+				}
 			} else {
 				value = big.NewInt(0)
 			}
@@ -1342,7 +1359,17 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 					break
 				}
 			}
-			contractAddr, deployErr := e.Deploy(ctx.Contract, bytecode, uint64(pc))
+			createNonce := uint64(pc)
+			if e.callV1(ctx.BlockHeight) {
+				creator, gerr := e.state.GetAccount(ctx.Contract)
+				if gerr != nil {
+					return &ExecutionResult{Err: fmt.Errorf("CREATE: creator: %w", gerr), GasUsed: gasUsed}
+				}
+				createNonce = creator.Nonce
+				creator.IncrNonce()
+				e.state.SetAccount(creator)
+			}
+			contractAddr, deployErr := e.deploy(ctx.Contract, bytecode, createNonce, ctx.BlockHeight)
 			if deployErr != nil {
 				stk.push(big.NewInt(0))
 				break
@@ -1398,12 +1425,14 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			// code wrote a fresh types.NewAccount at the derived address, which
 			// reset the balance to zero — a chosen salt could therefore destroy
 			// the SPLD held by any pre-funded address and overwrite live code.
-			if existing, gerr := e.state.GetAccount(contractAddr); gerr == nil {
-				if existing.IsContract || existing.Nonce > 0 ||
-					(existing.Balance != nil && existing.Balance.Sign() > 0) {
-					stk.push(big.NewInt(0))
-					break
+			if existing, gerr := e.state.GetAccount(contractAddr); gerr != nil {
+				if e.callV1(ctx.BlockHeight) {
+					return &ExecutionResult{Err: fmt.Errorf("CREATE2: account lookup: %w", gerr), GasUsed: gasUsed}
 				}
+			} else if existing.IsContract || existing.Nonce > 0 ||
+				(existing.Balance != nil && existing.Balance.Sign() > 0) {
+				stk.push(big.NewInt(0))
+				break
 			}
 
 			// Afford the endowment before writing the child, for the same reason
@@ -1501,6 +1530,15 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 // ── High-level API ────────────────────────────────────────────────────────────
 
 func (e *Engine) Deploy(deployer qcrypto.Address, bytecode []byte, nonce uint64) (qcrypto.Address, error) {
+	return e.DeployAt(deployer, bytecode, nonce, 0)
+}
+
+// DeployAt is Deploy judged under the vm_call_v1 rule at height.
+func (e *Engine) DeployAt(deployer qcrypto.Address, bytecode []byte, nonce, height uint64) (qcrypto.Address, error) {
+	return e.deploy(deployer, bytecode, nonce, height)
+}
+
+func (e *Engine) deploy(deployer qcrypto.Address, bytecode []byte, nonce, height uint64) (qcrypto.Address, error) {
 	if len(bytecode) == 0 {
 		return qcrypto.Address{}, fmt.Errorf("cannot deploy empty bytecode")
 	}
@@ -1521,11 +1559,14 @@ func (e *Engine) Deploy(deployer qcrypto.Address, bytecode []byte, nonce uint64)
 	// comment notes an unguarded deploy "could destroy the SPLD held by any
 	// pre-funded address"); TxDeploy and OpCREATE both reach the same hazard
 	// through here and were never guarded.
-	if existing, gerr := e.state.GetAccount(addr); gerr == nil {
-		if existing.IsContract || existing.Nonce > 0 ||
-			(existing.Balance != nil && existing.Balance.Sign() > 0) {
-			return qcrypto.Address{}, fmt.Errorf("deploy: %s is already occupied", addr)
+	existing, gerr := e.state.GetAccount(addr)
+	if gerr != nil {
+		if e.callV1(height) {
+			return qcrypto.Address{}, fmt.Errorf("deploy: account lookup: %w", gerr)
 		}
+	} else if existing.IsContract || existing.Nonce > 0 ||
+		(existing.Balance != nil && existing.Balance.Sign() > 0) {
+		return qcrypto.Address{}, fmt.Errorf("deploy: %s is already occupied", addr)
 	}
 
 	codeHash := qcrypto.Hash32(bytecode)

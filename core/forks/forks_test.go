@@ -1,6 +1,8 @@
 package forks
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -71,6 +73,36 @@ func TestVMGasV1UnscheduledMeansNever(t *testing.T) {
 	}
 	if err := (Schedule{VMGasV1: 100}).Validate(); err != nil {
 		t.Fatalf("scheduling vm_gas_v1 must be accepted: %v", err)
+	}
+}
+
+func TestVMCallV1UnscheduledMeansNever(t *testing.T) {
+	if !isKnown(VMCallV1) {
+		t.Fatal("vm_call_v1 must be a known name so a genesis can schedule it")
+	}
+	if (Schedule{}).Active(VMCallV1, 1) || (Schedule{VMCallV1: 0}).Active(VMCallV1, 1) {
+		t.Fatal("unscheduled vm_call_v1 must keep post-exec value, zero delegate value, and PC CREATE nonce")
+	}
+	if err := (Schedule{VMCallV1: 100}).Validate(); err != nil {
+		t.Fatalf("scheduling vm_call_v1 must be accepted: %v", err)
+	}
+}
+
+func TestLiveGenesisDoesNotScheduleVMCallV1(t *testing.T) {
+	for _, path := range []string{"../../genesis-production.json", "../../genesis-local.json"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		var doc struct {
+			Forks map[string]uint64 `json:"forks"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if at := doc.Forks[VMCallV1]; at != 0 {
+			t.Fatalf("%s schedules %s at %d; live genesis must leave it unscheduled", path, VMCallV1, at)
+		}
 	}
 }
 

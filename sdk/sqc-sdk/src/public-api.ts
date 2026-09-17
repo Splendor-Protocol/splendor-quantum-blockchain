@@ -42,6 +42,7 @@ export {
   decodeArgAddress,
   decodeArgUint256,
   assertQSolSignature,
+  canonicalizeAbiSignature,
 } from './abi.js';
 export type { AbiArg } from './abi.js';
 export type { BridgeEventMap, WalletEventMap } from './events.js';

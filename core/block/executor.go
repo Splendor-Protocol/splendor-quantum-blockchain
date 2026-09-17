@@ -192,6 +192,9 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 	ex.vmEngine.SetGasRules(func(h uint64) bool {
 		return ex.schedule().Active(forks.VMGasV1, h)
 	})
+	ex.vmEngine.SetCallRules(func(h uint64) bool {
+		return ex.schedule().Active(forks.VMCallV1, h)
+	})
 	return ex, nil
 }
 
@@ -941,7 +944,7 @@ func (e *Executor) executeTx(tx *types.Transaction, blockHeight uint64, blockTim
 	case types.TxTransfer:
 		return e.execTransfer(tx, fromAcc, receipt)
 	case types.TxDeploy:
-		return e.execDeploy(tx, fromAcc, receipt)
+		return e.execDeploy(tx, fromAcc, receipt, blockHeight)
 	case types.TxCall:
 		return e.execCall(tx, fromAcc, receipt, blockHeight, blockTime, producer)
 	case types.TxX402:
@@ -974,14 +977,14 @@ func (e *Executor) execTransfer(tx *types.Transaction, fromAcc *types.Account, r
 	return nil
 }
 
-func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt) error {
+func (e *Executor) execDeploy(tx *types.Transaction, fromAcc *types.Account, receipt *types.Receipt, blockHeight uint64) error {
 	if err := fromAcc.SubBalance(tx.Fee); err != nil {
 		return err
 	}
 	fromAcc.IncrNonce()
 	e.state.SetAccount(fromAcc)
 
-	contractAddr, err := e.vmEngine.Deploy(tx.From, tx.Data, tx.Nonce)
+	contractAddr, err := e.vmEngine.DeployAt(tx.From, tx.Data, tx.Nonce, blockHeight)
 	if err != nil {
 		return fmt.Errorf("deploy failed: %w", err)
 	}
@@ -1125,9 +1128,22 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 	sched := e.schedule()
 	vmRevert := sched.Active(forks.VMRevertV1, blockHeight)
 	vmGas := sched.Active(forks.VMGasV1, blockHeight)
+	vmCall := sched.Active(forks.VMCallV1, blockHeight)
 	var frame uint64
-	if vmRevert || vmGas {
+	if vmRevert || vmGas || vmCall {
 		frame = e.state.Snapshot()
+	}
+
+	// vm_call_v1: move the attached value inside the frame BEFORE the
+	// contract runs, matching nested CALL. The contract can spend it during
+	// this execution; a revert rolls the transfer back with the frame.
+	if vmCall && tx.Amount != nil && tx.Amount.Sign() > 0 {
+		if err := e.state.Transfer(tx.From, tx.To, tx.Amount); err != nil {
+			if frame != 0 {
+				_ = e.state.RevertToSnapshot(frame)
+			}
+			return fmt.Errorf("call value transfer: %w", err)
+		}
 	}
 
 	result, err := e.vmEngine.CallWithContext(
@@ -1173,7 +1189,7 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		// by the per-tx revert above this call.
 		return fmt.Errorf("call failed: %w", err)
 	}
-	if vmRevert || vmGas {
+	if vmRevert || vmGas || vmCall {
 		if cerr := e.state.CommitSnapshot(frame); cerr != nil {
 			return fmt.Errorf("commit of call frame snapshot: %w", cerr)
 		}
@@ -1189,12 +1205,9 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		}
 	}
 
-	// Credit the call value to the contract on success. On revert the value
-	// stays with the sender; on a hard error the enclosing per-tx snapshot
-	// reverts the fee debit and nonce bump too. Transfer re-checks the sender's
-	// balance (which still covers tx.Amount after the fee debit, since the
-	// pre-flight check required Amount+Fee) and handles the from==to case.
-	if !reverted && tx.Amount != nil && tx.Amount.Sign() > 0 {
+	// Pre-vm_call_v1: credit the call value after a successful run. The
+	// contract could not spend newly attached funds during that execution.
+	if !vmCall && !reverted && tx.Amount != nil && tx.Amount.Sign() > 0 {
 		if err := e.state.Transfer(tx.From, tx.To, tx.Amount); err != nil {
 			return fmt.Errorf("call value transfer: %w", err)
 		}

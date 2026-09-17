@@ -124,6 +124,12 @@ const (
 	// verify_v1 no-op x402 path and unbound SLH remain until operators
 	// extend.
 	VerifyIdentityV1 = "verify_identity_v1"
+	// VMCallV1 aligns remaining contract-call semantics: entry-call value
+	// is transferred inside the rollback-protected frame before execution,
+	// DELEGATECALL inherits the call value, CREATE uses a persistent
+	// creator nonce, and deploy/CREATE collision checks fail closed on
+	// account-read errors. Unscheduled on live genesis.
+	VMCallV1 = "vm_call_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -135,7 +141,7 @@ const (
 var Known = []string{
 	MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1,
 	VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1, MinFeeV1,
-	ModulesV2, ValidatorsAdmissionV1, BFTRoundsV1, VMGasV1, VerifyIdentityV1,
+	ModulesV2, ValidatorsAdmissionV1, BFTRoundsV1, VMGasV1, VerifyIdentityV1, VMCallV1,
 }
 
 // Schedule maps an upgrade name to the height at which it takes effect.
