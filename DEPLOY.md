@@ -35,7 +35,7 @@
                     │                                              │
                     │  /tx/submit    /block/{h}   /balance/{addr} │
                     │  /vm/disasm    /healthz      /readyz         │
-                    │  /gov/*        /staking/*    /dex/*          │
+                    │  /validators   /verify/*     /call           │
                     │  /ws           /metrics      /peers          │
                     └──────────────────┬──────────────────────────┘
                                        │ internal Go calls
@@ -1227,22 +1227,15 @@ Save as `diagnostics.sh`, `chmod +x diagnostics.sh`, run with `./diagnostics.sh`
 | `/vm/validate` | POST | Validate bytecode |
 | `/vm/estimate-gas` | POST | Estimate gas |
 | `/vm/opcodes` | GET | All SQC-VM opcodes |
-| `/gov/proposals` | GET | List proposals |
 | `/validators` | GET | Active validators (2,500 SPLD bond) |
 | `/validators/{addr}` | GET | One validator record |
 | `/verify/check` | POST | SQVL dual-sig check (no state) |
 | `/verify/attest` | POST | Submit dual-signed attestation |
 | `/verify/settle` | POST | Settle a verified instruction |
 | `/verify/proof/{id}` | GET | On-chain SQVL proof |
-| `/dex/pool/{t0}/{t1}` | GET | Pool info |
-| `/dex/pool/{t0}/{t1}/quote` | GET | Swap quote |
+| `/state/proof/{SQ:addr}` | GET | Current-state account Merkle proof |
 | `/call` | POST | Module read (`{"module","action","params"}`) or bytecode view call, at the head block |
-| `/exchange/{SQ:addr}` | GET | Exchange instance info (`exchange_info`) |
-| `/exchange/{SQ:addr}/condition/{id}` | GET | Condition state (`condition_info`) |
-| `/exchange/{SQ:addr}/order/{hash}` | GET | Order fill/cancel status (`order_status`) |
-| `/exchange/{SQ:addr}/nonce/{SQ:maker}` | GET | Maker's order nonce (`nonce`) |
-| `/exchange/{SQ:addr}/position/{condition}/{SQ:holder}` | GET | Holder's YES/NO balances (`position`) |
-| `/ws?subscribe=new_block,new_tx` | GET | WebSocket stream (`rpc/websocket.go`) |
+| `/ws?subscribe=new_block,new_tx` | GET | SSE stream (`rpc/websocket.go`) |
 | `/metrics` | GET | Prometheus metrics (:9100) |
 | `/ai/stats` | GET | AI scheduler stats |
 
