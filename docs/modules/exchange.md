@@ -269,11 +269,12 @@ address as in the Solidity exchange).
 5. Index `OrderFilled`/`MintMatched`/`MergeMatched` from receipts (`POST /logs`).
 6. After the resolver's `resolve`, trigger `redeem_for` for holders.
 
-## Reads
+## Reads (historical design — not served)
 
-On `POST /call` (envelope to `vm.ModuleRouterAddress`), never fork-gated. Every
-answer carries `module`, `action`, `exchange` and `exists` (the instance is a
-deployed contract) except the pure `position_id`.
+`POST /call` rejects `module: "exchange"` (`KnownModuleActions` has no such
+name). There are no GET mirrors: `/exchange/{addr}` and the condition/order/
+nonce/position paths are **not registered**. The table below is leftover
+parameter shape only.
 
 | action | params | answer |
 |---|---|---|
@@ -288,11 +289,7 @@ deployed contract) except the pure `position_id`.
 | `position_id` | `condition, outcome` | `condition, outcome, id` — pure |
 | `simulate_match` | `exchange, caller, taker_order, maker_orders, fill_shares` | `caller, ok, error, logs, head_height, head_time` — dry run at the head, always reverted |
 
-GET mirrors (identical bodies, same read dispatch): `/exchange/{addr}`,
-`/exchange/{addr}/condition/{id}`, `/exchange/{addr}/order/{hash}`,
-`/exchange/{addr}/nonce/{maker}`, `/exchange/{addr}/position/{condition}/{holder}`.
-`order_hash`, `order_remaining` and `simulate_match` carry a body and are
-`/call`-only.
+Those GET paths and `/call` exchange reads are not live. Do not use them.
 
 ## Events
 

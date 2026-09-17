@@ -16,7 +16,7 @@ The chain removes regular ECDSA wallets entirely: all addresses derive from 1952
 
 1. **Post-Quantum Native**: ML-DSA-65 signatures throughout; SHA3-256 hashing; quantum-resistant address derivation
 2. **AI Validator Market**: Autonomous agents bid to validate; cheapest compliant bid wins block production rights
-3. **Permissionless-by-Default with Governance Override**: Open participation unless chain governance votes to restrict (e.g., regulatory compliance, security incident response)
+3. **Validator admission (implemented)**: `validators_v1` requires a 2,500 SPLD bond; `validators_admission_v1` is approval/producer-based. There is **no routed on-chain governance module**. Application-governance ideas below are design notes, not a live write surface.
 4. **Full-State Merkle Proofs**: Every account, contract, and storage slot is a leaf in one global tree; external verifiers can audit any state element with a sibling-hash proof
 5. **Unified Native Asset (SPLD)**: No gas token vs. staking token split—SPLD is the single unit of account, fee payment, and validator collateral
 
@@ -114,12 +114,7 @@ Splendor does not use Proof-of-Work or traditional Proof-of-Stake. Instead, vali
 
 **Economic Incentive**: Agents profit from the spread between their bid (what they charge users) and their operational costs (compute, bandwidth). A race-to-the-bottom on fees benefits users while maintaining validator liveness through minimum collateral and slashing for misbehavior.
 
-**Governance Escape Hatch**: On-chain governance (SPLD-weighted voting) can:
-- Blacklist malicious agents
-- Impose minimum fee floors during spam attacks
-- Temporarily restrict validator registration (e.g., KYC requirement during regulatory pressure)
-
-This preserves **permissionless-by-default** while allowing the community to respond to existential threats.
+**Admission today:** `validators_admission_v1` is approval/producer-based. There is no routed governance module that can blacklist agents, change fees, or rewrite admission by vote. A future application-governance product would be separate work.
 
 ### 2.4 Virtual Machine (SQC-VM v4)
 
@@ -301,37 +296,16 @@ Standard transactions are transparent: sender, recipient, and amount are public.
 
 This balance preserves privacy for law-abiding users while providing a path for legal compliance.
 
-### 5.2 Permissioned Mode (Governance Opt-In)
+### 5.2 Validator admission (implemented) vs governance sketches
 
-By default, anyone can:
-- Create an account (generate ML-DSA keys)
-- Send transactions (if they pay fees)
-- Register as a validator (if they post stake)
+Anyone can create an account and send transactions if they pay fees. Validator
+`register` requires the 2,500 SPLD bond after `validators_v1`. After
+`validators_admission_v1`, only the block producer or an approved address may
+register. That is the live admission rule.
 
-**Governance Override**:
-
-```solidity
-// Pseudo-contract
-function setPermissionedMode(bool enabled) onlyGovernance {
-    permissioned = enabled;
-}
-
-function whitelistValidator(address agent) onlyGovernance {
-    allowedValidators[agent] = true;
-}
-```
-
-If `permissioned == true`, only `allowedValidators` can produce blocks. This can be activated:
-- **Regulatory Compliance**: A jurisdiction requires KYC for validators; governance votes to whitelist only compliant agents.
-- **Security Incident**: A critical fork-choice bug is discovered; governance restricts validators to a trusted set while patching.
-- **Spam Defense**: A coordinated attack floods the mempool; governance imposes a minimum fee and limits validators to high-reputation agents.
-
-**Risk**: Centralization. If governance is captured (51% of SPLD voting power), the chain can be censored. Mitigations:
-- **Time-locks**: Permission changes take 7–14 days to activate, allowing users to exit.
-- **Quadratic voting**: Reduce plutocracy (future upgrade).
-- **Forking**: Dissenting users can fork the chain and remove the whitelist.
-
-Splendor's philosophy: **permissionless-by-default, permissioned-if-necessary**. Don't cripple innovation with KYC gates, but don't let regulatory risk kill the project either.
+An `onlyGovernance` / SPLD-weighted voting escape hatch is **not implemented**
+and is **not a routed native module**. Do not treat it as a live capability.
+Rule changes remain a genesis schedule or an operator `--allow-fork-extension`.
 
 ---
 
