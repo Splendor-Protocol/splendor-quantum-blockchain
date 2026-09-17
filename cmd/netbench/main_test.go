@@ -96,3 +96,35 @@ func TestEqualBytes(t *testing.T) {
 		t.Fatal("different length reported equal")
 	}
 }
+
+func TestCorruptProofIsRejectedBeforeDecode(t *testing.T) {
+	for _, c := range []coding.Codec{coding.NewErasureCodec(), coding.NewRLNCCodec()} {
+		res := runTrialsScenario(c, 8, 32, 0, 50, 5, 11, scenarioCorruptProof, nil)
+		if res.rejectedAuth == 0 {
+			t.Fatalf("%s: corrupt-proof scenario never rejected a proof", c.Name())
+		}
+		// The rest of the finite codebook can still recover after the bad
+		// proof is dropped — that is authenticate-before-decode, not
+		// "one bad symbol fails the object".
+		if res.recovered == 0 {
+			t.Fatalf("%s: coded transfer did not recover after rejecting a corrupt proof", c.Name())
+		}
+	}
+}
+
+func TestManifestAndProofBytesAreCounted(t *testing.T) {
+	res := runTrials(coding.NewUncodedCodec(), 4, 32, 0, 0, 3, 2)
+	if res.recovered != 3 {
+		t.Fatalf("recovered %d/3", res.recovered)
+	}
+	if res.avgManifestBytes == 0 {
+		t.Fatal("manifest bytes were not counted")
+	}
+	if res.avgBytesTotal <= res.avgBytesUseful {
+		t.Fatalf("total bytes %.0f should exceed useful bytes %.0f because the manifest never increases rank",
+			res.avgBytesTotal, res.avgBytesUseful)
+	}
+	if res.avgAuthTime == 0 {
+		t.Fatal("auth time was not measured")
+	}
+}
