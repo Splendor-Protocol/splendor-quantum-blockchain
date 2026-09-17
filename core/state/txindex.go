@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/syndtr/goleveldb/leveldb"
@@ -9,6 +10,25 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
+
+// ErrTxIndexIncomplete reports a height whose receipts exist neither in the
+// index nor in the chain store, so nothing on this node can complete it and
+// the durable watermark cannot pass it. Backfill stops there: heights above
+// it were indexed live and stay readable, but /readyz keeps reporting the
+// index behind the applied height.
+var ErrTxIndexIncomplete = errors.New("tx index: height cannot be completed from this node's stores")
+
+// ErrReceiptNotFound is the GetReceipt error for a hash the index does not
+// hold, as opposed to a read or decode failure.
+var ErrReceiptNotFound = errors.New("receipt not found")
+
+// backfillFlushEvery is how many heights Backfill walks between durable
+// watermark writes. Every write is fsynced. A node upgraded from a build that
+// wrote no watermark walks its whole chain on first boot, before it listens
+// or seals, and one fsync per historical block turned that walk into minutes
+// on a tier. Batching makes it a read-only scan with a handful of writes; a
+// crash mid-walk costs at most this many heights of re-reading.
+const backfillFlushEvery = 1024
 
 const (
 	prefixTxIndex   = "txi:"  // txHash → block height + index
@@ -104,7 +124,7 @@ func (s *TxIndexStore) StoreReceipt(r *types.Receipt) error {
 func (s *TxIndexStore) GetReceipt(txHash [32]byte) (*types.Receipt, error) {
 	data, err := s.db.Get(receiptKey(txHash), nil)
 	if err == leveldb.ErrNotFound {
-		return nil, fmt.Errorf("receipt not found for tx %x", txHash[:8])
+		return nil, fmt.Errorf("%w for tx %x", ErrReceiptNotFound, txHash[:8])
 	}
 	if err != nil {
 		return nil, fmt.Errorf("receipt read error: %w", err)
@@ -263,50 +283,142 @@ func (s *TxIndexStore) IndexComplete(b *types.Block) bool {
 // Backfill indexes stored blocks in [from, to], restores receipts, and
 // advances IndexedHeight only contiguously. load may return a nil block to
 // skip a missing ancestor (snapshot gap).
+//
+// Heights below the persisted watermark are complete by definition and are
+// not read again, so a caller may always start at 0 (or the coverage mark)
+// and a repeated call over a long chain stays cheap. The watermark itself is
+// carried in memory and written every backfillFlushEvery heights and at the
+// end. A height that stays incomplete after RecordBlock has receipts nowhere
+// on this node; the walk stops there with ErrTxIndexIncomplete instead of
+// re-reading every block above it on each later call.
 func (s *TxIndexStore) Backfill(from, to uint64, load func(uint64) (*types.Block, []*types.Receipt, error)) error {
 	if load == nil || from > to {
 		return nil
 	}
+	mark, haveMark := s.IndexedHeight()
+	pending := false
+	flush := func() error {
+		if !pending {
+			return nil
+		}
+		batch := new(leveldb.Batch)
+		putIndexMeta(batch, keyIndexHeight, mark)
+		if err := persist.Write(s.db, batch); err != nil {
+			return err
+		}
+		pending = false
+		return nil
+	}
+	var (
+		hole     uint64
+		holeSeen bool
+	)
+	walked := uint64(0)
 	for h := from; h <= to; h++ {
+		if haveMark && h < mark {
+			// Below the watermark is complete by definition.
+			continue
+		}
 		b, receipts, err := load(h)
 		if err != nil {
-			return fmt.Errorf("tx index backfill at %d: %w", h, err)
+			return errors.Join(fmt.Errorf("tx index backfill at %d: %w", h, err), flush())
 		}
 		if b == nil {
 			continue
 		}
 		if !s.IndexComplete(b) {
+			ok, cerr := s.canComplete(b, receipts)
+			if cerr != nil {
+				return errors.Join(fmt.Errorf("tx index backfill at %d: %w", h, cerr), flush())
+			}
+			if !ok {
+				// Receipts for this height are in neither store. Keep its tx
+				// list readable and walk on so later heights are still
+				// repaired, but the watermark stops below it: RecordBlock is
+				// not used here because it would advance the watermark over
+				// a height it was never given receipts for. At the watermark
+				// height itself this is expected (a snapshot join's coverage
+				// height has no receipts by design) and not reported.
+				if err := s.IndexBlock(b); err != nil {
+					return errors.Join(fmt.Errorf("tx index backfill list %d: %w", h, err), flush())
+				}
+				if !(haveMark && h == mark) && !holeSeen {
+					hole, holeSeen = h, true
+				}
+				continue
+			}
 			if err := s.RecordBlock(b, receipts); err != nil {
-				return fmt.Errorf("tx index backfill record %d: %w", h, err)
+				return errors.Join(fmt.Errorf("tx index backfill record %d: %w", h, err), flush())
+			}
+			if !s.IndexComplete(b) {
+				return errors.Join(fmt.Errorf("%w: height %d", ErrTxIndexIncomplete, h), flush())
 			}
 		}
-		if s.IndexComplete(b) {
-			if err := s.setIndexedHeight(h); err != nil {
+		if !holeSeen && canAdvanceIndexedHeightFrom(mark, haveMark, s.CoverageFrom, h) {
+			mark, haveMark, pending = h, true, true
+		}
+		walked++
+		if walked%backfillFlushEvery == 0 {
+			if err := flush(); err != nil {
 				return err
 			}
 		}
 	}
+	if err := flush(); err != nil {
+		return err
+	}
+	if holeSeen {
+		return fmt.Errorf("%w: height %d", ErrTxIndexIncomplete, hole)
+	}
 	return nil
+}
+
+// canComplete reports whether every transaction in b has a receipt either
+// already in the index or among receipts, i.e. whether RecordBlock can make
+// the height complete. A read failure is returned, not treated as absence.
+func (s *TxIndexStore) canComplete(b *types.Block, receipts []*types.Receipt) (bool, error) {
+	given := make(map[[32]byte]struct{}, len(receipts))
+	for _, r := range receipts {
+		if r != nil {
+			given[r.TxHash] = struct{}{}
+		}
+	}
+	for _, tx := range b.Transactions {
+		hash, err := tx.FullHash()
+		if err != nil {
+			return false, nil
+		}
+		if _, ok := given[hash]; ok {
+			continue
+		}
+		_, err = s.GetReceipt(hash)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, ErrReceiptNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *TxIndexStore) canAdvanceIndexedHeight(h uint64) bool {
 	cur, ok := s.IndexedHeight()
+	return canAdvanceIndexedHeightFrom(cur, ok, s.CoverageFrom, h)
+}
+
+// canAdvanceIndexedHeightFrom is the contiguity rule: the next height after
+// the watermark, or the coverage mark when there is no watermark yet, or
+// genesis/block 1 on a fresh index.
+func canAdvanceIndexedHeightFrom(cur uint64, ok bool, coverage func() (uint64, bool), h uint64) bool {
 	if ok {
 		return h == cur+1
 	}
-	if cov, cok := s.CoverageFrom(); cok {
+	if cov, cok := coverage(); cok {
 		return h == cov
 	}
 	return h <= 1
-}
-
-func (s *TxIndexStore) setIndexedHeight(h uint64) error {
-	if !s.canAdvanceIndexedHeight(h) {
-		return nil
-	}
-	batch := new(leveldb.Batch)
-	putIndexMeta(batch, keyIndexHeight, h)
-	return persist.Write(s.db, batch)
 }
 
 func (s *TxIndexStore) readMetaUint64(key string) (uint64, bool, error) {
