@@ -365,3 +365,25 @@ func TestSnapshotSessionIsImmutableAcrossCommits(t *testing.T) {
 		t.Fatalf("pinned session yielded %d leaves, want the 5 committed at height 1", len(all))
 	}
 }
+
+func TestSnapshotSessionPageDefaultsZeroLeaves(t *testing.T) {
+	sdb, _ := openState(t)
+	acc := types.NewAccount(addr(0x11))
+	acc.AddBalance(big.NewInt(1))
+	sdb.SetAccount(acc)
+	if _, err := sdb.CommitWithHeight(1); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := sdb.BeginSnapshotChunkSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Release()
+	leaves, _, done, err := sess.Page(nil, 0)
+	if err != nil {
+		t.Fatalf("Page(0) must default, got %v", err)
+	}
+	if len(leaves) == 0 || !done {
+		t.Fatalf("Page(0) leaves=%d done=%v", len(leaves), done)
+	}
+}

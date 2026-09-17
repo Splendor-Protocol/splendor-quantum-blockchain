@@ -3,6 +3,7 @@ package block
 import (
 	"errors"
 	"testing"
+	"time"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
@@ -62,7 +63,7 @@ func TestExportStateSnapshotRefusesEmptyChain(t *testing.T) {
 
 // SnapshotChunkSession must stay pinned at the height it was begun at even
 // after the chain advances: every page reports the START height, and the final
-// page releases the session so its id stops resolving.
+// page is replayable once before the session is released.
 func TestSnapshotChunkSessionIsImmutableAcrossCommits(t *testing.T) {
 	ex, _, vpub, vpriv, _, _ := threeBlockChain(t)
 	vaddr := qcrypto.DeriveAddress(vpub)
@@ -109,9 +110,16 @@ func TestSnapshotChunkSessionIsImmutableAcrossCommits(t *testing.T) {
 		t.Fatal("collected no leaves across the whole session")
 	}
 
-	// The final page released the session; the same id must now be unknown.
-	if _, err := ex.PageSnapshotChunkSession(id, nil, 1); err == nil {
-		t.Fatal("session still resolvable after the final page; it should have been released")
+	// The final page is replayable once (lost-response retry), then released.
+	replay, err := ex.PageSnapshotChunkSession(id, after, 1)
+	if err != nil {
+		t.Fatalf("final page must be replayable once: %v", err)
+	}
+	if !replay.Done {
+		t.Fatal("replayed page must still be the final page")
+	}
+	if _, err := ex.PageSnapshotChunkSession(id, after, 1); err == nil {
+		t.Fatal("session still resolvable after the final-page replay")
 	}
 }
 
@@ -251,5 +259,97 @@ func TestImportStateSnapshotRefusesMalformedSnapshot(t *testing.T) {
 				t.Fatalf("%s: stored the head block", name)
 			}
 		})
+	}
+}
+
+func TestPageSnapshotChunkSessionNormalizesZeroLeaves(t *testing.T) {
+	ex, _, _, _, _, _ := threeBlockChain(t)
+	id, first, err := ex.StartSnapshotChunkSession(1)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if first.Done {
+		t.Fatal("need a multi-page session to exercise Page")
+	}
+	page, err := ex.PageSnapshotChunkSession(id, first.NextKey, 0)
+	if err != nil {
+		t.Fatalf("page with maxLeaves=0: %v", err)
+	}
+	if len(page.Leaves) == 0 && !page.Done {
+		t.Fatal("zero maxLeaves must default like Start, not reject")
+	}
+}
+
+func TestSnapshotChunkSessionQuota(t *testing.T) {
+	ex, _, _, _, _, _ := threeBlockChain(t)
+	var ids []string
+	for i := 0; i < maxSnapshotChunkSessions; i++ {
+		id, first, err := ex.StartSnapshotChunkSessionFrom("peer-a", 1)
+		if err != nil {
+			// per-source cap hits first
+			if i < maxSnapshotChunkSessionsPerSource {
+				t.Fatalf("session %d: %v", i, err)
+			}
+			break
+		}
+		if first.Done {
+			t.Fatal("quota test needs retained multi-page sessions")
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) != maxSnapshotChunkSessionsPerSource {
+		t.Fatalf("kept %d sessions from one source, want per-source cap %d", len(ids), maxSnapshotChunkSessionsPerSource)
+	}
+	if _, _, err := ex.StartSnapshotChunkSessionFrom("peer-a", 1); err == nil {
+		t.Fatal("per-source quota did not refuse")
+	}
+	if _, first, err := ex.StartSnapshotChunkSessionFrom("peer-b", 1); err != nil {
+		t.Fatalf("a different source should still start: %v", err)
+	} else if first.Done {
+		t.Fatal("peer-b session already done")
+	}
+}
+
+func TestSnapshotChunkSessionExpiryOnLookup(t *testing.T) {
+	ex, _, _, _, _, _ := threeBlockChain(t)
+	id, first, err := ex.StartSnapshotChunkSession(1)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if first.Done {
+		t.Fatal("need a retained session")
+	}
+	ex.snapshotChunkMu.Lock()
+	ex.snapshotChunkSessions[id].expires = time.Now().Add(-time.Second)
+	ex.snapshotChunkMu.Unlock()
+	if _, err := ex.PageSnapshotChunkSession(id, first.NextKey, 1); err == nil {
+		t.Fatal("expired session must fail closed on lookup")
+	}
+}
+
+func TestSnapshotChunkSessionsReleasedOnClose(t *testing.T) {
+	ex, sdb := newTestExecutor(t)
+	defer sdb.Close()
+	pub, priv, _ := qcrypto.GenerateKeypair()
+	from := qcrypto.DeriveAddress(pub)
+	vpub, vpriv, _ := qcrypto.GenerateKeypair()
+	vaddr := qcrypto.DeriveAddress(vpub)
+	fund(t, sdb, from, 1_000_000)
+	tx := signedTransfer(t, from, priv, testAddr(0x77), 100, 0)
+	if _, err := ex.ProduceBlock([]*types.Transaction{tx}, vaddr, vpub.Bytes(), vpriv, [32]byte{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	id, first, err := ex.StartSnapshotChunkSession(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Done {
+		// still exercise Close
+	}
+	if err := ex.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.PageSnapshotChunkSession(id, first.NextKey, 1); err == nil {
+		t.Fatal("session survived Close")
 	}
 }
