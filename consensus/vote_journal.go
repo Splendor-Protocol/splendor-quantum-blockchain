@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -25,9 +26,9 @@ var ErrDoubleSign = errors.New("refusing to sign a vote that contradicts one alr
 // voting for block A at (h, r) and came back before the height committed
 // would happily vote for block B at the same (h, r), and two conflicting
 // certificates for one height is the thing BFT exists to prevent. The journal
-// is written, and fsynced, BEFORE the vote is signed, so whatever the process
-// finds on disk after a restart is at least as far along as anything it ever
-// put on the wire.
+// is written and fsynced (file and parent directory) BEFORE the vote is
+// signed, so whatever the process finds on disk after a restart is at least
+// as far along as anything it ever put on the wire.
 type VoteJournal struct {
 	mu   sync.Mutex
 	path string
@@ -109,31 +110,14 @@ func (j *VoteJournal) Record(height uint64, round uint32, blockHash [32]byte) er
 	return nil
 }
 
-// write replaces the journal atomically: temp file, fsync, rename, so a
-// crash mid-write leaves either the old entry or the new one, never a torn
-// file.
+// write replaces the journal atomically: temp file, fsync, rename, then
+// fsync the parent directory so the new directory entry survives power loss.
 func (j *VoteJournal) write(e *journalEntry) error {
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
-	tmp := j.path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, j.path)
+	return persist.WriteFileAtomic(j.path, b, 0o600)
 }
 
 // Clear removes the durable vote lock, backing up the file first.
@@ -181,6 +165,9 @@ func (j *VoteJournal) clearLocked(h uint64, requireHeight bool) (string, error) 
 		}
 		return "", fmt.Errorf("vote journal clear: backup: %w", err)
 	}
+	if err := persist.SyncDir(filepath.Dir(j.path)); err != nil {
+		return "", fmt.Errorf("vote journal clear: sync dir: %w", err)
+	}
 	j.last = nil
 	j.removeProposalFile()
 	return backup, nil
@@ -204,11 +191,7 @@ func (j *VoteJournal) SaveProposal(b *types.Block) error {
 	if err != nil {
 		return err
 	}
-	tmp := j.proposalPath() + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, j.proposalPath())
+	return persist.WriteFileAtomic(j.proposalPath(), raw, 0o600)
 }
 
 // LoadProposal returns the persisted locked block when it matches Last().
@@ -239,4 +222,3 @@ func (j *VoteJournal) removeProposalFile() {
 	_ = os.Remove(j.proposalPath())
 	_ = os.Remove(j.proposalPath() + ".tmp")
 }
-

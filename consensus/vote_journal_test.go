@@ -71,6 +71,41 @@ func TestVoteJournalRefusesConflictsAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestVoteJournalAndProposalPersistAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vote-journal.json")
+	j, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, keys := testSet(t, 1)
+	block := proposalAt(t, set, keys, 4, 0, 3).Block
+	if err := j.Record(4, 0, block.Hash); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.SaveProposal(block); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("journal temp left behind")
+	}
+	if _, err := os.Stat(j.proposalPath() + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("proposal temp left behind")
+	}
+
+	j2, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, r, hash, ok := j2.Last()
+	if !ok || h != 4 || r != 0 || hash != block.Hash {
+		t.Fatalf("reopened journal = (%d, %d, %x, %v)", h, r, hash[:2], ok)
+	}
+	got, ok := j2.LoadProposal()
+	if !ok || got == nil || got.Hash != block.Hash {
+		t.Fatalf("reopened proposal missing: ok=%v got=%v", ok, got)
+	}
+}
+
 func TestVoteJournalRefusesCorruptFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vote-journal.json")
 	if err := os.WriteFile(path, []byte(`{"height": "seven"}`), 0o600); err != nil {
