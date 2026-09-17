@@ -222,6 +222,9 @@ type ExecutionContext struct {
 	Gas         uint64
 	Logs        []*types.Log
 	IsStatic    bool
+	// ExplicitGas means Gas is the caller-supplied remaining allocation,
+	// including 0. Without it, Gas==0 still means "use MaxGasPerCall".
+	ExplicitGas bool
 	// Return data from most recent sub-call
 	returnData []byte
 }
@@ -414,6 +417,16 @@ type Engine struct {
 	state       *state.StateDB
 	gasTable    GasTable
 	precompiles *PrecompileRegistry
+	gasRules    func(uint64) bool
+}
+
+// SetGasRules installs the vm_gas_v1 predicate. nil keeps pre-fork gas.
+func (e *Engine) SetGasRules(fn func(uint64) bool) {
+	e.gasRules = fn
+}
+
+func (e *Engine) gasV1(height uint64) bool {
+	return e.gasRules != nil && e.gasRules(height)
 }
 
 // NewEngine creates a new VM engine with default gas table and precompile registry.
@@ -443,7 +456,7 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 	mem := newMemory()
 	pc := 0
 	gas := ctx.Gas
-	if gas == 0 {
+	if gas == 0 && !(e.gasV1(ctx.BlockHeight) && ctx.ExplicitGas) {
 		gas = MaxGasPerCall
 	}
 	gasUsed := uint64(0)
@@ -471,6 +484,16 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			return nil
 		}
 		return useGas(wordsFor(end-mem.size()) * e.gasTable.MemPerWord)
+	}
+
+	// chargeCopy bills the requested load/copy BEFORE mem.load allocates.
+	// The 32 MiB per-op ceiling is not a work budget; repeated or huge
+	// RETURN/CALL copies must consume gas first.
+	chargeCopy := func(size int) error {
+		if size <= 0 || !e.gasV1(ctx.BlockHeight) {
+			return nil
+		}
+		return useGas(wordsFor(size) * e.gasTable.MemPerWord)
 	}
 
 	for pc < len(code) {
@@ -1163,6 +1186,9 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
+			if err := chargeCopy(argsSz); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			calldata, err := mem.load(argsOff, argsSz)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
@@ -1218,7 +1244,11 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 					subResult = &ExecutionResult{Err: fmt.Errorf("CALL: value transfer failed: %w", valueErr)}
 				} else {
 					var callErr error
-					subResult, callErr = e.callAtDepthWithCode(caller, origin, toAddr, codeSource, calldata, value, ctx.BlockHeight, ctx.Timestamp, isStatic, ctx.Depth+1)
+					childGas, explicit := uint64(0), false
+					if e.gasV1(ctx.BlockHeight) {
+						childGas, explicit = callGas, true
+					}
+					subResult, callErr = e.callAtDepthWithCode(caller, origin, toAddr, codeSource, calldata, value, ctx.BlockHeight, ctx.Timestamp, isStatic, ctx.Depth+1, childGas, explicit)
 					if callErr != nil && subResult == nil {
 						subResult = &ExecutionResult{Err: callErr}
 					}
@@ -1280,6 +1310,9 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
+			if err := chargeCopy(codeSz); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			bytecode, err := mem.load(codeOff, codeSz)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
@@ -1332,6 +1365,9 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			codeSz, szErr := memOperand(codeSize)
 			if offErr != nil || szErr != nil {
 				return &ExecutionResult{Err: fmt.Errorf("CREATE2: code range out of bounds"), GasUsed: gasUsed}
+			}
+			if err := chargeCopy(codeSz); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 			bytecode, err := mem.load(codeOff, codeSz)
 			if err != nil {
@@ -1404,6 +1440,9 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
+			if err := chargeCopy(size); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
+			}
 			data, err := mem.load(offset, size)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
@@ -1414,6 +1453,9 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			offset, size, err := popMemRange(stk)
 			if err != nil {
 				return &ExecutionResult{Err: fmt.Errorf("REVERT"), Reverted: true, GasUsed: gasUsed}
+			}
+			if err := chargeCopy(size); err != nil {
+				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 			data, err := mem.load(offset, size)
 			if err != nil {
@@ -1499,19 +1541,23 @@ func (e *Engine) CallWithContext(caller, origin, contract qcrypto.Address, calld
 // Previously every subcall built a fresh Depth=0 context, so MaxCallDepth never
 // triggered and a self-recursive contract exhausted the node's stack/heap.
 func (e *Engine) callAtDepth(caller, origin, contract qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int) (*ExecutionResult, error) {
-	return e.callAtDepthWithCode(caller, origin, contract, contract, calldata, value, blockHeight, timestamp, isStatic, depth)
+	return e.callAtDepthWithCode(caller, origin, contract, contract, calldata, value, blockHeight, timestamp, isStatic, depth, 0, false)
 }
 
 // callAtDepthWithCode runs codeSource's bytecode in contract's storage and
 // identity context. The two addresses are equal for CALL and STATICCALL; they
 // differ only for DELEGATECALL, which is the whole point of that instruction.
-func (e *Engine) callAtDepthWithCode(caller, origin, contract, codeSource qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int) (*ExecutionResult, error) {
+func (e *Engine) callAtDepthWithCode(caller, origin, contract, codeSource qcrypto.Address, calldata []byte, value *big.Int, blockHeight uint64, timestamp int64, isStatic bool, depth int, gasLimit uint64, explicitGas bool) (*ExecutionResult, error) {
 	if depth > MaxCallDepth {
 		return &ExecutionResult{Err: fmt.Errorf("max call depth exceeded")}, fmt.Errorf("max call depth exceeded")
 	}
+	childGas := uint64(MaxGasPerCall)
+	if e.gasV1(blockHeight) && explicitGas {
+		childGas = gasLimit
+	}
 	// Check precompile
 	if e.precompiles.IsPrecompile(codeSource) {
-		out, gas, err := e.precompiles.Call(codeSource, calldata, MaxGasPerCall)
+		out, gas, err := e.precompiles.Call(codeSource, calldata, childGas)
 		return &ExecutionResult{ReturnValue: out, GasUsed: gas, Err: err}, err
 	}
 
@@ -1530,7 +1576,7 @@ func (e *Engine) callAtDepthWithCode(caller, origin, contract, codeSource qcrypt
 		Caller: caller, Origin: origin, Contract: contract,
 		CallValue: value, Input: calldata, Code: code,
 		BlockHeight: blockHeight, Timestamp: timestamp,
-		IsStatic: isStatic, Gas: MaxGasPerCall, Depth: depth,
+		IsStatic: isStatic, Gas: childGas, ExplicitGas: e.gasV1(blockHeight) && explicitGas, Depth: depth,
 		Logs: make([]*types.Log, 0),
 	}
 	result := e.Execute(ctx)

@@ -127,6 +127,12 @@ type Executor struct {
 	// commit failed. New execution and voting must wait until RecoverPartialApply
 	// brings applied height/root in line with the head (review C2).
 	applyHalt atomic.Bool
+
+	// proposalWorkLimit is the producer-local cap on cumulative receipt gas
+	// while assembling a block (included failed receipts count). Zero means
+	// MaxBlockGas. Followers still enforce MaxBlockGas on apply; this only
+	// stops the builder from spending more wall time than the work budget.
+	proposalWorkLimit uint64
 }
 
 // ErrApplyHalted is returned when the executor refuses new work because a
@@ -161,7 +167,7 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to open chain database: %w", err)
 	}
-	return &Executor{
+	ex := &Executor{
 		state:    stateDB,
 		chainDB:  db,
 		vmEngine: vm.NewEngine(stateDB),
@@ -170,7 +176,11 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 		// marker written here always shares the same data directory as the
 		// blocks and state it is guarding an import into.
 		dataDir: chainDBPath,
-	}, nil
+	}
+	ex.vmEngine.SetGasRules(func(h uint64) bool {
+		return ex.schedule().Active(forks.VMGasV1, h)
+	})
+	return ex, nil
 }
 
 // WithHooks attaches a hook registry to the executor.
@@ -222,6 +232,13 @@ func (e *Executor) WithGenesisValidatorKey(fn func() []byte) *Executor {
 // executor is live.
 func (e *Executor) WithForks(s forks.Schedule) *Executor {
 	e.installForks(s)
+	return e
+}
+
+// WithProposalWorkLimit caps cumulative receipt gas the producer will pack
+// into one block. Zero (the default) uses MaxBlockGas.
+func (e *Executor) WithProposalWorkLimit(n uint64) *Executor {
+	e.proposalWorkLimit = n
 	return e
 }
 
@@ -962,9 +979,13 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 	// sub-calls; the entry frame runs directly on state, so without this a
 	// reverting call is unappliable (the producer drops it and the sender's
 	// call can never land — the jam module_revert_v1 fixed for modules).
-	vmRevert := e.schedule().Active(forks.VMRevertV1, blockHeight)
+	// vm_gas_v1 uses the same frame so an OOG / hard VM error keeps the fee
+	// and nonce while rolling back speculative writes.
+	sched := e.schedule()
+	vmRevert := sched.Active(forks.VMRevertV1, blockHeight)
+	vmGas := sched.Active(forks.VMGasV1, blockHeight)
 	var frame uint64
-	if vmRevert {
+	if vmRevert || vmGas {
 		frame = e.state.Snapshot()
 	}
 
@@ -974,6 +995,19 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 	)
 
 	reverted := result != nil && result.Reverted
+	// Only a result that actually ran (OOG, unknown opcode, stack error)
+	// becomes a failed receipt. A nil result is pre-execution (EOA, I/O)
+	// and stays dropped so statically invalid calls do not change root.
+	if vmGas && result != nil && err != nil && !reverted {
+		if rerr := e.state.RevertToSnapshot(frame); rerr != nil {
+			return fmt.Errorf("revert of failed call frame: %w", rerr)
+		}
+		receipt.GasUsed = result.GasUsed
+		receipt.Logs = []*types.Log{}
+		receipt.ContractAddress = nil
+		receipt.SetFailed(err.Error())
+		return nil
+	}
 	if vmRevert && reverted {
 		// Included with a failed receipt: fee kept, nonce consumed, gas
 		// recorded — and every write and log of the frame rolled back, the
@@ -998,7 +1032,7 @@ func (e *Executor) execCall(tx *types.Transaction, fromAcc *types.Account, recei
 		// by the per-tx revert above this call.
 		return fmt.Errorf("call failed: %w", err)
 	}
-	if vmRevert {
+	if vmRevert || vmGas {
 		if cerr := e.state.CommitSnapshot(frame); cerr != nil {
 			return fmt.Errorf("commit of call frame snapshot: %w", cerr)
 		}
@@ -1275,8 +1309,14 @@ func (e *Executor) assembleBlock(
 			continue
 		}
 		// Stop packing once the block gas budget is reached (txs are fee-sorted,
-		// so we keep the most valuable ones). Revert this tx's state before break.
-		if blockGas+receipt.GasUsed > MaxBlockGas {
+		// so we keep the most valuable ones). Failed receipts under vm_gas_v1
+		// count here too — repeated OOG cannot produce an empty-gas block.
+		// Revert this tx's state before break.
+		workLimit := e.proposalWorkLimit
+		if workLimit == 0 {
+			workLimit = MaxBlockGas
+		}
+		if blockGas+receipt.GasUsed > workLimit {
 			if err := e.state.RevertToSnapshot(snap); err != nil {
 				e.state.DiscardPending()
 				return nil, nil, fmt.Errorf("revert of over-budget tx: %w", err)
