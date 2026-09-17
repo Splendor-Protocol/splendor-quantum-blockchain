@@ -100,3 +100,24 @@ func TestSyncAllowsPlaintextWhenExplicitlyEnabled(t *testing.T) {
 		t.Fatalf("height=%d, want 5", blk.Header.Height)
 	}
 }
+
+// A peer serving a real, validly-signed block at the WRONG height must be
+// rejected at fetch time: the pipeline applies blocks by requested height, so
+// a height-5 block returned for a height-7 request would otherwise be run
+// into slot 7.
+func TestSyncRejectsWrongHeightBlock(t *testing.T) {
+	// plaintextOnlyPeer serves a signed block at height 5.
+	srv, validatorPK := plaintextOnlyPeer(t)
+
+	cfg := DefaultSyncConfig(validatorPK)
+	cfg.Identities = NewIdentityCache()
+	cfg.AllowPlaintext = true
+
+	_, err := NewBlockFetcher(cfg).FetchBlock(srv.URL, 7)
+	if err == nil {
+		t.Fatal("expected the fetch to reject a block at a different height than requested")
+	}
+	if !strings.Contains(err.Error(), "served height 5 in place of requested height 7") {
+		t.Fatalf("error should name the height mismatch, got: %v", err)
+	}
+}
