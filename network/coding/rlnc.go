@@ -3,6 +3,7 @@ package coding
 import (
 	"crypto/rand"
 	"fmt"
+	"io"
 )
 
 // RLNCCodec is a bounded-generation, systematic-first RLNC codec over
@@ -12,14 +13,26 @@ import (
 // mean the healthy case (no losses) needs zero coding or decoding work at
 // all — a receiver that gets every systematic symbol just has its object
 // back, no Gaussian elimination required.
-type RLNCCodec struct{}
+type RLNCCodec struct {
+	// rnd is the coefficient randomness source; nil uses crypto/rand. A
+	// benchmark or test can inject a deterministic reader (see
+	// NewRLNCCodecWithReader) to make runs reproducible; production code
+	// leaves it nil so repair coefficients come from crypto/rand.
+	rnd io.Reader
+}
 
-// NewRLNCCodec returns the GF(256) RLNC codec.
+// NewRLNCCodec returns the GF(256) RLNC codec with crypto/rand coefficients.
 func NewRLNCCodec() *RLNCCodec { return &RLNCCodec{} }
 
-func (RLNCCodec) Name() string { return "rlnc-gf256-v1" }
+// NewRLNCCodecWithReader returns an RLNC codec whose repair coefficients are
+// drawn from r instead of crypto/rand. This is for benchmarks and tests that
+// need reproducibility; it must never be used on a live path, where repair
+// coefficients are security-sensitive and must be unpredictable.
+func NewRLNCCodecWithReader(r io.Reader) *RLNCCodec { return &RLNCCodec{rnd: r} }
 
-func (RLNCCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder, error) {
+func (c RLNCCodec) Name() string { return "rlnc-gf256-v1" }
+
+func (c RLNCCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder, error) {
 	if len(sourceSymbols) == 0 {
 		return nil, ErrEmptyGeneration
 	}
@@ -33,7 +46,7 @@ func (RLNCCodec) NewEncoder(sourceSymbols [][]byte, symbolSize int) (Encoder, er
 	for i, s := range sourceSymbols {
 		cp[i] = append([]byte(nil), s...)
 	}
-	return &rlncEncoder{source: cp, symbolSize: symbolSize}, nil
+	return &rlncEncoder{source: cp, symbolSize: symbolSize, rnd: c.rnd}, nil
 }
 
 func (RLNCCodec) NewDecoder(sourceCount, symbolSize int) (Decoder, error) {
@@ -51,6 +64,7 @@ func (RLNCCodec) NewDecoder(sourceCount, symbolSize int) (Decoder, error) {
 type rlncEncoder struct {
 	source     [][]byte
 	symbolSize int
+	rnd        io.Reader
 }
 
 func (e *rlncEncoder) SourceCount() int { return len(e.source) }
@@ -77,11 +91,15 @@ func (e *rlncEncoder) Systematic() []Symbol {
 func (e *rlncEncoder) Repair(n int) []Symbol {
 	out := make([]Symbol, 0, n)
 	k := len(e.source)
+	src := e.rnd
+	if src == nil {
+		src = rand.Reader
+	}
 	for r := 0; r < n; r++ {
 		coeffs := make([]byte, k)
-		if _, err := rand.Read(coeffs); err != nil {
-			// crypto/rand failing is a fatal platform condition; the plan
-			// requires bounded, predictable failure rather than silently
+		if _, err := src.Read(coeffs); err != nil {
+			// A failed coefficient read is a fatal platform condition; the
+			// plan requires bounded, predictable failure rather than silently
 			// emitting a zero (all-zero-coefficient, i.e. useless) symbol.
 			panic(fmt.Sprintf("coding: rlnc repair symbol generation: %v", err))
 		}
