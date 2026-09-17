@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -32,9 +33,14 @@ import (
 var ErrSnapshotNotAnchored = errors.New("state snapshot head was not sealed by the trusted genesis validator")
 
 const (
-	// snapshotFetchTimeout bounds one snapshot query; the reply is tens of
-	// MiB at the cap, not a block.
+	// snapshotFetchTimeout bounds one snapshot query (single-shot or one
+	// chunked page). The reply is tens of MiB at the cap, not a block.
 	snapshotFetchTimeout = 3 * time.Minute
+
+	// snapshotTransferTimeout bounds a whole chunked download, including
+	// every page. Each page uses only the remaining time, so the overall
+	// deadline cannot be exceeded by starting another full per-request wait.
+	snapshotTransferTimeout = 15 * time.Minute
 
 	// maxSnapshotReplyBytes bounds the sealed reply. The server caps a
 	// snapshot at 64 MiB of raw leaves (block.MaxStateSnapshotBytes); those
@@ -96,13 +102,6 @@ func (f *BlockFetcher) FetchStateSnapshot(peerAddr string) (*types.StateSnapshot
 // block.MaxSnapshotChunkLeaves leaves, not the whole state.
 const maxSnapshotChunkReplyBytes = 16 << 20
 
-// maxChunkedLeafBytes bounds the total raw key+value bytes a chunked transfer
-// may accumulate on this node: the same 64 MiB the single-shot snapshot caps
-// its leaves at (block.MaxStateSnapshotBytes). It keeps this node's memory
-// bounded to one snapshot's worth of leaves no matter how many pages a peer
-// serves.
-const maxChunkedLeafBytes = 64 << 20
-
 // authenticateSnapshotHead binds the served hash to the header and checks the
 // head's seal against the trusted validator key. Call it as soon as the head is
 // known, before any further (potentially expensive) transfer work.
@@ -128,134 +127,226 @@ func authenticateSnapshotHead(peerAddr string, trusted []byte, head *types.Block
 	return nil
 }
 
-// FetchStateSnapshotChunked pulls a peer's state page by page. The head block
-// (attached to the first chunk) is authenticated against the pinned genesis
-// validator key BEFORE any further page is requested, and the fully assembled
-// leaves are checked against that block's declared state_root before anything
-// is returned — chunking changes how the bytes move over the wire, never what
-// is trusted. A height change mid-transfer aborts, as does a cursor that fails
-// to advance, a page-count/deadline breach, or raw leaves past the byte budget,
-// so a hostile or buggy peer cannot keep this node accumulating.
-//
+func (f *BlockFetcher) snapshotDiskLimit() int64 {
+	if f.cfg.MaxSnapshotDiskBytes > 0 {
+		return f.cfg.MaxSnapshotDiskBytes
+	}
+	return state.DefaultMaxSnapshotDiskBytes
+}
+
+// remainingRequestTimeout is the time a single page (or single-shot) query
+// may use: the per-request cap, or whatever is left of the overall deadline,
+// whichever is smaller. Zero means the overall budget is already gone.
+func remainingRequestTimeout(deadline time.Time, perRequest time.Duration, now time.Time) time.Duration {
+	left := deadline.Sub(now)
+	if left <= 0 {
+		return 0
+	}
+	if left < perRequest {
+		return left
+	}
+	return perRequest
+}
+
+func sealedChunkNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "peer returned 404")
+}
+
+// FetchStateSnapshotChunked pulls a peer's state page by page into disk
+// staging (cfg.SnapshotStagingDir, or a temporary directory). The head is
+// authenticated before further pages. Pages are not accumulated in RAM; the
+// returned snapshot is assembled only after the transfer and root check.
 // chunkSize <= 0 lets the peer choose its own default page size.
 func (f *BlockFetcher) FetchStateSnapshotChunked(peerAddr string, chunkSize int) (*types.StateSnapshot, error) {
+	store, cleanup, err := f.openChunkStaging()
+	if err != nil {
+		return nil, err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err := f.fetchChunkedInto(peerAddr, chunkSize, store); err != nil {
+		return nil, err
+	}
+	return store.Assemble()
+}
+
+func (f *BlockFetcher) openChunkStaging() (*state.SnapshotDownload, func(), error) {
+	dir := f.cfg.SnapshotStagingDir
+	cleanup := func() {}
+	if dir == "" {
+		tmp, err := os.MkdirTemp("", "sqc-snap-dl-*")
+		if err != nil {
+			return nil, nil, fmt.Errorf("snapshot download staging: %w", err)
+		}
+		dir = tmp
+		cleanup = func() { _ = os.RemoveAll(tmp) }
+	}
+	store, err := state.OpenSnapshotDownload(dir, f.snapshotDiskLimit())
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return store, cleanup, nil
+}
+
+// fetchChunkedInto streams pages from peer into store, resuming from the
+// persisted cursor when the store already holds an authenticated head.
+func (f *BlockFetcher) fetchChunkedInto(peerAddr string, chunkSize int, store *state.SnapshotDownload) error {
 	trusted := f.TrustedPubKey()
 	if len(trusted) == 0 {
-		return nil, fmt.Errorf("state sync from %s: no trusted validator pubkey yet "+
+		return fmt.Errorf("state sync from %s: no trusted validator pubkey yet "+
 			"(set --validator-pubkey-hex, or --genesis-hash to bootstrap it)", peerAddr)
 	}
 	if f.cfg.Identities == nil {
-		return nil, fmt.Errorf("state sync from %s: no sealed transport configured, and snapshots are only served sealed", peerAddr)
+		return fmt.Errorf("state sync from %s: no sealed transport configured, and snapshots are only served sealed", peerAddr)
+	}
+	if store.Done() {
+		return store.VerifyRoot()
 	}
 
 	var (
-		head       *types.Block
-		height     uint64
-		haveHeight bool
-		leaves     []types.StateLeaf
-		afterKey   []byte
-		sessionID  string
-		totalBytes int
+		sessionID = store.SessionID()
+		afterKey  = store.AfterKey()
 	)
-	const maxPages = 1 << 16 // far above any real state; a hard stop against a loop bug
-	deadline := time.Now().Add(snapshotFetchTimeout)
+	const maxPages = 1 << 16
+	deadline := time.Now().Add(snapshotTransferTimeout)
+	retriedSession := false
 	for page := 0; ; page++ {
 		if page >= maxPages {
-			return nil, fmt.Errorf("state snapshot from %s: exceeded %d pages", peerAddr, maxPages)
+			return fmt.Errorf("state snapshot from %s: exceeded %d pages", peerAddr, maxPages)
 		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("state snapshot from %s: transfer exceeded %s", peerAddr, snapshotFetchTimeout)
+		reqTimeout := remainingRequestTimeout(deadline, snapshotFetchTimeout, time.Now())
+		if reqTimeout <= 0 {
+			return fmt.Errorf("state snapshot from %s: transfer exceeded %s", peerAddr, snapshotTransferTimeout)
 		}
 
 		reqBody, err := json.Marshal(GetStateSnapshotChunkRequest{SessionID: sessionID, AfterKey: afterKey, MaxLeaves: chunkSize})
 		if err != nil {
-			return nil, fmt.Errorf("marshal chunk request: %w", err)
+			return fmt.Errorf("marshal chunk request: %w", err)
 		}
 		raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetStateSnapshotChunk, reqBody,
-			maxSnapshotChunkReplyBytes, snapshotFetchTimeout)
+			maxSnapshotChunkReplyBytes, reqTimeout)
 		if err != nil {
-			return nil, fmt.Errorf("fetch state snapshot chunk from %s: %w", peerAddr, err)
+			if sessionID != "" && !retriedSession && sealedChunkNotFound(err) {
+				// Session expired on this or a previous peer: start a new
+				// session at the saved cursor under the same head.
+				sessionID = ""
+				retriedSession = true
+				page--
+				continue
+			}
+			return fmt.Errorf("fetch state snapshot chunk from %s: %w", peerAddr, err)
 		}
 		var chunk StateSnapshotChunk
 		if err := json.Unmarshal(raw, &chunk); err != nil {
-			return nil, fmt.Errorf("decode state snapshot chunk from %s: %w", peerAddr, err)
+			return fmt.Errorf("decode state snapshot chunk from %s: %w", peerAddr, err)
 		}
 
-		if !haveHeight {
-			height = chunk.Height
-			haveHeight = true
+		if !store.HasHead() {
 			if chunk.Block == nil {
-				return nil, fmt.Errorf("state snapshot chunk from %s carries no head block on its first page", peerAddr)
+				return fmt.Errorf("state snapshot chunk from %s carries no head block on its first page", peerAddr)
 			}
-			head = chunk.Block
-			// Carry the server's session across pages so the whole transfer
-			// reads one immutable snapshot (empty if the peer is pre-session).
+			if err := authenticateSnapshotHead(peerAddr, trusted, chunk.Block, chunk.Height); err != nil {
+				return err
+			}
+			if err := store.AcceptHead(chunk.Block, chunk.Height); err != nil {
+				return err
+			}
+		} else {
+			if chunk.Height != store.Height() {
+				return fmt.Errorf("state snapshot from %s changed height mid-transfer (%d -> %d); the peer's "+
+					"state moved during the transfer, retry from scratch", peerAddr, store.Height(), chunk.Height)
+			}
+			if chunk.Block != nil {
+				if err := authenticateSnapshotHead(peerAddr, trusted, chunk.Block, chunk.Height); err != nil {
+					return err
+				}
+				if err := store.AcceptHead(chunk.Block, chunk.Height); err != nil {
+					return err
+				}
+			}
+		}
+		if chunk.SessionID != "" {
 			sessionID = chunk.SessionID
-			// Authenticate the head NOW, before requesting any further page:
-			// do not keep downloading a snapshot whose head we reject anyway.
-			if err := authenticateSnapshotHead(peerAddr, trusted, head, height); err != nil {
-				return nil, err
-			}
-		} else if chunk.Height != height {
-			return nil, fmt.Errorf("state snapshot from %s changed height mid-transfer (%d -> %d); the peer's "+
-				"state moved during the transfer, retry from scratch", peerAddr, height, chunk.Height)
 		}
 
-		// Every non-final page must carry a cursor strictly past the one that
-		// produced it, so a hostile or buggy peer cannot loop us on one page.
 		if !chunk.Done {
 			if len(chunk.NextKey) == 0 {
-				return nil, fmt.Errorf("state snapshot chunk from %s: not done but carries no next key", peerAddr)
+				return fmt.Errorf("state snapshot chunk from %s: not done but carries no next key", peerAddr)
 			}
 			if len(afterKey) > 0 && bytes.Compare(chunk.NextKey, afterKey) <= 0 {
-				return nil, fmt.Errorf("state snapshot chunk from %s: cursor did not advance", peerAddr)
+				return fmt.Errorf("state snapshot chunk from %s: cursor did not advance", peerAddr)
 			}
-			afterKey = chunk.NextKey
 		}
 
-		for _, l := range chunk.Leaves {
-			totalBytes += len(l.Key) + len(l.Value)
+		if err := store.AppendPage(chunk.Leaves, chunk.NextKey, chunk.Done, sessionID); err != nil {
+			return fmt.Errorf("stage snapshot page from %s: %w", peerAddr, err)
 		}
-		if totalBytes > maxChunkedLeafBytes {
-			return nil, fmt.Errorf("state snapshot from %s: raw leaves exceed the %d-byte budget", peerAddr, maxChunkedLeafBytes)
-		}
-		leaves = append(leaves, chunk.Leaves...)
 		if chunk.Done {
 			break
 		}
+		afterKey = chunk.NextKey
+		retriedSession = false
 	}
-
-	// Final integrity: the assembled leaves must hash to the head's committed
-	// root, so a peer that serves pages from a different state is caught here
-	// before anything is handed to the importer.
-	if got := state.SnapshotRoot(leaves); got != head.Header.StateRoot {
-		return nil, fmt.Errorf("state snapshot from %s: assembled leaves hash to %x, head %d commits to %x",
-			peerAddr, got[:8], height, head.Header.StateRoot[:8])
-	}
-	return &types.StateSnapshot{Height: height, Block: head, Leaves: leaves}, nil
+	return store.VerifyRoot()
 }
 
 // StateSync tries every known peer until one snapshot is fetched and
 // imported. The importer is the executor's ImportStateSnapshot; a failure
 // there moves on to the next peer, and the returned error names every
 // refusal so an operator can see which peer said what.
+//
+// A configured SnapshotStagingDir lets a failed peer (or a restart) resume
+// the same authenticated snapshot from the persisted cursor instead of
+// starting over in RAM.
 func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
 	peers := s.pool.Addrs()
 	if len(peers) == 0 {
 		return errors.New("state sync: no peers to take a snapshot from")
 	}
+
+	var store *state.SnapshotDownload
+	if dir := s.fetcher.cfg.SnapshotStagingDir; dir != "" {
+		opened, err := state.OpenSnapshotDownload(dir, s.fetcher.snapshotDiskLimit())
+		if err != nil {
+			log.Warn().Err(err).Str("dir", dir).Msg("state sync: discarding unreadable download staging")
+			_ = state.RemoveSnapshotDownload(dir)
+			opened, err = state.OpenSnapshotDownload(dir, s.fetcher.snapshotDiskLimit())
+			if err != nil {
+				return fmt.Errorf("state sync: open download staging: %w", err)
+			}
+		}
+		store = opened
+	}
+
 	var refusals []string
 	for _, peer := range peers {
-		snap, err := s.fetcher.FetchStateSnapshot(peer)
-		if err != nil {
-			// Bounded legacy fallback: the chunked path covers states too large
-			// to serve in one reply and carries the same trust rules.
-			log.Debug().Err(err).Str("peer", peer).Msg("state sync: single-shot snapshot unavailable, trying chunked")
-			snap, err = s.fetcher.FetchStateSnapshotChunked(peer, 0)
-		}
+		snap, err := s.fetchSnapshotFromPeer(peer, store)
 		if err != nil {
 			log.Warn().Err(err).Str("peer", peer).Msg("state sync: snapshot not usable")
 			refusals = append(refusals, fmt.Sprintf("%s: %v", peer, err))
+			continue
+		}
+		if store != nil && store.Done() && s.fetcher.cfg.AdoptSnapshotDownload != nil {
+			if err := s.fetcher.cfg.AdoptSnapshotDownload(store.Dir()); err != nil {
+				log.Warn().Err(err).Str("peer", peer).Msg("state sync: download import failed")
+				refusals = append(refusals, fmt.Sprintf("%s: import: %v", peer, err))
+				continue
+			}
+			log.Info().Str("peer", peer).Uint64("height", store.Height()).
+				Msg("state sync: snapshot imported from disk staging, block sync resumes from the next height")
+			return nil
+		}
+		if snap == nil && store != nil {
+			snap, err = store.Assemble()
+			if err != nil {
+				refusals = append(refusals, fmt.Sprintf("%s: assemble: %v", peer, err))
+				continue
+			}
+		}
+		if snap == nil {
+			refusals = append(refusals, fmt.Sprintf("%s: no snapshot assembled", peer))
 			continue
 		}
 		if err := importer(snap); err != nil {
@@ -263,9 +354,33 @@ func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
 			refusals = append(refusals, fmt.Sprintf("%s: import: %v", peer, err))
 			continue
 		}
+		if store != nil {
+			_ = store.Remove()
+		}
 		log.Info().Str("peer", peer).Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).
 			Msg("state sync: snapshot imported, block sync resumes from the next height")
 		return nil
 	}
 	return fmt.Errorf("state sync: no peer served a usable snapshot: %s", strings.Join(refusals, "; "))
+}
+
+func (s *Syncer) fetchSnapshotFromPeer(peer string, store *state.SnapshotDownload) (*types.StateSnapshot, error) {
+	if store != nil && store.HasHead() {
+		if err := s.fetcher.fetchChunkedInto(peer, 0, store); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	snap, err := s.fetcher.FetchStateSnapshot(peer)
+	if err != nil {
+		log.Debug().Err(err).Str("peer", peer).Msg("state sync: single-shot snapshot unavailable, trying chunked")
+		if store == nil {
+			return s.fetcher.FetchStateSnapshotChunked(peer, 0)
+		}
+		if err := s.fetcher.fetchChunkedInto(peer, 0, store); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	return snap, nil
 }

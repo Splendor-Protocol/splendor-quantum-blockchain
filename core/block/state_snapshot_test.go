@@ -324,6 +324,33 @@ func TestSnapshotChunkSessionQuota(t *testing.T) {
 	}
 }
 
+func TestStartSnapshotChunkSessionFromAtSkipsPrefix(t *testing.T) {
+	ex, _, _, _, _, _ := threeBlockChain(t)
+	_, first, err := ex.StartSnapshotChunkSession(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Done || first.Block == nil || len(first.NextKey) == 0 {
+		t.Fatal("need a multi-page snapshot")
+	}
+	id, page, err := ex.StartSnapshotChunkSessionFromAt("resume", first.NextKey, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Block == nil || page.Block.Hash != first.Block.Hash {
+		t.Fatal("resume start must still carry the head block")
+	}
+	if id == "" || page.SessionID != id {
+		t.Fatal("resume start must issue a session")
+	}
+	if len(page.Leaves) == 0 {
+		t.Fatal("resume page was empty")
+	}
+	if string(page.Leaves[0].Key) == string(first.Leaves[0].Key) {
+		t.Fatal("resume start re-sent the prefix already held by the client")
+	}
+}
+
 func TestSinglePageSnapshotSessionIsNotRetained(t *testing.T) {
 	ex, _, _, _, _, _ := threeBlockChain(t)
 	id, first, err := ex.StartSnapshotChunkSession(MaxSnapshotChunkLeaves)

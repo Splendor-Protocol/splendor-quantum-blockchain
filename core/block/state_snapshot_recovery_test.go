@@ -1,6 +1,7 @@
 package block
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -416,5 +417,131 @@ func TestReconcileRefusesCorruptedStaging(t *testing.T) {
 	}
 	if got, err := exB.readSnapshotMarker(); err != nil || got == nil {
 		t.Fatalf("marker should still be present after refused recovery, got (%v,%v)", got, err)
+	}
+}
+
+// R4: matching applied state without the head must not drop evidence. Staging
+// that still has the block lets recovery restore it, then delete.
+func TestReconcileRestoresMissingBlockWhenStateMatches(t *testing.T) {
+	exA, _, _, _, _, _ := threeBlockChain(t)
+	snap, err := exA.ExportStateSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+	if err := sdbB.ImportSnapshot(snap.Leaves, snap.Height, snap.Block.Header.StateRoot); err != nil {
+		t.Fatal(err)
+	}
+	marker := &snapshotImportMarker{
+		Height: snap.Height, BlockHash: snap.Block.Hash, StateRoot: snap.Block.Header.StateRoot,
+		ChainID: snap.Block.Header.ChainID, Phase: phaseComplete,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.writeSnapshotStaging(snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.ReconcileSnapshotImport(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got, err := exB.GetBlockByHeight(snap.Height)
+	if err != nil || got.Hash != snap.Block.Hash {
+		t.Fatalf("restored block = (%v, %v)", got, err)
+	}
+	if m, _ := exB.readSnapshotMarker(); m != nil {
+		t.Fatal("evidence should be gone after restore")
+	}
+}
+
+// R4: matching state, missing block, no staging — keep the marker.
+func TestReconcileKeepsEvidenceWhenStateMatchesAndBlockMissing(t *testing.T) {
+	exA, _, _, _, _, _ := threeBlockChain(t)
+	snap, err := exA.ExportStateSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+	if err := sdbB.ImportSnapshot(snap.Leaves, snap.Height, snap.Block.Header.StateRoot); err != nil {
+		t.Fatal(err)
+	}
+	marker := &snapshotImportMarker{
+		Height: snap.Height, BlockHash: snap.Block.Hash, StateRoot: snap.Block.Header.StateRoot,
+		ChainID: snap.Block.Header.ChainID, Phase: phaseComplete,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.ReconcileSnapshotImport(); err == nil {
+		t.Fatal("expected error when the head cannot be restored")
+	}
+	if m, _ := exB.readSnapshotMarker(); m == nil {
+		t.Fatal("marker was dropped even though the block is still missing")
+	}
+}
+
+// R4: missing block + dirty/mismatched state must never delete evidence.
+func TestReconcileKeepsEvidenceWhenStateMismatchedAndBlockMissing(t *testing.T) {
+	ex, sdb := newTestExecutor(t)
+	defer ex.Close()
+	defer sdb.Close()
+	fund(t, sdb, testAddr(0x42), 100)
+	marker := &snapshotImportMarker{
+		Height: 3, BlockHash: [32]byte{0x09}, StateRoot: [32]byte{0x0a},
+		ChainID: "test-chain", Phase: phaseStarted,
+	}
+	if err := ex.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.ReconcileSnapshotImport(); err == nil {
+		t.Fatal("mismatched state + missing block must not look like a clean slate")
+	}
+	if m, _ := ex.readSnapshotMarker(); m == nil {
+		t.Fatal("evidence dropped on missing block + mismatched state")
+	}
+}
+
+// R4: legacy interrupted import (block stored, no staging) is retryable.
+func TestReconcileLegacyNoStagingIsIncomplete(t *testing.T) {
+	exA, _, _, _, _, _ := threeBlockChain(t)
+	snap, err := exA.ExportStateSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exB, sdbB := newTestExecutor(t)
+	defer exB.Close()
+	defer sdbB.Close()
+	marker := &snapshotImportMarker{
+		Height: snap.Height, BlockHash: snap.Block.Hash, StateRoot: snap.Block.Header.StateRoot,
+		ChainID: snap.Block.Header.ChainID, Phase: phaseBlockStored,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.storeBlock(snap.Block); err != nil {
+		t.Fatal(err)
+	}
+	err = exB.ReconcileSnapshotImport()
+	if err == nil || !errors.Is(err, ErrSnapshotImportIncomplete) {
+		t.Fatalf("legacy no-staging = %v, want ErrSnapshotImportIncomplete", err)
+	}
+	if m, _ := exB.readSnapshotMarker(); m == nil {
+		t.Fatal("marker dropped on a retryable incomplete import")
+	}
+	if !exB.HasIncompleteSnapshotImport() {
+		t.Fatal("HasIncompleteSnapshotImport = false")
+	}
+	if err := exB.ImportStateSnapshot(snap); err != nil {
+		t.Fatalf("resume import: %v", err)
+	}
+	if h, ok := sdbB.AppliedHeight(); !ok || h != snap.Height {
+		t.Fatalf("applied after resume = (%d,%v)", h, ok)
+	}
+	if m, _ := exB.readSnapshotMarker(); m != nil {
+		t.Fatal("marker left after resumed import")
 	}
 }

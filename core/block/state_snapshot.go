@@ -27,6 +27,21 @@ const MaxStateSnapshotBytes = 64 << 20
 // has blocks: a snapshot is a starting point, never a replacement.
 var ErrChainNotEmpty = errors.New("state snapshot import needs an empty chain")
 
+// ErrSnapshotImportIncomplete means recovery could not finish and left
+// marker/staging in place so a subsequent --state-sync can resume. Startup
+// must not treat this as fatal when state-sync retry is configured.
+var ErrSnapshotImportIncomplete = errors.New("snapshot import incomplete; retry state sync")
+
+// snapClass is how a store lines up with the recovery marker.
+type snapClass int
+
+const (
+	snapAbsent snapClass = iota
+	snapMatch
+	snapConflict
+	snapMismatch
+)
+
 // snapshotImportMarker tracks an in-progress snapshot import across restarts.
 // Written before any import operations, deleted only after both block and state
 // are committed. A marker present at startup means import was interrupted and
@@ -331,6 +346,14 @@ func (e *Executor) StartSnapshotChunkSession(maxLeaves int) (string, *types.Stat
 // StartSnapshotChunkSessionFrom is StartSnapshotChunkSession keyed by source
 // for the per-peer session quota. Empty source still counts toward the global cap.
 func (e *Executor) StartSnapshotChunkSessionFrom(source string, maxLeaves int) (string, *types.StateSnapshotChunkResult, error) {
+	return e.StartSnapshotChunkSessionFromAt(source, nil, maxLeaves)
+}
+
+// StartSnapshotChunkSessionFromAt starts a session and returns the page whose
+// keys sort after afterKey. A resume/failover client that already has a prefix
+// of the snapshot uses this so the first page of a new session still carries
+// the head block for re-authentication.
+func (e *Executor) StartSnapshotChunkSessionFromAt(source string, afterKey []byte, maxLeaves int) (string, *types.StateSnapshotChunkResult, error) {
 	maxLeaves = normalizeSnapshotChunkLeaves(maxLeaves)
 	sess, err := e.state.BeginSnapshotChunkSession()
 	if err != nil {
@@ -342,7 +365,7 @@ func (e *Executor) StartSnapshotChunkSessionFrom(source string, maxLeaves int) (
 		sess.Release()
 		return "", nil, fmt.Errorf("state snapshot chunk at height %d has no stored block: %w", height, err)
 	}
-	leaves, nextKey, done, err := sess.Page(nil, maxLeaves)
+	leaves, nextKey, done, err := sess.Page(afterKey, maxLeaves)
 	if err != nil {
 		sess.Release()
 		return "", nil, err
@@ -555,8 +578,16 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 	if err != nil {
 		return fmt.Errorf("read chain head: %w", err)
 	}
+	if latest != nil && e.snapshotAlreadyAppliedLocked(latest, snap.Height, b) {
+		return nil
+	}
+	resume := false
 	if latest != nil {
-		return fmt.Errorf("%w: head is already at %d", ErrChainNotEmpty, latest.Header.Height)
+		if latest.Hash == b.Hash && latest.Header.Height == snap.Height && e.state.IsFresh() {
+			resume = true
+		} else {
+			return fmt.Errorf("%w: head is already at %d", ErrChainNotEmpty, latest.Header.Height)
+		}
 	}
 	if !e.state.IsFresh() {
 		return state.ErrStateNotFresh
@@ -593,11 +624,13 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 	}
 	log.Info().Uint64("height", snap.Height).Msg("snapshot import: marker and staging written")
 
-	// Store block.
-	if err := e.storeBlock(b); err != nil {
-		e.deleteSnapshotMarker()
-		e.deleteSnapshotStaging()
-		return fmt.Errorf("store snapshot head block: %w", err)
+	// Store block unless this is a resume after the head already landed.
+	if !resume {
+		if err := e.storeBlock(b); err != nil {
+			e.deleteSnapshotMarker()
+			e.deleteSnapshotStaging()
+			return fmt.Errorf("store snapshot head block: %w", err)
+		}
 	}
 
 	// Advance the marker. A failure here is survivable: reconciliation judges
@@ -618,12 +651,9 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 	log.Info().Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).Msg("snapshot import: state imported")
 
 	// Import complete: drop the marker first (recovery that finds no marker
-	// treats the import as done), then the retained staging.
-	if err := e.deleteSnapshotMarker(); err != nil {
-		log.Warn().Err(err).Msg("failed to delete recovery marker after successful import")
-	}
-	if err := e.deleteSnapshotStaging(); err != nil {
-		log.Warn().Err(err).Msg("failed to delete snapshot staging after successful import")
+	// treats the import as done), then the retained staging and download dir.
+	if err := e.deleteSnapshotEvidence(); err != nil {
+		log.Warn().Err(err).Msg("failed to delete snapshot evidence after successful import")
 	}
 
 	log.Info().Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).
@@ -635,18 +665,11 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 // and completes it, recognises it as done, or rolls back only what that import
 // left behind. Called before normal operations begin.
 //
-// It never trusts the marker phase alone: the marker's job is only to say "an
-// import may be in progress". Recovery decides from the actual stores —
-// whether the block at the marker's height is present with the recorded hash,
-// and whether the committed state is present with the recorded root — because
-// a crash can land at any point, including between writing the block and
-// rewriting the marker. The outcome is always one of:
-//   - both block and state present  → import actually completed, drop marker/retained snapshot
-//   - block present, state absent   → complete the state from the retained verified snapshot
-//   - nothing present               → nothing durable happened, drop marker/retained snapshot
-//
-// If the stores disagree with the marker, or the retained snapshot was
-// corrupted, it returns an error rather than guessing.
+// Evidence (marker, legacy staging, download dir) is deleted only when the
+// stored block hash and the applied height/root all match the marker. A
+// missing block plus mismatched or partial state never drops evidence. A
+// legacy interrupted import with no staging returns ErrSnapshotImportIncomplete
+// so --state-sync can resume instead of failing startup.
 func (e *Executor) ReconcileSnapshotImport() error {
 	marker, err := e.readSnapshotMarker()
 	if err != nil {
@@ -669,73 +692,279 @@ func (e *Executor) ReconcileSnapshotImport() error {
 		Str("state_root", fmt.Sprintf("%x", marker.StateRoot[:8])).
 		Msg("RECOVERY: interrupted snapshot import detected")
 
-	// What actually got persisted?
-	block, blockErr := e.GetBlockByHeight(marker.Height)
-	if blockErr != nil && !errors.Is(blockErr, types.ErrBlockNotFound) {
-		return fmt.Errorf("recovery: read block at height %d: %w", marker.Height, blockErr)
+	blockClass, _, err := e.classifySnapshotBlock(marker)
+	if err != nil {
+		return err
 	}
-	if blockErr == nil && block.Hash != marker.BlockHash {
-		return fmt.Errorf("recovery: block at height %d has hash %x, marker expects %x — refusing to reconcile mismatched stores",
-			marker.Height, block.Hash[:8], marker.BlockHash[:8])
-	}
-	blockStored := blockErr == nil
-
-	stateDone := false
-	if h, ok := e.state.AppliedHeight(); ok && h == marker.Height {
-		if root, err := e.state.StateRoot(); err == nil && root == marker.StateRoot {
-			stateDone = true
-		}
-	}
+	stateClass := e.classifySnapshotState(marker)
 
 	switch {
-	case stateDone:
-		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: state already committed; dropping marker and retained snapshot")
-		if err := e.deleteSnapshotMarker(); err != nil {
-			return fmt.Errorf("recovery: delete completed marker: %w", err)
-		}
-		if err := e.deleteSnapshotStaging(); err != nil {
-			return fmt.Errorf("recovery: delete completed staging: %w", err)
-		}
-		return nil
+	case blockClass == snapConflict:
+		return fmt.Errorf("recovery: block at height %d has a different hash than the marker — refusing to reconcile mismatched stores",
+			marker.Height)
 
-	case blockStored:
-		if !e.state.IsFresh() {
-			return fmt.Errorf("recovery: block %d stored but state is neither imported nor fresh — refusing to overwrite", marker.Height)
+	case blockClass == snapMatch && stateClass == snapMatch:
+		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: block and applied state match; dropping evidence")
+		return e.deleteSnapshotEvidence()
+
+	case blockClass == snapMatch && stateClass == snapAbsent:
+		if err := e.completeSnapshotStateFromEvidence(marker); err != nil {
+			return err
 		}
-		staged, err := e.readSnapshotStaging()
-		if err != nil {
-			return fmt.Errorf("recovery: block %d stored but staging unreadable: %w", marker.Height, err)
+		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: state import completed from retained snapshot")
+		return e.deleteSnapshotEvidence()
+
+	case blockClass == snapAbsent && stateClass == snapMatch:
+		if err := e.restoreSnapshotBlockFromEvidence(marker); err != nil {
+			return err
 		}
-		if staged == nil {
-			return fmt.Errorf("recovery: block %d stored but no retained snapshot to complete the import — retry state sync", marker.Height)
-		}
-		// Re-verify the retained leaves against the marker's committed root
-		// before importing, so a torn or corrupted staging file cannot poison
-		// state.
-		if got := state.SnapshotRoot(staged.Leaves); got != marker.StateRoot {
-			return fmt.Errorf("recovery: retained snapshot leaves hash to %x, marker commits to %x — staging corrupted",
-				got[:8], marker.StateRoot[:8])
-		}
-		if err := e.state.ImportSnapshot(staged.Leaves, marker.Height, marker.StateRoot); err != nil {
-			return fmt.Errorf("recovery: complete state import at height %d: %w", marker.Height, err)
-		}
-		log.Info().Uint64("height", marker.Height).Int("leaves", len(staged.Leaves)).Msg("RECOVERY: state import completed from retained snapshot")
-		if err := e.deleteSnapshotMarker(); err != nil {
-			return fmt.Errorf("recovery: delete marker after completing import: %w", err)
-		}
-		if err := e.deleteSnapshotStaging(); err != nil {
-			return fmt.Errorf("recovery: delete staging after completing import: %w", err)
-		}
-		return nil
+		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: missing snapshot head restored from staging")
+		return e.deleteSnapshotEvidence()
+
+	case blockClass == snapAbsent && stateClass == snapAbsent:
+		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: nothing persisted yet; discarding marker and retained snapshot")
+		return e.deleteSnapshotEvidence()
+
+	case stateClass == snapMismatch:
+		return fmt.Errorf("recovery: state at marker height %d is present but does not match the recorded root — evidence kept",
+			marker.Height)
 
 	default:
-		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: nothing persisted yet; discarding marker and retained snapshot")
-		if err := e.deleteSnapshotMarker(); err != nil {
-			return fmt.Errorf("recovery: delete stale marker: %w", err)
+		return fmt.Errorf("%w: stores are not yet consistent at height %d; evidence kept",
+			ErrSnapshotImportIncomplete, marker.Height)
+	}
+}
+
+func (e *Executor) classifySnapshotBlock(marker *snapshotImportMarker) (snapClass, *types.Block, error) {
+	block, err := e.GetBlockByHeight(marker.Height)
+	if errors.Is(err, types.ErrBlockNotFound) {
+		return snapAbsent, nil, nil
+	}
+	if err != nil {
+		return 0, nil, fmt.Errorf("recovery: read block at height %d: %w", marker.Height, err)
+	}
+	if block.Hash != marker.BlockHash {
+		return snapConflict, block, nil
+	}
+	return snapMatch, block, nil
+}
+
+func (e *Executor) classifySnapshotState(marker *snapshotImportMarker) snapClass {
+	h, ok := e.state.AppliedHeight()
+	if ok && h == marker.Height {
+		if root, err := e.state.StateRoot(); err == nil && root == marker.StateRoot {
+			return snapMatch
 		}
-		if err := e.deleteSnapshotStaging(); err != nil {
-			return fmt.Errorf("recovery: delete stale staging: %w", err)
+	}
+	if e.state.IsFresh() && !ok {
+		return snapAbsent
+	}
+	return snapMismatch
+}
+
+func (e *Executor) completeSnapshotStateFromEvidence(marker *snapshotImportMarker) error {
+	if !e.state.IsFresh() {
+		return fmt.Errorf("recovery: block %d stored but state is neither imported nor fresh — refusing to overwrite", marker.Height)
+	}
+	if d, err := e.openSnapshotDownload(); err != nil {
+		return fmt.Errorf("recovery: download staging unreadable: %w", err)
+	} else if d != nil {
+		if err := d.VerifyRoot(); err != nil {
+			return fmt.Errorf("recovery: download staging failed integrity: %w", err)
+		}
+		if got := d.StateRoot(); got != marker.StateRoot {
+			return fmt.Errorf("recovery: download staging root %x != marker %x", got[:8], marker.StateRoot[:8])
+		}
+		if err := e.state.ImportSnapshotJSONL(filepath.Join(d.Dir(), "leaves.jsonl"), marker.Height, marker.StateRoot); err != nil {
+			return fmt.Errorf("recovery: complete state import at height %d: %w", marker.Height, err)
 		}
 		return nil
 	}
+	staged, err := e.readSnapshotStaging()
+	if err != nil {
+		return fmt.Errorf("recovery: block %d stored but staging unreadable: %w", marker.Height, err)
+	}
+	if staged == nil {
+		return fmt.Errorf("%w: block %d stored but no retained snapshot to complete the import",
+			ErrSnapshotImportIncomplete, marker.Height)
+	}
+	if got := state.SnapshotRoot(staged.Leaves); got != marker.StateRoot {
+		return fmt.Errorf("recovery: retained snapshot leaves hash to %x, marker commits to %x — staging corrupted",
+			got[:8], marker.StateRoot[:8])
+	}
+	if err := e.state.ImportSnapshot(staged.Leaves, marker.Height, marker.StateRoot); err != nil {
+		return fmt.Errorf("recovery: complete state import at height %d: %w", marker.Height, err)
+	}
+	return nil
+}
+
+func (e *Executor) restoreSnapshotBlockFromEvidence(marker *snapshotImportMarker) error {
+	if d, err := e.openSnapshotDownload(); err != nil {
+		return fmt.Errorf("recovery: download staging unreadable: %w", err)
+	} else if d != nil && d.Head() != nil && d.Head().Hash == marker.BlockHash {
+		if err := e.storeBlock(d.Head()); err != nil {
+			return fmt.Errorf("recovery: restore snapshot head: %w", err)
+		}
+		return nil
+	}
+	staged, err := e.readSnapshotStaging()
+	if err != nil {
+		return fmt.Errorf("recovery: staging unreadable: %w", err)
+	}
+	if staged == nil || staged.Block == nil {
+		return fmt.Errorf("%w: applied state matches height %d but the head block is missing and no staging has it",
+			ErrSnapshotImportIncomplete, marker.Height)
+	}
+	if staged.Block.Hash != marker.BlockHash {
+		return fmt.Errorf("recovery: staged block hash %x != marker %x — evidence kept",
+			staged.Block.Hash[:8], marker.BlockHash[:8])
+	}
+	if err := e.storeBlock(staged.Block); err != nil {
+		return fmt.Errorf("recovery: restore snapshot head: %w", err)
+	}
+	return nil
+}
+
+func (e *Executor) snapshotAlreadyAppliedLocked(latest *types.Block, height uint64, b *types.Block) bool {
+	if latest == nil || b == nil || latest.Hash != b.Hash || latest.Header.Height != height {
+		return false
+	}
+	h, ok := e.state.AppliedHeight()
+	if !ok || h != height {
+		return false
+	}
+	root, err := e.state.StateRoot()
+	return err == nil && root == b.Header.StateRoot
+}
+
+// HasIncompleteSnapshotImport reports a recovery marker still on disk.
+func (e *Executor) HasIncompleteSnapshotImport() bool {
+	m, err := e.readSnapshotMarker()
+	return err == nil && m != nil
+}
+
+func (e *Executor) snapshotDownloadPath() string {
+	if e.dataDir == "" {
+		return ""
+	}
+	return filepath.Join(e.dataDir, "snapshot_download")
+}
+
+func (e *Executor) openSnapshotDownload() (*state.SnapshotDownload, error) {
+	path := e.snapshotDownloadPath()
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+	if _, err := os.Stat(filepath.Join(path, "progress.json")); os.IsNotExist(err) {
+		return nil, nil
+	}
+	return state.OpenSnapshotDownload(path, 0)
+}
+
+func (e *Executor) deleteSnapshotDownload() error {
+	path := e.snapshotDownloadPath()
+	if path == "" {
+		return nil
+	}
+	return state.RemoveSnapshotDownload(path)
+}
+
+func (e *Executor) deleteSnapshotEvidence() error {
+	if err := e.deleteSnapshotMarker(); err != nil {
+		return fmt.Errorf("recovery: delete marker: %w", err)
+	}
+	if err := e.deleteSnapshotStaging(); err != nil {
+		return fmt.Errorf("recovery: delete staging: %w", err)
+	}
+	if err := e.deleteSnapshotDownload(); err != nil {
+		return fmt.Errorf("recovery: delete download staging: %w", err)
+	}
+	return nil
+}
+
+// ImportSnapshotDownload adopts a completed on-disk chunked download. Used by
+// StateSync so a large snapshot is never assembled into a second RAM copy.
+func (e *Executor) ImportSnapshotDownload(dir string) error {
+	d, err := state.OpenSnapshotDownload(dir, 0)
+	if err != nil {
+		return err
+	}
+	if !d.Done() || d.Head() == nil {
+		return state.ErrSnapshotDownloadIncomplete
+	}
+	if err := d.VerifyRoot(); err != nil {
+		return err
+	}
+	b := d.Head()
+	if b.Header.Height != d.Height() {
+		return fmt.Errorf("state snapshot says height %d but its block is at %d", d.Height(), b.Header.Height)
+	}
+	if err := b.Validate(); err != nil {
+		return fmt.Errorf("state snapshot head block: %w", err)
+	}
+	if b.Header.ChainID != types.ChainID {
+		return fmt.Errorf("state snapshot is for chain %q, this node is on %q", b.Header.ChainID, types.ChainID)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	latest, err := e.LatestBlock()
+	if err != nil {
+		return fmt.Errorf("read chain head: %w", err)
+	}
+	if latest != nil && e.snapshotAlreadyAppliedLocked(latest, d.Height(), b) {
+		_ = d.Remove()
+		_ = e.deleteSnapshotMarker()
+		_ = e.deleteSnapshotStaging()
+		return nil
+	}
+	resume := false
+	if latest != nil {
+		if latest.Hash == b.Hash && latest.Header.Height == d.Height() && e.state.IsFresh() {
+			resume = true
+		} else {
+			return fmt.Errorf("%w: head is already at %d", ErrChainNotEmpty, latest.Header.Height)
+		}
+	}
+	if !e.state.IsFresh() {
+		return state.ErrStateNotFresh
+	}
+	if b.Header.Height == 0 && e.genesisHash != nil && b.Hash != *e.genesisHash {
+		return fmt.Errorf("state snapshot's block 0 hashes to %x, pinned --genesis-hash is %x", b.Hash[:8], e.genesisHash[:8])
+	}
+
+	marker := &snapshotImportMarker{
+		Height:    d.Height(),
+		BlockHash: b.Hash,
+		StateRoot: b.Header.StateRoot,
+		ChainID:   b.Header.ChainID,
+		Phase:     phaseStarted,
+	}
+	if err := e.writeSnapshotMarker(marker); err != nil {
+		return fmt.Errorf("write recovery marker: %w", err)
+	}
+	if !resume {
+		if err := e.storeBlock(b); err != nil {
+			e.deleteSnapshotMarker()
+			return fmt.Errorf("store snapshot head block: %w", err)
+		}
+		marker.Phase = phaseBlockStored
+		if err := e.writeSnapshotMarker(marker); err != nil {
+			log.Warn().Err(err).Msg("failed to update recovery marker after block store; recovery will reconcile from the stores")
+		}
+	}
+	if err := e.state.ImportSnapshotJSONL(filepath.Join(d.Dir(), "leaves.jsonl"), d.Height(), b.Header.StateRoot); err != nil {
+		log.Error().Err(err).Uint64("height", d.Height()).
+			Msg("state snapshot: head block stored but state import failed; recovery will complete it on restart")
+		return fmt.Errorf("import snapshot state: %w", err)
+	}
+	if err := e.deleteSnapshotEvidence(); err != nil {
+		log.Warn().Err(err).Msg("failed to delete snapshot evidence after successful import")
+	}
+	log.Info().Uint64("height", d.Height()).
+		Str("hash", fmt.Sprintf("%x", b.Hash[:8])).Msg("state snapshot imported from disk staging")
+	return nil
 }
