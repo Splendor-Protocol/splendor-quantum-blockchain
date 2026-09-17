@@ -12,6 +12,8 @@ import (
 	"runtime"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
 )
 
 // WalletFile is the on-disk format for an encrypted Splendor QC wallet.
@@ -73,6 +75,16 @@ const (
 	minArgon2Time   = 1
 	minArgon2Memory = 32 * 1024 // 32 MB
 	minSaltSize     = 16
+
+	// Ceilings so a crafted file cannot turn LoadWallet into an unbounded
+	// KDF or GCM panic. SaveWallet still writes the constants above.
+	maxArgon2Time      = 8
+	maxArgon2Memory    = 256 * 1024 // 256 MB
+	maxArgon2Threads   = 16
+	maxWalletFileBytes = 256 << 10
+	maxWalletCiphertext = 8 << 10
+	walletGCMNonceSize = 12
+	walletGCMTagSize   = 16
 )
 
 // KeyFilePermissionsEnforced reports whether CheckKeyFilePermissions can
@@ -118,6 +130,7 @@ func SaveWallet(path string, pub *PublicKey, priv *PrivateKey, password []byte) 
 
 	// Derive 256-bit encryption key using Argon2id
 	key := argon2.IDKey(password, salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+	defer wipeBytes(key)
 
 	// Encrypt private key bytes using AES-256-GCM
 	block, err := aes.NewCipher(key)
@@ -132,7 +145,9 @@ func SaveWallet(path string, pub *PublicKey, priv *PrivateKey, password []byte) 
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return fmt.Errorf("failed to generate nonce: %w", err)
 	}
-	ciphertext := gcm.Seal(nil, nonce, priv.Bytes(), nil)
+	privBytes := priv.Bytes()
+	ciphertext := gcm.Seal(nil, nonce, privBytes, nil)
+	wipeBytes(privBytes)
 
 	addr := DeriveAddress(pub)
 
@@ -153,7 +168,7 @@ func SaveWallet(path string, pub *PublicKey, priv *PrivateKey, password []byte) 
 	if err != nil {
 		return fmt.Errorf("failed to marshal wallet: %w", err)
 	}
-	return os.WriteFile(path, data, 0600)
+	return persist.WriteFileAtomic(path, data, 0o600)
 }
 
 // LoadWallet reads a wallet file, decrypts the private key using the password,
@@ -171,6 +186,10 @@ func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read wallet file: %w", err)
+	}
+	if len(data) > maxWalletFileBytes {
+		return nil, nil, fmt.Errorf("wallet %s is %d bytes, maximum is %d",
+			path, len(data), maxWalletFileBytes)
 	}
 
 	var wf WalletFile
@@ -202,9 +221,28 @@ func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
 				"minimum is time=%d, memory=%dKB) — re-encrypt it before use",
 			path, wf.Encrypted.Time, wf.Encrypted.Memory, minArgon2Time, minArgon2Memory)
 	}
+	if wf.Encrypted.Time > maxArgon2Time || wf.Encrypted.Memory > maxArgon2Memory {
+		return nil, nil, fmt.Errorf(
+			"wallet %s has excessive key-derivation parameters (time=%d, memory=%dKB; "+
+				"maximum is time=%d, memory=%dKB)",
+			path, wf.Encrypted.Time, wf.Encrypted.Memory, maxArgon2Time, maxArgon2Memory)
+	}
+	if wf.Encrypted.Threads == 0 || wf.Encrypted.Threads > maxArgon2Threads {
+		return nil, nil, fmt.Errorf(
+			"wallet %s has invalid key-derivation threads %d (allowed 1..%d)",
+			path, wf.Encrypted.Threads, maxArgon2Threads)
+	}
 	if len(wf.Encrypted.Salt) < minSaltSize {
 		return nil, nil, fmt.Errorf("wallet %s has a %d-byte salt, minimum is %d",
 			path, len(wf.Encrypted.Salt), minSaltSize)
+	}
+	if len(wf.Encrypted.Nonce) != walletGCMNonceSize {
+		return nil, nil, fmt.Errorf("wallet %s has a %d-byte nonce, want %d",
+			path, len(wf.Encrypted.Nonce), walletGCMNonceSize)
+	}
+	if len(wf.Encrypted.Ciphertext) < walletGCMTagSize || len(wf.Encrypted.Ciphertext) > maxWalletCiphertext {
+		return nil, nil, fmt.Errorf("wallet %s ciphertext is %d bytes, allowed %d..%d",
+			path, len(wf.Encrypted.Ciphertext), walletGCMTagSize, maxWalletCiphertext)
 	}
 
 	// Derive decryption key using Argon2id with stored parameters
@@ -216,6 +254,7 @@ func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
 		wf.Encrypted.Threads,
 		argon2KeyLen,
 	)
+	defer wipeBytes(key)
 
 	// Decrypt private key
 	block, err := aes.NewCipher(key)
@@ -230,6 +269,7 @@ func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
 	if err != nil {
 		return nil, nil, errors.New("decryption failed: wrong password or corrupted wallet")
 	}
+	defer wipeBytes(privBytes)
 
 	pub, err := PublicKeyFromBytes(wf.PublicKey)
 	if err != nil {
@@ -238,14 +278,6 @@ func LoadWallet(path string, password []byte) (*PublicKey, *PrivateKey, error) {
 	priv, err := PrivateKeyFromBytes(privBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load private key: %w", err)
-	}
-
-	// Zero out key material
-	for i := range key {
-		key[i] = 0
-	}
-	for i := range privBytes {
-		privBytes[i] = 0
 	}
 
 	// Prove the key material is the scheme this build signs with, rather than
@@ -288,4 +320,10 @@ func selfTestKeypair(pub *PublicKey, priv *PrivateKey) error {
 				"or generate a new wallet with 'sqc-wallet generate'", AlgMLDSA65)
 	}
 	return nil
+}
+
+func wipeBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
