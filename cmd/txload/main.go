@@ -26,6 +26,13 @@
 // or "duplicate pending nonce" (a retry after a lost reply); "nonce too low"
 // resyncs from /nonce; a per-address or pool-full refusal pauses the sender.
 // A gap can never be created, so nothing is ever pinned in a pool.
+//
+// Large pools: --lazy-keys keeps only a 32-byte seed per sender and derives the
+// ML-DSA-65 key at each submission (a resident expanded key is ~100 KB, so ten
+// thousand senders would otherwise hold a gigabyte); --scan-node -1 turns the
+// per-interval block scan off (it fetches every sealed block as JSON, which is
+// itself a load on the node); --one-shot has every sender send exactly one
+// transfer and ends the run when none remain — a "N accounts at once" burst.
 package main
 
 import (
@@ -33,7 +40,6 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -95,8 +101,11 @@ type config struct {
 	statsPath    string
 	summaryPath  string
 	pidPath      string
-	scanNode     int
+	scanNode     int // -1 = no block scan
 	topupEvery   int
+	fundDeadline time.Duration
+	lazyKeys     bool
+	oneShot      bool
 	verbose      bool
 }
 
@@ -122,8 +131,11 @@ func parseConfig(name string, args []string) (config, *flag.FlagSet) {
 	fs.StringVar(&c.statsPath, "stats", "", "append one JSON line per interval here")
 	fs.StringVar(&c.summaryPath, "summary", "", "write the end-of-run summary JSON here")
 	fs.StringVar(&c.pidPath, "pid", "", "write this process id here")
-	fs.IntVar(&c.scanNode, "scan-node", 0, "index of the --rpc node whose blocks are scanned for inclusion counts")
-	fs.IntVar(&c.topupEvery, "topup-every", 10, "re-check sender balances every N intervals and top up from the funder")
+	fs.IntVar(&c.scanNode, "scan-node", 0, "index of the --rpc node whose blocks are scanned for inclusion counts; -1 disables the scan")
+	fs.IntVar(&c.topupEvery, "topup-every", 10, "re-check sender balances every N intervals and top up from the funder (0 = never)")
+	fs.DurationVar(&c.fundDeadline, "fund-deadline", 3*time.Minute, "how long to wait for the initial funding to confirm")
+	fs.BoolVar(&c.lazyKeys, "lazy-keys", false, "keep only seed+address per sender; derive the signing key per submission (large pools)")
+	fs.BoolVar(&c.oneShot, "one-shot", false, "every sender sends exactly one transfer; the run ends when none remain")
 	fs.BoolVar(&c.verbose, "v", false, "log every submission")
 	_ = fs.Parse(args)
 
@@ -150,8 +162,11 @@ func parseConfig(name string, args []string) (config, *flag.FlagSet) {
 	if c.rate <= 0 {
 		fatal("--rate must be > 0")
 	}
-	if c.scanNode < 0 || c.scanNode >= len(c.rpcs) {
-		fatal("--scan-node out of range")
+	if c.scanNode < -1 || c.scanNode >= len(c.rpcs) {
+		fatal("--scan-node out of range (-1 disables the scan)")
+	}
+	if c.fundDeadline <= 0 {
+		fatal("--fund-deadline must be > 0")
 	}
 	if *fee != "" {
 		c.fee = mustBig(*fee, "--fee")
@@ -173,15 +188,34 @@ type node struct {
 }
 
 type account struct {
-	idx        int
-	name       string
-	addr       qcrypto.Address
-	priv       *qcrypto.PrivateKey
-	node       *node
-	mu         sync.Mutex
-	nonce      uint64
-	nonceOK    bool
+	idx     int
+	name    string
+	addr    qcrypto.Address
+	priv    *qcrypto.PrivateKey // nil when lazy: derived from seed per submission
+	seed    [32]byte
+	node    *node
+	mu      sync.Mutex
+	nonce   uint64
+	nonceOK bool
+	// one-shot bookkeeping (guarded by mu)
+	done  bool
+	fails int
+
 	pauseUntil atomic.Int64 // unix nanos
+}
+
+// signingKey returns the key that signs for a. A resident key is returned as
+// is; a lazy sender derives it from its seed, and the caller lets it go after
+// the submission so at most a handful of expanded keys are live at once.
+func (a *account) signingKey() (*qcrypto.PrivateKey, error) {
+	if a.priv != nil {
+		return a.priv, nil
+	}
+	w, err := signer.DeriveFromSeed(a.seed)
+	if err != nil {
+		return nil, err
+	}
+	return w.Private, nil
 }
 
 func (a *account) paused() bool { return time.Now().UnixNano() < a.pauseUntil.Load() }
@@ -220,13 +254,26 @@ func loadFunder(c config) (*account, error) {
 // domain tag. The funder's secret never enters the derivation: knowing a
 // sender key reveals nothing about the funder. Senders hold only what the
 // funder tops them up with.
-func deriveSender(funder qcrypto.Address, i int) (*account, error) {
-	seed := qcrypto.Hash32([]byte("sqc-txload/v1/" + funder.String() + "/" + strconv.Itoa(i)))
+//
+// With lazy set the account keeps the seed and the address only; the expanded
+// key is re-derived at every submission (see account.signingKey).
+func deriveSender(funder qcrypto.Address, i int, lazy bool) (*account, error) {
+	seed := senderSeed(funder, i)
 	w, err := signer.DeriveFromSeed(seed)
 	if err != nil {
 		return nil, err
 	}
-	return &account{idx: i, name: "s" + strconv.Itoa(i), addr: w.Address, priv: w.Private}, nil
+	a := &account{idx: i, name: "s" + strconv.Itoa(i), addr: w.Address, seed: seed}
+	if !lazy {
+		a.priv = w.Private
+	}
+	return a, nil
+}
+
+// senderSeed is the derivation every other tool (funder scripts, explorers)
+// can reproduce: SHA3-256("sqc-txload/v1/" + funder address + "/" + index).
+func senderSeed(funder qcrypto.Address, i int) [32]byte {
+	return qcrypto.Hash32([]byte("sqc-txload/v1/" + funder.String() + "/" + strconv.Itoa(i)))
 }
 
 // ── driver ──────────────────────────────────────────────────────────────────
@@ -246,6 +293,7 @@ type driver struct {
 	// counters (atomic)
 	submitted, accepted, transport, rateLimited, skipped, dupPending, nonceResync uint64
 	sampleTimeouts, samplesFailed, retries                                        uint64
+	oneShotRemaining, oneShotGaveUp                                               int64
 	rejMu                                                                         sync.Mutex
 	rejected                                                                      map[string]uint64
 	rejSamples                                                                    []string
@@ -283,6 +331,9 @@ const (
 
 var minFeeRe = regexp.MustCompile(`minimum (\d+)`)
 
+// maxSummarySenders is the largest pool whose addresses summary.json lists.
+const maxSummarySenders = 64
+
 func run(args []string) int {
 	cfg, _ := parseConfig("run", args)
 	if err := types.SetClientChainID(cfg.chainID); err != nil {
@@ -299,7 +350,7 @@ func run(args []string) int {
 	f.node = d.nodes[0]
 	d.funder = f
 	for i := 0; i < cfg.senders; i++ {
-		s, err := deriveSender(f.addr, cfg.senderOffset+i)
+		s, err := deriveSender(f.addr, cfg.senderOffset+i, cfg.lazyKeys)
 		if err != nil {
 			fatal("derive sender %d: %v", i, err)
 		}
@@ -307,6 +358,7 @@ func run(args []string) int {
 		d.senders = append(d.senders, s)
 		d.senderSet[s.addr] = s.idx
 	}
+	d.oneShotRemaining = int64(len(d.senders))
 	d.fundLow = new(big.Int).Div(cfg.fundAmt, big.NewInt(4))
 	if cfg.pidPath != "" {
 		if err := os.WriteFile(cfg.pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
@@ -332,15 +384,15 @@ func run(args []string) int {
 			fatal("%s reports chain %q, want %q", n.url, st.ChainID, cfg.chainID)
 		}
 	}
-	st, _ := d.status(d.nodes[cfg.scanNode])
+	st, _ := d.status(d.headNode())
 	d.lastScanned, d.scanStart = st.Height, st.Height
 	if cfg.fee != nil {
 		d.fee = cfg.fee
 	} else {
 		d.fee = feeFor(st)
 	}
-	fmt.Printf("txload: chain=%s nodes=%d senders=%d (offset %d) rate=%.2f/s fee=%s amount=[%s,%s] funder=%s head=%d\n",
-		cfg.chainID, len(d.nodes), len(d.senders), cfg.senderOffset, cfg.rate, d.fee, cfg.amountMin, cfg.amountMax, f.addr, st.Height)
+	fmt.Printf("txload: chain=%s nodes=%d senders=%d (offset %d) rate=%.2f/s fee=%s amount=[%s,%s] funder=%s head=%d lazy=%v one-shot=%v scan=%v\n",
+		cfg.chainID, len(d.nodes), len(d.senders), cfg.senderOffset, cfg.rate, d.fee, cfg.amountMin, cfg.amountMax, f.addr, st.Height, cfg.lazyKeys, cfg.oneShot, cfg.scanNode >= 0)
 	for i, s := range d.senders {
 		if i < 8 || cfg.verbose {
 			fmt.Printf("  %-5s %s → %s\n", s.name, s.addr, s.node.url)
@@ -362,13 +414,27 @@ func run(args []string) int {
 	d.startedAt = time.Now()
 	fmt.Printf("txload: streaming at %.2f tx/s (%s per tick); stats every %s\n", cfg.rate, time.Duration(float64(time.Second)/cfg.rate), cfg.interval)
 
+	// The rate loop ends the run itself in one-shot mode; cancelling here
+	// stops the reporter with it.
+	ctx, done := context.WithCancel(ctx)
+	defer done()
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); d.report(ctx) }()
 	d.loop(ctx)
+	done()
 	wg.Wait()
 	d.summary()
 	return 0
+}
+
+// headNode is the node whose head and pool the reports quote: the scan node,
+// or the first one when scanning is off.
+func (d *driver) headNode() *node {
+	if d.cfg.scanNode >= 0 {
+		return d.nodes[d.cfg.scanNode]
+	}
+	return d.nodes[0]
 }
 
 // addrs prints the sender addresses a configuration would use, so an operator
@@ -381,7 +447,7 @@ func addrs(args []string) int {
 	}
 	fmt.Printf("funder %s\n", f.addr)
 	for i := 0; i < cfg.senders; i++ {
-		s, err := deriveSender(f.addr, cfg.senderOffset+i)
+		s, err := deriveSender(f.addr, cfg.senderOffset+i, true)
 		if err != nil {
 			fatal("%v", err)
 		}
@@ -434,7 +500,7 @@ func (d *driver) fund(ctx context.Context, senders []*account) error {
 		}
 	}
 	fmt.Print("txload: waiting for funding to confirm")
-	deadline := time.Now().Add(3 * time.Minute)
+	deadline := time.Now().Add(d.cfg.fundDeadline)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -454,7 +520,7 @@ func (d *driver) fund(ctx context.Context, senders []*account) error {
 		time.Sleep(2 * time.Second)
 	}
 	fmt.Println()
-	return errors.New("funding not confirmed within 3 minutes")
+	return fmt.Errorf("funding not confirmed within %s", d.cfg.fundDeadline)
 }
 
 // ── submission ──────────────────────────────────────────────────────────────
@@ -488,12 +554,16 @@ func (d *driver) sendLocked(a *account, to qcrypto.Address, amount *big.Int) sen
 		}
 		a.nonce, a.nonceOK = n, true
 	}
+	priv, err := a.signingKey()
+	if err != nil {
+		fatal("derive %s: %v", a.name, err)
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
 			atomic.AddUint64(&d.retries, 1)
 		}
 		tx := types.NewTransfer(a.addr, to, amount, d.currentFee(), a.nonce, time.Now().Unix())
-		if err := tx.Sign(a.priv, true); err != nil {
+		if err := tx.Sign(priv, true); err != nil {
 			fatal("sign: %v", err)
 		}
 		body, _ := json.Marshal(tx)
@@ -637,6 +707,11 @@ func (d *driver) loop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+		if d.cfg.oneShot && atomic.LoadInt64(&d.oneShotRemaining) <= 0 {
+			wg.Wait()
+			fmt.Println("txload: one-shot complete — every sender has sent")
+			return
+		}
 		// The next free, unpaused sender. TryLock keeps one slow node from
 		// stalling the tick for everyone.
 		var a *account
@@ -646,6 +721,10 @@ func (d *driver) loop(ctx context.Context) {
 				continue
 			}
 			if c.mu.TryLock() {
+				if c.done {
+					c.mu.Unlock()
+					continue
+				}
 				a = c
 				next = (next + k + 1) % len(d.senders)
 				break
@@ -671,9 +750,30 @@ func (d *driver) loop(ctx context.Context) {
 		go func(a *account, to qcrypto.Address, amount *big.Int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			d.sendLocked(a, to, amount)
+			res := d.sendLocked(a, to, amount)
+			if d.cfg.oneShot {
+				d.retireOneShot(a, res)
+			}
 			a.mu.Unlock()
 		}(a, to, amount)
+	}
+}
+
+// retireOneShot marks a (whose mutex the caller holds) as finished once its
+// single transfer is in a pool, or after enough hard failures that retrying
+// is pointless; a pause (per-address cap, full pool) is retried.
+func (d *driver) retireOneShot(a *account, res sendResult) {
+	switch res {
+	case sendAccepted, sendAlreadyPending:
+		a.done = true
+		atomic.AddInt64(&d.oneShotRemaining, -1)
+	case sendFailed:
+		a.fails++
+		if a.fails >= 5 {
+			a.done = true
+			atomic.AddInt64(&d.oneShotGaveUp, 1)
+			atomic.AddInt64(&d.oneShotRemaining, -1)
+		}
 	}
 }
 
@@ -724,7 +824,9 @@ func (d *driver) report(ctx context.Context) {
 				pools[n.url] = -1
 			}
 		}
-		d.scanBlocks(heights[d.nodes[d.cfg.scanNode].url])
+		if d.cfg.scanNode >= 0 {
+			d.scanBlocks(heights[d.nodes[d.cfg.scanNode].url])
+		}
 
 		d.latMu.Lock()
 		rttWin, inclWin := d.rttWin, d.inclWin
@@ -778,7 +880,11 @@ func (d *driver) report(ctx context.Context) {
 			"cum_sample_timeout": atomic.LoadUint64(&d.sampleTimeouts),
 			"fee":                d.currentFee().String(),
 		}
-		head := heights[d.nodes[d.cfg.scanNode].url]
+		if d.cfg.oneShot {
+			line["one_shot_remaining"] = atomic.LoadInt64(&d.oneShotRemaining)
+			line["one_shot_gave_up"] = atomic.LoadInt64(&d.oneShotGaveUp)
+		}
+		head := heights[d.headNode().url]
 		fmt.Printf("%s | %5.0fs | acc %4d (%.2f/s) rej %3d 429 %3d err %3d | incl mine %4d all %4d in %3d blk (%d w/tx) | rtt p50 %4.0fms p95 %4.0fms | incl p50 %4.1fs p95 %4.1fs (%d) | head %d pool %v | cum acc %d incl %d\n",
 			now.UTC().Format("15:04:05"), now.Sub(d.startedAt).Seconds(),
 			cur.accepted-prev.accepted, float64(cur.accepted-prev.accepted)/dt, rejTotal, cur.rateLimited-prev.rateLimited, cur.transport-prev.transport,
@@ -878,8 +984,10 @@ func (d *driver) scanBlocks(head uint64) {
 
 func (d *driver) summary() {
 	// One last scan so the count covers everything sealed before the stop.
-	if st, err := d.status(d.nodes[d.cfg.scanNode]); err == nil {
-		d.scanBlocks(st.Height)
+	if d.cfg.scanNode >= 0 {
+		if st, err := d.status(d.nodes[d.cfg.scanNode]); err == nil {
+			d.scanBlocks(st.Height)
+		}
 	}
 	cur := d.snapshot()
 	elapsed := time.Since(d.startedAt).Seconds()
@@ -896,28 +1004,34 @@ func (d *driver) summary() {
 	rtt, incl := append([]float64(nil), d.rttAll...), append([]float64(nil), d.inclAll...)
 	d.latMu.Unlock()
 	d.scanMu.Lock()
-	sc := map[string]any{
-		"scan_node":         d.nodes[d.cfg.scanNode].url,
-		"height_start":      d.scanStart,
-		"height_end":        d.lastScanned,
-		"blocks_scanned":    d.blocksSeen,
-		"blocks_with_mine":  d.blocksWithMine,
-		"blocks_with_any":   d.blocksWithAny,
-		"included_mine":     d.includedMine,
-		"included_all":      d.includedAll,
-		"included_mine_tps": round(float64(d.includedMine) / elapsed),
+	var sc map[string]any
+	if d.cfg.scanNode >= 0 {
+		sc = map[string]any{
+			"scan_node":         d.nodes[d.cfg.scanNode].url,
+			"height_start":      d.scanStart,
+			"height_end":        d.lastScanned,
+			"blocks_scanned":    d.blocksSeen,
+			"blocks_with_mine":  d.blocksWithMine,
+			"blocks_with_any":   d.blocksWithAny,
+			"included_mine":     d.includedMine,
+			"included_all":      d.includedAll,
+			"included_mine_tps": round(float64(d.includedMine) / elapsed),
+		}
+	} else {
+		sc = map[string]any{"scan_node": "disabled", "height_start": d.scanStart}
+		if st, err := d.status(d.headNode()); err == nil {
+			sc["height_end"] = st.Height
+		}
 	}
 	d.scanMu.Unlock()
-	senders := make([]string, 0, len(d.senders))
-	for _, s := range d.senders {
-		senders = append(senders, s.addr.String())
-	}
 	out := map[string]any{
 		"chain_id":            d.cfg.chainID,
 		"nodes":               d.cfg.rpcs,
 		"funder":              d.funder.addr.String(),
-		"senders":             senders,
+		"senders_count":       len(d.senders),
 		"sender_offset":       d.cfg.senderOffset,
+		"lazy_keys":           d.cfg.lazyKeys,
+		"one_shot":            d.cfg.oneShot,
 		"target_rate_tps":     d.cfg.rate,
 		"fee":                 d.currentFee().String(),
 		"started_at":          d.startedAt.UTC().Format(time.RFC3339),
@@ -941,6 +1055,19 @@ func (d *driver) summary() {
 		"inclusion_timeouts":  atomic.LoadUint64(&d.sampleTimeouts),
 		"inclusion_failed_rc": atomic.LoadUint64(&d.samplesFailed),
 		"chain":               sc,
+	}
+	// A pool of tens of thousands would make the summary mostly addresses;
+	// they are reproducible from the funder address and offset anyway.
+	if len(d.senders) <= maxSummarySenders {
+		senders := make([]string, 0, len(d.senders))
+		for _, s := range d.senders {
+			senders = append(senders, s.addr.String())
+		}
+		out["senders"] = senders
+	}
+	if d.cfg.oneShot {
+		out["one_shot_remaining"] = atomic.LoadInt64(&d.oneShotRemaining)
+		out["one_shot_gave_up"] = atomic.LoadInt64(&d.oneShotGaveUp)
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Printf("\ntxload summary: accepted %d/%d (%.1f%%) in %.0fs = %.2f tx/s (%.0f/day); included from my senders %v of %v scanned blocks; rtt p50 %.0fms p95 %.0fms; inclusion p50 %.1fs p95 %.1fs (%d samples); rejected %d %v\n",
