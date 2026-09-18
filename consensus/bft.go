@@ -200,6 +200,24 @@ func (vs *VoteSet) AddVote(vote *Vote) (bool, error) {
 	return !quorumBefore && quorumNow, nil
 }
 
+// VoteFrom returns a copy of the vote addr cast into this set, or nil. A nil
+// set holds nothing. Used to re-send a vote this node already signed without
+// signing a second one: the bytes are identical, so a peer that already
+// counted it sees a duplicate rather than an equivocation.
+func (vs *VoteSet) VoteFrom(addr qcrypto.Address) *Vote {
+	if vs == nil {
+		return nil
+	}
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	v, ok := vs.votes[addr]
+	if !ok {
+		return nil
+	}
+	cp := *v
+	return &cp
+}
+
 // HasQuorum returns true if >= 2/3+1 validators have voted.
 func (vs *VoteSet) HasQuorum() bool {
 	vs.mu.Lock()
@@ -414,9 +432,22 @@ const (
 func (e *BFTEngine) UpdateValidatorSet(validators []ValidatorInfo) {
 	e.validatorsMu.Lock()
 	defer e.validatorsMu.Unlock()
+	changed := len(e.validators) != len(validators)
+	for i := range validators {
+		if !changed && (e.validators[i].Address != validators[i].Address ||
+			e.validators[i].IsActive != validators[i].IsActive) {
+			changed = true
+		}
+	}
 	e.validators = make([]ValidatorInfo, len(validators))
 	copy(e.validators, validators)
-	log.Info().Int("count", len(validators)).Msg("BFT: validator set updated")
+	// Logged only when the set actually moved. refreshSet runs on every tick
+	// AND on every proposal, so an unconditional line here was three
+	// "validator set updated" a second on a busy node — noise that read like
+	// a refresh loop while the real fault was elsewhere.
+	if changed {
+		log.Info().Int("count", len(validators)).Msg("BFT: validator set updated")
+	}
 	e.wake()
 }
 
@@ -713,9 +744,15 @@ func (rt *roundTimer) disarm() {
 //     node leads itself: no timer at all.
 //
 // A deadline belongs to a view. Once armed it is left alone until the view
-// changes, except that an accepted proposal at the same view (the leader's
-// periodic rebroadcast of the block it is locked to) renews it, as every
-// proposal used to: a leader that is still trying is not a failed leader.
+// changes, except that a NEWLY adopted proposal at the same view renews it:
+// the engine stops waiting for a leader's proposal and starts waiting for
+// votes on one, which is a different wait.
+//
+// A repeat of a proposal already adopted is not a new adoption.
+// handleProposal reports those as not accepted, and they must stay that way:
+// a leader rebroadcasting its locked body on a 2s interval renewed a 3s
+// deadline before it could fire, so the view change that would have rotated a
+// stuck round away never happened at all.
 func (e *BFTEngine) syncRoundTimer(rt *roundTimer, renew bool) {
 	e.stateMu.Lock()
 	h, r := e.currentHeight, e.currentRound
@@ -1410,6 +1447,16 @@ func (e *BFTEngine) LockedProposal() *types.Block {
 		return e.lockedProposal
 	}
 	return nil
+}
+
+// AdoptedProposal returns the block this node has already adopted — and
+// prevoted for — at its current view, or nil. A caller about to build a
+// proposal uses it to see that the view is taken: the engine refuses any other
+// body there until a round change, so minting one is wasted work.
+func (e *BFTEngine) AdoptedProposal() *types.Block {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	return e.proposal
 }
 
 // VoteLockedAt reports whether this node is already committed to a hash at h

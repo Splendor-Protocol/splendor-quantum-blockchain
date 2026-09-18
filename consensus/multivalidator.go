@@ -206,6 +206,20 @@ func (m *MultiValidator) propose() error {
 		return nil
 	}
 
+	// Not locked yet, but a value is already adopted at this view: this node
+	// has prevoted for it, and the engine refuses any other body at that
+	// (height, round) until a round change. Minting one would execute a whole
+	// block for nothing and drop the pool entries it happened to skip. Re-send
+	// the adopted body instead — that reaches peers that lost the first copy,
+	// and the engine answers it with the votes it already signed.
+	if held := m.engine.AdoptedProposal(); held != nil && held.Header.Height == height {
+		log.Debug().Uint64("height", height).Hex("hash", held.Hash[:8]).
+			Uint32("round", m.engine.Round()).
+			Msg("BFT: re-sending the value already adopted at this view")
+		m.engine.ProposeBlock(held)
+		return nil
+	}
+
 	batch := m.cfg.MaxTxPerBlock
 	if m.scheduler != nil {
 		batch = m.scheduler.RecommendBatchSize(m.pool.Size())

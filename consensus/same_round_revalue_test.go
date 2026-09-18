@@ -219,3 +219,67 @@ func TestTwoPhaseIdenticalRebroadcastIsIdempotent(t *testing.T) {
 		t.Fatalf("follower prevoted %d distinct hashes at height 4 round 0, want exactly A", len(mine))
 	}
 }
+
+// TestTwoPhaseByzantineLeaderCannotReplaceItsValueInOneRound is the safety
+// side of the same rule. A leader that sends two different bodies at the round
+// it leads is equivocating, not retrying; the second must be refused, and the
+// receiver must keep the prevote it already signed rather than sign another.
+func TestTwoPhaseByzantineLeaderCannotReplaceItsValueInOneRound(t *testing.T) {
+	set, keys := testSet(t, 4)
+	var lastProp *ProposalMsg
+	var votes []*Vote
+	commits := make([]*types.Block, 4)
+	engs := make([]*BFTEngine, 4)
+	for i := 0; i < 4; i++ {
+		i := i
+		engs[i] = twoPhaseFor(t, set, keys, i, BFTConfig{
+			OnCommit:          func(b *types.Block) error { commits[i] = b; return nil },
+			Broadcast:         func(v *Vote) { cp := *v; votes = append(votes, &cp) },
+			BroadcastProposal: func(p *ProposalMsg) { lastProp = p },
+		})
+		engs[i].SetHeight(4)
+	}
+	blockA := proposalAt(t, set, keys, 4, 0, 11).Block
+	if !engs[0].handleProposal(&pendingProposal{block: blockA, local: true}) {
+		t.Fatal("leader refused its own proposal")
+	}
+	propA := lastProp
+
+	// The same leader signs a second envelope, at the same round, over a
+	// different body. Followers adopt A first, then are shown B.
+	blockB := proposalAt(t, set, keys, 4, 0, 22).Block
+	envB := &ProposalEnvelope{
+		Height: 4, Round: 0, BlockHash: blockB.Hash,
+		LeaderAddr: set[0].Address, POLRound: -1, Timestamp: 99,
+	}
+	if err := envB.Sign(keys[0]); err != nil {
+		t.Fatal(err)
+	}
+	propB := &ProposalMsg{Block: blockB, Envelope: envB}
+
+	for i, e := range engs[1:] {
+		if !e.handleProposal(pendingProposalOf(propA)) {
+			t.Fatalf("follower %d refused A", i+1)
+		}
+		if e.handleProposal(pendingProposalOf(propB)) {
+			t.Fatalf("follower %d adopted a second value at the round it already voted in", i+1)
+		}
+		if e.proposal == nil || e.proposal.Hash != blockA.Hash {
+			t.Fatalf("follower %d abandoned A for B", i+1)
+		}
+		if h := distinctPrevoteHashes(votes, set[i+1].Address, 4, 0); len(h) != 1 || h[0] != blockA.Hash {
+			t.Fatalf("follower %d signed %d prevotes at height 4 round 0, want one for A", i+1, len(h))
+		}
+	}
+
+	// The honest majority still finishes the height on A.
+	for i := 0; i < 2; i++ {
+		deliverVotes(t, engs, &votes, types.VoteKindPrevote)
+		deliverVotes(t, engs, &votes, types.VoteKindPrecommit)
+	}
+	for i := range engs {
+		if commits[i] == nil || commits[i].Hash != blockA.Hash {
+			t.Fatalf("engine %d did not commit A despite an equivocating leader", i)
+		}
+	}
+}
