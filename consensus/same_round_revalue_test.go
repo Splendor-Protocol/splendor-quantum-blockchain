@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"errors"
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -281,5 +282,94 @@ func TestTwoPhaseByzantineLeaderCannotReplaceItsValueInOneRound(t *testing.T) {
 		if commits[i] == nil || commits[i].Hash != blockA.Hash {
 			t.Fatalf("engine %d did not commit A despite an equivocating leader", i)
 		}
+	}
+}
+
+// TestTwoPhaseFailedApplyDoesNotEraseTheVoteAlreadyCast is the regression for
+// the residual seen on the fixed build: four equivocation lines at two
+// heights, from one node, rarely rather than continuously.
+//
+// commitBlock's failure branch used to clear the whole view — proposal, vote
+// sets, POL, vote commitment, round-change QC — reasoning that nothing was
+// committed so there was nothing to be locked on. But the prevote this node
+// had already broadcast at (height, round) was still in every peer's
+// seenVotes. Having forgotten it, the node would adopt a different value at
+// the very same view and prevote again, and every peer dropped it as an
+// equivocator for the rest of the round. A node that had only prevoted — never
+// precommitted — had nothing in its journal to catch it, and a node reaches a
+// precommit quorum on its peers' precommits alone.
+func TestTwoPhaseFailedApplyDoesNotEraseTheVoteAlreadyCast(t *testing.T) {
+	set, keys := testSet(t, 4)
+	var lastProp *ProposalMsg
+	var votes []*Vote
+	applyFails := true
+	engs := make([]*BFTEngine, 4)
+	for i := 0; i < 4; i++ {
+		engs[i] = twoPhaseFor(t, set, keys, i, BFTConfig{
+			OnCommit: func(b *types.Block) error {
+				if applyFails {
+					return errors.New("injected apply failure")
+				}
+				return nil
+			},
+			Broadcast:         func(v *Vote) { cp := *v; votes = append(votes, &cp) },
+			BroadcastProposal: func(p *ProposalMsg) { lastProp = p },
+		})
+		engs[i].SetHeight(4) // set[0] leads round 0
+	}
+	blockA := proposalAt(t, set, keys, 4, 0, 11).Block
+	if !engs[0].handleProposal(&pendingProposal{block: blockA, local: true}) {
+		t.Fatal("leader refused its own proposal")
+	}
+	victim := engs[1]
+	if !victim.handleProposal(pendingProposalOf(lastProp)) {
+		t.Fatal("follower refused A")
+	}
+	// It prevoted A. It never precommits, so its journal stays empty — the
+	// prevote is the only record that it voted at all.
+	if victim.VoteLockedAt(4) {
+		t.Fatal("precondition: the victim must not be journal-locked")
+	}
+
+	// Three peers precommit A. That is a quorum, so the victim commits — and
+	// the apply fails.
+	for _, i := range []int{0, 2, 3} {
+		pc := &Vote{
+			Height: 4, Round: 0, BlockHash: blockA.Hash, ValidatorAddr: set[i].Address,
+			Timestamp: int64(50 + i), Kind: types.VoteKindPrecommit,
+		}
+		if err := pc.Sign(keys[i]); err != nil {
+			t.Fatal(err)
+		}
+		victim.handleVote(pc)
+	}
+	if victim.AdoptedProposal() == nil {
+		t.Fatal("a failed apply erased the value this node had already prevoted for")
+	}
+
+	// A second body arrives at the very same view. It must be refused.
+	blockB := proposalAt(t, set, keys, 4, 0, 22).Block
+	envB := &ProposalEnvelope{
+		Height: 4, Round: 0, BlockHash: blockB.Hash,
+		LeaderAddr: set[0].Address, POLRound: -1, Timestamp: 77,
+	}
+	if err := envB.Sign(keys[0]); err != nil {
+		t.Fatal(err)
+	}
+	if victim.handleProposal(pendingProposalOf(&ProposalMsg{Block: blockB, Envelope: envB})) {
+		t.Fatal("after a failed apply the node adopted a second value at the round it had already voted in")
+	}
+	if h := distinctPrevoteHashes(votes, set[1].Address, 4, 0); len(h) != 1 || h[0] != blockA.Hash {
+		t.Fatalf("victim signed %d distinct prevotes at height 4 round 0, want exactly one for A", len(h))
+	}
+
+	// Recovery is the round timer, not amnesia: the view change frees it.
+	applyFails = false
+	victim.handleTimeout()
+	if victim.Round() != 1 {
+		t.Fatalf("round = %d after the timeout, want 1", victim.Round())
+	}
+	if victim.AdoptedProposal() != nil {
+		t.Fatal("a view change must release the value so the next round can start clean")
 	}
 }
