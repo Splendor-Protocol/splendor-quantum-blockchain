@@ -412,6 +412,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 	nodeMetrics := rpc.NewNodeMetrics()
 	nodeMetrics.SetLabel("chain_id", types.ChainID)
 	nodeMetrics.SetLabel("version", buildinfo.Version())
+	// Failed executions are counted where the executor settles a block, so
+	// sqc_txs_failed_total moves alongside sqc_txs_processed_total (driven
+	// from blockCh below) instead of staying at zero.
+	executor.WithTxFailedHook(func(n int) { nodeMetrics.IncrTxsFailed(uint64(n)) })
 	metricsServer := rpc.NewMetricsServer(flagMetricsAddr, nodeMetrics)
 	if flagTLSCert != "" && flagTLSKey != "" {
 		if err := metricsServer.EnableTLS(flagTLSCert, flagTLSKey); err != nil {
@@ -1404,10 +1408,12 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// ── Start HTTP server ──────────────────────────────────────────────────
 	// The origin policy is applied by the core RPC router; wrapping the outer
 	// router with the same policy means explorer/bridge/call routes get identical
-	// treatment instead of silently defaulting to permissive.
+	// treatment instead of silently defaulting to permissive. The request
+	// counter sits outside even that, so sqc_rpc_requests_total sees every
+	// request the listener takes, explorer routes and preflights included.
 	httpServer := &http.Server{
 		Addr:        flagRPCAddr,
-		Handler:     coreRPC.CORS().Middleware(router),
+		Handler:     nodeMetrics.Middleware(coreRPC.CORS().Middleware(router)),
 		ReadTimeout: 10 * time.Second,
 		// Ordinary RPC writes must finish in 60s. /ws slides this deadline
 		// on every event and heartbeat via ResponseController.
