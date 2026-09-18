@@ -30,6 +30,16 @@ const (
 )
 
 // objectFetchDeadline is the aggregate budget for fetching n committed symbols.
+// sealedReplyBound is the wire size a sealed reply may reach when its
+// plaintext is at most plain bytes. The reply travels as a JSON envelope:
+// the AES-GCM ciphertext (plaintext plus a 16-byte tag) and the 1,088-byte
+// ML-KEM-768 ciphertext are both base64, beside a nonce, a timestamp and the
+// field names. Reading the wire with the plaintext cap truncated every proof
+// above roughly 48 KiB before it could be opened.
+func sealedReplyBound(plain int) int64 {
+	return int64((plain+16+2)/3*4 + 2048)
+}
+
 func objectFetchDeadline(n uint32) time.Duration {
 	if n >= uint32(objectFetchCap/objectFetchPerSymbol) {
 		return objectFetchCap
@@ -53,7 +63,7 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 		return nil, fmt.Errorf("coded object from %s: peer identity: %w", peerAddr, err)
 	}
 	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetObjectManifest, []byte(`{}`),
-		maxObjectManifestReplyBytes, objectFetchTimeout)
+		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("fetch object manifest from %s: %w", peerAddr, err)
 	}
@@ -77,7 +87,7 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 			return nil, err
 		}
 		proofRaw, err := f.cfg.Identities.querySealed(ctx, client, peerAddr, KindGetObjectSymbol, reqBody,
-			int64(maxObjectSymbolReplyBytes))
+			sealedReplyBound(maxObjectSymbolReplyBytes))
 		if err != nil {
 			return nil, fmt.Errorf("fetch object symbol %d from %s: %w", i, peerAddr, err)
 		}
