@@ -85,7 +85,22 @@ def main():
     ap.add_argument("--min-producers", type=int, default=2)
     ap.add_argument("--min-votes", type=int, default=2)
     ap.add_argument("--json-out", default=None)
+    # A block's qc_root is its certificate — a specific 2/3+1 subset of the
+    # votes. When the active set is larger than the quorum (n=4, quorum 3),
+    # honest nodes can finalise the SAME block (identical hash, state root and
+    # producer) with DIFFERENT valid vote subsets, so their qc_root bytes need
+    # not match. That is correct BFT behaviour, not a fork: the certificate is
+    # not part of the block hash. With this flag every node must still carry a
+    # qc_root and its own >= min-votes quorum, but qc_root is not required to be
+    # byte-identical across nodes. Without it (the default, used by
+    # run-live-join where quorum == n) qc_root must agree, which is the stronger
+    # check and the right one only when the set never exceeds the quorum.
+    ap.add_argument("--allow-qc-root-divergence", action="store_true")
     args = ap.parse_args()
+
+    cross_fields = ("hash", "state_root", "producer")
+    if not args.allow_qc_root_divergence:
+        cross_fields = cross_fields + ("qc_root",)
 
     failures = []
     rows = []
@@ -97,7 +112,7 @@ def main():
         ref_node, ref = next(iter(views.items()))
 
         for node, v in views.items():
-            for field in ("hash", "state_root", "producer", "qc_root"):
+            for field in cross_fields:
                 if v[field] != ref[field]:
                     failures.append(
                         f"height {h}: {node} reports {field}={v[field]} but "
@@ -112,19 +127,24 @@ def main():
 
         producers.add(ref["producer"])
 
-        if not ref["qc_root"]:
-            failures.append(f"height {h}: no qc_root — block was not certified")
-        voters = {v["by"] for v in ref["votes"]}
-        if len(voters) < args.min_votes:
-            failures.append(
-                f"height {h}: {len(voters)} distinct votes, need {args.min_votes} "
-                f"({sorted(voters)})"
-            )
-        for v in ref["votes"]:
-            if v["block"] != ref["hash"]:
-                failures.append(f"height {h}: vote from {v['by']} names block {v['block']}")
-            if v["height"] != h:
-                failures.append(f"height {h}: vote from {v['by']} is for height {v['height']}")
+        # Certification is checked on EVERY node when qc_root may diverge (each
+        # node must hold its own valid quorum), else on the reference node only
+        # — the same block, so one node's certificate stands for all.
+        check_on = views.items() if args.allow_qc_root_divergence else [(ref_node, ref)]
+        for node, v in check_on:
+            if not v["qc_root"]:
+                failures.append(f"height {h}: {node} has no qc_root — block was not certified")
+            voters = {vt["by"] for vt in v["votes"]}
+            if len(voters) < args.min_votes:
+                failures.append(
+                    f"height {h}: {node} carries {len(voters)} distinct votes, "
+                    f"need {args.min_votes} ({sorted(voters)})"
+                )
+            for vt in v["votes"]:
+                if vt["block"] != v["hash"]:
+                    failures.append(f"height {h}: {node} vote from {vt['by']} names block {vt['block']}")
+                if vt["height"] != h:
+                    failures.append(f"height {h}: {node} vote from {vt['by']} is for height {vt['height']}")
 
         rows.append(ref)
         print(
