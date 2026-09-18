@@ -65,6 +65,30 @@ func (e *BFTEngine) handleProposalTwoPhase(p *pendingProposal) bool {
 		return false
 	}
 
+	// A view owns exactly one value.
+	//
+	// Replacing the value at a round this node has already prevoted in means
+	// signing a second, conflicting prevote at that (height, round) — and
+	// seenVotes is keyed validator|height|round|kind, so every peer answers
+	// the second one by dropping that validator's prevotes for the rest of the
+	// round ("equivocation — conflicting votes dropped"). An honest node did
+	// this to itself: MultiValidator.propose mints a fresh body on every tick
+	// until a prevote QC gives it something to lock to, so at a contended
+	// height the leader handed the engine a second, different block at the
+	// round it had already voted in. Every peer shown that block did the same.
+	// A few ticks in, nobody's prevotes counted anywhere and the height was
+	// finished. Replacing a value is what a round change is for.
+	if b.Header.Height == e.currentHeight && round == e.currentRound && e.proposal != nil {
+		if e.proposal.Hash != b.Hash {
+			log.Warn().Uint64("height", b.Header.Height).Uint32("round", round).
+				Hex("holding", e.proposal.Hash[:8]).Hex("offered", b.Hash[:8]).
+				Bool("local", p.local).
+				Msg("BFT: a second value at a view this node has already voted in; refused until a round change")
+			return false
+		}
+		return e.answerDuplicateProposalLocked(p)
+	}
+
 	if !p.local {
 		if err := e.admitRemoteValue(p, round); err != nil {
 			log.Warn().Err(err).Uint64("height", b.Header.Height).Uint32("round", round).
@@ -111,6 +135,47 @@ func (e *BFTEngine) handleProposalTwoPhase(p *pendingProposal) bool {
 		e.onPrevoteQuorum(b, round)
 	}
 	return true
+}
+
+// answerDuplicateProposalLocked handles a repeat of the proposal this node has
+// already adopted at its current view — the leader's periodic rebroadcast of
+// the body it is locked to.
+//
+// It re-sends the votes this node already signed there. The SAME votes: their
+// bytes are unchanged, so a peer that has them counts a duplicate, and a peer
+// that lost the first copy finally hears it. Signing fresh ones would change
+// nothing but the timestamp, and re-opening the vote sets would throw away
+// every prevote collected since.
+//
+// It reports the proposal as not newly adopted, which is what keeps the round
+// deadline where it is: a leader that rebroadcasts faster than the round
+// timeout must not be able to hold the view change off for ever.
+func (e *BFTEngine) answerDuplicateProposalLocked(p *pendingProposal) bool {
+	prevote := e.voteSet.VoteFrom(e.localAddr)
+	precommit := e.precommits.VoteFrom(e.localAddr)
+	if p.local && e.broadcastP != nil {
+		e.broadcastP(&ProposalMsg{Block: e.proposal, Vote: prevote, Envelope: p.envelope, POL: p.pol})
+	}
+	if e.broadcast != nil {
+		if prevote != nil {
+			e.broadcast(prevote)
+		}
+		if precommit != nil {
+			e.broadcast(precommit)
+		}
+	}
+	// A vote that overtook this copy on the wire still belongs to the set.
+	e.drainPendingVotes()
+	if e.precommits != nil && e.precommits.HasQuorum() {
+		e.recordQuorum(e.proposal)
+		e.commitBlock(e.proposal)
+	} else if e.voteSet != nil && e.voteSet.HasQuorum() && !e.hasPOL {
+		e.onPrevoteQuorum(e.proposal, e.currentRound)
+	}
+	log.Debug().Uint64("height", e.currentHeight).Uint32("round", e.currentRound).
+		Hex("hash", e.proposal.Hash[:8]).
+		Msg("BFT: duplicate proposal at the current view; re-sent this node's votes")
+	return false
 }
 
 func (e *BFTEngine) signLocalEnvelope(p *pendingProposal) error {
