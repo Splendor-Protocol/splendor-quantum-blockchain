@@ -61,6 +61,8 @@ var (
 	flagNodeKeyPassFile    string
 	flagPeers              []string
 	flagBlockInterval      int
+	flagRoundTimeout       time.Duration
+	flagVoteTimeout        time.Duration
 	flagIsValidator        bool
 	flagLogLevel           string
 	flagGenesisPath        string
@@ -121,6 +123,13 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringVar(&flagNodeKeyPassFile, "node-key-pass-file", "", "Encrypt the persisted P2P node identity key with the passphrase in this file (also SQC_NODE_KEY_PASS). Without it the key is stored unencrypted at mode 0600.")
 	root.Flags().StringArrayVar(&flagPeers, "peer", nil, "Bootstrap peer RPC addresses")
 	root.Flags().IntVar(&flagBlockInterval, "block-interval", 2, "Block interval in seconds (validator only)")
+	root.Flags().DurationVar(&flagRoundTimeout, "round-timeout", consensus.DefaultRoundTimeout,
+		"How long a BFT view waits before rotating the leader away. Raise it for validators "+
+			"spread across regions: the round-0 leader must receive the previous block, build, "+
+			"sign and get its proposal back across the link inside this window, or its peers "+
+			"time out and discard the proposal when it arrives (validator only)")
+	root.Flags().DurationVar(&flagVoteTimeout, "vote-timeout", consensus.DefaultVoteTimeout,
+		"BFT vote timeout (validator only)")
 	root.Flags().BoolVar(&flagIsValidator, "validator", false, "Run as block-producing validator")
 	root.Flags().StringVar(&flagLogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	root.Flags().StringVar(&flagGenesisPath, "genesis", "", "Path to genesis.json (allocations applied once on an empty chain)")
@@ -964,6 +973,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 		// it — at boot when multi_validator is already active for the next
 		// block, otherwise at the tick that reaches the activation height.
 		producer = consensus.NewProducer(vCfg, consensus.BFTConfig{
+			RoundTimeout: flagRoundTimeout,
+			VoteTimeout:  flagVoteTimeout,
 			LocalAddr:    validatorAddr,
 			LocalPubKey:  validatorPKBytes,
 			LocalPrivKey: validatorPriv,
