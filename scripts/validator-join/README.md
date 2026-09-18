@@ -47,6 +47,64 @@ as `--validator --state-sync`, imports A's live state snapshot, is asserted to
 hold **no block below the snapshot**, registers from its own RPC, and then
 shares the leadership. That flag combination used to be refused at start-up.
 
+## What `run-fault-lab.sh` proves
+
+A **four-validator** lab on a chain that schedules the two-phase BFT fork
+(`bft_rounds_v1`) on top of devnet's rules (`modules_v2`,
+`validators_admission_v1`). Four validators A, B, C, D are brought up in a known
+registration order, so the leader of every height is computable as
+`ACTIVE[(height+round) % n]` and a faulty member can be aimed at exactly.
+
+```sh
+scripts/validator-join/run-fault-lab.sh              # the fault suite
+FORK_CONTROL=1 scripts/validator-join/run-fault-lab.sh   # the pre-fork control
+```
+
+1. **Add** — A self-registers (the admission producer clause); then B, C and D
+   each fund from the running chain, launch **once** as `--validator` against
+   it, catch up, are **approved** by A (`validators_admission_v1`), register
+   from their own RPC, and the set widens 1→2→3→4. Each phase's window is clean.
+2. **Remove** — D `unregister`s, the set falls to three, the n=3 window holds,
+   the chain runs to D's exit height, `finalize_exit` returns D's bond (asserted
+   from the balance), and D keeps following the chain as a non-validator.
+3. **Re-add** — D `register`s again on the approval it already holds, the set is
+   four, the window holds.
+4. **A bad D cannot halt the chain at n=4** (quorum is 3 of 4):
+   - **(a) crashed** — D is `SIGSTOP`ped; A/B/C seal a full window on quorum 3;
+     D `SIGCONT`s and re-syncs.
+   - **(b) withholds while leading** — D is paused just before a height it
+     leads; the honest three round-change past it and commit that height at
+     round ≥ 1 (verified from the window's votes), inside
+     `~2·(RoundTimeout+proposalWait)`.
+   - **(c) forges** — D seals a syntactically valid, correctly linked block with
+     its own key and pushes it at A and B; both refuse it (HTTP 400,
+     `block certificate rejected: multi_validator requires a quorum
+     certificate`) and the chain keeps climbing. The refusal is in the HTTP
+     response, not the node log, so it never masquerades as a consensus fault.
+   - **(d) restarted with a cleared vote journal** — D is stopped mid-height and
+     restarted with `--clear-vote-journal`, bypassing its own double-sign guard.
+     No QC double-counts a validator and the chain stays unbroken. Whether an
+     honest node logs `BFT: equivocation — conflicting votes dropped` is
+     recorded: at n=4 the honest quorum of three commits each height without D,
+     so a cleared-journal D re-syncs forward rather than re-signing a still-open
+     view — the drop path is exercised in-process by the consensus tests.
+
+Every scenario is gated the same way: each honest node's height climbs by
+`OBSERVE_BLOCKS`, the sampled window agrees on **hash, state root and producer**
+at every height with ≥ quorum distinct votes bound to the block, and no honest
+log holds a consensus refusal. At n=4 the **certificate can differ** between
+honest nodes — quorum is 3 of 4, so each node finalises the same block with its
+own valid 3-vote subset and a different `qc_root`; that is correct BFT
+behaviour, not a fork (the certificate is not part of the block hash), so the
+n=4 windows are observed with `--allow-qc-root-divergence` (hash/state/producer
+must still agree, and every node must still carry its own quorum).
+
+`FORK_CONTROL=1` runs the same add flow on a chain **without** `bft_rounds_v1`
+(the single-vote path) and then documents two limitations: n=3 has no fault
+tolerance (2/3+1 of three is three, so pausing one of three stalls until it
+returns), and what the single-vote path does at n=4 under a withholding leader.
+This is documentation of a limitation, not a failure of the lab.
+
 ## Environment
 
 | Variable | Default | Meaning |
@@ -63,18 +121,31 @@ Ports are probed before use. Other labs run on this machine, and a fixed base
 would silently attach the harness to somebody else's node; every `/status`
 assertion also checks the chain id for the same reason.
 
+The fault lab honours the same environment variables, plus `FORK_CONTROL=1`.
+Its scratch directory defaults to `/tmp/sqc-fault-lab/<UTC timestamp>`,
+`PORT_BASE` to `22600`, and `OBSERVE_BLOCKS` to `8`. It records a PASS/FAIL (and
+NOTE) line per scenario to `$LAB/logs/RESULTS.txt` and one sampled window JSON
+per scenario (`$LAB/logs/s*.json`).
+
 ## Files
 
 - `run-live-join.sh` — the pull-sync scenario.
 - `run-state-sync-join.sh` — the snapshot scenario.
-- `lib.sh` — process, wallet, polling and chain-action helpers.
+- `run-fault-lab.sh` — the four-validator add/remove/re-add + faulty-member lab.
+- `fault-lab-forkctl.inc` — the pre-fork control body, sourced when
+  `FORK_CONTROL=1`.
+- `lib.sh` — process, wallet, polling and chain-action helpers (register,
+  approve, unregister, finalize_exit, forge, leader schedule, pause/resume,
+  no_refusals).
 - `observe.py` — the window checker. Takes a height range and a list of node
   URLs, and asserts agreement, certificates, vote/height binding, parent
-  linkage and a minimum number of distinct producers.
+  linkage and a minimum number of distinct producers. `--allow-qc-root-divergence`
+  relaxes only the cross-node `qc_root` equality (for a set larger than the
+  quorum), still requiring each node to carry its own certificate.
 
 ## The fast equivalent
 
-`go test ./consensus -run 'TestSecondValidatorJoinsARunningProducer|TestThirdValidatorJoinsAndWidensTheQuorum'`
-runs the same scenario in-process, over a link that reorders and delays every
+`go test ./consensus -run 'TestSecondValidatorJoinsARunningProducer|TestThirdValidatorJoinsAndWidensTheQuorum|TestTwoPhaseFourValidatorsOneDownABBEventuallyCommits'`
+runs the same scenarios in-process, over a link that reorders and delays every
 message, in a few seconds and under `-race`. Use it in the edit loop; use the
 scripts to prove it against real processes and the real network stack.

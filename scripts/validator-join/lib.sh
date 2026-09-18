@@ -138,6 +138,20 @@ set_size_is() {
 	((n == $2))
 }
 
+# bond_returned ADDR NODE_URL BEFORE_UNITS — the account's balance has grown by
+# at least most of a bond (2,500 SPLD) since BEFORE_UNITS, i.e. finalize_exit
+# credited the bond back. A tolerance is left for the fees paid meanwhile.
+bond_returned() {
+	local now
+	now=$(balance_units "$1" "$2") || return 1
+	BEFORE="$3" NOW="$now" python3 -c '
+import os
+before=int(os.environ["BEFORE"]); now=int(os.environ["NOW"])
+bond=2500*10**18
+# credited at least 90% of the bond back (fees paid in between are < 1 SPLD)
+import sys; sys.exit(0 if now-before >= bond*9//10 else 1)'
+}
+
 # tracks_tip FOLLOWER_URL LEADER_URL SLACK — follower is within SLACK blocks.
 tracks_tip() {
 	local f l
@@ -265,3 +279,144 @@ register() {
 
 # balance_units ADDR NODE_URL
 balance_units() { jget "$2/balance/$1" "d.get('balance')"; }
+
+# ── fault-lab chain actions ──────────────────────────────────────────────────
+#
+# These mirror register() above. They are what the four-validator fault lab
+# (run-fault-lab.sh) adds on top of the join lab: admission approval, the exit
+# sequence, the forged-block prober, the leader schedule and process pause.
+
+# approve APPROVER ADDR NODE — an active validator opens admission for ADDR.
+# Under validators_admission_v1 a joiner that is not the block producer cannot
+# register until an active validator has approved its address. --require-success
+# so a soft "not an active validator" is a step failure, not a silent no-op.
+approve() {
+	local approver="$1" addr="$2" node="$3"
+	"$BIN/sqc-modcall" write \
+		--node "$node" \
+		--wallet "$LAB/keys/$approver.sqwallet" \
+		--pass-file "$LAB/run/wallet.pass" \
+		--chain-id "$CHAIN_ID" \
+		--fee "$LAB_FEE" \
+		--module validators --action approve \
+		--params "{\"address\":\"$addr\"}" \
+		--wait --require-success 2>&1 | tee -a "$LAB/logs/approve-$approver-$addr.log"
+}
+
+# unregister NAME NODE — NAME leaves the active set; bond starts unbonding and
+# returns after UnbondingBlocks (32) at finalize_exit. The record is Exiting,
+# so ListActive drops NAME immediately (validator_set_size falls) even though
+# the bond is still owed.
+unregister() {
+	local name="$1" node="$2"
+	"$BIN/sqc-modcall" write \
+		--node "$node" \
+		--wallet "$LAB/keys/$name.sqwallet" \
+		--pass-file "$LAB/run/wallet.pass" \
+		--chain-id "$CHAIN_ID" \
+		--fee "$LAB_FEE" \
+		--module validators --action unregister \
+		--params '{}' \
+		--wait --require-success 2>&1 | tee -a "$LAB/logs/unregister-$name.log"
+}
+
+# finalize_exit NAME NODE — return NAME's bond once the unbonding delay passed.
+# Refused (soft) with "unbonding until height N" before then, which is why the
+# caller waits height >= exit height first.
+finalize_exit() {
+	local name="$1" node="$2"
+	"$BIN/sqc-modcall" write \
+		--node "$node" \
+		--wallet "$LAB/keys/$name.sqwallet" \
+		--pass-file "$LAB/run/wallet.pass" \
+		--chain-id "$CHAIN_ID" \
+		--fee "$LAB_FEE" \
+		--module validators --action finalize_exit \
+		--params '{}' \
+		--wait --require-success 2>&1 | tee -a "$LAB/logs/finalize-$name.log"
+}
+
+# node_url NAME must be provided by the caller (run-fault-lab defines it): it
+# echoes a validator's own RPC URL. forge reads it. It is a function, not an
+# associative array, so the lab runs under the macOS system bash (3.2).
+
+# forge NAME TARGET_URL — NAME seals a syntactically valid, correctly linked
+# block with its own key and pushes it to TARGET's block-ingest path. Every
+# honest target must REFUSE it: below the certificate check the block carries no
+# quorum, and its state root is junk. cmdForge exits 0 when the target refuses
+# (HTTP != 200 — the expected outcome) and NON-ZERO only when the target
+# ACCEPTS it (HTTP 200 — the finding, "the producer gate did not hold"). The
+# refusal reason travels back in the HTTP response body cmdForge prints, NOT in
+# the target's log: the ingest handler answers 4xx without logging, so this
+# probe never trips no_refusals.
+forge() {
+	local name="$1" target="$2"
+	local self; self=$(node_url "$name")
+	[[ -n "$self" ]] || { bad "forge: no NODE_URL for $name"; return 2; }
+	"$BIN/sqc-modcall" forge \
+		--node "$self" --target "$target" \
+		--wallet "$LAB/keys/$name.sqwallet" \
+		--pass-file "$LAB/run/wallet.pass" \
+		--chain-id "$CHAIN_ID" \
+		--auth-token "$TOKEN" 2>&1
+}
+
+# ACTIVE is the ordered list of validator NAMEs in the on-chain registry index
+# (registration order). The leader schedule is ACTIVE[(height+round) % n], so
+# with a known order the leader of any height is computable. The caller keeps it
+# in step with the registry on every add / remove / re-add.
+ACTIVE=()
+
+# leader_at HEIGHT [ROUND] — echo the NAME scheduled to lead HEIGHT at ROUND
+# (default 0), from the current ACTIVE order. Mirrors BFTEngine.LeaderAddress.
+leader_at() {
+	local h="$1" r="${2:-0}" n=${#ACTIVE[@]}
+	((n > 0)) || { echo ""; return 1; }
+	echo "${ACTIVE[$(((h + r) % n))]}"
+}
+
+# next_leader_height AFTER NAME — smallest round-0 height strictly greater than
+# AFTER whose leader is NAME. Used to line a scenario up on a chosen leader.
+next_leader_height() {
+	local after="$1" want="$2" n=${#ACTIVE[@]} h
+	for ((h = after + 1; h <= after + n + 1; h++)); do
+		[[ "$(leader_at "$h")" == "$want" ]] && { echo "$h"; return 0; }
+	done
+	return 1
+}
+
+# node_pause NAME / node_resume NAME — freeze and thaw a node's whole process
+# with SIGSTOP / SIGCONT. A paused node stops answering /status and stops
+# voting; the honest quorum must carry the chain without it. kill is the right
+# tool: it models a crashed / partitioned member without corrupting its data.
+node_pause() {
+	local pid
+	pid=$(node_pid "$1") && [[ -n "$pid" ]] && kill -STOP "$pid" 2>/dev/null &&
+		say "paused $1 (pid $pid, SIGSTOP)"
+}
+node_resume() {
+	local pid
+	pid=$(node_pid "$1") && [[ -n "$pid" ]] && kill -CONT "$pid" 2>/dev/null &&
+		say "resumed $1 (pid $pid, SIGCONT)"
+}
+
+# NO_REFUSALS_RE is the consensus-refusal set: a leader check tripping, a
+# certificate refused inside the engine, a commit callback failing, an inbound
+# block refused by the producer gate, or any CRITICAL invariant. None may appear
+# in an honest node's log during a clean window. Factored from run-live-join's
+# final_checks, widened with the inbound-block and CRITICAL guards.
+NO_REFUSALS_RE="proposal from non-leader rejected|block certificate rejected|commit callback failed|refusing inbound block|CRITICAL:"
+
+# no_refusals LOG... — non-zero (and a diagnosis) if any log holds a refusal.
+no_refusals() {
+	local log rc=0
+	for log in "$@"; do
+		[[ -f "$log" ]] || continue
+		if grep -qE "$NO_REFUSALS_RE" "$log"; then
+			bad "$(basename "$log") contains consensus refusals:"
+			grep -nE "$NO_REFUSALS_RE" "$log" | tail -6 >&2
+			rc=1
+		fi
+	done
+	return $rc
+}
