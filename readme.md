@@ -2027,7 +2027,7 @@ must reproduce it exactly:
 
 The evidence behind the tier table above, collected while releasing v1.1.0
 (26-commit hardening) and v1.1.1 (RLNC object transfer). The full method and
-numbers are in [docs/reports/2026-09-18-v1.1.1-validation.pdf](docs/reports/2026-09-18-v1.1.1-validation.pdf).
+numbers are in [docs/reports/2026-09-18-v1.1.x-validation.pdf](docs/reports/2026-09-18-v1.1.x-validation.pdf).
 
 | Check | Result | Evidence |
 |---|---|---|

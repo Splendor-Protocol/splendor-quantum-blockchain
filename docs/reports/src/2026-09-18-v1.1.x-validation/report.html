@@ -13,9 +13,9 @@
   <img class="wordmark" src="splendor-wordmark-black.svg" alt="Splendor">
 
   <div class="cover-body">
-    <div class="kicker">Validation report · node releases v1.1.0 and v1.1.1</div>
+    <div class="kicker">Validation report · node releases v1.1.0, v1.1.1 and v1.1.2</div>
     <h1>Splendor Quantum Chain</h1>
-    <p class="subtitle">Release contents, upgrade compatibility, stress test and validator fault program for node release <code>v1.1.0</code> and the RLNC object-transfer release <code>v1.1.1</code>, now live on all three tiers.</p>
+    <p class="subtitle">Release contents, upgrade compatibility, a stress test, and a validator fault and scaling programme that found, fixed and released a consensus defect — across node releases <code>v1.1.0</code>, <code>v1.1.1</code> and <code>v1.1.2</code>.</p>
   </div>
 
   <div class="cover-foot">
@@ -23,12 +23,12 @@
       <dt>Date</dt><dd>18 September 2026</dd>
       <dt>Prepared for</dt><dd>Splendor Protocol</dd>
       <dt>Networks</dt><dd><code>splendor-quantum-1</code> · <code>splendor-quantum-testnet-1</code> · <code>splendor-quantum-devnet-1</code></dd>
-      <dt>Releases</dt><dd><code>v1.1.0</code> — 26 commits, <code>ec8f060</code>…<code>b8e31a0</code>, tag <code>eaef3c9</code>, 17 Sept<br><code>v1.1.1</code> (<code>11d372e</code>) — RLNC object transfer, merged 18 Sept, live on all tiers</dd>
-      <dt>Status</dt><dd>Sections 1–5 complete (30k stress contaminated, 40k / sustained not run: devnet was reconfigured under the test). Section 6 records a blocking defect in <code>v1.1.1</code> — multi-validator operation deadlocks — now fixed and validated live at four validators on PR #44, unreleased.</dd>
+      <dt>Releases</dt><dd><code>v1.1.0</code> — 26 commits, <code>ec8f060</code>…<code>b8e31a0</code>, tag <code>eaef3c9</code>, 17 Sept<br><code>v1.1.1</code> (<code>11d372e</code>) — RLNC object transfer, 18 Sept<br><code>v1.1.2</code> (<code>feb2ef7</code>) — multi-validator deadlock fix, 18 Sept</dd>
+      <dt>Status</dt><dd><code>v1.1.2</code> is live on all three tiers. Section 6 records a blocking defect in <code>v1.1.1</code> — multi-validator operation deadlocked — found, fixed, validated live at four validators, and released in <code>v1.1.2</code>. The 30k stress stage was contaminated and 40k / sustained were not run: devnet was reconfigured under the test.</dd>
     </dl>
     <ol class="contents">
       <li><span class="n">—</span><span>In plain words: what the chain is, what is live, what was tested</span></li>
-      <li><span class="n">1</span><span>Release contents (PR #42, PR #43)</span></li>
+      <li><span class="n">1</span><span>Release contents (PR #42, #43, #44)</span></li>
       <li><span class="n">2</span><span>Upgrade compatibility</span></li>
       <li><span class="n">3</span><span>Stress test</span></li>
       <li><span class="n">4</span><span>Validator fault program</span></li>
@@ -49,13 +49,13 @@
     <colgroup><col style="width:13%"><col style="width:27%"><col style="width:48%"><col style="width:12%"></colgroup>
     <thead><tr><th>Network</th><th>Chain ID</th><th>Endpoints</th><th>Release</th></tr></thead>
     <tbody>
-      <tr><td>Mainnet</td><td><code>splendor-quantum-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc.splendor.org</code><br><span class="label">Explorer</span><code>https://quantum-explorer.splendor.org</code></td><td><code>v1.1.1</code></td></tr>
-      <tr><td>Testnet</td><td><code>splendor-quantum-testnet-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc-testnet.splendor.org</code></td><td><code>v1.1.1</code></td></tr>
-      <tr><td>Devnet</td><td><code>splendor-quantum-devnet-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc-devnet.splendor.org</code></td><td><code>v1.1.1</code></td></tr>
+      <tr><td>Mainnet</td><td><code>splendor-quantum-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc.splendor.org</code><br><span class="label">Explorer</span><code>https://quantum-explorer.splendor.org</code></td><td><code>v1.1.2</code></td></tr>
+      <tr><td>Testnet</td><td><code>splendor-quantum-testnet-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc-testnet.splendor.org</code></td><td><code>v1.1.2</code></td></tr>
+      <tr><td>Devnet</td><td><code>splendor-quantum-devnet-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc-devnet.splendor.org</code></td><td><code>v1.1.2</code></td></tr>
       <tr><td>Faucet</td><td>test tiers (testnet, devnet)</td><td><span class="label">Faucet</span><code>https://quantum-faucet.splendor.org</code></td><td>—</td></tr>
     </tbody>
   </table>
-  <p class="small muted">All three tiers run <code>v1.1.1</code> (<code>11d372e</code>, RLNC object transfer) since 18 September.</p>
+  <p class="small muted">All three tiers run <code>v1.1.2</code> (<code>feb2ef7</code>) since 18 September.</p>
 
   <div class="two-col">
     <div>
@@ -73,10 +73,11 @@
     <div>
       <h3>What was done this week</h3>
       <ul>
-        <li><b><code>v1.1.0</code> (17 September) merged</b>, a 26-commit hardening release: consensus recovery, honest failed-commit reporting, fsync durability, validator-set reads, VM gas rules, public limits, snapshot recovery, wallet/KEM hardening, x402/identity, docs and SDK fixes.</li>
+        <li><b><code>v1.1.0</code> (17 September) merged</b>, a 26-commit hardening release: consensus recovery, fsync durability, validator-set reads, VM gas rules, public limits, snapshot recovery, wallet/KEM hardening, x402/identity, docs and SDK fixes.</li>
         <li><b>Devnet and testnet upgraded in place</b>, with no chain reset and no lost history.</li>
-        <li><b>Mainnet re-minted</b> with the 26 billion SPLD treasury: on <code>v1.1.0</code> (17 Sept, 22:21 UTC) and again on <code>v1.1.1</code> (18 Sept, 08:21 UTC); genesis hash unchanged both times.</li>
-        <li><b><code>v1.1.1</code> (18 September)</b>: RLNC object-transfer library and optional sealed live path merged; off by default; devnet and testnet upgraded in place, mainnet re-minted on it.</li>
+        <li><b>Mainnet re-minted</b> twice with the 26 billion SPLD treasury, genesis hash unchanged both times.</li>
+        <li><b><code>v1.1.1</code> (18 September)</b>: RLNC object-transfer library and optional sealed live path; off by default.</li>
+        <li><b><code>v1.1.2</code> (18 September)</b>: found, fixed and released the consensus defect that deadlocked every multi-validator set; proven live at four validators.</li>
       </ul>
 
       <h3>What is not claimed yet</h3>
@@ -84,7 +85,7 @@
         <li>RLNC live transfer is merged but off by default and not used by block sync.</li>
         <li>DEX, lending and governance are not native modules.</li>
         <li>Public validator admission is not open.</li>
-        <li>Multi-validator operation is not usable in the released <code>v1.1.1</code>; the fix is proven on devnet but not yet shipped. Tolerating one needs n ≥ 4 <i>and</i> <code>bft_rounds_v1</code> active — unscheduled on every public tier today; schedulable on a running tier without a reset.</li>
+        <li>Multi-validator operation needs <code>v1.1.2</code>; on <code>v1.1.1</code> it deadlocks. Tolerating one needs n ≥ 4 <i>and</i> <code>bft_rounds_v1</code> active — unscheduled on every public tier today; schedulable on a running tier without a reset.</li>
       </ul>
     </div>
   </div>
@@ -108,9 +109,9 @@
   <table class="compact">
     <colgroup><col style="width:38%"><col></colgroup>
     <tbody>
-      <tr><td>Does adding validators make the chain faster?</td><td><b>Viable once the fix ships; one validator is still fastest today.</b> The fault that halted three- and four-validator sets is fixed and proven live: four validators cleared the same load that deadlocked them. One validator still finishes that load fastest. Run one until the fix is released.</td></tr>
-      <tr><td>Can two validators join at the same time, one of them far away?</td><td><b>Yes.</b> Two registered in the same block; a third joined from 200 ms away and the set survives heavy load on the fixed build. The distant one loses about a third of its turns to a 3-second timeout that should be configurable.</td></tr>
-      <tr><td>Can anyone become a validator from their own machine or cloud?</td><td>Not yet: an existing validator must approve you and share a private cluster token, nodes talk on private addresses, and the tooling must cope with 4 KB keys. Section 6.4 lists what it would take.</td></tr>
+      <tr><td>Does adding validators make the chain faster?</td><td><b>Viable on <code>v1.1.2</code>; one validator is still fastest.</b> The fault that deadlocked multi-validator sets is fixed, released and proven live at four validators. A validator on another continent loses about a third of its turns to a timeout that is now adjustable.</td></tr>
+      <tr><td>Can two validators join at the same time, one of them far away?</td><td><b>Yes.</b> Two registered in the same block; a third joined from 200 ms away and the set survives heavy load on <code>v1.1.2</code>. The distant one loses about a third of its turns to a 3-second timeout, now adjustable.</td></tr>
+      <tr><td>Can anyone become a validator from their own machine or cloud?</td><td>Not yet: an existing validator must approve you and share a private cluster token, nodes talk on private addresses, and tooling must cope with 4 KB keys. Section 6.4 lists what it needs.</td></tr>
     </tbody>
   </table>
 </div>
@@ -119,7 +120,7 @@
 <section class="tech" id="s1">
   <div class="kicker">Technical · section 1</div>
   <h2><span class="num">1</span>Release contents</h2>
-  <p>Node release <code>v1.1.0</code> is the 26 commits <code>ec8f060</code>…<code>b8e31a0</code> (tag <code>eaef3c9</code>), merged on 17 September 2026 as PR #42. PR #43, merged on 18 September as <code>v1.1.1</code> (<code>11d372e</code>), adds the RLNC object-transfer library and an optional sealed live path. The tables below list every review item, its implementation status and the commits that close it.</p>
+  <p>Node release <code>v1.1.0</code> is the 26 commits <code>ec8f060</code>…<code>b8e31a0</code> (tag <code>eaef3c9</code>), merged on 17 September 2026 as PR #42. PR #43, merged on 18 September as <code>v1.1.1</code> (<code>11d372e</code>), adds the RLNC object-transfer library and an optional sealed live path. PR #44, merged the same day as <code>v1.1.2</code> (<code>feb2ef7</code>), closes the multi-validator consensus defect that section 6 documents. The tables below list every review item, its implementation status and the commits that close it.</p>
 
   <h3><span class="num">1.1</span>PR #42 — hardening release, closure table</h3>
   <table>
@@ -197,6 +198,22 @@
       <tr><td class="mono">—</td><td>Recoding</td><td>absent, correctly</td><td>Intermediate nodes do not recode; out of scope for <code>v1.1.1</code>.</td></tr>
     </tbody>
   </table>
+
+  <h3><span class="num">1.3</span>PR #44 — multi-validator deadlock fix, <code>v1.1.2</code></h3>
+  <p>Merged on 18 September 2026 as <code>v1.1.2</code> (<code>feb2ef7</code>), twelve commits. It closes the consensus defect that stopped every multi-validator set on <code>v1.1.1</code> (section 6.2), a second consensus defect found while fixing the first, the sync-latency defect beside them, and it makes the consensus timeouts configurable.</p>
+  <table class="compact">
+    <thead><tr><th style="width:31%">Change</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><b>Multi-validator deadlock fix</b></td><td>A view owns one value: a leader can no longer re-mint a different block at the same height and round and so equivocate against itself. Carries a regression test that fails on <code>main</code>.</td></tr>
+      <tr><td><b>Vote erased by a failed apply</b></td><td>A second, distinct defect: a failed apply erased the vote a node had already cast, letting it prevote a different value at the same view. Found with a randomized interleaving harness.</td></tr>
+      <tr><td>Honest re-send no longer an error</td><td>The vote set rejects a differing hash before it checks the address, so a duplicate from the same voter is benign by construction; it is no longer logged as an error.</td></tr>
+      <tr><td>Concurrent peer-height probing</td><td>Replaces a serial loop that cost five seconds per unreachable peer (section 6.1).</td></tr>
+      <tr><td><code>--round-timeout</code>, <code>--vote-timeout</code></td><td>Both configurable, defaulting to today's values — the distance budget section 6.3 asks for.</td></tr>
+      <tr><td>Dead metric counters driven</td><td><code>sqc_txs_failed_total</code> and <code>sqc_rpc_requests_total</code> finally move.</td></tr>
+      <tr><td>Route documentation</td><td>Corrects five validator and staking routes that were documented but return 404.</td></tr>
+      <tr><td>Devnet stress harness</td><td>The harness of section 3 and its fixes.</td></tr>
+    </tbody>
+  </table>
 </section>
 
 <!-- ======================================================= TECH 2 ====== -->
@@ -241,7 +258,7 @@
       <tr><td>Mainnet <code>splendor-quantum-1</code></td><td class="nowrap"><code>v1.1.0</code> → <code>v1.1.1</code>, reset</td><td class="num nowrap">≈137,000</td><td class="num">0 → climbing<br><span class="small muted">137 at 08:22:40</span></td><td class="mono">d865193d…</td><td>identical hash again (same validator key and genesis document); reset 18 Sept 08:21 UTC, deploy run 35323816854, pre-reset EBS snapshot <code>snap-05f1576c34b7010bf</code>; treasury <code>SQ:665f89b6…</code> = 26,000,000,000 SPLD exact; <code>validator_set_size</code> 0; <code>/readyz</code> ready, indexer lag 1</td></tr>
     </tbody>
   </table>
-  <p class="small muted">All heights and hashes read from each tier's <code>/status</code> before and after the swap.</p>
+  <p class="small muted">All heights and hashes read from each tier's <code>/status</code> before and after the swap. <code>v1.1.2</code> was cut and deployed to all three tiers after these observations; its swap evidence is not recorded in this document.</p>
   </div>
 
   <h3><span class="num">2.4</span>Transaction-index backfill and readiness</h3>
@@ -260,7 +277,7 @@
   <h3><span class="num">3.1</span>Method</h3>
   <p>Target: the devnet node (<code>splendor-quantum-devnet-1</code>, <code>v1.1.1</code>, commit <code>11d372e</code>) on its own host, a <b>t4g.xlarge (4 vCPU, 16 GiB)</b>. Baseline before load: block interval 1.000 s (Loki p50 1.001 s, p95 1.022 s over 586 blocks), background 0.80 tx/s, mempool ≤ 1, host CPU ≤ 27 %, 2,304 CPU credits.</p>
   <p>Load is generated by <code>cmd/txload</code> running <b>inside the devnet host's compose network</b>, so the RPC path under test is the node's, not the tunnel's: <b>20 containers</b>, each pinned to <code>--cpus 0.05</code> (0.1 from the 20k run on) and <code>--memory 48m</code>, each driving a disjoint <code>--sender-offset</code> range at <code>--rate 24 --one-shot</code> — every sender submits exactly once, so a stage is a burst of N signed ML-DSA-65 transfers at the <code>min_fee_v1</code> floor, offered from 20 source addresses. Stages escalate the sender population <b>10,000 → 20,000 → 30,000 → 40,000</b>, followed by a 15-minute sustained stage. Before each burst a funding pass tops up the new senders with 1 SPLD each from 20 funders that the faucet had endowed with 44,000 SPLD in total (faucet 992,180 → 948,180 SPLD). The txload changes (<code>--lazy-keys</code>, <code>--one-shot</code>, <code>--scan-node -1</code>, <code>--fund-deadline</code>) are commit <code>e2014c8</code>; the runbook and scripts are <code>e35f323</code> under <code>scripts/aws/devnet-stress/</code> on branch <code>stress/txload-devnet</code>, to be merged.</p>
-  <p>A watcher samples <code>/healthz</code> and <code>/status</code> every 5 s and records container restarts and OOM kills; the 5 s block-interval line is drawn dotted in the figures as the degradation threshold. Metrics come from Prometheus on the observability box (15 s series: <code>sqc_chain_height</code>, <code>sqc_mempool_size</code>, <code>sqc_txs_processed_total</code>, host CPU/memory/load), from Loki (per-block transaction counts and intervals from the node's own log lines), from <code>docker stats</code> for the node process, and from each driver's <code>stats.jsonl</code> / <code>summary.json</code>. Two exported counters are <b>dead</b> and were not used: <code>sqc_txs_failed_total</code> and <code>sqc_rpc_requests_total</code> are registered but never incremented. The stage scripts self-mark a stage <b>CONTAMINATED</b> when the validator set or the node container changes during its window.</p>
+  <p>A watcher samples <code>/healthz</code> and <code>/status</code> every 5 s and records container restarts and OOM kills; the 5 s block-interval line is drawn dotted in the figures as the degradation threshold. Metrics come from Prometheus on the observability box (15 s series: <code>sqc_chain_height</code>, <code>sqc_mempool_size</code>, <code>sqc_txs_processed_total</code>, host CPU/memory/load), from Loki (per-block transaction counts and intervals from the node's own log lines), from <code>docker stats</code> for the node process, and from each driver's <code>stats.jsonl</code> / <code>summary.json</code>. Two exported counters are <b>dead</b> on the builds under test and were not used: <code>sqc_txs_failed_total</code> and <code>sqc_rpc_requests_total</code> are registered but never incremented (both are driven as of <code>v1.1.2</code>, after these runs). The stage scripts self-mark a stage <b>CONTAMINATED</b> when the validator set or the node container changes during its window.</p>
 
   <h3><span class="num">3.2</span>Results</h3>
   <table class="compact">
@@ -362,7 +379,7 @@
   <div class="callout">
     <p class="formula">quorum(n) = ⌊2n/3⌋ + 1 &nbsp;&nbsp;·&nbsp;&nbsp; tolerated faults f = n − quorum(n)</p>
     <p>The certificate on a block needs ⌊2n/3⌋+1 votes from the active set of n validators. For <b>n = 1, 2, 3</b> that is <b>every</b> validator, so a two- or three-validator network halts if any single member stops, withholds or is partitioned. One faulty member is first tolerated at <b>n = 4</b>, two at <b>n = 7</b> — that is the arithmetic; section 6.2 shows a live four-validator set halting anyway, for a reason outside it. The mainnet set is currently one producer (<code>validator_set_size</code> 0 in the registry, the genesis producer sealing).</p>
-    <p><b>Recommendation.</b> These scenarios passed in a local four-validator lab, and that result did not transfer to real hosts: on devnet a three-validator set deadlocked under load and a four-validator set halted for 595 s (section 6.2). Tolerating a faulty member needs n ≥ 4 <i>and</i> <code>bft_rounds_v1</code> <i>and</i> the re-minting fix; with that fix a four-validator set has now cleared the load that deadlocked the old build (section 6.1). Until it is released, the operable configuration is one validator. <code>bft_rounds_v1</code> is unscheduled on every public tier today; it can be scheduled above head on a running tier through the fork-extension rollout, with no reset (section 2.1).</p>
+    <p><b>Recommendation.</b> These scenarios passed in a local four-validator lab, and that result did not transfer to real hosts: on devnet a three-validator set deadlocked under load and a four-validator set halted for 595 s (section 6.2). Tolerating a faulty member needs n ≥ 4 <i>and</i> <code>bft_rounds_v1</code> <i>and</i> the re-minting fix; with that fix, released in <code>v1.1.2</code>, a four-validator set has cleared the load that deadlocked the old build (section 6.1). On <code>v1.1.1</code> and earlier the operable configuration is one validator. <code>bft_rounds_v1</code> is unscheduled on every public tier today; it can be scheduled above head on a running tier through the fork-extension rollout, with no reset (section 2.1).</p>
   </div>
   <table class="compact" style="width:60%">
     <thead><tr><th class="num">n</th><th class="num">1</th><th class="num">2</th><th class="num">3</th><th class="num">4</th><th class="num">5</th><th class="num">6</th><th class="num">7</th><th class="num">8</th><th class="num">9</th><th class="num">10</th></tr></thead>
@@ -382,8 +399,8 @@
   <h3><span class="num">5.1</span>Known limits</h3>
   <ul>
     <li><b>RLNC live transfer is off by default and not consumed.</b> The sealed live path needs <code>--object-codec</code>; <code>FetchCodedObject</code> has no non-test caller, so block sync does not use it and no decoded object is chain-validated yet. <code>DescriptorID</code> is not bound to a chain id, and the hub serves the first published snapshot until restart (section 1.2).</li>
-    <li><b>Small validator sets have no fault tolerance, and fault tolerance needs the fork.</b> ⌊2n/3⌋+1 with n ≤ 3 requires every vote, and without <code>bft_rounds_v1</code> a paused member wedges an n = 3 set on a durable vote-lock (section 4, pre-fork control). Surviving one faulty member needs n ≥ 4, <code>bft_rounds_v1</code> active, and the re-minting defect fixed: a four-validator devnet set halted for 595 s on its first contested height. Root-caused and fixed on PR #44, validated live at four validators under the same load, and in no released build (sections 6.1, 6.2). Demonstrated live on 18 September: a three-validator devnet running the two-phase path deadlocked one second into a load burst, because a locked member cannot be outvoted when the quorum includes it, and it did not recover on its own (section 6.2).</li>
-    <li><b>A distant validator loses a third of its leader slots.</b> The round timeout is hardcoded to 3 s and the vote timeout to 800 ms, neither configurable; a member behind 200 ms of latency missed 29 of 84 leader slots while its co-located peers missed none. The chain recovers every time — it is a throughput cost, not a liveness one (section 6.3).</li>
+    <li><b>Small validator sets have no fault tolerance, and fault tolerance needs the fork.</b> ⌊2n/3⌋+1 with n ≤ 3 requires every vote, and without <code>bft_rounds_v1</code> a paused member wedges an n = 3 set on a durable vote-lock (section 4, pre-fork control). Surviving one faulty member needs n ≥ 4, <code>bft_rounds_v1</code> active, and the re-minting defect fixed: a four-validator devnet set halted for 595 s on its first contested height. Root-caused, fixed and released in <code>v1.1.2</code> (PR #44), validated live at four validators under the same load (sections 6.1, 6.2). Demonstrated live on 18 September: a three-validator devnet running the two-phase path deadlocked one second into a load burst, because a locked member cannot be outvoted when the quorum includes it, and it did not recover on its own (section 6.2).</li>
+    <li><b>A distant validator loses a third of its leader slots.</b> The round timeout was hardcoded to 3 s and the vote timeout to 800 ms; a member behind 200 ms of latency missed 29 of 84 leader slots while its co-located peers missed none. Both are flags as of <code>v1.1.2</code>, so the budget can now be widened — untested at distance. The chain recovers every time — it is a throughput cost, not a liveness one (section 6.3).</li>
     <li><b>The consensus round and lock are not observable through the API.</b> <code>/status</code> reports neither, so a deadlocked set looks healthy from outside; only the node logs show it.</li>
     <li><b><code>qc_root</code> legitimately differs between honest nodes at n &gt; quorum</b>, because each finalises with its own valid 3-of-4 vote subset; comparisons across nodes must use hash, state root and producer, as the lab observer now does (<code>--allow-qc-root-divergence</code>).</li>
     <li><b>Public validator admission is closed.</b> Admission is approval-based with a 2,500 SPLD bond.</li>
@@ -392,7 +409,7 @@
     <li><b>A flood is drained by growing blocks, not by holding cadence.</b> Under the 10k burst one 4,173-transaction block took 15.26 s (about 4.2 ms per ML-DSA-65 verification, all four cores busy); inclusion p95 reached 27–30 s. No transaction was lost or refused (section 3).</li>
     <li><b>Devnet is currently a 4-member set under the pre-fork rules, and frozen.</b> Reconfigured by another operator during the stress sweep on 18 September (08:12 UTC: 3 members, 2.5-minute freeze at 142,275; 08:44–08:58: 1 → 4 during the 30k stage, 346 s stall at 142,821); at hand-off, 09:05 UTC, it sat at height 142,888 with <code>validator_set_size</code> 4 and a 3-of-3 certificate requirement — the live confirmation of the section 4 finding. Under load the ceiling moved from ML-DSA-65 verification (10k, single validator: 4,173-transaction block in 15 s, recovered) to consensus liveness (30k, 2-of-2 quorum: 355-transaction blocks, stalled).</li>
     <li><b>The explorer's indexer stalls behind very large blocks.</b> <code>sqc-indexer</code> fetches each block as one multi-megabyte JSON document and processes receipts one by one; behind blocks 141,284 (4,176 transactions) and 141,285 (2,455) it stayed parked at checkpoint 141,283 for over 45 minutes, including across a restart.</li>
-    <li><b>Dead metrics.</b> <code>sqc_txs_failed_total</code> and <code>sqc_rpc_requests_total</code> are exported but never incremented; the stress run relied on driver-side counts instead.</li>
+    <li><b>Dead metrics</b> (fixed in <code>v1.1.2</code>). <code>sqc_txs_failed_total</code> and <code>sqc_rpc_requests_total</code> were exported but never incremented on the builds under test; the stress runs relied on driver-side counts instead.</li>
     <li><b>Accepted residuals from PR #42</b> (section 1.1): ungated OperatorIdentities persistence pre-<code>verify_identity_v1</code>; <code>/status</code> under the executor lock; per-source caps keyed on <code>RemoteAddr</code> behind cloudflared; pre-fork BFT accepting kind-tagged votes.</li>
   </ul>
 
@@ -400,14 +417,14 @@
   <ul>
     <li>RLNC (<code>v1.1.1</code> partials): bind <code>DescriptorID</code> to the chain id; add capability negotiation, expiry, retry/failover and progress to the controller; give <code>FetchCodedObject</code> a real consumer that chain-validates the result; add metrics and per-peer byte/CPU budgets; re-publish snapshots without restart; re-benchmark against an uncoded baseline with selective retransmission.</li>
     <li>Schedule <code>bft_rounds_v1</code> first, then <code>vm_gas_v1</code>, <code>vm_call_v1</code> and <code>verify_identity_v1</code>, on devnet through the fork-schedule extension above head (no reset), then promote tier by tier. Do not grow any public validator set until the two deadlocks are fixed.</li>
-    <li>Increment or remove the two dead counters; key request caps on a per-client value that survives the tunnel (forwarded client address, signed by cloudflared).</li>
+    <li>Key request caps on a per-client value that survives the tunnel (forwarded client address, signed by cloudflared). The two dead counters are driven as of <code>v1.1.2</code>.</li>
     <li>Resume the stress sweep (clean 30k, 40k, 15-minute sustained) only on a stable single-validator devnet, or on a re-baselined multi-validator devnet with <code>bft_rounds_v1</code> scheduled; the scripts self-mark contamination, so the window only needs to be protected from topology changes (section 3).</li>
     <li>Bounded block fetch and batched receipt lookups in <code>sqc-indexer</code>, so the explorer keeps up with multi-thousand-transaction blocks.</li>
     <li>Expose the consensus round, per-height round state and current lock in <code>/status</code>, so a deadlock is diagnosable without shell access (section 6.2).</li>
     <li>Populate the batch controller's CPU-pressure input or delete the branch: today it is dead code and batch size follows pool depth alone (section 6.1).</li>
     <li>Validator scaling and onboarding program: section 6 (in progress).</li>
-    <li>Release PR #44 — one value per view, and concurrent peer probing — so tiers can run more than one validator; then chase the residual equivocation that remains on the fixed build (section 6.1).</li>
-    <li>Expose the round timeout (hardcoded to 3 s at <code>consensus/bft.go:391</code>) and the 800 ms vote timeout as flags plumbed through deployment: a validator 200 ms away loses 34.5 % of its leader slots to a timeout that was never meant to be a distance budget (section 6.3).</li>
+    <li>Chase the residual equivocation that remains on the fixed build, and exercise the two later consensus fixes and the new timeout flags on live hardware — <code>v1.1.2</code> shipped them, but only <code>v1.1.2-rc1</code> has been under load (section 6.1).</li>
+    <li>Tune <code>--round-timeout</code> for a geographically spread set and confirm the missed slots go away: the flags exist as of <code>v1.1.2</code>, but a validator 200 ms away still lost 34.5 % of its leader slots on the default 3 s (section 6.3).</li>
     <li>Gate OperatorIdentities persistence behind <code>verify_identity_v1</code>; serve <code>/status</code> from a snapshot that does not take the executor lock.</li>
     <li>Merge <code>scripts/validator-join/run-fault-lab.sh</code> (<code>d0c6805</code>, on a worktree), the txload changes (<code>e2014c8</code>) with <code>scripts/aws/devnet-stress/</code> (<code>e35f323</code>, branch <code>stress/txload-devnet</code>), and commit the local swap harness next to them.</li>
   </ul>
@@ -467,8 +484,9 @@ scripts/validator-join/run-fault-lab.sh               <span class="c"># scenario
   </table>
 
   <div class="callout">
-    <p><b>The answer.</b> The defect that stopped multi-validator operation is found, fixed, covered by a regression test that fails on <code>main</code>, and <b>demonstrated live at four validators under the load that previously deadlocked the chain</b> — on PR #44, not yet in a release. More validators are therefore viable once that ships. They are not faster under load: one validator cleared the same burst at a 1.00 s median against four validators' 3.41 s, so the remaining cost of running four is throughput, not correctness. While idle, more validators are quicker (below). Today, on a released build, run one.</p>
+    <p><b>The answer.</b> The defect that stopped multi-validator operation is found, fixed, covered by a regression test that fails on <code>main</code>, and <b>demonstrated live at four validators under the load that previously deadlocked the chain</b> — released as <code>v1.1.2</code> (PR #44). More validators are therefore viable on that build. They are not faster under load: one validator cleared the same burst at a 1.00 s median against four validators' 3.41 s, so the remaining cost of running four is throughput, not correctness. While idle, more validators are quicker (below). One validator remains the fastest configuration.</p>
   </div>
+  <p class="small muted"><b>What was under load, precisely.</b> The four-validator run used <code>v1.1.2-rc1</code>, which carried the first three fixes. The two further consensus fixes and the timeout flags landed afterwards: they are in the released <code>v1.1.2</code>, but have not themselves been exercised on live hardware — only in the full test suite and under the race detector.</p>
 
   <h4>Per-run detail</h4>
   <table class="compact">
@@ -552,13 +570,13 @@ equivocation — conflicting votes dropped        <span class="c">(two different
   <p>Two details separate this from the three-validator case: the equivocation named <b>two</b> validators rather than one, and there was <b>no round timeout and no view change in the last 400 log lines</b> — the mechanism that is supposed to break a stuck round never fired. Meanwhile <code>validator set updated</code> was logged <b>180 times in 60 seconds</b>. The root cause below explains both captures.</p>
 
   <div class="callout">
-    <p><b>The conclusion this forces.</b> <code>v1.1.1</code> cannot be operated with more than one validator: two and three are unanimous by arithmetic, and four deadlocked on the re-minting defect below. That is a statement about the <b>released build</b>. On <code>v1.1.2-rc1</code> a four-validator set cleared the same burst that deadlocked this one (section 6.1).</p>
+    <p><b>The conclusion this forces.</b> <code>v1.1.1</code> cannot be operated with more than one validator: two and three are unanimous by arithmetic, and four deadlocked on the re-minting defect below. That is a statement about <code>v1.1.1</code>. The defect is fixed and released in <code>v1.1.2</code>, on which a four-validator set cleared the same burst that deadlocked this one (section 6.1).</p>
   </div>
 
   <h4>Root cause: a view could hold two different bodies</h4>
   <p>When a leader's prevote quorum did not form within one block interval, the next tick <b>re-minted a fresh block</b> — new timestamp, therefore new hash — at the same height and round, and the engine adopted any proposal arriving at the current view. The leader thereby signed <b>two conflicting prevotes for one view</b>. Peers correctly flagged that as equivocation and dropped it, and the dropped key stayed poisoned for the round, so within a few ticks nobody's prevotes counted. Compounding it, every accepted proposal <b>renewed the round timer</b>, so the view change that would have escaped the round never fired — which is exactly why the captures show thousands of equivocation drops and zero view changes. The equivocation check itself was correct and is not the bug: the nodes were genuinely sending different values. This also explains the three-validator capture, where the locked body <code>f0f994df</code> and the proposed <code>753aaf91</code> are the same block re-minted; there, the unanimous quorum left no escape even in principle.</p>
   <p>Confirmed independently from the live nodes: one node logged <code>failed to add own prevote — duplicate vote from itself</code> <b>72 times</b>, and the code carries no "one prevote per height and round" rule.</p>
-  <p><b>The fix makes a view own a single value.</b> A different body at a height and round the node has already adopted is refused until a round change, and an identical rebroadcast re-sends the votes already signed without renewing the deadline. Safety is tightened rather than relaxed, and the previously passing two-phase tests all still pass. The fix and the failing tests that reproduce the deadlock with <b>four honest validators and no node down</b> are on the <code>stress-test-hardening</code> branch (PR #44), where the full suite passes — 26 of 26 packages, including under the race detector — and the fix is validated live in section 6.1.</p>
+  <p><b>The fix makes a view own a single value.</b> A different body at a height and round the node has already adopted is refused until a round change, and an identical rebroadcast re-sends the votes already signed without renewing the deadline. Safety is tightened rather than relaxed, and the previously passing two-phase tests all still pass. The fix and the failing tests that reproduce the deadlock with <b>four honest validators and no node down</b> shipped in <code>v1.1.2</code> (PR #44, <code>feb2ef7</code>), where the full suite passes — 26 of 26 packages, including under the race detector — and the fix is validated live in section 6.1.</p>
 
   <h4>Recovery: what worked, and what did not</h4>
   <p>The procedure that clears the wedge is: <b>stop every validator, archive both <code>vote-journal.json</code> and <code>vote-journal.json.proposal</code> on every node, then start them together.</b> The second file is the trap — it holds the locked body that gets rebroadcast, so clearing only the journal leaves the wedge in place. Done correctly, recovery took <b>23 seconds</b>, against a <b>43-minute</b> outage for the first halt.</p>
@@ -572,7 +590,7 @@ equivocation — conflicting votes dropped        <span class="c">(two different
   </ul>
 
   <div class="callout">
-    <p><b>Recommendations.</b> On any released build, <b>run one validator</b>. Ship PR #44, then grow the set — validated at four under load, with the residual equivocation and the 7-second p95 tail (section 6.1) still to chase. Keep the recovery procedure above to hand: both journal files, every node, started together. Expose the consensus round, the per-height round state and the current lock in <code>/status</code>, so a deadlock is diagnosable without shell access.</p>
+    <p><b>Recommendations.</b> On <code>v1.1.1</code> or earlier, <b>run one validator</b>. On <code>v1.1.2</code> a set may grow — validated at four under load — with the residual equivocation (section 6.1) still to chase. Keep the recovery procedure above to hand: both journal files, every node, started together. Expose the consensus round, the per-height round state and the current lock in <code>/status</code>, so a deadlock is diagnosable without shell access.</p>
   </div>
 
   <h3><span class="num">6.3</span>Can two validators join at the same time, including one far away?</h3>
@@ -597,7 +615,7 @@ equivocation — conflicting votes dropped        <span class="c">(two different
   <p>Over a ten-minute window at four validators on the fixed build, <b>29 heights needed a round above zero — and every one of them was a height whose scheduled round-zero leader was the validator behind 200 ms of added latency</b>. That member missed <b>34.5 % of its own leader slots</b>, 29 of 84. The three co-located members missed none at all: 0 of 85, 0 of 85, 0 of 84.</p>
   <p>The rejection lines are all the same — <code>proposal is at round 0, this node has already left it for 1</code> — so the other nodes are not refusing a bad proposal. They never see one in time: they time out, advance to round 1, and discard the distant node's proposal when it finally arrives. In 15 of the 29 cases that node still produced the block at round 1; in the other 14 the round-1 leader took it. <b>The chain always recovered</b>, which is why this shows up as a throughput cost and never as a halt.</p>
   <div class="callout">
-    <p><b>Cause and remedy — this is the answer to "can we run validators on different continents?"</b> The round timeout is hardcoded to <b>3 seconds</b> (<code>consensus/bft.go:391</code>), with the vote timeout at 800 ms, and neither is exposed as a flag or plumbed through deployment. Three seconds is too tight for a member that must receive the previous block, build a block, sign it with ML-DSA-65 and get the proposal back across a 200 ms round trip. A distant validator is perfectly able to join, follow, vote and produce — it simply loses about a third of its own leader slots to a timeout that was never meant to be a distance budget. <b>Making that timeout configurable</b> is a follow-up on the same branch, and it is the change that would let a geographically spread set keep its slots.</p>
+    <p><b>Cause and remedy — this is the answer to "can we run validators on different continents?"</b> The round timeout is hardcoded to <b>3 seconds</b> (<code>consensus/bft.go:391</code>), with the vote timeout at 800 ms, and neither is exposed as a flag or plumbed through deployment. Three seconds is too tight for a member that must receive the previous block, build a block, sign it with ML-DSA-65 and get the proposal back across a 200 ms round trip. A distant validator is perfectly able to join, follow, vote and produce — it simply loses about a third of its own leader slots to a timeout that was never meant to be a distance budget. <b>Both are flags as of <code>v1.1.2</code></b> — <code>--round-timeout</code> and <code>--vote-timeout</code>, defaulting to these same values — so a geographically spread set can now widen its budget. That the wider budget recovers the missed slots has not yet been measured.</p>
   </div>
 
   <h3><span class="num">6.4</span>Is becoming a validator something anyone can do from their own machine or cloud?</h3>
@@ -630,7 +648,7 @@ The node relays the transaction one hop because it is not yet in the set. Confir
     <li><b>The validator key must not be shared with any other signing process.</b> That key is two things at once: the block signer, and an ordinary nonce-bearing account. The registry also requires <code>register</code> to be signed by it — the module refuses a public key whose derived address is not the caller — so the bond sits on the block-signing key and that key is not disposable. Any second process signing from it competes for one nonce sequence, and the mempool rejects the loser with no replace-by-fee: devnet's demo heartbeat, a transfer every second from the producer's own wallet, made every producer-signed registry write (self-register, funding the joiners, the approvals) fail with <code>duplicate pending nonce</code> until that container was stopped. The clean separation is <b>three roles on three keys</b>: the validator key signs blocks and its own registry lifecycle; a separate account holds treasury and bond funding; every faucet, demo or load process gets its own account. Devnet conflates all three today — its whole genesis supply is allocated to the validator — while mainnet already has the right shape, the validator holding nothing against one treasury allocation.</li>
     <li><b>Published pins go stale.</b> The pin table in <code>RPC_NODE.md</code> is dated 10 September; mainnet was re-minted twice this week (section 2.3). A joiner needs the current genesis-document hash and block-0 hash from a source it trusts, and today that source is the operator.</li>
     <li><b>No slashing, no eviction.</b> A misbehaving validator is only rejected (forged blocks refused with HTTP 400, equivocations dropped); nothing removes a registrant, there is no key rotation, and the bond is never at risk. Admission is therefore the only lever an operator has against a bad member.</li>
-    <li><b>Quorum arithmetic.</b> With ⌊2n/3⌋+1 votes required, n = 2 and n = 3 need every vote: one stranger going offline stalls the chain, and under the pre-fork rules the stall does not clear by itself (sections 4 and 3). A four-validator set halted for 595 s on the released build, and cleared the same load once PR #44 was applied (sections 6.1, 6.2) — so the set size a public member could safely join depends on a fix that has not shipped.</li>
+    <li><b>Quorum arithmetic.</b> With ⌊2n/3⌋+1 votes required, n = 2 and n = 3 need every vote: one stranger going offline stalls the chain, and under the pre-fork rules the stall does not clear by itself (sections 4 and 3). A four-validator set halted for 595 s on <code>v1.1.1</code> and cleared the same load on <code>v1.1.2</code> (sections 6.1, 6.2), so a public member would need every node on the fixed build.</li>
   </ul>
 
   <h4>Where these sizes break ordinary tooling</h4>
@@ -662,7 +680,7 @@ The node relays the transaction one hop because it is not yet in the set. Confir
     <li>Operator guidance on the two traps above: the key and signature sizes a post-quantum deployment carries with the pass-by-reference rule, and the three-role key separation.</li>
     <li>A published, dated manifest per tier — chain id, block-0 hash, genesis-document hash, bootnode identity and peer list — refreshed on every reset.</li>
     <li>A one-command joiner image: <code>SQC_ROLE=joiner</code> already fetches, pins and runs; it needs the token and peer-list steps above removed and a public image tag.</li>
-    <li>An admission decision: keep approval (and publish how to ask for it), or schedule open registration under <code>validators_v1</code> alone — in either case only once the multi-validator fix is released and a set has been held alive on a public tier (section 6.1).</li>
+    <li>An admission decision: keep approval (and publish how to ask for it), or schedule open registration under <code>validators_v1</code> alone — in either case only once a multi-validator set has been held alive on a public tier under <code>v1.1.2</code> (section 6.1).</li>
   </ul>
   </div>
 </section>
