@@ -167,6 +167,12 @@ func newVoteSet(height uint64, round uint32, blockHash [32]byte, validatorCount 
 	}
 }
 
+// ErrDuplicateVote reports a vote from a validator the set already holds one
+// from. The set is built for one block hash and rejects any other, so a
+// duplicate necessarily carries the same hash as the vote already counted:
+// it is an honest re-send, not an equivocation, and it is counted once.
+var ErrDuplicateVote = errors.New("vote already counted from this validator")
+
 // AddVote adds a validated vote to the set.
 // Returns true if this vote caused the quorum to be reached.
 func (vs *VoteSet) AddVote(vote *Vote) (bool, error) {
@@ -187,9 +193,14 @@ func (vs *VoteSet) AddVote(vote *Vote) (bool, error) {
 		return false, fmt.Errorf("wrong vote kind: want %s got %s", vs.kind, vote.Kind)
 	}
 
-	// Check for duplicate vote
+	// Already counted. Note what this is NOT: a vote for a different block is
+	// rejected above, on the hash, so anything reaching here agrees with the
+	// vote already held. It is a re-send — the network duplicated it, or a
+	// leader's rebroadcast asked this node to say again what it already said —
+	// and it is counted once. Callers tell it apart with ErrDuplicateVote and
+	// must not report it as a fault.
 	if _, exists := vs.votes[vote.ValidatorAddr]; exists {
-		return false, fmt.Errorf("duplicate vote from %s", vote.ValidatorAddr)
+		return false, fmt.Errorf("%w: %s", ErrDuplicateVote, vote.ValidatorAddr)
 	}
 
 	vs.votes[vote.ValidatorAddr] = vote
@@ -348,9 +359,13 @@ type BFTEngine struct {
 
 // BFTConfig configures the BFT engine.
 type BFTConfig struct {
-	LocalAddr         qcrypto.Address
-	LocalPubKey       []byte
-	LocalPrivKey      *qcrypto.PrivateKey
+	LocalAddr    qcrypto.Address
+	LocalPubKey  []byte
+	LocalPrivKey *qcrypto.PrivateKey
+	// VoteTimeout and RoundTimeout default to DefaultVoteTimeout and
+	// DefaultRoundTimeout when zero. RoundTimeout is how long a view is given
+	// before this node rotates the leader away; a set spread across regions
+	// needs it raised (see the constants).
 	VoteTimeout       time.Duration
 	RoundTimeout      time.Duration
 	OnCommit          func(*types.Block) error
@@ -383,13 +398,29 @@ type BFTConfig struct {
 	BroadcastRoundChange func(*RoundChange)
 }
 
+// DefaultRoundTimeout and DefaultVoteTimeout are the deadlines a node uses
+// when an operator has not set them.
+//
+// Three seconds is comfortable for validators in one region and tight for a
+// set spread across continents: the round-0 leader has to receive the previous
+// block, build on it, sign with ML-DSA-65 and get the proposal back across the
+// link before its peers give up on it. On a four-validator set with 200ms
+// added to one member, that member missed 29 of its 84 leader slots — 34.5% —
+// while the three co-located members missed none at all, and every view change
+// in the window was one of its heights. Operators running validators far apart
+// need to raise this; there is no auto-tuning, by design.
+const (
+	DefaultRoundTimeout = 3 * time.Second
+	DefaultVoteTimeout  = 800 * time.Millisecond
+)
+
 // NewBFTEngine creates a working multi-validator BFT engine.
 func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
 	if cfg.VoteTimeout == 0 {
-		cfg.VoteTimeout = 800 * time.Millisecond
+		cfg.VoteTimeout = DefaultVoteTimeout
 	}
 	if cfg.RoundTimeout == 0 {
-		cfg.RoundTimeout = 3 * time.Second
+		cfg.RoundTimeout = DefaultRoundTimeout
 	}
 	return &BFTEngine{
 		localAddr:        cfg.LocalAddr,
@@ -426,6 +457,19 @@ const (
 	maxPendingVotes = 256
 	maxSeenVotes    = 4096
 )
+
+// logVoteAddFailure reports why a vote was not added to a set. A re-send of a
+// vote already counted is normal traffic — the network duplicates messages and
+// a leader's rebroadcast asks for the vote again — so it is logged at debug.
+// Anything else means the vote did not belong to the set at all, which is
+// worth an operator's attention.
+func logVoteAddFailure(err error, what string) {
+	if errors.Is(err, ErrDuplicateVote) {
+		log.Debug().Err(err).Msgf("BFT: %s already counted, ignoring the re-send", what)
+		return
+	}
+	log.Error().Err(err).Msgf("BFT: failed to add %s", what)
+}
 
 // UpdateValidatorSet updates the active validator set.
 // This is called when the on-chain validator registry changes (epoch transitions).
@@ -1024,7 +1068,7 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) bool {
 		}
 		ownVote = vote
 		if _, addErr := e.voteSet.AddVote(vote); addErr != nil {
-			log.Error().Err(addErr).Msg("BFT: failed to add own vote")
+			logVoteAddFailure(addErr, "own vote")
 		}
 		if e.broadcast != nil {
 			e.broadcast(vote)

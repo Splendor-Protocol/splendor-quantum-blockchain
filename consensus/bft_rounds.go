@@ -118,7 +118,7 @@ func (e *BFTEngine) handleProposalTwoPhase(p *pendingProposal) bool {
 		}
 		ownPrevote = vote
 		if _, addErr := e.voteSet.AddVote(vote); addErr != nil {
-			log.Error().Err(addErr).Msg("BFT: failed to add own prevote")
+			logVoteAddFailure(addErr, "own prevote")
 		}
 		if e.broadcast != nil {
 			e.broadcast(vote)
