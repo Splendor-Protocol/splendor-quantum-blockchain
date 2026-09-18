@@ -646,9 +646,8 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 	}
 	hashHex := fmt.Sprintf("%x", hash[:])
 
-	// Idempotent confirmed path: a successful receipt, or a consumed X402
-	// nonce, means this payment already settled. A queued tx is never
-	// described as confirmed.
+	// Idempotent confirmed path: a successful receipt for THIS transaction is
+	// proof the payment settled. A queued tx is never described as confirmed.
 	if rec := s.settlementReceipt(hash); rec != nil {
 		if rec.Status == types.TxStatusSuccess {
 			writeJSON(w, http.StatusOK, x402.SettleResult{
@@ -670,20 +669,35 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nonceKey := x402.NonceKey(req.Payload.From, req.Payload.Nonce)
-	used, err := s.stateDB.IsX402NonceUsed(nonceKey)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, x402.SettleResult{
+	// A consumed nonce alone is NOT proof of which payment happened. Confirm on
+	// the used-nonce path only when the on-chain settlement record binds the
+	// nonce to exactly this payment — same payer, payee, amount and chain. This
+	// closes the bypass where a used payer/nonce was paired with different
+	// claimed details and still took the confirmed fallback.
+	//
+	// result.NonceUsed is only set after the payment signature verified, so a
+	// fabricated retry cannot reach this branch; and SettlementMatch re-checks
+	// the settled details against the authoritative record.
+	if result.NonceUsed {
+		ok, serr := s.x402proc.SettlementMatch(&req.Payload)
+		if serr != nil {
+			writeJSON(w, http.StatusInternalServerError, x402.SettleResult{
+				Status: x402.SettleFailed,
+				Error:  fmt.Sprintf("settlement record error: %v", serr),
+			})
+			return
+		}
+		if ok {
+			writeJSON(w, http.StatusOK, x402.SettleResult{
+				Success: true,
+				Status:  x402.SettleConfirmed,
+				TxHash:  hashHex,
+			})
+			return
+		}
+		writeJSON(w, http.StatusPaymentRequired, x402.SettleResult{
 			Status: x402.SettleFailed,
-			Error:  fmt.Sprintf("nonce registry error: %v", err),
-		})
-		return
-	}
-	if used || result.NonceUsed {
-		writeJSON(w, http.StatusOK, x402.SettleResult{
-			Success: true,
-			Status:  x402.SettleConfirmed,
-			TxHash:  hashHex,
+			Error:  "payment nonce already used by a different payment",
 		})
 		return
 	}

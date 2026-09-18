@@ -104,7 +104,13 @@ func TestX402NonceInStateRoot(t *testing.T) {
 	defer sdb.Close()
 
 	base, _ := sdb.Commit()
-	if err := sdb.MarkX402NonceUsed(qcrypto.Hash32([]byte("nonce-1")), 5); err != nil {
+	if err := sdb.MarkX402NonceSettled(qcrypto.Hash32([]byte("nonce-1")), &types.X402Settlement{
+		From:    mkAddr(1),
+		To:      mkAddr(2),
+		Amount:  big.NewInt(500),
+		ChainID: types.ChainID,
+		Height:  5,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := sdb.Commit()

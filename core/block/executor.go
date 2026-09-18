@@ -1342,7 +1342,14 @@ func (e *Executor) execX402(tx *types.Transaction, fromAcc *types.Account, recei
 		e.state.SetAccount(toAcc)
 	}
 
-	if err := e.state.MarkX402NonceUsed(nonceKey, blockHeight); err != nil {
+	if err := e.state.MarkX402NonceSettled(nonceKey, &types.X402Settlement{
+		From:    tx.From,
+		To:      tx.To,
+		Amount:  new(bigInt).Set(tx.Amount),
+		ChainID: tx.ChainID,
+		TxHash:  receipt.TxHash,
+		Height:  blockHeight,
+	}); err != nil {
 		return fmt.Errorf("X402 nonce: %w", err)
 	}
 

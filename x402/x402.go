@@ -173,29 +173,26 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 		return &VerifyResult{Reason: "payment expired"}
 	}
 
-	// 5. Nonce not already used
+	// 5. Nonce not already used. Checked only after the authorisation itself is
+	// proven (step 6), so a consumed nonce can never confirm a fabricated
+	// payment — and BEFORE the balance check, because an already-settled retry
+	// has necessarily already debited the payer and must still be recognised as
+	// the same payment rather than "insufficient balance".
 	nonceKey := NonceKey(payload.From, payload.Nonce)
 	used, err := p.state.IsX402NonceUsed(nonceKey)
 	if err != nil {
 		return &VerifyResult{Reason: fmt.Sprintf("nonce registry error: %v", err)}
 	}
-	if used {
-		return &VerifyResult{Reason: "payment nonce already used", NonceUsed: true}
-	}
 
-	// 6. Sender has sufficient balance
-	balance, err := p.state.GetBalance(payload.From)
-	if err != nil {
-		return &VerifyResult{Reason: fmt.Sprintf("balance lookup failed: %v", err)}
-	}
-	if balance.Cmp(payload.Amount) < 0 {
-		return &VerifyResult{Reason: "insufficient balance"}
-	}
-
-	// 7. Verify ML-DSA-65 signature. Registry-first: a key registered on chain
+	// 6. Verify ML-DSA-65 signature. Registry-first: a key registered on chain
 	// always wins. Only when the registry has no key for the payer may the
 	// payload carry one, and it is accepted iff it derives payload.From — the
 	// same guard the executor, mempool and BFT apply to a first-use key.
+	//
+	// The signature is checked BEFORE reporting a consumed nonce: an
+	// already-used nonce must never bypass identity checks. A used nonce whose
+	// signature does not verify is not an idempotent retry — it is an
+	// unauthenticated claim and is refused outright.
 	pub, res := p.resolvePayerKey(payload)
 	if res != nil {
 		return res
@@ -208,7 +205,40 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 		return &VerifyResult{Reason: "invalid ML-DSA signature"}
 	}
 
+	if used {
+		return &VerifyResult{Reason: "payment nonce already used", NonceUsed: true}
+	}
+
+	// 7. Sender has sufficient balance (fresh payments only).
+	balance, err := p.state.GetBalance(payload.From)
+	if err != nil {
+		return &VerifyResult{Reason: fmt.Sprintf("balance lookup failed: %v", err)}
+	}
+	if balance.Cmp(payload.Amount) < 0 {
+		return &VerifyResult{Reason: "insufficient balance"}
+	}
+
 	return &VerifyResult{Valid: true}
+}
+
+// SettlementMatch reports whether the on-chain settlement record for payload's
+// nonce confirms exactly this payment — same payer, payee, amount and chain.
+// It returns (false, nil) when the nonce has no settlement record or the record
+// binds a different payment. This is the authoritative link a retry must pass
+// before it may be reported as confirmed; a used nonce alone is never enough.
+func (p *Processor) SettlementMatch(payload *PaymentPayload) (bool, error) {
+	if payload == nil {
+		return false, fmt.Errorf("nil payment payload")
+	}
+	nonceKey := NonceKey(payload.From, payload.Nonce)
+	rec, err := p.state.GetX402Settlement(nonceKey)
+	if err != nil {
+		return false, err
+	}
+	if rec == nil {
+		return false, nil
+	}
+	return rec.Matches(payload.ChainID, payload.From, payload.To, payload.Amount), nil
 }
 
 // resolvePayerKey returns the ML-DSA-65 public key Verify must check the

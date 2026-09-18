@@ -167,7 +167,13 @@ func TestVerifyMarksNonceUsed(t *testing.T) {
 		t.Fatalf("keygen: %v", err)
 	}
 	proc, payload, reqs := newVerifyFixture(t, pub, priv, true)
-	if err := proc.state.MarkX402NonceUsed(NonceKey(payload.From, payload.Nonce), 4); err != nil {
+	if err := proc.state.MarkX402NonceSettled(NonceKey(payload.From, payload.Nonce), &types.X402Settlement{
+		From:    payload.From,
+		To:      payload.To,
+		Amount:  new(big.Int).Set(payload.Amount),
+		ChainID: types.ChainID,
+		Height:  4,
+	}); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	res := proc.Verify(reqs, payload)
@@ -225,3 +231,80 @@ func TestPaymentPayloadHashExcludesPublicKey(t *testing.T) {
 		t.Fatal("public_key did not round-trip through JSON")
 	}
 }
+// A used nonce must not confirm a payment with changed recipient/amount: the
+// on-chain settlement record binds the nonce to the payment that actually
+// happened, and SettlementMatch must refuse any other claim.
+func TestSettlementMatchRejectsChangedPayment(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	proc, payload, _ := newVerifyFixture(t, pub, priv, true)
+	if err := proc.state.MarkX402NonceSettled(NonceKey(payload.From, payload.Nonce), &types.X402Settlement{
+		From:    payload.From,
+		To:      payload.To,
+		Amount:  new(big.Int).Set(payload.Amount),
+		ChainID: types.ChainID,
+		Height:  4,
+	}); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+
+	// Identical details: matches.
+	if ok, err := proc.SettlementMatch(payload); err != nil || !ok {
+		t.Fatalf("identical payment should match: ok=%v err=%v", ok, err)
+	}
+
+	// Changed recipient: rejected even though the nonce is consumed.
+	changed := *payload
+	changed.To = qcrypto.Address{0x77}
+	if ok, err := proc.SettlementMatch(&changed); err != nil || ok {
+		t.Fatalf("changed recipient must not match: ok=%v err=%v", ok, err)
+	}
+
+	// Changed amount: rejected.
+	changed = *payload
+	changed.Amount = big.NewInt(5000)
+	if ok, err := proc.SettlementMatch(&changed); err != nil || ok {
+		t.Fatalf("changed amount must not match: ok=%v err=%v", ok, err)
+	}
+}
+
+// An already-used nonce must never bypass identity checks: Verify must verify
+// the signature before reporting NonceUsed, so an unsigned (or wrongly signed)
+// fabricated retry is refused rather than presented as an idempotent replay.
+func TestVerifyUsedNonceStillChecksSignature(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	proc, payload, reqs := newVerifyFixture(t, pub, priv, true)
+	if err := proc.state.MarkX402NonceSettled(NonceKey(payload.From, payload.Nonce), &types.X402Settlement{
+		From:    payload.From,
+		To:      payload.To,
+		Amount:  new(big.Int).Set(payload.Amount),
+		ChainID: types.ChainID,
+		Height:  4,
+	}); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+
+	// Correct signature + used nonce: NonceUsed, not Valid.
+	res := proc.Verify(reqs, payload)
+	if res.Valid || !res.NonceUsed {
+		t.Fatalf("signed used nonce: valid=%v nonce_used=%v", res.Valid, res.NonceUsed)
+	}
+
+	// Fabricated retry: same nonce, garbage signature. Must NOT be reported as
+	// an idempotent replay — the signature check runs first.
+	forged := *payload
+	forged.Signature = []byte("not-a-signature")
+	res = proc.Verify(reqs, &forged)
+	if res.NonceUsed {
+		t.Fatalf("unsigned used nonce reported NonceUsed: %+v", res)
+	}
+	if res.Valid {
+		t.Fatalf("unsigned used nonce reported Valid")
+	}
+}
+
