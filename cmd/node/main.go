@@ -1225,6 +1225,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Identity:    nodeIdentity,
 		Token:       authToken,
 		MaxInFlight: flagP2PMaxInFlight,
+		TrustProxy:  flagTrustProxy,
 		HandleBlock: func(body []byte) error {
 			// The trusted key is read at call time: a node pinning only
 			// --genesis-hash learns it from block 0 after start-up. A pushed

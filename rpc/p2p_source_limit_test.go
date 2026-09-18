@@ -106,3 +106,19 @@ func TestSealedOversizeContentLengthRejectedBeforeSlot(t *testing.T) {
 		t.Fatal("oversize body reached the handler")
 	}
 }
+
+// The per-source key must honour X-Forwarded-For only behind a trusted proxy,
+// matching the tx/x402 rate limiter. Without TrustProxy the header is ignored,
+// so a spoofed value cannot mint a fresh source budget per request.
+func TestSealedClientKeyHonorsTrustProxy(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, network.PathSealed, nil)
+	req.RemoteAddr = "192.0.2.10:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.7, 10.0.0.1")
+
+	if got := sealedClientKey(req, false); got != "192.0.2.10" {
+		t.Fatalf("trustProxy=false keyed on %q, want the socket address 192.0.2.10", got)
+	}
+	if got := sealedClientKey(req, true); got != "198.51.100.7" {
+		t.Fatalf("trustProxy=true keyed on %q, want the forwarded client 198.51.100.7", got)
+	}
+}

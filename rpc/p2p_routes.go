@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -47,6 +48,10 @@ type P2PConfig struct {
 	// MaxPerSource caps concurrent sealed requests from one client IP.
 	// 0 uses defaultSealedMaxPerSource; a negative value disables the cap.
 	MaxPerSource int
+	// TrustProxy makes the per-source key read X-Forwarded-For. Only enable
+	// behind a reverse proxy you control: otherwise any client can spoof the
+	// header and mint a fresh source budget per request, bypassing the cap.
+	TrustProxy bool
 	// HandleBlock applies a received block body (raw JSON).
 	HandleBlock func(body []byte) error
 	// HandleAnnounce processes a peer announcement body (raw JSON).
@@ -132,7 +137,7 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 			return
 		}
 
-		src := sealedClientKey(r)
+		src := sealedClientKey(r, cfg.TrustProxy)
 		if srcSlots != nil && !srcSlots.acquire(src) {
 			log.Debug().Str("remote", r.RemoteAddr).Msg("p2p: sealed request shed, per-source cap")
 			w.Header().Set("Retry-After", "1")
@@ -334,7 +339,7 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			writeError(w, http.StatusBadRequest, "invalid get_state_snapshot_chunk body")
 			return
 		}
-		payload, err = cfg.ServeStateSnapshotChunk(q.SessionID, q.AfterKey, q.MaxLeaves, sealedClientKey(r))
+		payload, err = cfg.ServeStateSnapshotChunk(q.SessionID, q.AfterKey, q.MaxLeaves, sealedClientKey(r, cfg.TrustProxy))
 	case network.KindGetObjectManifest:
 		if cfg.ServeObjectManifest == nil {
 			writeError(w, http.StatusNotImplemented, "sealed coded-object reads not available")
@@ -384,7 +389,20 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 	_, _ = w.Write(wire)
 }
 
-func sealedClientKey(r *http.Request) string {
+func sealedClientKey(r *http.Request, trustProxy bool) string {
+	// Only honour the forwarded header behind a proxy the operator controls:
+	// otherwise it is attacker-controlled and would let one source mint a fresh
+	// budget per request by spoofing a different value each time.
+	if trustProxy {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			if i := strings.IndexByte(fwd, ','); i >= 0 {
+				fwd = fwd[:i]
+			}
+			if ip := strings.TrimSpace(fwd); ip != "" {
+				return ip
+			}
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -392,7 +410,6 @@ func sealedClientKey(r *http.Request) string {
 	return host
 }
 
-// sealedSourceSlots bounds concurrent sealed work per client IP.
 type sealedSourceSlots struct {
 	mu       sync.Mutex
 	inflight map[string]int
