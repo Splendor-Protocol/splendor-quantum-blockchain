@@ -1,8 +1,10 @@
 package compiler
 
 import (
+	"context"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -363,5 +365,57 @@ func TestTopLevelRevertDoesNotRollBackStorage(t *testing.T) {
 	// The write survived the revert — the behavior the compiler designs around.
 	if len(v) == 0 || new(big.Int).SetBytes(v).Sign() == 0 {
 		t.Fatal("expected slot0 to persist through the top-level revert (checks-effects rule rationale)")
+	}
+}
+
+// A function that calls itself (directly or through another internal function)
+// inlines its own body, so recursion is unbounded compile-time expansion, not
+// a runtime call. It must be rejected by name in the semantic pass.
+func TestRecursiveCallGraphIsRejected(t *testing.T) {
+	cases := map[string]string{
+		"direct": `contract R { uint256 v; function f(uint256 a) internal { f(a - 1); } function g() public { f(9); } }`,
+		"mutual": `contract R { uint256 v; function a(uint256 x) internal { b(x); } function b(uint256 x) internal { a(x); } function g() public { a(1); } }`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Compile(src)
+			if err == nil {
+				t.Fatalf("recursive internal-call graph compiled without error")
+			}
+			if !strings.Contains(err.Error(), "recursive") {
+				t.Fatalf("recursion was not rejected as such, got: %v", err)
+			}
+		})
+	}
+}
+
+// A legal chain of DISTINCT internal calls (no cycle) must still compile: the
+// cycle check must not reject ordinary inlining.
+func TestAcyclicCallChainStillCompiles(t *testing.T) {
+	src := `contract A { uint256 v;
+		function leaf(uint256 x) internal returns (uint256) { return x + 1; }
+		function mid(uint256 x) internal returns (uint256) { return leaf(x) + 1; }
+		function top() public { v = mid(1); }
+		function get() public view returns (uint256) { return v; } }`
+	if _, err := Compile(src); err != nil {
+		t.Fatalf("acyclic call chain rejected: %v", err)
+	}
+}
+
+// A cancelled compile context must stop codegen with the context error, not
+// keep emitting bytecode to completion. This is the deadline-becomes-effective
+// property the source-verify route relies on.
+func TestCompileContextCancellationStopsCodegen(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before codegen runs
+	// A reasonably sized contract that would otherwise compile fine.
+	var b strings.Builder
+	b.WriteString("contract C { uint256 v;\n")
+	for i := 0; i < 50; i++ {
+		fmt.Fprintf(&b, "function f%d(uint256 a) public view returns (uint256) { return a + %d; }\n", i, i)
+	}
+	b.WriteString("}")
+	if _, err := CompileContext(ctx, b.String()); err == nil {
+		t.Fatal("compile completed despite a cancelled context")
 	}
 }
