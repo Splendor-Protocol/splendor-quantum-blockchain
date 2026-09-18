@@ -75,8 +75,8 @@ func (m *NodeMetrics) SetLabel(key, value string) {
 	m.labels[key] = value
 }
 
-// IncrRPCRequests increments the RPC request counter.
-// Call this in the logging middleware.
+// IncrRPCRequests increments the RPC request counter. Driven once per HTTP
+// request by (*NodeMetrics).Middleware, the outermost wrapper on the listener.
 func (m *NodeMetrics) IncrRPCRequests() {
 	m.RPCRequests.Add(1)
 }

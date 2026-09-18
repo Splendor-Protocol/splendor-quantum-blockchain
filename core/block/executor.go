@@ -143,6 +143,14 @@ type Executor struct {
 	// MaxBlockGas. Followers still enforce MaxBlockGas on apply; this only
 	// stops the builder from spending more wall time than the work budget.
 	proposalWorkLimit uint64
+
+	// onTxFailed, when set, is told how many transactions ended in failure
+	// each time this executor settles a block: receipts committed with
+	// TxStatusFailed, plus candidates the producer executed and dropped. It
+	// runs under mu, so it must be cheap and must not call back into the
+	// executor. cmd/node points it at sqc_txs_failed_total, which was exported
+	// long before anything drove it.
+	onTxFailed func(n int)
 }
 
 // ErrApplyHalted is returned when the executor refuses new work because a
@@ -211,6 +219,32 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 func (e *Executor) WithHooks(h *HookRegistry) *Executor {
 	e.hooks = h
 	return e
+}
+
+// WithTxFailedHook registers fn to be told, per settled block, how many
+// transactions failed; see the onTxFailed field. nil clears it.
+func (e *Executor) WithTxFailedHook(fn func(n int)) *Executor {
+	e.onTxFailed = fn
+	return e
+}
+
+// noteTxsFailed reports n failed transactions to the hook, when there is one
+// and there are any.
+func (e *Executor) noteTxsFailed(n int) {
+	if n > 0 && e.onTxFailed != nil {
+		e.onTxFailed(n)
+	}
+}
+
+// countFailedReceipts is how many of receipts carry TxStatusFailed.
+func countFailedReceipts(receipts []*types.Receipt) int {
+	n := 0
+	for _, r := range receipts {
+		if r != nil && r.Status == types.TxStatusFailed {
+			n++
+		}
+	}
+	return n
 }
 
 // WithTxIndex attaches a receipt/tx index store.
@@ -610,6 +644,9 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		e.notePartialPersist()
 		return fmt.Errorf("state commit failed: %w", err)
 	}
+
+	// The block is settled: its failed receipts are now a fact of the chain.
+	e.noteTxsFailed(countFailedReceipts(receipts))
 
 	// Index block transactions and store receipts. Failures are not consensus
 	// fatal; IndexedHeight stays behind so ReconcileTxIndex can backfill.
@@ -1433,6 +1470,7 @@ func (e *Executor) assembleBlock(
 		receipts  []*types.Receipt
 		blockGas  uint64
 		blockSize int
+		dropped   int // candidates that executed, failed, and were left out
 	)
 	skip := func(tx *types.Transaction, err error) {
 		skipped = append(skipped, SkippedTx{Tx: tx, Err: err})
@@ -1513,6 +1551,7 @@ func (e *Executor) assembleBlock(
 				return nil, nil, fmt.Errorf("revert of skipped tx: %w (tx error: %v)", rerr, err)
 			}
 			log.Warn().Err(err).Msg("skipping invalid tx")
+			dropped++
 			skip(tx, err)
 			continue
 		}
@@ -1610,6 +1649,9 @@ func (e *Executor) assembleBlock(
 
 	if !persist {
 		e.state.DiscardPending()
+		// The proposal's failed receipts are reported by ExecuteBlock once a
+		// quorum commits it; what was dropped is final now.
+		e.noteTxsFailed(dropped)
 		return b, skipped, nil
 	}
 
@@ -1622,6 +1664,7 @@ func (e *Executor) assembleBlock(
 	}
 
 	e.recordTxIndex(b, receipts)
+	e.noteTxsFailed(dropped + countFailedReceipts(receipts))
 
 	log.Info().
 		Uint64("height", height).

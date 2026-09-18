@@ -277,6 +277,25 @@ func (g *ExecGuard) Wrap(h http.HandlerFunc) http.Handler {
 	})
 }
 
+// ── Request counting ─────────────────────────────────────────────────────────
+
+// Middleware counts every request the listener takes into
+// sqc_rpc_requests_total. It is meant to be the outermost wrapper on the
+// server: every route, every method, preflight included, is one atomic add
+// with no labels, so the counter says how much traffic the node takes rather
+// than how much the RPC routes answered. The counter was exported long before
+// anything drove it, so the "RPC requests" panel read zero by construction.
+// A nil receiver passes the handler through unchanged.
+func (m *NodeMetrics) Middleware(next http.Handler) http.Handler {
+	if m == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.IncrRPCRequests()
+		next.ServeHTTP(w, r)
+	})
+}
+
 // ── Write plane ──────────────────────────────────────────────────────────────
 
 // WriteAuth guards routes that mutate the chain or the outbound peer set.
