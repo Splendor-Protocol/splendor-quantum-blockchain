@@ -33,7 +33,7 @@ export DS_TX_AMOUNT_UNITS=1000000000000000        # 0.001 SPLD per transfer
 export DS_HOST_ROOT=/srv/sqc-load
 export DS_NODE_NET=splendor-quantum-node_default
 export DS_NODE_SVC=sqc-node
-export DS_PROXY_PORT=18080     # sqc-load-rpcproxy: 127.0.0.1:18080 on the host -> sqc-node:8080
+export DS_PROXY_PORT="${DS_PROXY_PORT:-18080}"   # sqc-load-rpcproxy: host 127.0.0.1:PORT -> sqc-node:8080; override if another sidecar holds 18080
 export DS_DRIVER_IMAGE=alpine:3.20
 export DS_SOCAT_IMAGE=alpine/socat:1.8.0.3
 export DS_DRIVER_CPUS="${DS_DRIVER_CPUS:-0.1}"     # per container; 20 x 0.1 = 2 of the 4 vCPUs at most
