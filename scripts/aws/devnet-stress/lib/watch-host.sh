@@ -37,7 +37,10 @@ fire() {
 while :; do
   tick=$(date +%s)
   t0=$(date +%s%N)
-  hz=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz" 2>/dev/null || echo 000)
+  # curl prints %{http_code} (000 on failure) itself; a `|| echo 000` fallback
+  # would concatenate a second 000 and emit invalid JSON ("healthz":000000).
+  hz=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz" 2>/dev/null)
+  hz=${hz:-000}; hz=$((10#$hz))
   hz_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
   st=$(curl -s -m 5 "http://127.0.0.1:$PORT/status" 2>/dev/null || echo '{}')
   height=$(printf '%s' "$st" | jq -r '.height // 0' 2>/dev/null || echo 0)
