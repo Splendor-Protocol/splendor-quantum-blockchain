@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -17,8 +18,27 @@ const (
 	// maxObjectSymbolReplyBytes bounds one proof: MaxSymbolSize payload plus
 	// coefficients, Merkle siblings, and SQCO headers.
 	maxObjectSymbolReplyBytes = coding.MaxSymbolSize + coding.MaxSourceSymbols + (objects.MaxMerkleSiblings * 32) + 1024
-	objectFetchTimeout        = 1 * time.Minute
+	// objectFetchTimeout bounds one sealed request (manifest or symbol).
+	objectFetchTimeout = 1 * time.Minute
+	// The symbol phase also gets one aggregate budget: a floor so a small
+	// object is not starved by one slow symbol, per-symbol time above that,
+	// and a cap so a peer answering each symbol just inside
+	// objectFetchTimeout cannot hold a fetch for CodebookSize minutes.
+	objectFetchFloor     = 2 * time.Minute
+	objectFetchPerSymbol = 2 * time.Second
+	objectFetchCap       = 10 * time.Minute
 )
+
+// objectFetchDeadline is the aggregate budget for fetching n committed symbols.
+func objectFetchDeadline(n uint32) time.Duration {
+	if n >= uint32(objectFetchCap/objectFetchPerSymbol) {
+		return objectFetchCap
+	}
+	if d := time.Duration(n) * objectFetchPerSymbol; d > objectFetchFloor {
+		return d
+	}
+	return objectFetchFloor
+}
 
 // FetchCodedObject pulls a peer's currently published coded object over the
 // sealed channel: verify the manifest against the peer's pinned node identity,
@@ -45,14 +65,19 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 	if err != nil {
 		return nil, fmt.Errorf("object manifest from %s: %w", peerAddr, err)
 	}
+	// One client for every symbol so the loop reuses a connection instead of
+	// building a transport per request, under one deadline for the whole loop.
+	client := PeerHTTPClient(objectFetchTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), objectFetchDeadline(manifest.CodebookSize))
+	defer cancel()
 	descID := manifest.DescriptorID()
 	for i := uint32(0); i < manifest.CodebookSize && !recv.Ready(); i++ {
 		reqBody, err := json.Marshal(GetObjectSymbolRequest{DescriptorID: descID[:], Index: i})
 		if err != nil {
 			return nil, err
 		}
-		proofRaw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetObjectSymbol, reqBody,
-			int64(maxObjectSymbolReplyBytes), objectFetchTimeout)
+		proofRaw, err := f.cfg.Identities.querySealed(ctx, client, peerAddr, KindGetObjectSymbol, reqBody,
+			int64(maxObjectSymbolReplyBytes))
 		if err != nil {
 			return nil, fmt.Errorf("fetch object symbol %d from %s: %w", i, peerAddr, err)
 		}
