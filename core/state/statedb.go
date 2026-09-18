@@ -38,6 +38,11 @@ const (
 	prefixCode      = "code:"
 	prefixStorage   = "store:"
 	prefixX402Nonce = "x402nonce:"
+	// prefixX402Settle stores the authoritative on-chain settlement record for
+	// a consumed X402 nonce (payer/payee/amount/chain/tx). It is what links a
+	// used nonce to the payment that actually happened, so a retry cannot
+	// confirm a different, unauthenticated claimed payment.
+	prefixX402Settle = "x402settle:"
 
 	// prefixMeta namespaces node-local bookkeeping (e.g. the applied-height
 	// marker) that is deliberately EXCLUDED from the state root — it is not
@@ -736,6 +741,69 @@ func (s *StateDB) IsX402NonceUsed(nonceKey [32]byte) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// MarkX402NonceSettled stages BOTH the used marker and the authoritative
+// settlement record for an X402 payment nonce on the pending layer, atomically
+// with the balance transfer that settled it. The settlement record binds the
+// nonce key to payer, payee, amount, chain and transaction so a retry of a
+// used nonce can only re-confirm the payment that really happened.
+func (s *StateDB) MarkX402NonceSettled(nonceKey [32]byte, rec *types.X402Settlement) error {
+	if rec == nil {
+		return errors.New("state: nil X402 settlement record")
+	}
+	kw := prefixX402Nonce + string(nonceKey[:])
+	val, err := json.Marshal(rec.Height)
+	if err != nil {
+		return err
+	}
+	recVal, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.journalRaw(kw)
+	s.pendingRaw[kw] = val
+	ks := prefixX402Settle + string(nonceKey[:])
+	s.journalRaw(ks)
+	s.pendingRaw[ks] = recVal
+	s.touchLocked()
+	return nil
+}
+
+// GetX402Settlement returns the committed or pending on-chain settlement record
+// for an X402 nonce key, or (nil, nil) when the nonce has not settled. The
+// settlement record is the proof a used nonce must be matched against before a
+// payment can be reported as confirmed.
+func (s *StateDB) GetX402Settlement(nonceKey [32]byte) (*types.X402Settlement, error) {
+	ks := prefixX402Settle + string(nonceKey[:])
+
+	s.mu.RLock()
+	if v, ok := s.pendingRaw[ks]; ok {
+		cp := make([]byte, len(v))
+		copy(cp, v)
+		s.mu.RUnlock()
+		return decodeX402Settlement(cp)
+	}
+	s.mu.RUnlock()
+
+	data, err := s.rawGet([]byte(ks))
+	if err == leveldb.ErrNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return decodeX402Settlement(data)
+}
+
+func decodeX402Settlement(data []byte) (*types.X402Settlement, error) {
+	var rec types.X402Settlement
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return nil, fmt.Errorf("state: decode X402 settlement: %w", err)
+	}
+	return &rec, nil
 }
 
 // Commit writes all pending changes (accounts, code, storage/nonce overlay) to

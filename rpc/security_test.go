@@ -463,7 +463,13 @@ func TestX402SettleIdempotentWhenNonceUsed(t *testing.T) {
 	if err := payload.Sign(payerPriv); err != nil {
 		t.Fatalf("sign payload: %v", err)
 	}
-	if err := s.stateDB.MarkX402NonceUsed(x402.NonceKey(payer, nonce), 3); err != nil {
+	if err := s.stateDB.MarkX402NonceSettled(x402.NonceKey(payer, nonce), &types.X402Settlement{
+		From:    payer,
+		To:      payee,
+		Amount:  big.NewInt(500),
+		ChainID: types.ChainID,
+		Height:  3,
+	}); err != nil {
 		t.Fatalf("mark nonce: %v", err)
 	}
 	if _, err := s.stateDB.Commit(); err != nil {
@@ -495,3 +501,82 @@ func TestX402SettleIdempotentWhenNonceUsed(t *testing.T) {
 		t.Fatalf("already-consumed payment was re-queued: pool %d", s.pool.Size())
 	}
 }
+// A used payer/nonce paired with DIFFERENT claimed payment details must not
+// take the confirmed fallback: the on-chain settlement record binds the nonce
+// to the payment that actually happened. This is the I4 closure — a valid old
+// nonce cannot confirm changed recipient/amount details.
+func TestX402SettleUsedNonceRejectsChangedPayment(t *testing.T) {
+	payerPub, payerPriv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	realPayee := qcrypto.Address{0x55}
+	payer := qcrypto.DeriveAddress(payerPub)
+	s := newTestServer(t, "secret")
+
+	acc := types.NewAccount(payer)
+	acc.AddBalance(big.NewInt(1_000_000))
+	acc.PublicKey = payerPub.Bytes()
+	s.stateDB.SetAccount(acc)
+	if _, err := s.stateDB.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// The nonce has already settled to realPayee.
+	var nonce [32]byte
+	nonce[0] = 0xEE
+	if err := s.stateDB.MarkX402NonceSettled(x402.NonceKey(payer, nonce), &types.X402Settlement{
+		From:    payer,
+		To:      realPayee,
+		Amount:  big.NewInt(500),
+		ChainID: types.ChainID,
+		Height:  3,
+	}); err != nil {
+		t.Fatalf("mark nonce: %v", err)
+	}
+	if _, err := s.stateDB.Commit(); err != nil {
+		t.Fatalf("commit nonce: %v", err)
+	}
+
+	// The attacker presents the SAME nonce but a different recipient. Sign it
+	// with the payer's key so only the settlement-record mismatch (not the
+	// signature) is exercised — the point is that a validly-signed claim over
+	// an already-settled nonce still cannot confirm a DIFFERENT payment.
+	attackerPayee := qcrypto.Address{0x66}
+	now := time.Now().Unix()
+	changed := &x402.PaymentPayload{
+		Version: 1, ChainID: types.ChainID,
+		From: payer, To: attackerPayee, Amount: big.NewInt(500),
+		ValidAfter: now - 30, ValidBefore: now + 300, Nonce: nonce,
+	}
+	if err := changed.Sign(payerPriv); err != nil {
+		t.Fatalf("sign changed payload: %v", err)
+	}
+	reqs := &x402.PaymentRequirements{
+		PayTo: attackerPayee, Amount: big.NewInt(500),
+		ValidAfter: now - 30, ValidBefore: now + 300,
+	}
+	settle := x402.NewSettlementTx(changed, big.NewInt(1000), 0)
+	if err := settle.Sign(payerPriv, true); err != nil {
+		t.Fatalf("sign settlement: %v", err)
+	}
+
+	raw, _ := json.Marshal(map[string]any{"requirements": reqs, "payload": changed, "settlement_tx": settle})
+	rec := httptest.NewRecorder()
+	s.handleX402Settle(rec, httptest.NewRequest(http.MethodPost, "/x402/settle", bytes.NewReader(raw)))
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("changed payment: got %d (%s), want 402", rec.Code, rec.Body.String())
+	}
+	var out x402.SettleResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Success || out.Status == x402.SettleConfirmed {
+		t.Fatalf("changed payment reported confirmed: %+v", out)
+	}
+	if s.pool.Size() != 0 {
+		t.Fatalf("changed payment queued: pool %d", s.pool.Size())
+	}
+}
+

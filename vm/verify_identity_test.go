@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -185,11 +186,17 @@ func TestX402SpendRequiresUsedNonceUnderIdentityFork(t *testing.T) {
 	_, err = callVerify(t, sdb, vfyCtx(op.addr, 4, true), "spend", map[string]any{
 		"verify": inst.String(), "instruction_id": types.InstructionIDHex(ins.InstructionID),
 	})
-	if err == nil || !strings.Contains(err.Error(), "nonce unused") {
+	if err == nil || !strings.Contains(err.Error(), "no settlement record") {
 		t.Fatalf("x402 spend without a settled nonce: %v", err)
 	}
 
-	if err := sdb.MarkX402NonceUsed(x402.NonceKey(owner.addr, nonce), 1); err != nil {
+	if err := sdb.MarkX402NonceSettled(x402.NonceKey(owner.addr, nonce), &types.X402Settlement{
+		From:    owner.addr,
+		To:      qcrypto.Address{0x55},
+		Amount:  big.NewInt(500),
+		ChainID: types.ChainID,
+		Height:  1,
+	}); err != nil {
 		t.Fatalf("mark nonce: %v", err)
 	}
 	if _, err := callVerify(t, sdb, vfyCtx(op.addr, 5, true), "spend", map[string]any{
