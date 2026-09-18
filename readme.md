@@ -8,8 +8,8 @@
 | Testnet | `splendor-quantum-testnet-1` | `https://quantum-rpc-testnet.splendor.org` | `https://quantum-testnet-explorer.splendor.org` |
 | Devnet | `splendor-quantum-devnet-1` | `https://quantum-rpc-devnet.splendor.org` | `https://quantum-devnet-explorer.splendor.org` |
 
-Every tier runs node release `v1.1.0` (commit `b8e31a0`). Mainnet was
-re-minted on 17 September 2026 (22:21 UTC); its genesis hash is
+Every tier runs node release `v1.1.1` (commit `11d372e`). Mainnet was
+re-minted on 18 September 2026 (08:21 UTC); its genesis hash is
 `d865193d3bd88fb4446626940e63b5658275342a0153638079cf9e962332a257`, the
 value to pin with `--genesis-hash` when you follow the chain. Test coins for testnet
 and devnet: `https://quantum-faucet.splendor.org`. Indexer read API:
@@ -1855,7 +1855,7 @@ freshness or production readiness.
 
 <!-- tiers:begin -->
 Live rows were read from each tier's `/status`, `/block/0` and
-`/idx/v1/health` at **2026-09-17T22:21Z** by `npm run readme:tiers`, which
+`/idx/v1/health` at **2026-09-18T08:23Z** by `npm run readme:tiers`, which
 `npm run deploy` runs after every verified rollout. Do not edit this table by
 hand; edit `scripts/readme-tiers.mjs` and regenerate.
 
@@ -1867,15 +1867,15 @@ hand; edit `scripts/readme-tiers.mjs` and regenerate.
 | Explorer | `https://quantum-devnet-explorer.splendor.org` | `https://quantum-testnet-explorer.splendor.org` | `https://quantum-explorer.splendor.org` |
 | Faucet | `https://quantum-faucet.splendor.org` | `https://quantum-faucet.splendor.org` | none, by design |
 | Chain id | `splendor-quantum-devnet-1` | `splendor-quantum-testnet-1` | `splendor-quantum-1` |
-| Node image / commit | `sqc-node:v1.1.0` / `b8e31a0c0d96` | `sqc-node:v1.1.0` / `b8e31a0c0d96` | `sqc-node:v1.1.0` / `b8e31a0c0d96` |
+| Node image / commit | `sqc-node:v1.1.1` / `11d372ed6f81` | `sqc-node:v1.1.1` / `11d372ed6f81` | `sqc-node:v1.1.1` / `11d372ed6f81` |
 | Indexer image | `sqc-indexer:v0.3.3-56d5e27` | `sqc-indexer:v0.3.3-56d5e27` | `sqc-indexer:v0.3.3-56d5e27` |
-| Height | 107,299 | 435,017 | 88 |
+| Height | 142,366 | 471,063 | 162 |
 | Fork schedule (`/status.forks`) | `exchange_v1`, `module_revert_v1`, `modules_v2`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_admission_v1`, `validators_v1` at 1; `vm_revert_v1` at 130,000 | `bridge_v1`, `exchange_v1`, `module_revert_v1`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_v1` at 1; `modules_v2` at 74,674 | `module_revert_v1`, `modules_v2`, `multi_validator`, `qrc1155_v1`, `qrc20_v2`, `validators_admission_v1`, `validators_v1` at 1 |
-| Consensus (`/status.consensus_mode`, `head_qc_valid`) | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote |
-| Registered validators (`validator_set_size`) | 0 | 0 | 0 |
+| Consensus (`/status.consensus_mode`, `head_qc_valid`) | `bft`, certificate valid, 3 of 3 votes | `bft`, certificate valid, 1 of 1 vote | `bft`, certificate valid, 1 of 1 vote |
+| Registered validators (`validator_set_size`) | 3 | 0 | 0 |
 | Genesis block hash (`/status.genesis_hash`) | `1062b1ff435ef047906cf2c1e3f282eee670817d20157969749d2aaf6d23e87d` | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` | `d865193d3bd88fb4446626940e63b5658275342a0153638079cf9e962332a257` |
 | Genesis validator (`/block/0`) | `SQ:bcc5a8257f479089528bc144df5a2fad69752c089747cd7798325467ac7e2229` | `SQ:09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` | `SQ:442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` |
-| Peers reported | 0 | 0 | 0 |
+| Peers reported | 4 | 0 | 0 |
 <!-- tiers:end -->
 
 A name in `/status.forks` is a scheduled rule change, not proof the module is
@@ -2022,6 +2022,32 @@ must reproduce it exactly:
   replayed as a transfer.
 
 ---
+
+### What v1.1.x proved (17–18 September 2026)
+
+The evidence behind the tier table above, collected while releasing v1.1.0
+(26-commit hardening) and v1.1.1 (RLNC object transfer). The full method and
+numbers are in [docs/reports/2026-09-18-v1.1.1-validation.pdf](docs/reports/2026-09-18-v1.1.1-validation.pdf).
+
+| Check | Result | Evidence |
+|---|---|---|
+| Upgrade in place, v1.0.20 → v1.1.0 → v1.1.1 | devnet and testnet kept their chains; heights climbed through both swaps; genesis hashes unchanged | local swap harness 79/79 (devnet-shaped) and 80/80 (mainnet-shaped) for each step; live `/status` before and after |
+| Mainnet re-mint | reset onto v1.1.0 (17 Sept 22:21 UTC) and again onto v1.1.1 (18 Sept, see §20 table); genesis hash `d865193d…` both times because the validator key and genesis document are unchanged; treasury exactly 26,000,000,000 SPLD | `/status`, `/balance` on the fresh chain |
+| 10,000 accounts, one transfer each, at once (devnet, t4g.xlarge) | survived: all 10,000 accepted and included, no restart, no memory pressure; one 4,173-transaction block took 15 s, block time back to 1 s one block later | `scripts/aws/devnet-stress/`, txload stats + Prometheus |
+| 20,000 accounts | survived (all committed) but contaminated: a concurrent validator-set change on devnet overlapped the run; 30,000 and 40,000 not yet run on a stable devnet | same, self-marked CONTAMINATED |
+| Validator add / remove / re-add (four real nodes, local lab) | pass: set 1→2→3→4, remove D and finalise the 2,500 SPLD bond after 32 blocks, re-add D | `scripts/validator-join/run-fault-lab.sh` |
+| Faulty validator at n=4 under `bft_rounds_v1` | pass: crashed member, leader that withholds (round change and commit in 4 s), forged blocks refused (HTTP 400), cleared-journal restart safe; all four nodes agree on every block | same |
+| Same lab without `bft_rounds_v1` (today's public-tier rules) | n=4 still survives a withholding leader; n=3 with one member down stalls and stays vote-locked | same, control run |
+
+Consequences for operators: the quorum is ⌊2n/3⌋+1, so a set of 2 or 3 is
+unanimous and one faulty member stops it. Fault tolerance needs n ≥ 4 **and**
+`bft_rounds_v1` active. The fork is unscheduled on every public tier today; a
+running tier adopts it above head with the fork-extension rollout, no reset.
+Schedule it before growing a set beyond one validator.
+
+RLNC (v1.1.1): the object format, transfer controller and authenticate-before-decode
+path are in the tree; the sealed live path is opt-in (`--object-codec`, off by
+default) and its receive side is not yet wired into block or snapshot sync.
 
 ## 21. How a Release Reaches a Tier
 
