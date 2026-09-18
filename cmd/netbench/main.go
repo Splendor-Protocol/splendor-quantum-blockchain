@@ -143,7 +143,7 @@ func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct,
 			trialCodec = coding.NewRLNCCodecWithReader(coeffRng)
 		}
 		desc := objects.Descriptor{
-			Anchor:     objects.Anchor{Kind: "bench", ID: [32]byte{byte(trial)}, Height: uint64(trial)},
+			Anchor:     objects.Anchor{Kind: "snapshot", ID: [32]byte{byte(trial)}, Height: uint64(trial)},
 			Codec:      trialCodec.Name(),
 			SymbolSize: uint32(symbolSize),
 		}

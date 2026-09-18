@@ -261,6 +261,26 @@ func TestValidateRejectsUnknownCodec(t *testing.T) {
 	}
 }
 
+// Anchor kinds are a closed set: only a kind with a chain-level check on the
+// decoded bytes may pass, and the match is exact (no case folding, no
+// whitespace) since Kind is part of the signed descriptor.
+func TestValidateRejectsUnknownAnchorKind(t *testing.T) {
+	for _, kind := range []string{"model", "bench", "Block", "snapshot "} {
+		d := testDescriptor()
+		d.Anchor.Kind = kind
+		if err := d.Validate(1024, 1<<20); err == nil {
+			t.Fatalf("anchor kind %q passed validation", kind)
+		}
+	}
+	for _, kind := range []string{"block", "snapshot"} {
+		d := testDescriptor()
+		d.Anchor.Kind = kind
+		if err := d.Validate(1024, 1<<20); err != nil {
+			t.Fatalf("known anchor kind %q rejected: %v", kind, err)
+		}
+	}
+}
+
 func TestValidateRejectsOversizedKindOrCodec(t *testing.T) {
 	kind := testDescriptor()
 	kind.Anchor.Kind = string(make([]byte, MaxAnchorKindLen+1))
