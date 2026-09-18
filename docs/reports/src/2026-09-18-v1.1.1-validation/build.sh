@@ -79,6 +79,13 @@ echo "pages  $PAGES"
 echo "size   $SIZE ($BYTES bytes)"
 echo "tbd    $TBD markers in report.html"
 if command -v pdftotext >/dev/null 2>&1; then
+  # Shrink-to-fit guard: Chrome scales the whole document down when any unbreakable run is
+  # wider than the page. The cover title is 34pt; the glyph box of "Quantum" must stay >= 20pt.
+  H="$( { pdftotext -f 1 -l 1 -bbox "$PDF" - 2>/dev/null | grep -m1 '>Quantum<' || true; } \
+        | sed -nE 's/.*yMin="([0-9.]+)".*yMax="([0-9.]+)".*/\2 \1/p' | awk '{printf "%.1f", $1-$2}')"
+  if [[ -n "$H" ]] && awk -v h="$H" 'BEGIN{exit !(h < 20)}'; then
+    echo "WARN   document was shrunk to fit (cover title glyph height ${H}pt < 20pt): an unbreakable line is wider than the page" >&2
+  fi
   if ! pdftotext -f 3 -l 3 "$PDF" - 2>/dev/null | head -3 | grep -q "SECTION 1"; then
     echo "WARN   page 3 does not open with section 1: the business page has overflowed" >&2
   fi
