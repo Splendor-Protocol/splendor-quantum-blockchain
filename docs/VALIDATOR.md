@@ -181,14 +181,30 @@ sharing a production token.
 Registry presence is not enough. After `register` commits with
 `status: 1`, check both the registry and the head certificate.
 
-`GET /validators` returns `{ "validators": [...], "count": N, "bond_spld": 2500 }`
-where each active row is `{ "address", "bond", "status": "active", "joined_height" }`.
-`address` is an `SQ:` string and `bond` a decimal string in smallest units.
+The registry has **no REST route of its own**. It is read through the module
+router with `POST /call`, which is what `sqc-modcall read` does for you:
 
-`GET /validators/{addr}` returns `{ "address", "bond", "bond_spld": 2500,
-"status", "joined_height", "exit_height" }`. `status` is `inactive`,
-`active`, or `exiting`; `exit_height` is `0` until `unregister`. An
-unknown address is 404.
+```sh
+sqc-modcall read --node "$NODE" --module validators --action list
+sqc-modcall read --node "$NODE" --module validators --action validator \
+  --params '{"address":"SQ:…"}'
+```
+
+`list` answers with the active rows (`address`, `bond`, `status`,
+`joined_height`); `validator` answers one record and adds `exit_height`,
+which is `0` until `unregister`. `status` is `inactive`, `active` or
+`exiting`. An address that was never registered decodes to no record
+rather than an HTTP error.
+
+The same reads over plain HTTP take the router address and a hex-encoded
+envelope, so the CLI is the shorter path:
+
+```sh
+ROUTER=$(sqc-modcall addr)
+DATA=$(printf '{"module":"validators","action":"list","params":{}}' | xxd -p | tr -d '\n')
+curl -s -X POST "$NODE/call" -H 'Content-Type: application/json' \
+  -d "{\"to\":\"$ROUTER\",\"data\":\"$DATA\"}"
+```
 
 `GET /status` fields that matter here (real names):
 
@@ -231,10 +247,6 @@ not this registry.
 
 | Route | What |
 | --- | --- |
-| `GET /validators` | Active set (`address`, `bond`, `status`, `joined_height`, `count`, `bond_spld`) |
-| `GET /validators/{addr}` | One record (`bond`, `bond_spld`, `status`, `joined_height`, `exit_height`) |
-| `GET /staking/validators/{addr}` | Same record |
-| `GET /staking/total-staked`, `GET /staking/count` | `total_staked` (decimal string), `validator_count` |
 | `GET /status` | `consensus_mode`, `head_qc_*`, `local_validator`, `validator_set_size` |
 | module read `bond` | `{ "bond": "<smallest units>", "spld": "2500" }` via `sqc-modcall read --module validators --action bond` |
 | module reads `validator`, `list`, `count` | Same registry through `POST /call` |
