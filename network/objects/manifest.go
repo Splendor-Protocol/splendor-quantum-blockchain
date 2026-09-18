@@ -51,8 +51,10 @@ const (
 // data), which is why Decode (in this package) is followed by the object's
 // EXISTING chain-level validation, never treated as sufficient on its own.
 type Anchor struct {
-	// Kind names what this anchor is: "block", "snapshot", "model". Part of
-	// the signed descriptor so a manifest cannot be replayed across kinds.
+	// Kind names what this anchor is. Validate accepts only the kinds this
+	// node can check at chain level after decode ("block", "snapshot");
+	// "model" is reserved and refused until such a check exists. Part of the
+	// signed descriptor so a manifest cannot be replayed across kinds.
 	Kind string
 	// ID is the anchor's own identifying hash: a block hash, a state root,
 	// or a model manifest hash. Exactly 32 bytes (SHA3-256).
@@ -113,6 +115,13 @@ func (d Descriptor) DescriptorID() [32]byte {
 	return qcrypto.Hash32(buf)
 }
 
+// anchorKinds is the closed set of Anchor.Kind values Validate accepts. A
+// decoded object is only as trustworthy as the chain-level check that runs
+// on the reconstructed bytes, and this repository has one for exactly these
+// two kinds. Anything else is refused before a symbol is decoded rather than
+// reconstructed and then ignored.
+var anchorKinds = map[string]bool{"block": true, "snapshot": true}
+
 // Validate checks a Descriptor's own internal consistency (not signatures —
 // see Manifest.Verify), rejecting the shapes that would let a symbol count
 // or size be used to force unbounded work downstream.
@@ -122,6 +131,9 @@ func (d Descriptor) Validate(maxSourceCount uint32, maxSymbolSize uint32) error 
 	}
 	if len(d.Anchor.Kind) > MaxAnchorKindLen {
 		return fmt.Errorf("objects: descriptor anchor kind is %d bytes, max %d", len(d.Anchor.Kind), MaxAnchorKindLen)
+	}
+	if !anchorKinds[d.Anchor.Kind] {
+		return fmt.Errorf("objects: descriptor anchor kind %q is not one this node can validate", d.Anchor.Kind)
 	}
 	if d.Codec == "" {
 		return errors.New("objects: descriptor codec name is empty")
