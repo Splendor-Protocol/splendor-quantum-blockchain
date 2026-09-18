@@ -151,10 +151,14 @@ func (e *BFTEngine) handleProposalTwoPhase(p *pendingProposal) bool {
 // deadline where it is: a leader that rebroadcasts faster than the round
 // timeout must not be able to hold the view change off for ever.
 func (e *BFTEngine) answerDuplicateProposalLocked(p *pendingProposal) bool {
+	// Snapshot the value: commitBlock below can clear e.proposal, so reading
+	// the field again after it would dereference nil.
+	held := e.proposal
+	round := e.currentRound
 	prevote := e.voteSet.VoteFrom(e.localAddr)
 	precommit := e.precommits.VoteFrom(e.localAddr)
 	if p.local && e.broadcastP != nil {
-		e.broadcastP(&ProposalMsg{Block: e.proposal, Vote: prevote, Envelope: p.envelope, POL: p.pol})
+		e.broadcastP(&ProposalMsg{Block: held, Vote: prevote, Envelope: p.envelope, POL: p.pol})
 	}
 	if e.broadcast != nil {
 		if prevote != nil {
@@ -167,13 +171,13 @@ func (e *BFTEngine) answerDuplicateProposalLocked(p *pendingProposal) bool {
 	// A vote that overtook this copy on the wire still belongs to the set.
 	e.drainPendingVotes()
 	if e.precommits != nil && e.precommits.HasQuorum() {
-		e.recordQuorum(e.proposal)
-		e.commitBlock(e.proposal)
+		e.recordQuorum(held)
+		e.commitBlock(held)
 	} else if e.voteSet != nil && e.voteSet.HasQuorum() && !e.hasPOL {
-		e.onPrevoteQuorum(e.proposal, e.currentRound)
+		e.onPrevoteQuorum(held, round)
 	}
-	log.Debug().Uint64("height", e.currentHeight).Uint32("round", e.currentRound).
-		Hex("hash", e.proposal.Hash[:8]).
+	log.Debug().Uint64("height", held.Header.Height).Uint32("round", round).
+		Hex("hash", held.Hash[:8]).
 		Msg("BFT: duplicate proposal at the current view; re-sent this node's votes")
 	return false
 }

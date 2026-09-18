@@ -1315,19 +1315,50 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	// Attempt to apply block
 	if e.onCommit != nil {
 		if err := e.onCommit(b); err != nil {
-			// Commit failed - clear ALL state including vote commitment
-			// Nothing was committed, so there's nothing to be locked on
+			// A failed apply means the block was not stored. It does NOT mean
+			// this node did not vote.
+			//
+			// This used to clear the whole view — proposal, vote sets, the
+			// POL, the vote commitment and the round-change QC — on the
+			// reasoning that nothing was committed so there was nothing to be
+			// locked on. But the prevote this node cast at (currentHeight,
+			// currentRound) was broadcast and is in every peer's seenVotes,
+			// keyed validator|height|round|kind. Forgetting it left the node
+			// free to adopt a DIFFERENT value at the very same view and
+			// prevote again, and every peer answered the second one with
+			// "equivocation — conflicting votes dropped" and kept that key
+			// poisoned for the round. A node that had only prevoted had
+			// nothing in its journal to fall back on, so nothing caught it.
+			// Rare, because it takes a failed apply — which is exactly how it
+			// showed up live: four lines at two heights, from one node.
+			//
+			// Clearing the lock was not even effective: lockAt consults the
+			// journal, which still holds any precommit this node signed, so
+			// dropping the in-memory copy only lost lockedProposal — the body
+			// the leader needs in order to rebroadcast rather than mint.
+			//
+			// The VIEW is left exactly as it was — the proposal, the vote
+			// sets, the POL and the round-change QC all still describe the
+			// value this node voted for, and a re-delivery of that same block
+			// still commits (TestFailedCommitDoesNotWedgeTheHeight).
+			//
+			// The quorum and the vote-commitment FLAGS are dropped, as they
+			// always were: nothing was committed, so a later quorum for the
+			// same block must be able to record itself, and the next height
+			// must stay votable (TestFailedCommitDoesNotLockOutNextHeight).
+			// Dropping hasVoted costs no safety — a precommit this node
+			// actually signed is in the journal, which lockAt consults, so the
+			// lock survives there.
+			//
+			// Recovery from a value that will not apply is the round timer: it
+			// fires, the view changes, and the next round starts clean. That is
+			// what a round change is for.
 			log.Error().Err(err).Uint64("height", b.Header.Height).
-				Msg("commit callback failed, will retry")
+				Uint32("round", e.currentRound).
+				Msg("commit callback failed; holding the view for the round timer")
 
 			e.hasQuorum = false
 			e.hasVoted = false
-			e.voteSet = nil
-			e.precommits = nil
-			e.proposal = nil
-			e.lockedProposal = nil
-			e.hasPOL = false
-			e.rcQCRound = -1
 			return
 		}
 	}
