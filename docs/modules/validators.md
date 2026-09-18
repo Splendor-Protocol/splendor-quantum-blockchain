@@ -62,15 +62,16 @@ Two consequences worth knowing before scheduling it:
 - **Activate on an empty (or genesis-only) registry.** Any active validator
   may `approve`, and nothing evicts a registrant. A stranger registered
   before the fork activates stays active and can admit others. Check
-  `GET /validators` shows nothing but the tier's own key before setting the
+  the `list` read shows nothing but the tier's own key before setting the
   activation height, and register that key first.
 
 ## Reads / RPC
 
 | Route | What |
 | --- | --- |
-| `GET /validators` | Active set |
-| `GET /validators/{addr}` | One record (bond, status, exit height) |
+| module read `list` | Active set |
+| module read `validator` | One record (bond, status, exit height) |
+| `GET /status` | `validator_set_size`, `consensus_mode`, `head_qc_*` |
 | module read `bond` | The 2,500 SPLD figure in smallest units |
 | module read `approved` | `{ "address" }` → whether that address holds a standing approval |
 

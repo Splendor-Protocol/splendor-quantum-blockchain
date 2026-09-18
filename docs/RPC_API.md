@@ -16,8 +16,8 @@ Amounts, fees, and bonds are integers in the **smallest SPLD unit**.
 `smallest_spld`). Encoding differs by route. Block, tx, and receipt bodies
 emit `amount` and `fee` as JSON **numbers** by default; `?amounts=string`
 on those routes quotes them so JavaScript clients do not round values above
-2^53. `/balance.balance`, `/validators*.bond`, and
-`/staking/total-staked.total_staked` are always decimal **strings**.
+2^53. `/balance.balance` is always a decimal **string**, as are the `bond` and
+`total_staked` fields the `validators` module returns through `POST /call`.
 `/status.min_fee` is a number. `POST /tx/submit` accepts `amount` and
 `fee` as either numbers or decimal strings.
 
@@ -62,11 +62,6 @@ fields in block, tx, and receipt bodies (Go `encoding/json` defaults):
 | GET | `/state/root` | Head state root (`state_root` hex, `block_height`, `block_hash`) |
 | GET | `/state/account/{address}` | Account state (`balance` string, `nonce`, `has_public_key`, `state_root` hex) |
 | GET | `/state/proof/{address}` | Merkle proof for an account |
-| GET | `/validators` | Active validator set (`validators[]`, `count`, `bond_spld`; `bond` is a decimal string, `address` an `SQ:` string) |
-| GET | `/validators/{addr}` | One validator record (`status` `inactive`/`active`/`exiting`, `exit_height`); 404 if unknown |
-| GET | `/staking/validators/{addr}` | Same record via staking prefix |
-| GET | `/staking/total-staked` | `total_staked` (decimal string) |
-| GET | `/staking/count` | `validator_count` |
 | GET | `/contract/{address}` | Contract metadata |
 | GET | `/contract/{address}/code` | Bytecode |
 | GET | `/contract/{address}/storage/{slot}` | Storage slot |

@@ -68,7 +68,7 @@ await verify.proof(instructionId, instance);
 ```
 
 Validator register is the `validators` module (2,500 SPLD bond, returned after
-32 blocks). See [`validators.md`](validators.md) and `GET /validators`.
+32 blocks). See [`validators.md`](validators.md).
 
 ## What SQVL is (and is not)
 

@@ -1957,7 +1957,7 @@ section matter for anyone not using the SDK.
 | **Routed native modules (fork-gated, §8)** | |
 | `GET /state/proof/{address}` | Current-state account Merkle proof (sibling directions + leaf preimage) |
 | `GET /bridge/{addr}`, `GET /bridge/{addr}/claim/{id}` | Migration-bridge instance and claim status |
-| `GET /validators`, `GET /validators/{addr}` | Active validator set (2,500 SPLD bond; admission rule in §9) |
+| `sqc-modcall read --module validators --action list` | Active validator set (2,500 SPLD bond; admission rule in §9). The registry has no REST route; reads go through `POST /call` |
 | `POST /verify/check`, `POST /verify/attest`, `POST /verify/settle`, `GET /verify/proof/{id}` | SQVL dual-sig check, attestation, settlement, on-chain proof |
 | **Node-to-node, not for clients** | |
 | `POST /block`, `POST /peers/announce`, `GET /sync`, `GET /p2p/identity` | The sealed write plane. `POST` routes require the `X-Node-Auth` shared token (401 without it); a node with no `--rpc-auth-token` answers 503; with plaintext P2P off, as on the public tiers, `POST /block` answers 410 and only the sealed transport is accepted |
