@@ -373,3 +373,103 @@ func TestTwoPhaseFailedApplyDoesNotEraseTheVoteAlreadyCast(t *testing.T) {
 		t.Fatal("a view change must release the value so the next round can start clean")
 	}
 }
+
+// TestIdenticalVoteResendIsCountedOnceAndIsNotAFault is the assertion behind
+// demoting "duplicate vote from …" out of error level.
+//
+// On the live set one validator logged it 38 times in eight minutes while the
+// other three logged it never. The claim under test is that this is normal
+// traffic, not a fault: a set is built for ONE block hash and rejects any
+// other on the hash check, so a duplicate reaching the address check
+// necessarily agrees with the vote already counted. It is a re-send — the
+// network duplicated it, or a leader's rebroadcast asked this node to repeat
+// itself — and it must be counted once, change no quorum, and be
+// distinguishable from a real conflict.
+func TestIdenticalVoteResendIsCountedOnceAndIsNotAFault(t *testing.T) {
+	set, keys := testSet(t, 4)
+	blockA := proposalAt(t, set, keys, 4, 0, 11).Block
+	vs := newVoteSet(4, 0, blockA.Hash, 4, types.VoteKindPrevote)
+
+	mk := func(i int, hash [32]byte, ts int64) *Vote {
+		v := &Vote{
+			Height: 4, Round: 0, BlockHash: hash, ValidatorAddr: set[i].Address,
+			Timestamp: ts, Kind: types.VoteKindPrevote,
+		}
+		if err := v.Sign(keys[i]); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	if _, err := vs.AddVote(mk(0, blockA.Hash, 1)); err != nil {
+		t.Fatalf("first vote refused: %v", err)
+	}
+	// The same vote again, and a re-signed copy of it (same height, round and
+	// hash, different timestamp) — both are honest re-sends.
+	for _, again := range []*Vote{mk(0, blockA.Hash, 1), mk(0, blockA.Hash, 99)} {
+		reached, err := vs.AddVote(again)
+		if !errors.Is(err, ErrDuplicateVote) {
+			t.Fatalf("a re-sent identical vote reported %v, want ErrDuplicateVote", err)
+		}
+		if reached {
+			t.Fatal("a re-sent vote must never report reaching a quorum")
+		}
+	}
+	if got := vs.VoteCount(); got != 1 {
+		t.Fatalf("vote count = %d after two re-sends, want 1", got)
+	}
+
+	// A vote for a different block is refused on the hash, before the address
+	// is ever looked at — so it is never mistaken for a benign re-send.
+	other := proposalAt(t, set, keys, 4, 0, 22).Block
+	_, err := vs.AddVote(mk(0, other.Hash, 5))
+	if err == nil {
+		t.Fatal("a vote for a different block was accepted")
+	}
+	if errors.Is(err, ErrDuplicateVote) {
+		t.Fatal("a conflicting vote was reported as a benign duplicate")
+	}
+
+	// The quorum still needs three distinct validators.
+	for _, i := range []int{1, 2} {
+		if _, err := vs.AddVote(mk(i, blockA.Hash, int64(10+i))); err != nil {
+			t.Fatalf("validator %d refused: %v", i, err)
+		}
+	}
+	if !vs.HasQuorum() || vs.VoteCount() != 3 {
+		t.Fatalf("count %d quorum %v, want 3 and true", vs.VoteCount(), vs.HasQuorum())
+	}
+
+	// And at engine level: the same prevote delivered twice is counted once
+	// and is not recorded as an equivocation.
+	var lastProp *ProposalMsg
+	engs := make([]*BFTEngine, 4)
+	for i := 0; i < 4; i++ {
+		engs[i] = twoPhaseFor(t, set, keys, i, BFTConfig{
+			BroadcastProposal: func(p *ProposalMsg) { lastProp = p },
+		})
+		engs[i].SetHeight(4)
+	}
+	if !engs[0].handleProposal(&pendingProposal{block: blockA, local: true}) {
+		t.Fatal("leader refused its own proposal")
+	}
+	follower := engs[1]
+	if !follower.handleProposal(pendingProposalOf(lastProp)) {
+		t.Fatal("follower refused the proposal")
+	}
+	peer := mk(2, blockA.Hash, 7)
+	before := follower.voteSet.VoteCount()
+	follower.handleVote(peer)
+	after := follower.voteSet.VoteCount()
+	if after != before+1 {
+		t.Fatalf("a peer's prevote moved the count %d -> %d", before, after)
+	}
+	cp := *peer
+	follower.handleVote(&cp)
+	if got := follower.voteSet.VoteCount(); got != after {
+		t.Fatalf("a re-sent prevote changed the count %d -> %d", after, got)
+	}
+	if v, ok := follower.seenVotes[voteSeenKey(peer)]; !ok || v.BlockHash != blockA.Hash {
+		t.Fatal("a re-sent prevote disturbed the equivocation record")
+	}
+}

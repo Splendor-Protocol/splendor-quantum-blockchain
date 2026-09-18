@@ -253,9 +253,9 @@ func (h *fuzzHarness) step() {
 
 func TestTwoPhaseNoSelfEquivocationUnderRandomInterleavings(t *testing.T) {
 	maxCommitted, maxRound, commits := uint64(0), uint32(0), 0
-	for seed := int64(1); seed <= 400; seed++ {
+	for seed := int64(1); seed <= fuzzSeeds; seed++ {
 		h := newFuzzHarness(t, seed)
-		for s := 0; s < 1500; s++ {
+		for s := 0; s < fuzzSteps; s++ {
 			h.step()
 			if c := h.conflict(); c != "" {
 				t.Fatalf("seed %d step %d: %s", seed, s, c)
