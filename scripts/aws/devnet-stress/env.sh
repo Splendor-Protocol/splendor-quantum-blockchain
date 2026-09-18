@@ -38,6 +38,13 @@ export DS_DRIVER_IMAGE=alpine:3.20
 export DS_SOCAT_IMAGE=alpine/socat:1.8.0.3
 export DS_DRIVER_CPUS="${DS_DRIVER_CPUS:-0.1}"     # per container; 20 x 0.1 = 2 of the 4 vCPUs at most
 export DS_DRIVER_MEM="${DS_DRIVER_MEM:-48m}"
+# FUND pass budget. A funder can hold 64 pending (mempool MaxPerAddr), so funding
+# N senders takes roughly N/64 blocks per funder plus confirmation; 10k accounts
+# took ~5 min, a from-scratch 30k stage needs ~15. Bounded by the driver's
+# --duration / --fund-deadline and the host-side wait.
+export DS_FUND_DURATION="${DS_FUND_DURATION:-25m}"
+export DS_FUND_DEADLINE="${DS_FUND_DEADLINE:-20m}"
+export DS_FUND_WAIT_S="${DS_FUND_WAIT_S:-1500}"
 
 # Staging bucket for the arm64 binary (deleted by 90-cleanup.sh).
 export DS_BUCKET="${DS_BUCKET:-splendor-devnet-stress-640}"
