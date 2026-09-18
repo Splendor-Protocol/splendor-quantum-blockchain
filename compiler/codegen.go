@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 
@@ -76,6 +77,15 @@ type codegen struct {
 	// slotLive marks the cached slots already written on every path reaching
 	// here. Saved and restored around branches and loop bodies.
 	slotLive map[string]bool
+
+	// ctx bounds codegen: emittedItemBudget counts down every asm item and
+	// inlineDepth bounds nested inlining. Recursion is rejected in the checker,
+	// but an expanding acyclic call graph (f0→f1→f2→…) still grows bytecode
+	// geometrically with no per-call source size, so a budget and a depth
+	// ceiling are the only bound that make the deadline meaningful.
+	ctx               context.Context
+	emittedItemBudget int
+	inlineDepth       int
 }
 
 // slotAddr is the memory offset of cache word i.
@@ -308,12 +318,45 @@ func countLocals(body []stmt) int {
 	return n
 }
 
-func newCodegen(c *contractNode) *codegen {
+// MaxEmittedItems bounds the number of asm items codegen may produce for one
+// contract. Inlined body expansion is the only way a small source becomes a
+// large compile, and this is the ceiling that makes the compile-time budget
+// (and, with ctx, the HTTP deadline) actually bind. Chosen far above any real
+// contract in the subset — a 64 KiB bytecode ceiling needs, in practice, well
+// under this many items — but well under what an expanding call graph can
+// try to emit.
+const MaxEmittedItems = 1 << 20
+
+// MaxInlineDepth bounds nested inlining of internal functions. Recursive call
+// graphs are rejected by the checker, so this is defence in depth: a chain of
+// distinct internal calls (f0→f1→f2→…) is legal but grows bytecode with the
+// product of body sizes, and this ceiling stops pathological chains.
+const MaxInlineDepth = 64
+
+// spend consumes one unit of the emitted-item budget and returns an error when
+// the budget is exhausted or the compile context is cancelled. Called from the
+// statement/expression walks so a runaway inlining expansion stops with a
+// controlled error instead of running past the deadline.
+func (g *codegen) spend() error {
+	if err := g.ctx.Err(); err != nil {
+		return err
+	}
+	if g.emittedItemBudget <= 0 {
+		return fmt.Errorf("compiler: emitted-item budget exhausted (source expands too far)")
+	}
+	g.emittedItemBudget--
+	return nil
+}
+
+func newCodegen(c *contractNode, ctx context.Context) *codegen {
 	states := map[string]*stateVar{}
 	for _, s := range c.states {
 		states[s.name] = s
 	}
-	return &codegen{a: newAsm(), c: c, states: states}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &codegen{a: newAsm(), c: c, states: states, ctx: ctx, emittedItemBudget: MaxEmittedItems}
 }
 
 // FunctionSelector is the 4-byte selector of a function signature, computed the
@@ -449,6 +492,9 @@ func (g *codegen) genFunc(fn *funcNode) error {
 }
 
 func (g *codegen) genStmt(s stmt) error {
+	if err := g.spend(); err != nil {
+		return err
+	}
 	switch st := s.(type) {
 	case *assignStmt:
 		return g.genAssign(st)
@@ -815,6 +861,9 @@ func (g *codegen) requireTop(reason string) {
 
 // genExpr pushes the value of e onto the stack.
 func (g *codegen) genExpr(e expr) error {
+	if err := g.spend(); err != nil {
+		return err
+	}
 	switch ex := e.(type) {
 	case *numberExpr:
 		g.a.pushBig(ex.value)
@@ -918,6 +967,19 @@ func (g *codegen) genExpr(e expr) error {
 // rather than emitting a real RETURN. If wantReturn is true, a slot is
 // allocated for the return value and its index is returned.
 func (g *codegen) genInlineCall(name string, args []expr, wantReturn bool) (int, error) {
+	// Inlining is the recursion that turns a small source into an unbounded
+	// compile, so it is the recursion that must be budgeted. Recursive call
+	// graphs are rejected by the checker; an expanding acyclic graph is stopped
+	// here by depth plus the per-item budget in genStmt/genExpr.
+	g.inlineDepth++
+	defer func() { g.inlineDepth-- }()
+	if g.inlineDepth > MaxInlineDepth {
+		return 0, fmt.Errorf("compiler: internal-call inlining exceeded %d levels", MaxInlineDepth)
+	}
+	if err := g.spend(); err != nil {
+		return 0, err
+	}
+
 	// Find the callee among internal functions.
 	var target *funcNode
 	for _, fn := range g.c.funcs {

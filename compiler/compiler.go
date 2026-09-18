@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"strings"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 )
@@ -69,7 +70,7 @@ func CompileContext(ctx context.Context, src string) (*Contract, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	code, err := newCodegen(node).generate()
+	code, err := newCodegen(node, ctx).generate()
 	if err != nil {
 		return nil, err
 	}
@@ -153,8 +154,9 @@ func checkSelectorCollisions(fns []ABIFunction) error {
 	return nil
 }
 
-// check is a small semantic pass: duplicate names, and every referenced
-// identifier resolving to a parameter or a state variable.
+// check is a small semantic pass: duplicate names, every referenced
+// identifier resolving to a parameter or a state variable, and acyclic
+// internal-call graphs.
 func check(c *contractNode) error {
 	states := map[string]*stateVar{}
 	for _, s := range c.states {
@@ -177,6 +179,173 @@ func check(c *contractNode) error {
 			if err := checkStmt(s, states, locals); err != nil {
 				return fmt.Errorf("function %s: %w", fn.name, err)
 			}
+		}
+	}
+	// Cycles and arity mismatches have to be verified before codegen, because
+	// codegen inlines the callee body and would otherwise recurse without end.
+	if err := checkCallGraph(c); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkCallGraph verifies, on the resolved function map, that every internal
+// call names a function with the same arity and that no chain of internal
+// calls reaches back to its start. genInlineCall inlines bodies, so recursion
+// is not a runtime call — it is unbounded compile-time expansion.
+func checkCallGraph(c *contractNode) error {
+	byName := map[string]*funcNode{}
+	for _, fn := range c.funcs {
+		byName[fn.name] = fn
+	}
+	// Resolve which function each (name, arity) call refers to, so the cycle
+	// test follows real edges rather than names.
+	edges := map[*funcNode][]*funcNode{}
+	findCallee := func(name string, argc int) *funcNode {
+		for _, fn := range c.funcs {
+			if fn.name == name && fn.isInternal && len(fn.params) == argc {
+				return fn
+			}
+		}
+		return nil
+	}
+	var addStmts func(owner *funcNode, body []stmt) error
+	var addExpr func(owner *funcNode, e expr) error
+	addExpr = func(owner *funcNode, e expr) error {
+		switch ex := e.(type) {
+		case *callExpr:
+			target := findCallee(ex.name, len(ex.args))
+			for _, a := range ex.args {
+				if err := addExpr(owner, a); err != nil {
+					return err
+				}
+			}
+			if target != nil {
+				edges[owner] = append(edges[owner], target)
+			}
+		case *binaryExpr:
+			if err := addExpr(owner, ex.left); err != nil {
+				return err
+			}
+			return addExpr(owner, ex.right)
+		case *unaryExpr:
+			return addExpr(owner, ex.operand)
+		}
+		return nil
+	}
+	addStmts = func(owner *funcNode, body []stmt) error {
+		for _, s := range body {
+			switch st := s.(type) {
+			case *assignStmt:
+				if st.target.key != nil {
+					if err := addExpr(owner, st.target.key); err != nil {
+						return err
+					}
+				}
+				if err := addExpr(owner, st.value); err != nil {
+					return err
+				}
+			case *requireStmt:
+				if err := addExpr(owner, st.cond); err != nil {
+					return err
+				}
+			case *returnStmt:
+				if err := addExpr(owner, st.value); err != nil {
+					return err
+				}
+			case *emitStmt:
+				for _, a := range st.args {
+					if err := addExpr(owner, a); err != nil {
+						return err
+					}
+				}
+			case *varDeclStmt:
+				if err := addExpr(owner, st.value); err != nil {
+					return err
+				}
+			case *callStmt:
+				if target := findCallee(st.name, len(st.args)); target != nil {
+					edges[owner] = append(edges[owner], target)
+				}
+				for _, a := range st.args {
+					if err := addExpr(owner, a); err != nil {
+						return err
+					}
+				}
+			case *ifStmt:
+				if err := addExpr(owner, st.cond); err != nil {
+					return err
+				}
+				if err := addStmts(owner, st.body); err != nil {
+					return err
+				}
+				if err := addStmts(owner, st.elseBody); err != nil {
+					return err
+				}
+			case *forStmt:
+				if st.init != nil {
+					if err := addStmts(owner, []stmt{st.init}); err != nil {
+						return err
+					}
+				}
+				if st.cond != nil {
+					if err := addExpr(owner, st.cond); err != nil {
+						return err
+					}
+				}
+				if st.post != nil {
+					if err := addStmts(owner, []stmt{st.post}); err != nil {
+						return err
+					}
+				}
+				if err := addStmts(owner, st.body); err != nil {
+					return err
+				}
+			case *whileStmt:
+				if err := addExpr(owner, st.cond); err != nil {
+					return err
+				}
+				if err := addStmts(owner, st.body); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for _, fn := range c.funcs {
+		if err := addStmts(fn, fn.body); err != nil {
+			return err
+		}
+	}
+
+	// DFS over fn edges for a back edge.
+	const (
+		unvisited = iota
+		visiting
+		visited
+	)
+	state := map[*funcNode]int{}
+	var visit func(fn *funcNode, path []string) error
+	visit = func(fn *funcNode, path []string) error {
+		switch state[fn] {
+		case visiting:
+			return fmt.Errorf("recursive internal-call graph: %s", strings.Join(path, " -> "))
+		case visited:
+			return nil
+		}
+		state[fn] = visiting
+		path = append(path, fn.name)
+		for _, next := range edges[fn] {
+			if err := visit(next, path); err != nil {
+				return err
+			}
+		}
+		state[fn] = visited
+		return nil
+	}
+	for _, fn := range c.funcs {
+		if err := visit(fn, nil); err != nil {
+			return err
 		}
 	}
 	return nil
