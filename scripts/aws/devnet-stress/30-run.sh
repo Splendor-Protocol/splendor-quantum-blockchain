@@ -132,8 +132,8 @@ mark run_start "watcher + $STAGE"
 "$DS_HERE/35-watch.sh" start "$RUN"
 if [ $SKIP_FUND = 0 ]; then
   mark fund_start "FUND pass: $K x $N senders, 1 SPLD each where below 0.25"
-  start_pass fund "--rate 0.001 --duration 8m --fund-deadline 6m"
-  wait_drivers fund 600 'waiting for funding to confirm ok|no funding needed|^funding:' 
+  start_pass fund "--rate 0.001 --duration $DS_FUND_DURATION --fund-deadline $DS_FUND_DEADLINE"
+  wait_drivers fund "$DS_FUND_WAIT_S" 'waiting for funding to confirm ok|no funding needed|^funding:' 
   mark fund_end "fund pass finished"
   wait_quiet fund 900 || ds_warn "mempool did not go quiet after funding — continuing, recorded"
   mark quiet_end "mempool quiet"
