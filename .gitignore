@@ -20,3 +20,6 @@
 /node
 /wallet
 /qc
+
+# macOS finder metadata — never belongs in the tree
+.DS_Store
