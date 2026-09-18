@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Splendor Quantum Chain — v1.1.x validation report</title>
+<meta name="author" content="Splendor Protocol">
+<link rel="stylesheet" href="report.css">
+</head>
+<body>
+
+<!-- ======================================================= COVER ======= -->
+<div class="page cover">
+  <img class="wordmark" src="splendor-wordmark-black.svg" alt="Splendor">
+
+  <div class="cover-body">
+    <div class="kicker">Validation report · node releases v1.1.0 and v1.1.1</div>
+    <h1>Splendor Quantum Chain</h1>
+    <p class="subtitle">Release contents, upgrade compatibility, stress test and validator fault program for node release <code>v1.1.0</code> and the RLNC object-transfer release <code>v1.1.1</code>, now live on all three tiers.</p>
+  </div>
+
+  <div class="cover-foot">
+    <dl class="facts">
+      <dt>Date</dt><dd>18 September 2026</dd>
+      <dt>Prepared for</dt><dd>Splendor Protocol</dd>
+      <dt>Networks</dt><dd><code>splendor-quantum-1</code> · <code>splendor-quantum-testnet-1</code> · <code>splendor-quantum-devnet-1</code></dd>
+      <dt>Releases</dt><dd><code>v1.1.0</code> — 26 commits, <code>ec8f060</code>…<code>b8e31a0</code>, tag <code>eaef3c9</code>, 17 Sept<br><code>v1.1.1</code> (<code>11d372e</code>) — RLNC object transfer, merged 18 Sept, live on all tiers</dd>
+      <dt>Status</dt><dd>Evidence complete, except the 30k, 40k and sustained stress stages, which were not run (devnet was reconfigured mid-test).</dd>
+    </dl>
+    <ol class="contents">
+      <li><span class="n">—</span><span>In plain words: what the chain is, what is live, what was tested</span></li>
+      <li><span class="n">1</span><span>Release contents (PR #42, PR #43)</span></li>
+      <li><span class="n">2</span><span>Upgrade compatibility</span></li>
+      <li><span class="n">3</span><span>Stress test</span></li>
+      <li><span class="n">4</span><span>Validator fault program</span></li>
+      <li><span class="n">5</span><span>Known limits, follow-ups, reproduction</span></li>
+    </ol>
+  </div>
+</div>
+
+<!-- ======================================================= BUSINESS ==== -->
+<div class="page business">
+  <div class="kicker">In plain words</div>
+  <h2>What Splendor Quantum Chain is</h2>
+  <p class="lead">A new Layer-1 blockchain built for the post-quantum era. Every account, transaction and block has been signed with <b>ML-DSA-65</b> post-quantum signatures since the very first block, so there is no signature scheme to migrate later. Addresses and commitments use SHA3-256. The supply is fixed: <b>26 billion SPLD</b>, minted once at genesis.</p>
+
+  <h3>What is live today</h3>
+  <table class="compact">
+    <colgroup><col style="width:13%"><col style="width:27%"><col style="width:48%"><col style="width:12%"></colgroup>
+    <thead><tr><th>Network</th><th>Chain ID</th><th>Endpoints</th><th>Release</th></tr></thead>
+    <tbody>
+      <tr><td>Mainnet</td><td><code>splendor-quantum-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc.splendor.org</code><br><span class="label">Explorer</span><code>https://quantum-explorer.splendor.org</code></td><td><code>v1.1.1</code></td></tr>
+      <tr><td>Testnet</td><td><code>splendor-quantum-testnet-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc-testnet.splendor.org</code></td><td><code>v1.1.1</code></td></tr>
+      <tr><td>Devnet</td><td><code>splendor-quantum-devnet-1</code></td><td><span class="label">RPC</span><code>https://quantum-rpc-devnet.splendor.org</code></td><td><code>v1.1.1</code></td></tr>
+      <tr><td>Faucet</td><td>test tiers (testnet, devnet)</td><td><span class="label">Faucet</span><code>https://quantum-faucet.splendor.org</code></td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">All three tiers run <code>v1.1.1</code> (<code>11d372e</code>, RLNC object transfer) since 18 September.</p>
+
+  <div class="two-col">
+    <div>
+      <h3>Capabilities in plain words</h3>
+      <ul>
+        <li><b>Post-quantum accounts and validators.</b> User keys and validator keys are ML-DSA-65; the signatures that secure funds and blocks are designed to withstand quantum computers.</li>
+        <li><b>Native tokens.</b> Fungible (QRC-20), multi-asset (QRC-1155) and collectible (QRC-721) tokens are built into the chain, no custom contract needed.</li>
+        <li><b>Migration bridge.</b> Legacy SPLD and SPLV are burned on the old chain and claimed on the quantum chain, one for one.</li>
+        <li><b>Splendor Quantum Verification Layer.</b> Instructions are dual-signed with two independent post-quantum schemes, ML-DSA-65 and SLH-DSA.</li>
+        <li><b>Validator admission.</b> Approval-based, with a 2,500 SPLD bond. Public admission has not launched.</li>
+        <li><b>Tools people can use today.</b> Block explorer, browser wallet extension, phone wallet, faucet.</li>
+        <li><b>x402 micropayments.</b> A payment is reported as <i>submitted</i> and then <i>confirmed</i>, so a payer always knows whether it is final.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>What was done this week</h3>
+      <ul>
+        <li><b><code>v1.1.0</code> (17 September) merged</b>, a 26-commit hardening release: consensus recovery, honest failed-commit reporting, fsync durability, validator-set reads, VM gas rules, public limits, snapshot recovery, wallet/KEM hardening, x402/identity, README and SDK clean-up.</li>
+        <li><b>Devnet and testnet upgraded in place</b>, with no chain reset and no lost history.</li>
+        <li><b>Mainnet re-minted</b> with the 26 billion SPLD treasury: on <code>v1.1.0</code> (17 Sept, 22:21 UTC) and again on <code>v1.1.1</code> (18 Sept, 08:21 UTC); genesis hash unchanged both times.</li>
+        <li><b><code>v1.1.1</code> (18 September)</b>: RLNC object-transfer library and optional sealed live path merged; off by default; devnet and testnet upgraded in place, mainnet re-minted on it.</li>
+      </ul>
+
+      <h3>What is not claimed yet</h3>
+      <ul>
+        <li>RLNC live transfer is merged but off by default and not used by block sync.</li>
+        <li>DEX, lending and governance are not native modules.</li>
+        <li>Public validator admission is not open.</li>
+        <li>A set of 2 or 3 validators cannot tolerate a faulty member (quorum ⌊2n/3⌋+1). Tolerating one needs n ≥ 4 <i>and</i> <code>bft_rounds_v1</code> active — unscheduled on every public tier today; schedulable on a running tier without a reset.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>What the tests showed</h3>
+  <table class="compact">
+    <caption>The 30k, 40k and sustained stress stages are fully scripted and mark themselves contaminated if the network changes under them; they need a stable single-validator devnet window.</caption>
+    <thead><tr><th style="width:36%">Test</th><th style="width:22%">Result</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>Upgrade in place, devnet-shaped (local harness + live devnet)</td><td class="pass">PASS — 79 / 79 ×3</td><td>v1.0.20, v1.0.21 → v1.1.0; v1.1.0 → v1.1.1; live devnet swaps at 106,997 and 139,085, genesis unchanged</td></tr>
+      <tr><td>Upgrade in place, mainnet-shaped (local harness)</td><td class="pass">PASS — 80 / 80 ×2</td><td>v1.0.21 → v1.1.0; v1.1.0 → v1.1.1; each rolled back, balances identical; treasury 26,000,000,000 SPLD exact</td></tr>
+      <tr><td>Stress test, 10,000 accounts</td><td class="pass">SURVIVED (degraded)</td><td>all 10,000 accepted and included; one 15 s block; no restart</td></tr>
+      <tr><td>Stress test, 20,000 accounts</td><td class="pass">SURVIVED, contaminated</td><td>all 20,000 committed; concurrent validator-set change on devnet by another operator</td></tr>
+      <tr><td>Stress test, 30,000 accounts</td><td>not run</td><td>devnet reconfigured mid-test</td></tr>
+      <tr><td>Stress test, 40,000 accounts</td><td>not run</td><td>same</td></tr>
+      <tr><td>Validator fault program (4-validator lab)</td><td class="pass">PASS — 8 / 8 scenarios</td><td>under bft_rounds_v1; pre-fork control documents the n = 3 limit</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ======================================================= TECH 1 ====== -->
+<section class="tech" id="s1">
+  <div class="kicker">Technical · section 1</div>
+  <h2><span class="num">1</span>Release contents</h2>
+  <p>Node release <code>v1.1.0</code> is the 26 commits <code>ec8f060</code>…<code>b8e31a0</code> (tag <code>eaef3c9</code>), merged on 17 September 2026 as PR #42. PR #43, merged on 18 September as <code>v1.1.1</code> (<code>11d372e</code>), adds the RLNC object-transfer library and an optional sealed live path. The tables below list every review item, its implementation status and the commits that close it.</p>
+
+  <h3><span class="num">1.1</span>PR #42 — hardening release, closure table</h3>
+  <table>
+    <caption><b>All 23 review items implemented.</b> Item IDs and descriptions follow the reviewer's list; the three orchestrator fixes landed during closure are listed as their own rows.</caption>
+    <thead><tr><th style="width:8%">Item</th><th>Description</th><th style="width:13%">Status</th><th style="width:22%">Evidence</th></tr></thead>
+    <tbody>
+      <tr class="group"><td colspan="4">C — consensus and durability</td></tr>
+      <tr><td class="mono">C1</td><td>Complete BFT recovery across rounds — two-phase rounds behind <code>bft_rounds_v1</code> (not yet scheduled on live tiers)</td><td class="pass">implemented</td><td class="mono">f5d6041</td></tr>
+      <tr><td class="mono">C2</td><td>Do not report a failed state commit as successful</td><td class="pass">implemented</td><td class="mono">ec8f060</td></tr>
+      <tr><td class="mono">C3</td><td>Power-loss durability for blocks, state and signing records</td><td class="pass">implemented</td><td class="mono">6891140</td></tr>
+      <tr><td class="mono">C4</td><td>One committed validator set; propagate registry errors</td><td class="pass">implemented</td><td class="mono">7c38754</td></tr>
+      <tr><td class="mono">C5</td><td>Enforce the VM's work budget (child gas, copy charges, failed receipts) — behind <code>vm_gas_v1</code> (unscheduled)</td><td class="pass">implemented</td><td class="mono">43b2ff9</td></tr>
+      <tr><td class="mono">C6</td><td>Public resource limits and effective timeouts</td><td class="pass">implemented</td><td class="mono">6975bdb</td></tr>
+      <tr class="group"><td colspan="4">R — snapshot recovery and sync</td></tr>
+      <tr><td class="mono">R1</td><td>Default snapshot pagination</td><td class="pass">implemented</td><td class="mono">48b76df</td></tr>
+      <tr><td class="mono">R2</td><td>Bound and release snapshot sessions</td><td class="pass">implemented</td><td class="mono">48b76df, c1d56b9</td></tr>
+      <tr><td class="mono">R3</td><td>Bounded, resumable snapshot downloads</td><td class="pass">implemented</td><td class="mono">74cd1d2</td></tr>
+      <tr><td class="mono">R4</td><td>Reconcile both stores before deleting recovery evidence</td><td class="pass">implemented</td><td class="mono">74cd1d2, 3f6805e, 45495da</td></tr>
+      <tr><td class="mono">R5</td><td>Snapshot trust for a rotating validator set (genesis-checkpoint only)</td><td class="pass">implemented</td><td class="mono">04a1902</td></tr>
+      <tr><td class="mono">R6</td><td>Recover indexes, report readiness accurately</td><td class="pass">implemented</td><td class="mono">04a1902, 4dc5ad7, fe35f08; 694a46b</td></tr>
+      <tr><td class="mono">R7</td><td>Parallel block-fetch behaviour</td><td class="pass">implemented</td><td class="mono">04a1902, 4dc5ad7</td></tr>
+      <tr class="group"><td colspan="4">I — interfaces: VM, compiler, SDK, x402, wallet, gateway</td></tr>
+      <tr><td class="mono">I1</td><td>Complete proofs from a consistent committed view</td><td class="pass">implemented</td><td class="mono">f7125a4</td></tr>
+      <tr><td class="mono">I2</td><td>Align compiler and SDK address selectors</td><td class="pass">implemented</td><td class="mono">f7125a4</td></tr>
+      <tr><td class="mono">I3</td><td>Contract-call semantics (entry value, DELEGATECALL value, CREATE nonce, fail-closed reads) — behind <code>vm_call_v1</code> (unscheduled)</td><td class="pass">implemented</td><td class="mono">f7125a4</td></tr>
+      <tr><td class="mono">I4</td><td>x402: <i>submitted</i> versus <i>confirmed</i></td><td class="pass">implemented</td><td class="mono">f17861a</td></tr>
+      <tr><td class="mono">I5</td><td>SQVL settlement and identity guarantees — behind <code>verify_identity_v1</code> (unscheduled)</td><td class="pass">implemented</td><td class="mono">f17861a</td></tr>
+      <tr><td class="mono">I6</td><td>Wallet-file parsing and saving</td><td class="pass">implemented</td><td class="mono">d215087</td></tr>
+      <tr><td class="mono">I7</td><td>KEM rotation and replay policy</td><td class="pass">implemented</td><td class="mono">d215087</td></tr>
+      <tr><td class="mono">I8</td><td>Gateway TLS and event-stream behaviour</td><td class="pass">implemented</td><td class="mono">ce9743b</td></tr>
+      <tr class="group"><td colspan="4">Documentation and bounds</td></tr>
+      <tr><td class="mono">README/SDK</td><td>Capability clean-up: advertised capabilities match the routed module catalogue; governance/DEX/exchange live-route claims dropped</td><td class="pass">implemented</td><td class="mono">b4a942e, 87f9b08, da6c2bc</td></tr>
+      <tr><td class="mono">RLNC</td><td>RLNC library bounds: repair, dimensions and codebook copies (the 26th commit)</td><td class="pass">implemented</td><td class="mono">b8e31a0</td></tr>
+      <tr class="group"><td colspan="4">Orchestrator fixes landed during closure</td></tr>
+      <tr><td class="mono">O1</td><td>leveldb-free <code>core/persist/filesync</code> so the WASM signer build does not link leveldb; signer re-pinned</td><td class="pass">implemented</td><td class="mono">5a8dfb0</td></tr>
+      <tr><td class="mono">O2</td><td>Boot-safe tx-index backfill on an upgraded node: asynchronous walk, readiness reported separately (section 2.4)</td><td class="pass">implemented</td><td class="mono">694a46b</td></tr>
+      <tr><td class="mono">O3</td><td><code>/state/account</code> served as a point read; simulation sandboxes release their snapshots</td><td class="pass">implemented</td><td class="mono">5e50bbb</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">Four items ship behind fork names that no live tier has scheduled yet — <code>bft_rounds_v1</code> (C1), <code>vm_gas_v1</code> (C5), <code>vm_call_v1</code> (I3), <code>verify_identity_v1</code> (I5). They activate through the fork-schedule extension on a running chain (section 2.1), never by editing the genesis document.</p>
+
+  <h4>Accepted residuals (not blocking <code>v1.1.0</code>)</h4>
+  <ul>
+    <li><b>OperatorIdentities persistence is ungated</b> before the <code>verify_identity_v1</code> fork activates; the table is written but not consulted until then.</li>
+    <li><b><code>/status</code> takes the executor lock</b>; a heavily loaded executor delays status responses rather than serving a stale view.</li>
+    <li><b>Per-source request caps are keyed on <code>RemoteAddr</code></b>; behind cloudflared every request shares the tunnel's address, so the caps act as a global rather than per-client limit on hosted tiers.</li>
+    <li><b>Pre-fork BFT accepts kind-tagged votes</b>; the stricter vote-kind check applies only after <code>bft_rounds_v1</code> activates.</li>
+  </ul>
+
+  <h3><span class="num">1.2</span>PR #43 — RLNC object transfer, <code>v1.1.1</code></h3>
+  <p>Merged: <code>main</code> = <code>11d372e</code>, tag <code>v1.1.1</code> cut on 18 September 2026 at about 07:05 UTC; devnet and testnet upgraded in place and mainnet re-minted on it the same morning (section 2.3). Seven commits. Nothing consensus-visible or on disk changed, so the release rolls without a reset. The sealed live path is <b>off by default</b>: a node started without <code>--object-codec</code> answers <code>404 coded-object live path is not enabled</code>.</p>
+  <table class="compact">
+    <thead><tr><th style="width:12%">Commit</th><th>Change</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">4afab9c</td><td>SQCO wire format with a signed codebook size</td></tr>
+      <tr><td class="mono">fe6dc21</td><td>Transfer controller: authenticate before decode</td></tr>
+      <tr><td class="mono">14c652e</td><td>Optional sealed RLNC live path (<code>--object-codec</code>, default off)</td></tr>
+      <tr><td class="mono">12d00f7</td><td><code>cmd/netbench</code> for the coded path</td></tr>
+      <tr><td class="mono">ea73058</td><td>Review fix: descriptor anchor kinds allowlisted (<code>block</code>, <code>snapshot</code>)</td></tr>
+      <tr><td class="mono">ed6c16e</td><td>Review fix: aggregate symbol-fetch deadline max(2 min, n × 2 s), capped at 10 min; a single HTTP client</td></tr>
+      <tr><td class="mono">11d372e</td><td>Review fix: manifest and symbol reply caps applied to the sealed wire size — before this, proofs above about 48 KiB were truncated</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <caption>Status by review item, final for <code>v1.1.1</code>.</caption>
+    <thead><tr><th style="width:7%">Item</th><th style="width:24%">Review item</th><th style="width:13%">Status</th><th>What exists / what is missing</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">(2)</td><td>Wire format versioned</td><td class="partial">partial</td><td>SQCO magic / version / type; every length prefix capped before allocation; signed <code>CodebookSize</code>; anchor kinds allowlisted. Still no chain-id binding in <code>DescriptorID</code>.</td></tr>
+      <tr><td class="mono">(3)</td><td>Transfer controller</td><td class="partial">partial</td><td>Manifest exchange, bounded symbol requests, aggregate deadline. No capability negotiation, expiry, retry/failover or progress reporting.</td></tr>
+      <tr><td class="mono">(4)</td><td>Authenticate before decode</td><td class="pass">implemented</td><td>Verify → authorise → per-symbol Merkle proof before <code>Absorb</code>; a nil authoriser fails closed.</td></tr>
+      <tr><td class="mono">(5)</td><td>Reconstruct and validate</td><td class="partial">partial</td><td>Padding rejected, full rank required. <code>FetchCodedObject</code> has no non-test caller, so no decoded object is chain-validated by anyone yet.</td></tr>
+      <tr><td class="mono">(6)</td><td>Selectable transport</td><td class="partial">partial</td><td>Flag, ordinary fallback, default off. No metrics, no per-peer byte/CPU budgets; the hub serves the first published snapshot until restart.</td></tr>
+      <tr><td class="mono">(7)</td><td>Benchmark</td><td class="partial">partial</td><td>SQCO bytes, authenticate-vs-decode time, corrupt-proof and corrupt-coefficient scenarios. The uncoded baseline lacks selective retransmission, so the gain is an upper bound.</td></tr>
+      <tr><td class="mono">—</td><td>Recoding</td><td>absent, correctly</td><td>Intermediate nodes do not recode; out of scope for <code>v1.1.1</code>.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ======================================================= TECH 2 ====== -->
+<section class="tech" id="s2">
+  <div class="kicker">Technical · section 2</div>
+  <h2><span class="num">2</span>Upgrade compatibility</h2>
+
+  <h3><span class="num">2.1</span>Method</h3>
+  <p>Before <code>v1.1.0</code>, devnet and testnet ran <code>v1.0.20</code> (<code>4250a5f</code>) and mainnet ran <code>v1.0.21</code> (<code>9f974cd</code>). The question is whether a node holding a data directory written by either release can be switched to <code>v1.1.0</code> without a chain reset, keep producing on the same genesis, and be switched back. The procedure is <b>step 2 of the operator runbook</b>, the image swap, exercised two ways: by a <b>local swap harness</b> that runs the real <code>splendor-infra</code> entrypoint on copies of devnet-shaped and mainnet-shaped data directories (<code>scratchpad/swap/run.sh &lt;old-ref&gt; &lt;new-ref&gt; &lt;devnet|prod&gt;</code>, to be committed alongside the validator-join scripts), and then for real on the live tiers.</p>
+  <ol>
+    <li><b>Baseline.</b> The old release seals at least 15 blocks carrying transfers and a deployed QSol counter contract; height N, genesis hash, validator set and <code>/status</code> are recorded.</li>
+    <li><b>Swap.</b> The old node is stopped with SIGTERM and the candidate image is started on the same data directory. The entrypoint writes the genesis document only on first boot, so an existing directory is never re-minted.</li>
+    <li><b>Verify.</b> The candidate resumes at N+1 with <code>prev_hash</code> equal to the old head; genesis hash and block 0 identical; balances byte-identical; a new transfer confirms; the counter's contract state is readable; the tx-index backfill runs and <code>/readyz</code> turns ready.</li>
+    <li><b>Crash recovery.</b> The candidate is restarted cleanly and then killed with SIGKILL; it recovers and seals both times.</li>
+    <li><b>Fork extension.</b> The release's new fork names (<code>vm_gas_v1</code>, <code>bft_rounds_v1</code> for <code>v1.1.0</code>) are scheduled above head through the opt-in fork-schedule extension on the running node; the schedule is adopted and blocks are sealed across every activation. The genesis document is never edited, so its hash cannot change.</li>
+    <li><b>Rollback.</b> The old release boots on the directory the candidate wrote, and seals. On the mainnet-shaped directory <code>v1.0.21</code> additionally shows identical balances, readable candidate-era transactions and a confirming new send.</li>
+  </ol>
+  <p>Every check is a scripted assertion and the harness exits non-zero on the first failure.</p>
+
+  <h3><span class="num">2.2</span>Local swap harness results</h3>
+  <table class="compact">
+    <thead><tr><th style="width:20%">Data directory</th><th style="width:22%">From → to</th><th style="width:18%">Checks</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>devnet-shaped</td><td class="nowrap"><code>v1.0.20</code> → <code>v1.1.0</code></td><td class="pass">PASS — 79 / 79</td><td>the path devnet and testnet took</td></tr>
+      <tr><td>mainnet-shaped</td><td class="nowrap"><code>v1.0.21</code> → <code>v1.1.0</code></td><td class="pass">PASS — 80 / 80</td><td>same genesis document and validator key as mainnet; rollback keeps balances identical</td></tr>
+      <tr><td>devnet-shaped</td><td class="nowrap"><code>v1.0.21</code> → <code>v1.1.0</code></td><td class="pass">PASS — 79 / 79</td><td>cross-check: mainnet's old release on devnet-shaped data</td></tr>
+      <tr><td>devnet-shaped</td><td class="nowrap"><code>v1.1.0</code> → <code>v1.1.1</code></td><td class="pass">PASS — 79 / 79</td><td>same scenario set; rollback to <code>v1.1.0</code> boots and seals</td></tr>
+      <tr><td>mainnet-shaped</td><td class="nowrap"><code>v1.1.0</code> → <code>v1.1.1</code></td><td class="pass">PASS — 80 / 80</td><td>same scenario set; balances byte-identical across swap and rollback</td></tr>
+    </tbody>
+  </table>
+
+  <div class="keep">
+  <h3><span class="num">2.3</span>Live evidence</h3>
+  <table>
+    <thead><tr><th>Network</th><th>From → to</th><th class="num">Height before</th><th class="num">Height after</th><th>Genesis hash</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Devnet <code>splendor-quantum-devnet-1</code></td><td class="nowrap"><code>v1.0.20</code> → <code>v1.1.0</code></td><td class="num">106,997</td><td class="num">107,055</td><td class="mono">1062b1ff…</td><td>unchanged; no reset</td></tr>
+      <tr><td>Testnet <code>splendor-quantum-testnet-1</code></td><td class="nowrap"><code>v1.0.20</code> → <code>v1.1.0</code></td><td class="num">434,812</td><td class="num">434,858</td><td class="mono">324d7f56…</td><td>unchanged; no reset</td></tr>
+      <tr><td>Mainnet <code>splendor-quantum-1</code></td><td class="nowrap"><code>v1.0.21</code> → <code>v1.1.0</code>, reset</td><td class="num">35,965</td><td class="num">0 → climbing</td><td class="mono">d865193d…</td><td>identical hash: validator key and genesis document unchanged; treasury 26,000,000,000 SPLD exact; <code>validator_set_size</code> 0; re-minted 22:21 UTC, 17 Sept</td></tr>
+      <tr><td>Devnet <code>splendor-quantum-devnet-1</code></td><td class="nowrap"><code>v1.1.0</code> → <code>v1.1.1</code></td><td class="num">139,085</td><td class="num">139,158</td><td class="mono">1062b1ff…</td><td>unchanged; no reset; 18 Sept ~09:17 UTC; <code>head_qc_valid</code> true; ready immediately</td></tr>
+      <tr><td>Testnet <code>splendor-quantum-testnet-1</code></td><td class="nowrap"><code>v1.1.0</code> → <code>v1.1.1</code></td><td class="num">466,917</td><td class="num">466,967</td><td class="mono">324d7f56…</td><td>unchanged; no reset; 18 Sept ~09:24 UTC; ready immediately</td></tr>
+      <tr><td>Mainnet <code>splendor-quantum-1</code></td><td class="nowrap"><code>v1.1.0</code> → <code>v1.1.1</code>, reset</td><td class="num nowrap">≈137,000</td><td class="num">0 → climbing<br><span class="small muted">137 at 08:22:40</span></td><td class="mono">d865193d…</td><td>identical hash again (same validator key and genesis document); reset 18 Sept 08:21 UTC, deploy run 35323816854, pre-reset EBS snapshot <code>snap-05f1576c34b7010bf</code>; treasury <code>SQ:665f89b6…</code> = 26,000,000,000 SPLD exact; <code>validator_set_size</code> 0; <code>/readyz</code> ready, indexer lag 1</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">All heights and hashes read from each tier's <code>/status</code> before and after the swap.</p>
+  </div>
+
+  <h3><span class="num">2.4</span>Transaction-index backfill and readiness</h3>
+  <p>A <code>v1.1.0</code> node that inherits a pre-<code>v1.1.0</code> directory rebuilds its transaction index by walking the chain in the background (<code>694a46b</code>). Block, state and account RPCs answer immediately from the stores; only index-backed lookups wait. During the walk <code>/readyz</code> answers <b>HTTP 503</b> so a load balancer keeps traffic on peers, while <code>/healthz</code> stays <b>200</b> and <code>/status</code> remains available:</p>
+  <pre>{"ready":false,"reason":"transaction index behind applied height",
+ "applied_height":…,"index_height":…,"index_coverage_from":0,
+ "syncing":false,"recovering":false,"validator_locked":false}</pre>
+  <p>Devnet reached ready about 3 minutes after the <code>v1.1.0</code> swap (index 98,303 → 107,089); testnet about 10 minutes (75,775 → 434,911), sealing throughout. The walk is a one-time cost: the <code>v1.1.0</code> → <code>v1.1.1</code> swaps found the index watermark already present and answered <code>/readyz</code> ready at once (devnet applied 139,158 = index 139,158; testnet 466,967 = 466,967), with <code>/healthz</code> 200 throughout; the re-minted mainnet was ready from block 0 with an indexer lag of 1.</p>
+</section>
+
+<!-- ======================================================= TECH 3 ====== -->
+<section class="tech" id="s3">
+  <div class="kicker">Technical · section 3</div>
+  <h2><span class="num">3</span>Stress test</h2>
+
+  <h3><span class="num">3.1</span>Method</h3>
+  <p>Target: the devnet node (<code>splendor-quantum-devnet-1</code>, <code>v1.1.1</code>, commit <code>11d372e</code>) on its own host, a <b>t4g.xlarge (4 vCPU, 16 GiB)</b>. Baseline before load: block interval 1.000 s (Loki p50 1.001 s, p95 1.022 s over 586 blocks), background 0.80 tx/s, mempool ≤ 1, host CPU ≤ 27 %, 2,304 CPU credits.</p>
+  <p>Load is generated by <code>cmd/txload</code> running <b>inside the devnet host's compose network</b>, so the RPC path under test is the node's, not the tunnel's: <b>20 containers</b>, each pinned to <code>--cpus 0.05</code> (0.1 in the 20k run) and <code>--memory 48m</code>, each driving a disjoint <code>--sender-offset</code> range at <code>--rate 24 --one-shot</code> — every sender submits exactly once, so a stage is a burst of N signed ML-DSA-65 transfers at the <code>min_fee_v1</code> floor, offered from 20 source addresses. Stages escalate the sender population <b>10,000 → 20,000 → 30,000 → 40,000</b>, followed by a 15-minute sustained stage. Before each burst a funding pass tops up the new senders with 1 SPLD each from 20 funders that the faucet had endowed with 44,000 SPLD in total (faucet 992,180 → 948,180 SPLD). The txload changes (<code>--lazy-keys</code>, <code>--one-shot</code>, <code>--scan-node -1</code>, <code>--fund-deadline</code>) are commit <code>e2014c8</code>; the runbook and scripts are <code>e35f323</code> under <code>scripts/aws/devnet-stress/</code> on branch <code>stress/txload-devnet</code>, to be merged.</p>
+  <p>A watcher samples <code>/healthz</code> and <code>/status</code> every 5 s and records container restarts and OOM kills; the 5 s block-interval line is drawn dotted in the figures as the degradation threshold. Metrics come from Prometheus on the observability box (15 s series: <code>sqc_chain_height</code>, <code>sqc_mempool_size</code>, <code>sqc_txs_processed_total</code>, host CPU/memory/load), from Loki (per-block transaction counts and intervals from the node's own log lines), from <code>docker stats</code> for the node process, and from each driver's <code>stats.jsonl</code> / <code>summary.json</code>. Two exported counters are <b>dead</b> and were not used: <code>sqc_txs_failed_total</code> and <code>sqc_rpc_requests_total</code> are registered but never incremented. The stage scripts self-mark a stage <b>CONTAMINATED</b> when the validator set or the node container changes during its window.</p>
+
+  <h3><span class="num">3.2</span>Results</h3>
+  <table class="compact">
+    <caption>One row per measurement, one column per stage. RTT = driver-side submit round trip; inclusion = submit to block, sampled 1 in 10; "node CPU" is <code>docker stats</code> for the node process, 100 = one core.</caption>
+    <thead><tr><th style="width:34%"></th><th class="num">10,000</th><th class="num">20,000</th><th class="num">30,000</th><th class="num">40,000</th><th class="num">sustained</th></tr></thead>
+    <tbody>
+      <tr><td>Verdict</td><td class="num pass">SURVIVED (degraded)</td><td class="num pass">SURVIVED, contaminated</td><td class="num">not run</td><td class="num">not run</td><td class="num">not run</td></tr>
+      <tr><td>Burst start (UTC), duration</td><td class="num">07:37:41, 85 s</td><td class="num">07:53:28, 104 s</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Submitted / accepted (202)</td><td class="num">10,000 / 10,000</td><td class="num">20,000 / 20,000</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>429 / rejected / transport errors</td><td class="num">0 / 0 / 0</td><td class="num">0 / 0 / 0</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Offered peak (5 s) / accepted mean, tx/s</td><td class="num">523 / 118</td><td class="num">460 / 192</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Included rate peak (1 min, Prometheus), tx/s</td><td class="num">206</td><td class="num">204</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Mempool peak (Prometheus 30 s / driver 5 s)</td><td class="num">5,936 / 6,468</td><td class="num">14,531 / 15,374</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Block-time peak; intervals &gt; 5 s; back to 1 s after</td><td class="num">15.26 s; 3; 53 s</td><td class="num">7.77 s; 6; 301 s</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Transactions per block, peak</td><td class="num">4,173</td><td class="num">613</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Inclusion p50 / p95</td><td class="num">16.1 s / 26.8 s</td><td class="num">14.4 s / 30.0 s</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>RTT p50 / p95</td><td class="num">59 ms / 1,571 ms</td><td class="num">435 ms / 1,626 ms</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Host CPU peak / node CPU peak</td><td class="num">90 % / 394 % (≈ 4 cores)</td><td class="num">99 % / —</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>MemAvailable min / load1 peak</td><td class="num">11.6 GiB / 6.19</td><td class="num">13.9 GiB / 7.51</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Restarts / OOM / bad <code>/healthz</code> samples</td><td class="num">0 / no / 0 of 96</td><td class="num">0 / no / 0</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+      <tr><td>Validator set during the stage</td><td class="num">1</td><td class="num">1 → 2</td><td class="num">3</td><td class="num">3</td><td class="num">3</td></tr>
+    </tbody>
+  </table>
+
+  <h4>10,000 accounts — survived, degraded</h4>
+  <p>About 480 tx/s were offered across the 20 source addresses (5-second peak 523 tx/s); every transaction was accepted and included, with no 429 and no rejection. The batch scheduler drained the flood by growing blocks rather than holding the 1 s cadence: one block carried <b>4,173 transactions and took 15.26 s</b>, about 4.2 ms per transaction, which is the ML-DSA-65 verification cost. Three block intervals exceeded 5 s. Block time was back at 1 s within one block of the crest (07:38:25 → 07:38:35 UTC); inclusion p95 was 26.8 s. The node process peaked at 394 % CPU (all four cores), <code>/healthz</code> answered 200 in all 96 watcher samples, no restart, no OOM.</p>
+
+  <h4>20,000 accounts — survived, contaminated</h4>
+  <p>All 20,000 transactions were accepted and committed (largest block gap 7.77 s, no stall, no OOM, no restart). The numbers are not attributable to load alone: from 07:54 UTC an external operator began converting devnet into a multi-validator set on the same host — containers <code>sqc-val-01</code>/<code>02</code> joined the node's network at 07:54:16, the node container was recreated between 07:58 and 08:02, and <code>sqc_txs_processed_total</code> reset mid-window (which is why the Prometheus "included" delta for this stage is meaningless). The stage self-marked CONTAMINATED.</p>
+
+  <h4>30,000, 40,000 and sustained — not run</h4>
+  <p>At 08:12 UTC the external change pushed the set to <b>three validators under the pre-fork rules</b> (unanimity): the chain <b>froze at height 142,275 for about 2.5 minutes</b>, then continued as an unstable 3-validator BFT with roughly 12 s blocks and repeated <code>BFT: round timeout, view change</code>. The funding pass for the 30k stage could not confirm balances, and the run was stopped rather than measure a chain that was being reconfigured. This is the live counterpart of the n = 3 pre-fork stall reproduced in the lab (section 4). The 30k, 40k and sustained stages are fully scripted and self-mark CONTAMINATED on a topology change; they need a stable single-validator devnet window.</p>
+
+  <h3><span class="num">3.3</span>Figures</h3>
+  <p class="small muted">Time axis: minutes from burst start. Vertical lines: dotted = funding pass, solid = burst start and end, dashed = end of the drain window. Horizontal dotted line in the block-time panels: the 5 s threshold.</p>
+  <figure>
+    <img src="charts/stress/s10k-throughput.svg" alt="10k: offered, accepted and included tx/s">
+    <figcaption><b>Figure 3.1</b> — 10,000 accounts: offered (driver submits), accepted (HTTP 202) and included (Loki per-block counts; Prometheus 1-minute rate). The funding pass at −11 min is visible at left.</figcaption>
+  </figure>
+  <figure>
+    <img src="charts/stress/s10k-blocks.svg" alt="10k: block interval and transactions per block">
+    <figcaption><b>Figure 3.2</b> — 10,000 accounts: block interval and transactions per block from the node's log lines. The single 4,173-transaction block is the 15.26 s interval; the cadence returns to 1 s on the next block.</figcaption>
+  </figure>
+  <figure>
+    <img src="charts/stress/s10k-mempool.svg" alt="10k: mempool depth">
+    <figcaption><b>Figure 3.3</b> — 10,000 accounts: mempool depth from Prometheus (30 s scrape) and from the drivers' <code>/status</code> polls (5 s); the 30 s scrape under-reads the true peak of 6,468.</figcaption>
+  </figure>
+  <figure>
+    <img src="charts/stress/s10k-host.svg" alt="10k: host CPU, memory, load">
+    <figcaption><b>Figure 3.4</b> — 10,000 accounts: host CPU, node-process CPU (100 = one core), driver CPU, memory, load1 and MemAvailable. The node saturates all four cores for the duration of the crest; memory is untouched.</figcaption>
+  </figure>
+  <figure>
+    <img src="charts/stress/s20k-throughput.svg" alt="20k: offered, accepted and included tx/s">
+    <figcaption><b>Figure 3.5</b> — 20,000 accounts: offered, accepted and included. The included series after +1 min overlaps the external validator-set change; the stage is contaminated from 07:54 UTC.</figcaption>
+  </figure>
+  <figure>
+    <img src="charts/stress/s20k-blocks.svg" alt="20k: block interval and transactions per block">
+    <figcaption><b>Figure 3.6</b> — 20,000 accounts: block interval and transactions per block. The burst itself never exceeded 7.77 s. The 13 s interval at −3.4 min is the funding pass's 10,000 transfers being drained in one 4,173-transaction block just after the funding window closed (07:50 UTC), before the burst; the spike near +5 min coincides with the node container's recreation (07:58–08:02 UTC).</figcaption>
+  </figure>
+</section>
+
+<!-- ======================================================= TECH 4 ====== -->
+<section class="tech" id="s4">
+  <div class="kicker">Technical · section 4</div>
+  <h2><span class="num">4</span>Validator fault program</h2>
+
+  <h3><span class="num">4.1</span>Method</h3>
+  <p>A <b>local four-validator lab</b> (A, B, C, D) built on the <code>scripts/validator-join</code> harness — <code>scripts/validator-join/run-fault-lab.sh</code>, commit <code>d0c6805</code> on a worktree, to be merged. Real <code>sqc-node</code> processes on loopback, a scratch genesis carrying <b>devnet's fork schedule</b> plus <code>modules_v2</code>, <code>validators_admission_v1</code> and <code>bft_rounds_v1</code>, 2-second blocks. Nothing in the lab contacts a deployed tier. Each scenario samples a window of heights and asserts the properties the join harness already checks: identical hash, state root and producer at every height across all honest nodes, a certificate with at least quorum-many distinct votes on every block, and no unexpected consensus refusal lines in the honest logs. At n &gt; quorum, honest nodes legitimately finalise the same block with different valid 3-of-4 vote subsets, so <code>qc_root</code> bytes may differ between nodes; the observer allows that (<code>--allow-qc-root-divergence</code>) while still requiring hash, state-root and producer agreement and a per-node certificate of at least quorum size.</p>
+
+  <table>
+    <thead><tr><th style="width:5%">#</th><th style="width:19%">Scenario</th><th style="width:11%">Result</th><th>Observed</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">1</td><td>Add B, C, D live</td><td class="pass">PASS</td><td>Set 1 → 2 → 3 → 4. A self-registers under the producer admission clause and approves each joiner; each joiner registers through its own RPC. The n = 2, 3 and 4 windows are clean: identical hash, state root and producer per height, quorum-many distinct votes.</td></tr>
+      <tr><td class="mono">2</td><td>Remove D</td><td class="pass">PASS</td><td>Set 4 → 3, clean n = 3 window. After the 32-block unbonding, <code>finalize_exit</code> returned the 2,500 SPLD bond (balance 3,499.9 → 5,999.7 SPLD). D kept following as a non-validator.</td></tr>
+      <tr><td class="mono">3</td><td>Re-add D</td><td class="pass">PASS</td><td>Registered on the persisted approval; set back to 4; clean window.</td></tr>
+      <tr><td class="mono">4a</td><td>D crashed (SIGSTOP) at n = 4</td><td class="pass">PASS</td><td>A, B and C sealed a full window on quorum 3 (height 103 → 114). D resumed and re-synced.</td></tr>
+      <tr><td class="mono">4b</td><td>D leads and withholds</td><td class="pass">PASS</td><td>D paused before a height it led (H<sub>0</sub> = 115). The honest three round-changed and committed H<sub>0</sub> at round 1 within 4 s.</td></tr>
+      <tr><td class="mono">4c</td><td>D forges blocks</td><td class="pass">PASS</td><td>Forged blocks pushed at A and at B were both refused with HTTP 400 <code>block certificate rejected: multi_validator requires a quorum certificate</code>. The chain climbed 118 → 123.</td></tr>
+      <tr><td class="mono">4d</td><td>D restarts with a cleared vote journal mid-height</td><td class="pass">PASS</td><td>Chain 123 → 134 unbroken; no quorum certificate double-counted any validator. An honest <code>equivocation dropped</code> line cannot be provoked at n = 4 by design: a precommit needs a prevote QC of three, and once three prevote the height commits, so a cleared-journal node re-syncs forward instead of re-signing an open view. The drop path itself is covered by the in-process consensus tests.</td></tr>
+      <tr><td class="mono">PF</td><td>Pre-fork control (same lab without <code>bft_rounds_v1</code>)</td><td class="pass">documented</td><td>n = 4 with a withholding leader still recovered (H<sub>0</sub> = 67 committed in 4 s: a withholding leader casts no vote, so nobody is vote-locked). n = 3 with one member paused <b>stalled at height 77</b> (quorum ⌊2·3/3⌋+1 = 3 of 3) and did not resume when the member returned; A and B logged <code>SECURITY: durable vote-lock refuses different block at this height; view-change will not unlock</code> — the C1 single-vote wedge that needs <code>--clear-vote-journal</code> and that <code>bft_rounds_v1</code> removes.</td></tr>
+    </tbody>
+  </table>
+  <p><b>End state.</b> Blocks 1..133 identical (hash, state root, producer) across all four nodes; A ran as one unbroken process from genesis to the end; no consensus refusal lines in any honest log beyond the HTTP 400 responses that scenario 4c provokes on purpose.</p>
+
+  <div class="keep">
+  <h3><span class="num">4.2</span>Quorum and its consequence</h3>
+  <div class="callout">
+    <p class="formula">quorum(n) = ⌊2n/3⌋ + 1 &nbsp;&nbsp;·&nbsp;&nbsp; tolerated faults f = n − quorum(n)</p>
+    <p>The certificate on a block needs ⌊2n/3⌋+1 votes from the active set of n validators. For <b>n = 1, 2, 3</b> that is <b>every</b> validator, so a two- or three-validator network halts if any single member stops, withholds or is partitioned. One faulty member is first tolerated at <b>n = 4</b>, two at <b>n = 7</b>. The mainnet set is currently one producer (<code>validator_set_size</code> 0 in the registry, the genesis producer sealing).</p>
+    <p><b>Recommendation.</b> Tolerating a faulty member requires <b>both</b> n ≥ 4 <b>and</b> <code>bft_rounds_v1</code> active: the pre-fork control shows that without it a paused member wedges an n = 3 set on a durable vote-lock. <code>bft_rounds_v1</code> is unscheduled on every public tier today; it can be scheduled above head on a running tier through the fork-extension rollout, with no reset (section 2.1).</p>
+  </div>
+  <table class="compact" style="width:60%">
+    <thead><tr><th class="num">n</th><th class="num">1</th><th class="num">2</th><th class="num">3</th><th class="num">4</th><th class="num">5</th><th class="num">6</th><th class="num">7</th><th class="num">8</th><th class="num">9</th><th class="num">10</th></tr></thead>
+    <tbody>
+      <tr><td>quorum</td><td class="num">1</td><td class="num">2</td><td class="num">3</td><td class="num">3</td><td class="num">4</td><td class="num">5</td><td class="num">5</td><td class="num">6</td><td class="num">7</td><td class="num">7</td></tr>
+      <tr><td>tolerated faults</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">1</td><td class="num">1</td><td class="num">1</td><td class="num">2</td><td class="num">2</td><td class="num">2</td><td class="num">3</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ======================================================= TECH 5 ====== -->
+<section class="tech" id="s5">
+  <div class="kicker">Technical · section 5</div>
+  <h2><span class="num">5</span>Known limits, follow-ups, reproduction</h2>
+
+  <h3><span class="num">5.1</span>Known limits</h3>
+  <ul>
+    <li><b>RLNC live transfer is off by default and not consumed.</b> The sealed live path needs <code>--object-codec</code>; <code>FetchCodedObject</code> has no non-test caller, so block sync does not use it and no decoded object is chain-validated yet. <code>DescriptorID</code> is not bound to a chain id, and the hub serves the first published snapshot until restart (section 1.2).</li>
+    <li><b>Small validator sets have no fault tolerance, and fault tolerance needs the fork.</b> ⌊2n/3⌋+1 with n ≤ 3 requires every vote, and without <code>bft_rounds_v1</code> a paused member wedges an n = 3 set on a durable vote-lock (section 4, pre-fork control). Surviving one faulty member needs n ≥ 4 and <code>bft_rounds_v1</code> active; it is unscheduled on every public tier.</li>
+    <li><b><code>qc_root</code> legitimately differs between honest nodes at n &gt; quorum</b>, because each finalises with its own valid 3-of-4 vote subset; comparisons across nodes must use hash, state root and producer, as the lab observer now does (<code>--allow-qc-root-divergence</code>).</li>
+    <li><b>Public validator admission is closed.</b> Admission is approval-based with a 2,500 SPLD bond.</li>
+    <li><b>DEX, lending and governance are not native modules</b>; the README and SDK were corrected in <code>v1.1.0</code> to stop advertising them (<code>b4a942e</code>, <code>87f9b08</code>, <code>da6c2bc</code>).</li>
+    <li><b>Four hardening items are unscheduled on live tiers</b>: <code>bft_rounds_v1</code>, <code>vm_gas_v1</code>, <code>vm_call_v1</code>, <code>verify_identity_v1</code> ship in <code>v1.1.0</code> but activate only once scheduled (section 1.1).</li>
+    <li><b>A flood is drained by growing blocks, not by holding cadence.</b> Under the 10k burst one 4,173-transaction block took 15.26 s (about 4.2 ms per ML-DSA-65 verification, all four cores busy); inclusion p95 reached 27–30 s. No transaction was lost or refused (section 3).</li>
+    <li><b>Devnet is currently a 3-validator set under the pre-fork rules.</b> The change made at 08:12 UTC on 18 September froze the chain for about 2.5 minutes at 142,275 and left it on roughly 12 s blocks with repeated view changes — the live confirmation of the n = 3 finding in section 4.</li>
+    <li><b>Dead metrics.</b> <code>sqc_txs_failed_total</code> and <code>sqc_rpc_requests_total</code> are exported but never incremented; the stress run relied on driver-side counts instead.</li>
+    <li><b>Accepted residuals from PR #42</b> (section 1.1): ungated OperatorIdentities persistence pre-<code>verify_identity_v1</code>; <code>/status</code> under the executor lock; per-source caps keyed on <code>RemoteAddr</code> behind cloudflared; pre-fork BFT accepting kind-tagged votes.</li>
+  </ul>
+
+  <h3><span class="num">5.2</span>Follow-ups</h3>
+  <ul>
+    <li>RLNC (<code>v1.1.1</code> partials): bind <code>DescriptorID</code> to the chain id; add capability negotiation, expiry, retry/failover and progress to the controller; give <code>FetchCodedObject</code> a real consumer that chain-validates the result; add metrics and per-peer byte/CPU budgets; re-publish snapshots without restart; re-benchmark against an uncoded baseline with selective retransmission.</li>
+    <li>Schedule <code>bft_rounds_v1</code> first, then <code>vm_gas_v1</code>, <code>vm_call_v1</code> and <code>verify_identity_v1</code>, on devnet through the fork-schedule extension above head (no reset), then promote tier by tier; grow the public validator set to n ≥ 4 before relying on any fault tolerance.</li>
+    <li>Increment or remove the two dead counters; key request caps on a per-client value that survives the tunnel (forwarded client address, signed by cloudflared).</li>
+    <li>Re-run the 30k, 40k and 15-minute sustained stress stages in a stable single-validator devnet window; the scripts self-mark contamination, so the window only needs to be protected from topology changes (section 3).</li>
+    <li>Before growing the devnet validator set again, schedule <code>bft_rounds_v1</code> on devnet through the fork extension and take the set straight to n ≥ 4; a 3-member set under the pre-fork rules is exactly the configuration that stalled in the lab and on devnet.</li>
+    <li>Gate OperatorIdentities persistence behind <code>verify_identity_v1</code>; serve <code>/status</code> from a snapshot that does not take the executor lock.</li>
+    <li>Merge <code>scripts/validator-join/run-fault-lab.sh</code> (<code>d0c6805</code>, on a worktree), the txload changes (<code>e2014c8</code>) with <code>scripts/aws/devnet-stress/</code> (<code>e35f323</code>, branch <code>stress/txload-devnet</code>), and commit the local swap harness next to them.</li>
+  </ul>
+
+  <h3><span class="num">5.3</span>Reproduce</h3>
+  <pre><span class="c"># Build the releases under test</span>
+git checkout v1.1.0        <span class="c"># or v1.1.1 (11d372e)</span>
+go build -o bin/sqc-node ./cmd/node
+go build -o bin/txload  ./cmd/txload
+
+<span class="c"># Section 2 — local swap harness (runbook step 2) on a copy of an old-release data directory;</span>
+<span class="c"># runs the real splendor-infra entrypoint, asserts, rolls back, extends the fork schedule</span>
+scratchpad/swap/run.sh v1.0.20 v1.1.0 devnet    <span class="c"># 79 checks</span>
+scratchpad/swap/run.sh v1.0.21 v1.1.0 prod      <span class="c"># 80 checks, mainnet-shaped</span>
+scratchpad/swap/run.sh v1.1.0  v1.1.1 devnet
+curl -s https://quantum-rpc-devnet.splendor.org/status | jq '{height, genesis_hash, validator_set_size}'
+curl -si https://quantum-rpc-devnet.splendor.org/readyz | head -1   <span class="c"># 503 during the index walk</span>
+
+<span class="c"># Section 3 — devnet stress (branch stress/txload-devnet: txload e2014c8, runbook e35f323)</span>
+<span class="c"># 20 containers on the node's compose network, --cpus 0.05 --memory 48m each, disjoint sender ranges</span>
+scripts/aws/devnet-stress/README.md                   <span class="c"># preflight, funding, stages, watcher, figures</span>
+bin/txload run --rpc http://node:8080 --chain-id splendor-quantum-devnet-1 \
+  --seed funder-0.seed --senders 500 --sender-offset 0 --lazy-keys \
+  --rate 24 --one-shot --scan-node -1 --fund-deadline 5m \
+  --stats s10k-funder0.jsonl --summary s10k-funder0.json
+<span class="c"># stage outputs: runs/&lt;stage&gt;/{stats.jsonl,summary.json,watch.jsonl,metrics.json}; figures/*.svg; report/summary.json</span>
+
+<span class="c"># Section 4 — validator lab (never contacts a deployed tier)</span>
+VALIDATORS=3 scripts/validator-join/run-live-join.sh
+scripts/validator-join/run-state-sync-join.sh
+scripts/validator-join/run-fault-lab.sh               <span class="c"># scenarios 1–4d + pre-fork control; d0c6805, to be merged</span>
+
+<span class="c"># This document</span>
+./build.sh --preview</pre>
+</section>
+
+</body>
+</html>

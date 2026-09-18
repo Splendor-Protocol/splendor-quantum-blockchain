@@ -1,0 +1,206 @@
+/* Splendor Quantum Chain — validation report. Print stylesheet.
+   Black ink only: #000 text and rules, greys for secondary text and light rules. */
+
+@font-face { font-family: "Manrope"; font-weight: 400; font-style: normal; src: url("fonts/manrope-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Manrope"; font-weight: 500; font-style: normal; src: url("fonts/manrope-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Manrope"; font-weight: 600; font-style: normal; src: url("fonts/manrope-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Manrope"; font-weight: 700; font-style: normal; src: url("fonts/manrope-latin-700-normal.woff2") format("woff2"); }
+
+:root {
+  --ink: #000;
+  --ink-2: #333;
+  --ink-3: #666;
+  --ink-4: #9a9a9a;
+  --rule: #000;
+  --rule-light: #cfcfcf;
+  --wash: #f3f3f3;
+  --sans: "Manrope", -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --page-w: 174mm;   /* A4 210mm minus 2 x 18mm */
+  --page-h: 259mm;   /* A4 297mm minus 18mm top and 20mm bottom */
+}
+
+/* ---------- page geometry ---------- */
+@page {
+  size: A4;
+  margin: 18mm 18mm 20mm 18mm;
+  @bottom-left {
+    /* the mark, inlined: Chrome does not resolve a relative url() inside @page margin boxes */
+    content: url("data:image/svg+xml,%3Csvg width=%2212%22 height=%2212.33%22 viewBox=%220 0 36 37%22 fill=%22none%22 xmlns=%22http://www.w3.org/2000/svg%22%3E %3Cpath d=%22M8.27541e-08 0V8.88C-0.000149805 9.73691 0.203315 10.5814 0.593346 11.3427C0.983376 12.104 1.54861 12.7598 2.24169 13.2554L35.3256 37V30.1403C35.3257 28.8688 35.0283 27.6153 34.4577 26.4815C33.8871 25.3477 33.0593 24.3657 32.0416 23.6154L8.27541e-08 0Z%22 fill=%22black%22/%3E %3Cpath d=%22M25.3619 0.902439V9.44452C25.3618 10.2702 25.5607 11.0838 25.9421 11.8175C26.3234 12.5512 26.8761 13.1836 27.5539 13.6618L35.3256 18.0488V11.4457C35.3261 10.2217 35.0356 9.0149 34.4776 7.92348C33.9196 6.83206 33.1099 5.8869 32.1144 5.16496L25.3619 0.902439Z%22 fill=%22black%22/%3E %3Cpath d=%22M8.09194e-08 18.9512V27.9488C-0.000146484 28.8171 0.198808 29.6727 0.580192 30.4441C0.961575 31.2154 1.51428 31.88 2.192 32.3822L9.96362 37V30.0494C9.96373 28.7611 9.673 27.4909 9.11503 26.3421C8.55707 25.1934 7.74761 24.1984 6.75248 23.4381L8.09194e-08 18.9512Z%22 fill=%22black%22/%3E %3C/svg%3E");
+    vertical-align: middle;
+  }
+  @bottom-center {
+    content: "Splendor Quantum Chain — v1.1.x validation report";
+    font: 400 7.5pt "Manrope", sans-serif;
+    color: #777;
+    vertical-align: middle;
+  }
+  @bottom-right {
+    content: counter(page);
+    font: 500 8pt "Manrope", sans-serif;
+    color: #000;
+    vertical-align: middle;
+  }
+}
+@page :first {
+  @bottom-left   { content: none; }
+  @bottom-center { content: none; }
+  @bottom-right  { content: none; }
+}
+
+/* ---------- base ---------- */
+html { font-size: 10pt; }
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-weight: 400;
+  color: var(--ink);
+  background: #fff;
+  line-height: 1.45;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+  font-variant-numeric: tabular-nums;
+  text-rendering: optimizeLegibility;
+}
+* { box-sizing: border-box; }
+
+code, kbd, pre, .mono {
+  font-family: var(--mono);
+  font-size: 0.86em;
+}
+code { white-space: nowrap; }
+a { color: inherit; text-decoration: none; }
+strong, b { font-weight: 600; }
+
+/* One printed page per .page; every technical section starts on a fresh page. */
+.page { break-after: page; page-break-after: always; }
+.page:last-child { break-after: auto; }
+section.tech { break-before: page; page-break-before: always; }
+.page-break { break-before: page; page-break-before: always; }
+
+/* ---------- type scale ---------- */
+h1 { font-size: 26pt; font-weight: 700; letter-spacing: -0.015em; line-height: 1.1; margin: 0 0 4mm; }
+h2 {
+  font-size: 15pt; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2;
+  margin: 0 0 4mm; padding-bottom: 2mm; border-bottom: 0.7pt solid var(--rule);
+}
+h3 { font-size: 10.5pt; font-weight: 600; margin: 5mm 0 1.6mm; break-after: avoid; page-break-after: avoid; }
+h4 { font-size: 9.5pt; font-weight: 600; margin: 3.5mm 0 1mm; break-after: avoid; page-break-after: avoid; }
+h2 .num, h3 .num { font-family: var(--mono); font-weight: 500; color: var(--ink-3); margin-right: 2.5mm; font-size: 0.8em; }
+.kicker {
+  font-family: var(--mono); font-size: 7.5pt; font-weight: 500;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3);
+  margin: 0 0 2mm;
+}
+p { margin: 0 0 2.6mm; }
+p.lead { font-size: 11pt; line-height: 1.45; color: var(--ink); }
+.muted { color: var(--ink-3); }
+.small { font-size: 8.5pt; }
+ul, ol { margin: 0 0 2.6mm; padding-left: 4.2mm; }
+li { margin: 0 0 1.1mm; }
+li::marker { color: var(--ink-3); }
+dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 1.2mm 6mm; margin: 0; }
+dl.facts dt { font-size: 7.5pt; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); padding-top: 0.5mm; }
+dl.facts dd { margin: 0; }
+
+/* ---------- tables ---------- */
+table {
+  width: 100%; border-collapse: collapse; font-size: 8.6pt; line-height: 1.35;
+  margin: 2mm 0 4.5mm; break-inside: auto;
+}
+caption {
+  caption-side: top; text-align: left; font-size: 8pt; color: var(--ink-3);
+  padding: 0 0 1.5mm; font-weight: 500;
+}
+caption b { color: var(--ink); font-weight: 600; }
+thead { display: table-header-group; }
+th {
+  text-align: left; font-weight: 600; font-size: 7.5pt; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--ink-2);
+  border-bottom: 0.8pt solid var(--rule); padding: 1.2mm 2.5mm 1.2mm 0; vertical-align: bottom;
+}
+td { border-bottom: 0.4pt solid var(--rule-light); padding: 1.5mm 2.5mm 1.5mm 0; vertical-align: top; }
+tr { break-inside: avoid; page-break-inside: avoid; }
+tbody tr:last-child td { border-bottom: 0.8pt solid var(--rule); }
+th:last-child, td:last-child { padding-right: 0; }
+td.num, th.num { text-align: right; }
+td.mono, th.mono { font-family: var(--mono); font-size: 7.8pt; }
+td.nowrap, th.nowrap { white-space: nowrap; }
+tr.group td {
+  font-size: 7.5pt; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-2); background: var(--wash); border-bottom: 0.4pt solid var(--rule-light);
+  padding-top: 1.2mm; padding-bottom: 1.2mm;
+}
+table.compact td, table.compact th { padding-top: 1mm; padding-bottom: 1mm; }
+.pass { font-weight: 600; }
+.partial { font-weight: 500; }
+
+/* ---------- TBD marker ---------- */
+.tbd {
+  display: inline-block; font-family: var(--mono); font-size: 7pt; font-weight: 600;
+  letter-spacing: 0.08em; line-height: 1.5; padding: 0 1.3mm; margin: 0 0.3mm;
+  border: 0.6pt dashed var(--ink); color: var(--ink); vertical-align: 0.15em; white-space: nowrap;
+}
+
+/* ---------- figures ---------- */
+figure { margin: 3mm 0 5mm; break-inside: avoid; page-break-inside: avoid; }
+figure img { display: block; width: 100%; height: auto; }
+figcaption { font-size: 8pt; line-height: 1.4; color: var(--ink-3); margin-top: 1.6mm; }
+figcaption b { color: var(--ink); font-weight: 600; }
+.fig-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; }
+.fig-row figure { margin-top: 0; }
+
+/* ---------- code blocks ---------- */
+pre {
+  font-size: 7.8pt; line-height: 1.5; margin: 2mm 0 4mm; padding: 2.4mm 3mm;
+  background: var(--wash); border-left: 0.9pt solid var(--rule);
+  white-space: pre-wrap; word-break: break-word; break-inside: auto;
+}
+pre .c { color: var(--ink-3); }
+
+/* ---------- layout helpers ---------- */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8mm; }
+.three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 6mm; }
+.rule { border: 0; border-top: 0.7pt solid var(--rule); margin: 4mm 0; }
+.keep { break-inside: avoid; page-break-inside: avoid; }
+.callout { border-top: 0.8pt solid var(--rule); border-bottom: 0.4pt solid var(--rule-light); padding: 2.5mm 0; margin: 3mm 0 4mm; }
+.callout p:last-child { margin-bottom: 0; }
+.formula { font-family: var(--mono); font-size: 10pt; margin: 2mm 0; }
+
+/* ---------- cover ---------- */
+.cover {
+  height: var(--page-h); display: flex; flex-direction: column; position: relative;
+}
+.cover .wordmark { width: 64mm; height: auto; display: block; }
+.cover .cover-body { margin-top: 62mm; }
+.cover h1 { font-size: 34pt; margin-bottom: 5mm; }
+.cover .subtitle { font-size: 12.5pt; line-height: 1.4; max-width: 128mm; color: var(--ink-2); margin: 0; }
+.cover .cover-foot { margin-top: auto; display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 0 12mm; align-items: end; border-top: 0.8pt solid var(--rule); padding-top: 5mm; }
+.cover .contents { list-style: none; padding: 0; margin: 0; font-size: 9pt; }
+.cover .contents li { display: flex; gap: 3mm; margin: 0 0 1.3mm; }
+.cover .contents .n { font-family: var(--mono); color: var(--ink-3); font-size: 8pt; min-width: 5mm; padding-top: 0.3mm; }
+
+/* ---------- business page ---------- */
+/* No clipping: if this page overflows, section 1 moves to page 4 and build.sh reports it. */
+.business { font-size: 8.7pt; line-height: 1.38; }
+.business h2 { font-size: 17pt; border-bottom: 0; padding-bottom: 0; margin-bottom: 2.2mm; }
+.business p.lead { font-size: 9.6pt; line-height: 1.4; }
+.business h3 { font-size: 9.2pt; margin: 2.8mm 0 1.1mm; padding-bottom: 0.6mm; border-bottom: 0.6pt solid var(--rule); }
+.business p { margin-bottom: 1.6mm; }
+.business table { font-size: 8pt; margin: 1mm 0 1.8mm; table-layout: fixed; }
+.business td { padding: 0.85mm 2mm 0.85mm 0; }
+.business td code { white-space: normal; overflow-wrap: anywhere; }
+.business ul { padding-left: 3.6mm; margin-bottom: 1.2mm; }
+.business li { margin-bottom: 0.55mm; }
+.business .two-col { gap: 0 7mm; }
+.business .label { font-size: 7pt; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); display: inline-block; min-width: 16mm; }
+
+/* ---------- screen preview (does not affect print) ---------- */
+@media screen {
+  body { background: #e4e4e4; padding: 10mm 0; }
+  .page, section.tech {
+    background: #fff; width: 210mm; min-height: 297mm; margin: 0 auto 10mm;
+    padding: 18mm 18mm 20mm; box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  }
+  .cover { height: auto; min-height: 297mm; }
+}
