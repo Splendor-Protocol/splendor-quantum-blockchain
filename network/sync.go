@@ -117,6 +117,14 @@ type SyncConfig struct {
 	// assembling every leaf in RAM. When nil, StateSync assembles and calls
 	// the supplied importer.
 	AdoptSnapshotDownload func(dir string) error
+
+	// CodedObjects enables the coded-object snapshot path in StateSync: the
+	// peer's snapshot is fetched as an authenticated coded object (any size,
+	// multi-generation) before the plain single-shot/chunked paths are tried.
+	// Every failure falls back, so a peer without the coded live path still
+	// serves a join. Default true in DefaultSyncConfig; zero-value structs
+	// (tests) leave it off.
+	CodedObjects bool
 }
 
 // DefaultSyncConfig returns sensible defaults.
@@ -127,6 +135,7 @@ func DefaultSyncConfig(validatorPubKey []byte) SyncConfig {
 		MaxParallelFetch:  8,
 		RequestTimeout:    15 * time.Second,
 		RetryDelay:        2 * time.Second,
+		CodedObjects:      true,
 	}
 }
 

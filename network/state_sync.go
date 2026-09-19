@@ -24,6 +24,7 @@ import (
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
 )
 
 // ErrSnapshotNotAnchored means the snapshot's head block was sealed by a
@@ -73,30 +74,67 @@ func (f *BlockFetcher) FetchStateSnapshot(peerAddr string) (*types.StateSnapshot
 	if err := json.Unmarshal(raw, &snap); err != nil {
 		return nil, fmt.Errorf("decode state snapshot from %s: %w", peerAddr, err)
 	}
+	if err := validateFetchedSnapshot(peerAddr, trusted, &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+// FetchStateSnapshotCoded pulls the peer's state snapshot as a coded object
+// over the sealed channel, reconstructs it, and runs the SAME head
+// authentication as the plain single-shot path: the transfer is authenticated
+// by the object manifest (pinned to the peer's node identity) and the content
+// by the genesis validator seal on the head block. A peer that does not serve
+// coded objects, or a transfer failure of any kind, returns an error so the
+// caller falls back to the plain paths.
+func (f *BlockFetcher) FetchStateSnapshotCoded(peerAddr string) (*types.StateSnapshot, error) {
+	trusted := f.TrustedPubKey()
+	if len(trusted) == 0 {
+		return nil, fmt.Errorf("state sync from %s: no trusted validator pubkey yet "+
+			"(set --validator-pubkey-hex, or --genesis-hash to bootstrap it)", peerAddr)
+	}
+	raw, err := f.FetchCodedObject(peerAddr, objects.DefaultLimits())
+	if err != nil {
+		return nil, fmt.Errorf("coded state snapshot from %s: %w", peerAddr, err)
+	}
+	var snap types.StateSnapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		return nil, fmt.Errorf("decode coded state snapshot from %s: %w", peerAddr, err)
+	}
+	if err := validateFetchedSnapshot(peerAddr, trusted, &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+// validateFetchedSnapshot binds the served hash to the header and checks the
+// head's seal against the trusted genesis validator key. Shared by every
+// snapshot fetch path (single-shot, coded) so none of them can skip a check.
+func validateFetchedSnapshot(peerAddr string, trusted []byte, snap *types.StateSnapshot) error {
 	if snap.Block == nil {
-		return nil, fmt.Errorf("state snapshot from %s carries no head block", peerAddr)
+		return fmt.Errorf("state snapshot from %s carries no head block", peerAddr)
 	}
 	if snap.Block.Header.Height != snap.Height {
-		return nil, fmt.Errorf("state snapshot from %s says height %d but its block is at %d",
+		return fmt.Errorf("state snapshot from %s says height %d but its block is at %d",
 			peerAddr, snap.Height, snap.Block.Header.Height)
 	}
 	// Bind the served Hash to the header before any signature is believed
 	// over it (the same closure FetchGenesisValidatorPubKey needs).
 	if err := snap.Block.Validate(); err != nil {
-		return nil, fmt.Errorf("state snapshot head from %s: %w", peerAddr, err)
+		return fmt.Errorf("state snapshot head from %s: %w", peerAddr, err)
 	}
 	pub, err := qcrypto.PublicKeyFromBytes(trusted)
 	if err != nil {
-		return nil, fmt.Errorf("trusted validator pubkey: %w", err)
+		return fmt.Errorf("trusted validator pubkey: %w", err)
 	}
 	if snap.Block.Header.ValidatorAddr != qcrypto.DeriveAddress(pub) {
-		return nil, fmt.Errorf("%w: head %d from %s was sealed by %s",
+		return fmt.Errorf("%w: head %d from %s was sealed by %s",
 			ErrSnapshotNotAnchored, snap.Height, peerAddr, snap.Block.Header.ValidatorAddr)
 	}
 	if err := snap.Block.VerifySignature(trusted); err != nil {
-		return nil, fmt.Errorf("state snapshot head from %s: %w", peerAddr, err)
+		return fmt.Errorf("state snapshot head from %s: %w", peerAddr, err)
 	}
-	return &snap, nil
+	return nil
 }
 
 // maxSnapshotChunkReplyBytes bounds one chunked page's sealed reply. Far
@@ -372,6 +410,22 @@ func (s *Syncer) fetchSnapshotFromPeer(peer string, store *state.SnapshotDownloa
 			return nil, err
 		}
 		return nil, nil
+	}
+	// Negotiation: prefer the coded-object path when enabled — it is the
+	// resilient transfer — and fall back to the plain paths on ANY failure
+	// (peer does not serve coded objects, transfer error, unanchored head).
+	// The coded path authenticates the transfer; the content is authenticated
+	// identically by validateFetchedSnapshot, so the fallback never relaxes
+	// trust, only transport resilience.
+	if s.fetcher.cfg.CodedObjects {
+		if snap, err := s.fetcher.FetchStateSnapshotCoded(peer); err == nil {
+			log.Info().Str("peer", peer).Uint64("height", snap.Height).
+				Msg("state sync: took the peer's coded snapshot")
+			return snap, nil
+		} else {
+			log.Debug().Err(err).Str("peer", peer).
+				Msg("state sync: coded snapshot unavailable, falling back to plain transfer")
+		}
 	}
 	snap, err := s.fetcher.FetchStateSnapshot(peer)
 	if err != nil {
