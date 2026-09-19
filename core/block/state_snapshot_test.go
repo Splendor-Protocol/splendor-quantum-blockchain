@@ -110,16 +110,31 @@ func TestSnapshotChunkSessionIsImmutableAcrossCommits(t *testing.T) {
 		t.Fatal("collected no leaves across the whole session")
 	}
 
-	// The final page is replayable once (lost-response retry), then released.
+	// The final page is retryable for a bounded window (lost-response retry) —
+	// the pinned immutable view is released immediately, so a retry serves the
+	// cached final response rather than holding the snapshot open.
 	replay, err := ex.PageSnapshotChunkSession(id, after, 1)
 	if err != nil {
-		t.Fatalf("final page must be replayable once: %v", err)
+		t.Fatalf("final page must be retryable: %v", err)
 	}
 	if !replay.Done {
 		t.Fatal("replayed page must still be the final page")
 	}
-	if _, err := ex.PageSnapshotChunkSession(id, after, 1); err == nil {
-		t.Fatal("session still resolvable after the final-page replay")
+	// A second retry of the same lost final page is also served from the cache.
+	replay2, err := ex.PageSnapshotChunkSession(id, after, 1)
+	if err != nil {
+		t.Fatalf("final page must remain retryable within the cache TTL: %v", err)
+	}
+	if !replay2.Done {
+		t.Fatal("second retry must still be the final page")
+	}
+	// The pinned snapshot is released at completion, not retained until a later
+	// request happens along.
+	ex.snapshotChunkMu.Lock()
+	_, sessionKept := ex.snapshotChunkSessions[id]
+	ex.snapshotChunkMu.Unlock()
+	if sessionKept {
+		t.Fatal("completed session must not retain its pinned snapshot")
 	}
 }
 
@@ -348,6 +363,53 @@ func TestStartSnapshotChunkSessionFromAtSkipsPrefix(t *testing.T) {
 	}
 	if string(page.Leaves[0].Key) == string(first.Leaves[0].Key) {
 		t.Fatal("resume start re-sent the prefix already held by the client")
+	}
+}
+
+func TestCompletedSnapshotSessionKeepsFinalResponseInBoundedCache(t *testing.T) {
+	ex, _, _, _, _, _ := threeBlockChain(t)
+
+	id, first, err := ex.StartSnapshotChunkSession(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Done {
+		t.Fatal("need a multi-page snapshot")
+	}
+	after := first.NextKey
+	for {
+		next, err := ex.PageSnapshotChunkSession(id, after, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.Done {
+			break
+		}
+		after = next.NextKey
+	}
+	// The session map must be empty: the snapshot was released on completion.
+	ex.snapshotChunkMu.Lock()
+	_, kept := ex.snapshotChunkSessions[id]
+	ex.snapshotChunkMu.Unlock()
+	if kept {
+		t.Fatal("completed session still pinned in the session map")
+	}
+	// The final page is served from the bounded cache.
+	got, err := ex.PageSnapshotChunkSession(id, after, 1)
+	if err != nil {
+		t.Fatalf("final page should be cached: %v", err)
+	}
+	if !got.Done || got.SessionID != id {
+		t.Fatal("cached final page mismatch")
+	}
+	// Expiring the cache makes the id unresolvable (bounded, not permanent).
+	ex.snapshotFinalMu.Lock()
+	if c, ok := ex.snapshotFinals[id]; ok {
+		c.expires = time.Now().Add(-time.Second)
+	}
+	ex.snapshotFinalMu.Unlock()
+	if _, err := ex.PageSnapshotChunkSession(id, after, 1); err == nil {
+		t.Fatal("expired final cache must stop resolving the id")
 	}
 }
 

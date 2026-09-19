@@ -133,6 +133,14 @@ type Executor struct {
 	snapshotChunkMu       sync.Mutex
 	snapshotChunkSessions map[string]*snapshotChunkSession
 
+	// snapshotFinalMu guards the bounded cache of completed-transfer final
+	// responses, kept separately from the pinned LevelDB snapshots so a lost
+	// final page is retryable without holding the whole immutable view open.
+	snapshotFinalMu   sync.Mutex
+	snapshotFinals    map[string]*snapshotFinalCache
+	snapshotSweepStop chan struct{}
+	snapshotSweepOnce sync.Once
+
 	// applyHalt is set when the chain head was stored but the matching state
 	// commit failed. New execution and voting must wait until RecoverPartialApply
 	// brings applied height/root in line with the head (review C2).
@@ -531,6 +539,7 @@ func (e *Executor) Forks() forks.Schedule {
 
 // Close closes the chain database and releases pinned snapshot sessions.
 func (e *Executor) Close() error {
+	e.stopSnapshotSweeper()
 	e.releaseAllSnapshotChunkSessions()
 	return e.chainDB.Close()
 }
