@@ -13,6 +13,8 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
 )
 
 // snapshotPeer starts a node exposing only the sealed transport, answering
@@ -188,5 +190,92 @@ func TestStateSyncTriesEveryPeer(t *testing.T) {
 	err = syncer.StateSync(func(*types.StateSnapshot) error { t.Fatal("importer called with nothing to import"); return nil })
 	if err == nil || !strings.Contains(err.Error(), broken.URL) {
 		t.Fatalf("state sync with no serving peer = %v, want an error naming the peer", err)
+	}
+}
+
+// The coded snapshot path: the object manifest is signed by the peer's NODE
+// identity (transfer authentication) while the head block inside is sealed by
+// the pinned genesis validator (content authentication). Both must hold.
+func TestFetchStateSnapshotCodedAuthenticatesTransferAndContent(t *testing.T) {
+	genesisPub, genesisPriv, _ := qcrypto.GenerateKeypair()
+	snap := testSnapshot(t, genesisPub, genesisPriv)
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hub := objects.NewHub()
+	srv, _, nodePriv := codedObjectPeer(t, hub)
+	send, err := objects.NewObjectSender(raw, objects.ObjectDescriptor{
+		Anchor:     objects.Anchor{Kind: "snapshot", ID: snap.Block.Hash, Height: snap.Height},
+		SymbolSize: 64,
+	}, coding.NewRLNCCodec(), 2, nodePriv, objects.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.Put(send)
+
+	got, err := snapshotFetcher(genesisPub.Bytes()).FetchStateSnapshotCoded(srv.URL)
+	if err != nil {
+		t.Fatalf("coded snapshot fetch failed: %v", err)
+	}
+	if got.Height != 42 || got.Block == nil || got.Block.Hash != snap.Block.Hash || len(got.Leaves) != 2 {
+		t.Fatalf("got height %d, %d leaves", got.Height, len(got.Leaves))
+	}
+}
+
+// A coded transfer can be fully authenticated yet carry an unanchored head:
+// the content check must refuse it exactly like the plain path does.
+func TestFetchStateSnapshotCodedRefusesUnanchoredHead(t *testing.T) {
+	genesisPub, _, _ := qcrypto.GenerateKeypair()
+	otherPub, otherPriv, _ := qcrypto.GenerateKeypair()
+	snap := testSnapshot(t, otherPub, otherPriv) // head sealed by a NON-genesis key
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hub := objects.NewHub()
+	srv, _, nodePriv := codedObjectPeer(t, hub)
+	send, err := objects.NewObjectSender(raw, objects.ObjectDescriptor{
+		Anchor:     objects.Anchor{Kind: "snapshot", ID: snap.Block.Hash, Height: snap.Height},
+		SymbolSize: 64,
+	}, coding.NewUncodedCodec(), 0, nodePriv, objects.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.Put(send)
+
+	_, err = snapshotFetcher(genesisPub.Bytes()).FetchStateSnapshotCoded(srv.URL)
+	if !errors.Is(err, network.ErrSnapshotNotAnchored) {
+		t.Fatalf("coded snapshot with unanchored head = %v, want ErrSnapshotNotAnchored", err)
+	}
+}
+
+// Negotiation: CodedObjects is on by default, and a peer that serves no coded
+// objects must still complete a state sync through the plain single-shot path.
+func TestStateSyncFallsBackToPlainWhenPeerServesNoCodedObjects(t *testing.T) {
+	genesisPub, genesisPriv, _ := qcrypto.GenerateKeypair()
+	snap := testSnapshot(t, genesisPub, genesisPriv)
+	plainOnly := snapshotPeer(t, func() ([]byte, error) { return json.Marshal(snap) }) // no coded handlers
+
+	cfg := network.DefaultSyncConfig(genesisPub.Bytes())
+	cfg.Identities = network.NewIdentityCache()
+	if !cfg.CodedObjects {
+		t.Fatal("DefaultSyncConfig must enable CodedObjects")
+	}
+	pool := network.NewPeerPool("http://self", 10)
+	pool.Add(&network.PeerInfo{Addr: plainOnly.URL})
+	syncer := network.NewSyncer(cfg, pool, func() uint64 { return 0 }, func(*types.Block) error { return nil })
+
+	imported := 0
+	if err := syncer.StateSync(func(s *types.StateSnapshot) error {
+		imported++
+		return nil
+	}); err != nil {
+		t.Fatalf("state sync did not fall back to the plain path: %v", err)
+	}
+	if imported != 1 {
+		t.Fatalf("importer called %d times, want 1", imported)
 	}
 }
