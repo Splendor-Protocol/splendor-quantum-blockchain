@@ -293,6 +293,14 @@ func (e *BFTEngine) verifyPOL(height uint64, round uint32, hash [32]byte, votes 
 }
 
 func (e *BFTEngine) castPrevote(b *types.Block, round uint32) (*Vote, error) {
+	// A prevote is not the value lock. Record it separately so a restart can
+	// refuse a conflicting prevote at the SAME (height, round) without carrying
+	// a bare prevote as a permanent per-height commitment.
+	if e.journal != nil {
+		if err := e.journal.RecordPrevote(b.Header.Height, round, b.Hash); err != nil {
+			return nil, err
+		}
+	}
 	vote := &Vote{
 		Height:        b.Header.Height,
 		Round:         round,

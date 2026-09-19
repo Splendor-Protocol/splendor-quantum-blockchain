@@ -157,6 +157,93 @@ func TestEngineDoesNotDoubleSignAcrossRestart(t *testing.T) {
 	}
 }
 
+// The durable prevote record closes the "restart before precommit" gap: a
+// validator that prevoted for A at (h, r) but crashed before precommitting must
+// not, after restart, prevote for a DIFFERENT block at the same (h, r). The
+// value lock (journal.Record) would not stop it — a prevote never reached the
+// precommit journal — so the prevote record is what preserves the per-view
+// commitment.
+func TestPrevotedBeforeRestartCannotPrevoteDifferentlyAtSameView(t *testing.T) {
+	set, keys := testSet(t, 2)
+	path := filepath.Join(t.TempDir(), "vote-journal.json")
+
+	j1, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := twoPhaseFor(t, set, keys, 0, BFTConfig{VoteJournal: j1})
+	first.SetHeight(5)
+	blockA := proposalAt(t, set, keys, 5, 0, 11).Block
+	// Cast a prevote directly: this is what handleProposalTwoPhase does before
+	// any precommit exists, and it is exactly the point at which a crash loses
+	// the vote if nothing is durable.
+	if _, err := first.castPrevote(blockA, 0); err != nil {
+		t.Fatalf("first prevote: %v", err)
+	}
+	if _, _, _, ok := j1.Last(); ok {
+		t.Fatal("a prevote alone must not create a value lock")
+	}
+	if h, r, hash, ok := j1.LastPrevote(); !ok || h != 5 || r != 0 || hash != blockA.Hash {
+		t.Fatalf("prevote record = (%d,%d,%x,%v), want (5,0,%x,true)", h, r, hash[:2], ok, blockA.Hash[:2])
+	}
+
+	// Restart with the same journal.
+	j2, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := twoPhaseFor(t, set, keys, 0, BFTConfig{VoteJournal: j2})
+	second.SetHeight(5)
+	blockB := proposalAt(t, set, keys, 5, 0, 22).Block
+	if blockB.Hash == blockA.Hash {
+		t.Fatal("test blocks collide")
+	}
+	// The restarted engine must refuse a different prevote at the same view.
+	if _, err := second.castPrevote(blockB, 0); !errors.Is(err, ErrDoubleSign) {
+		t.Fatalf("restarted engine prevoted differently at the same view: %v", err)
+	}
+	// Re-prevoting the SAME block is an idempotent re-send.
+	if _, err := second.castPrevote(blockA, 0); err != nil {
+		t.Fatalf("restarted engine refused to re-prevote its own earlier vote: %v", err)
+	}
+}
+
+func TestVoteJournalPrevotePersistsAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vote-journal.json")
+	j, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := [32]byte{3}
+	if err := j.RecordPrevote(9, 1, a); err != nil {
+		t.Fatal(err)
+	}
+	// Identical re-prevote is fine; a different hash at the same view is not.
+	if err := j.RecordPrevote(9, 1, a); err != nil {
+		t.Fatalf("identical re-prevote refused: %v", err)
+	}
+	if err := j.RecordPrevote(9, 1, [32]byte{4}); !errors.Is(err, ErrDoubleSign) {
+		t.Fatalf("conflicting prevote in the same view: %v", err)
+	}
+	// A later round admits a different hash (a new view), unlike the value lock.
+	if err := j.RecordPrevote(9, 2, [32]byte{4}); err != nil {
+		t.Fatalf("new view prevote refused: %v", err)
+	}
+
+	j2, err := OpenVoteJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, r, hash, ok := j2.LastPrevote()
+	if !ok || h != 9 || r != 2 || hash != [32]byte{4} {
+		t.Fatalf("reopened prevote = (%d,%d,%x,%v)", h, r, hash[:2], ok)
+	}
+	// And the value lock itself is still empty (precommits write it, not prevotes).
+	if _, _, _, ok := j2.Last(); ok {
+		t.Fatal("prevote record leaked into the value lock")
+	}
+}
+
 func TestVoteJournalClearAndClearIfHeight(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vote-journal.json")
