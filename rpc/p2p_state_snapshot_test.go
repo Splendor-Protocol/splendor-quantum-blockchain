@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gorilla/mux"
@@ -252,8 +253,61 @@ func TestFetchStateSnapshotCodedRefusesUnanchoredHead(t *testing.T) {
 	}
 }
 
+// Negotiation: a peer that DECLARES no coded-object service is never probed —
+// the manifest request would be wasted, and the declaration is signed, so it
+// is not a downgrade an attacker can fake to a peer's detriment (the plain
+// path is equally authenticated).
+func TestStateSyncSkipsCodedProbeWhenPeerDeclaresNone(t *testing.T) {
+	genesisPub, genesisPriv, _ := qcrypto.GenerateKeypair()
+	snap := testSnapshot(t, genesisPub, genesisPriv)
+
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := network.NewNodeIdentity(pub, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.SetCapabilities(network.IdentityCaps{CodedObjects: false})
+	var manifestProbes atomic.Int64
+	router := mux.NewRouter()
+	RegisterP2PRoutes(router, P2PConfig{
+		Identity:           identity,
+		Token:              "write-secret",
+		ServeStateSnapshot: func() ([]byte, error) { return json.Marshal(snap) },
+		ServeObjectManifest: func(id []byte) ([]byte, error) {
+			manifestProbes.Add(1)
+			return nil, errors.New("coded objects disabled")
+		},
+	})
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+
+	cfg := network.DefaultSyncConfig(genesisPub.Bytes())
+	cfg.Identities = network.NewIdentityCache()
+	pool := network.NewPeerPool("http://self", 10)
+	pool.Add(&network.PeerInfo{Addr: srv.URL})
+	syncer := network.NewSyncer(cfg, pool, func() uint64 { return 0 }, func(*types.Block) error { return nil })
+
+	imported := 0
+	if err := syncer.StateSync(func(s *types.StateSnapshot) error {
+		imported++
+		return nil
+	}); err != nil {
+		t.Fatalf("state sync failed against a plain-only peer: %v", err)
+	}
+	if imported != 1 {
+		t.Fatalf("importer called %d times, want 1", imported)
+	}
+	if manifestProbes.Load() != 0 {
+		t.Fatalf("coded manifest probed %d times on a peer that declared no service", manifestProbes.Load())
+	}
+}
+
 // Negotiation: CodedObjects is on by default, and a peer that serves no coded
-// objects must still complete a state sync through the plain single-shot path.
+// objects (no handlers, no declaration) must still complete a state sync
+// through the plain single-shot path after the coded probe is refused.
 func TestStateSyncFallsBackToPlainWhenPeerServesNoCodedObjects(t *testing.T) {
 	genesisPub, genesisPriv, _ := qcrypto.GenerateKeypair()
 	snap := testSnapshot(t, genesisPub, genesisPriv)

@@ -66,6 +66,9 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 	if err != nil {
 		return nil, fmt.Errorf("coded object from %s: peer identity: %w", peerAddr, err)
 	}
+	if !doc.ServesCodedObjects() {
+		return nil, fmt.Errorf("coded object from %s: peer declares no coded-object service", peerAddr)
+	}
 	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetObjectManifest, []byte(`{}`),
 		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
 	if err != nil {

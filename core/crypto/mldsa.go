@@ -90,6 +90,12 @@ var (
 	// manifest signature can never be replayed as a (one-generation)
 	// multi-generation manifest.
 	CtxObjectManifestMulti = []byte("SPLENDOR-QC-OBJMANIFEST-MULTI-v1")
+	// CtxPeerCaps domain-separates the peer identity document's capability
+	// declaration (whether the node serves coded objects). A distinct domain
+	// from CtxPeerHandshake means the optional capability block can be
+	// signed independently, keeping old documents verifiable by new peers
+	// and new documents verifiable by old peers that ignore the extra field.
+	CtxPeerCaps = []byte("SPLENDOR-QC-P2PCAPS-v1")
 )
 
 // maxContextSize is the FIPS 204 limit on the signing context string.
