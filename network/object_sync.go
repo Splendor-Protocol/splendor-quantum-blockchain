@@ -53,9 +53,11 @@ func objectFetchDeadline(n uint32) time.Duration {
 }
 
 // FetchCodedObject pulls a peer's currently published coded object over the
-// sealed channel: verify the manifest against the peer's pinned node identity,
-// then authenticate-before-decode every symbol. Default snapshot/block sync
-// does not call this; it is the opt-in live path behind --object-codec.
+// sealed channel: verify the object manifest against the peer's pinned node
+// identity, then authenticate-before-decode every symbol of every generation.
+// The reconstructed bytes are then validated by the caller against the
+// chain-level commitments of whatever the object claims to be (a block or a
+// state snapshot) — this method only authenticates the transfer.
 func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) ([]byte, error) {
 	if f.cfg.Identities == nil {
 		return nil, fmt.Errorf("coded object from %s: no sealed transport configured", peerAddr)
@@ -69,36 +71,43 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 	if err != nil {
 		return nil, fmt.Errorf("fetch object manifest from %s: %w", peerAddr, err)
 	}
-	manifest, err := objects.DecodeManifest(raw)
+	manifest, err := objects.DecodeObjectManifest(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode object manifest from %s: %w", peerAddr, err)
 	}
-	recv, err := objects.NewReceiver(manifest, limits, objects.AllowSignerBytes(doc.NodePubKey))
+	recv, err := objects.NewObjectReceiver(manifest, limits, objects.AllowObjectSignerBytes(doc.NodePubKey))
 	if err != nil {
 		return nil, fmt.Errorf("object manifest from %s: %w", peerAddr, err)
 	}
 	// One client for every symbol so the loop reuses a connection instead of
-	// building a transport per request, under one deadline for the whole loop.
+	// building a transport per request, under one deadline for the whole loop,
+	// sized by the total codebook across all generations.
+	var total uint32
+	for _, g := range manifest.Generations {
+		total += g.CodebookSize
+	}
 	client := PeerHTTPClient(objectFetchTimeout)
-	ctx, cancel := context.WithTimeout(context.Background(), objectFetchDeadline(manifest.CodebookSize))
+	ctx, cancel := context.WithTimeout(context.Background(), objectFetchDeadline(total))
 	defer cancel()
 	descID := manifest.DescriptorID()
-	for i := uint32(0); i < manifest.CodebookSize && !recv.Ready(); i++ {
-		reqBody, err := json.Marshal(GetObjectSymbolRequest{DescriptorID: descID[:], Index: i})
-		if err != nil {
-			return nil, err
-		}
-		proofRaw, err := f.cfg.Identities.querySealed(ctx, client, peerAddr, KindGetObjectSymbol, reqBody,
-			sealedReplyBound(maxObjectSymbolReplyBytes))
-		if err != nil {
-			return nil, fmt.Errorf("fetch object symbol %d from %s: %w", i, peerAddr, err)
-		}
-		proof, err := objects.DecodeSymbolProof(proofRaw)
-		if err != nil {
-			return nil, fmt.Errorf("decode object symbol %d from %s: %w", i, peerAddr, err)
-		}
-		if _, err := recv.AbsorbProof(proof); err != nil {
-			return nil, fmt.Errorf("object symbol %d from %s: %w", i, peerAddr, err)
+	for gen := 0; gen < recv.GenerationCount(); gen++ {
+		for i := uint32(0); i < manifest.Generations[gen].CodebookSize && !recv.GenReady(gen); i++ {
+			reqBody, err := json.Marshal(GetObjectSymbolRequest{DescriptorID: descID[:], Generation: uint32(gen), Index: i})
+			if err != nil {
+				return nil, err
+			}
+			proofRaw, err := f.cfg.Identities.querySealed(ctx, client, peerAddr, KindGetObjectSymbol, reqBody,
+				sealedReplyBound(maxObjectSymbolReplyBytes))
+			if err != nil {
+				return nil, fmt.Errorf("fetch object symbol %d/%d from %s: %w", gen, i, peerAddr, err)
+			}
+			proof, err := objects.DecodeSymbolProof(proofRaw)
+			if err != nil {
+				return nil, fmt.Errorf("decode object symbol %d/%d from %s: %w", gen, i, peerAddr, err)
+			}
+			if _, err := recv.AbsorbProof(gen, proof); err != nil {
+				return nil, fmt.Errorf("object symbol %d/%d from %s: %w", gen, i, peerAddr, err)
+			}
 		}
 	}
 	got, err := recv.Decode()

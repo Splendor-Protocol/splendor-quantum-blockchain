@@ -116,6 +116,63 @@ func TestSealedCodedObjectServePath(t *testing.T) {
 	}
 }
 
+// The full fetch path: FetchCodedObject pulls the manifest and generation-aware
+// symbols over the sealed channel and reconstructs the published bytes. The
+// object spans several generations, so generation indexing on the wire is
+// exercised end to end.
+func TestSealedCodedObjectRoundTrip(t *testing.T) {
+	hub := objects.NewHub()
+	srv, _, priv := codedObjectPeer(t, hub)
+
+	// 40 KiB at 64-byte symbols is 640 source symbols -> 3 generations.
+	object := make([]byte, 40*1024)
+	for i := range object {
+		object[i] = byte(i * 7)
+	}
+	send, err := objects.NewObjectSender(object, objects.ObjectDescriptor{
+		Anchor:     objects.Anchor{Kind: "block", ID: [32]byte{4, 2}, Height: 9},
+		SymbolSize: 64,
+	}, coding.NewRLNCCodec(), 4, priv, objects.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if send.GenerationCount() < 2 {
+		t.Fatalf("test object spans %d generations, want >= 2", send.GenerationCount())
+	}
+	hub.Put(send)
+
+	got, err := objectFetcher().FetchCodedObject(srv.URL, objects.DefaultLimits())
+	if err != nil {
+		t.Fatalf("sealed coded fetch: %v", err)
+	}
+	if !bytes.Equal(got, object) {
+		t.Fatal("fetched object does not match the published bytes")
+	}
+}
+
+func TestFetchCodedObjectRefusesForeignSigner(t *testing.T) {
+	hub := objects.NewHub()
+	srv, _, _ := codedObjectPeer(t, hub)
+	_, otherPriv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := bytes.Repeat([]byte{7}, 128)
+	send, err := objects.NewObjectSender(object, objects.ObjectDescriptor{
+		Anchor:     objects.Anchor{Kind: "block", ID: [32]byte{1}, Height: 1},
+		SymbolSize: 64,
+	}, coding.NewUncodedCodec(), 0, otherPriv, objects.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.Put(send)
+
+	_, err = objectFetcher().FetchCodedObject(srv.URL, objects.DefaultLimits())
+	if !errors.Is(err, objects.ErrUnauthorizedSigner) {
+		t.Fatalf("foreign-signed object = %v, want ErrUnauthorizedSigner", err)
+	}
+}
+
 func TestObjectReceiverRefusesForeignSigner(t *testing.T) {
 	hub := objects.NewHub()
 	srv, _, _ := codedObjectPeer(t, hub)
