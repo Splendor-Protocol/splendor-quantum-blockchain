@@ -3,6 +3,7 @@ package rpc
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -88,7 +89,17 @@ type P2PConfig struct {
 	// symbol proof from generation `generation` of the requested object.
 	// nil means the node does not serve coded objects.
 	ServeObjectSymbol func(descriptorID []byte, generation uint32, index uint32) ([]byte, error)
+
+	// ServeBlockBatch builds a coded batch of count consecutive blocks
+	// starting at fromHeight and returns its SQCO object manifest; the blocks
+	// themselves are then served through ServeObjectSymbol by descriptor ID.
+	// nil means the node does not serve coded block batches.
+	ServeBlockBatch func(fromHeight uint64, count int) ([]byte, error)
 }
+
+// maxCodedBlockBatchBlocks bounds a coded block-batch request, so a peer
+// cannot be asked to encode an unbounded object on demand.
+const maxCodedBlockBatchBlocks = 128
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
 //
@@ -365,6 +376,21 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			return
 		}
 		payload, err = cfg.ServeObjectSymbol(q.DescriptorID, q.Generation, q.Index)
+	case network.KindGetBlockBatch:
+		if cfg.ServeBlockBatch == nil {
+			writeError(w, http.StatusNotImplemented, "sealed coded block-batch reads not available")
+			return
+		}
+		var q network.GetBlockBatchRequest
+		if jsonErr := json.Unmarshal(req.Body, &q); jsonErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid get_block_batch_v1 body")
+			return
+		}
+		if q.Count < 1 || q.Count > maxCodedBlockBatchBlocks {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("block batch count %d outside [1,%d]", q.Count, maxCodedBlockBatchBlocks))
+			return
+		}
+		payload, err = cfg.ServeBlockBatch(q.FromHeight, q.Count)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown sealed read kind")
 		return

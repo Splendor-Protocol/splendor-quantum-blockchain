@@ -106,10 +106,16 @@ type IdentityDocument struct {
 	// coded attempt and go straight to the plain paths.
 	CodedObjects *bool `json:"coded_objects,omitempty"`
 
-	// CapsSignature authenticates CodedObjects under the node identity key
-	// with its own domain (CtxPeerCaps). It is a separate signature so peers
-	// that predate the capability fields — which ignore unknown JSON keys and
-	// verify only Signature — still accept this document.
+	// CodedBlocks, when non-nil, declares whether this node serves coded
+	// block batches (get_block_batch_v1), with the same probe semantics as
+	// CodedObjects.
+	CodedBlocks *bool `json:"coded_blocks,omitempty"`
+
+	// CapsSignature authenticates CodedObjects and CodedBlocks under the node
+	// identity key with its own domain (CtxPeerCaps). It is a separate
+	// signature so peers that predate the capability fields — which ignore
+	// unknown JSON keys and verify only Signature — still accept this
+	// document.
 	CapsSignature []byte `json:"caps_signature,omitempty"`
 }
 
@@ -154,6 +160,9 @@ type IdentityCaps struct {
 	// CodedObjects says whether this node serves coded objects over the
 	// sealed channel (get_object_manifest_v1 / get_object_symbol_v1).
 	CodedObjects bool
+	// CodedBlocks says whether this node serves coded block batches
+	// (get_block_batch_v1).
+	CodedBlocks bool
 }
 
 // SetCapabilities declares (or replaces) the node's capability set. Call
@@ -246,9 +255,11 @@ func (n *NodeIdentity) Document() (*IdentityDocument, error) {
 		Signature:  sig,
 	}
 	if caps != nil {
-		coded := caps.CodedObjects
-		doc.CodedObjects = &coded
-		capsSig, err := qcrypto.Sign(sigPriv, identityCapsDigest(doc.NodePubKey, coded), qcrypto.CtxPeerCaps)
+		codedObj := caps.CodedObjects
+		codedBlk := caps.CodedBlocks
+		doc.CodedObjects = &codedObj
+		doc.CodedBlocks = &codedBlk
+		capsSig, err := qcrypto.Sign(sigPriv, identityCapsDigest(doc.NodePubKey, codedObj, codedBlk), qcrypto.CtxPeerCaps)
 		if err != nil {
 			return nil, fmt.Errorf("sign identity capabilities: %w", err)
 		}
@@ -273,10 +284,15 @@ func identityDigest(kemPub []byte, notAfter int64) []byte {
 // identityCapsDigest is the message signed under CtxPeerCaps. It binds the
 // capability declaration to the node identity key so a capability block cannot
 // be spliced from one peer's document onto another's.
-func identityCapsDigest(nodePubKey []byte, codedObjects bool) []byte {
-	buf := make([]byte, 0, len(nodePubKey)+1)
+func identityCapsDigest(nodePubKey []byte, codedObjects, codedBlocks bool) []byte {
+	buf := make([]byte, 0, len(nodePubKey)+2)
 	buf = append(buf, nodePubKey...)
 	if codedObjects {
+		buf = append(buf, 0x01)
+	} else {
+		buf = append(buf, 0x00)
+	}
+	if codedBlocks {
 		buf = append(buf, 0x01)
 	} else {
 		buf = append(buf, 0x00)
@@ -316,13 +332,13 @@ func (doc *IdentityDocument) Verify(expectedNodePubKey []byte) error {
 	if !qcrypto.Verify(pub, identityDigest(doc.KEMPubKey, doc.NotAfter), qcrypto.CtxPeerHandshake, doc.Signature) {
 		return fmt.Errorf("identity document signature is invalid: the KEM key is not authenticated")
 	}
-	// The capability block is optional, but when either half of it is present
+	// The capability block is optional, but when any half of it is present
 	// both must be, and the declaration must verify under the node key.
-	if doc.CodedObjects != nil || doc.CapsSignature != nil {
-		if doc.CodedObjects == nil || doc.CapsSignature == nil {
+	if doc.CodedObjects != nil || doc.CodedBlocks != nil || doc.CapsSignature != nil {
+		if doc.CodedObjects == nil || doc.CodedBlocks == nil || doc.CapsSignature == nil {
 			return fmt.Errorf("identity document capability declaration is incomplete")
 		}
-		if !qcrypto.Verify(pub, identityCapsDigest(doc.NodePubKey, *doc.CodedObjects), qcrypto.CtxPeerCaps, doc.CapsSignature) {
+		if !qcrypto.Verify(pub, identityCapsDigest(doc.NodePubKey, *doc.CodedObjects, *doc.CodedBlocks), qcrypto.CtxPeerCaps, doc.CapsSignature) {
 			return fmt.Errorf("identity document capability signature is invalid")
 		}
 	}
@@ -335,6 +351,12 @@ func (doc *IdentityDocument) Verify(expectedNodePubKey []byte) error {
 // downgrade.
 func (doc *IdentityDocument) ServesCodedObjects() bool {
 	return doc.CodedObjects == nil || *doc.CodedObjects
+}
+
+// ServesCodedBlocks reports whether this document's peer serves coded block
+// batches, with the same probe semantics as ServesCodedObjects.
+func (doc *IdentityDocument) ServesCodedBlocks() bool {
+	return doc.CodedBlocks == nil || *doc.CodedBlocks
 }
 
 // Seal encrypts plaintext to the peer described by a VERIFIED identity document.

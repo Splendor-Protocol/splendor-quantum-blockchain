@@ -33,6 +33,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
 )
 
 // maxSyncBodyBytes bounds a block/genesis body pulled from a (possibly malicious)
@@ -125,6 +126,22 @@ type SyncConfig struct {
 	// serves a join. Default true in DefaultSyncConfig; zero-value structs
 	// (tests) leave it off.
 	CodedObjects bool
+
+	// CodedBlockBatches enables the coded block-batch pre-fill in SyncOnce:
+	// when catching up by at least MinCodedBatchBlocks, one coded batch of up
+	// to CodedBatchSize blocks is fetched and applied before the per-block
+	// pipeline takes over. Any failure falls back to per-block fetching.
+	// Default true in DefaultSyncConfig; zero-value structs (tests) leave it
+	// off.
+	CodedBlockBatches bool
+
+	// CodedBatchSize is how many blocks one coded batch carries. 0 uses 32.
+	CodedBatchSize int
+
+	// MinCodedBatchBlocks is the catch-up gap below which SyncOnce does not
+	// bother with a coded batch (small gaps finish faster one-by-one). 0 uses
+	// 16.
+	MinCodedBatchBlocks int
 }
 
 // DefaultSyncConfig returns sensible defaults.
@@ -136,6 +153,7 @@ func DefaultSyncConfig(validatorPubKey []byte) SyncConfig {
 		RequestTimeout:    15 * time.Second,
 		RetryDelay:        2 * time.Second,
 		CodedObjects:      true,
+		CodedBlockBatches: true,
 	}
 }
 
@@ -410,6 +428,84 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 	return &block, nil
 }
 
+// FetchBlockBatch downloads a coded batch of count consecutive blocks starting
+// at fromHeight over the sealed channel: the peer returns the batch's object
+// manifest in reply to get_block_batch_v1, the blocks travel as coded symbols,
+// and every decoded block is validated exactly like FetchBlock (structural,
+// then the pinned key / active producer set) before any of them is returned.
+// Any failure returns an error so the caller falls back to per-block fetches —
+// the batch is a transport accelerator, never a weaker trust path.
+func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count int) ([]*types.Block, error) {
+	if f.cfg.Identities == nil {
+		return nil, fmt.Errorf("coded block batch from %s: no sealed transport configured", peerAddr)
+	}
+	doc, err := f.cfg.Identities.Get(peerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("coded block batch from %s: peer identity: %w", peerAddr, err)
+	}
+	if !doc.ServesCodedBlocks() {
+		return nil, fmt.Errorf("coded block batch from %s: peer declares no coded block-batch service", peerAddr)
+	}
+	if count < 1 {
+		return nil, errors.New("coded block batch: count must be positive")
+	}
+	req, err := json.Marshal(GetBlockBatchRequest{FromHeight: fromHeight, Count: count})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetBlockBatch, req,
+		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("fetch coded block batch from %s: %w", peerAddr, err)
+	}
+	manifest, err := objects.DecodeObjectManifest(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode block batch manifest from %s: %w", peerAddr, err)
+	}
+	// The manifest's anchor is the peer's signed statement about WHICH range
+	// the object carries. Refuse a mismatch before spending symbol work; the
+	// decoded blocks are re-checked per height below anyway.
+	if manifest.Anchor.Kind != "block" {
+		return nil, fmt.Errorf("block batch manifest from %s anchors kind %q", peerAddr, manifest.Anchor.Kind)
+	}
+	if manifest.Anchor.Height != fromHeight+uint64(count)-1 {
+		return nil, fmt.Errorf("block batch manifest from %s anchors height %d, want %d",
+			peerAddr, manifest.Anchor.Height, fromHeight+uint64(count)-1)
+	}
+	decoded, err := f.fetchDecodedObject(peerAddr, manifest, objects.DefaultLimits())
+	if err != nil {
+		return nil, fmt.Errorf("coded block batch from %s: %w", peerAddr, err)
+	}
+	var blocks []*types.Block
+	if err := json.Unmarshal(decoded, &blocks); err != nil {
+		return nil, fmt.Errorf("decode coded block batch from %s: %w", peerAddr, err)
+	}
+	if len(blocks) != count {
+		return nil, fmt.Errorf("coded block batch from %s: got %d blocks, asked for %d", peerAddr, len(blocks), count)
+	}
+	for i, b := range blocks {
+		if b == nil {
+			return nil, fmt.Errorf("coded block batch from %s: block %d is null", peerAddr, i)
+		}
+		want := fromHeight + uint64(i)
+		if b.Header.Height != want {
+			// Same rule as FetchBlock: a validly-signed block at the wrong
+			// height must never slip into the pipeline's slot for `want`.
+			return nil, fmt.Errorf("peer %s served height %d in place of requested height %d",
+				peerAddr, b.Header.Height, want)
+		}
+		if err := b.Validate(); err != nil {
+			return nil, fmt.Errorf("block %d from coded batch failed validation: %w", want, err)
+		}
+		if err := VerifyBlockProducer(b, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
+			if !errors.Is(err, ErrProducerNotYetKnown) || f.cfg.LookupProducerKey == nil {
+				return nil, fmt.Errorf("coded block batch block %d: %w", want, err)
+			}
+		}
+	}
+	return blocks, nil
+}
+
 // Syncer orchestrates the full block sync process.
 type Syncer struct {
 	fetcher     *BlockFetcher
@@ -624,7 +720,64 @@ func (s *Syncer) SyncOnceContext(ctx context.Context) (int, error) {
 		workers = int(span)
 	}
 
-	applied, err := s.pipelineFetchAndApply(ctx, localH, target, workers)
+	// Coded batch pre-fill: when the catch-up gap is large enough, pull one
+	// coded batch from a peer above the local height and apply it in order
+	// before the per-block pipeline takes the rest. Any failure — peer
+	// without the service, transfer error, an unauthenticated block — falls
+	// back to per-block fetching, which re-validates every block it touches.
+	// The batch is a transport accelerator, never a weaker trust path.
+	applied := 0
+	batchSize := s.fetcher.cfg.CodedBatchSize
+	if batchSize < 1 {
+		batchSize = 32
+	}
+	minBatch := s.fetcher.cfg.MinCodedBatchBlocks
+	if minBatch < 1 {
+		minBatch = 16
+	}
+	if s.fetcher.cfg.CodedBlockBatches && target-localH >= uint64(minBatch) {
+		if cands := s.pool.PeersAboveHeight(localH); len(cands) > 0 {
+			peer := cands[0]
+			n := int(target - localH)
+			if n > batchSize {
+				n = batchSize
+			}
+			blocks, err := s.fetcher.FetchBlockBatch(peer, localH+1, n)
+			if err != nil {
+				log.Debug().Err(err).Str("peer", peer).
+					Msg("sync: coded block batch unavailable, falling back to per-block fetching")
+			} else {
+				batchApplied := 0
+				for _, b := range blocks {
+					if err := ctx.Err(); err != nil {
+						return applied, err
+					}
+					// Fail closed: a block that does not authenticate is never
+					// applied. Stop here and let the pipeline surface the same
+					// refusal at this height.
+					if err := VerifyBlockProducer(b, s.fetcher.TrustedPubKey(), s.fetcher.cfg.LookupProducerKey); err != nil {
+						log.Warn().Err(err).Uint64("height", b.Header.Height).
+							Msg("sync: coded batch block failed producer authentication, falling back to per-block fetching")
+						break
+					}
+					if err := s.applyBlock(b); err != nil {
+						log.Warn().Err(err).Uint64("height", b.Header.Height).
+							Msg("sync: coded batch block failed to apply, falling back to per-block fetching")
+						break
+					}
+					s.pool.UpdatePeerHeight(peer, b.Header.Height)
+					applied++
+					batchApplied++
+					localH = b.Header.Height
+				}
+				log.Debug().Int("blocks", batchApplied).Uint64("height", localH).
+					Msg("sync: applied coded block batch")
+			}
+		}
+	}
+
+	pApplied, err := s.pipelineFetchAndApply(ctx, localH, target, workers)
+	applied += pApplied
 	if err != nil {
 		return applied, err
 	}

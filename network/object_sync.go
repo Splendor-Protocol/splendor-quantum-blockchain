@@ -78,6 +78,18 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 	if err != nil {
 		return nil, fmt.Errorf("decode object manifest from %s: %w", peerAddr, err)
 	}
+	return f.fetchDecodedObject(peerAddr, manifest, limits)
+}
+
+// fetchDecodedObject reconstructs the object committed by manifest: symbols
+// are fetched over the sealed channel, every proof authenticated against its
+// generation's codebook root before it reaches a decoder, under one deadline
+// sized by the total codebook.
+func (f *BlockFetcher) fetchDecodedObject(peerAddr string, manifest *objects.ObjectManifest, limits objects.Limits) ([]byte, error) {
+	doc, err := f.cfg.Identities.Get(peerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("coded object from %s: peer identity: %w", peerAddr, err)
+	}
 	recv, err := objects.NewObjectReceiver(manifest, limits, objects.AllowObjectSignerBytes(doc.NodePubKey))
 	if err != nil {
 		return nil, fmt.Errorf("object manifest from %s: %w", peerAddr, err)
