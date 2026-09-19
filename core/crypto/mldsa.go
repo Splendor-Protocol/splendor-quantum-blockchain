@@ -83,6 +83,13 @@ var (
 	// trusted enough to spend decode work on. See the Sept 2026 improvement
 	// plan Section 8.3. Appended after CtxVerify: the block is append-only.
 	CtxObjectManifest = []byte("SPLENDOR-QC-OBJMANIFEST-v1")
+	// CtxObjectManifestMulti domain-separates multi-generation coded-object
+	// manifests: one signature covering the anchor and every generation's
+	// codebook root, for objects too large to fit a single generation. A
+	// distinct domain from CtxObjectManifest means a single-generation
+	// manifest signature can never be replayed as a (one-generation)
+	// multi-generation manifest.
+	CtxObjectManifestMulti = []byte("SPLENDOR-QC-OBJMANIFEST-MULTI-v1")
 )
 
 // maxContextSize is the FIPS 204 limit on the signing context string.

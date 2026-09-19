@@ -15,8 +15,9 @@ import (
 var sqcoMagic = [4]byte{'S', 'Q', 'C', 'O'}
 
 const (
-	wireTypeManifest    byte = 1
-	wireTypeSymbolProof byte = 2
+	wireTypeManifest       byte = 1
+	wireTypeSymbolProof    byte = 2
+	wireTypeObjectManifest byte = 3
 )
 
 var (
@@ -257,6 +258,155 @@ func DecodeSymbolProof(frame []byte) (SymbolProof, error) {
 }
 
 type writer struct{ b []byte }
+
+// FrameType returns the SQCO wire type of a frame (1 manifest, 2 symbol proof,
+// 3 object manifest), without decoding the body. The manifest reply is
+// self-describing, so a fetch can decide whether the peer served a
+// single-generation or multi-generation object.
+func FrameType(frame []byte) (byte, error) {
+	r := newReader(frame)
+	if err := r.requireMagic(); err != nil {
+		return 0, err
+	}
+	ver, err := r.u8()
+	if err != nil {
+		return 0, err
+	}
+	if ver != WireVersion {
+		return 0, fmt.Errorf("%w: %d", ErrUnknownWireVersion, ver)
+	}
+	return r.u8()
+}
+
+// EncodeObjectManifest writes a versioned SQCO frame for a multi-generation
+// object manifest. Generation count is bounded by MaxGenerations before any
+// allocation.
+func EncodeObjectManifest(m *ObjectManifest) ([]byte, error) {
+	if m == nil {
+		return nil, errors.New("objects: nil object manifest")
+	}
+	if len(m.Generations) == 0 || len(m.Generations) > MaxGenerations {
+		return nil, fmt.Errorf("objects: object manifest has %d generations, must be in [1,%d]", len(m.Generations), MaxGenerations)
+	}
+	var w writer
+	w.magic()
+	w.u8(WireVersion)
+	w.u8(wireTypeObjectManifest)
+	if err := w.str16(m.Anchor.Kind, MaxAnchorKindLen, "anchor kind"); err != nil {
+		return nil, err
+	}
+	w.bytes32(m.Anchor.ID)
+	w.u64(m.Anchor.Height)
+	if err := w.str16(m.Codec, MaxCodecNameLen, "codec name"); err != nil {
+		return nil, err
+	}
+	w.u64(m.ObjectSize)
+	w.u32(m.SymbolSize)
+	w.u16(uint16(len(m.Generations)))
+	for _, g := range m.Generations {
+		w.u32(g.SourceCount)
+		w.bytes32(g.CodebookRoot)
+		w.u32(g.CodebookSize)
+	}
+	if err := w.blob16(m.SignerPubKey, qcrypto.PublicKeySize, "signer public key"); err != nil {
+		return nil, err
+	}
+	if err := w.blob16(m.Signature, qcrypto.SignatureSize, "signature"); err != nil {
+		return nil, err
+	}
+	return w.b, nil
+}
+
+// DecodeObjectManifest parses a frame produced by EncodeObjectManifest.
+// Claimed generation, symbol, and signer lengths are checked against the
+// constants before allocation.
+func DecodeObjectManifest(frame []byte) (*ObjectManifest, error) {
+	r := newReader(frame)
+	if err := r.requireMagic(); err != nil {
+		return nil, err
+	}
+	ver, err := r.u8()
+	if err != nil {
+		return nil, err
+	}
+	if ver != WireVersion {
+		return nil, fmt.Errorf("%w: %d", ErrUnknownWireVersion, ver)
+	}
+	typ, err := r.u8()
+	if err != nil {
+		return nil, err
+	}
+	if typ != wireTypeObjectManifest {
+		return nil, fmt.Errorf("%w: %d (want object manifest)", ErrUnknownWireType, typ)
+	}
+	kind, err := r.str16(MaxAnchorKindLen, "anchor kind")
+	if err != nil {
+		return nil, err
+	}
+	id, err := r.bytes32()
+	if err != nil {
+		return nil, err
+	}
+	height, err := r.u64()
+	if err != nil {
+		return nil, err
+	}
+	codec, err := r.str16(MaxCodecNameLen, "codec name")
+	if err != nil {
+		return nil, err
+	}
+	objectSize, err := r.u64()
+	if err != nil {
+		return nil, err
+	}
+	symbolSize, err := r.u32()
+	if err != nil {
+		return nil, err
+	}
+	nGen, err := r.u16()
+	if err != nil {
+		return nil, err
+	}
+	if int(nGen) == 0 || int(nGen) > MaxGenerations {
+		return nil, fmt.Errorf("objects: object manifest has %d generations, must be in [1,%d]", nGen, MaxGenerations)
+	}
+	gens := make([]GenerationManifest, 0, nGen)
+	for i := 0; i < int(nGen); i++ {
+		src, err := r.u32()
+		if err != nil {
+			return nil, err
+		}
+		root, err := r.bytes32()
+		if err != nil {
+			return nil, err
+		}
+		size, err := r.u32()
+		if err != nil {
+			return nil, err
+		}
+		gens = append(gens, GenerationManifest{SourceCount: src, CodebookRoot: root, CodebookSize: size})
+	}
+	pub, err := r.blob16(qcrypto.PublicKeySize, "signer public key")
+	if err != nil {
+		return nil, err
+	}
+	sig, err := r.blob16(qcrypto.SignatureSize, "signature")
+	if err != nil {
+		return nil, err
+	}
+	if err := r.done(); err != nil {
+		return nil, err
+	}
+	return &ObjectManifest{
+		Anchor:       Anchor{Kind: kind, ID: id, Height: height},
+		Codec:        codec,
+		ObjectSize:   objectSize,
+		SymbolSize:   symbolSize,
+		Generations:  gens,
+		SignerPubKey: pub,
+		Signature:    sig,
+	}, nil
+}
 
 func (w *writer) magic()    { w.b = append(w.b, sqcoMagic[:]...) }
 func (w *writer) u8(v byte) { w.b = append(w.b, v) }
