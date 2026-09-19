@@ -99,7 +99,7 @@ func TestEqualBytes(t *testing.T) {
 
 func TestCorruptProofIsRejectedBeforeDecode(t *testing.T) {
 	for _, c := range []coding.Codec{coding.NewErasureCodec(), coding.NewRLNCCodec()} {
-		res := runTrialsScenario(c, 8, 32, 0, 50, 5, 11, scenarioCorruptProof, nil)
+		res := runTrialsScenario(c, 8, 32, 0, 50, 5, 11, scenarioCorruptProof, nil, false)
 		if res.rejectedAuth == 0 {
 			t.Fatalf("%s: corrupt-proof scenario never rejected a proof", c.Name())
 		}
@@ -126,5 +126,16 @@ func TestManifestAndProofBytesAreCounted(t *testing.T) {
 	}
 	if res.avgAuthTime == 0 {
 		t.Fatal("auth time was not measured")
+	}
+}
+
+// The multi-generation endpoint must recover a clean-link object exactly like
+// the single-generation one — the production shape must not regress recovery.
+func TestMultiGenTrialsRecover(t *testing.T) {
+	for _, c := range []coding.Codec{coding.NewErasureCodec(), coding.NewRLNCCodec()} {
+		res := runTrialsScenario(c, 8, 64, 0, 50, 4, 21, scenarioLoss, nil, true)
+		if res.recovered != 4 {
+			t.Fatalf("%s multigen: recovered %d/4, want 4 on a clean link", c.Name(), res.recovered)
+		}
 	}
 }

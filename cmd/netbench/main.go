@@ -55,10 +55,15 @@ func main() {
 	trials := flag.Int("trials", 20, "number of independent trials to average over")
 	seed := flag.Int64("seed", 1, "PRNG seed, for reproducible trials")
 	scenario := flag.String("scenario", scenarioLoss, "loss, corrupt-proof, or corrupt-coeff")
+	multigen := flag.Bool("multigen", false, "run the multi-generation transfer controller (production shape): the object is split across generations with a per-generation source cap of half the requested count")
 	flag.Parse()
 
 	if *sourceCount <= 0 || *symbolSize <= 0 || *trials <= 0 {
 		fmt.Fprintln(os.Stderr, "netbench: --source-count, --symbol-size and --trials must all be positive")
+		os.Exit(2)
+	}
+	if *multigen && *sourceCount < 4 {
+		fmt.Fprintln(os.Stderr, "netbench: --multigen needs --source-count >= 4 so the object spans at least two generations")
 		os.Exit(2)
 	}
 	if *lossPct < 0 || *lossPct >= 100 {
@@ -84,13 +89,13 @@ func main() {
 		coding.NewRLNCCodec(),
 	}
 
-	fmt.Printf("netbench: scenario=%s source_count=%d symbol_size=%d loss_pct=%.1f repair_overhead_pct=%.1f trials=%d seed=%d\n\n",
-		*scenario, *sourceCount, *symbolSize, *lossPct, *repairOverheadPct, *trials, *seed)
+	fmt.Printf("netbench: scenario=%s source_count=%d symbol_size=%d loss_pct=%.1f repair_overhead_pct=%.1f trials=%d seed=%d multigen=%v\n\n",
+		*scenario, *sourceCount, *symbolSize, *lossPct, *repairOverheadPct, *trials, *seed, *multigen)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "codec\trecovered\tfailed\trejected_auth\tavg_symbols_used\tavg_bytes_total\tavg_bytes_useful\tavg_manifest_bytes\tavg_auth_time\tavg_decode_time")
 	for _, c := range codecs {
-		res := runTrialsScenario(c, *sourceCount, *symbolSize, *lossPct, *repairOverheadPct, *trials, *seed, *scenario, priv)
+		res := runTrialsScenario(c, *sourceCount, *symbolSize, *lossPct, *repairOverheadPct, *trials, *seed, *scenario, priv, *multigen)
 		fmt.Fprintf(w, "%s\t%d/%d\t%d\t%d\t%.1f\t%.0f\t%.0f\t%.0f\t%s\t%s\n",
 			c.Name(), res.recovered, *trials, res.failed, res.rejectedAuth,
 			res.avgSymbolsUsed, res.avgBytesTotal, res.avgBytesUseful, res.avgManifestBytes,
@@ -115,10 +120,66 @@ type trialResult struct {
 }
 
 func runTrials(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairOverheadPct float64, trials int, seed int64) trialResult {
-	return runTrialsScenario(codec, sourceCount, symbolSize, lossPct, repairOverheadPct, trials, seed, scenarioLoss, nil)
+	return runTrialsScenario(codec, sourceCount, symbolSize, lossPct, repairOverheadPct, trials, seed, scenarioLoss, nil, false)
 }
 
-func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairOverheadPct float64, trials int, seed int64, scenario string, signer *qcrypto.PrivateKey) trialResult {
+// trialEndpoint abstracts the single- and multi-generation transfer
+// controllers behind one interface so the trial loop is identical for both —
+// the per-generation codebook of the production path and the one-shot
+// codebook of the classic path.
+type trialEndpoint struct {
+	multi bool
+
+	single *objects.Sender
+	recv   *objects.Receiver
+
+	obj   *objects.ObjectSender
+	orecv *objects.ObjectReceiver
+}
+
+func (e trialEndpoint) generations() int {
+	if e.multi {
+		return e.obj.GenerationCount()
+	}
+	return 1
+}
+
+func (e trialEndpoint) symbolCount(gen int) int {
+	if e.multi {
+		return e.obj.SymbolCount(gen)
+	}
+	return e.single.SymbolCount()
+}
+
+func (e trialEndpoint) proof(gen, idx int) (objects.SymbolProof, error) {
+	if e.multi {
+		return e.obj.Proof(gen, idx)
+	}
+	return e.single.Proof(idx)
+}
+
+func (e trialEndpoint) ready(gen int) bool {
+	if e.multi {
+		return e.orecv.GenReady(gen)
+	}
+	return e.recv.Ready()
+}
+
+func (e trialEndpoint) absorb(gen int, proof objects.SymbolProof) (bool, error) {
+	if e.multi {
+		return e.orecv.AbsorbProof(gen, proof)
+	}
+	return e.recv.AbsorbProof(proof)
+}
+
+func (e trialEndpoint) decode() ([]byte, error) {
+	if e.multi {
+		return e.orecv.Decode()
+	}
+	return e.recv.Decode()
+}
+
+func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairOverheadPct float64, trials int, seed int64, scenario string, signer *qcrypto.PrivateKey, multigen bool) trialResult {
 	if signer == nil {
 		_, priv, err := qcrypto.GenerateKeypair()
 		if err != nil {
@@ -146,22 +207,52 @@ func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct,
 			coeffRng := rand.New(rand.NewSource(seed + int64(trial) + 1_000_000_003))
 			trialCodec = coding.NewRLNCCodecWithReader(coeffRng)
 		}
-		desc := objects.Descriptor{
+		desc := objects.ObjectDescriptor{
 			Anchor:     objects.Anchor{Kind: "snapshot", ID: [32]byte{byte(trial)}, Height: uint64(trial)},
 			Codec:      trialCodec.Name(),
 			SymbolSize: uint32(symbolSize),
 		}
-		send, err := objects.NewSender(object, desc, trialCodec, repairCount, signer, objects.DefaultLimits())
-		if err != nil {
-			continue
-		}
-		recv, err := objects.NewReceiver(send.Manifest(), objects.DefaultLimits(), objects.AllowSignerBytes(send.Manifest().SignerPubKey))
-		if err != nil {
-			continue
-		}
-		mFrame, err := objects.EncodeManifest(send.Manifest())
-		if err != nil {
-			continue
+		var (
+			endpoint trialEndpoint
+			mFrame   []byte
+		)
+		if multigen {
+			// Force the object to span at least two generations, the shape the
+			// production path uses for large objects: the per-generation
+			// source cap is half the requested count.
+			limits := objects.DefaultLimits()
+			limits.MaxSourceCount = uint32(sourceCount/2 + sourceCount%2)
+			send, err := objects.NewObjectSender(object, desc, trialCodec, repairCount, signer, limits)
+			if err != nil {
+				continue
+			}
+			recv, err := objects.NewObjectReceiver(send.Manifest(), limits, objects.AllowObjectSignerBytes(send.Manifest().SignerPubKey))
+			if err != nil {
+				continue
+			}
+			mFrame, err = objects.EncodeObjectManifest(send.Manifest())
+			if err != nil {
+				continue
+			}
+			endpoint = trialEndpoint{multi: true, obj: send, orecv: recv}
+		} else {
+			send, err := objects.NewSender(object, objects.Descriptor{
+				Anchor:     desc.Anchor,
+				Codec:      desc.Codec,
+				SymbolSize: desc.SymbolSize,
+			}, trialCodec, repairCount, signer, objects.DefaultLimits())
+			if err != nil {
+				continue
+			}
+			recv, err := objects.NewReceiver(send.Manifest(), objects.DefaultLimits(), objects.AllowSignerBytes(send.Manifest().SignerPubKey))
+			if err != nil {
+				continue
+			}
+			mFrame, err = objects.EncodeManifest(send.Manifest())
+			if err != nil {
+				continue
+			}
+			endpoint = trialEndpoint{single: send, recv: recv}
 		}
 		bytesTotal := int64(len(mFrame))
 		bytesUseful := int64(0)
@@ -169,56 +260,61 @@ func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct,
 		var authCPU, decodeCPU time.Duration
 		corrupted := false
 
-		for i := 0; i < send.SymbolCount(); i++ {
-			if recv.Ready() {
-				break
-			}
-			proof, err := send.Proof(i)
-			if err != nil {
-				bytesTotal = -1
-				break
-			}
-			frame, err := objects.EncodeSymbolProof(proof)
-			if err != nil {
-				bytesTotal = -1
-				break
-			}
-			bytesTotal += int64(len(frame))
-			if rng.Float64()*100 < lossPct {
-				continue
-			}
-			switch scenario {
-			case scenarioCorruptProof:
-				if !corrupted && len(proof.Symbol.Payload) > 0 {
-					proof.Symbol.Payload = append([]byte(nil), proof.Symbol.Payload...)
-					proof.Symbol.Payload[0] ^= 0xff
-					corrupted = true
+		for gen := 0; gen < endpoint.generations(); gen++ {
+			for i := 0; i < endpoint.symbolCount(gen); i++ {
+				if endpoint.ready(gen) {
+					break
 				}
-			case scenarioCorruptCoeff:
-				if !corrupted && len(proof.Symbol.Coefficients) > 0 {
-					proof.Symbol.Coefficients = append([]byte(nil), proof.Symbol.Coefficients...)
-					proof.Symbol.Coefficients[0] ^= 0xff
-					corrupted = true
+				proof, err := endpoint.proof(gen, i)
+				if err != nil {
+					bytesTotal = -1
+					break
 				}
+				frame, err := objects.EncodeSymbolProof(proof)
+				if err != nil {
+					bytesTotal = -1
+					break
+				}
+				bytesTotal += int64(len(frame))
+				if rng.Float64()*100 < lossPct {
+					continue
+				}
+				switch scenario {
+				case scenarioCorruptProof:
+					if !corrupted && len(proof.Symbol.Payload) > 0 {
+						proof.Symbol.Payload = append([]byte(nil), proof.Symbol.Payload...)
+						proof.Symbol.Payload[0] ^= 0xff
+						corrupted = true
+					}
+				case scenarioCorruptCoeff:
+					if !corrupted && len(proof.Symbol.Coefficients) > 0 {
+						proof.Symbol.Coefficients = append([]byte(nil), proof.Symbol.Coefficients...)
+						proof.Symbol.Coefficients[0] ^= 0xff
+						corrupted = true
+					}
+				}
+				start := time.Now()
+				increased, err := endpoint.absorb(gen, proof)
+				authCPU += time.Since(start)
+				if errors.Is(err, objects.ErrUnauthenticatedSymbol) {
+					rejectedAuth++
+					continue
+				}
+				if err != nil || !increased {
+					continue
+				}
+				symbolsUsed++
+				bytesUseful += int64(len(frame))
 			}
-			start := time.Now()
-			increased, err := recv.AbsorbProof(proof)
-			authCPU += time.Since(start)
-			if errors.Is(err, objects.ErrUnauthenticatedSymbol) {
-				rejectedAuth++
-				continue
+			if bytesTotal < 0 {
+				break
 			}
-			if err != nil || !increased {
-				continue
-			}
-			symbolsUsed++
-			bytesUseful += int64(len(frame))
 		}
-		if bytesTotal < 0 || !recv.Ready() {
+		if bytesTotal < 0 || !endpoint.ready(endpoint.generations()-1) {
 			continue
 		}
 		start := time.Now()
-		got, err := recv.Decode()
+		got, err := endpoint.decode()
 		decodeCPU += time.Since(start)
 		if err != nil || !bytes.Equal(got, object) {
 			continue
