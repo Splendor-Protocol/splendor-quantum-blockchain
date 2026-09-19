@@ -93,3 +93,26 @@ func TestHubPutReplacesPrevious(t *testing.T) {
 		t.Fatal("current object was not replaced")
 	}
 }
+
+func TestHubClearDropsCurrent(t *testing.T) {
+	_, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	send, err := NewObjectSender(bytes.Repeat([]byte{5}, 64), ObjectDescriptor{
+		Anchor:     Anchor{Kind: "block", ID: [32]byte{3}, Height: 3},
+		SymbolSize: 64,
+	}, coding.NewUncodedCodec(), 0, priv, DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHub()
+	h.Put(send)
+	h.Clear()
+	if h.Current() != nil {
+		t.Fatal("cleared hub still holds a current object")
+	}
+	if _, err := h.ServeManifest(nil); err == nil {
+		t.Fatal("cleared hub served a manifest")
+	}
+}

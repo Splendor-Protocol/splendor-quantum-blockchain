@@ -41,6 +41,16 @@ func (h *Hub) Current() *ObjectSender {
 	return h.current
 }
 
+// Clear drops the current object. Used when a node wants to republish at a
+// newer head; until the replacement is Put, ServeManifest/ServeSymbol report
+// "no coded object published" and callers fall back to the plain paths.
+func (h *Hub) Clear() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.current = nil
+	h.byID = make(map[[32]byte]*ObjectSender)
+}
+
 func (h *Hub) get(id [32]byte) *ObjectSender {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
