@@ -39,12 +39,10 @@ func writeStateJSON(w http.ResponseWriter, code int, v interface{}) {
 }
 
 func committedHead(stateDB *state.StateDB, executor *block.Executor) (root [32]byte, height uint64, blockHash string) {
-	root, _ = stateDB.StateRoot()
-	if h, ok := stateDB.AppliedHeight(); ok {
-		height = h
-	}
-	if executor != nil {
-		if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil && latest.Header.Height == height {
+	view := stateDB.CommittedView()
+	root, height = view.Root, view.Height
+	if executor != nil && view.HeightKnown {
+		if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil && latest.Header.Height == height && latest.Header.StateRoot == root {
 			blockHash = hex.EncodeToString(latest.Hash[:])
 		}
 	}
@@ -93,13 +91,13 @@ func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 			return
 		}
 
-		// A point read, as before this route existed alongside /state/proof.
-		// Building the proof here would walk and hash every committed leaf
-		// under the state read lock for an unauthenticated, unguarded route,
-		// and each in-flight request would hold block commit off for the
-		// length of that walk. Proofs come from /state/proof, behind the
-		// simulation guard.
-		acc, err := stateDB.GetAccount(addr)
+		// A committed read: the account bytes come from committed state, not the
+		// pending overlay, so they agree with the root/height below. Building the
+		// proof here would walk and hash every committed leaf under the state read
+		// lock for an unauthenticated, unguarded route, and each in-flight request
+		// would hold block commit off for the length of that walk. Proofs come
+		// from /state/proof, behind the simulation guard.
+		acc, err := stateDB.CommittedAccount(addr)
 		if err != nil {
 			writeStateJSON(w, http.StatusNotFound, map[string]string{
 				"error": fmt.Sprintf("account %s not found: %s", addrStr, err.Error()),
@@ -167,7 +165,17 @@ func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.H
 			})
 			return
 		}
-		_, _, blockHash := committedHead(stateDB, executor)
+		// The block hash must identify the SAME block the proof commits to: resolve
+		// it by the proof's exact height and require the header state root to match
+		// the proof root. A concurrent commit cannot then associate a later head
+		// with this earlier proof.
+		var blockHash string
+		if executor != nil && proof.HeightKnown {
+			if b, berr := executor.GetBlockByHeight(proof.Height); berr == nil && b != nil &&
+				b.Header.Height == proof.Height && b.Header.StateRoot == proof.Root {
+				blockHash = hex.EncodeToString(b.Hash[:])
+			}
+		}
 
 		steps := make([]map[string]interface{}, len(proof.Steps))
 		for i, step := range proof.Steps {
