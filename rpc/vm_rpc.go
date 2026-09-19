@@ -37,7 +37,19 @@ type ReadyStatus struct {
 	IndexCoverageFrom uint64 `json:"index_coverage_from"`
 	Syncing           bool   `json:"syncing"`
 	Recovering        bool   `json:"recovering"`
-	ValidatorLocked   bool   `json:"validator_locked"`
+	// StoresAligned is false when the stored head and the committed state
+	// disagree (applied height or root), i.e. a partial persist awaiting
+	// reconciliation.
+	StoresAligned bool `json:"stores_aligned"`
+	// ValidatorLocked reports the BFT engine's vote lock at its current height
+	// (a normal in-round state), NOT the executor apply halt — that is
+	// Recovering/StoresAligned.
+	ValidatorLocked bool `json:"validator_locked"`
+	// ConsensusHeight/Round mirror the BFT engine's current view.
+	ConsensusHeight uint64 `json:"consensus_height"`
+	ConsensusRound  uint32 `json:"consensus_round"`
+	// LastCommitTime is the timestamp of the head block, or 0 when unknown.
+	LastCommitTime int64 `json:"last_commit_time,omitempty"`
 }
 
 func RegisterVMRoutes(r *mux.Router, nodeStartTime time.Time, ready func() ReadyStatus) {

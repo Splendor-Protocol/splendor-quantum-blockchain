@@ -603,6 +603,14 @@ func (e *Executor) storesAligned() bool {
 	return root == head.Header.StateRoot
 }
 
+// StoresAligned reports whether the stored head and the committed state agree:
+// the applied height equals the head block's height and the committed state root
+// matches the header. Readiness uses it so a node that stored a head but has not
+// committed its state is never reported ready.
+func (e *Executor) StoresAligned() bool {
+	return e.storesAligned()
+}
+
 // RecoverPartialApply replays stored blocks onto stale state (ReconcileState)
 // and clears the apply halt only when head height/root and applied state match.
 func (e *Executor) RecoverPartialApply() error {
