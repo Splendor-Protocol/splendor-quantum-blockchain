@@ -33,6 +33,13 @@ type VoteJournal struct {
 	mu   sync.Mutex
 	path string
 	last *journalEntry // nil until the first vote
+	// lastPrevote records the most recent PREVOTE this validator signed,
+	// separately from the value lock (last). A prevote at a view must not
+	// survive that view's round advancing; a value lock survives the height.
+	// Keeping them apart lets a restart resume at the round after a prevote
+	// that never reached a precommit, without turning a prevote into the
+	// permanent per-height value commitment.
+	lastPrevote *prevoteEntry
 }
 
 type journalEntry struct {
@@ -40,6 +47,12 @@ type journalEntry struct {
 	Round     uint32 `json:"round"`
 	BlockHash string `json:"block_hash"`
 	POLRound  uint32 `json:"pol_round,omitempty"`
+}
+
+type prevoteEntry struct {
+	Height    uint64 `json:"height"`
+	Round     uint32 `json:"round"`
+	BlockHash string `json:"block_hash"`
 }
 
 // OpenVoteJournal loads the journal at path, creating the parent directory.
@@ -52,12 +65,18 @@ func OpenVoteJournal(path string) (*VoteJournal, error) {
 	j := &VoteJournal{path: path}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
+		if err := j.loadPrevote(); err != nil {
+			return nil, err
+		}
 		return j, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("vote journal: %w", err)
 	}
 	if len(b) == 0 {
+		if err := j.loadPrevote(); err != nil {
+			return nil, err
+		}
 		return j, nil
 	}
 	var e journalEntry
@@ -68,6 +87,9 @@ func OpenVoteJournal(path string) (*VoteJournal, error) {
 		return nil, fmt.Errorf("vote journal %s is corrupt: bad block hash", path)
 	}
 	j.last = &e
+	if err := j.loadPrevote(); err != nil {
+		return nil, err
+	}
 	return j, nil
 }
 
@@ -81,6 +103,49 @@ func (j *VoteJournal) Last() (height uint64, round uint32, hash [32]byte, ok boo
 	b, _ := hex.DecodeString(j.last.BlockHash)
 	copy(hash[:], b)
 	return j.last.Height, j.last.Round, hash, true
+}
+
+// LastPrevote returns the most recently recorded PREVOTE, or ok=false.
+// A prevote is a per-view (height, round) commitment: it is what must survive
+// a restart only long enough to resume past the view it already voted in.
+func (j *VoteJournal) LastPrevote() (height uint64, round uint32, hash [32]byte, ok bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.lastPrevote == nil {
+		return 0, 0, [32]byte{}, false
+	}
+	b, _ := hex.DecodeString(j.lastPrevote.BlockHash)
+	copy(hash[:], b)
+	return j.lastPrevote.Height, j.lastPrevote.Round, hash, true
+}
+
+// RecordPrevote admits and persists a prevote for (height, round, blockHash).
+// It guards per-view equivocation: a different hash at the SAME (height, round)
+// is refused. A different hash at a later round is a round change's new view
+// and is allowed — the value lock (Record/RecordWithPOL) decides whether the
+// height can change value, not the prevote.
+func (j *VoteJournal) RecordPrevote(height uint64, round uint32, blockHash [32]byte) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	want := hex.EncodeToString(blockHash[:])
+	if p := j.lastPrevote; p != nil {
+		switch {
+		case height < p.Height:
+			return fmt.Errorf("%w: already prevoted at height %d, asked to prevote at %d", ErrDoubleSign, p.Height, height)
+		case height == p.Height && round < p.Round:
+			return fmt.Errorf("%w: already prevoted at height %d round %d, asked to prevote at round %d", ErrDoubleSign, p.Height, p.Round, round)
+		case height == p.Height && round == p.Round && p.BlockHash != want:
+			return fmt.Errorf("%w: already prevoted %s at height %d round %d, asked to prevote %s", ErrDoubleSign, p.BlockHash[:8], height, round, want[:8])
+		case height == p.Height && round == p.Round:
+			return nil // identical prevote, nothing new to record
+		}
+	}
+	e := &prevoteEntry{Height: height, Round: round, BlockHash: want}
+	if err := j.writePrevote(e); err != nil {
+		return fmt.Errorf("vote journal prevote: %w", err)
+	}
+	j.lastPrevote = e
+	return nil
 }
 
 // Record admits a vote for (height, round, blockHash) and persists it, or
@@ -146,6 +211,44 @@ func (j *VoteJournal) write(e *journalEntry) error {
 		return err
 	}
 	return persist.WriteFileAtomic(j.path, b, 0o600)
+}
+
+func (j *VoteJournal) prevotePath() string { return j.path + ".prevote" }
+
+// writePrevote persists the per-view prevote alongside the journal. It is a
+// second file, not the journal entry: a prevote is not the value lock, and
+// backing it into journalEntry would let a crash-recovery path confuse a
+// view-level prevote for a height-level precommit lock.
+func (j *VoteJournal) writePrevote(e *prevoteEntry) error {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	return persist.WriteFileAtomic(j.prevotePath(), b, 0o600)
+}
+
+// loadPrevote reads the prevote record back. A missing or empty file is a
+// no-op; a corrupt one is an error, for the same reason the journal itself is.
+func (j *VoteJournal) loadPrevote() error {
+	b, err := os.ReadFile(j.prevotePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("vote journal prevote: %w", err)
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	var e prevoteEntry
+	if err := json.Unmarshal(b, &e); err != nil {
+		return fmt.Errorf("vote journal prevote %s is corrupt: %w", j.prevotePath(), err)
+	}
+	if _, err := hex.DecodeString(e.BlockHash); err != nil || len(e.BlockHash) != 64 {
+		return fmt.Errorf("vote journal prevote %s is corrupt: bad block hash", j.prevotePath())
+	}
+	j.lastPrevote = &e
+	return nil
 }
 
 // Clear removes the durable vote lock, backing up the file first.
@@ -249,4 +352,13 @@ func (j *VoteJournal) LoadProposal() (*types.Block, bool) {
 func (j *VoteJournal) removeProposalFile() {
 	_ = os.Remove(j.proposalPath())
 	_ = os.Remove(j.proposalPath() + ".tmp")
+	j.clearPrevoteLocked()
+}
+
+// clearPrevoteLocked drops the in-memory and on-disk prevote record. Caller
+// holds j.mu.
+func (j *VoteJournal) clearPrevoteLocked() {
+	_ = os.Remove(j.prevotePath())
+	_ = os.Remove(j.prevotePath() + ".tmp")
+	j.lastPrevote = nil
 }
