@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
@@ -185,13 +186,17 @@ func (e *BFTEngine) answerDuplicateProposalLocked(p *pendingProposal) bool {
 // attachedPOL returns the prevote quorum to attach to a locally broadcast
 // proposal. A wire-provided POL (a re-proposal from a peer) is kept as-is; a
 // locally built proposal for a value this node holds a POL for gets the
-// retained quorum, so a peer locked to another value can verify and unlock.
+// retained quorum, so a peer locked to another value can verify and unlock. A
+// round-change-selected value gets the certificate carried by its round-change.
 func (e *BFTEngine) attachedPOL(p *pendingProposal, b *types.Block) []*Vote {
 	if p != nil && len(p.pol) > 0 {
 		return p.pol
 	}
 	if e.hasPOL && e.polHeight == b.Header.Height && e.polHash == b.Hash {
 		return e.polVotes
+	}
+	if e.rcValueSet && b.Header.Height == e.currentHeight && b.Hash == e.rcValueHash {
+		return e.rcValueVotes
 	}
 	return nil
 }
@@ -500,11 +505,26 @@ func (e *BFTEngine) signRoundChange(height uint64, round uint32) (*RoundChange, 
 	if hash, lr, ok := e.lockAt(height); ok {
 		rc.LockedHash = hash
 		rc.LockedRound = int32(lr)
+		// Carry the certificate (POL) that justifies the lock, so the next
+		// leader can re-propose the highest locked value with its quorum even
+		// if it never witnessed that quorum itself.
+		if e.hasPOL && e.polHeight == height && e.polHash == hash {
+			rc.POLVotes = e.polVotes
+		}
 	}
 	if err := rc.Sign(e.localPrivKey); err != nil {
 		return nil, err
 	}
 	return rc, nil
+}
+
+func (e *BFTEngine) clearRoundChangeLocked() {
+	e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
+	e.rcQCRound = -1
+	e.rcValueHash = [32]byte{}
+	e.rcValueRound = 0
+	e.rcValueVotes = nil
+	e.rcValueSet = false
 }
 
 func (e *BFTEngine) addRoundChangeLocked(rc *RoundChange) {
@@ -520,7 +540,48 @@ func (e *BFTEngine) addRoundChangeLocked(rc *RoundChange) {
 	need := (e.activeCount()*2)/3 + 1
 	if len(m) >= need {
 		e.rcQCRound = int32(rc.Round)
+		e.selectJustifiedValueLocked(m)
 	}
+}
+
+// selectJustifiedValueLocked picks the value with the highest locked round from
+// the round-change quorum and retains its certificate. Called with stateMu held.
+// A nil certificate means the lock was a bare vote with no witnessed quorum; the
+// hash still constrains the leader (safety) even though it cannot unlock peers.
+func (e *BFTEngine) selectJustifiedValueLocked(m map[qcrypto.Address]*RoundChange) {
+	var best *RoundChange
+	for _, rc := range m {
+		if rc == nil {
+			continue
+		}
+		if rc.LockedRound < 0 {
+			continue
+		}
+		if best == nil || rc.LockedRound > best.LockedRound ||
+			(rc.LockedRound == best.LockedRound && bytes.Compare(rc.LockedHash[:], best.LockedHash[:]) > 0) {
+			best = rc
+		}
+	}
+	if best == nil {
+		e.rcValueSet = false
+		e.rcValueVotes = nil
+		return
+	}
+	e.rcValueHash = best.LockedHash
+	e.rcValueRound = uint32(best.LockedRound)
+	e.rcValueVotes = best.POLVotes
+	e.rcValueSet = true
+}
+
+// JustifiedValue returns the value selected from the current round-change quorum
+// (the highest locked round) and its certificate, if one has been selected.
+func (e *BFTEngine) JustifiedValue() (hash [32]byte, round uint32, votes []*Vote, ok bool) {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if !e.rcValueSet {
+		return [32]byte{}, 0, nil, false
+	}
+	return e.rcValueHash, e.rcValueRound, e.rcValueVotes, true
 }
 
 func (e *BFTEngine) ensureSoloRoundChangeQCLocked() {
