@@ -8,6 +8,7 @@ import (
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
@@ -101,4 +102,81 @@ func ensurePublishedSnapshot(hub *objects.Hub, codec coding.Codec, exec *block.E
 	}
 	_, priv := ident.SigningKeys()
 	return publishSnapshotObject(hub, codec, exec, priv)
+}
+
+// blockBatchCache holds recently built coded block batches. Each requested
+// range is a distinct object, so a bounded cache (oldest evicted first) keeps
+// the hot catch-up ranges served without letting an attacker fill memory with
+// arbitrary ranges: a cached entry is replaced or evicted, never grown past
+// the cap. A batch lost to eviction mid-transfer just falls back to per-block
+// fetching on the client.
+var blockBatchCache = objects.NewCache(8)
+
+// maxServedBlockBatchBlocks bounds the range one on-demand batch covers.
+const maxServedBlockBatchBlocks = 128
+
+// publishBlockBatch encodes count consecutive blocks starting at fromHeight as
+// a coded object signed by the node identity and stashes it in the batch
+// cache. Returns the SQCO object manifest frame; the block bytes themselves
+// are served as symbol proofs by descriptor ID. Anchor kind "block" with the
+// LAST block of the range, so a client refuses a manifest that names a
+// different range before spending symbol work.
+func publishBlockBatch(exec *block.Executor, codec coding.Codec, signer *qcrypto.PrivateKey, fromHeight uint64, count int) ([]byte, error) {
+	if count < 1 || count > maxServedBlockBatchBlocks {
+		return nil, fmt.Errorf("block batch count %d outside [1,%d]", count, maxServedBlockBatchBlocks)
+	}
+	blocks := make([]*types.Block, 0, count)
+	for h := fromHeight; h < fromHeight+uint64(count); h++ {
+		b, err := exec.GetBlockByHeight(h)
+		if err != nil {
+			return nil, fmt.Errorf("block %d unavailable: %w", h, err)
+		}
+		if b == nil {
+			return nil, fmt.Errorf("block %d unavailable", h)
+		}
+		blocks = append(blocks, b)
+	}
+	raw, err := json.Marshal(blocks)
+	if err != nil {
+		return nil, err
+	}
+	last := blocks[len(blocks)-1]
+	desc := objects.ObjectDescriptor{
+		Anchor: objects.Anchor{
+			Kind:   "block",
+			ID:     last.Hash,
+			Height: last.Header.Height,
+		},
+		Codec:      codec.Name(),
+		SymbolSize: objectSymbolSize,
+	}
+	repair := repairFor((len(raw) + objectSymbolSize - 1) / objectSymbolSize)
+	send, err := objects.NewObjectSender(raw, desc, codec, repair, signer, objects.DefaultLimits())
+	if err != nil {
+		return nil, fmt.Errorf("encode coded block batch: %w", err)
+	}
+	blockBatchCache.Put(send)
+	return objects.EncodeObjectManifest(send.Manifest())
+}
+
+// serveBatchSymbol returns the symbol proof for a cached block-batch object,
+// so get_object_symbol_v1 requests resolve against the batch cache when the
+// snapshot hub does not hold the descriptor.
+func serveBatchSymbol(descID []byte, generation uint32, index uint32) ([]byte, error) {
+	send, err := blockBatchCache.Get(descID)
+	if err != nil {
+		return nil, err
+	}
+	gen := int(generation)
+	if gen < 0 || gen >= send.GenerationCount() {
+		return nil, fmt.Errorf("objects: generation %d out of range [0,%d)", gen, send.GenerationCount())
+	}
+	if uint64(index) >= uint64(send.SymbolCount(gen)) {
+		return nil, fmt.Errorf("objects: symbol index %d out of range [0,%d) in generation %d", index, send.SymbolCount(gen), gen)
+	}
+	proof, err := send.Proof(gen, int(index))
+	if err != nil {
+		return nil, err
+	}
+	return objects.EncodeSymbolProof(proof)
 }

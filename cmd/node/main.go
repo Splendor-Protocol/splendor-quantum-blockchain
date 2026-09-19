@@ -589,6 +589,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// domain, so peers that predate it still verify the document.
 	nodeIdentity.SetCapabilities(network.IdentityCaps{
 		CodedObjects: flagObjectCodec != "" && flagObjectCodec != "none",
+		CodedBlocks:  flagObjectCodec != "" && flagObjectCodec != "none",
 	})
 	// Announcements are signed with the same key peers pin for the sealed
 	// transport, so a peer entry is attributable to one node instead of to
@@ -663,6 +664,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// The fetch side accepts any codec a peer serves (the receiver resolves it
 	// from the manifest), so this only gates whether the path is attempted.
 	syncCfg.CodedObjects = flagObjectCodec != "none"
+	syncCfg.CodedBlockBatches = flagObjectCodec != "none"
 	// Under a rotating BFT leader most blocks are sealed by a registered
 	// validator other than the genesis one; the registry is the second key
 	// ring. ExecuteBlock still verifies the certificate.
@@ -1395,10 +1397,23 @@ func runNode(cmd *cobra.Command, args []string) error {
 			if objectCodec == nil {
 				return nil, errors.New("coded-object live path is not enabled")
 			}
+			// Block batches are per-range objects cached separately; the
+			// snapshot hub only holds the snapshot object. Consult both.
 			if err := ensurePublishedSnapshot(objectHub, objectCodec, executor, nodeIdentity, &objectPublish); err != nil {
 				return nil, err
 			}
-			return objectHub.ServeSymbol(descriptorID, generation, index)
+			frame, hubErr := objectHub.ServeSymbol(descriptorID, generation, index)
+			if hubErr == nil {
+				return frame, nil
+			}
+			return serveBatchSymbol(descriptorID, generation, index)
+		},
+		ServeBlockBatch: func(fromHeight uint64, count int) ([]byte, error) {
+			if objectCodec == nil {
+				return nil, errors.New("coded-object live path is not enabled")
+			}
+			_, priv := nodeIdentity.SigningKeys()
+			return publishBlockBatch(executor, objectCodec, priv, fromHeight, count)
 		},
 	})
 

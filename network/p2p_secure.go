@@ -69,13 +69,19 @@ const (
 	// KindGetObjectSymbol asks for one authenticated symbol proof of that
 	// object. Same trust and read-plane rules as KindGetObjectManifest.
 	KindGetObjectSymbol = "get_object_symbol_v1"
+	// KindGetBlockBatch asks for a coded batch of consecutive blocks. The
+	// reply is the batch's object manifest; the block bytes travel as coded
+	// symbols over KindGetObjectSymbol. Same trust and read-plane rules as
+	// KindGetObjectManifest.
+	KindGetBlockBatch = "get_block_batch_v1"
 )
 
 // IsReadKind reports whether a sealed request only reads chain data.
 func IsReadKind(kind string) bool {
 	return kind == KindGetBlock || kind == KindGetLatest ||
 		kind == KindGetStateSnapshot || kind == KindGetStateSnapshotChunk ||
-		kind == KindGetObjectManifest || kind == KindGetObjectSymbol
+		kind == KindGetObjectManifest || kind == KindGetObjectSymbol ||
+		kind == KindGetBlockBatch
 }
 
 // GetObjectManifestRequest is the body of a KindGetObjectManifest query.
@@ -137,6 +143,15 @@ type SealedRequest struct {
 // GetBlockRequest is the body of a KindGetBlock query.
 type GetBlockRequest struct {
 	Height uint64 `json:"height"`
+}
+
+// GetBlockBatchRequest is the body of a KindGetBlockBatch query: a coded
+// batch of count consecutive blocks starting at FromHeight. The reply is the
+// SQCO object manifest for the batch; the blocks themselves travel as coded
+// symbol proofs over get_object_symbol_v1.
+type GetBlockBatchRequest struct {
+	FromHeight uint64 `json:"from_height"`
+	Count      int    `json:"count"`
 }
 
 // ── Peer identity cache (client side) ────────────────────────────────────────
