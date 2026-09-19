@@ -366,3 +366,73 @@ func TestEnvelopeReplayIsDistinctFromNewMessage(t *testing.T) {
 		t.Fatalf("new message = %q", pt)
 	}
 }
+
+// The capability block signs the coded-object declaration under its own
+// domain: present documents verify, tampered declarations are rejected, and a
+// document without the block stays verifiable (old peers) with probe
+// semantics.
+func TestIdentityDocumentCapabilities(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ident, err := NewNodeIdentity(pub, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No declaration: verify as before, and ServesCodedObjects probes.
+	doc, err := ident.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.CodedObjects != nil || doc.CapsSignature != nil {
+		t.Fatal("undeclared capabilities leaked into the document")
+	}
+	if err := doc.Verify(nil); err != nil {
+		t.Fatalf("document without capabilities rejected: %v", err)
+	}
+	if !doc.ServesCodedObjects() {
+		t.Fatal("an undeclared document must probe (ServesCodedObjects true)")
+	}
+
+	// Declared true: verifies and serves.
+	ident.SetCapabilities(IdentityCaps{CodedObjects: true})
+	doc, err = ident.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.CodedObjects == nil || !*doc.CodedObjects {
+		t.Fatal("declared coded-object service missing from document")
+	}
+	if err := doc.Verify(nil); err != nil {
+		t.Fatalf("capability-bearing document rejected: %v", err)
+	}
+	if !doc.ServesCodedObjects() {
+		t.Fatal("declared service must report true")
+	}
+
+	// Declared false: verifies and lets a fetcher skip the coded attempt.
+	ident.SetCapabilities(IdentityCaps{CodedObjects: false})
+	doc, err = ident.Document()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.CodedObjects == nil || *doc.CodedObjects {
+		t.Fatal("false declaration not preserved")
+	}
+	if err := doc.Verify(nil); err != nil {
+		t.Fatalf("false-declaration document rejected: %v", err)
+	}
+	if doc.ServesCodedObjects() {
+		t.Fatal("declared absence must report false")
+	}
+
+	// Tampering with the declaration breaks the capability signature only —
+	// and must be refused.
+	flipped := true
+	doc.CodedObjects = &flipped
+	if err := doc.Verify(nil); err == nil {
+		t.Fatal("tampered capability declaration verified")
+	}
+}

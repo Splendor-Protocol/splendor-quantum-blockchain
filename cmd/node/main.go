@@ -583,6 +583,13 @@ func runNode(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("node identity: %w", err)
 	}
+	// Declare the coded-object capability in the identity document so peers can
+	// skip the coded attempt when this node is not serving coded objects.
+	// Absent on --object-codec=none; the declaration is signed with its own
+	// domain, so peers that predate it still verify the document.
+	nodeIdentity.SetCapabilities(network.IdentityCaps{
+		CodedObjects: flagObjectCodec != "" && flagObjectCodec != "none",
+	})
 	// Announcements are signed with the same key peers pin for the sealed
 	// transport, so a peer entry is attributable to one node instead of to
 	// anyone holding the shared write-plane token.

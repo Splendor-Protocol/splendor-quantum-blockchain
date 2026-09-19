@@ -98,6 +98,19 @@ type IdentityDocument struct {
 	// Signature is ML-DSA-65 over SHA3-256(KEMPubKey || NotAfter) under
 	// CtxPeerHandshake, proving the KEM key belongs to NodePubKey.
 	Signature []byte `json:"signature"`
+
+	// CodedObjects, when non-nil, declares whether this node serves coded
+	// objects (get_object_manifest_v1 / get_object_symbol_v1). nil means the
+	// field predates this document version — the peer may or may not serve,
+	// so the fetcher probes. A declaration of false lets a fetcher skip the
+	// coded attempt and go straight to the plain paths.
+	CodedObjects *bool `json:"coded_objects,omitempty"`
+
+	// CapsSignature authenticates CodedObjects under the node identity key
+	// with its own domain (CtxPeerCaps). It is a separate signature so peers
+	// that predate the capability fields — which ignore unknown JSON keys and
+	// verify only Signature — still accept this document.
+	CapsSignature []byte `json:"caps_signature,omitempty"`
 }
 
 // Envelope is a sealed message: an ML-KEM ciphertext carrying the shared
@@ -121,6 +134,10 @@ type NodeIdentity struct {
 	kemPriv  *mlkem.DecapsulationKey768
 	notAfter time.Time
 
+	// caps is the node's declared capability set, or nil while undecided.
+	// Included in Document() (with CapsSignature) only when non-nil.
+	caps *IdentityCaps
+
 	// previous keeps the just-rotated key alive briefly so messages already in
 	// flight against the old document still open. Without it, every rotation
 	// would drop a burst of legitimate blocks.
@@ -130,6 +147,21 @@ type NodeIdentity struct {
 	replayMu      sync.Mutex
 	seenEnvelopes map[[32]byte]time.Time
 	seenOrder     [][32]byte
+}
+
+// IdentityCaps is the capability set a node declares in its identity document.
+type IdentityCaps struct {
+	// CodedObjects says whether this node serves coded objects over the
+	// sealed channel (get_object_manifest_v1 / get_object_symbol_v1).
+	CodedObjects bool
+}
+
+// SetCapabilities declares (or replaces) the node's capability set. Call
+// before the first peer fetches the identity document.
+func (n *NodeIdentity) SetCapabilities(caps IdentityCaps) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.caps = &caps
 }
 
 // NewNodeIdentity creates a node identity from an existing ML-DSA keypair,
@@ -198,20 +230,31 @@ func (n *NodeIdentity) Document() (*IdentityDocument, error) {
 	notAfter := n.notAfter.Unix()
 	sigPub := n.sigPub
 	sigPriv := n.sigPriv
+	caps := n.caps
 	n.mu.Unlock()
 
 	sig, err := qcrypto.Sign(sigPriv, identityDigest(kemPub, notAfter), qcrypto.CtxPeerHandshake)
 	if err != nil {
 		return nil, fmt.Errorf("sign identity document: %w", err)
 	}
-	return &IdentityDocument{
+	doc := &IdentityDocument{
 		SigAlg:     qcrypto.AlgMLDSA65,
 		KEMAlg:     "ML-KEM-768",
 		NodePubKey: sigPub.Bytes(),
 		KEMPubKey:  kemPub,
 		NotAfter:   notAfter,
 		Signature:  sig,
-	}, nil
+	}
+	if caps != nil {
+		coded := caps.CodedObjects
+		doc.CodedObjects = &coded
+		capsSig, err := qcrypto.Sign(sigPriv, identityCapsDigest(doc.NodePubKey, coded), qcrypto.CtxPeerCaps)
+		if err != nil {
+			return nil, fmt.Errorf("sign identity capabilities: %w", err)
+		}
+		doc.CapsSignature = capsSig
+	}
+	return doc, nil
 }
 
 // identityDigest is the message signed by the identity key. Binding NotAfter
@@ -222,6 +265,21 @@ func identityDigest(kemPub []byte, notAfter int64) []byte {
 	buf = append(buf, kemPub...)
 	for i := 0; i < 8; i++ {
 		buf = append(buf, byte(notAfter>>(8*i)))
+	}
+	d := qcrypto.Hash32(buf)
+	return d[:]
+}
+
+// identityCapsDigest is the message signed under CtxPeerCaps. It binds the
+// capability declaration to the node identity key so a capability block cannot
+// be spliced from one peer's document onto another's.
+func identityCapsDigest(nodePubKey []byte, codedObjects bool) []byte {
+	buf := make([]byte, 0, len(nodePubKey)+1)
+	buf = append(buf, nodePubKey...)
+	if codedObjects {
+		buf = append(buf, 0x01)
+	} else {
+		buf = append(buf, 0x00)
 	}
 	d := qcrypto.Hash32(buf)
 	return d[:]
@@ -258,7 +316,25 @@ func (doc *IdentityDocument) Verify(expectedNodePubKey []byte) error {
 	if !qcrypto.Verify(pub, identityDigest(doc.KEMPubKey, doc.NotAfter), qcrypto.CtxPeerHandshake, doc.Signature) {
 		return fmt.Errorf("identity document signature is invalid: the KEM key is not authenticated")
 	}
+	// The capability block is optional, but when either half of it is present
+	// both must be, and the declaration must verify under the node key.
+	if doc.CodedObjects != nil || doc.CapsSignature != nil {
+		if doc.CodedObjects == nil || doc.CapsSignature == nil {
+			return fmt.Errorf("identity document capability declaration is incomplete")
+		}
+		if !qcrypto.Verify(pub, identityCapsDigest(doc.NodePubKey, *doc.CodedObjects), qcrypto.CtxPeerCaps, doc.CapsSignature) {
+			return fmt.Errorf("identity document capability signature is invalid")
+		}
+	}
 	return nil
+}
+
+// ServesCodedObjects reports whether this document's peer serves coded
+// objects. A document that predates the capability field returns true: the
+// peer may or may not serve, and the fetcher probes rather than assumes a
+// downgrade.
+func (doc *IdentityDocument) ServesCodedObjects() bool {
+	return doc.CodedObjects == nil || *doc.CodedObjects
 }
 
 // Seal encrypts plaintext to the peer described by a VERIFIED identity document.
