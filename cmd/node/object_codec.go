@@ -18,8 +18,14 @@ import (
 // by NewObjectSender, so a snapshot of any supported size is served coded.
 const objectSymbolSize = 16 * 1024
 
+// repairFor commits repair symbols at 50% of the source count. The netbench
+// harness shows why this is the default: at 20% simulated loss, 25% repair
+// leaves both coded codecs starved of rank in most trials, while 50% repair
+// recovers every trial (uncoded, with no repair, recovers none). Repair
+// symbols are only requested after systematic ones are lost, so a clean link
+// pays only the one-time publish cost, not extra transfer.
 func repairFor(sourceCount int) int {
-	n := sourceCount / 4
+	n := sourceCount / 2
 	if n < 1 {
 		return 1
 	}

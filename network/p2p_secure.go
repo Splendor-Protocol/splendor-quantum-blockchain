@@ -62,8 +62,9 @@ const (
 	// read-plane rules as KindGetStateSnapshot: sealed only, no token.
 	KindGetStateSnapshotChunk = "get_state_snapshot_chunk"
 	// KindGetObjectManifest asks for the SQCO encoding of a coded object's
-	// signed manifest (opt-in live path behind --object-codec). Public
-	// once published, so sealed but not token-gated.
+	// signed manifest (served by default behind --object-codec, disabled
+	// with --object-codec=none). Public once published, so sealed but not
+	// token-gated.
 	KindGetObjectManifest = "get_object_manifest_v1"
 	// KindGetObjectSymbol asks for one authenticated symbol proof of that
 	// object. Same trust and read-plane rules as KindGetObjectManifest.
