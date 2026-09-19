@@ -405,6 +405,13 @@ func (s *Server) handleGetBalance(w http.ResponseWriter, r *http.Request) {
 		"address": addrStr,
 		"balance": balance.String(),
 		"unit":    "smallest_spld",
+		// GetBalance reads through the pending overlay, so this includes writes
+		// from a block being assembled that may never be committed. Said out
+		// loud rather than changed: a wallet wants the balance it can spend
+		// from next, which is this one, and quietly switching the route to the
+		// committed view would break every such caller. /state/account is the
+		// route that answers for committed state, and labels itself.
+		"view": "pending",
 	})
 }
 
@@ -425,6 +432,9 @@ func (s *Server) handleGetNonce(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"address": addrStr,
 		"nonce":   nonce,
+		// Pending, for the same reason as /balance: the next nonce a sender
+		// should sign with has to account for transactions already queued.
+		"view": "pending",
 	})
 }
 
@@ -679,7 +689,7 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 	// fabricated retry cannot reach this branch; and SettlementMatch re-checks
 	// the settled details against the authoritative record.
 	if result.NonceUsed {
-		ok, serr := s.x402proc.SettlementMatch(&req.Payload)
+		rec, serr := s.x402proc.SettlementRecord(&req.Payload)
 		if serr != nil {
 			writeJSON(w, http.StatusInternalServerError, x402.SettleResult{
 				Status: x402.SettleFailed,
@@ -687,11 +697,16 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		if ok {
+		if rec != nil {
+			// The record's hash, not the caller's. A client re-signing a
+			// different transaction over the same payload arrives with a hash of
+			// its own that never settled anything, and echoing that back
+			// described an invention as confirmed. What settled this payment is
+			// whatever the chain recorded against the nonce.
 			writeJSON(w, http.StatusOK, x402.SettleResult{
 				Success: true,
 				Status:  x402.SettleConfirmed,
-				TxHash:  hashHex,
+				TxHash:  fmt.Sprintf("%x", rec.TxHash[:]),
 			})
 			return
 		}

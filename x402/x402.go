@@ -227,18 +227,38 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 // binds a different payment. This is the authoritative link a retry must pass
 // before it may be reported as confirmed; a used nonce alone is never enough.
 func (p *Processor) SettlementMatch(payload *PaymentPayload) (bool, error) {
+	rec, err := p.SettlementRecord(payload)
+	if err != nil {
+		return false, err
+	}
+	return rec != nil, nil
+}
+
+// SettlementRecord returns the authoritative on-chain record for this payment,
+// or nil when nothing settled it — which is the same question SettlementMatch
+// answers, plus the answer's evidence.
+//
+// A caller confirming a payment needs the record itself, not just that one
+// exists: the transaction hash it holds is the transaction that ACTUALLY
+// settled, and a client re-signing a different transaction over the same
+// payload arrives with a hash of its own that never did. Echoing the supplied
+// hash back told such a caller a settlement it invented was confirmed.
+func (p *Processor) SettlementRecord(payload *PaymentPayload) (*types.X402Settlement, error) {
 	if payload == nil {
-		return false, fmt.Errorf("nil payment payload")
+		return nil, fmt.Errorf("nil payment payload")
 	}
 	nonceKey := NonceKey(payload.From, payload.Nonce)
 	rec, err := p.state.GetX402Settlement(nonceKey)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if rec == nil {
-		return false, nil
+		return nil, nil
 	}
-	return rec.Matches(payload.ChainID, payload.From, payload.To, payload.Amount), nil
+	if !rec.Matches(payload.ChainID, payload.From, payload.To, payload.Amount) {
+		return nil, nil
+	}
+	return rec, nil
 }
 
 // resolvePayerKey returns the ML-DSA-65 public key Verify must check the
