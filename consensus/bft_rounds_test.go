@@ -80,6 +80,57 @@ func TestTwoPhaseSoloCommitsInOneLoop(t *testing.T) {
 	}
 }
 
+// A leader holding a prevote quorum for A must attach that certificate when it
+// re-broadcasts A — not merely name the round in the envelope. A peer locked to
+// a different value needs the actual prevotes to verify the POL and unlock.
+func TestReProposalAttachesTheRetainedPrevoteQuorum(t *testing.T) {
+	set, keys := testSet(t, 4)
+	var lastProp *ProposalMsg
+	eng := twoPhaseFor(t, set, keys, 0, BFTConfig{
+		BroadcastProposal: func(p *ProposalMsg) {
+			cp := *p
+			lastProp = &cp
+		},
+	})
+	eng.SetHeight(4) // (4+0)%4 == 0: set[0] leads round 0
+
+	blockA := proposalAt(t, set, keys, 4, 0, 11).Block
+	if !eng.handleProposal(&pendingProposal{block: blockA, local: true}) {
+		t.Fatal("leader did not adopt A")
+	}
+	// The first broadcast has no POL yet: nothing has reached quorum.
+	if lastProp == nil || len(lastProp.POL) != 0 {
+		t.Fatalf("initial proposal POL = %d votes, want 0", len(lastProp.POL))
+	}
+	// Two peer prevotes plus the leader's own form the quorum 3, which the
+	// engine retains as a POL for A.
+	for _, i := range []int{1, 2} {
+		v := &Vote{Height: 4, Round: 0, BlockHash: blockA.Hash, ValidatorAddr: set[i].Address, Timestamp: int64(100 + i), Kind: types.VoteKindPrevote}
+		if err := v.Sign(keys[i]); err != nil {
+			t.Fatal(err)
+		}
+		eng.handleVote(v)
+	}
+	if !eng.VoteLockedAt(4) {
+		t.Fatal("leader did not POL-lock on A")
+	}
+	if len(eng.polVotes) < 3 {
+		t.Fatalf("retained POL votes = %d, want >= 3", len(eng.polVotes))
+	}
+
+	// Re-proposing the SAME locked body takes the duplicate path (returns false
+	// because it is not newly adopted), but it must still re-broadcast — and the
+	// re-broadcast must now attach the retained prevote quorum.
+	lastProp = nil
+	eng.handleProposal(&pendingProposal{block: blockA, local: true})
+	if lastProp == nil || len(lastProp.POL) < 3 {
+		t.Fatalf("re-proposal POL has %d votes, want the retained quorum of 3", len(lastProp.POL))
+	}
+	if !eng.verifyPOL(4, 0, blockA.Hash, lastProp.POL) {
+		t.Fatal("attached POL does not verify for the locked value")
+	}
+}
+
 func TestTwoPhaseLockedValueReproposedByNewEnvelopeLeader(t *testing.T) {
 	set, keys := testSet(t, 4)
 	var lastProp *ProposalMsg
