@@ -126,7 +126,7 @@ func (e *BFTEngine) handleProposalTwoPhase(p *pendingProposal) bool {
 	}
 
 	if p.local && e.broadcastP != nil {
-		e.broadcastP(&ProposalMsg{Block: b, Vote: ownPrevote, Envelope: p.envelope, POL: p.pol})
+		e.broadcastP(&ProposalMsg{Block: b, Vote: ownPrevote, Envelope: p.envelope, POL: e.attachedPOL(p, b)})
 	}
 
 	e.drainPendingVotes()
@@ -158,7 +158,7 @@ func (e *BFTEngine) answerDuplicateProposalLocked(p *pendingProposal) bool {
 	prevote := e.voteSet.VoteFrom(e.localAddr)
 	precommit := e.precommits.VoteFrom(e.localAddr)
 	if p.local && e.broadcastP != nil {
-		e.broadcastP(&ProposalMsg{Block: held, Vote: prevote, Envelope: p.envelope, POL: p.pol})
+		e.broadcastP(&ProposalMsg{Block: held, Vote: prevote, Envelope: p.envelope, POL: e.attachedPOL(p, held)})
 	}
 	if e.broadcast != nil {
 		if prevote != nil {
@@ -180,6 +180,20 @@ func (e *BFTEngine) answerDuplicateProposalLocked(p *pendingProposal) bool {
 		Hex("hash", held.Hash[:8]).
 		Msg("BFT: duplicate proposal at the current view; re-sent this node's votes")
 	return false
+}
+
+// attachedPOL returns the prevote quorum to attach to a locally broadcast
+// proposal. A wire-provided POL (a re-proposal from a peer) is kept as-is; a
+// locally built proposal for a value this node holds a POL for gets the
+// retained quorum, so a peer locked to another value can verify and unlock.
+func (e *BFTEngine) attachedPOL(p *pendingProposal, b *types.Block) []*Vote {
+	if p != nil && len(p.pol) > 0 {
+		return p.pol
+	}
+	if e.hasPOL && e.polHeight == b.Header.Height && e.polHash == b.Hash {
+		return e.polVotes
+	}
+	return nil
 }
 
 func (e *BFTEngine) signLocalEnvelope(p *pendingProposal) error {
@@ -349,6 +363,13 @@ func (e *BFTEngine) onPrevoteQuorum(b *types.Block, round uint32) {
 	e.polHash = b.Hash
 	e.polRound = round
 	e.polHeight = b.Header.Height
+	// Retain the quorum itself so a later leader (or this node re-proposing the
+	// locked body) can attach the authenticated prevote certificate. Merely
+	// naming a later POL round in an envelope is not enough for a peer locked to
+	// a different value: it needs the actual votes to verify.
+	if e.voteSet != nil {
+		e.polVotes = e.voteSet.Votes()
+	}
 	e.lockedProposal = b
 	if !e.isMember() {
 		return

@@ -353,8 +353,13 @@ type BFTEngine struct {
 	polHash          [32]byte
 	polRound         uint32
 	polHeight        uint64
-	rcByRound        map[uint32]map[qcrypto.Address]*RoundChange
-	rcQCRound        int32
+	// polVotes is the prevote quorum (POL) this node witnessed for polHash at
+	// (polHeight, polRound). Retained — not just the hash/round — so a leader
+	// re-proposing the locked value can attach the actual certificate and let a
+	// peer that missed the quorum verify and unlock to it.
+	polVotes  []*Vote
+	rcByRound map[uint32]map[qcrypto.Address]*RoundChange
+	rcQCRound int32
 }
 
 // BFTConfig configures the BFT engine.
@@ -1426,6 +1431,7 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	e.hasVoted = false
 	e.hasQuorum = false
 	e.hasPOL = false
+	e.polVotes = nil
 	e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
 	e.rcQCRound = -1
 
@@ -1474,6 +1480,7 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	e.hasVoted = false
 	e.hasQuorum = false
 	e.hasPOL = false
+	e.polVotes = nil
 	e.precommits = nil
 	e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
 	e.rcQCRound = -1
