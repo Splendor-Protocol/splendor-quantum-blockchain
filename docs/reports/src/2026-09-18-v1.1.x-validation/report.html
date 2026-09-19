@@ -171,7 +171,8 @@
   </ul>
 
   <h3><span class="num">1.2</span>PR #43 — RLNC object transfer, <code>v1.1.1</code></h3>
-  <p>Merged: <code>main</code> = <code>11d372e</code>, tag <code>v1.1.1</code> cut on 18 September 2026 at about 07:05 UTC; devnet and testnet upgraded in place and mainnet re-minted on it the same morning (section 2.3). Seven commits. Nothing consensus-visible or on disk changed, so the release rolls without a reset. The sealed live path is <b>off by default</b>: a node started without <code>--object-codec</code> answers <code>404 coded-object live path is not enabled</code>.</p>
+  <p>Merged: <code>main</code> = <code>11d372e</code>, tag <code>v1.1.1</code> cut on 18 September 2026 at about 07:05 UTC; devnet and testnet upgraded in place and mainnet re-minted on it the same morning (section 2.3). Seven commits. Nothing consensus-visible or on disk changed, so the release rolls without a reset.</p>
+  <p><b>Follow-up (20 September 2026):</b> the coded path is no longer optional. Multi-generation objects removed the size cap; the sealed serve path carries generation-indexed symbol requests; <code>--object-codec</code> defaults to <code>rlnc-gf256-v1</code>; state sync fetches the coded snapshot first with the plain single-shot/chunked transfer as fallback; catch-up pre-fills gaps with coded block batches (<code>get_block_batch_v1</code>); and the peer identity document carries a separately signed capability block (<code>CtxPeerCaps</code>) so a peer that serves no coded objects is never probed. Measured with <code>cmd/netbench</code> at 20% simulated loss: coded codecs recover 30/30 trials at 50% repair while the uncoded baseline recovers 0/30; the path is the join/catch-up transfer only and never touches the vote/proposal hot path.</p>
   <table class="compact">
     <thead><tr><th style="width:12%">Commit</th><th>Change</th></tr></thead>
     <tbody>

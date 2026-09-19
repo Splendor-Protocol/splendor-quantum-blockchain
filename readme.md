@@ -2053,8 +2053,9 @@ RLNC (v1.1.1): the object format, transfer controller and authenticate-before-de
 path are in the tree and are now the **default transfer for state-sync joins**:
 `--object-codec` defaults to `rlnc-gf256-v1` (a node publishes its state snapshot
 as a signed multi-generation coded object), the receiving side is wired into
-state sync (`SyncConfig.CodedObjects`, default on), and any coded-path failure
-falls back to the plain single-shot/chunked snapshot transfer. `--object-codec=none`
+state sync (`SyncConfig.CodedObjects`, default on), catch-up pre-fills gaps of
+16+ blocks with coded block batches, and any coded-path failure falls back to
+the plain single-shot/chunked snapshot and per-block transfers. `--object-codec=none`
 disables the coded path on both sides. Measured with `cmd/netbench`: at 20%
 simulated loss with 50% repair, the coded codecs recover every trial while the
 uncoded baseline recovers none; the coded path is the join transfer only and
