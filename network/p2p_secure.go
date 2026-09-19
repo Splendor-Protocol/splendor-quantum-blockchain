@@ -187,7 +187,25 @@ type IdentityCache struct {
 	// warned remembers which peers have already been reported as unpinned, so
 	// the refusal is shouted once per peer rather than once per produced block.
 	warned map[string]struct{}
+
+	// codedRefused remembers peers that answered a coded-object probe with a
+	// refusal. Only peers whose identity document predates the capability
+	// block (no declaration) are remembered — a declared refusal is handled
+	// by the signed capability itself, and a declared service that fails
+	// transiently must not be poisoned. Entries expire after
+	// codedProbeRefusalTTL.
+	codedRefused map[string]time.Time
 }
+
+// codedProbeRefusalTTL is how long a coded-object probe refusal is remembered
+// for a peer that made no capability declaration, so the node does not pay a
+// wasted sealed request on every join against legacy peers. A var (not a
+// const) so tests can shrink it; never mutated in production.
+var codedProbeRefusalTTL = 2 * time.Minute
+
+// maxCodedRefusedPeers bounds the refusal map, whose keys are peer URLs that
+// arrive from untrusted places.
+const maxCodedRefusedPeers = 256
 
 // ErrPeerNotPinned is returned when pins are required and a peer has none.
 //
@@ -252,6 +270,7 @@ func NewIdentityCache() *IdentityCache {
 			CheckRedirect: noRedirect,
 			Transport:     SafeTransport(5 * time.Second),
 		},
+		codedRefused: make(map[string]time.Time),
 	}
 }
 
@@ -296,6 +315,70 @@ func (c *IdentityCache) PinsRequired() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.requirePins
+}
+
+// NoteCodedRefusal records that a peer answered a coded-object probe with a
+// refusal. Callers must only note refusals for peers whose identity document
+// made no capability declaration; a declared service that fails transiently
+// must not be poisoned, and a declared absence never gets probed at all.
+func (c *IdentityCache) NoteCodedRefusal(peerURL string) {
+	peerURL = canonicalPeerURL(peerURL)
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneCodedRefusedLocked(now)
+	if _, ok := c.codedRefused[peerURL]; ok {
+		c.codedRefused[peerURL] = now.Add(codedProbeRefusalTTL)
+		return
+	}
+	if len(c.codedRefused) >= maxCodedRefusedPeers {
+		// Evict the entry expiring soonest; the map's keys are peer URLs from
+		// untrusted places, so it must never grow past the cap.
+		var oldestKey string
+		var oldestExp time.Time
+		for k, exp := range c.codedRefused {
+			if oldestKey == "" || exp.Before(oldestExp) {
+				oldestKey, oldestExp = k, exp
+			}
+		}
+		delete(c.codedRefused, oldestKey)
+	}
+	c.codedRefused[peerURL] = now.Add(codedProbeRefusalTTL)
+}
+
+// CodedRecentlyRefused reports whether a coded-object probe to this peer was
+// recently refused, so the caller can skip the wasted request.
+func (c *IdentityCache) CodedRecentlyRefused(peerURL string) bool {
+	peerURL = canonicalPeerURL(peerURL)
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	exp, ok := c.codedRefused[peerURL]
+	if !ok {
+		return false
+	}
+	if now.After(exp) {
+		delete(c.codedRefused, peerURL)
+		return false
+	}
+	return true
+}
+
+// ForgetCodedRefusal clears a peer's refusal entry, e.g. after a successful
+// coded transfer or a fresh capability declaration.
+func (c *IdentityCache) ForgetCodedRefusal(peerURL string) {
+	peerURL = canonicalPeerURL(peerURL)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.codedRefused, peerURL)
+}
+
+func (c *IdentityCache) pruneCodedRefusedLocked(now time.Time) {
+	for k, exp := range c.codedRefused {
+		if now.After(exp) {
+			delete(c.codedRefused, k)
+		}
+	}
 }
 
 // Get returns a verified identity document for a peer, fetching it if needed.

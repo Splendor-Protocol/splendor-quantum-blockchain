@@ -446,6 +446,9 @@ func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count
 	if !doc.ServesCodedBlocks() {
 		return nil, fmt.Errorf("coded block batch from %s: peer declares no coded block-batch service", peerAddr)
 	}
+	if doc.CodedBlocks == nil && f.cfg.Identities.CodedRecentlyRefused(peerAddr) {
+		return nil, fmt.Errorf("coded block batch from %s: peer recently refused coded-object service", peerAddr)
+	}
 	if count < 1 {
 		return nil, errors.New("coded block batch: count must be positive")
 	}
@@ -456,8 +459,12 @@ func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count
 	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetBlockBatch, req,
 		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
 	if err != nil {
+		if doc.CodedBlocks == nil {
+			f.cfg.Identities.NoteCodedRefusal(peerAddr)
+		}
 		return nil, fmt.Errorf("fetch coded block batch from %s: %w", peerAddr, err)
 	}
+	f.cfg.Identities.ForgetCodedRefusal(peerAddr)
 	manifest, err := objects.DecodeObjectManifest(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode block batch manifest from %s: %w", peerAddr, err)
