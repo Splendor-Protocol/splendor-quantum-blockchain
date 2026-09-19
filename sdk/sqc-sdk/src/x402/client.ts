@@ -110,6 +110,24 @@ export type X402SettleResult = {
 /** Named policy for payment-gated next(). Default is receipt confirmation. */
 export type X402SettlementPolicy = 'receipt' | 'optimistic-submitted';
 
+/**
+ * A payment evaluation request as seen by the middleware. Only the fields the
+ * middleware consumes are declared; extra request metadata is ignored.
+ */
+export type X402Request = { path: string; headers: Record<string, string | string[] | undefined> };
+
+/**
+ * Application-level consumption record. The middleware binds each confirmed
+ * settlement to the specific service request it pays for, so replaying one real
+ * payment cannot silently purchase an unrelated request. store may be an
+ * in-memory Map, a durable KV table, or anything else — only get/put are
+ * required and both should be idempotent (put-if-absent on the server side).
+ */
+export type X402ConsumptionStore = {
+  get: (key: string) => Promise<string | undefined>;
+  put: (key: string, value: string) => Promise<void>;
+};
+
 export type X402MiddlewareConfig = {
   payTo: string;
   price: string | Record<string, string>;
@@ -130,6 +148,18 @@ export type X402MiddlewareConfig = {
   settlementPolicy?: X402SettlementPolicy;
   confirmTimeoutMs?: number;
   confirmPollMs?: number;
+  /**
+   * Optional application-level consumption record. When omitted, the middleware
+   * grants access once settlement succeeds without binding it to a request
+   * (legacy behaviour). When provided, a confirmed nonce is consumed for exactly
+   * one entitlement key; retries of the same request are idempotent, but the
+   * same payment used for a different key is rejected.
+   */
+  consumptionStore?: X402ConsumptionStore;
+  /**
+   * Derive the entitlement key for a request. Defaults to req.path.
+   */
+  requestKey?: (req: X402Request) => string;
 };
 
 type ReqLike = { path: string; headers: Record<string, string | string[] | undefined> };
@@ -206,6 +236,10 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
         const settleResult = await client.settle(requirements, payload, settlementTx);
         const granted = await grantAfterSettle(config, payload, settleResult, settlementPolicy);
         if (granted === true) {
+          const consumptionError = await consumePayment(config, payload, settleResult, req);
+          if (consumptionError) {
+            return res.status(402).json(consumptionError);
+          }
           next();
           return;
         }
@@ -282,6 +316,52 @@ async function grantAfterSettle(
     reason: settleResult.error || 'settle returned unsuccessful',
     status: settleResult.status,
   };
+}
+
+/**
+ * Bind a confirmed payment to the specific service request it is purchasing.
+ *
+ * The consumption key is the payment's identity (payer + nonce); the stored
+ * value is the entitlement key derived from the request. A retry of the same
+ * request maps to the same entitlement key and is idempotent, but a confirmed
+ * payment pointed at a different entitlement key is rejected — one real payment
+ * cannot silently purchase repeated/unrelated requests.
+ */
+async function consumePayment(
+  config: X402MiddlewareConfig,
+  payload: PaymentPayload,
+  settleResult: X402SettleResult,
+  req: ReqLike,
+): Promise<{ error: string; reason: string } | undefined> {
+  const store = config.consumptionStore;
+  if (!store) {
+    // Legacy: no application-level consumption record configured.
+    return undefined;
+  }
+  // A payment that never confirmed must not be consumed.
+  if (!(settleConfirmed(settleResult) || (settleSubmitted(settleResult) && config.settlementPolicy === 'optimistic-submitted'))) {
+    return undefined;
+  }
+  const expectedEntitlement = config.requestKey
+    ? config.requestKey(req)
+    : req.path;
+  const consumptionKey = `x402:payment:${payload.from}:${payload.nonce}`;
+
+  const stored = await store.get(consumptionKey);
+  if (stored !== undefined) {
+    if (stored === expectedEntitlement) {
+      // Same request retrying with an already-consumed payment: idempotent.
+      return undefined;
+    }
+    return {
+      error: 'Payment Already Consumed',
+      reason:
+        'this payment identity was already consumed for a different request; it cannot purchase this request',
+    };
+  }
+
+  await store.put(consumptionKey, expectedEntitlement);
+  return undefined;
 }
 
 export { fromSPLD, toSPLD };

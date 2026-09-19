@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -326,6 +327,74 @@ func TestSetOperatorRequiresSLHUnderIdentityFork(t *testing.T) {
 		"active":     true,
 	}); err != nil {
 		t.Fatalf("set_operator with SLH: %v", err)
+	}
+}
+
+// OperatorIdentities is consensus-visible state that the un-forked chain does
+// not persist. Before verify_identity_v1 a deploy or set_operator that names an
+// slh_pubkey must NOT write it into instance state (state roots stay identical
+// to pre-activation builds); the same call registers it once the fork is live.
+func TestOperatorIdentitiesNotPersistedBeforeIdentityFork(t *testing.T) {
+	sdb := newTestState(t)
+	owner := newVfyOp(t)
+	op := newVfyOp(t)
+
+	// Deploy with operator_identities pre-fork is accepted but not persisted.
+	if _, err := callVerify(t, sdb, vfyCtx(owner.addr, 1, false), "deploy", map[string]any{
+		"threshold": 1,
+		"operator_identities": []map[string]any{{
+			"operator":   op.addr.String(),
+			"slh_pubkey": hex.EncodeToString(op.slhPub.Bytes()),
+		}},
+	}); err != nil {
+		t.Fatalf("pre-fork deploy with identities: %v", err)
+	}
+	// The deploy address derives from (owner, nonce=1, height=1).
+	deployAddr := verifyDeployAddr(owner.addr, 1, 1)
+	inst, err := loadInstance(sdb, deployAddr)
+	if err != nil {
+		t.Fatalf("loadInstance: %v", err)
+	}
+	if len(inst.OperatorIdentities) != 0 {
+		t.Fatalf("pre-fork deploy persisted %d operator identities", len(inst.OperatorIdentities))
+	}
+
+	// set_operator pre-fork parses but does not persist the SLH key.
+	if _, err := callVerify(t, sdb, vfyCtx(owner.addr, 2, false), "set_operator", map[string]any{
+		"verify":     deployAddr.String(),
+		"operator":   op.addr.String(),
+		"slh_pubkey": hex.EncodeToString(op.slhPub.Bytes()),
+		"active":     true,
+	}); err != nil {
+		t.Fatalf("pre-fork set_operator with slh: %v", err)
+	}
+	inst, err = loadInstance(sdb, deployAddr)
+	if err != nil {
+		t.Fatalf("loadInstance: %v", err)
+	}
+	if len(inst.OperatorIdentities) != 0 {
+		t.Fatalf("pre-fork set_operator persisted %d operator identities", len(inst.OperatorIdentities))
+	}
+	if len(inst.Operators) != 1 || inst.Operators[0] != op.addr {
+		t.Fatalf("pre-fork set_operator did not record the operator: %+v", inst.Operators)
+	}
+
+	// The migration path: once the fork is active, the same set_operator
+	// registers the key.
+	if _, err := callVerify(t, sdb, vfyCtx(owner.addr, 3, true), "set_operator", map[string]any{
+		"verify":     deployAddr.String(),
+		"operator":   op.addr.String(),
+		"slh_pubkey": hex.EncodeToString(op.slhPub.Bytes()),
+		"active":     true,
+	}); err != nil {
+		t.Fatalf("forked set_operator with slh: %v", err)
+	}
+	inst, err = loadInstance(sdb, deployAddr)
+	if err != nil {
+		t.Fatalf("loadInstance: %v", err)
+	}
+	if got, ok := operatorSLH(inst, op.addr); !ok || !bytes.Equal(got, op.slhPub.Bytes()) {
+		t.Fatalf("forked set_operator did not register the SLH key (ok=%v)", ok)
 	}
 }
 

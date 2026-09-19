@@ -164,4 +164,66 @@ describe('createX402Middleware', () => {
     await mw({ path: '/api', headers: paidHeader }, res as never, next);
     expect(next).toHaveBeenCalled();
   });
+
+  it('binds a confirmed payment to the request when a consumptionStore is configured', async () => {
+    const data = new Map<string, string>();
+    const store = {
+      get: vi.fn(async (k: string) => data.get(k)),
+      put: vi.fn(async (k: string, v: string) => data.set(k, v)),
+    };
+    const connection = mockConnection({ settleStatus: 'confirmed' });
+    const mw = createX402Middleware({
+      payTo: PAY_TO,
+      price: '0.01',
+      connection,
+      consumptionStore: store,
+    });
+    const json = vi.fn();
+    const res = { status: vi.fn(() => ({ json })), json };
+    const next = vi.fn();
+
+    await mw({ path: '/api/once', headers: paidHeader }, res as never, next);
+    expect(next).toHaveBeenCalled();
+    expect(store.put).toHaveBeenCalledWith(
+      `x402:payment:${PAY_TO}:${'ab'.repeat(32)}`,
+      '/api/once',
+    );
+
+    // The same payment replayed for the same request is idempotent...
+    next.mockClear();
+    json.mockClear();
+    await mw({ path: '/api/once', headers: paidHeader }, res as never, next);
+    expect(next).toHaveBeenCalled();
+
+    // ...but the same payment used for a different request is rejected.
+    next.mockClear();
+    json.mockClear();
+    await mw({ path: '/api/other', headers: paidHeader }, res as never, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(402);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'Payment Already Consumed' }),
+    );
+  });
+
+  it('does not consume a payment that never confirmed', async () => {
+    const data = new Map<string, string>();
+    const store = {
+      get: vi.fn(async (k: string) => data.get(k)),
+      put: vi.fn(async (k: string, v: string) => data.set(k, v)),
+    };
+    const connection = mockConnection({ settleStatus: 'failed' });
+    const mw = createX402Middleware({
+      payTo: PAY_TO,
+      price: '0.01',
+      connection,
+      consumptionStore: store,
+    });
+    const json = vi.fn();
+    const res = { status: vi.fn(() => ({ json })), json };
+    const next = vi.fn();
+    await mw({ path: '/api', headers: paidHeader }, res as never, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(store.put).not.toHaveBeenCalled();
+  });
 });
