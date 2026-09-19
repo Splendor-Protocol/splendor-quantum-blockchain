@@ -2,6 +2,7 @@ package objects
 
 import (
 	"bytes"
+	"sync"
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -79,4 +80,32 @@ func TestCachePutGetAndEviction(t *testing.T) {
 	if len(c.order) != 2 {
 		t.Fatalf("cache grew to %d entries on a replace, want 2", len(c.order))
 	}
+}
+
+// The cache is shared by concurrent sealed handlers (batch Put vs symbol
+// Get); run the race detector over a mixed load.
+func TestCacheConcurrentPutGet(t *testing.T) {
+	_, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewCache(256) // 200 distinct entries across the goroutines: no eviction
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(seed byte) {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				send := newCachedSender(t, priv, seed+byte(i), uint64(i))
+				c.Put(send)
+				descID := send.Manifest().DescriptorID()
+				if _, err := c.Get(descID[:]); err != nil {
+					t.Errorf("concurrent get lost its own put: %v", err)
+					return
+				}
+				c.Len()
+			}
+		}(byte(g))
+	}
+	wg.Wait()
 }
