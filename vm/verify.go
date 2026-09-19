@@ -151,6 +151,13 @@ func verifyDeploy(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage
 		if err := identitiesCoverOperators(identities, ops); err != nil {
 			return fmt.Errorf("verify deploy: %w", err)
 		}
+	} else {
+		// Pre-activation: OperatorIdentities is consensus-visible state that the
+		// un-forked chain does not persist. Drop a supplied operator_identities
+		// so state roots stay identical to pre-verify_identity_v1 builds.
+		// Existing instances migrate their keys through set_operator (or a
+		// redeploy) once verify_identity_v1 activates.
+		identities = nil
 	}
 	if len(ops) > MaxVerifyOperators {
 		return fmt.Errorf("verify deploy: too many operators")
@@ -545,6 +552,9 @@ func verifySetOperator(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMe
 			if err != nil {
 				return fmt.Errorf("verify set_operator: slh_pubkey: %w", err)
 			}
+			// Pre-activation: parse (and validate) for good error surface, but do
+			// not persist into consensus-visible OperatorIdentities. Once
+			// verify_identity_v1 activates, the same call registers the key.
 		}
 		if !isOperator(inst, op) {
 			if len(inst.Operators) >= MaxVerifyOperators {
@@ -552,7 +562,7 @@ func verifySetOperator(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMe
 			}
 			inst.Operators = append(inst.Operators, op)
 		}
-		if len(slh) > 0 {
+		if len(slh) > 0 && verifyIdentityActive(ctx) {
 			upsertOperatorIdentity(inst, op, slh)
 		}
 	} else {
