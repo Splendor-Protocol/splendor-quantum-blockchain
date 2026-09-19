@@ -161,7 +161,7 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().BoolVar(&flagClearVoteJournal, "clear-vote-journal", false, "Backup and clear dataDir/vote-journal.json at startup. Ops recovery for a split durable vote-lock after peers are healthy; coordinate across conflicting validators. Misuse can enable conflicting votes if a prior vote already left the node.")
 	root.Flags().Uint64Var(&flagClearVoteJournalAt, "clear-vote-journal-at-height", 0, "Like --clear-vote-journal, but only if the journal's last vote is at this height; refuse to start if it holds a different height (0 disables).")
 	root.Flags().BoolVar(&flagVoteOnly, "vote-only", false, "Participate in BFT voting but never propose or seal. Ops recovery after unlocking a split vote-journal at set≥3: start non-leader validators with this so they cannot race a divergent next-height proposal while the scheduled leader cannot solo-seal. Remove once tip advances.")
-	root.Flags().StringVar(&flagObjectCodec, "object-codec", "", "Optional coded-object live path (uncoded-v1, erasure-rs-v1, or rlnc-gf256-v1). Empty keeps the default JSON/chunked snapshot and block sync. When set, this node may serve get_object_manifest_v1 / get_object_symbol_v1 over the sealed channel; it does not replace snapshot sync.")
+	root.Flags().StringVar(&flagObjectCodec, "object-codec", "rlnc-gf256-v1", "Coded-object transfer codec (uncoded-v1, erasure-rs-v1, or rlnc-gf256-v1), served by default over the sealed channel for state-sync joins. 'none' disables serving and fetching coded objects entirely; the plain JSON/chunked snapshot path always remains as the fallback.")
 
 	// Operators need a way to produce the value they pin, and to check that a
 	// genesis.json they were handed is the one they expect, without starting a node.
@@ -344,7 +344,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			"the plaintext fallback carries no peer identity, so it would readmit the unpinned " +
 			"peers that the pin requirement exists to refuse")
 	}
-	if flagObjectCodec != "" {
+	if flagObjectCodec != "" && flagObjectCodec != "none" {
 		if _, err := coding.Resolve(flagObjectCodec); err != nil {
 			return fmt.Errorf("--object-codec: %w", err)
 		}
@@ -652,6 +652,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 	syncCfg.AllowPlaintext = flagAllowPlaintextP2P
 	syncCfg.SnapshotStagingDir = filepath.Join(flagDataDir, "chain", "snapshot_download")
 	syncCfg.AdoptSnapshotDownload = executor.ImportSnapshotDownload
+	// Coded-object transfer is on unless the operator disabled it entirely.
+	// The fetch side accepts any codec a peer serves (the receiver resolves it
+	// from the manifest), so this only gates whether the path is attempted.
+	syncCfg.CodedObjects = flagObjectCodec != "none"
 	// Under a rotating BFT leader most blocks are sealed by a registered
 	// validator other than the genesis one; the registry is the second key
 	// ring. ExecuteBlock still verifies the certificate.
@@ -1213,7 +1217,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	var snapshotInFlight atomic.Bool
 	objectHub := objects.NewHub()
 	var objectCodec coding.Codec
-	if flagObjectCodec != "" {
+	if flagObjectCodec != "" && flagObjectCodec != "none" {
 		var err error
 		objectCodec, err = coding.Resolve(flagObjectCodec)
 		if err != nil {

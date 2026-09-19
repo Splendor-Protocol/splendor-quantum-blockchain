@@ -82,7 +82,7 @@ type P2PConfig struct {
 	ServeStateSnapshotChunk func(sessionID string, afterKey []byte, maxLeaves int, source string) ([]byte, error)
 	// ServeObjectManifest returns the SQCO encoding of a coded-object
 	// manifest. Empty descriptorID means the currently published object.
-	// nil means the node does not serve coded objects (default).
+	// nil means the node does not serve coded objects (--object-codec=none).
 	ServeObjectManifest func(descriptorID []byte) ([]byte, error)
 	// ServeObjectSymbol returns the SQCO encoding of one authenticated
 	// symbol proof from generation `generation` of the requested object.
