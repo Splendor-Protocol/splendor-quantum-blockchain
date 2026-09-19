@@ -10,6 +10,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/consensus"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
@@ -18,9 +19,9 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/rpc"
 )
 
-// nodeReadyStatus is /readyz: applied height, index coverage, and not-in-recovery.
-// /healthz stays process liveness only.
-func nodeReadyStatus(ex *block.Executor, sdb *state.StateDB, syncer *network.Syncer, stateSyncPending bool) rpc.ReadyStatus {
+// nodeReadyStatus is /readyz: applied height, index coverage, store alignment,
+// consensus progress, and not-in-recovery. /healthz stays process liveness only.
+func nodeReadyStatus(ex *block.Executor, sdb *state.StateDB, syncer *network.Syncer, stateSyncPending bool, bftEngine func() *consensus.BFTEngine) rpc.ReadyStatus {
 	st := rpc.ReadyStatus{}
 	if sdb != nil {
 		h, ok := sdb.AppliedHeight()
@@ -34,12 +35,28 @@ func nodeReadyStatus(ex *block.Executor, sdb *state.StateDB, syncer *network.Syn
 		if cok {
 			st.IndexCoverageFrom = cov
 		}
+		// Recovering is apply recovery: an interrupted snapshot import or a
+		// partial persist that has halted further apply. Distinct from the BFT
+		// vote lock reported in ValidatorLocked.
 		st.Recovering = ex.HasIncompleteSnapshotImport() || !ex.CanProgress()
-		st.ValidatorLocked = !ex.CanProgress()
+		st.StoresAligned = ex.StoresAligned()
+	} else {
+		st.StoresAligned = false
 	}
 	var head uint64
 	if ex != nil {
 		head, _ = ex.LatestHeight()
+		if hb, err := ex.LatestBlock(); err == nil && hb != nil {
+			st.LastCommitTime = hb.Header.Timestamp
+		}
+	}
+	if bftEngine != nil {
+		if eng := bftEngine(); eng != nil {
+			cs := eng.Status()
+			st.ConsensusHeight = cs.Height
+			st.ConsensusRound = cs.Round
+			st.ValidatorLocked = cs.Locked
+		}
 	}
 	st.Syncing = stateSyncPending || (syncer != nil && !syncer.IsSynced())
 
@@ -52,6 +69,8 @@ func nodeReadyStatus(ex *block.Executor, sdb *state.StateDB, syncer *network.Syn
 		st.Reason = "sync in progress"
 	case !st.AppliedKnown:
 		st.Reason = "applied height unknown"
+	case ex != nil && !st.StoresAligned:
+		st.Reason = "committed state not aligned with head"
 	case head == 0:
 		st.Reason = "chain not yet synced"
 	case ex != nil && ex.HasTxIndex() && st.AppliedKnown && (!st.IndexKnown || st.IndexHeight < st.AppliedHeight):

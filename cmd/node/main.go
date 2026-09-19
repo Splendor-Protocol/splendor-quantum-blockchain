@@ -1151,7 +1151,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 	router := mux.NewRouter()
 
 	isReady := func() rpc.ReadyStatus {
-		return nodeReadyStatus(executor, stateDB, syncer, stateSyncPending.Load())
+		return nodeReadyStatus(executor, stateDB, syncer, stateSyncPending.Load(), bftEngine)
 	}
 
 	// Core RPC server (handles /tx/submit, /block/*, /balance/*, /status, etc.)

@@ -102,14 +102,14 @@ func TestPrepareStateSyncGenesisWritesBookkeepingOnly(t *testing.T) {
 }
 
 func TestNodeReadyStatusRequiresAppliedAndIndex(t *testing.T) {
-	st := nodeReadyStatus(nil, nil, nil, false)
+	st := nodeReadyStatus(nil, nil, nil, false, nil)
 	if st.Ready {
 		t.Fatal("empty node must not be ready")
 	}
 	if st.Reason == "" {
 		t.Fatal("not-ready must name a reason")
 	}
-	st = nodeReadyStatus(nil, nil, nil, true)
+	st = nodeReadyStatus(nil, nil, nil, true, nil)
 	if st.Ready || st.Reason != "state sync in progress" {
 		t.Fatalf("pending state sync = %+v", st)
 	}
@@ -148,7 +148,7 @@ func TestNodeReadyStatusWithExecutorIndexAndSync(t *testing.T) {
 		t.Fatalf("produce: %v", err)
 	}
 
-	st := nodeReadyStatus(ex, sdb, nil, false)
+	st := nodeReadyStatus(ex, sdb, nil, false, nil)
 	if !st.Ready || st.IndexCoverageFrom != 0 {
 		t.Fatalf("caught-up node = %+v", st)
 	}
@@ -159,7 +159,7 @@ func TestNodeReadyStatusWithExecutorIndexAndSync(t *testing.T) {
 	}
 	t.Cleanup(func() { empty.Close() })
 	ex.WithTxIndex(empty)
-	st = nodeReadyStatus(ex, sdb, nil, false)
+	st = nodeReadyStatus(ex, sdb, nil, false, nil)
 	if st.Ready || st.Reason != "transaction index behind applied height" {
 		t.Fatalf("index behind = %+v", st)
 	}
@@ -170,7 +170,7 @@ func TestNodeReadyStatusWithExecutorIndexAndSync(t *testing.T) {
 	pool.UpdatePeerHeight("http://peer", 10)
 	cfg := network.DefaultSyncConfig([]byte{1})
 	syncer := network.NewSyncer(cfg, pool, func() uint64 { return 1 }, func(*types.Block) error { return nil })
-	st = nodeReadyStatus(ex, sdb, syncer, false)
+	st = nodeReadyStatus(ex, sdb, syncer, false, nil)
 	if st.Ready || !st.Syncing || st.Reason != "sync in progress" {
 		t.Fatalf("catch-up sync = %+v", st)
 	}
@@ -183,8 +183,8 @@ func TestNodeReadyStatusWithExecutorIndexAndSync(t *testing.T) {
 	if _, err := ex.ProduceBlock([]*types.Transaction{tx2}, qcrypto.DeriveAddress(vpub), vpub.Bytes(), vpriv, [32]byte{}, 2); err == nil {
 		t.Fatal("expected injected commit failure")
 	}
-	st = nodeReadyStatus(ex, sdb, nil, false)
-	if st.Ready || !st.Recovering || !st.ValidatorLocked {
+	st = nodeReadyStatus(ex, sdb, nil, false, nil)
+	if st.Ready || !st.Recovering || st.StoresAligned {
 		t.Fatalf("halted producer = %+v", st)
 	}
 }

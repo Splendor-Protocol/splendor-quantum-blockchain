@@ -1574,6 +1574,34 @@ func (e *BFTEngine) Round() uint32 {
 	return e.currentRound
 }
 
+// ConsensusStatus is a point-in-time snapshot of the engine's progress, for
+// readiness and diagnostics. Locked reports the node's in-memory vote lock (a
+// prevote it cast, or a POL it witnessed) at the current height — a normal
+// in-round state, not a failure. Callers must not infer health from Locked
+// alone.
+type ConsensusStatus struct {
+	Height       uint64
+	Round        uint32
+	Locked       bool
+	LockedHeight uint64
+}
+
+// Status returns a consistent snapshot of the current height, round and vote
+// lock under a single stateMu hold.
+func (e *BFTEngine) Status() ConsensusStatus {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	st := ConsensusStatus{Height: e.currentHeight, Round: e.currentRound}
+	if e.hasVoted && e.votedHeight == e.currentHeight {
+		st.Locked = true
+		st.LockedHeight = e.votedHeight
+	} else if e.hasPOL && e.polHeight == e.currentHeight {
+		st.Locked = true
+		st.LockedHeight = e.polHeight
+	}
+	return st
+}
+
 // findValidatorPubKey returns the public key for a validator address, or nil.
 func (e *BFTEngine) findValidatorPubKey(addr qcrypto.Address) []byte {
 	e.validatorsMu.RLock()
