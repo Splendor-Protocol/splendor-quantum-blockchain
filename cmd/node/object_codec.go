@@ -32,14 +32,24 @@ func repairFor(sourceCount int) int {
 	return n
 }
 
+// objectSnapshotRepublishLag is how far the published snapshot's anchor may
+// fall behind the chain head before the next coded request republishes at the
+// current head. A node that has been running for hours otherwise serves a
+// snapshot anchored at an old head and every joiner pays the block catch-up.
+const objectSnapshotRepublishLag = 256
+
+// objectSnapshotStale reports whether a snapshot published at height
+// published is too old to serve given a chain head of head.
+func objectSnapshotStale(published, head uint64) bool {
+	return head > published+objectSnapshotRepublishLag
+}
+
 // publishSnapshotObject encodes the node's current state snapshot as a
 // (possibly multi-generation) coded object signed by the node identity.
 // Existing snapshot validation still runs on the reconstructed bytes at the
-// receiver; this only authenticates the transfer.
+// receiver; this only authenticates the transfer. Put swaps atomically, so a
+// republish never leaves the hub in a half-published state.
 func publishSnapshotObject(hub *objects.Hub, codec coding.Codec, exec *block.Executor, signer *qcrypto.PrivateKey) error {
-	if hub.Current() != nil {
-		return nil
-	}
 	snap, err := exec.ExportStateSnapshot()
 	if err != nil {
 		return fmt.Errorf("state snapshot not available: %w", err)
@@ -70,15 +80,24 @@ func publishSnapshotObject(hub *objects.Hub, codec coding.Codec, exec *block.Exe
 }
 
 func ensurePublishedSnapshot(hub *objects.Hub, codec coding.Codec, exec *block.Executor, ident *network.NodeIdentity, gate *atomic.Bool) error {
-	if hub.Current() != nil {
-		return nil
+	if cur := hub.Current(); cur != nil {
+		head, err := exec.LatestHeight()
+		if err != nil || !objectSnapshotStale(cur.Manifest().Anchor.Height, head) {
+			return nil
+		}
+		// Stale: republish at the current head. The old object keeps serving
+		// until the new one is Put, so the swap is atomic from a request's
+		// point of view.
 	}
 	if !gate.CompareAndSwap(false, true) {
 		return errors.New("a coded-object publish is already in progress, retry shortly")
 	}
 	defer gate.Store(false)
-	if hub.Current() != nil {
-		return nil
+	if cur := hub.Current(); cur != nil {
+		head, err := exec.LatestHeight()
+		if err != nil || !objectSnapshotStale(cur.Manifest().Anchor.Height, head) {
+			return nil // someone else republished while we waited for the gate
+		}
 	}
 	_, priv := ident.SigningKeys()
 	return publishSnapshotObject(hub, codec, exec, priv)
