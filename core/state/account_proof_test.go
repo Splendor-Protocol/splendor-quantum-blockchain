@@ -114,6 +114,41 @@ func TestAccountProofIgnoresPendingOverlay(t *testing.T) {
 	}
 }
 
+// CommittedAccount is the committed read used by /state/account; it must ignore
+// the pending overlay exactly like the proof preimage does, so a response that
+// also carries a committed root/height never mixes in a speculative write.
+func TestCommittedAccountIgnoresPendingOverlay(t *testing.T) {
+	sdb, err := NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer sdb.Close()
+
+	a := addr(0xB2)
+	acc := types.NewAccount(a)
+	acc.AddBalance(big.NewInt(40))
+	sdb.SetAccount(acc)
+	if _, err := sdb.CommitWithHeight(1); err != nil {
+		t.Fatal(err)
+	}
+
+	pending := types.NewAccount(a)
+	pending.AddBalance(big.NewInt(500))
+	sdb.SetAccount(pending)
+
+	got, err := sdb.CommittedAccount(a)
+	if err != nil {
+		t.Fatalf("CommittedAccount: %v", err)
+	}
+	if got.Balance == nil || got.Balance.Cmp(big.NewInt(40)) != 0 {
+		t.Fatalf("CommittedAccount balance = %s, want committed 40 (pending 500 leaked)", got.Balance)
+	}
+	// GetAccount (the live read) still sees the pending value.
+	if live, _ := sdb.GetAccount(a); live.Balance.Cmp(big.NewInt(500)) != 0 {
+		t.Fatalf("GetAccount balance = %s, want pending 500", live.Balance)
+	}
+}
+
 func TestVerifyAccountProofRejectsWrongPreimage(t *testing.T) {
 	sdb, err := NewStateDB(t.TempDir())
 	if err != nil {

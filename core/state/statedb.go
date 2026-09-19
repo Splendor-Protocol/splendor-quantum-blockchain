@@ -471,6 +471,28 @@ func (s *StateDB) GetAccount(addr qcrypto.Address) (*types.Account, error) {
 	return &acc, nil
 }
 
+// CommittedAccount reads the account from committed state only (the durable
+// LevelDB leaf set), ignoring the pending overlay. RPC responses that also carry
+// a committed root/height must use this instead of GetAccount, so a speculative
+// pending write cannot leak into a response labeled "committed".
+func (s *StateDB) CommittedAccount(addr qcrypto.Address) (*types.Account, error) {
+	data, err := s.rawGet([]byte(prefixAccount + addr.String()))
+	if err == leveldb.ErrNotFound {
+		return types.NewAccount(addr), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("state read error for %s: %w", addr, err)
+	}
+	var acc types.Account
+	if err := json.Unmarshal(data, &acc); err != nil {
+		return nil, fmt.Errorf("failed to decode account %s: %w", addr, err)
+	}
+	if acc.Balance == nil {
+		acc.Balance = big.NewInt(0)
+	}
+	return &acc, nil
+}
+
 // SetAccount writes an account to the dirty cache.
 // Changes are not persisted until Commit() is called.
 func (s *StateDB) SetAccount(acc *types.Account) {
@@ -938,6 +960,26 @@ func (s *StateDB) AppliedHeight() (uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.appliedHeight, s.heightKnown
+}
+
+// CommittedView is a consistent snapshot of the committed state: the root and
+// applied height read under one lock, so a concurrent commit cannot mix an old
+// root with a new height (or vice versa).
+type CommittedView struct {
+	Root        [32]byte
+	Height      uint64
+	HeightKnown bool
+}
+
+// CommittedView returns the committed root and applied height together.
+func (s *StateDB) CommittedView() CommittedView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return CommittedView{
+		Root:        merkleRoot(s.leaves),
+		Height:      s.appliedHeight,
+		HeightKnown: s.heightKnown,
+	}
 }
 
 // FailNextCommit makes the next Commit/CommitWithHeight return err without
