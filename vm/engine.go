@@ -1200,11 +1200,6 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 
-			callGas := subGas.Uint64()
-			if callGas > gas-gasUsed {
-				callGas = gas - gasUsed
-			}
-
 			argsOff, err := memOperand(argsOffset)
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
@@ -1213,6 +1208,14 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 			if err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
+			// Charge the caller's input copy BEFORE the child budget is derived.
+			// The CALL path used to clamp callGas against remaining gas, then
+			// charge the input copy, then hand the OLD (higher) allowance to the
+			// child: 100 remaining could fall to 70 after copying while the child
+			// still received 100 — the parent only noticed the overspend once the
+			// child had already run. Deriving the allowance from post-copy gas
+			// guarantees the child never receives more than the caller actually
+			// has available at dispatch.
 			if err := chargeCopy(argsSz); err != nil {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
@@ -1221,6 +1224,14 @@ func (e *Engine) Execute(ctx *ExecutionContext) *ExecutionResult {
 				return &ExecutionResult{Err: err, GasUsed: gasUsed}
 			}
 			toAddr := bigToAddr(addrInt)
+
+			// Clamp the child allowance against the gas actually remaining now
+			// that the copy (and any other dispatch-side charges) are accounted
+			// for. This is what the child is allowed to consume.
+			callGas := subGas.Uint64()
+			if callGas > gas-gasUsed {
+				callGas = gas - gasUsed
+			}
 
 			var subResult *ExecutionResult
 

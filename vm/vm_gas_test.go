@@ -5,6 +5,8 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 func enableGasV1(e *Engine) {
@@ -158,6 +160,67 @@ func TestCallInputCopyChargedBeforeLoad(t *testing.T) {
 	})
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "out of gas") {
 		t.Fatalf("32 MiB CALL args must OOG before mem.load, got %+v", res)
+	}
+}
+
+// The CALL path must derive the child allowance from gas remaining AFTER the
+// caller's input copy is charged. Pre-fix, callGas was clamped first, then the
+// copy charged, then the OLD (higher) allowance handed to the child: with
+// Gas=X the child observed GASLIMIT = X - (pushes + CALL), even though the copy
+// had consumed 300 more. Here the child reads GASLIMIT into storage, so the
+// post-fix value must be the post-copy remaining.
+func TestChildGasAllowanceIsClampedAfterInputCopy(t *testing.T) {
+	sdb := newTestState(t)
+	defer sdb.Close()
+
+	caller := addr(0x79)
+	callee := addr(0x7a)
+	// Child records its own GASLIMIT to slot 0: pushU(0)=slot, GASLIMIT=value, SSTORE.
+	installContract(t, sdb, callee, concat(pushU(0), []byte{OpGASLIMIT, OpSSTORE}), 0)
+
+	// Parent: CALL(callee, subGas=huge, argsOffset=0, argsSize=3200, ret=0).
+	// Stack order is reversed; 7 PUSHes (3 gas each) + CALL (700) precede the copy.
+	const totalGas = 50_000
+	parent := concat(
+		pushU(0),    // retSize
+		pushU(0),    // retOffset
+		pushU(3200), // argsSize -> 100 words * 3 = 300 copy gas
+		pushU(0),    // argsOffset
+		pushU(0),    // value
+		push32(addrToBig(callee)),
+		pushU(999_000), // subGas (clamped down anyway)
+		[]byte{OpCALL, OpSTOP},
+	)
+
+	e := NewEngine(sdb)
+	enableGasV1(e)
+	res := e.Execute(&ExecutionContext{
+		Caller:      addr(0x01),
+		Origin:      addr(0x01),
+		Contract:    caller,
+		CallValue:   big.NewInt(0),
+		Code:        parent,
+		BlockHeight: 1,
+		Gas:         totalGas,
+		ExplicitGas: true,
+		Logs:        make([]*types.Log, 0),
+	})
+	if res.Err != nil {
+		t.Fatalf("parent should finish: %v", res.Err)
+	}
+
+	raw, _ := sdb.GetStorageValue(callee, bigToSlot(big.NewInt(0)))
+	observed := new(big.Int).SetBytes(raw).Uint64()
+
+	// 7 PUSHes (21) + CALL (700) + copy of 3200 bytes (100 words * 3 = 300).
+	const preCopy = 7*3 + 700
+	const copyCost = 100 * 3
+	want := uint64(totalGas - preCopy - copyCost)
+	if observed != want {
+		t.Fatalf("child GASLIMIT = %d, want %d (remaining after input copy)", observed, want)
+	}
+	if observed >= uint64(totalGas-preCopy) {
+		t.Fatalf("child GASLIMIT %d was sized from pre-copy remaining %d — the copy charge was ignored", observed, totalGas-preCopy)
 	}
 }
 
