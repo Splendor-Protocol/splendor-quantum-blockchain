@@ -360,6 +360,14 @@ type BFTEngine struct {
 	polVotes  []*Vote
 	rcByRound map[uint32]map[qcrypto.Address]*RoundChange
 	rcQCRound int32
+	// rcValue* is the safe value selected from the current round-change quorum:
+	// the one with the highest locked round, plus its certificate. A leader must
+	// re-propose this value (or hold for its body) instead of minting a value
+	// that could conflict with a validator's lock.
+	rcValueHash  [32]byte
+	rcValueRound uint32
+	rcValueVotes []*Vote
+	rcValueSet   bool
 }
 
 // BFTConfig configures the BFT engine.
@@ -1432,8 +1440,7 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	e.hasQuorum = false
 	e.hasPOL = false
 	e.polVotes = nil
-	e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
-	e.rcQCRound = -1
+	e.clearRoundChangeLocked()
 
 	// Cleanup
 	e.prunePendingVotes(e.currentHeight)
@@ -1482,8 +1489,7 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	e.hasPOL = false
 	e.polVotes = nil
 	e.precommits = nil
-	e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
-	e.rcQCRound = -1
+	e.clearRoundChangeLocked()
 	e.lockedProposal = nil
 
 	// Crash recovery: A restart re-enters a height the previous process may
@@ -1515,12 +1521,18 @@ func (e *BFTEngine) SetHeight(h uint64) {
 
 // LockedProposal returns the block this node is vote-locked to at the current
 // height, when the body is still available (in memory or restored from the
-// journal). Callers rebroadcast it instead of minting a new hash.
+// journal). A round-change-selected value (higher than this node's own lock) is
+// preferred when its body is locally held, so the leader re-proposes the safe
+// value instead of its own lower lock. Callers rebroadcast it instead of
+// minting a new hash.
 func (e *BFTEngine) LockedProposal() *types.Block {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 	if e.lockedProposal == nil {
 		return nil
+	}
+	if e.rcValueSet && e.lockedProposal.Header.Height == e.currentHeight && e.lockedProposal.Hash == e.rcValueHash {
+		return e.lockedProposal
 	}
 	if e.hasVoted && e.lockedProposal.Header.Height == e.votedHeight && e.lockedProposal.Hash == e.votedHash {
 		return e.lockedProposal

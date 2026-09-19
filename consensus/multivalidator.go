@@ -220,6 +220,15 @@ func (m *MultiValidator) propose() error {
 		return nil
 	}
 
+	// A round-change quorum selected a value this node does not hold the body
+	// for. Minting a fresh block here could conflict with that selected value,
+	// so hold until a peer re-proposes the selected body (or we receive it).
+	if hash, _, _, ok := m.engine.JustifiedValue(); ok {
+		log.Warn().Uint64("height", height).Hex("selected", hash[:8]).
+			Msg("BFT: round-change selected a value this node does not hold; holding")
+		return nil
+	}
+
 	batch := m.cfg.MaxTxPerBlock
 	if m.scheduler != nil {
 		batch = m.scheduler.RecommendBatchSize(m.pool.Size())

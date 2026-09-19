@@ -84,6 +84,12 @@ func (e *ProposalEnvelope) Verify(pubKeyBytes []byte) error {
 
 // RoundChange is an authenticated vote to leave the previous round. The new
 // leader needs a quorum of these for (height, newRound) before proposing.
+//
+// POLVotes carries the prevote quorum (certificate) that justifies LockedHash at
+// LockedRound, when this node witnessed it. It is evidence, not part of the
+// round-change signature: each vote is individually signed and re-verified via
+// verifyPOL when a leader consumes it, so a round-change cannot attach a forged
+// or mismatched certificate.
 type RoundChange struct {
 	Height        uint64          `json:"height"`
 	Round         uint32          `json:"round"`
@@ -91,6 +97,7 @@ type RoundChange struct {
 	LockedRound   int32           `json:"locked_round"`
 	ValidatorAddr qcrypto.Address `json:"validator_addr"`
 	Timestamp     int64           `json:"timestamp"`
+	POLVotes      []*Vote         `json:"pol_votes,omitempty"`
 	Signature     []byte          `json:"signature,omitempty"`
 }
 

@@ -131,6 +131,63 @@ func TestReProposalAttachesTheRetainedPrevoteQuorum(t *testing.T) {
 	}
 }
 
+// A round-change quorum must select the value with the HIGHEST locked round and
+// retain its certificate, so the next leader re-proposes the safe value (B@1)
+// instead of a lower lock (A@0) or a fresh block.
+func TestRoundChangeSelectsHighestJustifiedValue(t *testing.T) {
+	set, keys := testSet(t, 4)
+	eng := twoPhaseFor(t, set, keys, 0, BFTConfig{})
+	eng.SetHeight(5)
+
+	hashA := [32]byte{0xAA}
+	hashB := [32]byte{0xBB}
+
+	// Validator 0: no lock.
+	rc0 := &RoundChange{Height: 5, Round: 2, LockedRound: -1, ValidatorAddr: set[0].Address, Timestamp: 1}
+	if err := rc0.Sign(keys[0]); err != nil {
+		t.Fatal(err)
+	}
+	// Validator 1: bare vote lock at A@round0 (no witnessed quorum).
+	rc1 := &RoundChange{Height: 5, Round: 2, LockedHash: hashA, LockedRound: 0, ValidatorAddr: set[1].Address, Timestamp: 2}
+	if err := rc1.Sign(keys[1]); err != nil {
+		t.Fatal(err)
+	}
+	// Validator 2: lock at B@round1 carrying its prevote quorum certificate.
+	polB := make([]*Vote, 3)
+	for i := 0; i < 3; i++ {
+		polB[i] = &Vote{Height: 5, Round: 1, BlockHash: hashB, ValidatorAddr: set[i].Address, Timestamp: int64(100 + i), Kind: types.VoteKindPrevote}
+		if err := polB[i].Sign(keys[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rc2 := &RoundChange{Height: 5, Round: 2, LockedHash: hashB, LockedRound: 1, ValidatorAddr: set[2].Address, Timestamp: 3, POLVotes: polB}
+	if err := rc2.Sign(keys[2]); err != nil {
+		t.Fatal(err)
+	}
+
+	// n=4 → quorum 3. The round-change QC forms on the third message.
+	eng.addRoundChangeLocked(rc0)
+	eng.addRoundChangeLocked(rc1)
+	eng.addRoundChangeLocked(rc2)
+
+	if eng.rcQCRound != 2 {
+		t.Fatalf("rcQCRound = %d, want 2", eng.rcQCRound)
+	}
+	hash, round, votes, ok := eng.JustifiedValue()
+	if !ok {
+		t.Fatal("no justified value selected")
+	}
+	if hash != hashB || round != 1 {
+		t.Fatalf("JustifiedValue = (%x, %d), want (%x, 1)", hash[:8], round, hashB[:8])
+	}
+	if len(votes) != 3 {
+		t.Fatalf("selected certificate has %d votes, want 3", len(votes))
+	}
+	if !eng.verifyPOL(5, 1, hashB, votes) {
+		t.Fatal("selected certificate does not verify")
+	}
+}
+
 func TestTwoPhaseLockedValueReproposedByNewEnvelopeLeader(t *testing.T) {
 	set, keys := testSet(t, 4)
 	var lastProp *ProposalMsg
