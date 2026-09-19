@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/syndtr/goleveldb/leveldb"
+
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
@@ -590,5 +592,105 @@ func TestReconcileLegacyNoStagingIsIncomplete(t *testing.T) {
 	}
 	if m, _ := exB.readSnapshotMarker(); m != nil {
 		t.Fatal("marker left after resumed import")
+	}
+}
+
+// TestReconcileResumesInterruptedBoundedBatchPublish simulates a crash in the
+// middle of ImportSnapshotJSONLResume's bounded-batch publish: the block is
+// stored and the leaf VALUES were written, but the height marker (written last)
+// never landed. Recovery must recognise the resumable partial state and re-run
+// the import from the retained, verified download — not refuse it as a mismatch
+// or discard the evidence.
+func TestReconcileResumesInterruptedBoundedBatchPublish(t *testing.T) {
+	exA, _, _, _, _, _ := threeBlockChain(t)
+	snap, err := exA.ExportStateSnapshot()
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	statePath := t.TempDir()
+	chainPath := t.TempDir()
+	sdbB, err := state.NewStateDB(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exB, err := NewExecutor(sdbB, chainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	marker := &snapshotImportMarker{
+		Height: snap.Height, BlockHash: snap.Block.Hash, StateRoot: snap.Block.Header.StateRoot,
+		ChainID: snap.Block.Header.ChainID, Phase: phaseBlockStored,
+	}
+	if err := exB.writeSnapshotMarker(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := exB.storeBlock(snap.Block); err != nil {
+		t.Fatal(err)
+	}
+
+	// A complete, verified download the recovery path can resume from.
+	dl, err := state.OpenSnapshotDownload(exB.snapshotDownloadPath(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dl.AcceptHead(snap.Block, snap.Height); err != nil {
+		t.Fatal(err)
+	}
+	if err := dl.AppendPage(snap.Leaves, nil, true, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the interrupted publish: close everything, write the leaf values
+	// directly (no height marker), and reopen so loadLeaves repopulates the
+	// in-memory index — exactly what a restart would observe.
+	if err := exB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sdbB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rawDB, err := leveldb.OpenFile(statePath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := new(leveldb.Batch)
+	for _, l := range snap.Leaves {
+		partial.Put(l.Key, l.Value)
+	}
+	if err := rawDB.Write(partial, nil); err != nil {
+		rawDB.Close()
+		t.Fatal(err)
+	}
+	rawDB.Close()
+
+	sdbB2, err := state.NewStateDB(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdbB2.Close()
+	exB2, err := NewExecutor(sdbB2, chainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exB2.Close()
+
+	if !sdbB2.CanResumeSnapshotImport() {
+		t.Fatal("partial publish must be resumable")
+	}
+
+	if err := exB2.ReconcileSnapshotImport(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if h, ok := sdbB2.AppliedHeight(); !ok || h != snap.Height {
+		t.Fatalf("applied height after resume = (%d,%v), want (%d,true)", h, ok, snap.Height)
+	}
+	if root, _ := sdbB2.StateRoot(); root != snap.Block.Header.StateRoot {
+		t.Fatalf("state root after resume = %x, want %x", root[:8], snap.Block.Header.StateRoot[:8])
+	}
+	if got, err := exB2.readSnapshotMarker(); err != nil || got != nil {
+		t.Fatalf("marker after resume = (%v,%v), want (nil,nil)", got, err)
 	}
 }

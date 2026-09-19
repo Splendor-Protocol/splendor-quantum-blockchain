@@ -859,6 +859,14 @@ func (e *Executor) ReconcileSnapshotImport() error {
 		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: nothing persisted yet; discarding marker and retained snapshot")
 		return e.deleteSnapshotEvidence()
 
+	case blockClass == snapMatch && stateClass == snapMismatch && e.state.CanResumeSnapshotImport():
+		if err := e.completeSnapshotStateFromEvidence(marker); err != nil {
+			return err
+		}
+		e.markSnapshotIndexCoverage(marker.Height)
+		log.Info().Uint64("height", marker.Height).Msg("RECOVERY: resumed bounded-batch state import from retained snapshot")
+		return e.deleteSnapshotEvidence()
+
 	case stateClass == snapMismatch:
 		return fmt.Errorf("recovery: state at marker height %d is present but does not match the recorded root — evidence kept",
 			marker.Height)
@@ -890,14 +898,14 @@ func (e *Executor) classifySnapshotState(marker *snapshotImportMarker) snapClass
 			return snapMatch
 		}
 	}
-	if e.state.IsFresh() && !ok {
+	if !ok && e.state.IsFresh() {
 		return snapAbsent
 	}
 	return snapMismatch
 }
 
 func (e *Executor) completeSnapshotStateFromEvidence(marker *snapshotImportMarker) error {
-	if !e.state.IsFresh() {
+	if !e.state.IsFresh() && !e.state.CanResumeSnapshotImport() {
 		return fmt.Errorf("recovery: block %d stored but state is neither imported nor fresh — refusing to overwrite", marker.Height)
 	}
 	if d, err := e.openSnapshotDownload(); err != nil {
@@ -909,7 +917,7 @@ func (e *Executor) completeSnapshotStateFromEvidence(marker *snapshotImportMarke
 		if got := d.StateRoot(); got != marker.StateRoot {
 			return fmt.Errorf("recovery: download staging root %x != marker %x", got[:8], marker.StateRoot[:8])
 		}
-		if err := e.state.ImportSnapshotJSONL(filepath.Join(d.Dir(), "leaves.jsonl"), marker.Height, marker.StateRoot); err != nil {
+		if err := e.state.ImportSnapshotJSONLResume(filepath.Join(d.Dir(), "leaves.jsonl"), marker.Height, marker.StateRoot); err != nil {
 			return fmt.Errorf("recovery: complete state import at height %d: %w", marker.Height, err)
 		}
 		return nil

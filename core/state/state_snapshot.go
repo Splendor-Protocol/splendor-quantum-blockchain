@@ -301,6 +301,17 @@ func (s *StateDB) IsFresh() bool {
 	return s.freshLocked()
 }
 
+// CanResumeSnapshotImport reports whether a snapshot import may be retried over
+// the current state: there must be no committed height marker and no pending
+// overlay, but committed leaf values from an interrupted bounded-batch publish
+// are acceptable (re-writing the same verified leaves is idempotent, and the
+// height marker written last is what commits the snapshot).
+func (s *StateDB) CanResumeSnapshotImport() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.importAllowedLocked(true)
+}
+
 func (s *StateDB) freshLocked() bool {
 	return len(s.leaves) == 0 && !s.heightKnown &&
 		len(s.dirty) == 0 && len(s.codeCache) == 0 && len(s.pendingRaw) == 0

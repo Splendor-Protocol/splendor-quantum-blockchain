@@ -479,17 +479,32 @@ func forEachLeafJSONL(path string, fn func(types.StateLeaf) error) error {
 // ImportSnapshotJSONL is ImportSnapshot reading leaves from a JSONL file so
 // the importer never holds a second full-snapshot JSON buffer.
 func (s *StateDB) ImportSnapshotJSONL(path string, height uint64, wantRoot [32]byte) error {
+	return s.importSnapshotJSONL(path, height, wantRoot, false)
+}
+
+// ImportSnapshotJSONLResume is ImportSnapshotJSONL for the recovery path: it
+// also accepts a state whose only content is a previous, interrupted bounded-
+// batch publish (leaf values present but no height marker), because re-writing
+// the same verified leaves is idempotent and the height marker is what commits
+// the snapshot. It never accepts a state that already has a committed height.
+func (s *StateDB) ImportSnapshotJSONLResume(path string, height uint64, wantRoot [32]byte) error {
+	return s.importSnapshotJSONL(path, height, wantRoot, true)
+}
+
+func (s *StateDB) importSnapshotJSONL(path string, height uint64, wantRoot [32]byte, resume bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sandbox {
 		return ErrSandboxCommit
 	}
-	if !s.freshLocked() {
+	if !s.importAllowedLocked(resume) {
 		return ErrStateNotFresh
 	}
 
+	// Pass 1 — verify. Build the leaf-hash index (32 bytes per leaf) and check
+	// the root. No leaf VALUES are retained: the memory is bounded by the hash
+	// index, not by the snapshot's value bytes.
 	index := make(map[string][32]byte)
-	batch := new(leveldb.Batch)
 	if err := forEachLeafJSONL(path, func(l types.StateLeaf) error {
 		if len(l.Key) == 0 {
 			return errors.New("state: snapshot carries an empty key")
@@ -501,7 +516,6 @@ func (s *StateDB) ImportSnapshotJSONL(path string, height uint64, wantRoot [32]b
 			return fmt.Errorf("state: snapshot carries key %q twice", l.Key)
 		}
 		index[string(l.Key)] = qcrypto.Hash32(l.Value)
-		batch.Put(l.Key, l.Value)
 		return nil
 	}); err != nil {
 		return err
@@ -512,6 +526,39 @@ func (s *StateDB) ImportSnapshotJSONL(path string, height uint64, wantRoot [32]b
 	if got := merkleRoot(index); got != wantRoot {
 		return fmt.Errorf("%w: leaves hash to %x, header says %x", ErrSnapshotRootMismatch, got[:8], wantRoot[:8])
 	}
+
+	// Pass 2 — publish in bounded batches. Each batch holds at most
+	// snapshotImportBatchLeaves leaf values, so RAM stays flat regardless of
+	// snapshot size. The height marker is written last and is what makes the
+	// import committed; an interrupted pass leaves values but no marker, which
+	// the resume path (and the executor's recovery marker) re-imports.
+	const snapshotImportBatchLeaves = 10000
+	batch := new(leveldb.Batch)
+	n := 0
+	flush := func() error {
+		if err := persist.Write(s.db, batch); err != nil {
+			return fmt.Errorf("state: snapshot import failed: %w", err)
+		}
+		batch = new(leveldb.Batch)
+		n = 0
+		return nil
+	}
+	if err := forEachLeafJSONL(path, func(l types.StateLeaf) error {
+		// The file is a local staging artifact, but re-check each value against
+		// the pass-1 index so a mutation between passes cannot publish data the
+		// root never committed to.
+		if qcrypto.Hash32(l.Value) != index[string(l.Key)] {
+			return fmt.Errorf("state: snapshot changed during import at key %q", l.Key)
+		}
+		batch.Put(l.Key, l.Value)
+		n++
+		if n >= snapshotImportBatchLeaves {
+			return flush()
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
 	hb, err := json.Marshal(height)
 	if err != nil {
 		return fmt.Errorf("marshal height marker: %w", err)
@@ -520,10 +567,28 @@ func (s *StateDB) ImportSnapshotJSONL(path string, height uint64, wantRoot [32]b
 	if err := persist.Write(s.db, batch); err != nil {
 		return fmt.Errorf("state: snapshot import failed: %w", err)
 	}
+
 	s.leaves = index
 	s.nativeSum = nil
 	s.touchLocked()
 	s.appliedHeight = height
 	s.heightKnown = true
 	return nil
+}
+
+// importAllowedLocked reports whether an import may replace the committed
+// state. A fresh DB is always importable; with resume, a DB that has leaf
+// values but no committed height marker (an interrupted bounded-batch publish)
+// is also importable. Any pending overlay or committed height refuses.
+func (s *StateDB) importAllowedLocked(resume bool) bool {
+	if len(s.dirty) > 0 || len(s.codeCache) > 0 || len(s.pendingRaw) > 0 {
+		return false
+	}
+	if s.heightKnown {
+		return false
+	}
+	if len(s.leaves) == 0 {
+		return true
+	}
+	return resume
 }
