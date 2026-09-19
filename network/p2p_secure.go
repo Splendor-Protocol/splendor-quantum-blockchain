@@ -154,6 +154,12 @@ type GetBlockBatchRequest struct {
 	Count      int    `json:"count"`
 }
 
+// MaxCodedBlockBatchBlocks bounds a coded block-batch request on BOTH sides:
+// the serve side refuses to encode an unbounded object on demand, and the
+// fetch side refuses a count that could overflow the fromHeight+count-1
+// anchor arithmetic.
+const MaxCodedBlockBatchBlocks = 128
+
 // ── Peer identity cache (client side) ────────────────────────────────────────
 
 type cachedIdentity struct {

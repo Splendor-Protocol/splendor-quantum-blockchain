@@ -99,7 +99,8 @@ type P2PConfig struct {
 
 // maxCodedBlockBatchBlocks bounds a coded block-batch request, so a peer
 // cannot be asked to encode an unbounded object on demand.
-const maxCodedBlockBatchBlocks = 128
+// (Bounds enforcement lives in the shared network.MaxCodedBlockBatchBlocks;
+// this comment marks where the check happens in the sealed dispatch.)
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
 //
@@ -386,8 +387,8 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			writeError(w, http.StatusBadRequest, "invalid get_block_batch_v1 body")
 			return
 		}
-		if q.Count < 1 || q.Count > maxCodedBlockBatchBlocks {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("block batch count %d outside [1,%d]", q.Count, maxCodedBlockBatchBlocks))
+		if q.Count < 1 || q.Count > network.MaxCodedBlockBatchBlocks {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("block batch count %d outside [1,%d]", q.Count, network.MaxCodedBlockBatchBlocks))
 			return
 		}
 		payload, err = cfg.ServeBlockBatch(q.FromHeight, q.Count)

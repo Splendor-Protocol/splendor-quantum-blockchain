@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sync/atomic"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
@@ -114,9 +115,6 @@ func ensurePublishedSnapshot(hub *objects.Hub, codec coding.Codec, exec *block.E
 // fetching on the client.
 var blockBatchCache = objects.NewCache(8)
 
-// maxServedBlockBatchBlocks bounds the range one on-demand batch covers.
-const maxServedBlockBatchBlocks = 128
-
 // publishBlockBatch encodes count consecutive blocks starting at fromHeight as
 // a coded object signed by the node identity and stashes it in the batch
 // cache. Returns the SQCO object manifest frame; the block bytes themselves
@@ -124,8 +122,14 @@ const maxServedBlockBatchBlocks = 128
 // LAST block of the range, so a client refuses a manifest that names a
 // different range before spending symbol work.
 func publishBlockBatch(exec *block.Executor, codec coding.Codec, signer *qcrypto.PrivateKey, fromHeight uint64, count int) ([]byte, error) {
-	if count < 1 || count > maxServedBlockBatchBlocks {
-		return nil, fmt.Errorf("block batch count %d outside [1,%d]", count, maxServedBlockBatchBlocks)
+	if count < 1 || count > network.MaxCodedBlockBatchBlocks {
+		return nil, fmt.Errorf("block batch count %d outside [1,%d]", count, network.MaxCodedBlockBatchBlocks)
+	}
+	// The range comes from an untrusted request body: refuse one whose end
+	// would wrap, or the loop below would terminate immediately and index an
+	// empty slice (panic), and a wrapped anchor could name the wrong range.
+	if fromHeight > math.MaxUint64-uint64(count) {
+		return nil, fmt.Errorf("block batch range [%d, %d) overflows uint64", fromHeight, fromHeight+uint64(count))
 	}
 	blocks := make([]*types.Block, 0, count)
 	for h := fromHeight; h < fromHeight+uint64(count); h++ {

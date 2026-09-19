@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -218,5 +219,29 @@ func TestSyncOncePrefillsCodedBlockBatch(t *testing.T) {
 		if h != uint64(i+1) {
 			t.Fatalf("block %d at height %d, want %d", i, h, i+1)
 		}
+	}
+}
+
+// Degenerate batch ranges are refused before any network work: an out-of-cap
+// count and a fromHeight whose range end would wrap must never reach the wire
+// or the anchor arithmetic.
+func TestFetchBlockBatchRejectsDegenerateRanges(t *testing.T) {
+	f := NewBlockFetcher(DefaultSyncConfig(nil)) // no Identities needed: guards fire first
+	if _, err := f.FetchBlockBatch("http://peer", 10, MaxCodedBlockBatchBlocks+1); err == nil {
+		t.Fatal("over-cap count accepted")
+	}
+	if _, err := f.FetchBlockBatch("http://peer", 10, 0); err == nil {
+		t.Fatal("zero count accepted")
+	}
+	if _, err := f.FetchBlockBatch("http://peer", ^uint64(0), 2); err == nil {
+		t.Fatal("wrapping range accepted")
+	}
+	// A maximal NON-wrapping range must pass the guard and fail later, on the
+	// (unreachable) transport — not on the overflow check.
+	cfg := DefaultSyncConfig(nil)
+	cfg.Identities = NewIdentityCache()
+	f2 := NewBlockFetcher(cfg)
+	if _, err := f2.FetchBlockBatch("http://127.0.0.1:1", ^uint64(0)-1, 2); err != nil && strings.Contains(err.Error(), "overflows") {
+		t.Fatalf("maximal non-wrapping range tripped the overflow guard: %v", err)
 	}
 }

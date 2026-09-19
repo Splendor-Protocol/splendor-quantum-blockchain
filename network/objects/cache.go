@@ -3,6 +3,7 @@ package objects
 import (
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // Cache holds a bounded set of coded objects for sealed serving, keyed by
@@ -11,7 +12,11 @@ import (
 // the oldest entry is evicted once the cache is full. A client that loses its
 // object to eviction mid-transfer simply retries or falls back — cache
 // eviction never corrupts, it only refuses.
+//
+// Concurrent by design: sealed handlers Put new batch objects while symbol
+// requests Get them, so every method takes the lock.
 type Cache struct {
+	mu      sync.Mutex
 	max     int
 	entries map[[32]byte]*ObjectSender
 	order   [][32]byte // FIFO, oldest first
@@ -32,6 +37,8 @@ func (c *Cache) Put(s *ObjectSender) {
 		return
 	}
 	id := s.Manifest().DescriptorID()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if _, exists := c.entries[id]; exists {
 		c.entries[id] = s
 		return
@@ -53,8 +60,17 @@ func (c *Cache) Get(descID []byte) (*ObjectSender, error) {
 	}
 	var id [32]byte
 	copy(id[:], descID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if s, ok := c.entries[id]; ok {
 		return s, nil
 	}
 	return nil, fmt.Errorf("objects: no coded object published for %x", descID[:8])
+}
+
+// Len reports how many objects the cache currently holds.
+func (c *Cache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
 }

@@ -210,3 +210,15 @@ func TestEnsurePublishedSnapshotRepublishesWhenStale(t *testing.T) {
 	}
 	_ = sdb
 }
+
+// The batch range comes from an untrusted request body: an over-cap count or
+// a wrapping range must be refused before any block lookup (the nil executor
+// proves the guard fires first).
+func TestPublishBlockBatchRejectsDegenerateRanges(t *testing.T) {
+	if _, err := publishBlockBatch(nil, coding.NewUncodedCodec(), nil, 10, network.MaxCodedBlockBatchBlocks+1); err == nil {
+		t.Fatal("over-cap count accepted")
+	}
+	if _, err := publishBlockBatch(nil, coding.NewUncodedCodec(), nil, ^uint64(0), 2); err == nil {
+		t.Fatal("wrapping range accepted")
+	}
+}
