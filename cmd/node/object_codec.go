@@ -37,7 +37,9 @@ func repairFor(sourceCount int) int {
 // fall behind the chain head before the next coded request republishes at the
 // current head. A node that has been running for hours otherwise serves a
 // snapshot anchored at an old head and every joiner pays the block catch-up.
-const objectSnapshotRepublishLag = 256
+// A var (not a const) so tests can shrink the lag; it is never mutated in
+// production.
+var objectSnapshotRepublishLag = uint64(256)
 
 // objectSnapshotStale reports whether a snapshot published at height
 // published is too old to serve given a chain head of head.
