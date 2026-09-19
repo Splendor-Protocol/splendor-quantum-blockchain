@@ -314,6 +314,15 @@ const snapshotSessionTTL = 10 * time.Minute
 const (
 	maxSnapshotChunkSessions          = 32
 	maxSnapshotChunkSessionsPerSource = 4
+	// maxSnapshotFinalCache bounds the completed-transfer final responses kept
+	// after their sessions are released. A lost final page is retryable, but the
+	// cache is small and swept, so it cannot pin whole snapshots in memory.
+	maxSnapshotFinalCache = 64
+	// snapshotFinalCacheTTL is how long a released final response is retryable.
+	snapshotFinalCacheTTL = 5 * time.Minute
+	// snapshotSweepInterval is how often the background sweeper runs. Sweeping
+	// also happens on every session start/page; this only covers idle nodes.
+	snapshotSweepInterval = time.Minute
 )
 
 func normalizeSnapshotChunkLeaves(n int) int {
@@ -331,7 +340,14 @@ type snapshotChunkSession struct {
 	block   *types.Block
 	expires time.Time
 	source  string
+}
+
+// snapshotFinalCache holds a completed transfer's final response so a client
+// that drops the final page can retry it without the whole immutable view
+// staying pinned. Each entry is small (a page), bounded and TTL-swept.
+type snapshotFinalCache struct {
 	final   *types.StateSnapshotChunkResult
+	expires time.Time
 }
 
 // StartSnapshotChunkSession pins the state at its current height and returns an
@@ -354,6 +370,7 @@ func (e *Executor) StartSnapshotChunkSessionFrom(source string, maxLeaves int) (
 // of the snapshot uses this so the first page of a new session still carries
 // the head block for re-authentication.
 func (e *Executor) StartSnapshotChunkSessionFromAt(source string, afterKey []byte, maxLeaves int) (string, *types.StateSnapshotChunkResult, error) {
+	e.startSnapshotSweeper()
 	maxLeaves = normalizeSnapshotChunkLeaves(maxLeaves)
 	sess, err := e.state.BeginSnapshotChunkSession()
 	if err != nil {
@@ -411,11 +428,16 @@ func (e *Executor) StartSnapshotChunkSessionFromAt(source string, afterKey []byt
 
 // PageSnapshotChunkSession serves one page from an existing immutable session.
 // The head block is only attached to the first page; the final page releases
-// the pinned snapshot.
+// the pinned snapshot immediately and caches the final response separately so
+// a lost final page is retryable without holding the whole view open.
 func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, maxLeaves int) (*types.StateSnapshotChunkResult, error) {
 	maxLeaves = normalizeSnapshotChunkLeaves(maxLeaves)
 	e.snapshotChunkMu.Lock()
 	e.sweepSnapshotChunkSessionsLocked()
+	if final := e.snapshotFinalCacheGetLocked(sessionID); final != nil {
+		e.snapshotChunkMu.Unlock()
+		return final, nil
+	}
 	sc := e.snapshotChunkSessions[sessionID]
 	if sc == nil {
 		e.snapshotChunkMu.Unlock()
@@ -433,13 +455,6 @@ func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, m
 		sc.mu.Unlock()
 		return nil, fmt.Errorf("unknown or expired snapshot session %q; start a new transfer", sessionID)
 	}
-	if sc.final != nil {
-		cp := *sc.final
-		e.unpinSnapshotChunkSession(sc)
-		sc.mu.Unlock()
-		e.forgetSnapshotChunkSession(sessionID, sc)
-		return &cp, nil
-	}
 
 	leaves, nextKey, done, err := sc.session.Page(afterKey, maxLeaves)
 	if err != nil {
@@ -454,11 +469,63 @@ func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, m
 		Done:      done,
 	}
 	if done {
-		cp := *result
-		sc.final = &cp
+		// Release the pinned immutable view BEFORE returning the final page, and
+		// stash a copy so a client that drops it can re-request it without the
+		// snapshot staying pinned until some later request happens along.
+		e.unpinSnapshotChunkSession(sc)
+		sc.mu.Unlock()
+		e.cacheSnapshotFinal(sessionID, result)
+		e.forgetSnapshotChunkSession(sessionID, sc)
+		return result, nil
 	}
 	sc.mu.Unlock()
 	return result, nil
+}
+
+// snapshotFinalCacheGetLocked returns a cached final response, if one is still
+// valid. Caller holds snapshotChunkMu. The map itself is guarded by
+// snapshotFinalMu; both locks are short and never acquired in reverse order.
+func (e *Executor) snapshotFinalCacheGetLocked(sessionID string) *types.StateSnapshotChunkResult {
+	e.snapshotFinalMu.Lock()
+	defer e.snapshotFinalMu.Unlock()
+	if e.snapshotFinals == nil {
+		return nil
+	}
+	c, ok := e.snapshotFinals[sessionID]
+	if !ok {
+		return nil
+	}
+	if time.Now().After(c.expires) {
+		delete(e.snapshotFinals, sessionID)
+		return nil
+	}
+	cp := *c.final
+	return &cp
+}
+
+// cacheSnapshotFinal stores a completed transfer's final page in the bounded
+// cache, evicting the oldest / over-capacity entries.
+func (e *Executor) cacheSnapshotFinal(sessionID string, final *types.StateSnapshotChunkResult) {
+	e.snapshotFinalMu.Lock()
+	defer e.snapshotFinalMu.Unlock()
+	if e.snapshotFinals == nil {
+		e.snapshotFinals = make(map[string]*snapshotFinalCache)
+	}
+	for len(e.snapshotFinals) >= maxSnapshotFinalCache {
+		var oldestID string
+		var oldest time.Time
+		for id, c := range e.snapshotFinals {
+			if oldestID == "" || c.expires.Before(oldest) {
+				oldestID, oldest = id, c.expires
+			}
+		}
+		if oldestID == "" {
+			break
+		}
+		delete(e.snapshotFinals, oldestID)
+	}
+	cp := *final
+	e.snapshotFinals[sessionID] = &snapshotFinalCache{final: &cp, expires: time.Now().Add(snapshotFinalCacheTTL)}
 }
 
 // sweepSnapshotChunkSessionsLocked releases expired sessions. Caller holds
@@ -468,6 +535,58 @@ func (e *Executor) sweepSnapshotChunkSessionsLocked() {
 	for id, sc := range e.snapshotChunkSessions {
 		if now.After(sc.expires) {
 			e.releaseSnapshotChunkSessionLocked(id, sc)
+		}
+	}
+	e.sweepSnapshotFinalCacheLocked(now)
+}
+
+// sweepSnapshotFinalCacheLocked drops expired final-response cache entries.
+func (e *Executor) sweepSnapshotFinalCacheLocked(now time.Time) {
+	if e.snapshotFinals == nil {
+		return
+	}
+	e.snapshotFinalMu.Lock()
+	for id, c := range e.snapshotFinals {
+		if now.After(c.expires) {
+			delete(e.snapshotFinals, id)
+		}
+	}
+	e.snapshotFinalMu.Unlock()
+}
+
+// startSnapshotSweeper launches a periodic background sweeper so an idle node
+// releases expired pinned snapshots and stale final-response entries without
+// waiting for the next session request. It is a no-op after the first call and
+// stops when Close is invoked.
+func (e *Executor) startSnapshotSweeper() {
+	e.snapshotSweepOnce.Do(func() {
+		stop := make(chan struct{})
+		e.snapshotSweepStop = stop
+		go func() {
+			t := time.NewTicker(snapshotSweepInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-t.C:
+					e.snapshotChunkMu.Lock()
+					e.sweepSnapshotChunkSessionsLocked()
+					e.snapshotChunkMu.Unlock()
+				}
+			}
+		}()
+	})
+}
+
+// stopSnapshotSweeper stops the periodic sweeper, if started.
+func (e *Executor) stopSnapshotSweeper() {
+	e.snapshotSweepOnce.Do(func() {})
+	if e.snapshotSweepStop != nil {
+		select {
+		case <-e.snapshotSweepStop:
+		default:
+			close(e.snapshotSweepStop)
 		}
 	}
 }
