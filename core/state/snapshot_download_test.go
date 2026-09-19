@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/syndtr/goleveldb/leveldb"
+
+	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/persist"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -158,6 +162,72 @@ func TestImportSnapshotJSONLRoundTrip(t *testing.T) {
 	}
 	if got, _ := dst.StateRoot(); got != root {
 		t.Fatalf("imported root %x != %x", got[:8], root[:8])
+	}
+}
+
+// A bounded-batch import that was interrupted after leaf values were published
+// but before the height marker is resumable: CanResumeSnapshotImport reports
+// true, and ImportSnapshotJSONLResume re-writes the same verified leaves and
+// commits the height marker.
+func TestImportSnapshotJSONLResumeAfterPartialPublish(t *testing.T) {
+	leaves := testDownloadLeaves()
+	root := SnapshotRoot(leaves)
+	dir := t.TempDir()
+	d, err := OpenSnapshotDownload(dir, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := &types.Block{Header: types.BlockHeader{Height: 9, StateRoot: root}, Hash: [32]byte{0x09}}
+	if err := d.AcceptHead(head, 9); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AppendPage(leaves, nil, true, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := t.TempDir()
+	dst, err := NewStateDB(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an interrupted publish: write the leaf values directly, no
+	// height marker, then reopen so loadLeaves repopulates the in-memory index
+	// from the partial DB — exactly the state a restart would observe.
+	idx := make(map[string][32]byte)
+	partial := new(leveldb.Batch)
+	for _, l := range leaves {
+		idx[string(l.Key)] = qcrypto.Hash32(l.Value)
+		partial.Put(l.Key, l.Value)
+	}
+	if err := persist.Write(dst.db, partial); err != nil {
+		t.Fatal(err)
+	}
+	dst.Close()
+
+	dst, err = NewStateDB(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	if h, ok := dst.AppliedHeight(); ok || h != 0 {
+		t.Fatalf("partial publish must have no height marker, got (%d,%v)", h, ok)
+	}
+	if dst.IsFresh() {
+		t.Fatal("partial publish must not be fresh")
+	}
+	if !dst.CanResumeSnapshotImport() {
+		t.Fatal("partial publish must be resumable")
+	}
+
+	// Resuming over the partial publish must succeed and commit the height.
+	if err := dst.ImportSnapshotJSONLResume(d.leavesPath(), 9, root); err != nil {
+		t.Fatalf("resume import: %v", err)
+	}
+	if h, ok := dst.AppliedHeight(); !ok || h != 9 {
+		t.Fatalf("resumed height = (%d,%v)", h, ok)
+	}
+	if got, _ := dst.StateRoot(); got != root {
+		t.Fatalf("resumed root %x != %x", got[:8], root[:8])
 	}
 }
 
