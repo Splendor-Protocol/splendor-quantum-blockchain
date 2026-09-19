@@ -468,14 +468,15 @@ func (s *Syncer) TrustedPubKey() []byte {
 	return s.fetcher.TrustedPubKey()
 }
 
-// fetchResult carries one height's outcome back to the ordered applier.
+// fetchResult carries one height's outcome back to the ordered applier. held is
+// the measured size of the decoded block (or the reservation, on error), already
+// charged to the byte budget by the worker before the result is enqueued.
 type fetchResult struct {
-	height   uint64
-	block    *types.Block
-	peer     string
-	err      error
-	reserved int64
-	held     int64
+	height uint64
+	block  *types.Block
+	peer   string
+	err    error
+	held   int64
 }
 
 const defaultFetchReserveBytes int64 = 2 << 20
@@ -709,7 +710,7 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 			for h := range heights {
 				if err := ctx.Err(); err != nil {
 					select {
-					case results <- fetchResult{height: h, err: err, reserved: preReserve, held: preReserve}:
+					case results <- fetchResult{height: h, err: err, held: preReserve}:
 					default:
 						budget.release(preReserve)
 					}
@@ -733,10 +734,15 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 				if block != nil {
 					held = blockHeldBytes(block)
 				}
+				// Charge the measured block size now, not when the ordered applier
+				// finally consumes it: a decoded block sitting out-of-order in
+				// `pending` already occupies memory, so the budget must reflect its
+				// real size to keep the aggregate in-flight+pending bytes bounded.
+				budget.adjust(preReserve, held)
 				select {
-				case results <- fetchResult{height: h, block: block, peer: peerAddr, err: err, reserved: preReserve, held: held}:
+				case results <- fetchResult{height: h, block: block, peer: peerAddr, err: err, held: held}:
 				case <-ctx.Done():
-					budget.release(preReserve)
+					budget.release(held)
 					return
 				}
 			}
@@ -770,7 +776,6 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 			delete(pending, next)
 		}
 
-		budget.adjust(res.reserved, res.held)
 		if res.err != nil {
 			budget.release(res.held)
 			return applied, fmt.Errorf("sync: failed to fetch block %d: %w", next, res.err)
