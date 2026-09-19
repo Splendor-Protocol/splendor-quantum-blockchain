@@ -83,9 +83,12 @@ type GetObjectManifestRequest struct {
 	DescriptorID []byte `json:"descriptor_id,omitempty"`
 }
 
-// GetObjectSymbolRequest is the body of a KindGetObjectSymbol query.
+// GetObjectSymbolRequest is the body of a KindGetObjectSymbol query. Generation
+// selects which generation of a multi-generation object the index belongs to;
+// 0 is the first (and only) generation of a single-generation object.
 type GetObjectSymbolRequest struct {
 	DescriptorID []byte `json:"descriptor_id"`
+	Generation   uint32 `json:"generation"`
 	Index        uint32 `json:"index"`
 }
 

@@ -13,10 +13,9 @@ import (
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
 )
 
-// objectSymbolSize is the live-path generation payload size (the smaller
-// plan candidate). A snapshot that needs more than MaxSourceSymbols of
-// these does not fit one generation; the existing JSON/chunked snapshot
-// path remains the default for that case.
+// objectSymbolSize is the live-path generation payload size. Snapshots larger
+// than one generation (MaxSourceSymbols of these) are split across generations
+// by NewObjectSender, so a snapshot of any supported size is served coded.
 const objectSymbolSize = 16 * 1024
 
 func repairFor(sourceCount int) int {
@@ -28,9 +27,9 @@ func repairFor(sourceCount int) int {
 }
 
 // publishSnapshotObject encodes the node's current state snapshot as a
-// finite coded object signed by the node identity. Existing snapshot
-// validation still runs on the reconstructed bytes at the receiver; this
-// only authenticates the transfer.
+// (possibly multi-generation) coded object signed by the node identity.
+// Existing snapshot validation still runs on the reconstructed bytes at the
+// receiver; this only authenticates the transfer.
 func publishSnapshotObject(hub *objects.Hub, codec coding.Codec, exec *block.Executor, signer *qcrypto.PrivateKey) error {
 	if hub.Current() != nil {
 		return nil
@@ -46,7 +45,7 @@ func publishSnapshotObject(hub *objects.Hub, codec coding.Codec, exec *block.Exe
 	if err != nil {
 		return err
 	}
-	desc := objects.Descriptor{
+	desc := objects.ObjectDescriptor{
 		Anchor: objects.Anchor{
 			Kind:   "snapshot",
 			ID:     snap.Block.Hash,
@@ -55,9 +54,10 @@ func publishSnapshotObject(hub *objects.Hub, codec coding.Codec, exec *block.Exe
 		Codec:      codec.Name(),
 		SymbolSize: objectSymbolSize,
 	}
-	send, err := objects.NewSender(raw, desc, codec, repairFor((len(raw)+objectSymbolSize-1)/objectSymbolSize), signer, objects.DefaultLimits())
+	repair := repairFor((len(raw) + objectSymbolSize - 1) / objectSymbolSize)
+	send, err := objects.NewObjectSender(raw, desc, codec, repair, signer, objects.DefaultLimits())
 	if err != nil {
-		return fmt.Errorf("snapshot does not fit a coded generation (use chunked snapshot): %w", err)
+		return fmt.Errorf("encode coded snapshot: %w", err)
 	}
 	hub.Put(send)
 	return nil

@@ -421,6 +421,16 @@ func (r *ObjectReceiver) Ready() bool {
 	return true
 }
 
+// GenReady reports whether generation gen alone has reached full rank, so a
+// fetcher can stop requesting symbols for a finished generation while others
+// continue.
+func (r *ObjectReceiver) GenReady(gen int) bool {
+	if gen < 0 || gen >= len(r.gens) {
+		return false
+	}
+	return r.gens[gen].decoder.Rank() == r.gens[gen].sourceCount
+}
+
 // AbsorbProof verifies the proof against generation gen's codebook root, THEN
 // absorbs the symbol.
 func (r *ObjectReceiver) AbsorbProof(gen int, proof SymbolProof) (bool, error) {
