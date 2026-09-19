@@ -85,8 +85,9 @@ type P2PConfig struct {
 	// nil means the node does not serve coded objects (default).
 	ServeObjectManifest func(descriptorID []byte) ([]byte, error)
 	// ServeObjectSymbol returns the SQCO encoding of one authenticated
-	// symbol proof. nil means the node does not serve coded objects.
-	ServeObjectSymbol func(descriptorID []byte, index uint32) ([]byte, error)
+	// symbol proof from generation `generation` of the requested object.
+	// nil means the node does not serve coded objects.
+	ServeObjectSymbol func(descriptorID []byte, generation uint32, index uint32) ([]byte, error)
 }
 
 // RegisterP2PRoutes exposes the post-quantum sealed transport.
@@ -363,7 +364,7 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			writeError(w, http.StatusBadRequest, "invalid get_object_symbol_v1 body")
 			return
 		}
-		payload, err = cfg.ServeObjectSymbol(q.DescriptorID, q.Index)
+		payload, err = cfg.ServeObjectSymbol(q.DescriptorID, q.Generation, q.Index)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown sealed read kind")
 		return

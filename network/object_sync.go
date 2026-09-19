@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	// maxObjectManifestReplyBytes bounds a sealed manifest reply. An ML-DSA-65
-	// public key plus signature plus a small descriptor is well under 8 KiB;
-	// 16 KiB leaves room without approaching a symbol payload.
-	maxObjectManifestReplyBytes = 16 << 10
+	// maxObjectManifestReplyBytes bounds a sealed manifest reply. A
+	// multi-generation object manifest is at most MaxGenerations × 40 bytes of
+	// generation entries plus the descriptor, key and signature: under 170 KiB
+	// at the cap. 256 KiB leaves headroom for the envelope without approaching
+	// a symbol payload.
+	maxObjectManifestReplyBytes = 256 << 10
 	// maxObjectSymbolReplyBytes bounds one proof: MaxSymbolSize payload plus
 	// coefficients, Merkle siblings, and SQCO headers.
 	maxObjectSymbolReplyBytes = coding.MaxSymbolSize + coding.MaxSourceSymbols + (objects.MaxMerkleSiblings * 32) + 1024

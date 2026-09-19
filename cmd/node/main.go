@@ -1380,14 +1380,14 @@ func runNode(cmd *cobra.Command, args []string) error {
 			}
 			return objectHub.ServeManifest(descriptorID)
 		},
-		ServeObjectSymbol: func(descriptorID []byte, index uint32) ([]byte, error) {
+		ServeObjectSymbol: func(descriptorID []byte, generation uint32, index uint32) ([]byte, error) {
 			if objectCodec == nil {
 				return nil, errors.New("coded-object live path is not enabled")
 			}
 			if err := ensurePublishedSnapshot(objectHub, objectCodec, executor, nodeIdentity, &objectPublish); err != nil {
 				return nil, err
 			}
-			return objectHub.ServeSymbol(descriptorID, index)
+			return objectHub.ServeSymbol(descriptorID, generation, index)
 		},
 	})
 

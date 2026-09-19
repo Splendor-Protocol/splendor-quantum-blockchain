@@ -2,9 +2,11 @@ package rpc
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -31,8 +33,8 @@ func codedObjectPeer(t *testing.T, hub *objects.Hub) (*httptest.Server, *qcrypto
 		ServeObjectManifest: func(id []byte) ([]byte, error) {
 			return hub.ServeManifest(id)
 		},
-		ServeObjectSymbol: func(id []byte, index uint32) ([]byte, error) {
-			return hub.ServeSymbol(id, index)
+		ServeObjectSymbol: func(id []byte, generation uint32, index uint32) ([]byte, error) {
+			return hub.ServeSymbol(id, generation, index)
 		},
 	})
 	srv := httptest.NewServer(router)
@@ -47,12 +49,15 @@ func objectFetcher() *network.BlockFetcher {
 	return network.NewBlockFetcher(cfg)
 }
 
-func TestSealedCodedObjectRoundTrip(t *testing.T) {
+// The sealed serve path hands out the multi-generation object manifest and
+// per-generation symbol proofs; a receiver built from the fetched manifest
+// (pinned to the peer's node identity) reconstructs the published bytes.
+func TestSealedCodedObjectServePath(t *testing.T) {
 	hub := objects.NewHub()
-	srv, pub, priv := codedObjectPeer(t, hub)
+	srv, _, priv := codedObjectPeer(t, hub)
 
 	object := bytes.Repeat([]byte("coded-live-path-"), 20) // 320 bytes
-	send, err := objects.NewSender(object, objects.Descriptor{
+	send, err := objects.NewObjectSender(object, objects.ObjectDescriptor{
 		Anchor:     objects.Anchor{Kind: "block", ID: [32]byte{4, 2}, Height: 9},
 		SymbolSize: 64,
 	}, coding.NewRLNCCodec(), 4, priv, objects.DefaultLimits())
@@ -61,17 +66,57 @@ func TestSealedCodedObjectRoundTrip(t *testing.T) {
 	}
 	hub.Put(send)
 
-	got, err := objectFetcher().FetchCodedObject(srv.URL, objects.DefaultLimits())
+	identities := network.NewIdentityCache()
+	doc, err := identities.Get(srv.URL)
 	if err != nil {
-		t.Fatalf("sealed coded fetch: %v", err)
+		t.Fatalf("peer identity: %v", err)
+	}
+	raw, err := identities.QuerySealedTimeout(srv.URL, network.KindGetObjectManifest, []byte(`{}`),
+		256<<10, time.Minute)
+	if err != nil {
+		t.Fatalf("sealed manifest query: %v", err)
+	}
+	m, err := objects.DecodeObjectManifest(raw)
+	if err != nil {
+		t.Fatalf("decode object manifest: %v", err)
+	}
+	recv, err := objects.NewObjectReceiver(m, objects.DefaultLimits(), objects.AllowObjectSignerBytes(doc.NodePubKey))
+	if err != nil {
+		t.Fatalf("receiver: %v", err)
+	}
+	descID := m.DescriptorID()
+	for gen := 0; gen < send.GenerationCount(); gen++ {
+		for i := 0; i < send.SymbolCount(gen); i++ {
+			req, err := json.Marshal(network.GetObjectSymbolRequest{
+				DescriptorID: descID[:], Generation: uint32(gen), Index: uint32(i),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proofRaw, err := identities.QuerySealedTimeout(srv.URL, network.KindGetObjectSymbol, req,
+				128<<10, time.Minute)
+			if err != nil {
+				t.Fatalf("sealed symbol query %d/%d: %v", gen, i, err)
+			}
+			proof, err := objects.DecodeSymbolProof(proofRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := recv.AbsorbProof(gen, proof); err != nil {
+				t.Fatalf("absorb %d/%d: %v", gen, i, err)
+			}
+		}
+	}
+	got, err := recv.Decode()
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !bytes.Equal(got, object) {
-		t.Fatal("fetched object does not match the published bytes")
+		t.Fatal("reconstructed object does not match the published bytes")
 	}
-	_ = pub
 }
 
-func TestFetchCodedObjectRefusesForeignSigner(t *testing.T) {
+func TestObjectReceiverRefusesForeignSigner(t *testing.T) {
 	hub := objects.NewHub()
 	srv, _, _ := codedObjectPeer(t, hub)
 	_, otherPriv, err := qcrypto.GenerateKeypair()
@@ -79,7 +124,7 @@ func TestFetchCodedObjectRefusesForeignSigner(t *testing.T) {
 		t.Fatal(err)
 	}
 	object := bytes.Repeat([]byte{7}, 128)
-	send, err := objects.NewSender(object, objects.Descriptor{
+	send, err := objects.NewObjectSender(object, objects.ObjectDescriptor{
 		Anchor:     objects.Anchor{Kind: "block", ID: [32]byte{1}, Height: 1},
 		SymbolSize: 64,
 	}, coding.NewUncodedCodec(), 0, otherPriv, objects.DefaultLimits())
@@ -88,7 +133,21 @@ func TestFetchCodedObjectRefusesForeignSigner(t *testing.T) {
 	}
 	hub.Put(send)
 
-	_, err = objectFetcher().FetchCodedObject(srv.URL, objects.DefaultLimits())
+	identities := network.NewIdentityCache()
+	doc, err := identities.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("peer identity: %v", err)
+	}
+	raw, err := identities.QuerySealedTimeout(srv.URL, network.KindGetObjectManifest, []byte(`{}`),
+		256<<10, time.Minute)
+	if err != nil {
+		t.Fatalf("sealed manifest query: %v", err)
+	}
+	m, err := objects.DecodeObjectManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = objects.NewObjectReceiver(m, objects.DefaultLimits(), objects.AllowObjectSignerBytes(doc.NodePubKey))
 	if !errors.Is(err, objects.ErrUnauthorizedSigner) {
 		t.Fatalf("foreign-signed object = %v, want ErrUnauthorizedSigner", err)
 	}
@@ -108,8 +167,10 @@ func TestCodedObjectKindsNotImplementedWhenUnwired(t *testing.T) {
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 
-	_, err = objectFetcher().FetchCodedObject(srv.URL, objects.DefaultLimits())
+	identities := network.NewIdentityCache()
+	_, err = identities.QuerySealedTimeout(srv.URL, network.KindGetObjectManifest, []byte(`{}`),
+		256<<10, time.Minute)
 	if err == nil {
-		t.Fatal("fetch succeeded against a node that does not serve coded objects")
+		t.Fatal("manifest query succeeded against a node that does not serve coded objects")
 	}
 }

@@ -6,22 +6,22 @@ import (
 	"sync"
 )
 
-// Hub holds at most one current Sender for sealed serving. Replacing the
-// current object drops the previous codebook so memory stays bounded to a
-// single generation.
+// Hub holds at most one current ObjectSender for sealed serving. Replacing the
+// current object drops the previous one so memory stays bounded to a single
+// (possibly multi-generation) coded object.
 type Hub struct {
 	mu      sync.RWMutex
-	current *Sender
-	byID    map[[32]byte]*Sender
+	current *ObjectSender
+	byID    map[[32]byte]*ObjectSender
 }
 
 // NewHub returns an empty hub.
 func NewHub() *Hub {
-	return &Hub{byID: make(map[[32]byte]*Sender)}
+	return &Hub{byID: make(map[[32]byte]*ObjectSender)}
 }
 
 // Put publishes s as the current object, replacing any previous one.
-func (h *Hub) Put(s *Sender) {
+func (h *Hub) Put(s *ObjectSender) {
 	if s == nil || s.manifest == nil {
 		return
 	}
@@ -35,13 +35,13 @@ func (h *Hub) Put(s *Sender) {
 }
 
 // Current is the object last Put, or nil.
-func (h *Hub) Current() *Sender {
+func (h *Hub) Current() *ObjectSender {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.current
 }
 
-func (h *Hub) get(id [32]byte) *Sender {
+func (h *Hub) get(id [32]byte) *ObjectSender {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if id == ([32]byte{}) {
@@ -51,32 +51,37 @@ func (h *Hub) get(id [32]byte) *Sender {
 }
 
 // ServeManifest returns the SQCO encoding of the requested (or current)
-// manifest. Empty descID means the current object.
+// object manifest. Empty descID means the current object.
 func (h *Hub) ServeManifest(descID []byte) ([]byte, error) {
 	s, err := h.lookup(descID)
 	if err != nil {
 		return nil, err
 	}
-	return EncodeManifest(s.Manifest())
+	return EncodeObjectManifest(s.Manifest())
 }
 
-// ServeSymbol returns the SQCO encoding of one codebook proof.
-func (h *Hub) ServeSymbol(descID []byte, index uint32) ([]byte, error) {
+// ServeSymbol returns the SQCO encoding of one codebook proof from
+// generation gen of the requested object.
+func (h *Hub) ServeSymbol(descID []byte, generation uint32, index uint32) ([]byte, error) {
 	s, err := h.lookup(descID)
 	if err != nil {
 		return nil, err
 	}
-	if uint64(index) >= uint64(s.SymbolCount()) {
-		return nil, fmt.Errorf("objects: symbol index %d out of range [0,%d)", index, s.SymbolCount())
+	gen := int(generation)
+	if gen < 0 || gen >= s.GenerationCount() {
+		return nil, fmt.Errorf("objects: generation %d out of range [0,%d)", gen, s.GenerationCount())
 	}
-	proof, err := s.Proof(int(index))
+	if uint64(index) >= uint64(s.SymbolCount(gen)) {
+		return nil, fmt.Errorf("objects: symbol index %d out of range [0,%d) in generation %d", index, s.SymbolCount(gen), gen)
+	}
+	proof, err := s.Proof(gen, int(index))
 	if err != nil {
 		return nil, err
 	}
 	return EncodeSymbolProof(proof)
 }
 
-func (h *Hub) lookup(descID []byte) (*Sender, error) {
+func (h *Hub) lookup(descID []byte) (*ObjectSender, error) {
 	var id [32]byte
 	if len(descID) != 0 {
 		if len(descID) != 32 {
