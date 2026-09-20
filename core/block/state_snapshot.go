@@ -307,19 +307,42 @@ func (e *Executor) ExportStateSnapshotChunk(afterKey []byte, maxLeaves int) (*ty
 	return result, nil
 }
 
-// snapshotSessionTTL bounds how long an immutable chunk session survives before
-// its pinned LevelDB snapshot is released and its id stops resolving. The TTL
-// runs from the last page served, not from the session's creation.
+// defaultSnapshotSessionTTL bounds how long an immutable chunk session
+// survives before its pinned LevelDB snapshot is released and its id stops
+// resolving. The TTL runs from the last page served, not from the session's
+// creation.
 //
-// A var, not a const, purely so a test can drive the lifecycle in
-// milliseconds instead of waiting minutes for a sweeper. Neither is
-// configurable at runtime.
-var snapshotSessionTTL = 10 * time.Minute
+// defaultSnapshotSweepInterval is how often the background sweeper runs.
+// Sweeping also happens on every session start/page; this only covers idle
+// nodes.
+//
+// Both are per-Executor (see snapshotTTL/snapshotSweepEvery) rather than
+// mutable globals. A test needs to drive the lifecycle in milliseconds instead
+// of waiting minutes, and doing that by assigning to a package var races the
+// sweeper goroutine of any executor an earlier test left running -- which the
+// race detector reports, correctly, as a write to a variable a live goroutine
+// is reading. Neither is configurable at runtime.
+const (
+	defaultSnapshotSessionTTL    = 10 * time.Minute
+	defaultSnapshotSweepInterval = time.Minute
+)
 
-// snapshotSweepInterval is how often the background sweeper runs. Sweeping
-// also happens on every session start/page; this only covers idle nodes. A
-// var for the same reason as snapshotSessionTTL.
-var snapshotSweepInterval = time.Minute
+// snapshotTTL is this executor's session TTL, defaulted lazily so a
+// zero-valued Executor behaves like a configured one.
+func (e *Executor) snapshotTTL() time.Duration {
+	if e.snapshotSessionTTL > 0 {
+		return e.snapshotSessionTTL
+	}
+	return defaultSnapshotSessionTTL
+}
+
+// snapshotSweepEvery is this executor's sweep interval, defaulted lazily.
+func (e *Executor) snapshotSweepEvery() time.Duration {
+	if e.snapshotSweepInterval > 0 {
+		return e.snapshotSweepInterval
+	}
+	return defaultSnapshotSweepInterval
+}
 
 const (
 	maxSnapshotChunkSessions          = 32
@@ -436,7 +459,7 @@ func (e *Executor) StartSnapshotChunkSessionFromAt(source string, afterKey []byt
 		return "", nil, err
 	}
 	e.snapshotChunkSessions[id] = &snapshotChunkSession{
-		session: sess, block: block, expires: time.Now().Add(snapshotSessionTTL), source: source,
+		session: sess, block: block, expires: time.Now().Add(e.snapshotTTL()), source: source,
 	}
 	e.snapshotChunkMu.Unlock()
 
@@ -473,7 +496,7 @@ func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, m
 	// checkpoint is gone" -- which is the very condition the restart policy on
 	// the client side then acts on. The TTL is meant to collect sessions nobody
 	// is using, and an idle one still expires on exactly the same clock.
-	sc.expires = time.Now().Add(snapshotSessionTTL)
+	sc.expires = time.Now().Add(e.snapshotTTL())
 	e.snapshotChunkMu.Unlock()
 
 	sc.mu.Lock()
@@ -615,7 +638,7 @@ func (e *Executor) startSnapshotSweeper() {
 		stop := make(chan struct{})
 		e.snapshotSweepStop = stop
 		go func() {
-			t := time.NewTicker(snapshotSweepInterval)
+			t := time.NewTicker(e.snapshotSweepEvery())
 			defer t.Stop()
 			for {
 				select {

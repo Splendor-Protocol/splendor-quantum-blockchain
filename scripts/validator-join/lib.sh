@@ -170,12 +170,23 @@ funded() {
 # ── node processes ───────────────────────────────────────────────────────────
 
 # node_start NAME PORT [extra flags...] — background an sqc-node, record its pid.
+#
+# SQC_NODE_BIN_<NAME> overrides the binary for one node, so a lab can be run
+# with a MIXED fleet: an older release serving and a new one joining, which is
+# what every rollout actually is. Without it a harness can only ever test a
+# fleet that upgraded atomically, and the interesting failures are the ones
+# that need two versions at once.
 node_start() {
 	local name="$1" port="$2"
 	shift 2
 	local log="$LAB/logs/$name.log"
+	local binvar="SQC_NODE_BIN_$name"
+	local nodebin="${!binvar:-$BIN/sqc-node}"
 	mkdir -p "$LAB/data/$name" "$LAB/logs"
-	"$BIN/sqc-node" \
+	if [ "$nodebin" != "$BIN/sqc-node" ]; then
+		say "node $name runs $nodebin (overridden)"
+	fi
+	"$nodebin" \
 		--data-dir "$LAB/data/$name" \
 		--rpc-addr "127.0.0.1:$port" \
 		--metrics-addr "127.0.0.1:$((port + 1000))" \

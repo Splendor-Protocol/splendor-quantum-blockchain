@@ -148,6 +148,13 @@ type Executor struct {
 	snapshotSweepStop chan struct{}
 	snapshotSweepOnce sync.Once
 
+	// snapshotSessionTTL and snapshotSweepInterval override the package
+	// defaults for this executor only. Zero means the default. They exist so a
+	// test can drive the session lifecycle in milliseconds without assigning
+	// to a package var that another executor's sweeper goroutine is reading.
+	snapshotSessionTTL    time.Duration
+	snapshotSweepInterval time.Duration
+
 	// applyHalt is set when the chain head was stored but the matching state
 	// commit failed. New execution and voting must wait until RecoverPartialApply
 	// brings applied height/root in line with the head (review C2).

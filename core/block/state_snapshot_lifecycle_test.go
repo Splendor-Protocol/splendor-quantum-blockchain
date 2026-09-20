@@ -24,11 +24,17 @@ func pinnedSnapshotSessions(e *Executor) int {
 	return n
 }
 
-func shortSnapshotSessionLifecycle(t *testing.T, ttl, sweep time.Duration) {
+// shortSnapshotSessionLifecycle drives ONE executor's session lifecycle in
+// milliseconds. It configures that executor rather than a package var,
+// because assigning to a global races the sweeper goroutine of any executor
+// an earlier test left running -- a write to a variable a live goroutine is
+// reading, which is exactly what -race reported.
+//
+// Must be called before the first session starts: the sweeper reads the
+// interval once, when it is lazily started.
+func shortSnapshotSessionLifecycle(t *testing.T, e *Executor, ttl, sweep time.Duration) {
 	t.Helper()
-	oldTTL, oldSweep := snapshotSessionTTL, snapshotSweepInterval
-	snapshotSessionTTL, snapshotSweepInterval = ttl, sweep
-	t.Cleanup(func() { snapshotSessionTTL, snapshotSweepInterval = oldTTL, oldSweep })
+	e.snapshotSessionTTL, e.snapshotSweepInterval = ttl, sweep
 }
 
 func waitForPinned(e *Executor, want int, limit time.Duration) int {
@@ -47,8 +53,8 @@ func waitForPinned(e *Executor, want int, limit time.Duration) int {
 // pinning an expired snapshot indefinitely. Nothing else asks this executor
 // for anything after the first page.
 func TestExpiredSnapshotSessionReleasesWithoutAnotherRequest(t *testing.T) {
-	shortSnapshotSessionLifecycle(t, 40*time.Millisecond, 10*time.Millisecond)
 	ex, _, _, _, _, _ := threeBlockChain(t)
+	shortSnapshotSessionLifecycle(t, ex, 40*time.Millisecond, 10*time.Millisecond)
 
 	_, first, err := ex.StartSnapshotChunkSessionFrom("peer-a", 1)
 	if err != nil {
@@ -127,8 +133,8 @@ func TestCompletedSessionUnpinsButKeepsFinalPageRetryable(t *testing.T) {
 // now runs from the last page.
 func TestAnActiveTransferKeepsItsSessionPastTheTTL(t *testing.T) {
 	const ttl = 120 * time.Millisecond
-	shortSnapshotSessionLifecycle(t, ttl, 10*time.Millisecond)
 	ex, _, _, _, _, _ := threeBlockChain(t)
+	shortSnapshotSessionLifecycle(t, ex, ttl, 10*time.Millisecond)
 
 	id, page, err := ex.StartSnapshotChunkSessionFrom("peer-a", 1)
 	if err != nil {
