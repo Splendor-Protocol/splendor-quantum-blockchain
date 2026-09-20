@@ -31,12 +31,28 @@ var (
 type Limits struct {
 	MaxSourceCount uint32
 	MaxSymbolSize  uint32
+	// MaxObjectSize caps the TOTAL payload capacity an object manifest may
+	// commit to across all of its generations. The manifest is peer-supplied
+	// and signed; without this cap a ~5 KiB manifest can commit to
+	// MaxGenerations (4096) × MaxSourceSymbols × MaxSymbolSize ≈ 16 GiB of
+	// decoder allocation on the receiver.
+	MaxObjectSize uint64
 }
 
+// DefaultMaxObjectSize bounds one coded object to 256 MiB of payload: plenty
+// of room for the 64 MiB state-snapshot cap and for block batches, while
+// bounding what a single peer-signed manifest can force a receiver to hold.
+const DefaultMaxObjectSize uint64 = 256 << 20
+
 // DefaultLimits uses the coding library caps: one generation cannot exceed
-// MaxSourceSymbols × MaxSymbolSize bytes of payload.
+// MaxSourceSymbols × MaxSymbolSize bytes of payload, and one object cannot
+// exceed DefaultMaxObjectSize across all its generations.
 func DefaultLimits() Limits {
-	return Limits{MaxSourceCount: coding.MaxSourceSymbols, MaxSymbolSize: coding.MaxSymbolSize}
+	return Limits{
+		MaxSourceCount: coding.MaxSourceSymbols,
+		MaxSymbolSize:  coding.MaxSymbolSize,
+		MaxObjectSize:  DefaultMaxObjectSize,
+	}
 }
 
 func (l Limits) withDefaults() Limits {
@@ -45,6 +61,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.MaxSymbolSize == 0 {
 		l.MaxSymbolSize = coding.MaxSymbolSize
+	}
+	if l.MaxObjectSize == 0 {
+		l.MaxObjectSize = DefaultMaxObjectSize
 	}
 	return l
 }
