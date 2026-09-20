@@ -33,6 +33,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
 )
@@ -357,9 +358,17 @@ func (f *BlockFetcher) FetchBlockContext(ctx context.Context, peerAddr string, h
 	if err != nil {
 		return nil, fmt.Errorf("fetch block %d from %s: %w", height, peerAddr, err)
 	}
+	// The sealed reply bound (maxSyncBodyBytes = 128 MiB) sits far above the
+	// 32 MiB wire cap a producer may legitimately sign, so enforce the wire
+	// cap here: an oversized block is refused at the transport layer instead
+	// of being parsed, validated and applied.
+	if len(raw) > block.MaxBlockWireBytes {
+		return nil, fmt.Errorf("block %d from %s is %d bytes, over the %d-byte wire cap",
+			height, peerAddr, len(raw), block.MaxBlockWireBytes)
+	}
 
-	var block types.Block
-	if err := json.Unmarshal(raw, &block); err != nil {
+	var blk types.Block
+	if err := json.Unmarshal(raw, &blk); err != nil {
 		return nil, fmt.Errorf("decode block %d: %w", height, err)
 	}
 	// The peer must serve the block we asked for. A real, validly-signed block
@@ -367,13 +376,13 @@ func (f *BlockFetcher) FetchBlockContext(ctx context.Context, peerAddr string, h
 	// the pipeline applies by requested height — so without this, a peer could
 	// hand back height 7 for a request of height 5 and the applier would run
 	// it into slot 5. Reject the mismatch here, before any of that.
-	if block.Header.Height != height {
+	if blk.Header.Height != height {
 		return nil, fmt.Errorf("peer %s served height %d in place of requested height %d",
-			peerAddr, block.Header.Height, height)
+			peerAddr, blk.Header.Height, height)
 	}
 
 	// Validate structural integrity
-	if err := block.Validate(); err != nil {
+	if err := blk.Validate(); err != nil {
 		return nil, fmt.Errorf("block %d failed validation: %w", height, err)
 	}
 
@@ -385,7 +394,7 @@ func (f *BlockFetcher) FetchBlockContext(ctx context.Context, peerAddr string, h
 	// FetchGenesisValidatorPubKey, which checks block 0 against a pinned hash.
 	// Above height 0 the active validator set is the second key ring, so a
 	// rotating BFT leader can be followed without trusting what it carries.
-	if err := VerifyBlockProducer(&block, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
+	if err := VerifyBlockProducer(&blk, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
 		// Only defer a missing registry entry when a resolver is wired —
 		// the parent state may not contain that registration yet. A nil
 		// resolver or a key that does not bind to ValidatorAddr stays fatal.
@@ -397,7 +406,7 @@ func (f *BlockFetcher) FetchBlockContext(ctx context.Context, peerAddr string, h
 	// Height 0 must additionally match the pin when one is configured, so a peer
 	// cannot serve a different chain's genesis under a key we happen to trust.
 	if height == 0 && f.cfg.hasGenesisPin() {
-		computed, herr := block.ComputeHash()
+		computed, herr := blk.ComputeHash()
 		if herr != nil {
 			return nil, fmt.Errorf("hash genesis block: %w", herr)
 		}
@@ -406,7 +415,7 @@ func (f *BlockFetcher) FetchBlockContext(ctx context.Context, peerAddr string, h
 		}
 	}
 
-	return &block, nil
+	return &blk, nil
 }
 
 // FetchLatestBlock fetches the latest block from a peer.
@@ -490,32 +499,61 @@ func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count
 	if err != nil {
 		return nil, fmt.Errorf("coded block batch from %s: %w", peerAddr, err)
 	}
-	var blocks []*types.Block
-	if err := json.Unmarshal(decoded, &blocks); err != nil {
+	return parseBlockBatch(peerAddr, fromHeight, count, decoded, block.MaxBlockWireBytes, func(b *types.Block) error {
+		if err := VerifyBlockProducer(b, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
+			// Only defer a missing registry entry when a resolver is wired.
+			if !errors.Is(err, ErrProducerNotYetKnown) || f.cfg.LookupProducerKey == nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// parseBlockBatch decodes a coded batch payload — the JSON array of count
+// consecutive blocks — refusing anything that is not exactly count blocks at
+// exactly the requested heights, each within maxBlockBytes of wire size,
+// structurally valid and authenticated by verify. This is the batch analogue
+// of the per-block checks FetchBlockContext performs; every refusal makes the
+// caller fall back to per-block fetching, never to a weaker trust path.
+func parseBlockBatch(peerAddr string, fromHeight uint64, count int, decoded []byte, maxBlockBytes int, verify func(*types.Block) error) ([]*types.Block, error) {
+	var raws []json.RawMessage
+	if err := json.Unmarshal(decoded, &raws); err != nil {
 		return nil, fmt.Errorf("decode coded block batch from %s: %w", peerAddr, err)
 	}
-	if len(blocks) != count {
-		return nil, fmt.Errorf("coded block batch from %s: got %d blocks, asked for %d", peerAddr, len(blocks), count)
+	if len(raws) != count {
+		return nil, fmt.Errorf("coded block batch from %s: got %d blocks, asked for %d", peerAddr, len(raws), count)
 	}
-	for i, b := range blocks {
-		if b == nil {
-			return nil, fmt.Errorf("coded block batch from %s: block %d is null", peerAddr, i)
-		}
+	blocks := make([]*types.Block, 0, count)
+	for i, rb := range raws {
 		want := fromHeight + uint64(i)
+		// The batch object itself is bounded by objects.DefaultMaxObjectSize,
+		// but any single block inside it must also respect the per-block wire
+		// cap a producer may legitimately sign.
+		if len(rb) > maxBlockBytes {
+			return nil, fmt.Errorf("coded block batch from %s: block %d is %d bytes, over the %d-byte wire cap",
+				peerAddr, want, len(rb), maxBlockBytes)
+		}
+		var b *types.Block
+		if err := json.Unmarshal(rb, &b); err != nil {
+			return nil, fmt.Errorf("decode block %d from coded batch: %w", want, err)
+		}
+		if b == nil {
+			return nil, fmt.Errorf("coded block batch from %s: block %d is null", peerAddr, want)
+		}
+		// Same rule as FetchBlock: a validly-signed block at the wrong height
+		// must never slip into the pipeline's slot for `want`.
 		if b.Header.Height != want {
-			// Same rule as FetchBlock: a validly-signed block at the wrong
-			// height must never slip into the pipeline's slot for `want`.
 			return nil, fmt.Errorf("peer %s served height %d in place of requested height %d",
 				peerAddr, b.Header.Height, want)
 		}
 		if err := b.Validate(); err != nil {
 			return nil, fmt.Errorf("block %d from coded batch failed validation: %w", want, err)
 		}
-		if err := VerifyBlockProducer(b, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
-			if !errors.Is(err, ErrProducerNotYetKnown) || f.cfg.LookupProducerKey == nil {
-				return nil, fmt.Errorf("coded block batch block %d: %w", want, err)
-			}
+		if err := verify(b); err != nil {
+			return nil, fmt.Errorf("coded block batch block %d: %w", want, err)
 		}
+		blocks = append(blocks, b)
 	}
 	return blocks, nil
 }
@@ -788,6 +826,19 @@ func (s *Syncer) SyncOnceContext(ctx context.Context) (int, error) {
 					Msg("sync: applied coded block batch")
 			}
 		}
+	}
+
+	// Fold the pre-fill into the per-round block budget: target was clamped to
+	// localH + MaxBlocksPerBatch BEFORE the pre-fill, and the pre-fill only
+	// advances localH toward target, so pre-fill + pipeline together can never
+	// exceed MaxBlocksPerBatch in one SyncOnce. The re-clamp below states that
+	// invariant explicitly so a future edit to the pre-fill cannot quietly
+	// blow the budget. The byte budget is folded the same way: the batch
+	// object is bounded by objects.DefaultMaxObjectSize and every block inside
+	// it by MaxBlockWireBytes (parseBlockBatch), so the pre-fill holds at most
+	// one bounded object at a time.
+	if s.fetcher.cfg.MaxBlocksPerBatch > 0 && target-localH > uint64(s.fetcher.cfg.MaxBlocksPerBatch) {
+		target = localH + uint64(s.fetcher.cfg.MaxBlocksPerBatch)
 	}
 
 	pApplied, err := s.pipelineFetchAndApply(ctx, localH, target, workers)
