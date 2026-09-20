@@ -146,7 +146,7 @@ func SignObjectManifest(desc ObjectDescriptor, objectSize uint64, generations []
 // resolvable, symbol size, generation count and per-generation codebook size)
 // and its ML-DSA-65 signature. It does NOT check whether SignerPubKey is
 // authorised for the anchor — the caller's ObjectAuthorizer decides that.
-func (m *ObjectManifest) Verify(maxSourceCount, maxSymbolSize uint32) error {
+func (m *ObjectManifest) Verify(maxSourceCount, maxSymbolSize uint32, maxObjectSize uint64) error {
 	if m == nil {
 		return errors.New("objects: nil object manifest")
 	}
@@ -193,6 +193,13 @@ func (m *ObjectManifest) Verify(maxSourceCount, maxSymbolSize uint32) error {
 				i, g.CodebookSize, g.SourceCount, coding.MaxRepairSymbols)
 		}
 		total += uint64(g.SourceCount) * uint64(m.SymbolSize)
+	}
+	// The total generation capacity is what the receiver will actually
+	// allocate (one decoder per generation), so it is the quantity that must
+	// be bounded against the peer-supplied manifest — not just ObjectSize,
+	// which an attacker can understate relative to the committed capacity.
+	if total > maxObjectSize {
+		return fmt.Errorf("objects: object manifest capacity %d exceeds the %d-byte cap", total, maxObjectSize)
 	}
 	if m.ObjectSize > total {
 		return fmt.Errorf("objects: object manifest object size %d exceeds generations' capacity %d", m.ObjectSize, total)
@@ -265,6 +272,9 @@ func NewObjectSender(object []byte, desc ObjectDescriptor, codec coding.Codec, r
 		return nil, errors.New("objects: descriptor symbol size is zero")
 	}
 	limits = limits.withDefaults()
+	if uint64(len(object)) > limits.MaxObjectSize {
+		return nil, fmt.Errorf("objects: object size %d exceeds the %d-byte cap", len(object), limits.MaxObjectSize)
+	}
 	if desc.SymbolSize > limits.MaxSymbolSize {
 		return nil, fmt.Errorf("objects: descriptor symbol size %d exceeds the %d cap", desc.SymbolSize, limits.MaxSymbolSize)
 	}
@@ -378,7 +388,7 @@ func NewObjectReceiver(m *ObjectManifest, limits Limits, authorize ObjectAuthori
 		return nil, ErrNilAuthorizer
 	}
 	limits = limits.withDefaults()
-	if err := m.Verify(limits.MaxSourceCount, limits.MaxSymbolSize); err != nil {
+	if err := m.Verify(limits.MaxSourceCount, limits.MaxSymbolSize, limits.MaxObjectSize); err != nil {
 		return nil, err
 	}
 	if err := authorize(m); err != nil {

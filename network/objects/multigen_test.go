@@ -3,6 +3,7 @@ package objects
 import (
 	"bytes"
 	"math/rand"
+	"strings"
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
@@ -27,6 +28,7 @@ func TestObjectSenderReceiverMultiGenerationRoundTrip(t *testing.T) {
 		SymbolSize: 64,
 	}
 	limits := Limits{MaxSourceCount: 8, MaxSymbolSize: 64}
+	limits = limits.withDefaults()
 
 	send, err := NewObjectSender(object, desc, coding.NewRLNCCodec(), 2, priv, limits)
 	if err != nil {
@@ -47,7 +49,7 @@ func TestObjectSenderReceiverMultiGenerationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeObjectManifest: %v", err)
 	}
-	if err := decoded.Verify(limits.MaxSourceCount, limits.MaxSymbolSize); err != nil {
+	if err := decoded.Verify(limits.MaxSourceCount, limits.MaxSymbolSize, limits.MaxObjectSize); err != nil {
 		t.Fatalf("decoded manifest verify: %v", err)
 	}
 
@@ -176,3 +178,63 @@ func TestObjectSenderSingleGeneration(t *testing.T) {
 		t.Fatal("decoded object mismatch")
 	}
 }
+
+// TestObjectManifestCapacityCap: the signed manifest's TOTAL generation
+// capacity is what a receiver will allocate, so a manifest that commits to
+// ~16 GiB of capacity (MaxGenerations × MaxSourceSymbols × MaxSymbolSize)
+// must be refused under DefaultLimits even though its wire frame is only a
+// few KiB. ObjectSize is understated on purpose: capping ObjectSize alone
+// would not bound the allocation.
+func TestObjectManifestCapacityCap(t *testing.T) {
+	_, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gens := make([]GenerationManifest, MaxGenerations)
+	for i := range gens {
+		gens[i] = GenerationManifest{SourceCount: coding.MaxSourceSymbols, CodebookRoot: [32]byte{byte(i)}, CodebookSize: coding.MaxSourceSymbols}
+	}
+	desc := ObjectDescriptor{Anchor: Anchor{Kind: "snapshot", ID: [32]byte{9}, Height: 1}, Codec: coding.NewRLNCCodec().Name(), SymbolSize: coding.MaxSymbolSize}
+	m, err := SignObjectManifest(desc, 1, gens, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := DefaultLimits()
+	err = m.Verify(limits.MaxSourceCount, limits.MaxSymbolSize, limits.MaxObjectSize)
+	if err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("Verify of oversized-capacity manifest = %v, want capacity error", err)
+	}
+	if _, err := NewObjectReceiver(m, limits, AllowObjectSignerBytes(priv.Public().Bytes())); err == nil {
+		t.Fatal("NewObjectReceiver accepted a manifest committing to ~16 GiB of decoder allocation")
+	}
+
+	// The same manifest under a small custom cap fails for the same reason.
+	small := Limits{MaxSourceCount: coding.MaxSourceSymbols, MaxSymbolSize: coding.MaxSymbolSize, MaxObjectSize: 1 << 20}
+	if err := m.Verify(small.MaxSourceCount, small.MaxSymbolSize, small.MaxObjectSize); err == nil {
+		t.Fatal("Verify accepted oversized capacity under a 1 MiB cap")
+	}
+}
+
+// TestObjectSenderRejectsOversizedPayload: the serve side must refuse to
+// encode an object that exceeds its own cap, so a misbehaving caller cannot
+// build a manifest the fetchers will refuse anyway.
+func TestObjectSenderRejectsOversizedPayload(t *testing.T) {
+	_, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(2))
+	object := testObject(rng, 20*64) // 1280 bytes
+	desc := ObjectDescriptor{Anchor: Anchor{Kind: "snapshot", ID: [32]byte{11}, Height: 2}, Codec: coding.NewRLNCCodec().Name(), SymbolSize: 64}
+	limits := Limits{MaxSourceCount: 8, MaxSymbolSize: 64, MaxObjectSize: 512}
+	if _, err := NewObjectSender(object, desc, coding.NewRLNCCodec(), 1, priv, limits); err == nil ||
+		!strings.Contains(err.Error(), "cap") {
+		t.Fatalf("NewObjectSender with a 512-byte cap on a 1280-byte object = %v, want cap error", err)
+	}
+	// Under a fitting cap the same object encodes fine.
+	limits.MaxObjectSize = 2048
+	if _, err := NewObjectSender(object, desc, coding.NewRLNCCodec(), 1, priv, limits); err != nil {
+		t.Fatalf("NewObjectSender with a fitting cap: %v", err)
+	}
+}
+
