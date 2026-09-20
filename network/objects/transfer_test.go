@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
 )
 
@@ -18,7 +19,7 @@ func testObject(rng *rand.Rand, n int) []byte {
 
 func transferDesc(codec string, object []byte, symbolSize uint32) Descriptor {
 	return Descriptor{
-		Anchor:     Anchor{Kind: "block", ID: [32]byte{9, 9, 9}, Height: 7},
+		Anchor:     Anchor{ChainID: types.ChainID, Kind: "block", ID: [32]byte{9, 9, 9}, Height: 7},
 		Codec:      codec,
 		ObjectSize: uint64(len(object)),
 		SymbolSize: symbolSize,
@@ -247,7 +248,7 @@ func TestNewSenderFillsAndChecksDescriptor(t *testing.T) {
 
 	// Codec name filled from the encoder when omitted.
 	s, err := NewSender(object, Descriptor{
-		Anchor:     Anchor{Kind: "snapshot", ID: [32]byte{1}, Height: 3},
+		Anchor:     Anchor{ChainID: types.ChainID, Kind: "snapshot", ID: [32]byte{1}, Height: 3},
 		SymbolSize: 32,
 	}, codec, 0, priv, DefaultLimits())
 	if err != nil {
@@ -262,14 +263,14 @@ func TestNewSenderFillsAndChecksDescriptor(t *testing.T) {
 	}
 
 	if _, err := NewSender(object, Descriptor{
-		Anchor:     Anchor{Kind: "snapshot", ID: [32]byte{1}},
+		Anchor:     Anchor{ChainID: types.ChainID, Kind: "snapshot", ID: [32]byte{1}},
 		Codec:      "rlnc-gf256-v1",
 		SymbolSize: 32,
 	}, codec, 0, priv, DefaultLimits()); err == nil {
 		t.Fatal("mismatched codec name accepted")
 	}
 	if _, err := NewSender(object, Descriptor{
-		Anchor:     Anchor{Kind: "snapshot", ID: [32]byte{1}},
+		Anchor:     Anchor{ChainID: types.ChainID, Kind: "snapshot", ID: [32]byte{1}},
 		ObjectSize: 99,
 		SymbolSize: 32,
 	}, codec, 0, priv, DefaultLimits()); err == nil {

@@ -44,6 +44,13 @@ func EncodeManifest(m *Manifest) ([]byte, error) {
 	w.magic()
 	w.u8(WireVersion)
 	w.u8(wireTypeManifest)
+	// Chain id leads the frame for the same reason it leads the descriptor
+	// preimage: it is the outermost scope of the object's identity, and a
+	// receiver should be able to reject another tier's frame before it has
+	// parsed anything it would have to trust.
+	if err := w.str16(m.Descriptor.Anchor.ChainID, MaxChainIDLen, "anchor chain id"); err != nil {
+		return nil, err
+	}
 	if err := w.str16(m.Descriptor.Anchor.Kind, MaxAnchorKindLen, "anchor kind"); err != nil {
 		return nil, err
 	}
@@ -86,6 +93,10 @@ func DecodeManifest(frame []byte) (*Manifest, error) {
 	}
 	if typ != wireTypeManifest {
 		return nil, fmt.Errorf("%w: %d (want manifest)", ErrUnknownWireType, typ)
+	}
+	chainID, err := r.str16(MaxChainIDLen, "anchor chain id")
+	if err != nil {
+		return nil, err
 	}
 	kind, err := r.str16(MaxAnchorKindLen, "anchor kind")
 	if err != nil {
@@ -136,7 +147,7 @@ func DecodeManifest(frame []byte) (*Manifest, error) {
 	}
 	return &Manifest{
 		Descriptor: Descriptor{
-			Anchor:      Anchor{Kind: kind, ID: id, Height: height},
+			Anchor:      Anchor{ChainID: chainID, Kind: kind, ID: id, Height: height},
 			Codec:       codec,
 			ObjectSize:  objectSize,
 			SymbolSize:  symbolSize,
@@ -304,6 +315,13 @@ func EncodeObjectManifest(m *ObjectManifest) ([]byte, error) {
 	w.magic()
 	w.u8(WireVersion)
 	w.u8(wireTypeObjectManifest)
+	// Chain id leads the frame for the same reason it leads the descriptor
+	// preimage: it is the outermost scope of the object's identity, and a
+	// receiver should be able to reject another tier's frame before it has
+	// parsed anything it would have to trust.
+	if err := w.str16(m.Anchor.ChainID, MaxChainIDLen, "anchor chain id"); err != nil {
+		return nil, err
+	}
 	if err := w.str16(m.Anchor.Kind, MaxAnchorKindLen, "anchor kind"); err != nil {
 		return nil, err
 	}
@@ -350,6 +368,10 @@ func DecodeObjectManifest(frame []byte) (*ObjectManifest, error) {
 	}
 	if typ != wireTypeObjectManifest {
 		return nil, fmt.Errorf("%w: %d (want object manifest)", ErrUnknownWireType, typ)
+	}
+	chainID, err := r.str16(MaxChainIDLen, "anchor chain id")
+	if err != nil {
+		return nil, err
 	}
 	kind, err := r.str16(MaxAnchorKindLen, "anchor kind")
 	if err != nil {
@@ -410,7 +432,7 @@ func DecodeObjectManifest(frame []byte) (*ObjectManifest, error) {
 		return nil, err
 	}
 	return &ObjectManifest{
-		Anchor:       Anchor{Kind: kind, ID: id, Height: height},
+		Anchor:       Anchor{ChainID: chainID, Kind: kind, ID: id, Height: height},
 		Codec:        codec,
 		ObjectSize:   objectSize,
 		SymbolSize:   symbolSize,

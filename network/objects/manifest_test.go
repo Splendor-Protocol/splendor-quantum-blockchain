@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
 )
 
 func testDescriptor() Descriptor {
 	return Descriptor{
-		Anchor:      Anchor{Kind: "block", ID: [32]byte{1, 2, 3}, Height: 42},
+		Anchor:      Anchor{ChainID: types.ChainID, Kind: "block", ID: [32]byte{1, 2, 3}, Height: 42},
 		Codec:       "rlnc-gf256-v1",
 		ObjectSize:  1000,
 		SymbolSize:  64,

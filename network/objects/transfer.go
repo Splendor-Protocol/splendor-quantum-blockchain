@@ -6,10 +6,18 @@ import (
 	"fmt"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
 )
 
 var (
+	// ErrWrongChain means a manifest names a chain this node is not on. It is
+	// a distinct sentinel because the caller's response differs from every
+	// other rejection here: a peer serving another tier's objects is
+	// misconfigured or hostile, not merely unlucky, and retrying it is
+	// pointless.
+	ErrWrongChain = errors.New("objects: manifest belongs to another chain")
+
 	// ErrUnauthenticatedSymbol means a proof did not verify against the
 	// signed codebook root. The decoder is not touched: authenticate-
 	// before-decode is the whole point of this controller.
@@ -220,6 +228,17 @@ func bindDescriptor(desc Descriptor, object []byte, codecName string, limits Lim
 	} else if desc.Codec != codecName {
 		return Descriptor{}, fmt.Errorf("objects: descriptor codec %q does not match encoder %q", desc.Codec, codecName)
 	}
+	// The chain id is stamped from this node's own adopted identity, never
+	// taken on trust from the caller. A publisher able to name an arbitrary
+	// chain could mint objects that another tier's nodes would accept, which
+	// is the defect this field exists to close, reintroduced one layer up. A
+	// caller may state the id explicitly — and then it has to agree.
+	if desc.Anchor.ChainID == "" {
+		desc.Anchor.ChainID = types.ChainID
+	} else if desc.Anchor.ChainID != types.ChainID {
+		return Descriptor{}, fmt.Errorf("objects: descriptor chain id %q is not this node's chain %q",
+			desc.Anchor.ChainID, types.ChainID)
+	}
 	if err := desc.Validate(limits.MaxSourceCount, limits.MaxSymbolSize); err != nil {
 		return Descriptor{}, err
 	}
@@ -256,6 +275,16 @@ func NewReceiver(m *Manifest, limits Limits, authorize Authorizer) (*Receiver, e
 		return nil, ErrNilAuthorizer
 	}
 	limits = limits.withDefaults()
+	// The chain first, ahead of any cryptography. The same operator key
+	// legitimately exists on devnet and on mainnet, so authorization answers
+	// who sent this and never which chain it is from — and Verify is an
+	// ML-DSA-65 signature check, so doing it first made a peer on another tier
+	// cost a full verification per manifest before being refused on a field
+	// that is free to read. Checked here rather than left to the caller because
+	// every receiver needs it and a forgotten check fails open.
+	if got := m.Descriptor.Anchor.ChainID; got != types.ChainID {
+		return nil, fmt.Errorf("%w: manifest is anchored to %q, this node is on %q", ErrWrongChain, got, types.ChainID)
+	}
 	if err := m.Verify(limits.MaxSourceCount, limits.MaxSymbolSize); err != nil {
 		return nil, err
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
 )
 
@@ -54,21 +55,36 @@ type ObjectDescriptor struct {
 	SymbolSize uint32
 }
 
+// objectDescriptorDomain tags the multi-generation descriptor preimage, so an
+// object id can never collide with the single-generation one (or any other
+// SHA3-256 preimage in this codebase) and so the id changes wholesale between
+// preimage versions instead of two versions being silently confusable.
+var objectDescriptorDomain = []byte("SPLENDOR-QC-OBJDESC-MULTIGEN-v2")
+
 // objectDescriptorID binds the descriptor (not the generation roots) so the
 // per-generation IDs below can be computed before any codebook exists.
+// The preimage mirrors the single-generation Descriptor.DescriptorID exactly:
+// a domain tag, then the chain id outermost, then length-prefixed fields.
+//
+// The chain id is here for the reason it is there -- none of the anchor, the
+// height, the codec or the generation shape names the network, so without it a
+// manifest published on one tier verifies and decodes byte-for-byte on
+// another. The signer does not close that gap: the same operator key
+// legitimately exists on more than one tier.
+//
+// Length prefixes rather than 0x00 separators: with two variable-length fields
+// concatenated the separators are only unambiguous while neither can contain
+// 0x00, which Validate enforces but this method -- callable on an unchecked
+// descriptor -- does not.
 func (d ObjectDescriptor) objectDescriptorID() [32]byte {
-	buf := make([]byte, 0, 64+len(d.Anchor.Kind)+len(d.Codec))
-	buf = append(buf, []byte(d.Anchor.Kind)...)
-	buf = append(buf, 0x00)
+	buf := make([]byte, 0, 96+len(d.Anchor.ChainID)+len(d.Anchor.Kind)+len(d.Codec))
+	buf = appendLenPrefixed(buf, objectDescriptorDomain)
+	buf = appendLenPrefixed(buf, []byte(d.Anchor.ChainID))
+	buf = appendLenPrefixed(buf, []byte(d.Anchor.Kind))
 	buf = append(buf, d.Anchor.ID[:]...)
-	var heightBuf [8]byte
-	binary.BigEndian.PutUint64(heightBuf[:], d.Anchor.Height)
-	buf = append(buf, heightBuf[:]...)
-	buf = append(buf, []byte(d.Codec)...)
-	buf = append(buf, 0x00)
-	var symBuf [4]byte
-	binary.BigEndian.PutUint32(symBuf[:], d.SymbolSize)
-	buf = append(buf, symBuf[:]...)
+	buf = appendU64(buf, d.Anchor.Height)
+	buf = appendLenPrefixed(buf, []byte(d.Codec))
+	buf = appendU32(buf, d.SymbolSize)
 	return qcrypto.Hash32(buf)
 }
 
@@ -100,12 +116,20 @@ func (m *ObjectManifest) generationID(gen int) [32]byte {
 }
 
 // signedBytes is the exact preimage Sign/Verify operate over: the object
-// descriptor ID, then every generation's source count, codebook root and
-// codebook size.
+// descriptor ID, the object size, then every generation's source count,
+// codebook root and codebook size. Each generation entry is fixed width, so
+// the concatenation is unambiguous and generations cannot be reordered or
+// spliced without changing the preimage.
 func (m *ObjectManifest) signedBytes() []byte {
 	descID := m.DescriptorID()
-	buf := make([]byte, 0, 32+len(m.Generations)*40)
+	buf := make([]byte, 0, 40+len(m.Generations)*40)
 	buf = append(buf, descID[:]...)
+	// ObjectSize is NOT in the descriptor id (the single-generation Descriptor
+	// signs it there; this one cannot, because the id has to be computable
+	// before the generations exist), so it has to be signed here. It drives
+	// the final truncation in Join, and an unsigned field that decides how
+	// many bytes the caller gets back is a field the signature does not cover.
+	buf = appendU64(buf, m.ObjectSize)
 	for _, g := range m.Generations {
 		var cntBuf, sizeBuf [4]byte
 		binary.BigEndian.PutUint32(cntBuf[:], g.SourceCount)
@@ -283,6 +307,17 @@ func NewObjectSender(object []byte, desc ObjectDescriptor, codec coding.Codec, r
 	} else if desc.Codec != codec.Name() {
 		return nil, fmt.Errorf("objects: descriptor codec %q does not match encoder %q", desc.Codec, codec.Name())
 	}
+	// Stamped from this node's own adopted identity, never taken on trust from
+	// the caller: a publisher able to name an arbitrary chain could mint
+	// objects another tier's nodes would accept, which is the defect the field
+	// exists to close, reintroduced one layer up. A caller may state the id --
+	// and then it has to agree.
+	if desc.Anchor.ChainID == "" {
+		desc.Anchor.ChainID = types.ChainID
+	} else if desc.Anchor.ChainID != types.ChainID {
+		return nil, fmt.Errorf("objects: descriptor chain id %q is not this node's chain %q",
+			desc.Anchor.ChainID, types.ChainID)
+	}
 
 	perGenBytes := int(limits.MaxSourceCount) * int(desc.SymbolSize)
 	var gens []*generation
@@ -395,6 +430,16 @@ func NewObjectReceiver(m *ObjectManifest, limits Limits, authorize ObjectAuthori
 	limits = limits.withDefaults()
 	if err := m.Verify(limits.MaxSourceCount, limits.MaxSymbolSize, limits.MaxObjectSize); err != nil {
 		return nil, err
+	}
+	// Before the signer is consulted, exactly as on the single-generation
+	// path: the same operator key legitimately exists on devnet and on
+	// mainnet, so authorization answers who sent this and never which chain it
+	// is from. This is the receiver the coded snapshot path uses by default,
+	// so a missing check here fails open on the path that actually carries
+	// state.
+	if got := m.Anchor.ChainID; got != types.ChainID {
+		return nil, fmt.Errorf("%w: object manifest is anchored to %q, this node is on %q",
+			ErrWrongChain, got, types.ChainID)
 	}
 	if err := authorize(m); err != nil {
 		return nil, err
