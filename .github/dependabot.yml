@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Go modules: the crypto dependency (circl, ML-DSA-65/ML-KEM) is the one
+  # that must never sit stale. Grouped into one PR so a bump is one review.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-deps:
+        patterns:
+          - "*"
+  - package-ecosystem: npm
+    directory: /sdk/sqc-sdk
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /sdk/connect-react
+    schedule:
+      interval: weekly
+  # The runtime image is what actually ships; keep its base current.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

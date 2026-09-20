@@ -18,7 +18,7 @@ else
   GO := $(shell which go 2>/dev/null || echo go)
 endif
 
-.PHONY: all build node wallet docker docker-run docker-validator test test-crypto test-race clean deps tidy fmt lint vet fuzz install-go setup-validator setup-rpc run-node run-validator gen-validator-wallet help
+.PHONY: all build node wallet docker docker-run docker-validator test test-crypto test-race clean deps tidy fmt lint vet vulncheck fuzz install-go setup-validator setup-rpc run-node run-validator gen-validator-wallet help
 
 # ── Default ───────────────────────────────────────────────────────────────
 all: deps build
@@ -129,6 +129,11 @@ lint:
 vet:
 	$(GO) vet ./...
 
+# Scans the REACHABLE dependency graph against the Go vulnerability database
+# (the same check CI runs on every push).
+vulncheck:
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
 # ── Install Go 1.25 (if not present) ─────────────────────────────────────
 # Must match the `go` directive in go.mod: circl v1.6.5 (ML-DSA-65) needs 1.25.
 install-go:
@@ -178,6 +183,7 @@ help:
 	@echo "  make test              Run all tests"
 	@echo "  make test-race         Run all tests under the race detector"
 	@echo "  make fuzz              Fuzz the SQCO wire decoders (FUZZTIME ?= 15s)"
+	@echo "  make vulncheck         Scan reachable deps against the Go vuln DB"
 	@echo "  make lint / vet / fmt  Code quality"
 	@echo "  make clean             Remove binaries and data"
 	@echo ""

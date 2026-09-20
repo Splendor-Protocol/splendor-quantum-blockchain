@@ -67,6 +67,12 @@ jobs:
           fi
       - name: go test
         run: go test -count=1 ./...
+      # Scans the reachable dependency graph against the Go vulnerability
+      # database. Unlike the GitHub advisory feed this checks what the code
+      # actually calls, so a CVE in a required-but-unused module path does not
+      # gate a merge.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       # Bounded fuzzing of the peer-supplied SQCO wire decoders (object
       # manifests, symbol proofs, frame probes). `go test ./...` above replays
       # each target's committed seed corpus as a normal test; this spends a
@@ -213,6 +219,26 @@ jobs:
           # the inputs were never more than log decoration.
           gh workflow run sync-signer.yml --repo "$WALLET_REPO" --ref main
           echo "dispatched for chain ${CHAIN_SHA}: https://github.com/${WALLET_REPO}/actions/workflows/sync-signer.yml"
+
+  codeql:
+    name: CodeQL static analysis (Go)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        run: go build ./...
+      - uses: github/codeql-action/analyze@v3
 
   js:
     name: SDK typechecks and tests
