@@ -18,7 +18,7 @@ else
   GO := $(shell which go 2>/dev/null || echo go)
 endif
 
-.PHONY: all build node wallet docker docker-run docker-validator test test-crypto test-race clean deps tidy fmt lint vet install-go setup-validator setup-rpc run-node run-validator gen-validator-wallet help
+.PHONY: all build node wallet docker docker-run docker-validator test test-crypto test-race clean deps tidy fmt lint vet fuzz install-go setup-validator setup-rpc run-node run-validator gen-validator-wallet help
 
 # ── Default ───────────────────────────────────────────────────────────────
 all: deps build
@@ -104,6 +104,20 @@ test-crypto:
 test-race:
 	$(GO) test -race -count=1 ./...
 
+# ── Fuzzing ───────────────────────────────────────────────────────────────
+# Bounded fuzzing of the peer-supplied SQCO wire decoders (object manifests,
+# symbol proofs, frame probes). Each target runs for FUZZTIME (override:
+# make fuzz FUZZTIME=60s). The committed seed corpus in
+# network/objects/testdata/fuzz is also replayed by `make test`; this spends
+# fresh inputs on top so a regression surfaces before a release.
+FUZZTIME ?= 15s
+
+fuzz:
+	@set -e; for t in FuzzDecodeObjectManifest FuzzDecodeSymbolProof FuzzDecodeManifest FuzzFrameType; do \
+		echo "== fuzz $$t ($(FUZZTIME))"; \
+		$(GO) test ./network/objects/ -run "^$$t$$" -fuzz "$$t" -fuzztime $(FUZZTIME); \
+	done
+
 # ── Code quality ──────────────────────────────────────────────────────────
 fmt:
 	gofmt -w .
@@ -163,6 +177,7 @@ help:
 	@echo "  make gen-validator-wallet  Generate validator.sqwallet"
 	@echo "  make test              Run all tests"
 	@echo "  make test-race         Run all tests under the race detector"
+	@echo "  make fuzz              Fuzz the SQCO wire decoders (FUZZTIME ?= 15s)"
 	@echo "  make lint / vet / fmt  Code quality"
 	@echo "  make clean             Remove binaries and data"
 	@echo ""
