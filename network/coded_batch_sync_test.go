@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
@@ -243,5 +244,76 @@ func TestFetchBlockBatchRejectsDegenerateRanges(t *testing.T) {
 	f2 := NewBlockFetcher(cfg)
 	if _, err := f2.FetchBlockBatch("http://127.0.0.1:1", ^uint64(0)-1, 2); err != nil && strings.Contains(err.Error(), "overflows") {
 		t.Fatalf("maximal non-wrapping range tripped the overflow guard: %v", err)
+	}
+}
+
+// parseBlockBatch is the batch analogue of the per-block checks in
+// FetchBlockContext: exact count, exact heights, per-block wire cap,
+// structural validity and producer authentication. A batch that fails any of
+// these makes the caller fall back to per-block fetching.
+func TestParseBlockBatchRefusals(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(height uint64, prev [32]byte) *types.Block {
+		b := &types.Block{Header: types.BlockHeader{
+			Height: height, Timestamp: time.Now().Unix(), ChainID: types.ChainID,
+			AlgID: qcrypto.AlgMLDSA65, TxMerkleRoot: qcrypto.Hash32([]byte{}),
+			ValidatorAddr: qcrypto.DeriveAddress(pub), PrevHash: prev,
+		}}
+		h, err := b.ComputeHash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Hash = h
+		if err := b.SignBlock(priv); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	var prev [32]byte
+	b1 := mk(21, prev)
+	b2 := mk(22, b1.Hash)
+	b3 := mk(23, b2.Hash)
+	raw, err := json.Marshal([]*types.Block{b1, b2, b3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := func(*types.Block) error { return nil }
+
+	got, err := parseBlockBatch("peer:1", 21, 3, raw, block.MaxBlockWireBytes, ok)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("valid batch = %d blocks, %v; want 3, nil", len(got), err)
+	}
+	if _, err := parseBlockBatch("peer:1", 21, 2, raw, block.MaxBlockWireBytes, ok); err == nil {
+		t.Fatal("count mismatch accepted")
+	}
+	if _, err := parseBlockBatch("peer:1", 21, 3, raw, block.MaxBlockWireBytes, func(b *types.Block) error {
+		return fmt.Errorf("producer refused")
+	}); err == nil || !strings.Contains(err.Error(), "producer refused") {
+		t.Fatalf("producer refusal lost: %v", err)
+	}
+
+	// A block at the wrong height in the first slot must be refused even
+	// though it is validly signed.
+	shifted, err := json.Marshal([]*types.Block{b2, b3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseBlockBatch("peer:1", 21, 2, shifted, block.MaxBlockWireBytes, ok); err == nil {
+		t.Fatal("wrong-height batch accepted")
+	}
+
+	// Null elements are refused.
+	if _, err := parseBlockBatch("peer:1", 21, 3, []byte(`[null,null,null]`), block.MaxBlockWireBytes, ok); err == nil {
+		t.Fatal("null-element batch accepted")
+	}
+
+	// Every block inside the batch must respect the wire cap. The signed
+	// blocks above are far larger than 128 bytes on the wire, so a small cap
+	// must refuse them before any parsing.
+	if _, err := parseBlockBatch("peer:1", 21, 3, raw, 128, ok); err == nil || !strings.Contains(err.Error(), "wire cap") {
+		t.Fatalf("wire-cap refusal missing: %v", err)
 	}
 }
