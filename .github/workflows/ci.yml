@@ -67,6 +67,19 @@ jobs:
           fi
       - name: go test
         run: go test -count=1 ./...
+      # Bounded fuzzing of the peer-supplied SQCO wire decoders (object
+      # manifests, symbol proofs, frame probes). `go test ./...` above replays
+      # each target's committed seed corpus as a normal test; this spends a
+      # small fixed budget on fresh inputs so a regression surfaces here
+      # instead of in a release. `make fuzz` runs the same loop locally.
+      - name: go fuzz (bounded)
+        run: |
+          set -euo pipefail
+          for target in FuzzDecodeObjectManifest FuzzDecodeSymbolProof FuzzDecodeManifest FuzzFrameType; do
+            echo "::group::fuzz ${target}"
+            go test ./network/objects/ -run "^${target}$" -fuzz "${target}" -fuzztime 15s
+            echo "::endgroup::"
+          done
 
   wasm-drift:
     name: signer WASM matches its source
