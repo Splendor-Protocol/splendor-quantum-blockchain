@@ -113,9 +113,13 @@ test-race:
 FUZZTIME ?= 15s
 
 fuzz:
-	@set -e; for t in FuzzDecodeObjectManifest FuzzDecodeSymbolProof FuzzDecodeManifest FuzzFrameType; do \
+	@set -e; for t in FuzzDecodeObjectManifest FuzzDecodeSymbolProof FuzzDecodeManifest FuzzFrameType FuzzObjectReceiverAbsorb; do \
 		echo "== fuzz $$t ($(FUZZTIME))"; \
 		$(GO) test ./network/objects/ -run "^$$t$$" -fuzz "$$t" -fuzztime $(FUZZTIME); \
+	done
+	@set -e; for t in FuzzValidateBlockBatchRange FuzzBlockBatchRequestJSON FuzzObjectSymbolRequestJSON FuzzObjectManifestRequestJSON; do \
+		echo "== fuzz $$t ($(FUZZTIME))"; \
+		$(GO) test ./network/ -run "^$$t$$" -fuzz "$$t" -fuzztime $(FUZZTIME); \
 	done
 
 # ── Code quality ──────────────────────────────────────────────────────────
@@ -130,9 +134,10 @@ vet:
 	$(GO) vet ./...
 
 # Scans the REACHABLE dependency graph against the Go vulnerability database
-# (the same check CI runs on every push).
+# (the same check CI runs on every push). Pinned: v1.8+ requires Go 1.26 and
+# would force a toolchain switch on the Go 1.25 toolchain in go.mod.
 vulncheck:
-	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
 # ── Install Go 1.25 (if not present) ─────────────────────────────────────
 # Must match the `go` directive in go.mod: circl v1.6.5 (ML-DSA-65) needs 1.25.

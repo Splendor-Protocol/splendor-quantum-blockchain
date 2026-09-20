@@ -3,7 +3,6 @@ package rpc
 import (
 	"crypto/subtle"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -387,8 +386,8 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			writeError(w, http.StatusBadRequest, "invalid get_block_batch_v1 body")
 			return
 		}
-		if q.Count < 1 || q.Count > network.MaxCodedBlockBatchBlocks {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("block batch count %d outside [1,%d]", q.Count, network.MaxCodedBlockBatchBlocks))
+		if rangeErr := network.ValidateBlockBatchRange(q.FromHeight, q.Count); rangeErr != nil {
+			writeError(w, http.StatusBadRequest, rangeErr.Error())
 			return
 		}
 		payload, err = cfg.ServeBlockBatch(q.FromHeight, q.Count)
