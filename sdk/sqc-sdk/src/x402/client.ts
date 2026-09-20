@@ -8,6 +8,17 @@ import type { X402PayOpts } from '../types.js';
 import { randomNonceHex } from '../encoding.js';
 import { assertAddress } from '../address.js';
 import { WalletError } from '../errors.js';
+import {
+  consumptionExpiry,
+  createMemoryConsumptionStore,
+  defaultRequestBinding,
+  paymentIdentity,
+  paymentOutlivesConsumption,
+  resolveReuseLimits,
+  type X402BindableRequest,
+  type X402ConsumptionStore,
+  type X402ReuseLimits,
+} from './consumption.js';
 
 export type PaymentRequirements = {
   pay_to: string;
@@ -110,24 +121,6 @@ export type X402SettleResult = {
 /** Named policy for payment-gated next(). Default is receipt confirmation. */
 export type X402SettlementPolicy = 'receipt' | 'optimistic-submitted';
 
-/**
- * A payment evaluation request as seen by the middleware. Only the fields the
- * middleware consumes are declared; extra request metadata is ignored.
- */
-export type X402Request = { path: string; headers: Record<string, string | string[] | undefined> };
-
-/**
- * Application-level consumption record. The middleware binds each confirmed
- * settlement to the specific service request it pays for, so replaying one real
- * payment cannot silently purchase an unrelated request. store may be an
- * in-memory Map, a durable KV table, or anything else — only get/put are
- * required and both should be idempotent (put-if-absent on the server side).
- */
-export type X402ConsumptionStore = {
-  get: (key: string) => Promise<string | undefined>;
-  put: (key: string, value: string) => Promise<void>;
-};
-
 export type X402MiddlewareConfig = {
   payTo: string;
   price: string | Record<string, string>;
@@ -149,20 +142,52 @@ export type X402MiddlewareConfig = {
   confirmTimeoutMs?: number;
   confirmPollMs?: number;
   /**
-   * Optional application-level consumption record. When omitted, the middleware
-   * grants access once settlement succeeds without binding it to a request
-   * (legacy behaviour). When provided, a confirmed nonce is consumed for exactly
-   * one entitlement key; retries of the same request are idempotent, but the
-   * same payment used for a different key is rejected.
+   * Where consumption records live — what each settled payment already bought.
+   *
+   * A settled payment confirms for as long as its authorisation window is open,
+   * so without a record the same X-Payment header buys an unlimited number of
+   * requests. The default is a per-process in-memory store, which is
+   * authoritative for one process for as long as it runs and no longer:
+   *
+   *   - a restart (a rolling deploy included) forgets every claim, so a payment
+   *     whose window is still open is claimed again and buys `reuse.maxGrants`
+   *     more requests;
+   *   - behind k replicas each replica grants the same payment up to
+   *     `reuse.maxGrants` times, for k × maxGrants in total.
+   *
+   * Both are properties of a per-process store, not bugs to be fixed inside
+   * one. Supply a shared (e.g. Redis) store — the interface is three methods —
+   * for anything beyond a single long-lived instance.
    */
   consumptionStore?: X402ConsumptionStore;
   /**
-   * Derive the entitlement key for a request. Defaults to req.path.
+   * How much one settled payment buys. Defaults to
+   * `{ maxGrants: 3, replayWindowMs: 180_000 }`: the request that was paid for
+   * plus two retries of it, and only within three minutes of the claim.
+   *
+   * Raise it for a client that legitimately retries harder; set
+   * `maxGrants: 1` (or `replayWindowMs: 0`) to sell strictly one request with no
+   * replay at all, accepting that a dropped response then costs the payer a
+   * second payment. There is no unbounded setting: an unbounded replay is a
+   * subscription sold at the price of one request.
+   *
+   * Once either bound is reached the payment is refused with 402
+   * `Payment Reuse Exhausted`, which is a different answer from the
+   * `Payment Already Consumed` a different binding gets.
    */
-  requestKey?: (req: X402Request) => string;
+  reuse?: Partial<X402ReuseLimits>;
+  /**
+   * What a payment is bound to. Default: `METHOD path`, narrowed by a client
+   * `Idempotency-Key` / `X-Request-Id` header when one is present.
+   *
+   * Retrying the SAME binding replays the grant, up to `reuse` above; a
+   * DIFFERENT binding carrying the same payment is refused with 402
+   * `Payment Already Consumed`.
+   */
+  bindRequest?: (req: X402BindableRequest) => string;
 };
 
-type ReqLike = { path: string; headers: Record<string, string | string[] | undefined> };
+type ReqLike = X402BindableRequest;
 type ResLike = {
   status: (code: number) => ResLike;
   json: (body: unknown) => void;
@@ -194,6 +219,11 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
   const client = X402Client.fromConnection(config.connection);
   const requireSettlement = config.requireSettlement !== false;
   const settlementPolicy: X402SettlementPolicy = config.settlementPolicy ?? 'receipt';
+  const consumption = config.consumptionStore ?? createMemoryConsumptionStore();
+  // Checked at construction, not per request: a bad allowance should fail the
+  // server's boot, not every payment it takes.
+  const reuse = resolveReuseLimits(config.reuse);
+  const bindRequest = config.bindRequest ?? defaultRequestBinding;
 
   return async function x402Middleware(req: ReqLike, res: ResLike, next: NextFn) {
     const header = req.headers['x-payment'];
@@ -223,9 +253,85 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
         });
       }
 
+      // Reserve, then settle. The claim is taken BEFORE the settle call, so two
+      // concurrent requests carrying the same payment cannot both be settling
+      // while each believes it owns the payment; and a settlement that never
+      // establishes releases the claim, so a failed attempt does not burn the
+      // payer's money without giving them the request. The reuse allowance is
+      // charged by the same call, for the same reason: a check that concurrent
+      // requests can all pass before any of them pays is not a bound.
+      const paymentId = paymentIdentity(payload);
+      const binding = bindRequest(req);
+      const now = Date.now();
+      // Retention is clamped, so a payment signed to stay valid past the clamp
+      // outlives the record that counts its reuse: the record expires, the next
+      // presentation claims afresh, and the payment buys another full allowance
+      // — repeating for as long as the payer's window runs. The node cannot
+      // refuse it either, because the nonce really did settle. So a payment this
+      // server cannot police for its whole life is declined at the door.
+      if (paymentOutlivesConsumption(payload, now)) {
+        return res.status(402).json({
+          error: 'Payment Window Too Long',
+          reason:
+            'this payment stays valid for longer than the server retains its consumption record, ' +
+            'so its reuse could not be bounded for the whole of that window; sign a shorter valid_before',
+          requirements,
+        });
+      }
+      const claim = await consumption.claim(paymentId, binding, {
+        now,
+        expiresAt: consumptionExpiry(payload, now),
+        maxGrants: reuse.maxGrants,
+        replayWindowMs: reuse.replayWindowMs,
+      });
+      if (claim.status === 'conflict') {
+        return res.status(402).json({
+          error: 'Payment Already Consumed',
+          reason:
+            'this payment was already spent on a different request ' +
+            `(${claim.record.binding}); one settled payment buys one request. ` +
+            'Retry the same request to replay it, or pay again',
+          requirements,
+        });
+      }
+      // Nothing is wrong with the request — the payment behind it is used up.
+      // Kept distinct from the conflict above so a client can tell "ask for
+      // something else" from "pay again", and so an operator reading logs can
+      // tell a misrouted credential from an exhausted one.
+      if (claim.status === 'exhausted') {
+        return res.status(402).json({
+          error: 'Payment Reuse Exhausted',
+          reason: claim.reason,
+          limit: claim.limit,
+          grants: claim.record.grants,
+          maxGrants: reuse.maxGrants,
+          replayWindowMs: reuse.replayWindowMs,
+          requirements,
+        });
+      }
+      if (claim.status === 'unavailable') {
+        return res.status(503).json({ error: 'Payment Consumption Unavailable', reason: claim.reason });
+      }
+      // A retry of the same request that already got through is served again
+      // without re-settling: the payer must not be charged twice for a dropped
+      // response. The claim above has already charged this replay against the
+      // allowance, so the retries are counted — and the one that goes over is
+      // refused as exhausted rather than reaching here.
+      if (claim.status === 'replay' && claim.record.granted) {
+        next();
+        return;
+      }
+
+      // The reservation this request owns, if it took one. A replay holds no
+      // token: it did not reserve the payment, so it must not be able to give
+      // the reservation back — releasing on behalf of the request that is still
+      // settling would hand the payment to a different binding mid-flight.
+      const token = claim.status === 'claimed' ? claim.token : undefined;
+
       if (requireSettlement) {
         const settlementTx = payload.settlement_tx;
         if (!settlementTx || typeof settlementTx !== 'object') {
+          await consumption.release(paymentId, token);
           return res.status(402).json({
             error: 'Settlement Required',
             reason:
@@ -233,24 +339,55 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
             requirements,
           });
         }
-        const settleResult = await client.settle(requirements, payload, settlementTx);
-        const granted = await grantAfterSettle(config, payload, settleResult, settlementPolicy);
+        let settleResult: X402SettleResult;
+        try {
+          settleResult = await client.settle(requirements, payload, settlementTx);
+        } catch (err) {
+          // A settle call that threw — a dropped connection, a timeout, a node
+          // that is down — established nothing, so the reservation goes back.
+          // It used to fall through to the outer catch, which released nothing
+          // and answered "Malformed X-Payment header": the payer lost a grant
+          // from the allowance for a request nobody served, and was told their
+          // header was the problem.
+          await consumption.release(paymentId, token);
+          return res.status(502).json({
+            error: 'Settlement Unavailable',
+            reason: `could not reach the chain to settle this payment: ${errText(err)}`,
+            requirements,
+          });
+        }
+        let granted: true | { error: string; reason: string; status?: string };
+        try {
+          granted = await grantAfterSettle(config, payload, settleResult, settlementPolicy);
+        } catch (err) {
+          await consumption.release(paymentId, token);
+          return res.status(502).json({
+            error: 'Settlement Unavailable',
+            reason: `could not confirm this payment on chain: ${errText(err)}`,
+            requirements,
+          });
+        }
         if (granted === true) {
-          const consumptionError = await consumePayment(config, payload, settleResult, req);
-          if (consumptionError) {
-            return res.status(402).json(consumptionError);
-          }
+          await consumption.grant(paymentId, settleResult.tx_hash);
           next();
           return;
         }
+        await consumption.release(paymentId, token);
         return res.status(402).json(granted);
       }
 
+      await consumption.grant(paymentId);
       next();
     } catch {
       return res.status(400).json({ error: 'Malformed X-Payment header' });
     }
   };
+}
+
+/** A thrown value rendered for an operator, without leaking a stack trace. */
+function errText(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  return String(err);
 }
 
 function isNonceAlreadyUsed(reason?: string): boolean {
@@ -316,52 +453,6 @@ async function grantAfterSettle(
     reason: settleResult.error || 'settle returned unsuccessful',
     status: settleResult.status,
   };
-}
-
-/**
- * Bind a confirmed payment to the specific service request it is purchasing.
- *
- * The consumption key is the payment's identity (payer + nonce); the stored
- * value is the entitlement key derived from the request. A retry of the same
- * request maps to the same entitlement key and is idempotent, but a confirmed
- * payment pointed at a different entitlement key is rejected — one real payment
- * cannot silently purchase repeated/unrelated requests.
- */
-async function consumePayment(
-  config: X402MiddlewareConfig,
-  payload: PaymentPayload,
-  settleResult: X402SettleResult,
-  req: ReqLike,
-): Promise<{ error: string; reason: string } | undefined> {
-  const store = config.consumptionStore;
-  if (!store) {
-    // Legacy: no application-level consumption record configured.
-    return undefined;
-  }
-  // A payment that never confirmed must not be consumed.
-  if (!(settleConfirmed(settleResult) || (settleSubmitted(settleResult) && config.settlementPolicy === 'optimistic-submitted'))) {
-    return undefined;
-  }
-  const expectedEntitlement = config.requestKey
-    ? config.requestKey(req)
-    : req.path;
-  const consumptionKey = `x402:payment:${payload.from}:${payload.nonce}`;
-
-  const stored = await store.get(consumptionKey);
-  if (stored !== undefined) {
-    if (stored === expectedEntitlement) {
-      // Same request retrying with an already-consumed payment: idempotent.
-      return undefined;
-    }
-    return {
-      error: 'Payment Already Consumed',
-      reason:
-        'this payment identity was already consumed for a different request; it cannot purchase this request',
-    };
-  }
-
-  await store.put(consumptionKey, expectedEntitlement);
-  return undefined;
 }
 
 export { fromSPLD, toSPLD };
