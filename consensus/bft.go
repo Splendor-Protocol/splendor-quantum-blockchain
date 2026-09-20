@@ -294,6 +294,14 @@ type BFTEngine struct {
 	votedHeight uint64
 	hasVoted    bool
 
+	// The last PREVOTE this process signed. Separate from hasVoted, which is
+	// the lock: a prevote binds only its own view. Used to tell a journal
+	// refusal this process caused apart from one a previous process left
+	// behind, the way hasSigned does for precommits.
+	prevotedHeight uint64
+	prevotedRound  uint32
+	hasPrevoted    bool
+
 	// Quorum tracking: separate from voting for safety
 	// Allows verification that quorum matches our vote before commit
 	quorumHash   [32]byte
@@ -353,21 +361,60 @@ type BFTEngine struct {
 	polHash          [32]byte
 	polRound         uint32
 	polHeight        uint64
-	// polVotes is the prevote quorum (POL) this node witnessed for polHash at
-	// (polHeight, polRound). Retained — not just the hash/round — so a leader
-	// re-proposing the locked value can attach the actual certificate and let a
-	// peer that missed the quorum verify and unlock to it.
-	polVotes  []*Vote
-	rcByRound map[uint32]map[qcrypto.Address]*RoundChange
+	// polCert is the prevote quorum behind (polHeight, polRound, polHash) —
+	// the proof a later leader needs to re-propose this value to a node locked
+	// on a different one. The hash and the round alone prove nothing: an
+	// honest node does not leave a lock on a claim it cannot check.
+	polCert   []*Vote
+	rcByRound map[uint32]map[qcrypto.Address]*roundChangeRecord
 	rcQCRound int32
-	// rcValue* is the safe value selected from the current round-change quorum:
-	// the one with the highest locked round, plus its certificate. A leader must
-	// re-propose this value (or hold for its body) instead of minting a value
-	// that could conflict with a validator's lock.
-	rcValueHash  [32]byte
-	rcValueRound uint32
-	rcValueVotes []*Vote
-	rcValueSet   bool
+
+	// The view this node's own proposal was refused at by the durable record,
+	// when the refusal was not the restart shape that advances the round.
+	// syncRoundTimer arms a deadline for exactly that view, because a view
+	// this node leads and holds no proposal in waits on nobody and so armed
+	// nothing at all: the node then emitted no round-change of its own, and
+	// three of four validators is a quorum only while all three are talking.
+	// Tagged with the view so the mark expires by itself when the view moves.
+	refusedHeight uint64
+	refusedRound  uint32
+	hasRefused    bool
+
+	// live is the view an outside observer reads — /readyz and /status — kept
+	// under a mutex of its own that is never held across a long call.
+	//
+	// The engine holds stateMu for the whole of commitBlock, which includes
+	// onCommit: the executor's entire block apply, measured at 15s for a
+	// 4,173-transaction block on this chain's own validation run. A probe that
+	// took stateMu to read the height therefore stalled for that long, and an
+	// orchestrator with a 1-5s probe timeout pulled the validator precisely
+	// while it was doing its job.
+	live   EngineView
+	liveMu sync.RWMutex
+}
+
+// EngineView is the engine's view as an observer reads it: one snapshot,
+// published at each transition, so height, round and the lock always belong
+// to each other. A caller must never be able to read a lock at one height
+// against a round from another.
+type EngineView struct {
+	// Height and Round are the view the engine is working on.
+	Height uint64
+	Round  uint32
+	// Locked reports a vote lock at Height — in memory or in the durable
+	// journal. LockedHash is the hash of the locked body when that body is
+	// available, which is exactly what /readyz has always reported.
+	Locked     bool
+	LockedHash [32]byte
+}
+
+// roundChangeRecord is a round-change plus whether the lock it claims is
+// actually proven. Justification is decided once, on admission: verifying it
+// costs one ML-DSA verify per vote in the certificate, and the value selection
+// runs on every propose tick.
+type roundChangeRecord struct {
+	rc        *RoundChange
+	justified bool
 }
 
 // BFTConfig configures the BFT engine.
@@ -457,7 +504,7 @@ func NewBFTEngine(cfg BFTConfig) (*BFTEngine, error) {
 		rcCh:             make(chan *RoundChange, 256),
 		seenVotes:        make(map[string]*Vote),
 		pendingVotes:     make(map[string][]*Vote),
-		rcByRound:        make(map[uint32]map[qcrypto.Address]*RoundChange),
+		rcByRound:        make(map[uint32]map[qcrypto.Address]*roundChangeRecord),
 		rcQCRound:        -1,
 	}, nil
 }
@@ -598,6 +645,13 @@ func (e *BFTEngine) ProposeBlock(b *types.Block) {
 }
 
 // SubmitRoundChange queues an authenticated round-change from a peer.
+//
+// The justification a round-change now carries — a prevote quorum and the body
+// it locked — is the largest thing on this queue, so it is trimmed to what
+// could conceivably be used before it occupies a slot. None of these checks
+// decide justification; roundChangeJustified does that, on the engine loop,
+// against the validator set. They only stop a signed member from parking
+// memory here under a claim that cannot be true.
 func (e *BFTEngine) SubmitRoundChange(rc *RoundChange) {
 	if rc == nil {
 		return
@@ -610,6 +664,34 @@ func (e *BFTEngine) SubmitRoundChange(rc *RoundChange) {
 	if err := rc.Verify(pubKey); err != nil {
 		log.Debug().Err(err).Msg("BFT: dropping unauthenticated round-change")
 		return
+	}
+	// The signature covers the claim, not the attachment, so an attachment
+	// that contradicts the claim was added by someone in the middle or is
+	// simply junk. Dropping it keeps the message, which still counts toward
+	// the quorum that lets the next leader propose at all.
+	view := e.View()
+	switch {
+	case rc.LockedRound < 0:
+		// Claims no lock; there is nothing for a proof to prove.
+		rc.LockedCert, rc.LockedBlock = nil, nil
+	case len(rc.LockedCert) > e.activeCount() || (rc.LockedBlock != nil && rc.LockedBlock.Hash != rc.LockedHash):
+		log.Debug().Str("from", rc.ValidatorAddr.String()).
+			Int("cert_votes", len(rc.LockedCert)).
+			Msg("BFT: dropping a round-change justification that cannot be a quorum for the claimed value")
+		rc.LockedCert, rc.LockedBlock = nil, nil
+	case rc.Height == view.Height && rc.Round > view.Round+roundChangeBodyWindow:
+		// Only a leader at the CURRENT round ever reads an attachment, so one
+		// for a round this node is nowhere near is memory held on the queue for
+		// nothing. handleRoundChange admits rounds up to 32 ahead — that is
+		// what lets a set which has fallen behind form a quorum at all — so a
+		// single member could otherwise park 33 bodies per height on every
+		// peer, each up to the 32 MiB a block may be. The published view is
+		// read rather than the engine's own state, because taking stateMu here
+		// would put this on the far side of a block apply.
+		log.Debug().Str("from", rc.ValidatorAddr.String()).
+			Uint32("rc_round", rc.Round).Uint32("round", view.Round).
+			Msg("BFT: dropping the justification on a round-change too far ahead to be acted on")
+		rc.LockedCert, rc.LockedBlock = nil, nil
 	}
 	select {
 	case e.rcCh <- rc:
@@ -686,6 +768,15 @@ func (e *BFTEngine) spentByPreviousProcess(height uint64, round uint32) bool {
 		return false
 	}
 	return !(e.hasSigned && e.signedHeight == height && e.signedRound == round)
+}
+
+// markRefusedViewLocked records that this node's own proposal at (height,
+// round) was refused by the durable record and the round was deliberately left
+// where it is. syncRoundTimer arms a deadline for that view so the timer can
+// rotate the leader away; the mark is tagged with the view, so it stops
+// applying the moment the view moves.
+func (e *BFTEngine) markRefusedViewLocked(height uint64, round uint32) {
+	e.refusedHeight, e.refusedRound, e.hasRefused = height, round, true
 }
 
 // isMember reports whether this node is in the active validator set.
@@ -797,6 +888,10 @@ func (rt *roundTimer) disarm() {
 //   - no proposal, and the view's leader is another member of a set larger
 //     than one: roundTimeout + proposalWait, so a leader that never proposes
 //     is rotated away;
+//   - no proposal at a view this node leads and has already been refused a
+//     proposal at by the durable record: roundTimeout, because nobody else is
+//     going to answer and the deadline is the only thing that can move the
+//     view on. Without it the node sat there silently for ever;
 //   - anything else — a sole validator, a height just committed, a view this
 //     node leads itself: no timer at all.
 //
@@ -814,6 +909,7 @@ func (e *BFTEngine) syncRoundTimer(rt *roundTimer, renew bool) {
 	e.stateMu.Lock()
 	h, r := e.currentHeight, e.currentRound
 	open := e.voteSet != nil && e.proposal != nil
+	refused := e.hasRefused && e.refusedHeight == h && e.refusedRound == r
 	e.stateMu.Unlock()
 
 	var wait time.Duration
@@ -822,6 +918,8 @@ func (e *BFTEngine) syncRoundTimer(rt *roundTimer, renew bool) {
 		wait = e.roundTimeout
 	case e.awaitingRemoteLeader(h, r):
 		wait = e.roundTimeout + e.proposalWait
+	case refused:
+		wait = e.roundTimeout
 	default:
 		rt.disarm()
 		return
@@ -849,6 +947,7 @@ func (e *BFTEngine) awaitingRemoteLeader(height uint64, round uint32) bool {
 func (e *BFTEngine) expireRound(height uint64, round uint32) bool {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	defer e.publishViewLocked()
 	if e.currentHeight != height || e.currentRound != round {
 		log.Debug().Uint64("timer_height", height).Uint32("timer_round", round).
 			Uint64("height", e.currentHeight).Uint32("round", e.currentRound).
@@ -865,6 +964,7 @@ func (e *BFTEngine) expireRound(height uint64, round uint32) bool {
 func (e *BFTEngine) handleTimeout() {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	defer e.publishViewLocked()
 	e.viewChangeLocked()
 }
 
@@ -937,6 +1037,9 @@ func (e *BFTEngine) proposalRound(p *pendingProposal) (uint32, error) {
 func (e *BFTEngine) handleProposal(p *pendingProposal) bool {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	// Deferred LIFO, so the view is republished while stateMu is still held:
+	// whatever this handler moved is visible to a probe the moment it returns.
+	defer e.publishViewLocked()
 
 	if p == nil || p.block == nil {
 		return false
@@ -1067,14 +1170,22 @@ func (e *BFTEngine) handleProposal(p *pendingProposal) bool {
 			// the journal. Retrying at this round can never succeed, and our
 			// retries are what keep the round timer from firing — so take the
 			// view change now rather than wait for a timeout that never comes.
-			if p.local && errors.Is(verr, ErrDoubleSign) && round == e.currentRound && e.spentByPreviousProcess(b.Header.Height, round) {
-				e.currentRound = round + 1
-				e.voteSet = nil
-				e.proposal = nil
-				log.Warn().Uint64("height", b.Header.Height).Uint32("round", round+1).
-					Msg("BFT: own proposal refused by the vote journal, advancing the round")
-				if cb := e.onViewChange; cb != nil {
-					go cb(b.Header.Height, round+1)
+			if p.local && errors.Is(verr, ErrDoubleSign) && round == e.currentRound {
+				if e.spentByPreviousProcess(b.Header.Height, round) {
+					e.currentRound = round + 1
+					e.voteSet = nil
+					e.proposal = nil
+					log.Warn().Uint64("height", b.Header.Height).Uint32("round", round+1).
+						Msg("BFT: own proposal refused by the vote journal, advancing the round")
+					if cb := e.onViewChange; cb != nil {
+						go cb(b.Header.Height, round+1)
+					}
+				} else {
+					// Not the restart shape — a journal ahead of the engine, or
+					// a vote this process cast itself. The round is left to the
+					// timer, as before, but a view this node leads and holds no
+					// proposal in arms no timer: mark it so one is armed.
+					e.markRefusedViewLocked(b.Header.Height, round)
 				}
 			}
 			return false
@@ -1232,6 +1343,7 @@ func (e *BFTEngine) pendingVoteCount() int {
 func (e *BFTEngine) handleVote(vote *Vote) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	defer e.publishViewLocked()
 
 	if vote == nil {
 		return
@@ -1369,8 +1481,15 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 		Hex("qc_root", root[:8]).
 		Msg("block committed with valid QC")
 
-	// Attempt to apply block
+	// Attempt to apply block.
+	//
+	// onCommit is the executor's whole block apply and stateMu is held across
+	// it, so this is the last chance to publish before the engine is
+	// unobservable through that lock for seconds at a time. What a probe reads
+	// during the apply is therefore the height being applied — which is where
+	// the engine really is — rather than the one before it.
 	if e.onCommit != nil {
+		e.publishViewLocked()
 		if err := e.onCommit(b); err != nil {
 			// A failed apply means the block was not stored. It does NOT mean
 			// this node did not vote.
@@ -1439,12 +1558,15 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	e.hasVoted = false
 	e.hasQuorum = false
 	e.hasPOL = false
-	e.polVotes = nil
-	e.clearRoundChangeLocked()
+	e.polCert = nil
+	e.hasPrevoted = false
+	e.rcByRound = make(map[uint32]map[qcrypto.Address]*roundChangeRecord)
+	e.rcQCRound = -1
 
 	// Cleanup
 	e.prunePendingVotes(e.currentHeight)
 	e.pruneSeenVotes(e.currentHeight)
+	e.publishViewLocked()
 }
 
 // pruneSeenVotes drops equivocation records for heights the chain has passed.
@@ -1487,10 +1609,12 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	e.hasVoted = false
 	e.hasQuorum = false
 	e.hasPOL = false
-	e.polVotes = nil
 	e.precommits = nil
-	e.clearRoundChangeLocked()
+	e.rcByRound = make(map[uint32]map[qcrypto.Address]*roundChangeRecord)
+	e.rcQCRound = -1
 	e.lockedProposal = nil
+	e.polCert = nil
+	e.hasRefused = false
 
 	// Crash recovery: A restart re-enters a height the previous process may
 	// already have voted at. Round r is spent— the journal refuses every other
@@ -1498,11 +1622,26 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	// re-sign it, never a different block. Reload the locked proposal body so
 	// the leader can rebroadcast it instead of minting a new hash.
 	if e.journal != nil {
+		resume := uint32(0)
 		if jh, jr, jhash, ok := e.journal.Last(); ok && jh == h {
-			e.currentRound = jr + 1
+			resume = jr + 1
 			e.votedHash, e.votedHeight, e.hasVoted = jhash, jh, true
+			// lockAt reads signedRound for the lock's round and this process
+			// has signed nothing yet, so without restoring it a recovered lock
+			// reported as round 0 and a stale proof of lock at round 1 looked
+			// like grounds to leave it. hasSigned stays false: the vote was a
+			// previous process's, which is what spentByPreviousProcess needs.
+			e.signedHeight, e.signedRound = jh, jr
 			if prop, ok := e.journal.LoadProposal(); ok {
 				e.lockedProposal = prop
+			}
+			// The certificate comes back with the lock. Without it this node
+			// can still say what it is locked to and can no longer PROVE it,
+			// so the value-selection at the next round change has to skip it
+			// and a leader cannot re-propose it to a node locked elsewhere.
+			if ch, cr, chash, votes, ok := e.journal.LoadCertificate(); ok && ch == jh && cr == jr && chash == jhash {
+				e.hasPOL, e.polHeight, e.polRound, e.polHash = true, ch, cr, chash
+				e.polCert = votes
 			}
 			log.Warn().
 				Uint64("height", h).
@@ -1510,29 +1649,91 @@ func (e *BFTEngine) SetHeight(h uint64) {
 				Uint32("resume_round", jr+1).
 				Hex("committed_to", jhash[:8]).
 				Bool("proposal_body", e.lockedProposal != nil).
+				Int("pol_certificate", len(e.polCert)).
 				Msg("crash recovery: restored vote commitment from journal")
+		}
+		// The prevote sidecar records a view this process signed in without
+		// ever locking, and RecordPrevote refuses any prevote at a round BELOW
+		// it. Resuming below that round leaves the node unable to prevote at
+		// all: its own fresh body is refused, a view it leads itself arms no
+		// deadline, so it emits no round-change — and with four validators and
+		// one silent, the two round-changes left are one short of the quorum
+		// that would have rotated the leader. The whole height stops.
+		//
+		// The round itself, not the round after it. The identical value may be
+		// re-prevoted there — that is how a node which crashed between prevote
+		// and precommit rejoins the view it was already in — and a fresh body
+		// of its own is refused by the sidecar, which takes the view change.
+		if ph, pr, phash, ok := e.journal.LastPrevote(); ok && ph == h && pr > resume {
+			log.Warn().
+				Uint64("height", h).
+				Uint32("prevote_round", pr).
+				Uint32("resume_round", pr).
+				Hex("prevoted", phash[:8]).
+				Msg("crash recovery: resuming at the round of the durable prevote record")
+			resume = pr
+		}
+		// A recovered round has to be ANNOUNCED, not just entered.
+		//
+		// Assigning it here is the only place the engine moves a round without
+		// going through enterRoundLocked, which signs a round-change and sends
+		// it. So a recovered node sat in a view no peer knew about — and since
+		// it holds no proposal, and may lead that very view, syncRoundTimer
+		// armed no deadline either, so it never reached handleTimeout and never
+		// announced anything later.
+		//
+		// With four validators and one silent that is a halt, not a delay. The
+		// two peers still walking up through their own timeouts arrive at the
+		// recovered round and find two round-changes there, one short of the
+		// quorum of three — the missing one being the recovered node's, which it
+		// never sent. Every honest member then waits for the others.
+		//
+		// Round 0 is not a recovery, so it announces nothing: otherwise every
+		// restart would push the set forward a view.
+		if resume > 0 && e.roundsV1(h) {
+			e.enterRoundLocked(resume, "crash recovery: announcing the round this node resumed at")
+		} else {
+			e.currentRound = resume
 		}
 	}
 	e.voteSet = nil
 	e.proposal = nil
 	e.prunePendingVotes(h)
+	e.publishViewLocked()
 	e.wake()
 }
 
 // LockedProposal returns the block this node is vote-locked to at the current
 // height, when the body is still available (in memory or restored from the
-// journal). A round-change-selected value (higher than this node's own lock) is
-// preferred when its body is locally held, so the leader re-proposes the safe
-// value instead of its own lower lock. Callers rebroadcast it instead of
-// minting a new hash.
+// journal). Callers rebroadcast it instead of minting a new hash.
 func (e *BFTEngine) LockedProposal() *types.Block {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	return e.lockedProposalLocked()
+}
+
+// SafeProposal returns the body this node must offer at its current view.
+//
+// A leader does not get to choose. Under bft_rounds_v1 past round 0 the value
+// is whatever the round-change quorum justifies — the highest proven lock any
+// member of that quorum reported, which is HotStuff's rule for a NEW-VIEW
+// leader ("replicas send NEW-VIEW messages with their highest PrepareQC to the
+// new leader, who selects the highest-QC as a safety anchor") applied to a
+// prevote quorum. Only when the quorum proves no lock at all does this fall
+// back to the body this node itself is locked to, and only when that is absent
+// too is the leader free to mint.
+func (e *BFTEngine) SafeProposal() *types.Block {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
+	if sel, ok := e.safeValueLocked(); ok {
+		return sel.LockedBlock
+	}
+	return e.lockedProposalLocked()
+}
+
+func (e *BFTEngine) lockedProposalLocked() *types.Block {
 	if e.lockedProposal == nil {
 		return nil
-	}
-	if e.rcValueSet && e.lockedProposal.Header.Height == e.currentHeight && e.lockedProposal.Hash == e.rcValueHash {
-		return e.lockedProposal
 	}
 	if e.hasVoted && e.lockedProposal.Header.Height == e.votedHeight && e.lockedProposal.Hash == e.votedHash {
 		return e.lockedProposal
@@ -1558,6 +1759,10 @@ func (e *BFTEngine) AdoptedProposal() *types.Block {
 func (e *BFTEngine) VoteLockedAt(h uint64) bool {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	return e.voteLockedAtLocked(h)
+}
+
+func (e *BFTEngine) voteLockedAtLocked(h uint64) bool {
 	if e.hasVoted && e.votedHeight == h {
 		return true
 	}
@@ -1572,6 +1777,40 @@ func (e *BFTEngine) VoteLockedAt(h uint64) bool {
 	return false
 }
 
+// View returns the engine's published view without taking stateMu.
+//
+// This is what a readiness or status probe must use. Height, Round,
+// VoteLockedAt and LockedProposal each take stateMu, which handleVote holds
+// through commitBlock and therefore through the executor's whole block apply:
+// asking the engine four questions over that lock made /readyz and /status
+// stall for the length of every apply, so a probe timeout of a few seconds
+// restarted a validator that was working normally. The snapshot is published
+// at each transition instead, under a lock held for a struct copy and nothing
+// else.
+func (e *BFTEngine) View() EngineView {
+	e.liveMu.RLock()
+	defer e.liveMu.RUnlock()
+	return e.live
+}
+
+// publishViewLocked republishes the observable view. Called with stateMu held,
+// at every transition and — crucially — before commitBlock hands the block to
+// the executor, so the view a probe reads during a long apply is the height
+// being applied rather than the one before it.
+func (e *BFTEngine) publishViewLocked() {
+	v := EngineView{
+		Height: e.currentHeight,
+		Round:  e.currentRound,
+		Locked: e.voteLockedAtLocked(e.currentHeight),
+	}
+	if b := e.lockedProposalLocked(); b != nil {
+		v.LockedHash = b.Hash
+	}
+	e.liveMu.Lock()
+	e.live = v
+	e.liveMu.Unlock()
+}
+
 // Height returns the height the engine is working on.
 func (e *BFTEngine) Height() uint64 {
 	e.stateMu.Lock()
@@ -1584,34 +1823,6 @@ func (e *BFTEngine) Round() uint32 {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 	return e.currentRound
-}
-
-// ConsensusStatus is a point-in-time snapshot of the engine's progress, for
-// readiness and diagnostics. Locked reports the node's in-memory vote lock (a
-// prevote it cast, or a POL it witnessed) at the current height — a normal
-// in-round state, not a failure. Callers must not infer health from Locked
-// alone.
-type ConsensusStatus struct {
-	Height       uint64
-	Round        uint32
-	Locked       bool
-	LockedHeight uint64
-}
-
-// Status returns a consistent snapshot of the current height, round and vote
-// lock under a single stateMu hold.
-func (e *BFTEngine) Status() ConsensusStatus {
-	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
-	st := ConsensusStatus{Height: e.currentHeight, Round: e.currentRound}
-	if e.hasVoted && e.votedHeight == e.currentHeight {
-		st.Locked = true
-		st.LockedHeight = e.votedHeight
-	} else if e.hasPOL && e.polHeight == e.currentHeight {
-		st.Locked = true
-		st.LockedHeight = e.polHeight
-	}
-	return st
 }
 
 // findValidatorPubKey returns the public key for a validator address, or nil.

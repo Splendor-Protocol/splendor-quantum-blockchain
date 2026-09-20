@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
 // ProposalEnvelope is the bft_rounds_v1 wrapper a current-round leader signs.
@@ -85,11 +86,13 @@ func (e *ProposalEnvelope) Verify(pubKeyBytes []byte) error {
 // RoundChange is an authenticated vote to leave the previous round. The new
 // leader needs a quorum of these for (height, newRound) before proposing.
 //
-// POLVotes carries the prevote quorum (certificate) that justifies LockedHash at
-// LockedRound, when this node witnessed it. It is evidence, not part of the
-// round-change signature: each vote is individually signed and re-verified via
-// verifyPOL when a leader consumes it, so a round-change cannot attach a forged
-// or mismatched certificate.
+// It also carries the sender's justification, which is what lets the new
+// leader pick a value rather than merely count messages. IBFT 2.0 calls this
+// the Prepared-Certificate and the latest prepared proposed block, and its
+// proposer rule is "must match proposed block from Round-Change messages
+// including Prepared-Certificate for highest round amongst all
+// Prepared-Certificates". Splendor's prepared round is the prevote quorum
+// (proof of lock), so LockedCert is that quorum and LockedBlock is its body.
 type RoundChange struct {
 	Height        uint64          `json:"height"`
 	Round         uint32          `json:"round"`
@@ -97,8 +100,21 @@ type RoundChange struct {
 	LockedRound   int32           `json:"locked_round"`
 	ValidatorAddr qcrypto.Address `json:"validator_addr"`
 	Timestamp     int64           `json:"timestamp"`
-	POLVotes      []*Vote         `json:"pol_votes,omitempty"`
 	Signature     []byte          `json:"signature,omitempty"`
+
+	// LockedCert is the prevote quorum proving LockedHash was locked at
+	// LockedRound; LockedBlock is that value's body.
+	//
+	// Neither is covered by Signature, and neither needs to be: every vote in
+	// the certificate carries its own signature over (height, round, hash),
+	// and the body is bound to LockedHash by its own hash. What the signature
+	// does cover is the CLAIM — a peer can strip the proof off a round-change
+	// in flight, and it cannot forge a different one. A stripped proof costs
+	// the sender its say in the value selection, not the chain its safety:
+	// selection is a liveness rule, and every node still refuses to leave its
+	// own lock without a certificate it verified itself.
+	LockedCert  []*Vote      `json:"locked_cert,omitempty"`
+	LockedBlock *types.Block `json:"locked_block,omitempty"`
 }
 
 type roundChangeBody struct {

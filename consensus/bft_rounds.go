@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"time"
 
@@ -49,12 +50,44 @@ func (e *BFTEngine) handleProposalTwoPhase(p *pendingProposal) bool {
 			}
 			e.ensureSoloRoundChangeQCLocked()
 		}
-		if locked, _, ok := e.lockAt(b.Header.Height); ok && b.Hash != locked {
-			log.Warn().Hex("locked", locked[:8]).Hex("proposed", b.Hash[:8]).
-				Msg("BFT: refusing to mint a value other than the locked body")
+		// The round-change quorum, not the leader, decides the value. A leader
+		// that reached this round through a view change re-proposes the
+		// highest justified lock reported to it; only a quorum that proves no
+		// lock leaves it free to offer its own body.
+		sel, haveSel := e.safeValueLocked()
+		if haveSel && b.Hash != sel.LockedHash {
+			log.Warn().Uint64("height", b.Header.Height).Uint32("round", e.currentRound).
+				Hex("justified", sel.LockedHash[:8]).Int32("justified_round", sel.LockedRound).
+				Hex("offered", b.Hash[:8]).
+				Msg("BFT: the round-change quorum justifies a different value; refusing to propose this one")
 			return false
 		}
-		if err := e.signLocalEnvelope(p); err != nil {
+		if locked, lockRound, ok := e.lockAt(b.Header.Height); ok && b.Hash != locked {
+			// A leader unlocks on the same evidence a follower does: a proven
+			// prevote quorum for the offered value at a strictly later round.
+			// Without this the node holding the OLDEST lock refuses to lead
+			// the round that would have resolved the height, and the set waits
+			// for a leader rotation it does not need.
+			if !(haveSel && sel.LockedHash == b.Hash && sel.LockedRound > int32(lockRound)) {
+				log.Warn().Hex("locked", locked[:8]).Uint32("locked_round", lockRound).
+					Hex("proposed", b.Hash[:8]).
+					Msg("BFT: refusing to mint a value other than the locked body")
+				return false
+			}
+			log.Info().Uint64("height", b.Header.Height).Hex("was_locked", locked[:8]).
+				Uint32("lock_round", lockRound).Hex("now", b.Hash[:8]).Int32("pol_round", sel.LockedRound).
+				Msg("BFT: leaving the lock for a value proven at a later round")
+		}
+		// A body this node did not build gets the same judgement a peer's
+		// proposal gets in admitRemoteValue. Re-proposing a locked value means
+		// putting somebody else's block on the wire under this node's envelope,
+		// and the local path used to skip validateProposal entirely: a leader
+		// would prevote and broadcast a body every peer then rejected, which
+		// turns a round it was meant to resolve into a wasted one.
+		if !e.validateOwnValueLocked(b) {
+			return false
+		}
+		if err := e.signLocalEnvelope(p, sel); err != nil {
 			log.Error().Err(err).Msg("BFT: failed to sign proposal envelope")
 			return false
 		}
@@ -90,12 +123,57 @@ func (e *BFTEngine) handleProposalTwoPhase(p *pendingProposal) bool {
 		return e.answerDuplicateProposalLocked(p)
 	}
 
-	if !p.local {
-		if err := e.admitRemoteValue(p, round); err != nil {
+	// polRound is the proof of lock this node actually VERIFIED for the value,
+	// or -1. It is what the durable prevote record is allowed to leave a lock
+	// on, so it must never be the round an envelope merely claimed: for a
+	// peer's proposal it comes back from admitRemoteValue, which checked the
+	// certificate, and for this node's own it comes from the envelope it just
+	// signed over evidence it holds.
+	polRound := int32(-1)
+	if p.local {
+		polRound = envelopePOLRound(p)
+	} else {
+		verified, err := e.admitRemoteValue(p, round)
+		if err != nil {
 			log.Warn().Err(err).Uint64("height", b.Header.Height).Uint32("round", round).
 				Msg("BFT: two-phase proposal rejected")
 			return false
 		}
+		polRound = verified
+	}
+
+	// Sign the prevote BEFORE anything here moves, so a refusal leaves the
+	// engine in the view it was already in. The journal can refuse — this node
+	// prevoted another value at this very view, possibly in a previous process
+	// — and half-adopting a value nobody here voted for helps nothing.
+	var ownPrevote *Vote
+	if e.isMember() {
+		vote, verr := e.castPrevote(b, round, polRound)
+		if verr != nil {
+			log.Error().Err(verr).Uint64("height", b.Header.Height).Uint32("round", round).
+				Hex("proposed", b.Hash[:8]).Msg("BFT: failed to prevote")
+			// Our own proposal, refused because a previous process already
+			// prevoted something else at this view. Retrying here can never
+			// succeed, and while we retry no deadline is running — the timer
+			// only arms for a view this node holds a proposal in or is waiting
+			// on someone else for. Take the view change now.
+			if p.local && errors.Is(verr, ErrDoubleSign) && round == e.currentRound {
+				if e.prevoteSpentByPreviousProcess(b.Header.Height, round) {
+					log.Warn().Uint64("height", b.Header.Height).Uint32("round", round).
+						Msg("BFT: own proposal refused by the durable prevote record, advancing the round")
+					e.viewChangeTwoPhaseLocked()
+				} else {
+					// The refusal is not the restart shape — the durable record
+					// is at another view entirely, or this process wrote it. The
+					// round is left to the timer, as before; the mark is what
+					// gives this view a deadline for the timer to fire, since a
+					// view this node leads and holds no proposal in arms none.
+					e.markRefusedViewLocked(b.Header.Height, round)
+				}
+			}
+			return false
+		}
+		ownPrevote = vote
 	}
 
 	e.currentHeight = b.Header.Height
@@ -110,30 +188,67 @@ func (e *BFTEngine) handleProposalTwoPhase(p *pendingProposal) bool {
 		}
 	}
 
-	var ownPrevote *Vote
-	if e.isMember() {
-		vote, verr := e.castPrevote(b, round)
-		if verr != nil {
-			log.Error().Err(verr).Msg("BFT: failed to prevote")
-			return false
-		}
-		ownPrevote = vote
-		if _, addErr := e.voteSet.AddVote(vote); addErr != nil {
+	if ownPrevote != nil {
+		if _, addErr := e.voteSet.AddVote(ownPrevote); addErr != nil {
 			logVoteAddFailure(addErr, "own prevote")
 		}
 		if e.broadcast != nil {
-			e.broadcast(vote)
+			e.broadcast(ownPrevote)
 		}
 	}
 
 	if p.local && e.broadcastP != nil {
-		e.broadcastP(&ProposalMsg{Block: b, Vote: ownPrevote, Envelope: p.envelope, POL: e.attachedPOL(p, b)})
+		e.broadcastP(&ProposalMsg{Block: b, Vote: ownPrevote, Envelope: p.envelope, POL: p.pol})
 	}
 
 	e.drainPendingVotes()
 
 	if e.voteSet.HasQuorum() {
 		e.onPrevoteQuorum(b, round)
+	}
+	return true
+}
+
+// validateOwnValueLocked judges a value this node is about to offer as leader.
+//
+// A body it built itself was validated as it was built. A body that came from
+// somewhere else — the value a round-change quorum justified, or this node's
+// own locked body reloaded from the journal after a restart — has to be checked
+// against the head this node would apply it to, and against its own contents:
+// the producer's signature, the transaction root, the transaction count.
+func (e *BFTEngine) validateOwnValueLocked(b *types.Block) bool {
+	if b.Header.ValidatorAddr == e.localAddr {
+		return true
+	}
+	// Already adopted at this view: it was judged when it was adopted, and a
+	// leader rebroadcasting the body it is bound to does that on every block
+	// interval. The check that matters is the one before the value first goes
+	// on the wire.
+	if e.proposal != nil && e.proposal.Hash == b.Hash && e.proposal.Header.Height == b.Header.Height {
+		return true
+	}
+	if err := b.Validate(); err != nil {
+		log.Warn().Err(err).Uint64("height", b.Header.Height).Hex("value", b.Hash[:8]).
+			Str("producer", b.Header.ValidatorAddr.String()).
+			Msg("BFT: refusing to re-propose a body that does not match its own header")
+		return false
+	}
+	if pk := e.findValidatorPubKey(b.Header.ValidatorAddr); pk == nil {
+		log.Warn().Uint64("height", b.Header.Height).Str("producer", b.Header.ValidatorAddr.String()).
+			Msg("BFT: refusing to re-propose a body whose producer is not in this node's validator set")
+		return false
+	} else if err := b.VerifySignature(pk); err != nil {
+		log.Warn().Err(err).Uint64("height", b.Header.Height).
+			Str("producer", b.Header.ValidatorAddr.String()).
+			Msg("BFT: refusing to re-propose a body its producer did not sign")
+		return false
+	}
+	if e.validateProposal != nil {
+		if err := e.validateProposal(b); err != nil {
+			log.Warn().Err(err).Uint64("height", b.Header.Height).Hex("value", b.Hash[:8]).
+				Msg("BFT: refusing to re-propose a body that would not apply here")
+			return false
+		}
 	}
 	return true
 }
@@ -159,7 +274,7 @@ func (e *BFTEngine) answerDuplicateProposalLocked(p *pendingProposal) bool {
 	prevote := e.voteSet.VoteFrom(e.localAddr)
 	precommit := e.precommits.VoteFrom(e.localAddr)
 	if p.local && e.broadcastP != nil {
-		e.broadcastP(&ProposalMsg{Block: held, Vote: prevote, Envelope: p.envelope, POL: e.attachedPOL(p, held)})
+		e.broadcastP(&ProposalMsg{Block: held, Vote: prevote, Envelope: p.envelope, POL: p.pol})
 	}
 	if e.broadcast != nil {
 		if prevote != nil {
@@ -183,25 +298,17 @@ func (e *BFTEngine) answerDuplicateProposalLocked(p *pendingProposal) bool {
 	return false
 }
 
-// attachedPOL returns the prevote quorum to attach to a locally broadcast
-// proposal. A wire-provided POL (a re-proposal from a peer) is kept as-is; a
-// locally built proposal for a value this node holds a POL for gets the
-// retained quorum, so a peer locked to another value can verify and unlock. A
-// round-change-selected value gets the certificate carried by its round-change.
-func (e *BFTEngine) attachedPOL(p *pendingProposal, b *types.Block) []*Vote {
-	if p != nil && len(p.pol) > 0 {
-		return p.pol
-	}
-	if e.hasPOL && e.polHeight == b.Header.Height && e.polHash == b.Hash {
-		return e.polVotes
-	}
-	if e.rcValueSet && b.Header.Height == e.currentHeight && b.Hash == e.rcValueHash {
-		return e.rcValueVotes
-	}
-	return nil
-}
-
-func (e *BFTEngine) signLocalEnvelope(p *pendingProposal) error {
+// signLocalEnvelope seals this node's proposal and attaches the proof of lock
+// that justifies it.
+//
+// The envelope used to name a POL round and send nothing else, which is a
+// claim, not a proof: verifyPOL counts votes, so a node locked on another
+// value rejected every such re-proposal and the height could not converge.
+// sel is the round-change quorum's justified value when there is one — its
+// certificate was verified on admission and is the one to forward; otherwise
+// the justification is this node's own lock, whose certificate it kept when
+// the prevote quorum formed (or reloaded from the journal after a restart).
+func (e *BFTEngine) signLocalEnvelope(p *pendingProposal, sel *RoundChange) error {
 	if p.envelope != nil {
 		return nil
 	}
@@ -213,14 +320,51 @@ func (e *BFTEngine) signLocalEnvelope(p *pendingProposal) error {
 		POLRound:   -1,
 		Timestamp:  time.Now().Unix(),
 	}
-	if hash, round, ok := e.lockAt(p.block.Header.Height); ok {
-		env.POLRound = int32(round)
-		env.POLHash = hash
+	switch {
+	case sel != nil && sel.LockedHash == p.block.Hash:
+		env.POLRound = sel.LockedRound
+		env.POLHash = sel.LockedHash
+		p.pol = sel.LockedCert
+	default:
+		if hash, round, ok := e.lockAt(p.block.Header.Height); ok && hash == p.block.Hash {
+			env.POLRound = int32(round)
+			env.POLHash = hash
+			p.pol = e.certificateFor(p.block.Header.Height, round, hash)
+		}
+	}
+	if env.POLRound >= 0 && len(p.pol) == 0 {
+		// Nothing to prove it with. Say so rather than sending a claim that
+		// every locked peer will reject and no peer can act on.
+		log.Warn().Uint64("height", env.Height).Uint32("round", env.Round).
+			Int32("pol_round", env.POLRound).Hex("value", env.BlockHash[:8]).
+			Msg("BFT: proposing a locked value without its certificate; peers locked elsewhere cannot follow")
 	}
 	if err := env.Sign(e.localPrivKey); err != nil {
 		return err
 	}
 	p.envelope = env
+	return nil
+}
+
+// envelopePOLRound is the POL round a proposal claims, or -1.
+func envelopePOLRound(p *pendingProposal) int32 {
+	if p == nil || p.envelope == nil {
+		return -1
+	}
+	return p.envelope.POLRound
+}
+
+// certificateFor returns the prevote quorum this node holds for a value at
+// (height, round), from memory or from the journal after a restart.
+func (e *BFTEngine) certificateFor(height uint64, round uint32, hash [32]byte) []*Vote {
+	if e.hasPOL && e.polHeight == height && e.polRound == round && e.polHash == hash && len(e.polCert) > 0 {
+		return e.polCert
+	}
+	if e.journal != nil {
+		if ch, cr, chash, votes, ok := e.journal.LoadCertificate(); ok && ch == height && cr == round && chash == hash {
+			return votes
+		}
+	}
 	return nil
 }
 
@@ -259,31 +403,78 @@ func (e *BFTEngine) proposalRoundTwoPhase(p *pendingProposal) (uint32, error) {
 	return env.Round, nil
 }
 
-func (e *BFTEngine) admitRemoteValue(p *pendingProposal, round uint32) error {
+// admitRemoteValue judges a peer's proposal and reports the proof-of-lock
+// round it verified for that value, or -1 when it verified none.
+func (e *BFTEngine) admitRemoteValue(p *pendingProposal, round uint32) (int32, error) {
 	b := p.block
 	pk := e.findValidatorPubKey(b.Header.ValidatorAddr)
 	if pk == nil {
-		return fmt.Errorf("no key for the original producer %s", b.Header.ValidatorAddr)
+		return -1, fmt.Errorf("no key for the original producer %s", b.Header.ValidatorAddr)
 	}
 	if err := b.VerifySignature(pk); err != nil {
-		return fmt.Errorf("block signature invalid: %w", err)
+		return -1, fmt.Errorf("block signature invalid: %w", err)
 	}
 	if e.validateProposal != nil {
 		if err := e.validateProposal(b); err != nil {
-			return err
+			return -1, err
 		}
 	}
+	// Tendermint's unlock rule, with its round relationship spelled out:
+	// "if the validator is locked on a block since LastLockRound but now has a
+	// PoLC for something else at round PoLC-Round where LastLockRound <
+	// PoLC-Round < R, then it unlocks". All three comparisons matter here.
+	//
+	//   lockRound < POLRound  — an earlier or equal proof says nothing new;
+	//                           this node's own lock is at least that fresh.
+	//   POLRound  < Round     — a prevote quorum for the round now being
+	//                           proposed cannot exist yet, so a proposal
+	//                           justifying itself is justifying nothing.
+	//   the certificate       — 2/3+1 distinct, verified prevotes for exactly
+	//                           this value at exactly POLRound. Naming a round
+	//                           is a claim; this is the proof.
 	if locked, lockRound, ok := e.lockAt(b.Header.Height); ok && b.Hash != locked {
 		env := p.envelope
 		if env == nil || env.POLRound < 0 || env.POLHash != b.Hash {
-			return fmt.Errorf("locked to %x, proposal is %x with no later POL", locked[:8], b.Hash[:8])
+			return -1, fmt.Errorf("locked to %x, proposal is %x with no later POL", locked[:8], b.Hash[:8])
 		}
-		if uint32(env.POLRound) <= lockRound || !e.verifyPOL(b.Header.Height, uint32(env.POLRound), b.Hash, p.pol) {
-			return fmt.Errorf("proposal POL does not unlock the locked value")
+		if uint32(env.POLRound) <= lockRound {
+			return -1, fmt.Errorf("proposal POL is at round %d, no later than the lock at round %d",
+				env.POLRound, lockRound)
 		}
+		if uint32(env.POLRound) >= env.Round {
+			return -1, fmt.Errorf("proposal POL is at round %d, not earlier than the proposal round %d",
+				env.POLRound, env.Round)
+		}
+		if !e.verifyPOL(b.Header.Height, uint32(env.POLRound), b.Hash, p.pol) {
+			return -1, fmt.Errorf("proposal carries no prevote quorum for %x at round %d, so it cannot unlock %x",
+				b.Hash[:8], env.POLRound, locked[:8])
+		}
+		_ = round
+		return env.POLRound, nil
 	}
+	// Not locked, so nothing had to be unlocked. Any POL the envelope names
+	// went unchecked and must not be reported as verified: a prevote record
+	// that leaves a lock on an unverified claim is no record at all.
 	_ = round
-	return nil
+	return -1, nil
+}
+
+// quorumVotes extracts the prevotes in vs that belong to (height, round,
+// hash) — the certificate that value's quorum consists of. The set is built
+// for exactly one view and one hash, so this is normally all of it; the filter
+// is there so a certificate can never be assembled out of anything else.
+func quorumVotes(vs *VoteSet, height uint64, round uint32, hash [32]byte) []*Vote {
+	if vs == nil {
+		return nil
+	}
+	var out []*Vote
+	for _, v := range vs.Votes() {
+		if v.Kind != types.VoteKindPrevote || v.Height != height || v.Round != round || v.BlockHash != hash {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func (e *BFTEngine) verifyPOL(height uint64, round uint32, hash [32]byte, votes []*Vote) bool {
@@ -311,12 +502,20 @@ func (e *BFTEngine) verifyPOL(height uint64, round uint32, hash [32]byte, votes 
 	return ok >= need
 }
 
-func (e *BFTEngine) castPrevote(b *types.Block, round uint32) (*Vote, error) {
-	// A prevote is not the value lock. Record it separately so a restart can
-	// refuse a conflicting prevote at the SAME (height, round) without carrying
-	// a bare prevote as a permanent per-height commitment.
+// castPrevote signs this node's prevote after recording it durably.
+//
+// The record is written and fsynced before the signature exists, so a process
+// that dies between the two comes back knowing at least as much as anything it
+// put on the wire. Without it the journal protected precommits only: a
+// validator that prevoted A and restarted before precommitting had nothing on
+// disk saying so, and prevoted whatever the next proposal at that same view
+// carried. Every peer answers that second prevote by dropping this validator's
+// prevotes for the rest of the round.
+//
+// polRound is the round of the proof of lock the caller verified, or -1.
+func (e *BFTEngine) castPrevote(b *types.Block, round uint32, polRound int32) (*Vote, error) {
 	if e.journal != nil {
-		if err := e.journal.RecordPrevote(b.Header.Height, round, b.Hash); err != nil {
+		if err := e.journal.RecordPrevote(b.Header.Height, round, b.Hash, polRound); err != nil {
 			return nil, err
 		}
 	}
@@ -331,7 +530,23 @@ func (e *BFTEngine) castPrevote(b *types.Block, round uint32) (*Vote, error) {
 	if err := vote.Sign(e.localPrivKey); err != nil {
 		return nil, err
 	}
+	e.prevotedHeight, e.prevotedRound, e.hasPrevoted = b.Header.Height, round, true
 	return vote, nil
+}
+
+// prevoteSpentByPreviousProcess reports whether a journal refusal of this
+// node's own proposal at (height, round) is the restart shape: the durable
+// prevote record sits at exactly that view and this process did not write it.
+// A refusal this process caused is left to the round timer, as before.
+func (e *BFTEngine) prevoteSpentByPreviousProcess(height uint64, round uint32) bool {
+	if e.journal == nil {
+		return false
+	}
+	ph, pr, _, ok := e.journal.LastPrevote()
+	if !ok || ph != height || pr != round {
+		return false
+	}
+	return !(e.hasPrevoted && e.prevotedHeight == height && e.prevotedRound == round)
 }
 
 func (e *BFTEngine) castPrecommit(b *types.Block, round uint32, polRound uint32) (*Vote, error) {
@@ -368,14 +583,18 @@ func (e *BFTEngine) onPrevoteQuorum(b *types.Block, round uint32) {
 	e.polHash = b.Hash
 	e.polRound = round
 	e.polHeight = b.Header.Height
-	// Retain the quorum itself so a later leader (or this node re-proposing the
-	// locked body) can attach the authenticated prevote certificate. Merely
-	// naming a later POL round in an envelope is not enough for a peer locked to
-	// a different value: it needs the actual votes to verify.
-	if e.voteSet != nil {
-		e.polVotes = e.voteSet.Votes()
-	}
 	e.lockedProposal = b
+	// Keep the quorum itself, not just the fact of it. This is the only copy
+	// of the proof that this value was locked at this round: a round change
+	// clears the vote set, and after that neither this node's round-change
+	// message nor a re-proposal it leads can justify the value to anyone.
+	e.polCert = quorumVotes(e.voteSet, b.Header.Height, round, b.Hash)
+	if e.journal != nil && len(e.polCert) > 0 {
+		if err := e.journal.SaveCertificate(b.Header.Height, round, b.Hash, e.polCert); err != nil {
+			log.Warn().Err(err).Uint64("height", b.Header.Height).Uint32("round", round).
+				Msg("BFT: failed to persist the proof of lock; a restart here cannot prove this lock")
+		}
+	}
 	if !e.isMember() {
 		return
 	}
@@ -471,11 +690,25 @@ func (e *BFTEngine) handleVoteTwoPhase(vote *Vote) {
 }
 
 func (e *BFTEngine) viewChangeTwoPhaseLocked() bool {
-	e.currentRound++
+	return e.enterRoundLocked(e.currentRound+1, "round timeout, two-phase view change")
+}
+
+// enterRoundLocked moves the engine to round, announces this node's own
+// round-change there and lets the leader know a view exists to propose in.
+//
+// The round is a statement about this height only: the vote lock, the proof of
+// lock and everything durable are untouched, which is what makes it safe to
+// arrive at a round by any route — a timeout, or a quorum of peers already
+// there.
+func (e *BFTEngine) enterRoundLocked(round uint32, why string) bool {
+	e.currentRound = round
 	e.voteSet = nil
 	e.precommits = nil
 	e.proposal = nil
 	h, r := e.currentHeight, e.currentRound
+	// Records for rounds now behind the engine can never be read again, and
+	// attachments outside the window are not read either.
+	e.dropStaleRoundChangesLocked()
 	rc, err := e.signRoundChange(h, r)
 	if err != nil {
 		log.Error().Err(err).Msg("BFT: failed to sign round-change")
@@ -485,8 +718,7 @@ func (e *BFTEngine) viewChangeTwoPhaseLocked() bool {
 			e.broadcastRC(rc)
 		}
 	}
-	log.Warn().Uint64("height", h).Uint32("round", r).
-		Msg("BFT: round timeout, two-phase view change")
+	log.Warn().Uint64("height", h).Uint32("round", r).Msg("BFT: " + why)
 	cb := e.onViewChange
 	if cb != nil {
 		go cb(h, r)
@@ -494,6 +726,13 @@ func (e *BFTEngine) viewChangeTwoPhaseLocked() bool {
 	return true
 }
 
+// signRoundChange builds this node's vote to leave the current round, with
+// the justification for whatever it is locked to.
+//
+// The lock is reported with its proof and its body. Reporting the hash and the
+// round alone is what left a new leader counting messages: it could see that
+// somebody was locked and could neither verify the claim nor re-propose the
+// value, because it did not have it.
 func (e *BFTEngine) signRoundChange(height uint64, round uint32) (*RoundChange, error) {
 	rc := &RoundChange{
 		Height:        height,
@@ -505,11 +744,15 @@ func (e *BFTEngine) signRoundChange(height uint64, round uint32) (*RoundChange, 
 	if hash, lr, ok := e.lockAt(height); ok {
 		rc.LockedHash = hash
 		rc.LockedRound = int32(lr)
-		// Carry the certificate (POL) that justifies the lock, so the next
-		// leader can re-propose the highest locked value with its quorum even
-		// if it never witnessed that quorum itself.
-		if e.hasPOL && e.polHeight == height && e.polHash == hash {
-			rc.POLVotes = e.polVotes
+		rc.LockedCert = e.certificateFor(height, lr, hash)
+		if body := e.lockedProposalLocked(); body != nil && body.Hash == hash {
+			rc.LockedBlock = body
+		}
+		if len(rc.LockedCert) == 0 || rc.LockedBlock == nil {
+			log.Warn().Uint64("height", height).Uint32("round", round).
+				Hex("locked", hash[:8]).Uint32("locked_round", lr).
+				Bool("certificate", len(rc.LockedCert) > 0).Bool("body", rc.LockedBlock != nil).
+				Msg("BFT: round-change reports a lock it cannot prove; the next leader will have to pick another value")
 		}
 	}
 	if err := rc.Sign(e.localPrivKey); err != nil {
@@ -518,70 +761,185 @@ func (e *BFTEngine) signRoundChange(height uint64, round uint32) (*RoundChange, 
 	return rc, nil
 }
 
-func (e *BFTEngine) clearRoundChangeLocked() {
-	e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
-	e.rcQCRound = -1
-	e.rcValueHash = [32]byte{}
-	e.rcValueRound = 0
-	e.rcValueVotes = nil
-	e.rcValueSet = false
+// roundChangeJustified reports whether rc proves the lock it claims.
+//
+// IBFT 2.0 calls this JustifyRoundChange: a Prepared-Certificate is valid when
+// it holds a quorum of messages "for the same round r'" with "r' < round
+// number of Round-Change messages" and a body whose hash matches. The same
+// three conditions apply here to a prevote quorum.
+func (e *BFTEngine) roundChangeJustified(rc *RoundChange) bool {
+	if rc.LockedRound < 0 {
+		return false // claims no lock; there is nothing to prove
+	}
+	if uint32(rc.LockedRound) >= rc.Round {
+		return false
+	}
+	if rc.LockedBlock == nil || rc.LockedBlock.Hash != rc.LockedHash {
+		return false
+	}
+	if rc.LockedBlock.Header.Height != rc.Height {
+		return false
+	}
+	// Bind the WHOLE body to the hash the certificate is about, not just its
+	// header. ComputeVotedHash marshals the header alone — deliberately, so a
+	// certificate can be attached to a block after it is signed — which leaves
+	// the transaction list bound by nothing but the header's Merkle root.
+	// Checking only the hash therefore admitted a genuine certificate carrying
+	// a garbage body: the leader re-proposed it, every peer rejected it on the
+	// transaction root, and the round that was supposed to resolve the height
+	// was spent. Validate recomputes the voted hash, the transaction Merkle
+	// root and the transaction count, and requires the producer's signature to
+	// be present; validateOwnValueLocked verifies that signature before this
+	// node puts the body back on the wire.
+	if err := rc.LockedBlock.Validate(); err != nil {
+		log.Debug().Err(err).Str("from", rc.ValidatorAddr.String()).
+			Uint64("height", rc.Height).Hex("locked", rc.LockedHash[:8]).
+			Msg("BFT: round-change body does not match the value its certificate proves")
+		return false
+	}
+	return e.verifyPOL(rc.Height, uint32(rc.LockedRound), rc.LockedHash, rc.LockedCert)
 }
 
 func (e *BFTEngine) addRoundChangeLocked(rc *RoundChange) {
 	if e.rcByRound == nil {
-		e.rcByRound = make(map[uint32]map[qcrypto.Address]*RoundChange)
+		e.rcByRound = make(map[uint32]map[qcrypto.Address]*roundChangeRecord)
 	}
 	m := e.rcByRound[rc.Round]
 	if m == nil {
-		m = make(map[qcrypto.Address]*RoundChange)
+		m = make(map[qcrypto.Address]*roundChangeRecord)
 		e.rcByRound[rc.Round] = m
 	}
-	m[rc.ValidatorAddr] = rc
+	// An unproven lock claim still counts toward the quorum, and this is where
+	// Splendor departs from IBFT 2.0, which discards an unjustified
+	// ROUND-CHANGE outright. With four validators and one faulty, three
+	// round-changes are the whole quorum: dropping one because its sender lost
+	// a certificate stops the chain rather than protecting it. The claim is
+	// signed, so nobody can forge a lock; an unproven one simply loses its say
+	// in the value selection below. Safety does not rest on the selection —
+	// every node still refuses to leave its own lock without a certificate it
+	// verified itself.
+	//
+	// What is NOT kept is the attachment on such a message. Only a justified
+	// record is ever read — safeValueLocked skips the rest — and only at the
+	// current round, so an unproven or far-ahead attachment is a body held for
+	// nothing. rcByRound lives for the whole height, admits rounds up to 32
+	// ahead and replaces a record on a re-send, so one member could park a
+	// body per admissible round on every peer, each up to the 32 MiB a block
+	// may be. The record is stored either way; only the proof and the body go.
+	justified := e.roundChangeJustified(rc)
+	if !justified || !e.roundChangeBodyWantedLocked(rc.Round) {
+		// A stripped record is recorded as unjustified, so that "justified
+		// implies the proof and the body are here" stays true for every reader
+		// — CanPropose says so in as many words.
+		stripped := *rc
+		stripped.LockedCert, stripped.LockedBlock = nil, nil
+		rc, justified = &stripped, false
+	}
+	m[rc.ValidatorAddr] = &roundChangeRecord{rc: rc, justified: justified}
 	need := (e.activeCount()*2)/3 + 1
 	if len(m) >= need {
 		e.rcQCRound = int32(rc.Round)
-		e.selectJustifiedValueLocked(m)
 	}
 }
 
-// selectJustifiedValueLocked picks the value with the highest locked round from
-// the round-change quorum and retains its certificate. Called with stateMu held.
-// A nil certificate means the lock was a bare vote with no witnessed quorum; the
-// hash still constrains the leader (safety) even though it cannot unlock peers.
-func (e *BFTEngine) selectJustifiedValueLocked(m map[qcrypto.Address]*RoundChange) {
+// roundChangeBodyWantedLocked reports whether a round-change for round is close
+// enough to the current view for its attachment to be worth keeping.
+func (e *BFTEngine) roundChangeBodyWantedLocked(round uint32) bool {
+	return round >= e.currentRound && round <= e.currentRound+roundChangeBodyWindow
+}
+
+// dropStaleRoundChangesLocked forgets the round-change records the engine can
+// no longer read and strips the attachments off those it keeps beyond the
+// window. handleRoundChange refuses a round below the current one and
+// safeValueLocked reads only the current round, so a record for a round already
+// left is unreachable — it used to be held until the height committed.
+func (e *BFTEngine) dropStaleRoundChangesLocked() {
+	for round, m := range e.rcByRound {
+		if round < e.currentRound {
+			delete(e.rcByRound, round)
+			continue
+		}
+		if e.roundChangeBodyWantedLocked(round) {
+			continue
+		}
+		for addr, rec := range m {
+			if rec.rc.LockedCert == nil && rec.rc.LockedBlock == nil {
+				continue
+			}
+			stripped := *rec.rc
+			stripped.LockedCert, stripped.LockedBlock = nil, nil
+			m[addr] = &roundChangeRecord{rc: &stripped, justified: false}
+		}
+	}
+}
+
+// safeValueLocked is the value a leader may propose at the current view: the
+// highest justified lock across the round-change quorum it holds there, or
+// ok=false when the quorum proves no lock and the leader is free to mint.
+//
+// This is HotStuff's NEW-VIEW selection — the new leader takes the highest QC
+// reported to it as its safety anchor — over IBFT 2.0's wire form. It is a
+// LIVENESS rule: it makes the leader offer the one value some correct node may
+// still be bound to, so the round can gather a quorum instead of deadlocking
+// against a lock nobody can dislodge. Safety is elsewhere, in admitRemoteValue
+// and the journal, and does not depend on the leader choosing well.
+func (e *BFTEngine) safeValueLocked() (*RoundChange, bool) {
+	if !e.roundsV1(e.currentHeight) || e.currentRound == 0 {
+		return nil, false
+	}
+	m := e.rcByRound[e.currentRound]
+	need := (e.activeCount()*2)/3 + 1
+	if len(m) < need {
+		return nil, false
+	}
 	var best *RoundChange
-	for _, rc := range m {
-		if rc == nil {
+	for _, rec := range m {
+		if !rec.justified || rec.rc.Height != e.currentHeight {
 			continue
 		}
-		if rc.LockedRound < 0 {
+		// The set can have changed size since admission; a certificate that
+		// was a quorum then may not be one now.
+		if len(rec.rc.LockedCert) < need {
 			continue
 		}
-		if best == nil || rc.LockedRound > best.LockedRound ||
-			(rc.LockedRound == best.LockedRound && bytes.Compare(rc.LockedHash[:], best.LockedHash[:]) > 0) {
-			best = rc
+		if best == nil {
+			best = rec.rc
+			continue
+		}
+		if rec.rc.LockedRound == best.LockedRound && rec.rc.LockedHash != best.LockedHash {
+			// Two proven prevote quorums for different values at one round
+			// needs more than a third of the set signing twice. Say plainly
+			// that the fault assumption has been exceeded; the order below
+			// still picks one, and picks the same one everywhere.
+			log.Error().Uint64("height", e.currentHeight).Int32("locked_round", rec.rc.LockedRound).
+				Hex("a", best.LockedHash[:8]).Hex("b", rec.rc.LockedHash[:8]).
+				Msg("CRITICAL: two justified values at one round; more than f validators have equivocated")
+		}
+		if betterJustifiedLock(rec.rc, best) {
+			best = rec.rc
 		}
 	}
-	if best == nil {
-		e.rcValueSet = false
-		e.rcValueVotes = nil
-		return
-	}
-	e.rcValueHash = best.LockedHash
-	e.rcValueRound = uint32(best.LockedRound)
-	e.rcValueVotes = best.POLVotes
-	e.rcValueSet = true
+	return best, best != nil
 }
 
-// JustifiedValue returns the value selected from the current round-change quorum
-// (the highest locked round) and its certificate, if one has been selected.
-func (e *BFTEngine) JustifiedValue() (hash [32]byte, round uint32, votes []*Vote, ok bool) {
-	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
-	if !e.rcValueSet {
-		return [32]byte{}, 0, nil, false
+// betterJustifiedLock is the total order the value selection runs on: a later
+// lock first, then the lower hash, then the lower reporter address.
+//
+// The order has to be total. The selection used to fall through to map
+// iteration order whenever two records agreed on the round and the hash, so two
+// leaders at one view — or the same leader on a retry — could forward different
+// certificates for the same value, and the record whose body the proposal
+// carried was whichever the map happened to yield first. The tie-breaks decide
+// nothing about safety (every node still refuses to leave its own lock without
+// a certificate it verified itself); they make the choice reproducible.
+func betterJustifiedLock(a, b *RoundChange) bool {
+	if a.LockedRound != b.LockedRound {
+		return a.LockedRound > b.LockedRound
 	}
-	return e.rcValueHash, e.rcValueRound, e.rcValueVotes, true
+	if a.LockedHash != b.LockedHash {
+		return bytes.Compare(a.LockedHash[:], b.LockedHash[:]) < 0
+	}
+	return bytes.Compare(a.ValidatorAddr[:], b.ValidatorAddr[:]) < 0
 }
 
 func (e *BFTEngine) ensureSoloRoundChangeQCLocked() {
@@ -601,6 +959,7 @@ func (e *BFTEngine) ensureSoloRoundChangeQCLocked() {
 func (e *BFTEngine) handleRoundChange(rc *RoundChange) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
+	defer e.publishViewLocked()
 	if rc == nil {
 		return
 	}
@@ -619,6 +978,18 @@ func (e *BFTEngine) handleRoundChange(rc *RoundChange) {
 		return
 	}
 	e.addRoundChangeLocked(rc)
+	// A quorum of signed round-changes for a LATER round is proof that the set
+	// has left the rounds in between: at most f of those signatures are faulty,
+	// so at least one correct node is already at that round and will not answer
+	// anything earlier. Walking there one timeout at a time cost a lagging node
+	// a full round timeout per intermediate round — with nothing to wait for in
+	// any of them — while the rest of the set sat at the round it could not
+	// reach. Safety is untouched: a round change carries no value, and this
+	// node's lock, its proof of lock and its journal all survive it.
+	if rc.Round > e.currentRound && e.rcQCRound == int32(rc.Round) {
+		e.enterRoundLocked(rc.Round, "round-change quorum for a later round, catching up")
+		return
+	}
 	if e.rcQCRound == int32(e.currentRound) && e.IsLeader(e.currentHeight, e.currentRound) {
 		if cb := e.onViewChange; cb != nil {
 			h, r := e.currentHeight, e.currentRound
@@ -652,5 +1023,14 @@ func (e *BFTEngine) CanPropose() bool {
 	if e.currentRound == 0 {
 		return true
 	}
-	return e.rcQCRound == int32(e.currentRound)
+	if e.rcQCRound != int32(e.currentRound) {
+		return false
+	}
+	// A quorum of round-changes is the permission to propose, not the answer
+	// to what. The leader may proceed once the selection has resolved: either
+	// the quorum proves no lock, or it proves one and handed over the body to
+	// re-propose. A justified record always carries the body — the check is
+	// here so that can never be assumed silently.
+	sel, ok := e.safeValueLocked()
+	return !ok || sel.LockedBlock != nil
 }

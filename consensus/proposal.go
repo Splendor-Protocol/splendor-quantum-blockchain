@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
 
@@ -18,6 +19,33 @@ import (
 // liveness bound, not a safety one: a proposal still needs 2/3+1 votes from
 // the set before anything is committed.
 const MaxRoundAdvance = 32
+
+// roundChangeBodyWindow is how far ahead of the current round a round-change
+// may be and still have its justification kept.
+//
+// MaxRoundAdvance bounds which rounds are ADMITTED, and it has to stay wide:
+// counting a message from a member that is ahead is what lets a set which has
+// fallen behind form a quorum at all. Only the leader of the CURRENT round ever
+// reads an attachment, though, so the current round and the next one — the one
+// a view change walks into — are the whole working set. Retention was 33 rounds
+// wide, which is 33 bodies per validator per height, each up to the 32 MiB a
+// block may be.
+//
+// A node that catches up by more than one round in a single jump arrives to
+// find the attachments at that round already gone. That costs the value
+// selection its say there, exactly as a proof stripped in flight does, and
+// nothing else: safety is in admitRemoteValue and the journal, and the leader
+// still has its own lock to fall back on.
+const roundChangeBodyWindow = 1
+
+// MaxRoundChangeBytes bounds a round-change message on the wire.
+//
+// The justification a round-change carries is a whole block plus the prevote
+// quorum that proves it, so this is the largest block the chain accepts plus
+// room for that certificate and JSON framing. The ingress checks it BEFORE
+// decoding: without it a member could make every peer parse an arbitrarily
+// large body per admissible round, and a re-send repeated the cost.
+const MaxRoundChangeBytes = block.MaxBlockWireBytes + 4<<20
 
 // ProposalMsg is the wire form of a BFT proposal: the block, plus the
 // proposer's own signed vote for it.

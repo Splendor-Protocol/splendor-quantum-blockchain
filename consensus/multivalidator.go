@@ -189,14 +189,20 @@ func (m *MultiValidator) propose() error {
 	}
 	m.engine.SetHeight(height)
 
-	// If we already vote-locked this height, rebroadcast that exact block
-	// (same hash, possibly a higher round). Minting a fresh BuildProposal
-	// every tick is what left joiners view-changing on divergent 54703 hashes
-	// while the producer's journal stayed locked on the first one.
-	if locked := m.engine.LockedProposal(); locked != nil && locked.Header.Height == height {
+	// If the view already dictates a value, re-send that exact block (same
+	// hash, possibly a higher round). Minting a fresh BuildProposal every tick
+	// is what left joiners view-changing on divergent 54703 hashes while the
+	// producer's journal stayed locked on the first one.
+	//
+	// SafeProposal, not LockedProposal: past round 0 the value belongs to the
+	// round-change quorum, which may be reporting a lock held by somebody
+	// else and at a later round than this node's own. Offering this node's
+	// lock there is a proposal the engine refuses and the peers could not
+	// follow anyway.
+	if locked := m.engine.SafeProposal(); locked != nil && locked.Header.Height == height {
 		log.Info().Uint64("height", height).Hex("hash", locked.Hash[:8]).
 			Uint32("round", m.engine.Round()).
-			Msg("BFT: rebroadcasting vote-locked proposal")
+			Msg("BFT: rebroadcasting the value this view is bound to")
 		m.engine.ProposeBlock(locked)
 		return nil
 	}
@@ -217,15 +223,6 @@ func (m *MultiValidator) propose() error {
 			Uint32("round", m.engine.Round()).
 			Msg("BFT: re-sending the value already adopted at this view")
 		m.engine.ProposeBlock(held)
-		return nil
-	}
-
-	// A round-change quorum selected a value this node does not hold the body
-	// for. Minting a fresh block here could conflict with that selected value,
-	// so hold until a peer re-proposes the selected body (or we receive it).
-	if hash, _, _, ok := m.engine.JustifiedValue(); ok {
-		log.Warn().Uint64("height", height).Hex("selected", hash[:8]).
-			Msg("BFT: round-change selected a value this node does not hold; holding")
 		return nil
 	}
 

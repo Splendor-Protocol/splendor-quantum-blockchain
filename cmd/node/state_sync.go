@@ -52,10 +52,16 @@ func nodeReadyStatus(ex *block.Executor, sdb *state.StateDB, syncer *network.Syn
 	}
 	if bftEngine != nil {
 		if eng := bftEngine(); eng != nil {
-			cs := eng.Status()
-			st.ConsensusHeight = cs.Height
-			st.ConsensusRound = cs.Round
-			st.ValidatorLocked = cs.Locked
+			// View() reads a snapshot the engine republishes at every
+			// transition, under its own lock. Status() read the engine's
+			// stateMu, which is held for the whole of commitBlock -- so a
+			// readiness probe blocked behind a 4,173-transaction apply for
+			// the 15 seconds that apply took, and a monitor polling /readyz
+			// saw a node that looked wedged precisely when it was busiest.
+			v := eng.View()
+			st.ConsensusHeight = v.Height
+			st.ConsensusRound = v.Round
+			st.ValidatorLocked = v.Locked
 		}
 	}
 	st.Syncing = stateSyncPending || (syncer != nil && !syncer.IsSynced())
