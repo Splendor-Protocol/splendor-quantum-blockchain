@@ -38,7 +38,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build -mod=readonly \
       -ldflags="-s -w" -o /out/sqc-modcall ./cmd/sqc-modcall
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────
-FROM alpine:3.19
+FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates
 
@@ -48,7 +48,16 @@ COPY --from=builder /out/sqc-node /usr/local/bin/sqc-node
 COPY --from=builder /out/sqc-wallet /usr/local/bin/sqc-wallet
 COPY --from=builder /out/sqc-modcall /usr/local/bin/sqc-modcall
 
-RUN mkdir -p /sqc/data
+# The node never binds a privileged port (defaults: RPC :8080, metrics on
+# 127.0.0.1) and never needs to touch device files, so drop to an
+# unprivileged user: a compromised node process then cannot escape to root
+# in the container. Named volumes inherit the image's ownership on first
+# use; a pre-existing bind mount owned by root must be chowned by the
+# operator before this image runs against it.
+RUN addgroup -S sqc && adduser -S -G sqc sqc \
+    && mkdir -p /sqc/data \
+    && chown -R sqc:sqc /sqc
+USER sqc
 
 EXPOSE 8080
 VOLUME ["/sqc/data"]
