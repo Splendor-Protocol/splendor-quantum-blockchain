@@ -79,6 +79,8 @@ var (
 	flagRateLimit          float64
 	flagRateBurst          float64
 	flagTrustProxy         bool
+	flagTrustedProxies     []string
+	flagClientIPHeader     string
 	flagSimRate            float64
 	flagSimBurst           float64
 	flagSimMaxInFlight     int
@@ -144,7 +146,9 @@ No ECDSA. No SHA-256. No conventional cryptography.`,
 	root.Flags().StringArrayVar(&flagCORSOrigins, "cors-origin", nil, "Browser origin allowed to call this node (repeatable). Default: none. Use '*' to allow any origin.")
 	root.Flags().Float64Var(&flagRateLimit, "rpc-rate-limit", 25, "Sustained requests/second per client IP on tx submission and x402 routes (0 disables)")
 	root.Flags().Float64Var(&flagRateBurst, "rpc-rate-burst", 50, "Burst allowance per client IP for rate-limited routes")
-	root.Flags().BoolVar(&flagTrustProxy, "trust-proxy", false, "Read client IP from X-Forwarded-For. ONLY enable behind a proxy you control — otherwise clients can spoof it and bypass rate limits.")
+	root.Flags().BoolVar(&flagTrustProxy, "trust-proxy", false, "Identify callers by the right-most X-Forwarded-For entry your proxy appended, rather than by the socket address. ONLY enable behind a proxy you control: with no --trusted-proxy set, this assumes every connection arrives through it.")
+	root.Flags().StringArrayVar(&flagTrustedProxies, "trusted-proxy", nil, "IP or CIDR of one of your own proxies (repeatable). Their appended X-Forwarded-For entries are skipped when resolving the client, and a connection from anywhere else is identified by its socket address. Implies --trust-proxy. Prefer this to the bare flag.")
+	root.Flags().StringVar(&flagClientIPHeader, "client-ip-header", "", "Single-valued header your ingress always overwrites, read in place of X-Forwarded-For (cloudflared: CF-Connecting-IP; nginx: X-Real-IP). Honoured only on connections from a trusted proxy.")
 	root.Flags().Float64Var(&flagSimRate, "sim-rate-limit", 0, "Sustained requests/second per client IP on VM-executing routes (/call, /estimate, /logs). 0 uses the built-in default.")
 	root.Flags().Float64Var(&flagSimBurst, "sim-rate-burst", 0, "Burst allowance for VM-executing routes. 0 uses the built-in default.")
 	root.Flags().IntVar(&flagSimMaxInFlight, "sim-max-inflight", 0, "Maximum concurrent VM simulations across all callers; excess requests get 503. This, not the rate limit, bounds how much CPU anonymous callers can occupy. 0 uses the built-in default.")
@@ -1163,6 +1167,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// ── Build HTTP router ──────────────────────────────────────────────────
 	router := mux.NewRouter()
 
+	// How a caller is identified, for every per-client budget: the socket
+	// address, or — behind a proxy the operator names — the right-most
+	// forwarded entry that proxy did not write. Resolved once and shared, so
+	// the public plane and the sealed plane cannot disagree about who is
+	// calling. A bad --trusted-proxy stops the node here rather than silently
+	// widening what a header may claim.
+	clientIPPolicy, err := rpc.NewClientIPPolicy(flagTrustProxy, flagTrustedProxies, flagClientIPHeader)
+	if err != nil {
+		return fmt.Errorf("client IP policy: %w", err)
+	}
+
 	isReady := func() rpc.ReadyStatus {
 		return nodeReadyStatus(executor, stateDB, syncer, stateSyncPending.Load(), bftEngine)
 	}
@@ -1193,7 +1208,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			CORSOrigins:       flagCORSOrigins,
 			SubmitRatePerSec:  flagRateLimit,
 			SubmitBurst:       flagRateBurst,
-			TrustProxy:        flagTrustProxy,
+			ClientIP:          clientIPPolicy,
 			SimRatePerSec:     flagSimRate,
 			SimBurst:          flagSimBurst,
 			SimMaxInFlight:    flagSimMaxInFlight,
@@ -1238,7 +1253,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 		Identity:    nodeIdentity,
 		Token:       authToken,
 		MaxInFlight: flagP2PMaxInFlight,
-		TrustProxy:  flagTrustProxy,
+		ClientIP:    clientIPPolicy,
 		HandleBlock: func(body []byte) error {
 			// The trusted key is read at call time: a node pinning only
 			// --genesis-hash learns it from block 0 after start-up. A pushed

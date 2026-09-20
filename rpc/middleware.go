@@ -16,7 +16,6 @@ package rpc
 import (
 	"context"
 	"crypto/subtle"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -109,10 +108,10 @@ type RateLimiter struct {
 	ratePerSec float64
 	burst      float64
 
-	// trustProxy makes the limiter read X-Forwarded-For. Only enable behind a
-	// reverse proxy you control: otherwise any client can spoof the header and
-	// mint a fresh bucket per request, bypassing the limit entirely.
-	trustProxy bool
+	// clientIP decides which address identifies the caller: the socket peer,
+	// or — behind a proxy the operator configured — the right-most forwarded
+	// entry that proxy did not write. See ClientIPPolicy.
+	clientIP ClientIPPolicy
 }
 
 type tokenBucket struct {
@@ -122,12 +121,12 @@ type tokenBucket struct {
 
 // NewRateLimiter creates a limiter allowing ratePerSec sustained requests with
 // the given burst. A non-positive rate disables limiting.
-func NewRateLimiter(ratePerSec, burst float64, trustProxy bool) *RateLimiter {
+func NewRateLimiter(ratePerSec, burst float64, clientIP ClientIPPolicy) *RateLimiter {
 	rl := &RateLimiter{
 		buckets:    make(map[string]*tokenBucket),
 		ratePerSec: ratePerSec,
 		burst:      burst,
-		trustProxy: trustProxy,
+		clientIP:   clientIP,
 	}
 	if ratePerSec > 0 {
 		go rl.sweep()
@@ -182,6 +181,10 @@ func (rl *RateLimiter) Allow(clientKey string) bool {
 // Middleware rejects over-limit callers with 429 before any expensive work.
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rl.clientIP.forwardedChainIsAbusive(r) {
+			writeError(w, http.StatusBadRequest, "X-Forwarded-For is too long to attribute")
+			return
+		}
 		if !rl.Allow(rl.clientKey(r)) {
 			w.Header().Set("Retry-After", "1")
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
@@ -191,24 +194,11 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// clientKey identifies the caller for rate-limiting purposes.
+// clientKey identifies the caller for rate-limiting purposes. The selection
+// rule lives in ClientIPPolicy, shared with the sealed transport's per-source
+// cap, because a caller able to choose its key defeats either budget alone.
 func (rl *RateLimiter) clientKey(r *http.Request) string {
-	if rl.trustProxy {
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			// Left-most entry is the original client.
-			if i := strings.IndexByte(fwd, ','); i >= 0 {
-				fwd = fwd[:i]
-			}
-			if ip := strings.TrimSpace(fwd); ip != "" {
-				return ip
-			}
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return rl.clientIP.clientKey(r)
 }
 
 // ── Simulation plane ─────────────────────────────────────────────────────────
@@ -231,9 +221,9 @@ type ExecGuard struct {
 // NewExecGuard builds a guard allowing ratePerSec requests per IP with the
 // given burst, at most maxInFlight concurrent executions, each bounded by
 // timeout. Non-positive maxInFlight or timeout disables that dimension.
-func NewExecGuard(ratePerSec, burst float64, maxInFlight int, timeout time.Duration, trustProxy bool) *ExecGuard {
+func NewExecGuard(ratePerSec, burst float64, maxInFlight int, timeout time.Duration, clientIP ClientIPPolicy) *ExecGuard {
 	g := &ExecGuard{
-		limiter: NewRateLimiter(ratePerSec, burst, trustProxy),
+		limiter: NewRateLimiter(ratePerSec, burst, clientIP),
 		timeout: timeout,
 	}
 	if maxInFlight > 0 {
@@ -249,6 +239,10 @@ func (g *ExecGuard) Wrap(h http.HandlerFunc) http.Handler {
 		return h
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if g.limiter != nil && g.limiter.clientIP.forwardedChainIsAbusive(r) {
+			writeError(w, http.StatusBadRequest, "X-Forwarded-For is too long to attribute")
+			return
+		}
 		if !g.limiter.Allow(g.limiter.clientKey(r)) {
 			w.Header().Set("Retry-After", "1")
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")

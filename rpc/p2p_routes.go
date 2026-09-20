@@ -4,9 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -48,10 +46,10 @@ type P2PConfig struct {
 	// MaxPerSource caps concurrent sealed requests from one client IP.
 	// 0 uses defaultSealedMaxPerSource; a negative value disables the cap.
 	MaxPerSource int
-	// TrustProxy makes the per-source key read X-Forwarded-For. Only enable
-	// behind a reverse proxy you control: otherwise any client can spoof the
-	// header and mint a fresh source budget per request, bypassing the cap.
-	TrustProxy bool
+	// ClientIP decides which address the per-source cap keys off. The zero
+	// value keys on the socket peer; configure it to read a forwarded header
+	// only behind a proxy the operator controls. See ClientIPPolicy.
+	ClientIP ClientIPPolicy
 	// HandleBlock applies a received block body (raw JSON).
 	HandleBlock func(body []byte) error
 	// HandleAnnounce processes a peer announcement body (raw JSON).
@@ -149,7 +147,7 @@ func RegisterP2PRoutes(r *mux.Router, cfg P2PConfig) {
 			return
 		}
 
-		src := sealedClientKey(r, cfg.TrustProxy)
+		src := sealedClientKey(r, cfg.ClientIP)
 		if srcSlots != nil && !srcSlots.acquire(src) {
 			log.Debug().Str("remote", r.RemoteAddr).Msg("p2p: sealed request shed, per-source cap")
 			w.Header().Set("Retry-After", "1")
@@ -351,7 +349,7 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 			writeError(w, http.StatusBadRequest, "invalid get_state_snapshot_chunk body")
 			return
 		}
-		payload, err = cfg.ServeStateSnapshotChunk(q.SessionID, q.AfterKey, q.MaxLeaves, sealedClientKey(r, cfg.TrustProxy))
+		payload, err = cfg.ServeStateSnapshotChunk(q.SessionID, q.AfterKey, q.MaxLeaves, sealedClientKey(r, cfg.ClientIP))
 	case network.KindGetObjectManifest:
 		if cfg.ServeObjectManifest == nil {
 			writeError(w, http.StatusNotImplemented, "sealed coded-object reads not available")
@@ -416,25 +414,12 @@ func serveSealedRead(w http.ResponseWriter, r *http.Request, cfg P2PConfig, req 
 	_, _ = w.Write(wire)
 }
 
-func sealedClientKey(r *http.Request, trustProxy bool) string {
-	// Only honour the forwarded header behind a proxy the operator controls:
-	// otherwise it is attacker-controlled and would let one source mint a fresh
-	// budget per request by spoofing a different value each time.
-	if trustProxy {
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			if i := strings.IndexByte(fwd, ','); i >= 0 {
-				fwd = fwd[:i]
-			}
-			if ip := strings.TrimSpace(fwd); ip != "" {
-				return ip
-			}
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+// sealedClientKey is the per-source budget key for the sealed transport. It
+// delegates to the same ClientIPPolicy the rate limiter uses: these were two
+// copies of one parse that happened to agree, and one of them drifting is the
+// same bug twice.
+func sealedClientKey(r *http.Request, policy ClientIPPolicy) string {
+	return policy.clientKey(r)
 }
 
 type sealedSourceSlots struct {

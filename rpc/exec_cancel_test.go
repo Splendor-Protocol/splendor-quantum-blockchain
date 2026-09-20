@@ -44,7 +44,7 @@ func TestCancelledCallReleasesSlotBeforeTimeout(t *testing.T) {
 	defer sdb.Close()
 	to := installLoopContract(t, sdb)
 
-	guard := NewExecGuard(0, 0, 1, 30*time.Second, false)
+	guard := NewExecGuard(0, 0, 1, 30*time.Second, ClientIPPolicy{})
 	h := guard.Wrap(makeCallHandler(sdb, nil))
 	body, _ := json.Marshal(map[string]string{
 		"to": to.String(), "data": "", "encoding": "hex",
@@ -101,7 +101,7 @@ func TestStateProofIsGuardedAndHonoursCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	guard := NewExecGuard(0, 0, 1, 30*time.Second, false)
+	guard := NewExecGuard(0, 0, 1, 30*time.Second, ClientIPPolicy{})
 	proof := guard.Wrap(merkleProofHandler(sdb, nil))
 
 	entered := make(chan struct{})

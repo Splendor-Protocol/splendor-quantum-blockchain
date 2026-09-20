@@ -108,17 +108,35 @@ func TestSealedOversizeContentLengthRejectedBeforeSlot(t *testing.T) {
 }
 
 // The per-source key must honour X-Forwarded-For only behind a trusted proxy,
-// matching the tx/x402 rate limiter. Without TrustProxy the header is ignored,
-// so a spoofed value cannot mint a fresh source budget per request.
+// matching the tx/x402 rate limiter, and it must take the entry the PROXY
+// wrote rather than the one the caller did.
+//
+// This test used to assert the left-most entry. That is the wrong end: every
+// appending proxy -- nginx's $proxy_add_x_forwarded_for, Cloudflare,
+// cloudflared -- preserves what the client sent and appends its own view on
+// the right, so the left-most entry is attacker-controlled and one client
+// could mint an identity per request. Both planes now resolve the caller
+// through one ClientIPPolicy; see TestQARotatingForwardedEntriesCannotEscape
+// TheSourceCap for the attack this ordering refuses.
 func TestSealedClientKeyHonorsTrustProxy(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, network.PathSealed, nil)
 	req.RemoteAddr = "192.0.2.10:1234"
+	// The caller claimed 198.51.100.7; the proxy appended what it actually saw.
 	req.Header.Set("X-Forwarded-For", "198.51.100.7, 10.0.0.1")
 
-	if got := sealedClientKey(req, false); got != "192.0.2.10" {
-		t.Fatalf("trustProxy=false keyed on %q, want the socket address 192.0.2.10", got)
+	off, err := NewClientIPPolicy(false, nil, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := sealedClientKey(req, true); got != "198.51.100.7" {
-		t.Fatalf("trustProxy=true keyed on %q, want the forwarded client 198.51.100.7", got)
+	if got := sealedClientKey(req, off); got != socketKeyPrefix+"192.0.2.10" {
+		t.Fatalf("untrusted keyed on %q, want the socket address 192.0.2.10", got)
+	}
+
+	on, err := NewClientIPPolicy(true, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sealedClientKey(req, on); got != forwardedKeyPrefix+"10.0.0.1" {
+		t.Fatalf("trusted keyed on %q, want the entry the proxy appended, 10.0.0.1", got)
 	}
 }

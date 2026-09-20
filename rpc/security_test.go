@@ -357,7 +357,7 @@ func TestCORSAllowlist(t *testing.T) {
 
 // The rate limiter must admit the burst then refuse further requests.
 func TestRateLimiterBounds(t *testing.T) {
-	rl := NewRateLimiter(1, 3, false)
+	rl := NewRateLimiter(1, 3, ClientIPPolicy{})
 	allowed := 0
 	for i := 0; i < 10; i++ {
 		if rl.Allow("1.2.3.4") {

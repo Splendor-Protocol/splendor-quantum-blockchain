@@ -28,7 +28,7 @@ func TestExecGuardNilPassesThrough(t *testing.T) {
 }
 
 func TestExecGuardRateLimits(t *testing.T) {
-	g := NewExecGuard(1, 2, 0, 0, false)
+	g := NewExecGuard(1, 2, 0, 0, ClientIPPolicy{})
 	h := g.Wrap(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	if code := guardRequest(t, h); code != http.StatusOK {
@@ -46,7 +46,7 @@ func TestExecGuardRateLimits(t *testing.T) {
 // load once the in-flight limit is reached, not queue behind it.
 func TestExecGuardShedsBeyondConcurrencyCap(t *testing.T) {
 	const cap = 2
-	g := NewExecGuard(0, 0, cap, 0, false) // rate limiting off, concurrency only
+	g := NewExecGuard(0, 0, cap, 0, ClientIPPolicy{}) // rate limiting off, concurrency only
 
 	release := make(chan struct{})
 	entered := make(chan struct{}, cap)

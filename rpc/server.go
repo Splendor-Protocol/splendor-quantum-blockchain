@@ -129,10 +129,10 @@ type Config struct {
 	// Zero rate disables limiting.
 	SubmitRatePerSec float64
 	SubmitBurst      float64
-	// TrustProxy reads the client IP from X-Forwarded-For. Only enable behind a
-	// reverse proxy you control — otherwise the header is attacker-controlled and
-	// rate limits can be bypassed by spoofing it.
-	TrustProxy bool
+	// ClientIP decides which address the per-client budgets key off. The zero
+	// value keys on the socket peer; configure it to read a forwarded header
+	// only behind a proxy you control. See ClientIPPolicy.
+	ClientIP ClientIPPolicy
 
 	// SimRatePerSec / SimBurst / SimMaxInFlight / SimTimeout bound the routes
 	// that execute the VM or scan the receipt index for an anonymous caller
@@ -167,7 +167,7 @@ const (
 // how many cores a caller can occupy at once, which is what actually decides
 // whether the node stays responsive. The rate limit is intentionally loose
 // because it usually cannot tell callers apart — public nodes sit behind a
-// tunnel or load balancer, so without TrustProxy every request appears to come
+// tunnel or load balancer, so without a configured ClientIPPolicy every request appears to come
 // from one address and the per-IP bucket degrades into a global throttle. A
 // tight rate there would reject legitimate explorer and wallet traffic while
 // adding nothing that the concurrency cap does not already provide.
@@ -205,7 +205,7 @@ func New(
 		peerCount:          cfg.PeerCount,
 		writeAuth:          NewWriteAuth(cfg.AuthToken),
 		cors:               NewCORSPolicy(cfg.CORSOrigins),
-		submitLimiter:      NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
+		submitLimiter:      NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.ClientIP),
 		simGuard:           newSimGuard(cfg),
 		lookupReceipt:      cfg.LookupReceipt,
 	}
@@ -307,7 +307,7 @@ func newSimGuard(cfg Config) *ExecGuard {
 	if timeout <= 0 {
 		timeout = defaultSimTimeout
 	}
-	return NewExecGuard(rate, burst, inFlight, timeout, cfg.TrustProxy)
+	return NewExecGuard(rate, burst, inFlight, timeout, cfg.ClientIP)
 }
 
 // SimGuard exposes the simulation-plane guard so /call, /estimate and /logs —
