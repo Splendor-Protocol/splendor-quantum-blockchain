@@ -103,6 +103,17 @@ func sampleVfyIns(action, from string, payload []byte) types.VerifyInstruction {
 	}
 }
 
+// sampleX402Ins builds the shape an x402 proof must have: it names the payee
+// and the amount it claims, both of which are inside the v2 instruction digest.
+// An instruction carrying only a payer and a nonce proves nothing beyond "this
+// payer consumed some nonce", which is why the linkage refuses it.
+func sampleX402Ins(from, to, amount string, payload []byte) types.VerifyInstruction {
+	ins := sampleVfyIns("x402", from, payload)
+	ins.To = to
+	ins.Amount = amount
+	return ins
+}
+
 func registerIns(t *testing.T, sdb *state.StateDB, owner *vfyOp, inst qcrypto.Address, ins *types.VerifyInstruction, identity bool) {
 	t.Helper()
 	if err := types.SignVerifyInstruction(types.ChainID, ins, owner.mldsa, owner.slh); err != nil {
@@ -147,7 +158,7 @@ func TestX402SpendIsNoOpWithoutIdentityFork(t *testing.T) {
 	owner := newVfyOp(t)
 	op := newVfyOp(t)
 	inst := deployVerify(t, sdb, owner, op, false)
-	ins := sampleVfyIns("x402", owner.addr.String(), []byte("not-a-nonce"))
+	ins := sampleX402Ins(owner.addr.String(), qcrypto.Address{0x55}.String(), "500", []byte("not-a-nonce"))
 	registerIns(t, sdb, owner, inst, &ins, false)
 	digest, err := types.VerifyInstructionDigest(types.ChainID, &ins)
 	if err != nil {
@@ -174,7 +185,8 @@ func TestX402SpendRequiresUsedNonceUnderIdentityFork(t *testing.T) {
 
 	var nonce [32]byte
 	nonce[0] = 0xAB
-	ins := sampleVfyIns("x402", owner.addr.String(), nonce[:])
+	payee := qcrypto.Address{0x55}
+	ins := sampleX402Ins(owner.addr.String(), payee.String(), "500", nonce[:])
 	registerIns(t, sdb, owner, inst, &ins, true)
 	digest, err := types.VerifyInstructionDigest(types.ChainID, &ins)
 	if err != nil {
@@ -196,7 +208,7 @@ func TestX402SpendRequiresUsedNonceUnderIdentityFork(t *testing.T) {
 
 	if err := sdb.MarkX402NonceSettled(x402.NonceKey(owner.addr, nonce), &types.X402Settlement{
 		From:    owner.addr,
-		To:      qcrypto.Address{0x55},
+		To:      payee,
 		Amount:  big.NewInt(500),
 		ChainID: types.ChainID,
 		Height:  1,
@@ -207,6 +219,70 @@ func TestX402SpendRequiresUsedNonceUnderIdentityFork(t *testing.T) {
 		"verify": inst.String(), "instruction_id": types.InstructionIDHex(ins.InstructionID),
 	}); err != nil {
 		t.Fatalf("x402 spend after nonce consumed: %v", err)
+	}
+}
+
+// The linkage must not degrade to payer + nonce. An x402 instruction that names
+// no payee and no amount used to be accepted against ANY payment the same payer
+// had settled — including one to an unrelated recipient, for an unrelated sum.
+// Both fields are inside the signed v2 digest, so requiring them costs the payer
+// nothing and makes the proof say what it claims to say.
+func TestX402LinkageRequiresPayeeAndAmount(t *testing.T) {
+	var nonce [32]byte
+	nonce[0] = 0xC1
+
+	cases := []struct {
+		name    string
+		to      string
+		amount  string
+		wantErr string
+	}{
+		{"no payee, no amount", "", "", "must name the payee and amount"},
+		{"no amount", qcrypto.Address{0x55}.String(), "", "must name the payee and amount"},
+		{"no payee", "", "500", "must name the payee and amount"},
+		{"payee of an unrelated payment", qcrypto.Address{0x66}.String(), "500", "does not bind this payment"},
+		{"amount of an unrelated payment", qcrypto.Address{0x55}.String(), "499", "does not bind this payment"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sdb := newTestState(t)
+			owner := newVfyOp(t)
+			op := newVfyOp(t)
+			inst := deployVerify(t, sdb, owner, op, true)
+
+			// A real payment of 500 from owner to 0x55 has settled.
+			if err := sdb.MarkX402NonceSettled(x402.NonceKey(owner.addr, nonce), &types.X402Settlement{
+				From:    owner.addr,
+				To:      qcrypto.Address{0x55},
+				Amount:  big.NewInt(500),
+				ChainID: types.ChainID,
+				Height:  1,
+			}); err != nil {
+				t.Fatalf("mark nonce: %v", err)
+			}
+
+			ins := sampleX402Ins(owner.addr.String(), tc.to, tc.amount, nonce[:])
+			registerIns(t, sdb, owner, inst, &ins, true)
+			digest, err := types.VerifyInstructionDigest(types.ChainID, &ins)
+			if err != nil {
+				t.Fatal(err)
+			}
+			att := signAttest(t, inst, digest, op, true)
+			if _, err := callVerify(t, sdb, vfyCtx(op.addr, 3, true), "attest", map[string]any{
+				"verify": inst.String(), "instruction_id": types.InstructionIDHex(ins.InstructionID), "attestation": att,
+			}); err != nil {
+				t.Fatalf("attest: %v", err)
+			}
+			_, err = callVerify(t, sdb, vfyCtx(op.addr, 4, true), "spend", map[string]any{
+				"verify": inst.String(), "instruction_id": types.InstructionIDHex(ins.InstructionID),
+			})
+			if err == nil {
+				t.Fatal("a weakly-linked x402 proof was accepted against a settled payment")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not mention %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

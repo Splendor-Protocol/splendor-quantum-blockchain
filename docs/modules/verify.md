@@ -30,7 +30,13 @@ surface.
 `x402`. `native_transfer` and `qrc20_transfer` move funds. `finalize_only`
 is proof-only. `x402` is not a second debit: before `verify_identity_v1` it
 is a no-op success; under that fork it is proof-only linkage to an already
-consumed X402 payment nonce. The same `instruction_id` cannot settle twice.
+settled X402 payment. The instruction must name `from`, `to` and `amount`, and
+all three (plus the chain and the payment nonce in `payload`) must match the
+on-chain settlement record — otherwise the proof would degrade to "this payer
+consumed some nonce" and would accept a payment to an unrelated payee. All
+three fields are inside the signed v2 digest, so the payer's signature covers
+what the proof asserts. See [`x402.md`](x402.md). The same `instruction_id`
+cannot settle twice.
 
 ## Product API (existing quantum RPC)
 

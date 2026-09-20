@@ -471,10 +471,28 @@ func applyX402SettlementLinkage(stateDB *state.StateDB, ins *types.VerifyInstruc
 
 	// The settle action is proof-only: it must point at a payment that was
 	// actually settled by a TxX402. A bare used marker is not enough — resolve
-	// the authoritative settlement record and require the instruction's payer
-	// (and, when present, payee and amount) to match it, so an x402 proof
-	// cannot claim a settlement that does not exist or that moved different
-	// funds.
+	// the authoritative settlement record and require the WHOLE payment tuple to
+	// match: payer, payee, amount, chain, and the nonce the record is keyed by.
+	//
+	// Payee and amount are REQUIRED, not checked-when-present. An instruction
+	// that omitted both used to be accepted against any settled payment by the
+	// same payer, so the proof degraded to "this payer consumed some nonce" —
+	// which is what it was supposed to stop being. Both fields are inside the v2
+	// instruction digest, so requiring them means the signature covers the payee
+	// and amount the proof asserts; a relayer cannot re-point it.
+	if ins.To == "" || ins.Amount == "" {
+		return fmt.Errorf("verify settle: x402 instruction must name the payee and amount it proves " +
+			"(to and amount are inside the signed digest; without them the proof only links payer and nonce)")
+	}
+	to, err := qcrypto.AddressFromString(ins.To)
+	if err != nil {
+		return fmt.Errorf("verify settle: x402 to: %w", err)
+	}
+	amt, ok := new(big.Int).SetString(ins.Amount, 10)
+	if !ok || amt.Sign() < 0 {
+		return fmt.Errorf("verify settle: bad amount")
+	}
+
 	rec, err := stateDB.GetX402Settlement(nonceKey)
 	if err != nil {
 		return fmt.Errorf("verify settle: x402 settlement record: %w", err)
@@ -482,29 +500,13 @@ func applyX402SettlementLinkage(stateDB *state.StateDB, ins *types.VerifyInstruc
 	if rec == nil {
 		return fmt.Errorf("verify settle: x402 payment not settled (no settlement record)")
 	}
-	if rec.From != from {
-		return fmt.Errorf("verify settle: x402 settlement payer mismatch")
-	}
-	if ins.To != "" {
-		to, err := qcrypto.AddressFromString(ins.To)
-		if err != nil {
-			return fmt.Errorf("verify settle: x402 to: %w", err)
-		}
-		if rec.To != to {
-			return fmt.Errorf("verify settle: x402 settlement payee mismatch")
-		}
-	}
-	if ins.Amount != "" {
-		amt, ok := new(big.Int).SetString(ins.Amount, 10)
-		if !ok || amt.Sign() < 0 {
-			return fmt.Errorf("verify settle: bad amount")
-		}
-		if rec.Amount == nil || rec.Amount.Cmp(amt) != 0 {
-			return fmt.Errorf("verify settle: x402 settlement amount mismatch")
-		}
-	}
 	if rec.ChainID != types.ChainID {
 		return fmt.Errorf("verify settle: x402 settlement chain mismatch")
+	}
+	if !rec.Matches(types.ChainID, from, to, amt) {
+		return fmt.Errorf("verify settle: x402 settlement does not bind this payment "+
+			"(payer/payee/amount differ from the settlement recorded for this nonce): "+
+			"recorded %s → %s for %s", rec.From, rec.To, rec.Amount)
 	}
 	return nil
 }
