@@ -33,6 +33,13 @@ import (
 // used — but it is not evidence of a hostile peer: under leader rotation the
 // next head may well be the genesis validator's, so callers retry rather than
 // give up.
+// ErrSnapshotCheckpointUnavailable means the staged transfer is pinned to a
+// checkpoint the peer has moved past: it can no longer serve pages under that
+// head, and pages from two different heads must never be spliced together.
+// The transfer is not resumable — it has to be abandoned and restarted at a
+// checkpoint the network still holds.
+var ErrSnapshotCheckpointUnavailable = errors.New("state snapshot: the staged checkpoint is no longer servable")
+
 var ErrSnapshotNotAnchored = errors.New("state snapshot head was not sealed by the trusted genesis validator (genesis-checkpoint trust: retry until a genesis-sealed head is available; the snapshot registry is not a trust source)")
 
 const (
@@ -109,7 +116,9 @@ func (f *BlockFetcher) FetchStateSnapshotCoded(peerAddr string) (*types.StateSna
 
 // validateFetchedSnapshot binds the served hash to the header and checks the
 // head's seal against the trusted genesis validator key. Shared by every
-// snapshot fetch path (single-shot, coded) so none of them can skip a check.
+// snapshot fetch path (single-shot, coded) so none of them can skip a check --
+// which is what keeps the coded path a transport accelerator rather than a
+// second, weaker trust path.
 func validateFetchedSnapshot(peerAddr string, trusted []byte, snap *types.StateSnapshot) error {
 	if snap.Block == nil {
 		return fmt.Errorf("state snapshot from %s carries no head block", peerAddr)
@@ -295,8 +304,35 @@ func (f *BlockFetcher) fetchChunkedInto(peerAddr string, chunkSize int, store *s
 			}
 		} else {
 			if chunk.Height != store.Height() {
-				return fmt.Errorf("state snapshot from %s changed height mid-transfer (%d -> %d); the peer's "+
-					"state moved during the transfer, retry from scratch", peerAddr, store.Height(), chunk.Height)
+				// The pages this peer can serve belong to a different root, so
+				// they are refused either way: pages from two roots must never
+				// be spliced. What matters is which KIND of refusal this is,
+				// because one of them can retire a staged transfer.
+				//
+				// Only a peer that has moved PAST the staged checkpoint is
+				// evidence that it is gone. A peer serving a LOWER height has
+				// not moved past anything — it is behind, and reporting that as
+				// "the checkpoint is gone" would let a lagging peer retire a
+				// transfer the rest of the set can still serve.
+				//
+				// A resumed transfer asks from a cursor, so the reply carries no
+				// head to check: the height is all there is. It is therefore
+				// treated as a CLAIM, not as proof, and acting on it is gated on
+				// no peer having advanced the transfer this round (see
+				// StateSync). When a head does come with it, it has to verify —
+				// a peer that sends an unauthenticated one is refused outright
+				// rather than believed about the checkpoint.
+				if chunk.Height > store.Height() {
+					if chunk.Block != nil {
+						if err := authenticateSnapshotHead(peerAddr, trusted, chunk.Block, chunk.Height); err != nil {
+							return err
+						}
+					}
+					return fmt.Errorf("%w: staged head is %d, %s has moved on to %d",
+						ErrSnapshotCheckpointUnavailable, store.Height(), peerAddr, chunk.Height)
+				}
+				return fmt.Errorf("state snapshot from %s: serves height %d, behind the staged transfer at %d",
+					peerAddr, chunk.Height, store.Height())
 			}
 			if chunk.Block != nil {
 				if err := authenticateSnapshotHead(peerAddr, trusted, chunk.Block, chunk.Height); err != nil {
@@ -340,30 +376,139 @@ func (f *BlockFetcher) fetchChunkedInto(peerAddr string, chunkSize int, store *s
 // A configured SnapshotStagingDir lets a failed peer (or a restart) resume
 // the same authenticated snapshot from the persisted cursor instead of
 // starting over in RAM.
+//
+// RESTART POLICY. Resuming is only possible while some peer still holds the
+// checkpoint the transfer was pinned to. Once a session has expired, or the
+// peer that served it is gone and the rest have advanced, that head is dead:
+// the height guard refuses the mismatched pages (correctly — pages from two
+// roots must never be spliced), and without a policy the client reopens the
+// same dead checkpoint on every retry and never syncs. So a round in which
+// at least one peer says the staged checkpoint is gone and NO peer could
+// continue it abandons the staged transfer wholesale — head, cursor and
+// leaves together, never a subset — and runs one more round from scratch at
+// whatever checkpoint the network currently serves.
+//
+// A COMPLETED download is never abandoned: it is self-contained, root-checked
+// evidence that the executor's recovery can still import, and the peers being
+// past it does not make it any less valid.
 func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
 	peers := s.pool.Addrs()
 	if len(peers) == 0 {
 		return errors.New("state sync: no peers to take a snapshot from")
 	}
 
-	var store *state.SnapshotDownload
-	if dir := s.fetcher.cfg.SnapshotStagingDir; dir != "" {
-		opened, err := state.OpenSnapshotDownload(dir, s.fetcher.snapshotDiskLimit())
-		if err != nil {
-			log.Warn().Err(err).Str("dir", dir).Msg("state sync: discarding unreadable download staging")
-			_ = state.RemoveSnapshotDownload(dir)
-			opened, err = state.OpenSnapshotDownload(dir, s.fetcher.snapshotDiskLimit())
-			if err != nil {
-				return fmt.Errorf("state sync: open download staging: %w", err)
-			}
-		}
-		store = opened
+	dir := s.fetcher.cfg.SnapshotStagingDir
+	store, err := s.openStateSyncStaging(dir)
+	if err != nil {
+		return err
 	}
 
-	var refusals []string
+	for attempt := 0; ; attempt++ {
+		before := stagedProgress(store)
+		imported, staleCheckpoint, refusals := s.stateSyncRound(peers, store, importer)
+		if imported {
+			return nil
+		}
+		if attempt == 0 && staleCheckpoint && store != nil && store.HasHead() && !store.Done() {
+			// Somebody said the checkpoint is gone. Before acting on it: did
+			// anybody get further this round? A transfer simply longer than one
+			// round looks identical from here, and throwing away a download an
+			// honest peer is still feeding is the worse mistake of the two — the
+			// retry loop above reopens every couple of seconds, so it would not
+			// be one wasted transfer but an unbounded series of them.
+			if after := stagedProgress(store); after != before {
+				log.Warn().Uint64("staged_height", store.Height()).
+					Int64("leaf_bytes", after.leafBytes).
+					Msg("state sync: a peer reports the staged checkpoint is gone, but the transfer advanced this round; keeping it")
+				return fmt.Errorf("state sync: no peer served a usable snapshot: %s", strings.Join(refusals, "; "))
+			}
+			abandons := store.Abandons()
+			if abandons >= maxSnapshotAbandons {
+				return fmt.Errorf("state sync: the staged checkpoint at height %d has been abandoned %d times "+
+					"without completing a transfer; refusing to discard it again (last refusals: %s)",
+					store.Height(), abandons, strings.Join(refusals, "; "))
+			}
+			log.Warn().Uint64("staged_height", store.Height()).Str("dir", dir).Int("abandons", abandons+1).
+				Msg("state sync: no peer can serve the staged checkpoint and none advanced it; abandoning and restarting")
+			if err := store.Remove(); err != nil {
+				return fmt.Errorf("state sync: abandon staged checkpoint: %w", err)
+			}
+			store, err = s.openStateSyncStaging(dir)
+			if err != nil {
+				return err
+			}
+			if store != nil && store.HasHead() {
+				return errors.New("state sync: abandoned staging still carries a head; refusing to mix checkpoints")
+			}
+			// Carried across the wipe and persisted, so the count survives this
+			// process. Without that, a restart resets it and the ceiling above
+			// is no ceiling at all.
+			if store != nil {
+				if err := store.SetAbandons(abandons + 1); err != nil {
+					return fmt.Errorf("state sync: record the abandoned checkpoint: %w", err)
+				}
+			}
+			continue
+		}
+		return fmt.Errorf("state sync: no peer served a usable snapshot: %s", strings.Join(refusals, "; "))
+	}
+}
+
+// maxSnapshotAbandons bounds how many times a staged checkpoint may be thrown
+// away before the node stops trying and says so. Abandoning is recovery, not
+// routine: past this the problem is not the checkpoint.
+const maxSnapshotAbandons = 3
+
+// stagedTransferProgress is the part of a staged download that moving forward
+// changes. Comparing it across a round distinguishes "nobody can serve this
+// checkpoint" from "this transfer is simply taking longer than one round".
+type stagedTransferProgress struct {
+	leafBytes int64
+	afterKey  string
+	done      bool
+}
+
+func stagedProgress(store *state.SnapshotDownload) stagedTransferProgress {
+	if store == nil {
+		return stagedTransferProgress{}
+	}
+	return stagedTransferProgress{
+		leafBytes: store.LeafBytes(),
+		afterKey:  string(store.AfterKey()),
+		done:      store.Done(),
+	}
+}
+
+// openStateSyncStaging opens the configured staging directory, discarding and
+// recreating it if it cannot be read. nil when no directory is configured.
+func (s *Syncer) openStateSyncStaging(dir string) (*state.SnapshotDownload, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	opened, err := state.OpenSnapshotDownload(dir, s.fetcher.snapshotDiskLimit())
+	if err != nil {
+		log.Warn().Err(err).Str("dir", dir).Msg("state sync: discarding unreadable download staging")
+		_ = state.RemoveSnapshotDownload(dir)
+		opened, err = state.OpenSnapshotDownload(dir, s.fetcher.snapshotDiskLimit())
+		if err != nil {
+			return nil, fmt.Errorf("state sync: open download staging: %w", err)
+		}
+	}
+	return opened, nil
+}
+
+// stateSyncRound tries every peer once. staleCheckpoint reports that a peer
+// explicitly refused to continue the staged checkpoint because it has moved
+// past it, which — with no peer having succeeded — is what "no peer can serve
+// this checkpoint any more" looks like from here.
+func (s *Syncer) stateSyncRound(peers []string, store *state.SnapshotDownload,
+	importer func(*types.StateSnapshot) error) (imported, staleCheckpoint bool, refusals []string) {
 	for _, peer := range peers {
 		snap, err := s.fetchSnapshotFromPeer(peer, store)
 		if err != nil {
+			if errors.Is(err, ErrSnapshotCheckpointUnavailable) {
+				staleCheckpoint = true
+			}
 			log.Warn().Err(err).Str("peer", peer).Msg("state sync: snapshot not usable")
 			refusals = append(refusals, fmt.Sprintf("%s: %v", peer, err))
 			continue
@@ -376,7 +521,7 @@ func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
 			}
 			log.Info().Str("peer", peer).Uint64("height", store.Height()).
 				Msg("state sync: snapshot imported from disk staging, block sync resumes from the next height")
-			return nil
+			return true, staleCheckpoint, refusals
 		}
 		if snap == nil && store != nil {
 			snap, err = store.Assemble()
@@ -399,13 +544,18 @@ func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
 		}
 		log.Info().Str("peer", peer).Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).
 			Msg("state sync: snapshot imported, block sync resumes from the next height")
-		return nil
+		return true, staleCheckpoint, refusals
 	}
-	return fmt.Errorf("state sync: no peer served a usable snapshot: %s", strings.Join(refusals, "; "))
+	return false, staleCheckpoint, refusals
 }
 
 func (s *Syncer) fetchSnapshotFromPeer(peer string, store *state.SnapshotDownload) (*types.StateSnapshot, error) {
 	if store != nil && store.HasHead() {
+		// A staged transfer is already pinned to a checkpoint. Continue it
+		// rather than starting a coded fetch at whatever head this peer now
+		// serves: switching would discard the pages already on disk, and the
+		// restart policy above exists precisely so that discarding is a
+		// decision taken deliberately and counted.
 		if err := s.fetcher.fetchChunkedInto(peer, 0, store); err != nil {
 			return nil, err
 		}

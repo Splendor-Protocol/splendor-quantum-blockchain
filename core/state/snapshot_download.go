@@ -60,6 +60,12 @@ type SnapshotDownloadProgress struct {
 	PageCount     int      `json:"page_count"`
 	LeavesHash    [32]byte `json:"leaves_hash"`
 	Done          bool     `json:"done"`
+
+	// Abandons counts how many times a checkpoint staged here has been
+	// discarded without a transfer ever completing. Persisted so the count
+	// survives the process: state sync's retry loop reopens every couple of
+	// seconds, so a count held only in memory is no bound at all.
+	Abandons int `json:"abandons,omitempty"`
 }
 
 // SnapshotDownload is a bounded on-disk staging area for one authenticated
@@ -131,6 +137,20 @@ func (d *SnapshotDownload) AfterKey() []byte {
 }
 
 func (d *SnapshotDownload) Done() bool { return d.progress.Done }
+
+// Abandons is how many times a checkpoint staged here has been discarded
+// without completing.
+func (d *SnapshotDownload) Abandons() int { return d.progress.Abandons }
+
+// SetAbandons carries the abandon count across a wipe and fsyncs it, so the
+// ceiling on abandoning survives a restart.
+func (d *SnapshotDownload) SetAbandons(n int) error {
+	if n < 0 {
+		n = 0
+	}
+	d.progress.Abandons = n
+	return d.persistProgress()
+}
 
 func (d *SnapshotDownload) LeafBytes() int64 { return d.progress.LeafBytes }
 

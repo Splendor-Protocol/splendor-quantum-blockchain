@@ -308,8 +308,18 @@ func (e *Executor) ExportStateSnapshotChunk(afterKey []byte, maxLeaves int) (*ty
 }
 
 // snapshotSessionTTL bounds how long an immutable chunk session survives before
-// its pinned LevelDB snapshot is released and its id stops resolving.
-const snapshotSessionTTL = 10 * time.Minute
+// its pinned LevelDB snapshot is released and its id stops resolving. The TTL
+// runs from the last page served, not from the session's creation.
+//
+// A var, not a const, purely so a test can drive the lifecycle in
+// milliseconds instead of waiting minutes for a sweeper. Neither is
+// configurable at runtime.
+var snapshotSessionTTL = 10 * time.Minute
+
+// snapshotSweepInterval is how often the background sweeper runs. Sweeping
+// also happens on every session start/page; this only covers idle nodes. A
+// var for the same reason as snapshotSessionTTL.
+var snapshotSweepInterval = time.Minute
 
 const (
 	maxSnapshotChunkSessions          = 32
@@ -318,11 +328,15 @@ const (
 	// after their sessions are released. A lost final page is retryable, but the
 	// cache is small and swept, so it cannot pin whole snapshots in memory.
 	maxSnapshotFinalCache = 64
+	// maxSnapshotFinalCacheBytes bounds the same cache in BYTES, because the
+	// count alone does not bound memory: one page may carry
+	// state.MaxChunkBytes of leaves, so 64 entries is a quarter of a gigabyte
+	// of retained pages on a path any peer can drive. The two bounds are sized
+	// to agree -- 64 pages at the 4 MiB chunk cap is exactly this figure -- so
+	// neither makes the other unreachable, and whichever binds first evicts.
+	maxSnapshotFinalCacheBytes = int64(maxSnapshotFinalCache) * int64(state.MaxChunkBytes)
 	// snapshotFinalCacheTTL is how long a released final response is retryable.
 	snapshotFinalCacheTTL = 5 * time.Minute
-	// snapshotSweepInterval is how often the background sweeper runs. Sweeping
-	// also happens on every session start/page; this only covers idle nodes.
-	snapshotSweepInterval = time.Minute
 )
 
 func normalizeSnapshotChunkLeaves(n int) int {
@@ -348,6 +362,9 @@ type snapshotChunkSession struct {
 type snapshotFinalCache struct {
 	final   *types.StateSnapshotChunkResult
 	expires time.Time
+	// bytes is the leaf payload retained by this entry, kept so eviction can
+	// bound the cache by memory and not only by entry count.
+	bytes int64
 }
 
 // StartSnapshotChunkSession pins the state at its current height and returns an
@@ -448,6 +465,15 @@ func (e *Executor) PageSnapshotChunkSession(sessionID string, afterKey []byte, m
 		e.snapshotChunkMu.Unlock()
 		return nil, fmt.Errorf("unknown or expired snapshot session %q; start a new transfer", sessionID)
 	}
+	// Serving a page is proof the transfer is alive, so the TTL runs from the
+	// last page rather than from the session's creation. Fixed at creation, it
+	// capped a whole transfer at the TTL: the downloader's own budget is longer
+	// than that, so any transfer running past it lost its session mid-flight,
+	// reopened at a newer head, and had the mismatch reported to it as "the
+	// checkpoint is gone" -- which is the very condition the restart policy on
+	// the client side then acts on. The TTL is meant to collect sessions nobody
+	// is using, and an idle one still expires on exactly the same clock.
+	sc.expires = time.Now().Add(snapshotSessionTTL)
 	e.snapshotChunkMu.Unlock()
 
 	sc.mu.Lock()
@@ -511,7 +537,18 @@ func (e *Executor) cacheSnapshotFinal(sessionID string, final *types.StateSnapsh
 	if e.snapshotFinals == nil {
 		e.snapshotFinals = make(map[string]*snapshotFinalCache)
 	}
-	for len(e.snapshotFinals) >= maxSnapshotFinalCache {
+	size := snapshotChunkResultBytes(final)
+	// A page that could not fit even an empty cache is not retained at all:
+	// admitting it would evict every other client's retry page to hold one
+	// that breaks the bound anyway.
+	if size > maxSnapshotFinalCacheBytes {
+		return
+	}
+	held := int64(0)
+	for _, c := range e.snapshotFinals {
+		held += c.bytes
+	}
+	for len(e.snapshotFinals) >= maxSnapshotFinalCache || held+size > maxSnapshotFinalCacheBytes {
 		var oldestID string
 		var oldest time.Time
 		for id, c := range e.snapshotFinals {
@@ -522,10 +559,25 @@ func (e *Executor) cacheSnapshotFinal(sessionID string, final *types.StateSnapsh
 		if oldestID == "" {
 			break
 		}
+		held -= e.snapshotFinals[oldestID].bytes
 		delete(e.snapshotFinals, oldestID)
 	}
 	cp := *final
-	e.snapshotFinals[sessionID] = &snapshotFinalCache{final: &cp, expires: time.Now().Add(snapshotFinalCacheTTL)}
+	e.snapshotFinals[sessionID] = &snapshotFinalCache{final: &cp, expires: time.Now().Add(snapshotFinalCacheTTL), bytes: size}
+}
+
+// snapshotChunkResultBytes is the leaf payload one cached page holds. Keys and
+// values only: the struct overhead is constant per entry and already bounded by
+// the entry count.
+func snapshotChunkResultBytes(r *types.StateSnapshotChunkResult) int64 {
+	if r == nil {
+		return 0
+	}
+	var n int64
+	for _, l := range r.Leaves {
+		n += int64(len(l.Key)) + int64(len(l.Value))
+	}
+	return n
 }
 
 // sweepSnapshotChunkSessionsLocked releases expired sessions. Caller holds
