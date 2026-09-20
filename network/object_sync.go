@@ -71,18 +71,18 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 	}
 	// A peer whose document predates the capability block gets probed; if it
 	// refused recently, skip the wasted sealed request this time.
-	if doc.CodedObjects == nil && f.cfg.Identities.CodedRecentlyRefused(peerAddr) {
+	if doc.CodedObjects == nil && f.cfg.Identities.CodedRecentlyRefused(peerAddr, CodedSnapshots) {
 		return nil, fmt.Errorf("coded object from %s: peer recently refused coded-object service", peerAddr)
 	}
 	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetObjectManifest, []byte(`{}`),
 		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
 	if err != nil {
 		if doc.CodedObjects == nil {
-			f.cfg.Identities.NoteCodedRefusal(peerAddr)
+			f.cfg.Identities.NoteCodedRefusal(peerAddr, CodedSnapshots)
 		}
 		return nil, fmt.Errorf("fetch object manifest from %s: %w", peerAddr, err)
 	}
-	f.cfg.Identities.ForgetCodedRefusal(peerAddr)
+	f.cfg.Identities.ForgetCodedRefusal(peerAddr, CodedSnapshots)
 	manifest, err := objects.DecodeObjectManifest(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode object manifest from %s: %w", peerAddr, err)

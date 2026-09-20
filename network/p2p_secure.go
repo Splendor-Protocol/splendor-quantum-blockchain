@@ -348,12 +348,33 @@ func (c *IdentityCache) PinsRequired() bool {
 	return c.requirePins
 }
 
-// NoteCodedRefusal records that a peer answered a coded-object probe with a
+// CodedService names which coded capability a refusal applies to.
+//
+// The two are tracked separately because a peer may serve one and not the
+// other -- a node on the previous release started WITH --object-codec answers
+// get_object_manifest_v1 and has never heard of get_block_batch_v1. Keyed
+// together, one batch refusal suppressed that peer's WORKING snapshot path for
+// the whole TTL, so the fallback cost was paid on a capability the peer
+// actually had.
+type CodedService string
+
+const (
+	// CodedSnapshots is the coded-object snapshot service.
+	CodedSnapshots CodedService = "objects"
+	// CodedBatches is the coded block-batch service.
+	CodedBatches CodedService = "batches"
+)
+
+func codedRefusalKey(peerURL string, svc CodedService) string {
+	return string(svc) + "|" + peerURL
+}
+
+// NoteCodedRefusal records that a peer answered a probe for svc with a
 // refusal. Callers must only note refusals for peers whose identity document
 // made no capability declaration; a declared service that fails transiently
 // must not be poisoned, and a declared absence never gets probed at all.
-func (c *IdentityCache) NoteCodedRefusal(peerURL string) {
-	peerURL = canonicalPeerURL(peerURL)
+func (c *IdentityCache) NoteCodedRefusal(peerURL string, svc CodedService) {
+	peerURL = codedRefusalKey(canonicalPeerURL(peerURL), svc)
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -377,10 +398,10 @@ func (c *IdentityCache) NoteCodedRefusal(peerURL string) {
 	c.codedRefused[peerURL] = now.Add(codedProbeRefusalTTL)
 }
 
-// CodedRecentlyRefused reports whether a coded-object probe to this peer was
+// CodedRecentlyRefused reports whether a probe to this peer for svc was
 // recently refused, so the caller can skip the wasted request.
-func (c *IdentityCache) CodedRecentlyRefused(peerURL string) bool {
-	peerURL = canonicalPeerURL(peerURL)
+func (c *IdentityCache) CodedRecentlyRefused(peerURL string, svc CodedService) bool {
+	peerURL = codedRefusalKey(canonicalPeerURL(peerURL), svc)
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -395,10 +416,10 @@ func (c *IdentityCache) CodedRecentlyRefused(peerURL string) bool {
 	return true
 }
 
-// ForgetCodedRefusal clears a peer's refusal entry, e.g. after a successful
-// coded transfer or a fresh capability declaration.
-func (c *IdentityCache) ForgetCodedRefusal(peerURL string) {
-	peerURL = canonicalPeerURL(peerURL)
+// ForgetCodedRefusal clears a peer's refusal entry for svc, e.g. after a
+// successful coded transfer or a fresh capability declaration.
+func (c *IdentityCache) ForgetCodedRefusal(peerURL string, svc CodedService) {
+	peerURL = codedRefusalKey(canonicalPeerURL(peerURL), svc)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.codedRefused, peerURL)

@@ -1412,11 +1412,17 @@ func runNode(cmd *cobra.Command, args []string) error {
 			if objectCodec == nil {
 				return nil, errors.New("coded-object live path is not enabled")
 			}
+			// Deliberately NOT ensurePublishedSnapshot here. A fetch is one
+			// manifest read followed by one sealed request per symbol, so
+			// re-checking staleness on every symbol let the fetcher trigger
+			// the refresh that superseded its own object -- mid-transfer, and
+			// by its own request. Retirement keeps the old generation
+			// reachable either way, but there is no reason to publish a new
+			// one on the symbol path at all: a refresh is due when somebody
+			// asks for a MANIFEST, which is where a transfer begins.
+			//
 			// Block batches are per-range objects cached separately; the
 			// snapshot hub only holds the snapshot object. Consult both.
-			if err := ensurePublishedSnapshot(objectHub, objectCodec, executor, nodeIdentity, &objectPublish); err != nil {
-				return nil, err
-			}
 			frame, hubErr := objectHub.ServeSymbol(descriptorID, generation, index)
 			if hubErr == nil {
 				return frame, nil

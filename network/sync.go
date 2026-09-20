@@ -1290,7 +1290,7 @@ func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count
 	if !doc.ServesCodedBlocks() {
 		return nil, fmt.Errorf("coded block batch from %s: peer declares no coded block-batch service", peerAddr)
 	}
-	if doc.CodedBlocks == nil && f.cfg.Identities.CodedRecentlyRefused(peerAddr) {
+	if doc.CodedBlocks == nil && f.cfg.Identities.CodedRecentlyRefused(peerAddr, CodedBatches) {
 		return nil, fmt.Errorf("coded block batch from %s: peer recently refused coded-object service", peerAddr)
 	}
 	req, err := json.Marshal(GetBlockBatchRequest{FromHeight: fromHeight, Count: count})
@@ -1301,11 +1301,11 @@ func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count
 		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
 	if err != nil {
 		if doc.CodedBlocks == nil {
-			f.cfg.Identities.NoteCodedRefusal(peerAddr)
+			f.cfg.Identities.NoteCodedRefusal(peerAddr, CodedBatches)
 		}
 		return nil, fmt.Errorf("fetch coded block batch from %s: %w", peerAddr, err)
 	}
-	f.cfg.Identities.ForgetCodedRefusal(peerAddr)
+	f.cfg.Identities.ForgetCodedRefusal(peerAddr, CodedBatches)
 	manifest, err := objects.DecodeObjectManifest(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode block batch manifest from %s: %w", peerAddr, err)

@@ -84,7 +84,7 @@ func TestCodedProbeRefusalIsRememberedForUndeclaredPeers(t *testing.T) {
 	oldTTL := codedProbeRefusalTTL
 	codedProbeRefusalTTL = 20 * time.Millisecond
 	t.Cleanup(func() { codedProbeRefusalTTL = oldTTL })
-	f.cfg.Identities.ForgetCodedRefusal(peer.srv.URL)
+	f.cfg.Identities.ForgetCodedRefusal(peer.srv.URL, CodedSnapshots)
 	if _, err := f.FetchCodedObject(peer.srv.URL, objects.DefaultLimits()); err == nil {
 		t.Fatal("coded fetch succeeded against a refusing peer")
 	}
@@ -118,5 +118,35 @@ func TestCodedProbeRefusalIsNotRememberedForDeclaredPeers(t *testing.T) {
 	}
 	if peer.probes.Load() != 2 {
 		t.Fatalf("declared peer's transient failure was remembered: %d sealed requests, want 2", peer.probes.Load())
+	}
+}
+
+// A peer may serve one coded capability and not the other: a node on the
+// previous release started WITH --object-codec answers get_object_manifest_v1
+// and has never heard of get_block_batch_v1. Keyed together, one batch refusal
+// suppressed that peer's WORKING snapshot path for the whole TTL — the
+// fallback cost paid on a capability the peer actually had.
+func TestCodedRefusalsAreKeptPerCapability(t *testing.T) {
+	ic := NewIdentityCache()
+	const peer = "http://198.51.100.9:8080"
+
+	ic.NoteCodedRefusal(peer, CodedBatches)
+
+	if !ic.CodedRecentlyRefused(peer, CodedBatches) {
+		t.Fatal("a batch refusal was not remembered")
+	}
+	if ic.CodedRecentlyRefused(peer, CodedSnapshots) {
+		t.Fatal("a refusal of the block-batch service suppressed the snapshot service, " +
+			"which this peer serves")
+	}
+
+	// And clearing one does not clear the other.
+	ic.NoteCodedRefusal(peer, CodedSnapshots)
+	ic.ForgetCodedRefusal(peer, CodedSnapshots)
+	if ic.CodedRecentlyRefused(peer, CodedSnapshots) {
+		t.Fatal("forgetting the snapshot refusal did not clear it")
+	}
+	if !ic.CodedRecentlyRefused(peer, CodedBatches) {
+		t.Fatal("forgetting the snapshot refusal also cleared the batch one")
 	}
 }
