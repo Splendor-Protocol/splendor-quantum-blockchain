@@ -47,6 +47,9 @@ func vfyForks(identity bool) forks.Schedule {
 	s := forks.Schedule{forks.VerifyV1: 1, forks.ModuleRevertV1: 1}
 	if identity {
 		s[forks.VerifyIdentityV1] = 1
+		// The linkage resolves settlement records, so the rule that writes
+		// them must be in force no later than the linkage (see Schedule.Validate).
+		s[forks.X402SettleV1] = 1
 	}
 	return s
 }

@@ -697,7 +697,8 @@ func (s *Server) handleX402Settle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusPaymentRequired, x402.SettleResult{
 			Status: x402.SettleFailed,
-			Error:  "payment nonce already used by a different payment",
+			Error: "payment nonce already used and no settlement record confirms these payment details " +
+				"(a different payee/amount/chain, or a payment settled before x402_settle_v1 activated)",
 		})
 		return
 	}

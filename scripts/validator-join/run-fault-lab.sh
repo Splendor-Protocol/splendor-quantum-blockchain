@@ -184,7 +184,7 @@ cat >"$LAB/genesis.json" <<EOF
     "oracle_v1": 1, "multisig_v1": 1, "governance_v1": 1, "qrc721_v1": 1,
     "qrc4626_v1": 1, "min_fee_v1": 1, "multi_validator": 1,
     "modules_v2": 1, "validators_admission_v1": 1, $BFT_FORK
-    "verify_identity_v1": 1
+    "x402_settle_v1": 1, "verify_identity_v1": 1
   }
 }
 EOF

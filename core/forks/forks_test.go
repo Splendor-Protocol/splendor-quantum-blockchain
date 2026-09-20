@@ -113,7 +113,7 @@ func TestVerifyIdentityV1UnscheduledMeansNever(t *testing.T) {
 	if (Schedule{}).Active(VerifyIdentityV1, 1) || (Schedule{VerifyIdentityV1: 0}).Active(VerifyIdentityV1, 1) {
 		t.Fatal("unscheduled verify_identity_v1 must keep unbound SLH and no-op x402 spend")
 	}
-	if err := (Schedule{VerifyIdentityV1: 100, VerifyV1: 1, ModuleRevertV1: 1}).Validate(); err != nil {
+	if err := (Schedule{VerifyIdentityV1: 100, VerifyV1: 1, ModuleRevertV1: 1, X402SettleV1: 100}).Validate(); err != nil {
 		t.Fatalf("scheduling verify_identity_v1 must be accepted: %v", err)
 	}
 	if err := (Schedule{VerifyIdentityV1: 1}).Validate(); err == nil {

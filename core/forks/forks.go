@@ -124,6 +124,19 @@ const (
 	// verify_v1 no-op x402 path and unbound SLH remain until operators
 	// extend.
 	VerifyIdentityV1 = "verify_identity_v1"
+	// X402SettleV1 makes the executor write the authoritative on-chain X402
+	// settlement record (payer/payee/amount/chain/tx) alongside the used-nonce
+	// marker, so a retry of a consumed nonce can only ever re-confirm the
+	// payment that actually happened.
+	//
+	// The record is a state leaf: writing it changes the state root of every
+	// block containing an X402 payment. Ungated, an upgraded node and a
+	// not-yet-upgraded node would agree the nonce is used and disagree on the
+	// root — the two halves of the network would part at the first X402
+	// transaction after the first node restarted. Hence a named height, so the
+	// whole network starts writing the leaf in the same block.
+	// Unscheduled on live genesis.
+	X402SettleV1 = "x402_settle_v1"
 	// VMCallV1 aligns remaining contract-call semantics: entry-call value
 	// is transferred inside the rollback-protected frame before execution,
 	// DELEGATECALL inherits the call value, CREATE uses a persistent
@@ -142,6 +155,7 @@ var Known = []string{
 	MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1,
 	VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1, MinFeeV1,
 	ModulesV2, ValidatorsAdmissionV1, BFTRoundsV1, VMGasV1, VerifyIdentityV1, VMCallV1,
+	X402SettleV1,
 }
 
 // Schedule maps an upgrade name to the height at which it takes effect.
@@ -227,6 +241,22 @@ func (s Schedule) Validate() error {
 			return fmt.Errorf("genesis schedules %s at height %d but %s only at height %d: "+
 				"the dependency must be in force no later than the upgrade that needs it",
 				VerifyIdentityV1, at, VerifyV1, vAt)
+		}
+	}
+	// The SQVL x402 spend linkage resolves the on-chain settlement record, so
+	// a chain that enforces the linkage before it writes the records refuses
+	// every x402 spend. Requiring the record rule no later than the linkage
+	// rule turns that into a load-time error instead of a live outage.
+	if at, ok := s.At(VerifyIdentityV1); ok {
+		xAt, xok := s.At(X402SettleV1)
+		if !xok {
+			return fmt.Errorf("genesis schedules %s at height %d but never schedules %s, which it depends on",
+				VerifyIdentityV1, at, X402SettleV1)
+		}
+		if xAt > at {
+			return fmt.Errorf("genesis schedules %s at height %d but %s only at height %d: "+
+				"the dependency must be in force no later than the upgrade that needs it",
+				VerifyIdentityV1, at, X402SettleV1, xAt)
 		}
 	}
 	if at, ok := s.At(ValidatorsAdmissionV1); ok {

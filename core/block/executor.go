@@ -127,6 +127,13 @@ type Executor struct {
 	// read (execCall) sees the schedule installed when the block began.
 	forks atomic.Pointer[forks.Schedule]
 
+	// x402SettleRules is the x402_settle_v1 predicate. It is installed in
+	// NewExecutor exactly the way the VM's gas and call rules are, so the gate
+	// on a consensus-visible state leaf is one named place rather than a
+	// schedule lookup buried inside execX402. nil means pre-fork: the used-nonce
+	// marker is written alone, as it was before the settlement record existed.
+	x402SettleRules func(uint64) bool
+
 	// snapshotChunkSessions holds in-flight immutable chunked-snapshot serving
 	// sessions, keyed by an opaque session id handed to the client on the first
 	// page (see StartSnapshotChunkSession / PageSnapshotChunkSession).
@@ -220,7 +227,21 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 	ex.vmEngine.SetCallRules(func(h uint64) bool {
 		return ex.schedule().Active(forks.VMCallV1, h)
 	})
+	ex.SetX402SettleRules(func(h uint64) bool {
+		return ex.schedule().Active(forks.X402SettleV1, h)
+	})
 	return ex, nil
+}
+
+// SetX402SettleRules installs the x402_settle_v1 predicate. nil keeps the
+// pre-fork registry: the used-nonce marker only, and no settlement-record leaf.
+func (e *Executor) SetX402SettleRules(fn func(uint64) bool) {
+	e.x402SettleRules = fn
+}
+
+// x402SettleV1 reports whether the settlement record is written at height h.
+func (e *Executor) x402SettleV1(height uint64) bool {
+	return e.x402SettleRules != nil && e.x402SettleRules(height)
 }
 
 // WithHooks attaches a hook registry to the executor.
@@ -1359,14 +1380,25 @@ func (e *Executor) execX402(tx *types.Transaction, fromAcc *types.Account, recei
 		e.state.SetAccount(toAcc)
 	}
 
-	if err := e.state.MarkX402NonceSettled(nonceKey, &types.X402Settlement{
-		From:    tx.From,
-		To:      tx.To,
-		Amount:  new(bigInt).Set(tx.Amount),
-		ChainID: tx.ChainID,
-		TxHash:  receipt.TxHash,
-		Height:  blockHeight,
-	}); err != nil {
+	// The settlement record is a state leaf, so writing it changes the state
+	// root of every block that carries an X402 payment. Before x402_settle_v1
+	// only the used-nonce marker is written — byte for byte the pre-record
+	// registry — so an upgraded node and a node still on the old build compute
+	// the SAME root and a rolling upgrade does not part the network at the first
+	// X402 transaction. At the fork height every node starts writing the record
+	// in the same block.
+	if e.x402SettleV1(blockHeight) {
+		if err := e.state.MarkX402NonceSettled(nonceKey, &types.X402Settlement{
+			From:    tx.From,
+			To:      tx.To,
+			Amount:  new(bigInt).Set(tx.Amount),
+			ChainID: tx.ChainID,
+			TxHash:  receipt.TxHash,
+			Height:  blockHeight,
+		}); err != nil {
+			return fmt.Errorf("X402 nonce: %w", err)
+		}
+	} else if err := e.state.MarkX402NonceUsed(nonceKey, blockHeight); err != nil {
 		return fmt.Errorf("X402 nonce: %w", err)
 	}
 
