@@ -376,6 +376,11 @@ type genReceiver struct {
 	codebookRoot [32]byte
 	codebookSize uint32
 	decoder      coding.Decoder
+	// absorbed records which codebook indices this generation has already
+	// taken. A malicious peer can replay a proof it legitimately holds; the
+	// same row must never reach the decoder twice (a duplicated row can
+	// corrupt rank tracking), so a replay is absorbed as a no-op.
+	absorbed []bool
 }
 
 // NewObjectReceiver verifies the object manifest (shape, signature) then the
@@ -410,6 +415,7 @@ func NewObjectReceiver(m *ObjectManifest, limits Limits, authorize ObjectAuthori
 			codebookRoot: g.CodebookRoot,
 			codebookSize: g.CodebookSize,
 			decoder:      dec,
+			absorbed:     make([]bool, g.CodebookSize),
 		}
 	}
 	return &ObjectReceiver{manifest: m, gens: gens}, nil
@@ -455,6 +461,11 @@ func (r *ObjectReceiver) AbsorbProof(gen int, proof SymbolProof) (bool, error) {
 	if !VerifySymbolProof(g.codebookRoot, g.descID, proof) {
 		return false, ErrUnauthenticatedSymbol
 	}
+	// A replayed proof is authentic but must not reach the decoder twice.
+	if g.absorbed[idx] {
+		return false, nil
+	}
+	g.absorbed[idx] = true
 	return g.decoder.Absorb(proof.Symbol)
 }
 

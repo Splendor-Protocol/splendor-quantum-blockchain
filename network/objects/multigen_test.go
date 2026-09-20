@@ -238,3 +238,53 @@ func TestObjectSenderRejectsOversizedPayload(t *testing.T) {
 	}
 }
 
+// TestObjectReceiverAbsorbReplayIsNoOp: a malicious peer can replay a proof
+// it legitimately holds. The replay must not reach the decoder twice (a
+// duplicated row can corrupt rank tracking); it is absorbed as a no-op and
+// the decode still reproduces the object.
+func TestObjectReceiverAbsorbReplayIsNoOp(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := testObject(rand.New(rand.NewSource(3)), 128)
+	desc := ObjectDescriptor{Anchor: Anchor{Kind: "snapshot", ID: [32]byte{8}, Height: 4}, Codec: coding.NewRLNCCodec().Name(), SymbolSize: 64}
+	limits := Limits{MaxSourceCount: 2, MaxSymbolSize: 64, MaxObjectSize: 1 << 20}
+	send, err := NewObjectSender(object, desc, coding.NewRLNCCodec(), 0, priv, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recv, err := NewObjectReceiver(send.Manifest(), limits, AllowObjectSignerBytes(pub.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p0, err := send.Proof(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress, err := recv.AbsorbProof(0, p0)
+	if err != nil || !progress {
+		t.Fatalf("first absorb = (%v, %v), want (true, nil)", progress, err)
+	}
+	progress, err = recv.AbsorbProof(0, p0)
+	if err != nil || progress {
+		t.Fatalf("replayed absorb = (%v, %v), want (false, nil)", progress, err)
+	}
+	p1, err := send.Proof(0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recv.AbsorbProof(0, p1); err != nil {
+		t.Fatal(err)
+	}
+	if !recv.Ready() {
+		t.Fatal("receiver did not reach full rank")
+	}
+	got, err := recv.Decode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, object) {
+		t.Fatal("decoded object mismatch after a replayed absorb")
+	}
+}

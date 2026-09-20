@@ -25,7 +25,6 @@ import (
 	"fmt"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"io"
-	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -447,13 +446,10 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 // the batch is a transport accelerator, never a weaker trust path.
 func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count int) ([]*types.Block, error) {
 	// Reject degenerate ranges before any network work: an out-of-cap count
-	// or a fromHeight so large that fromHeight+count-1 wraps would otherwise
-	// let a forged manifest anchor match a wrapped height.
-	if count < 1 || count > MaxCodedBlockBatchBlocks {
-		return nil, fmt.Errorf("coded block batch: count %d outside [1,%d]", count, MaxCodedBlockBatchBlocks)
-	}
-	if fromHeight > math.MaxUint64-uint64(count-1) {
-		return nil, fmt.Errorf("coded block batch: range [%d, %d) overflows uint64", fromHeight, fromHeight+uint64(count))
+	// or a range end that would wrap would otherwise let a forged manifest
+	// anchor match a wrapped height or a serve-side loop truncate the batch.
+	if err := ValidateBlockBatchRange(fromHeight, count); err != nil {
+		return nil, fmt.Errorf("coded block batch: %w", err)
 	}
 	if f.cfg.Identities == nil {
 		return nil, fmt.Errorf("coded block batch from %s: no sealed transport configured", peerAddr)

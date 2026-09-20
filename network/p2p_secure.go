@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -159,6 +160,23 @@ type GetBlockBatchRequest struct {
 // fetch side refuses a count that could overflow the fromHeight+count-1
 // anchor arithmetic.
 const MaxCodedBlockBatchBlocks = 128
+
+// ValidateBlockBatchRange is the single guard for a get_block_batch_v1 range,
+// shared by the fetch side (before any network work), the serve side (before
+// any block lookup) and the fuzz targets. A count outside
+// [1, MaxCodedBlockBatchBlocks], or a range whose end (fromHeight+count)
+// would wrap uint64, is refused: the serve side iterates h in
+// [fromHeight, fromHeight+count), so a wrap would silently truncate the
+// batch (or worse, let a forged anchor name the wrong range).
+func ValidateBlockBatchRange(fromHeight uint64, count int) error {
+	if count < 1 || count > MaxCodedBlockBatchBlocks {
+		return fmt.Errorf("block batch count %d outside [1,%d]", count, MaxCodedBlockBatchBlocks)
+	}
+	if fromHeight > math.MaxUint64-uint64(count) {
+		return fmt.Errorf("block batch range [%d, %d) overflows uint64", fromHeight, fromHeight+uint64(count))
+	}
+	return nil
+}
 
 // ── Peer identity cache (client side) ────────────────────────────────────────
 

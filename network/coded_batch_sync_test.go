@@ -237,13 +237,14 @@ func TestFetchBlockBatchRejectsDegenerateRanges(t *testing.T) {
 	if _, err := f.FetchBlockBatch("http://peer", ^uint64(0), 2); err == nil {
 		t.Fatal("wrapping range accepted")
 	}
-	// A maximal NON-wrapping range must pass the guard and fail later, on the
-	// (unreachable) transport — not on the overflow check.
+	// The guard is strict about the serve-side range [fromHeight,
+	// fromHeight+count): a range whose END wraps is refused even though the
+	// anchored block height itself would not wrap.
 	cfg := DefaultSyncConfig(nil)
 	cfg.Identities = NewIdentityCache()
 	f2 := NewBlockFetcher(cfg)
-	if _, err := f2.FetchBlockBatch("http://127.0.0.1:1", ^uint64(0)-1, 2); err != nil && strings.Contains(err.Error(), "overflows") {
-		t.Fatalf("maximal non-wrapping range tripped the overflow guard: %v", err)
+	if _, err := f2.FetchBlockBatch("http://127.0.0.1:1", ^uint64(0)-1, 2); err == nil || !strings.Contains(err.Error(), "overflows") {
+		t.Fatalf("wrapping range end was not refused: %v", err)
 	}
 }
 

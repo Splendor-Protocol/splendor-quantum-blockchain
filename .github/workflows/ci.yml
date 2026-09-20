@@ -70,20 +70,27 @@ jobs:
       # Scans the reachable dependency graph against the Go vulnerability
       # database. Unlike the GitHub advisory feed this checks what the code
       # actually calls, so a CVE in a required-but-unused module path does not
-      # gate a merge.
+      # gate a merge. Pinned: v1.8+ requires Go 1.26 and would force a
+      # toolchain switch on the Go 1.25 toolchain in go.mod.
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       # Bounded fuzzing of the peer-supplied SQCO wire decoders (object
-      # manifests, symbol proofs, frame probes). `go test ./...` above replays
+      # manifests, symbol proofs, frame probes, adversarial absorb streams)
+      # and the sealed-read request bodies. `go test ./...` above replays
       # each target's committed seed corpus as a normal test; this spends a
       # small fixed budget on fresh inputs so a regression surfaces here
-      # instead of in a release. `make fuzz` runs the same loop locally.
+      # instead of in a release. `make fuzz` runs the same loops locally.
       - name: go fuzz (bounded)
         run: |
           set -euo pipefail
-          for target in FuzzDecodeObjectManifest FuzzDecodeSymbolProof FuzzDecodeManifest FuzzFrameType; do
+          for target in FuzzDecodeObjectManifest FuzzDecodeSymbolProof FuzzDecodeManifest FuzzFrameType FuzzObjectReceiverAbsorb; do
             echo "::group::fuzz ${target}"
             go test ./network/objects/ -run "^${target}$" -fuzz "${target}" -fuzztime 15s
+            echo "::endgroup::"
+          done
+          for target in FuzzValidateBlockBatchRange FuzzBlockBatchRequestJSON FuzzObjectSymbolRequestJSON FuzzObjectManifestRequestJSON; do
+            echo "::group::fuzz ${target}"
+            go test ./network/ -run "^${target}$" -fuzz "${target}" -fuzztime 15s
             echo "::endgroup::"
           done
 

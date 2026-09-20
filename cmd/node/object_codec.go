@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sync/atomic"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
@@ -122,14 +121,12 @@ var blockBatchCache = objects.NewCache(8)
 // LAST block of the range, so a client refuses a manifest that names a
 // different range before spending symbol work.
 func publishBlockBatch(exec *block.Executor, codec coding.Codec, signer *qcrypto.PrivateKey, fromHeight uint64, count int) ([]byte, error) {
-	if count < 1 || count > network.MaxCodedBlockBatchBlocks {
-		return nil, fmt.Errorf("block batch count %d outside [1,%d]", count, network.MaxCodedBlockBatchBlocks)
-	}
-	// The range comes from an untrusted request body: refuse one whose end
-	// would wrap, or the loop below would terminate immediately and index an
-	// empty slice (panic), and a wrapped anchor could name the wrong range.
-	if fromHeight > math.MaxUint64-uint64(count) {
-		return nil, fmt.Errorf("block batch range [%d, %d) overflows uint64", fromHeight, fromHeight+uint64(count))
+	// The range comes from an untrusted request body; the shared guard
+	// refuses an out-of-cap count and a range end that would wrap uint64
+	// (the loop below would terminate immediately and index an empty slice,
+	// and a wrapped anchor could name the wrong range).
+	if err := network.ValidateBlockBatchRange(fromHeight, count); err != nil {
+		return nil, err
 	}
 	blocks := make([]*types.Block, 0, count)
 	for h := fromHeight; h < fromHeight+uint64(count); h++ {

@@ -40,8 +40,8 @@ func FuzzDecodeObjectManifest(f *testing.F) {
 func FuzzDecodeSymbolProof(f *testing.F) {
 	f.Add([]byte{})
 	p := SymbolProof{
-		Symbol:        coding.Symbol{Index: 0, Coefficients: []byte{1}, Payload: []byte{2}},
-		Siblings:      [][32]byte{{3}},
+		Symbol:         coding.Symbol{Index: 0, Coefficients: []byte{1}, Payload: []byte{2}},
+		Siblings:       [][32]byte{{3}},
 		SiblingIsRight: []bool{true},
 	}
 	if frame, err := EncodeSymbolProof(p); err == nil {
@@ -123,4 +123,69 @@ func objectManifestFixture(f *testing.F) []byte {
 		f.Fatal(err)
 	}
 	return frame
+}
+
+// FuzzObjectReceiverAbsorb drives adversarial symbol streams against a
+// receiver: arbitrary picks of (generation, index) — including replays and
+// out-of-order absorbs — and occasional corrupted wire frames. The invariant
+// is the reconstruction property itself: whenever the receiver reports full
+// rank, Decode must reproduce the original object byte for byte.
+func FuzzObjectReceiverAbsorb(f *testing.F) {
+	_, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		f.Fatal(err)
+	}
+	object := []byte("fuzz object payload 0123456789")
+	desc := ObjectDescriptor{
+		Anchor:     Anchor{Kind: "snapshot", ID: [32]byte{4}, Height: 9},
+		Codec:      coding.NewRLNCCodec().Name(),
+		SymbolSize: 8,
+	}
+	limits := Limits{MaxSourceCount: 4, MaxSymbolSize: 8, MaxObjectSize: 1 << 20}
+	send, err := NewObjectSender(object, desc, coding.NewRLNCCodec(), 2, priv, limits)
+	if err != nil {
+		f.Fatal(err)
+	}
+	authorize := AllowObjectSignerBytes(priv.Public().Bytes())
+
+	f.Add([]byte{0, 0, 0, 0, 0, 0})       // replay of index 0 in gen 0
+	f.Add([]byte{0, 0, 1, 0, 2, 0, 3, 0}) // sequential full rank, gen 0
+	f.Add([]byte{0, 0, 1, 0, 0, 0, 0, 5, 3, 0, 2, 0})
+	f.Fuzz(func(t *testing.T, seq []byte) {
+		recv, err := NewObjectReceiver(send.Manifest(), limits, authorize)
+		if err != nil {
+			t.Fatalf("receiver: %v", err)
+		}
+		for i := 0; i+1 < len(seq); i += 2 {
+			gen := int(seq[i]) % send.GenerationCount()
+			idx := int(seq[i+1]) % send.SymbolCount(gen)
+			proof, err := send.Proof(gen, idx)
+			if err != nil {
+				t.Fatalf("proof %d/%d: %v", gen, idx, err)
+			}
+			frame, err := EncodeSymbolProof(proof)
+			if err != nil {
+				t.Fatalf("encode proof: %v", err)
+			}
+			if seq[i]&0x40 != 0 && len(frame) > 0 {
+				// Corrupt the wire frame: the wire decoder or the
+				// codebook-root verification must refuse it — never panic.
+				frame[int(seq[i+1])%len(frame)] ^= 0xff
+			}
+			p, err := DecodeSymbolProof(frame)
+			if err != nil {
+				continue
+			}
+			_, _ = recv.AbsorbProof(gen, p)
+		}
+		if recv.Ready() {
+			got, err := recv.Decode()
+			if err != nil {
+				t.Fatalf("ready receiver failed to decode: %v", err)
+			}
+			if !bytes.Equal(got, object) {
+				t.Fatalf("ready receiver decoded %d bytes, want the %d-byte original", len(got), len(object))
+			}
+		}
+	})
 }
