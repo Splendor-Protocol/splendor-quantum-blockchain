@@ -99,7 +99,7 @@ func TestEqualBytes(t *testing.T) {
 
 func TestCorruptProofIsRejectedBeforeDecode(t *testing.T) {
 	for _, c := range []coding.Codec{coding.NewErasureCodec(), coding.NewRLNCCodec()} {
-		res := runTrialsScenario(c, 8, 32, 0, 50, 5, 11, scenarioCorruptProof, nil, false)
+		res := runTrialsScenario(c, 8, 32, 0, 50, 5, 11, scenarioCorruptProof, nil, false, 0)
 		if res.rejectedAuth == 0 {
 			t.Fatalf("%s: corrupt-proof scenario never rejected a proof", c.Name())
 		}
@@ -133,9 +133,57 @@ func TestManifestAndProofBytesAreCounted(t *testing.T) {
 // the single-generation one — the production shape must not regress recovery.
 func TestMultiGenTrialsRecover(t *testing.T) {
 	for _, c := range []coding.Codec{coding.NewErasureCodec(), coding.NewRLNCCodec()} {
-		res := runTrialsScenario(c, 8, 64, 0, 50, 4, 21, scenarioLoss, nil, true)
+		res := runTrialsScenario(c, 8, 64, 0, 50, 4, 21, scenarioLoss, nil, true, 0)
 		if res.recovered != 4 {
 			t.Fatalf("%s multigen: recovered %d/4, want 4 on a clean link", c.Name(), res.recovered)
 		}
+	}
+}
+
+// Review item 7 asks for a baseline with selective retransmission. Without
+// one, the published comparison comes out "coded 30/30, uncoded 0/30" — true
+// of a transport that gives up after a single pass, which is not a transport
+// anyone deploys. This pins the honest shape: given enough rounds the uncoded
+// baseline recovers too, so the case for coding is round trips, not recovery.
+func TestUncodedBaselineRecoversWithRetransmission(t *testing.T) {
+	const (
+		sources = 16
+		symSize = 1024
+		loss    = 20.0
+		repair  = 50.0
+		trials  = 10
+		seed    = int64(7)
+	)
+	uncoded := coding.NewUncodedCodec()
+
+	single := runTrialsScenario(uncoded, sources, symSize, loss, repair, trials, seed, scenarioLoss, nil, false, 0)
+	retried := runTrialsScenario(uncoded, sources, symSize, loss, repair, trials, seed, scenarioLoss, nil, false, 8)
+
+	// The claim under test is not an exact single-shot figure (small samples
+	// get lucky); it is that retransmission closes the gap the published
+	// comparison attributes to coding.
+	if retried.recovered <= single.recovered {
+		t.Fatalf("retransmission recovered %d/%d against single-shot's %d/%d; it must do strictly better, "+
+			"or --retransmit-rounds is not doing anything", retried.recovered, trials, single.recovered, trials)
+	}
+	if retried.recovered != trials {
+		t.Fatalf("uncoded with 8 retransmission rounds recovered %d/%d; a real uncoded transport "+
+			"re-requests what was lost and should reach every trial at %.0f%% loss", retried.recovered, trials, loss)
+	}
+
+	// And coding does not win on bytes either: against the retransmitting
+	// baseline the coded path moves a comparable amount, because its repair
+	// overhead is paid up front where the baseline pays it in re-requests.
+	// The case for coding is the ROUND TRIPS it saves, which this harness
+	// does not simulate latency for -- so a claim resting on bytes or on
+	// recovery alone is not supported by these numbers.
+	coded := runTrialsScenario(coding.NewRLNCCodec(), sources, symSize, loss, repair, trials, seed, scenarioLoss, nil, false, 0)
+	if coded.recovered != trials {
+		t.Fatalf("coded recovered %d/%d in a single pass", coded.recovered, trials)
+	}
+	if retried.avgBytesTotal > coded.avgBytesTotal*1.5 {
+		t.Fatalf("retransmitting baseline moved %.0f bytes against the coded path's %.0f; "+
+			"if the gap were really that wide the byte argument would hold, and it does not",
+			retried.avgBytesTotal, coded.avgBytesTotal)
 	}
 }

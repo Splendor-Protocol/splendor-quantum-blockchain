@@ -14,16 +14,37 @@
 // matrix (uneven bandwidth, peer disappearance, concurrent consensus load)
 // still needs a real deployment.
 //
-// Decision record: RLNC is now the default serve codec on sqc-node
+// Decision record: RLNC is the default serve codec on sqc-node
 // (--object-codec=rlnc-gf256-v1) and the coded-object snapshot path is the
 // preferred transfer in state sync, with the plain single-shot/chunked path
-// as fallback. Measured on this harness (32 sources, 16 KiB symbols,
-// 20 trials): at 0% loss every codec recovers 20/20; at 20% loss with 50%
-// repair, erasure and RLNC recover 30/30 while uncoded recovers 0/30 (no
-// repair, no retransmission); RLNC's decode CPU is the lowest of the three.
-// The consensus-latency regression half of the gate is structural: the
-// coded path is the join/snapshot transfer only, never the vote/proposal
-// hot path. This tool remains the measurement harness; it does not decide.
+// as fallback.
+//
+// The comparison that justified it was against a SINGLE-SHOT uncoded
+// baseline -- "at 20% loss with 50% repair, erasure and RLNC recover 30/30
+// while uncoded recovers 0/30 (no repair, no retransmission)". That is true
+// and it is not a fair fight: no real transport gives up after one pass, and
+// review item 7 asks for a baseline with selective retransmission. Hence
+// --retransmit-rounds, and the honest numbers (32 sources, 16 KiB symbols,
+// 20% loss, 50% repair, 30 trials, seed 7):
+//
+//	rounds  uncoded   rlnc     uncoded bytes  rlnc bytes  uncoded auth  rlnc auth
+//	0       0/30      30/30    -              672164      -             2.53ms
+//	2       23/30     30/30    -              672164      -             2.53ms
+//	4       30/30     30/30    669822         672164      738us         2.50ms
+//
+// So coding does NOT buy recovery that retransmission cannot reach, and it
+// does not buy bytes -- at 20% loss the retransmitting baseline moves
+// slightly FEWER (669,822 vs 672,164) and costs a third of the authenticate
+// CPU. What it buys is ROUND TRIPS: one pass instead of up to four. That is
+// the whole case, and it is a case about latency, not loss. It matters on the
+// join path this chain actually has -- a validator 200 ms away loses about a
+// third of its leader slots to timeouts, and a snapshot join that needs four
+// sequential rounds pays that latency four times. It would not justify coding
+// on a LAN.
+//
+// The consensus-latency regression half of the gate is structural: the coded
+// path is the join/snapshot transfer only, never the vote/proposal hot path.
+// This tool remains the measurement harness; it does not decide.
 package main
 
 import (
@@ -55,6 +76,7 @@ func main() {
 	trials := flag.Int("trials", 20, "number of independent trials to average over")
 	seed := flag.Int64("seed", 1, "PRNG seed, for reproducible trials")
 	scenario := flag.String("scenario", scenarioLoss, "loss, corrupt-proof, or corrupt-coeff")
+	retransmitRounds := flag.Int("retransmit-rounds", 0, "selective-retransmission rounds for the baseline: after the first pass, re-request the symbols that were lost, up to this many extra rounds (each still subject to loss). 0 is single-shot. A real uncoded transport retransmits, so a coded-vs-uncoded comparison at 0 is not a comparison with anything anyone deploys")
 	multigen := flag.Bool("multigen", false, "run the multi-generation transfer controller (production shape): the object is split across generations with a per-generation source cap of half the requested count")
 	flag.Parse()
 
@@ -95,7 +117,7 @@ func main() {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "codec\trecovered\tfailed\trejected_auth\tavg_symbols_used\tavg_bytes_total\tavg_bytes_useful\tavg_manifest_bytes\tavg_auth_time\tavg_decode_time")
 	for _, c := range codecs {
-		res := runTrialsScenario(c, *sourceCount, *symbolSize, *lossPct, *repairOverheadPct, *trials, *seed, *scenario, priv, *multigen)
+		res := runTrialsScenario(c, *sourceCount, *symbolSize, *lossPct, *repairOverheadPct, *trials, *seed, *scenario, priv, *multigen, *retransmitRounds)
 		fmt.Fprintf(w, "%s\t%d/%d\t%d\t%d\t%.1f\t%.0f\t%.0f\t%.0f\t%s\t%s\n",
 			c.Name(), res.recovered, *trials, res.failed, res.rejectedAuth,
 			res.avgSymbolsUsed, res.avgBytesTotal, res.avgBytesUseful, res.avgManifestBytes,
@@ -120,7 +142,7 @@ type trialResult struct {
 }
 
 func runTrials(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairOverheadPct float64, trials int, seed int64) trialResult {
-	return runTrialsScenario(codec, sourceCount, symbolSize, lossPct, repairOverheadPct, trials, seed, scenarioLoss, nil, false)
+	return runTrialsScenario(codec, sourceCount, symbolSize, lossPct, repairOverheadPct, trials, seed, scenarioLoss, nil, false, 0)
 }
 
 // trialEndpoint abstracts the single- and multi-generation transfer
@@ -179,7 +201,24 @@ func (e trialEndpoint) decode() ([]byte, error) {
 	return e.recv.Decode()
 }
 
-func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairOverheadPct float64, trials int, seed int64, scenario string, signer *qcrypto.PrivateKey, multigen bool) trialResult {
+// lostSymbol is a symbol the loss simulation dropped, remembered so a
+// retransmitting baseline can ask for it again.
+type lostSymbol struct {
+	gen   int
+	index int
+}
+
+// allReady reports whether every generation has enough symbols to decode.
+func allReady(e trialEndpoint) bool {
+	for g := 0; g < e.generations(); g++ {
+		if !e.ready(g) {
+			return false
+		}
+	}
+	return true
+}
+
+func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct, repairOverheadPct float64, trials int, seed int64, scenario string, signer *qcrypto.PrivateKey, multigen bool, retransmitRounds int) trialResult {
 	if signer == nil {
 		_, priv, err := qcrypto.GenerateKeypair()
 		if err != nil {
@@ -259,6 +298,7 @@ func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct,
 		symbolsUsed := 0
 		var authCPU, decodeCPU time.Duration
 		corrupted := false
+		var lost []lostSymbol
 
 		for gen := 0; gen < endpoint.generations(); gen++ {
 			for i := 0; i < endpoint.symbolCount(gen); i++ {
@@ -277,6 +317,7 @@ func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct,
 				}
 				bytesTotal += int64(len(frame))
 				if rng.Float64()*100 < lossPct {
+					lost = append(lost, lostSymbol{gen: gen, index: i})
 					continue
 				}
 				switch scenario {
@@ -309,6 +350,51 @@ func runTrialsScenario(codec coding.Codec, sourceCount, symbolSize int, lossPct,
 			if bytesTotal < 0 {
 				break
 			}
+		}
+		// Selective retransmission. A real uncoded transport re-requests what
+		// was lost; comparing a coded transfer against one that gives up after
+		// a single pass measures the absence of retries, not the value of
+		// coding. Every retransmitted frame is charged to bytesTotal, so the
+		// cost of recovering this way stays visible next to the coded path's
+		// repair overhead.
+		for round := 0; round < retransmitRounds && bytesTotal >= 0 && len(lost) > 0; round++ {
+			if allReady(endpoint) {
+				break
+			}
+			var stillLost []lostSymbol
+			for _, ls := range lost {
+				if endpoint.ready(ls.gen) {
+					continue
+				}
+				proof, err := endpoint.proof(ls.gen, ls.index)
+				if err != nil {
+					bytesTotal = -1
+					break
+				}
+				frame, err := objects.EncodeSymbolProof(proof)
+				if err != nil {
+					bytesTotal = -1
+					break
+				}
+				bytesTotal += int64(len(frame))
+				if rng.Float64()*100 < lossPct {
+					stillLost = append(stillLost, ls)
+					continue
+				}
+				start := time.Now()
+				increased, err := endpoint.absorb(ls.gen, proof)
+				authCPU += time.Since(start)
+				if errors.Is(err, objects.ErrUnauthenticatedSymbol) {
+					rejectedAuth++
+					continue
+				}
+				if err != nil || !increased {
+					continue
+				}
+				symbolsUsed++
+				bytesUseful += int64(len(frame))
+			}
+			lost = stillLost
 		}
 		if bytesTotal < 0 || !endpoint.ready(endpoint.generations()-1) {
 			continue
