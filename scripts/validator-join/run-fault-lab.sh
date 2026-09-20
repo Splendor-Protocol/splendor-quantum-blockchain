@@ -100,6 +100,18 @@ clean_window() {
 	local urls=() n
 	for n in "$@"; do urls+=("$(node_url $n)"); done
 	say "observe $label: heights $from..$to over [$*] (min-producers $minp, min-votes $minv)"
+	# The window is sampled after the fault has cleared, and the heights are
+	# produced one block-interval apart. A round change still in flight (4(b))
+	# delays the top block past the moment H0 commits, so a single sample can
+	# race a block that is still being produced. Poll for the top height on
+	# every listed node first, bounded by the window's own production budget,
+	# so observe.py only ever samples a complete window.
+	local budget=$(((to - from + 2) * BLOCK_INTERVAL + 20))
+	for n in "$@"; do
+		wait_for "$budget" "$label: $n reached the window top $to" \
+			height_at_least "$(node_url $n)" "$to" ||
+			{ bad "$label: $n never reached the window top $to"; return 1; }
+	done
 	# The fault lab runs a set that reaches four (> the quorum of three), so
 	# honest nodes may certify the same block with different valid vote subsets:
 	# hash/state_root/producer must agree, qc_root need not (see observe.py).
