@@ -262,7 +262,10 @@ type writer struct{ b []byte }
 // FrameType returns the SQCO wire type of a frame (1 manifest, 2 symbol proof,
 // 3 object manifest), without decoding the body. The manifest reply is
 // self-describing, so a fetch can decide whether the peer served a
-// single-generation or multi-generation object.
+// single-generation or multi-generation object. A frame whose type byte is
+// not one of the three known types is refused: callers switch on the result,
+// so accepting unknown types here would push the rejection burden onto every
+// caller.
 func FrameType(frame []byte) (byte, error) {
 	r := newReader(frame)
 	if err := r.requireMagic(); err != nil {
@@ -275,7 +278,16 @@ func FrameType(frame []byte) (byte, error) {
 	if ver != WireVersion {
 		return 0, fmt.Errorf("%w: %d", ErrUnknownWireVersion, ver)
 	}
-	return r.u8()
+	typ, err := r.u8()
+	if err != nil {
+		return 0, err
+	}
+	switch typ {
+	case wireTypeManifest, wireTypeSymbolProof, wireTypeObjectManifest:
+		return typ, nil
+	default:
+		return 0, fmt.Errorf("%w: %d", ErrUnknownWireType, typ)
+	}
 }
 
 // EncodeObjectManifest writes a versioned SQCO frame for a multi-generation
