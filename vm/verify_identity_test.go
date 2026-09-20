@@ -409,74 +409,6 @@ func TestSetOperatorRequiresSLHUnderIdentityFork(t *testing.T) {
 	}
 }
 
-// OperatorIdentities is consensus-visible state that the un-forked chain does
-// not persist. Before verify_identity_v1 a deploy or set_operator that names an
-// slh_pubkey must NOT write it into instance state (state roots stay identical
-// to pre-activation builds); the same call registers it once the fork is live.
-func TestOperatorIdentitiesNotPersistedBeforeIdentityFork(t *testing.T) {
-	sdb := newTestState(t)
-	owner := newVfyOp(t)
-	op := newVfyOp(t)
-
-	// Deploy with operator_identities pre-fork is accepted but not persisted.
-	if _, err := callVerify(t, sdb, vfyCtx(owner.addr, 1, false), "deploy", map[string]any{
-		"threshold": 1,
-		"operator_identities": []map[string]any{{
-			"operator":   op.addr.String(),
-			"slh_pubkey": hex.EncodeToString(op.slhPub.Bytes()),
-		}},
-	}); err != nil {
-		t.Fatalf("pre-fork deploy with identities: %v", err)
-	}
-	// The deploy address derives from (owner, nonce=1, height=1).
-	deployAddr := verifyDeployAddr(owner.addr, 1, 1)
-	inst, err := loadInstance(sdb, deployAddr)
-	if err != nil {
-		t.Fatalf("loadInstance: %v", err)
-	}
-	if len(inst.OperatorIdentities) != 0 {
-		t.Fatalf("pre-fork deploy persisted %d operator identities", len(inst.OperatorIdentities))
-	}
-
-	// set_operator pre-fork parses but does not persist the SLH key.
-	if _, err := callVerify(t, sdb, vfyCtx(owner.addr, 2, false), "set_operator", map[string]any{
-		"verify":     deployAddr.String(),
-		"operator":   op.addr.String(),
-		"slh_pubkey": hex.EncodeToString(op.slhPub.Bytes()),
-		"active":     true,
-	}); err != nil {
-		t.Fatalf("pre-fork set_operator with slh: %v", err)
-	}
-	inst, err = loadInstance(sdb, deployAddr)
-	if err != nil {
-		t.Fatalf("loadInstance: %v", err)
-	}
-	if len(inst.OperatorIdentities) != 0 {
-		t.Fatalf("pre-fork set_operator persisted %d operator identities", len(inst.OperatorIdentities))
-	}
-	if len(inst.Operators) != 1 || inst.Operators[0] != op.addr {
-		t.Fatalf("pre-fork set_operator did not record the operator: %+v", inst.Operators)
-	}
-
-	// The migration path: once the fork is active, the same set_operator
-	// registers the key.
-	if _, err := callVerify(t, sdb, vfyCtx(owner.addr, 3, true), "set_operator", map[string]any{
-		"verify":     deployAddr.String(),
-		"operator":   op.addr.String(),
-		"slh_pubkey": hex.EncodeToString(op.slhPub.Bytes()),
-		"active":     true,
-	}); err != nil {
-		t.Fatalf("forked set_operator with slh: %v", err)
-	}
-	inst, err = loadInstance(sdb, deployAddr)
-	if err != nil {
-		t.Fatalf("loadInstance: %v", err)
-	}
-	if got, ok := operatorSLH(inst, op.addr); !ok || !bytes.Equal(got, op.slhPub.Bytes()) {
-		t.Fatalf("forked set_operator did not register the SLH key (ok=%v)", ok)
-	}
-}
-
 func TestLoadRecordPropagatesReadError(t *testing.T) {
 	sdb := newTestState(t)
 	owner := newVfyOp(t)
@@ -516,5 +448,122 @@ func TestLoadRecordPropagatesReadError(t *testing.T) {
 func TestVerifyIdentityForkUnscheduledOnEmptySchedule(t *testing.T) {
 	if (forks.Schedule{}).Active(forks.VerifyIdentityV1, 1) {
 		t.Fatal("empty schedule must not activate verify_identity_v1")
+	}
+}
+
+// operator_identities is recorded from the module's own activation, not from
+// verify_identity_v1. Every build the network has run with verify_v1 active
+// parses the field, refuses a malformed key, and writes the identities into the
+// instance record — and that record is a state leaf. So a build that WITHHELD
+// the identities pre-activation would be the one that forks: same deploy, a
+// different leaf, a different state root, and a replay of live history in which
+// it rejects its own chain.
+//
+// That early recording is also the key-registration migration the review asked
+// for. Pre-activation the stored key binds nothing — attest neither looks it up
+// nor compares against it — so instances accumulate their operators' SLH-DSA
+// keys harmlessly, and verify_identity_v1 activates onto a registry that is
+// already populated instead of demanding a separate migration first.
+//
+// This test therefore pins the opposite of what its previous version pinned:
+// the field is honoured on BOTH sides of the fork, and only the requirements
+// differ.
+func TestVerifyIdentityRecordsOperatorKeysFromModuleActivation(t *testing.T) {
+	owner := newVfyOp(t)
+	op := newVfyOp(t)
+
+	deploy := func(sdb *state.StateDB, identity bool, params map[string]any) *verifyInstance {
+		t.Helper()
+		rc, err := callVerify(t, sdb, vfyCtx(owner.addr, 1, identity), "deploy", params)
+		if err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+		inst, err := loadInstance(sdb, *rc.ContractAddress)
+		if err != nil {
+			t.Fatalf("load instance: %v", err)
+		}
+		return inst
+	}
+
+	// Pre-fork, a deploy carrying operator_identities records them.
+	withField := deploy(newTestState(t), false, map[string]any{
+		"threshold": 1,
+		"operators": []string{op.addr.String()},
+		"operator_identities": []map[string]any{
+			{"operator": op.addr.String(), "slh_pubkey": hex.EncodeToString(op.slhPub.Bytes())},
+		},
+	})
+	bound, ok := operatorSLH(withField, op.addr)
+	if !ok || !bytes.Equal(bound, op.slhPub.Bytes()) {
+		t.Fatalf("pre-fork deploy did not record the operator's SLH key: %d identities stored",
+			len(withField.OperatorIdentities))
+	}
+
+	// And the same deploy under the fork records exactly the same thing: the
+	// activation adds requirements, it does not add or reshape state.
+	post := deploy(newTestState(t), true, map[string]any{
+		"threshold": 1,
+		"operators": []string{op.addr.String()},
+		"operator_identities": []map[string]any{
+			{"operator": op.addr.String(), "slh_pubkey": hex.EncodeToString(op.slhPub.Bytes())},
+		},
+	})
+	preJSON, _ := json.Marshal(withField)
+	postJSON, _ := json.Marshal(post)
+	if !bytes.Equal(preJSON, postJSON) {
+		t.Fatalf("the same deploy records a different instance either side of %s:\n pre:  %s\n post: %s",
+			forks.VerifyIdentityV1, preJSON, postJSON)
+	}
+
+	// set_operator is the same: the key offered is decoded and recorded now,
+	// so an instance that registers its operators before the activation height
+	// needs no migration when the height arrives.
+	sdb := newTestState(t)
+	rc, err := callVerify(t, sdb, vfyCtx(owner.addr, 1, false), "deploy", map[string]any{
+		"threshold": 1,
+		"operators": []string{op.addr.String()},
+	})
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	instAddr := *rc.ContractAddress
+	other := newVfyOp(t)
+	if _, err := callVerify(t, sdb, vfyCtx(owner.addr, 2, false), "set_operator", map[string]any{
+		"verify":     instAddr.String(),
+		"operator":   other.addr.String(),
+		"slh_pubkey": hex.EncodeToString(other.slhPub.Bytes()),
+		"active":     true,
+	}); err != nil {
+		t.Fatalf("pre-fork set_operator: %v", err)
+	}
+	inst, err := loadInstance(sdb, instAddr)
+	if err != nil {
+		t.Fatalf("load instance: %v", err)
+	}
+	if !isOperator(inst, other.addr) {
+		t.Fatal("pre-fork set_operator did not add the operator")
+	}
+	got, ok := operatorSLH(inst, other.addr)
+	if !ok || !bytes.Equal(got, other.slhPub.Bytes()) {
+		t.Fatalf("pre-fork set_operator recorded no SLH key for the operator: %d identities stored",
+			len(inst.OperatorIdentities))
+	}
+
+	// The recorded key is inert until the fork: attest pre-fork signs the bare
+	// instruction digest and never consults the registry, which is why filling
+	// it early is a migration rather than an early activation. An attestor whose
+	// registered key is NOT the one it signs with still passes pre-fork.
+	ins := sampleVfyIns("finalize_only", "", []byte("inert"))
+	registerIns(t, sdb, owner, instAddr, &ins, false)
+	digest, err := types.VerifyInstructionDigest(types.ChainID, &ins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callVerify(t, sdb, vfyCtx(op.addr, 3, false), "attest", map[string]any{
+		"verify":         instAddr.String(),
+		"instruction_id": types.InstructionIDHex(ins.InstructionID),
+		"attestation":    signAttest(t, instAddr, digest, op, false),
+	}); err != nil {
+		t.Fatalf("pre-fork attest must ignore the identity registry: %v", err)
 	}
 }

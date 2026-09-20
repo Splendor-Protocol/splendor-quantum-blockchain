@@ -135,6 +135,24 @@ func verifyDeploy(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage
 		}
 		ops = append(ops, a)
 	}
+	// operator_identities is parsed and recorded from the module's own
+	// activation, NOT from verify_identity_v1, and the height gate below adds
+	// only the extra requirements — never the storage.
+	//
+	// Two reasons, and the first one is consensus. Every build the network has
+	// ever run with verify_v1 active honours this field: it parses it, refuses a
+	// malformed key, and writes the identities into the instance record. That
+	// record is a state leaf, so withholding it before verify_identity_v1 is what
+	// would fork the chain — a node that skipped it would compute a different
+	// state root for the same deploy than the live fleet, and would reject its
+	// own history on replay.
+	//
+	// The second is that this IS the key-registration migration the review asked
+	// for. Instances register their operators' SLH-DSA keys from genesis onward,
+	// where the keys are inert: pre-activation attest neither looks them up nor
+	// binds against them. verify_identity_v1 then makes an already-populated
+	// registry mandatory and binding, so there is no window in which live
+	// instances must be migrated before the fork can activate.
 	identities, err := parseOperatorIdentities(p.OperatorIdentities)
 	if err != nil {
 		return fmt.Errorf("verify deploy: %w", err)
@@ -151,13 +169,6 @@ func verifyDeploy(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMessage
 		if err := identitiesCoverOperators(identities, ops); err != nil {
 			return fmt.Errorf("verify deploy: %w", err)
 		}
-	} else {
-		// Pre-activation: OperatorIdentities is consensus-visible state that the
-		// un-forked chain does not persist. Drop a supplied operator_identities
-		// so state roots stay identical to pre-verify_identity_v1 builds.
-		// Existing instances migrate their keys through set_operator (or a
-		// redeploy) once verify_identity_v1 activates.
-		identities = nil
 	}
 	if len(ops) > MaxVerifyOperators {
 		return fmt.Errorf("verify deploy: too many operators")
@@ -537,6 +548,17 @@ func verifySetOperator(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMe
 		return err
 	}
 	if p.Active {
+		// Same rule as deploy: an slh_pubkey offered here is decoded and recorded
+		// at any height, because the live fleet does exactly that and the instance
+		// record is a state leaf. Withholding it before verify_identity_v1 would
+		// write a different leaf than the rest of the network, and would also pass
+		// a transaction the fleet fails on an undecodable key — a receipt-status
+		// divergence on top of a state-root one.
+		//
+		// Registering keys early is the migration, not a leak of the fork: until
+		// verify_identity_v1 the recorded key binds nothing (attest ignores it).
+		// What the gate adds is the requirement that the key be present, and that
+		// it be a well-formed SLH-DSA public key rather than merely decodable.
 		var slh []byte
 		if verifyIdentityActive(ctx) {
 			if p.SLHPub == "" {
@@ -554,9 +576,6 @@ func verifySetOperator(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMe
 			if err != nil {
 				return fmt.Errorf("verify set_operator: slh_pubkey: %w", err)
 			}
-			// Pre-activation: parse (and validate) for good error surface, but do
-			// not persist into consensus-visible OperatorIdentities. Once
-			// verify_identity_v1 activates, the same call registers the key.
 		}
 		if !isOperator(inst, op) {
 			if len(inst.Operators) >= MaxVerifyOperators {
@@ -564,7 +583,7 @@ func verifySetOperator(stateDB *state.StateDB, ctx ModuleContext, raw json.RawMe
 			}
 			inst.Operators = append(inst.Operators, op)
 		}
-		if len(slh) > 0 && verifyIdentityActive(ctx) {
+		if len(slh) > 0 {
 			upsertOperatorIdentity(inst, op, slh)
 		}
 	} else {

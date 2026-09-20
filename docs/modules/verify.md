@@ -38,6 +38,96 @@ three fields are inside the signed v2 digest, so the payer's signature covers
 what the proof asserts. See [`x402.md`](x402.md). The same `instruction_id`
 cannot settle twice.
 
+## `verify_identity_v1`: what changes, and the migration
+
+`verify_identity_v1` binds operator identity to an SLH-DSA key stored in the
+instance record, ties attestations to the instance and the attestor role, and
+enforces the x402 settlement linkage. It is **unscheduled on every live tier**.
+
+### Operator identities are recorded from the module's activation
+
+`operator_identities` (on `deploy`) and `slh_pubkey` (on `set_operator`) are
+stored inside the instance record from the moment `verify_v1` is active — not
+from the `verify_identity_v1` height. That is what every build the network has
+run does, and it has to stay that way: the instance record is a state leaf, so a
+node that withheld the identities before the height would compute a different
+state root for the same `deploy` than the rest of the fleet, would split a
+mixed-version validator set at the first transaction carrying the field, and
+would reject its own history on replay. A malformed `slh_pubkey` is rejected
+before the height for the same reason — accepting one would pass a transaction
+the fleet fails, which diverges the receipt status as well as the state.
+
+Before the height the recorded key is **inert**: `attest` neither looks it up nor
+compares against it. It is a registry entry and nothing more.
+`verify_identity_v1` is what makes the registry mandatory and binding.
+
+The two entry points check a supplied key at slightly different strengths, and
+both are consensus behaviour rather than an inconsistency to tidy up:
+
+| | `deploy` (`operator_identities`) | `set_operator` (`slh_pubkey`) |
+| --- | --- | --- |
+| Before the height | decoded **and** checked as a well-formed SLH-DSA key | decoded only |
+| At/after the height | same, plus required, and must cover every operator | same, plus required **and** checked as a well-formed key |
+
+### Migration for existing instances
+
+Because identities are recorded from the module's activation, **they can and
+should be pre-staged**. An instance owner registers each operator's SLH-DSA key
+at any height before the fork, and the fork then activates onto a registry that
+is already populated. There is no pre-activation gap and no separate migration
+mechanism to invent — registration *is* the migration, and it is available now.
+
+What an instance must not do is arrive at the height with no keys recorded. Such
+an instance has `operators` and no identities, and until its owner registers
+them:
+
+| Action | Before the height | At/after the height, no keys recorded |
+| --- | --- | --- |
+| `attest` | works; a recorded key is not consulted | **fails** — `operator has no registered SLH-DSA key` |
+| `deploy` | `operators` alone is fine | requires `operator_identities` with `slh_pubkey` |
+| `set_operator` (active) | records `slh_pubkey` when supplied | requires `slh_pubkey`, and it must be a well-formed key |
+| `spend` with `x402` | no-op success | enforced linkage (see below) |
+| `finalize`, `spend` (native / QRC-20 / finalize_only) | unchanged | unchanged |
+
+Registration is one owner-signed `set_operator` per operator, and it can be
+submitted **today**, long before any height is published:
+
+```json
+{"module":"verify","action":"set_operator","params":{
+  "verify":"SQ:…","operator":"SQ:…","slh_pubkey":"<hex or base64>","active":true}}
+```
+
+So the operational sequence is:
+
+1. Have every instance owner register their operators' SLH-DSA keys now. The
+   calls are accepted on the live tiers and change nothing about how the
+   instance behaves until the height.
+2. Publish the activation height, with enough lead time to chase the owners who
+   have not registered. An instance that registered in advance crosses the
+   height with no interruption at all.
+3. An owner who waits submits the same calls at or after the height, and that
+   instance cannot collect attestations between the height and the last of them.
+   That window is avoidable, which is the point of step 1.
+4. Instances that never register keep working for `register`, `finalize` and
+   non-x402 `spend`, and stop being able to collect new attestations.
+
+### x402 instructions registered under the old rules
+
+Under the fork the `x402` settlement action stops being a no-op and becomes
+proof-only linkage: the instruction must name `from`, `to` and `amount`, and all
+of them — plus the chain and the payment nonce in `payload` — must match the
+on-chain settlement record for that nonce.
+
+Two things follow for already-registered instructions:
+
+- An instruction with no `to` / `amount` cannot spend after the height. The
+  fields are inside the signed digest, so they cannot be added to an existing
+  instruction: register a new one, with a new `instruction_id`.
+- The settlement record only exists for payments settled at or after the
+  `x402_settle_v1` height. `Schedule.Validate` requires `x402_settle_v1` no
+  later than `verify_identity_v1` for that reason; an instruction pointing at a
+  payment settled before it cannot be proved here. See [`x402.md`](x402.md).
+
 ## Product API (existing quantum RPC)
 
 | Method | Path | What it does |
