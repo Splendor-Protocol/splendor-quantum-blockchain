@@ -239,6 +239,13 @@ const maxCodedRefusedPeers = 256
 // plaintext fallback.
 var ErrPeerNotPinned = errors.New("peer node identity is not pinned")
 
+// ErrSealedReplyTooLarge means a peer's sealed reply exceeded the byte cap the
+// caller reserved for it. Callers that size that cap from a memory budget need
+// this distinguishable from a corrupt envelope: a reply truncated at the cap
+// fails to decode, and "decode sealed reply" is the wrong thing to tell an
+// operator whose peer is simply serving more than was asked for.
+var ErrSealedReplyTooLarge = errors.New("sealed reply exceeds the requested byte limit")
+
 // maxWarnedPeers bounds the log-once set below. Peer URLs arrive from places
 // this node does not control — a /peers/announce body, another peer's /peers
 // list — so a map keyed by them and never emptied is a leak whose rate an
@@ -613,9 +620,15 @@ func (c *IdentityCache) querySealed(ctx context.Context, client *http.Client, pe
 		return nil, fmt.Errorf("peer returned %d for sealed %s", resp.StatusCode, kind)
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxReply))
+	// Read one byte past the cap so an oversized reply is reported as such
+	// instead of arriving silently truncated and failing to decode.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxReply+1))
 	if err != nil {
 		return nil, fmt.Errorf("read sealed reply: %w", err)
+	}
+	if int64(len(raw)) > maxReply {
+		return nil, fmt.Errorf("%w: sealed %s reply from %s exceeds %d bytes",
+			ErrSealedReplyTooLarge, kind, peerURL, maxReply)
 	}
 	replyEnv, err := UnmarshalEnvelope(raw)
 	if err != nil {

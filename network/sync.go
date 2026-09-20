@@ -25,6 +25,7 @@ import (
 	"fmt"
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"io"
+	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -32,7 +33,6 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/objects"
 )
@@ -79,11 +79,20 @@ type SyncConfig struct {
 	// pipeline may fetch. 0 uses 16.
 	MaxFetchLookahead int
 
-	// MaxFetchBufferBytes caps the reserved size of in-flight + pending
-	// fetched blocks. 0 uses 16 MiB. The pipeline reserves bytes before
-	// issuing a fetch and accounts the measured body after it returns,
-	// so this is a byte window, not only a batch-count cap.
+	// MaxFetchBufferBytes caps the block bytes the pipeline holds at once:
+	// bodies being read plus bodies buffered out of order while the applier
+	// waits for an earlier height. 0 uses 16 MiB. Every byte is reserved
+	// before it can be read and the read is capped at the reservation, so
+	// this is an enforced ceiling rather than an estimate — with one
+	// documented exception, the height the applier is waiting for (see
+	// syncByteBudget).
 	MaxFetchBufferBytes int64
+
+	// FetchReserveBytes is the opening per-block reservation the pipeline
+	// makes before a body is read. 0 uses defaultFetchReserveBytes. The
+	// pipeline raises its own working estimate above this when a peer serves
+	// bigger blocks; it never lowers it below.
+	FetchReserveBytes int64
 
 	// RequestTimeout is the timeout for individual block download requests.
 	RequestTimeout time.Duration
@@ -207,14 +216,34 @@ func (f *BlockFetcher) setTrustedPubKey(pk []byte) {
 // The sealed ML-KEM channel is tried first. Falling back to plaintext is opt-in
 // because an attacker who can silence /p2p/identity would otherwise be able to
 // downgrade every sync to cleartext just by refusing to answer.
-func (f *BlockFetcher) fetchBlockJSON(ctx context.Context, peerAddr, kind string, body []byte, plainPath string) ([]byte, error) {
+//
+// limit is the caller's byte allowance for this one body: the pipeline
+// reserves it from the fetch budget BEFORE the read, so the read must not be
+// allowed to exceed it. A body that does is reported as errFetchBodyTooLarge
+// rather than truncated, so the caller can reserve more and ask again.
+func (f *BlockFetcher) fetchBlockJSON(ctx context.Context, peerAddr, kind string, body []byte, plainPath string, limit int64) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if limit < 1 || limit > maxSyncBodyBytes {
+		limit = maxSyncBodyBytes
+	}
 	if f.cfg.Identities != nil {
-		raw, err := f.cfg.Identities.QuerySealedContext(ctx, peerAddr, kind, body, maxSyncBodyBytes)
+		// The allowance is in DECODED body bytes — that is what the caller
+		// holds and what its budget was charged for. A sealed reply carries
+		// the same bytes base64'd inside an envelope, so the wire form is
+		// allowed to be bigger; the decoded body is then checked against the
+		// allowance itself. Opening one reply therefore touches up to about
+		// twice the allowance transiently, per in-flight request.
+		raw, err := f.cfg.Identities.QuerySealedContext(ctx, peerAddr, kind, body, sealedWireAllowance(limit))
 		if err == nil {
+			if int64(len(raw)) > limit {
+				return nil, fmt.Errorf("%w: sealed body from %s is over %d bytes", errFetchBodyTooLarge, peerAddr, limit)
+			}
 			return raw, nil
+		}
+		if errors.Is(err, ErrSealedReplyTooLarge) {
+			return nil, fmt.Errorf("%w: %v", errFetchBodyTooLarge, err)
 		}
 		// Pulling in cleartext from a peer we refused to authenticate would
 		// undo the refusal: the pin says this is not the peer we meant, and the
@@ -249,8 +278,31 @@ func (f *BlockFetcher) fetchBlockJSON(ctx context.Context, peerAddr, kind string
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %s: peer returned %d", plainPath, resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxSyncBodyBytes))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("%w: body from %s%s is over %d bytes", errFetchBodyTooLarge, peerAddr, plainPath, limit)
+	}
+	return raw, nil
 }
+
+// sealedWireAllowance is the envelope-sized cap for a sealed reply carrying
+// at most limit decoded bytes: base64 is 4/3, plus the envelope's own JSON
+// and KEM ciphertext. Generous on purpose — a body that fits the allowance
+// must never be refused for its packaging, or every fetch would pay a retry.
+func sealedWireAllowance(limit int64) int64 {
+	if limit >= maxSyncBodyBytes/2 {
+		return maxSyncBodyBytes
+	}
+	return limit*2 + 4096
+}
+
+// errFetchBodyTooLarge means a peer's block body did not fit the byte
+// allowance reserved for it. It is not a peer fault on its own: a legitimate
+// block can simply be bigger than the pipeline's working reservation.
+var errFetchBodyTooLarge = errors.New("sync: block body exceeds the reserved byte allowance")
 
 // hasGenesisPin reports whether a genesis hash was configured.
 func (c SyncConfig) hasGenesisPin() bool {
@@ -277,7 +329,7 @@ func (f *BlockFetcher) FetchGenesisValidatorPubKey(peerAddr string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	raw, err := f.fetchBlockJSON(context.Background(), peerAddr, KindGetBlock, req, "/block/0")
+	raw, err := f.fetchBlockJSON(context.Background(), peerAddr, KindGetBlock, req, "/block/0", maxSyncBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("fetch genesis block from %s: %w", peerAddr, err)
 	}
@@ -349,40 +401,40 @@ func (f *BlockFetcher) FetchBlock(peerAddr string, height uint64) (*types.Block,
 
 // FetchBlockContext is FetchBlock with a cancellable in-flight request.
 func (f *BlockFetcher) FetchBlockContext(ctx context.Context, peerAddr string, height uint64) (*types.Block, error) {
+	b, _, err := f.fetchBlockLimited(ctx, peerAddr, height, maxSyncBodyBytes)
+	return b, err
+}
+
+// fetchBlockLimited is FetchBlockContext with an explicit byte allowance for
+// the body, returning the wire size that was actually read so the caller can
+// charge its memory budget for what it is holding rather than for a guess.
+func (f *BlockFetcher) fetchBlockLimited(ctx context.Context, peerAddr string, height uint64, limit int64) (*types.Block, int64, error) {
 	req, err := json.Marshal(GetBlockRequest{Height: height})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	raw, err := f.fetchBlockJSON(ctx, peerAddr, KindGetBlock, req, fmt.Sprintf("/block/%d", height))
+	raw, err := f.fetchBlockJSON(ctx, peerAddr, KindGetBlock, req, fmt.Sprintf("/block/%d", height), limit)
 	if err != nil {
-		return nil, fmt.Errorf("fetch block %d from %s: %w", height, peerAddr, err)
-	}
-	// The sealed reply bound (maxSyncBodyBytes = 128 MiB) sits far above the
-	// 32 MiB wire cap a producer may legitimately sign, so enforce the wire
-	// cap here: an oversized block is refused at the transport layer instead
-	// of being parsed, validated and applied.
-	if len(raw) > block.MaxBlockWireBytes {
-		return nil, fmt.Errorf("block %d from %s is %d bytes, over the %d-byte wire cap",
-			height, peerAddr, len(raw), block.MaxBlockWireBytes)
+		return nil, 0, fmt.Errorf("fetch block %d from %s: %w", height, peerAddr, err)
 	}
 
-	var blk types.Block
-	if err := json.Unmarshal(raw, &blk); err != nil {
-		return nil, fmt.Errorf("decode block %d: %w", height, err)
+	var block types.Block
+	if err := json.Unmarshal(raw, &block); err != nil {
+		return nil, 0, fmt.Errorf("decode block %d: %w", height, err)
 	}
 	// The peer must serve the block we asked for. A real, validly-signed block
 	// at the WRONG height passes the structural and producer checks below, and
 	// the pipeline applies by requested height — so without this, a peer could
 	// hand back height 7 for a request of height 5 and the applier would run
 	// it into slot 5. Reject the mismatch here, before any of that.
-	if blk.Header.Height != height {
-		return nil, fmt.Errorf("peer %s served height %d in place of requested height %d",
-			peerAddr, blk.Header.Height, height)
+	if block.Header.Height != height {
+		return nil, 0, fmt.Errorf("peer %s served height %d in place of requested height %d",
+			peerAddr, block.Header.Height, height)
 	}
 
 	// Validate structural integrity
-	if err := blk.Validate(); err != nil {
-		return nil, fmt.Errorf("block %d failed validation: %w", height, err)
+	if err := block.Validate(); err != nil {
+		return nil, 0, fmt.Errorf("block %d failed validation: %w", height, err)
 	}
 
 	// Fail closed: never APPLY a block we cannot authenticate against a key we
@@ -393,33 +445,33 @@ func (f *BlockFetcher) FetchBlockContext(ctx context.Context, peerAddr string, h
 	// FetchGenesisValidatorPubKey, which checks block 0 against a pinned hash.
 	// Above height 0 the active validator set is the second key ring, so a
 	// rotating BFT leader can be followed without trusting what it carries.
-	if err := VerifyBlockProducer(&blk, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
+	if err := VerifyBlockProducer(&block, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
 		// Only defer a missing registry entry when a resolver is wired —
 		// the parent state may not contain that registration yet. A nil
 		// resolver or a key that does not bind to ValidatorAddr stays fatal.
 		if !errors.Is(err, ErrProducerNotYetKnown) || f.cfg.LookupProducerKey == nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
 	// Height 0 must additionally match the pin when one is configured, so a peer
 	// cannot serve a different chain's genesis under a key we happen to trust.
 	if height == 0 && f.cfg.hasGenesisPin() {
-		computed, herr := blk.ComputeHash()
+		computed, herr := block.ComputeHash()
 		if herr != nil {
-			return nil, fmt.Errorf("hash genesis block: %w", herr)
+			return nil, 0, fmt.Errorf("hash genesis block: %w", herr)
 		}
 		if computed != f.cfg.GenesisHash {
-			return nil, fmt.Errorf("genesis hash %x does not match pinned %x", computed[:8], f.cfg.GenesisHash[:8])
+			return nil, 0, fmt.Errorf("genesis hash %x does not match pinned %x", computed[:8], f.cfg.GenesisHash[:8])
 		}
 	}
 
-	return &blk, nil
+	return &block, int64(len(raw)), nil
 }
 
 // FetchLatestBlock fetches the latest block from a peer.
 func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
-	raw, err := f.fetchBlockJSON(context.Background(), peerAddr, KindGetLatest, []byte(`{}`), "/block/latest")
+	raw, err := f.fetchBlockJSON(context.Background(), peerAddr, KindGetLatest, []byte(`{}`), "/block/latest", maxSyncBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("fetch latest block from %s: %w", peerAddr, err)
 	}
@@ -437,129 +489,15 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 	return &block, nil
 }
 
-// FetchBlockBatch downloads a coded batch of count consecutive blocks starting
-// at fromHeight over the sealed channel: the peer returns the batch's object
-// manifest in reply to get_block_batch_v1, the blocks travel as coded symbols,
-// and every decoded block is validated exactly like FetchBlock (structural,
-// then the pinned key / active producer set) before any of them is returned.
-// Any failure returns an error so the caller falls back to per-block fetches —
-// the batch is a transport accelerator, never a weaker trust path.
-func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count int) ([]*types.Block, error) {
-	// Reject degenerate ranges before any network work: an out-of-cap count
-	// or a range end that would wrap would otherwise let a forged manifest
-	// anchor match a wrapped height or a serve-side loop truncate the batch.
-	if err := ValidateBlockBatchRange(fromHeight, count); err != nil {
-		return nil, fmt.Errorf("coded block batch: %w", err)
-	}
-	if f.cfg.Identities == nil {
-		return nil, fmt.Errorf("coded block batch from %s: no sealed transport configured", peerAddr)
-	}
-	doc, err := f.cfg.Identities.Get(peerAddr)
-	if err != nil {
-		return nil, fmt.Errorf("coded block batch from %s: peer identity: %w", peerAddr, err)
-	}
-	if !doc.ServesCodedBlocks() {
-		return nil, fmt.Errorf("coded block batch from %s: peer declares no coded block-batch service", peerAddr)
-	}
-	if doc.CodedBlocks == nil && f.cfg.Identities.CodedRecentlyRefused(peerAddr) {
-		return nil, fmt.Errorf("coded block batch from %s: peer recently refused coded-object service", peerAddr)
-	}
-	req, err := json.Marshal(GetBlockBatchRequest{FromHeight: fromHeight, Count: count})
-	if err != nil {
-		return nil, err
-	}
-	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetBlockBatch, req,
-		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
-	if err != nil {
-		if doc.CodedBlocks == nil {
-			f.cfg.Identities.NoteCodedRefusal(peerAddr)
-		}
-		return nil, fmt.Errorf("fetch coded block batch from %s: %w", peerAddr, err)
-	}
-	f.cfg.Identities.ForgetCodedRefusal(peerAddr)
-	manifest, err := objects.DecodeObjectManifest(raw)
-	if err != nil {
-		return nil, fmt.Errorf("decode block batch manifest from %s: %w", peerAddr, err)
-	}
-	// The manifest's anchor is the peer's signed statement about WHICH range
-	// the object carries. Refuse a mismatch before spending symbol work; the
-	// decoded blocks are re-checked per height below anyway.
-	if manifest.Anchor.Kind != "block" {
-		return nil, fmt.Errorf("block batch manifest from %s anchors kind %q", peerAddr, manifest.Anchor.Kind)
-	}
-	if manifest.Anchor.Height != fromHeight+uint64(count)-1 {
-		return nil, fmt.Errorf("block batch manifest from %s anchors height %d, want %d",
-			peerAddr, manifest.Anchor.Height, fromHeight+uint64(count)-1)
-	}
-	decoded, err := f.fetchDecodedObject(peerAddr, manifest, objects.DefaultLimits())
-	if err != nil {
-		return nil, fmt.Errorf("coded block batch from %s: %w", peerAddr, err)
-	}
-	return parseBlockBatch(peerAddr, fromHeight, count, decoded, block.MaxBlockWireBytes, func(b *types.Block) error {
-		if err := VerifyBlockProducer(b, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
-			// Only defer a missing registry entry when a resolver is wired.
-			if !errors.Is(err, ErrProducerNotYetKnown) || f.cfg.LookupProducerKey == nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// parseBlockBatch decodes a coded batch payload — the JSON array of count
-// consecutive blocks — refusing anything that is not exactly count blocks at
-// exactly the requested heights, each within maxBlockBytes of wire size,
-// structurally valid and authenticated by verify. This is the batch analogue
-// of the per-block checks FetchBlockContext performs; every refusal makes the
-// caller fall back to per-block fetching, never to a weaker trust path.
-func parseBlockBatch(peerAddr string, fromHeight uint64, count int, decoded []byte, maxBlockBytes int, verify func(*types.Block) error) ([]*types.Block, error) {
-	var raws []json.RawMessage
-	if err := json.Unmarshal(decoded, &raws); err != nil {
-		return nil, fmt.Errorf("decode coded block batch from %s: %w", peerAddr, err)
-	}
-	if len(raws) != count {
-		return nil, fmt.Errorf("coded block batch from %s: got %d blocks, asked for %d", peerAddr, len(raws), count)
-	}
-	blocks := make([]*types.Block, 0, count)
-	for i, rb := range raws {
-		want := fromHeight + uint64(i)
-		// The batch object itself is bounded by objects.DefaultMaxObjectSize,
-		// but any single block inside it must also respect the per-block wire
-		// cap a producer may legitimately sign.
-		if len(rb) > maxBlockBytes {
-			return nil, fmt.Errorf("coded block batch from %s: block %d is %d bytes, over the %d-byte wire cap",
-				peerAddr, want, len(rb), maxBlockBytes)
-		}
-		var b *types.Block
-		if err := json.Unmarshal(rb, &b); err != nil {
-			return nil, fmt.Errorf("decode block %d from coded batch: %w", want, err)
-		}
-		if b == nil {
-			return nil, fmt.Errorf("coded block batch from %s: block %d is null", peerAddr, want)
-		}
-		// Same rule as FetchBlock: a validly-signed block at the wrong height
-		// must never slip into the pipeline's slot for `want`.
-		if b.Header.Height != want {
-			return nil, fmt.Errorf("peer %s served height %d in place of requested height %d",
-				peerAddr, b.Header.Height, want)
-		}
-		if err := b.Validate(); err != nil {
-			return nil, fmt.Errorf("block %d from coded batch failed validation: %w", want, err)
-		}
-		if err := verify(b); err != nil {
-			return nil, fmt.Errorf("coded block batch block %d: %w", want, err)
-		}
-		blocks = append(blocks, b)
-	}
-	return blocks, nil
-}
-
 // Syncer orchestrates the full block sync process.
 type Syncer struct {
 	fetcher     *BlockFetcher
 	pool        *PeerPool
 	localHeight func() uint64            // returns current local chain height
 	applyBlock  func(*types.Block) error // applies a validated block to local chain
+
+	// resident meters the decoded block bytes the fetch pipeline holds.
+	resident fetchResidency
 }
 
 // NewSyncer creates a syncer.
@@ -621,37 +559,196 @@ func (s *Syncer) TrustedPubKey() []byte {
 	return s.fetcher.TrustedPubKey()
 }
 
-// fetchResult carries one height's outcome back to the ordered applier. held is
-// the measured size of the decoded block (or the reservation, on error), already
-// charged to the byte budget by the worker before the result is enqueued.
+// fetchResidency meters the block bytes the fetch pipeline is actually
+// holding: bodies decoded by a worker plus those buffered out of order while
+// the applier waits for an earlier height. The byte budget exists to bound
+// exactly this quantity, so the meter is what the bound is asserted against.
+type fetchResidency struct {
+	mu   sync.Mutex
+	cur  int64
+	peak int64
+}
+
+func (r *fetchResidency) add(n int64) {
+	if n <= 0 {
+		return
+	}
+	r.mu.Lock()
+	r.cur += n
+	if r.cur > r.peak {
+		r.peak = r.cur
+	}
+	r.mu.Unlock()
+}
+
+func (r *fetchResidency) sub(n int64) {
+	if n <= 0 {
+		return
+	}
+	r.mu.Lock()
+	r.cur -= n
+	if r.cur < 0 {
+		r.cur = 0
+	}
+	r.mu.Unlock()
+}
+
+func (r *fetchResidency) reset() {
+	r.mu.Lock()
+	r.cur, r.peak = 0, 0
+	r.mu.Unlock()
+}
+
+// PeakFetchResidentBytes is the high-water mark of decoded block bytes the
+// last sync pass held at once.
+func (s *Syncer) PeakFetchResidentBytes() int64 {
+	s.resident.mu.Lock()
+	defer s.resident.mu.Unlock()
+	return s.resident.peak
+}
+
+// fetchResult carries one height's outcome back to the ordered applier.
 type fetchResult struct {
 	height uint64
 	block  *types.Block
 	peer   string
 	err    error
-	held   int64
+	// held is the byte allowance this result still owns in the budget. The
+	// applier releases it once the block is applied or given up on.
+	held int64
 }
 
+// defaultFetchReserveBytes is the opening per-block reservation. It is only
+// a starting point: the pipeline raises its working reservation to the
+// largest body it has actually seen, so the reservation converges on real
+// block sizes instead of staying a guess.
 const defaultFetchReserveBytes int64 = 2 << 20
 const typicalFetchBlockBytes int64 = 4 << 20
 
+// syncByteBudget bounds the block bytes the fetch pipeline holds at once:
+// bodies being read plus bodies already decoded and buffered out of order
+// while the applier waits for an earlier height. Every byte is reserved
+// BEFORE it can be read and charged at its real size once it has been, so a
+// block cannot be held against a smaller guess.
+//
+// DOCUMENTED BOUNDED EXCEPTION. The one height the applier is waiting for is
+// admitted even when the budget is full. Nothing releases budget until that
+// height is applied, so making it wait is a deadlock rather than
+// backpressure. Exactly one height is in that position at a time and its
+// allowance is capped at maxSyncBodyBytes, so the overrun is at most one
+// block — and only a block that is itself larger than the whole budget can
+// cause any overrun at all.
+//
+// Prior art: geth's downloader keeps a running estimate of real result sizes
+// (resultSize) and throttles new fetches against a byte ceiling derived from
+// it, while never throttling the item at the head of the queue — the same two
+// ideas. Splendor differs by making the estimate a hard read cap rather than
+// only a scheduling hint: a body over its allowance is refused and re-asked
+// for under a larger one, so a peer cannot make the node hold more than it
+// reserved by simply serving a bigger block.
 type syncByteBudget struct {
 	mu   sync.Mutex
 	cond *sync.Cond
 	used int64
 	max  int64
+	// head is the height the applier is waiting for: the exception above.
+	head uint64
+	// grant is the working per-fetch reservation — the largest body seen so
+	// far, never below the configured opening reserve, never above max.
+	grant int64
 }
 
-func newSyncByteBudget(max int64) *syncByteBudget {
+func newSyncByteBudget(max, reserve int64) *syncByteBudget {
 	if max < 1 {
 		max = 16 << 20
 	}
-	b := &syncByteBudget{max: max}
+	if reserve < 1 {
+		reserve = defaultFetchReserveBytes
+	}
+	if reserve > max {
+		reserve = max
+	}
+	b := &syncByteBudget{max: max, grant: reserve}
 	b.cond = sync.NewCond(&b.mu)
 	return b
 }
 
-func (b *syncByteBudget) acquire(ctx context.Context, n int64) error {
+// setHead names the height the applier is blocked on. It is the only height
+// exempt from the budget, and moving it wakes whoever was waiting for it.
+func (b *syncByteBudget) setHead(h uint64) {
+	b.mu.Lock()
+	b.head = h
+	b.cond.Broadcast()
+	b.mu.Unlock()
+}
+
+// fetchHeadroomShift gives the reservation room above the largest body actually
+// seen, as a right shift: 3 is one eighth.
+//
+// Blocks a few bytes apart are the normal case, and a reservation set to the
+// exact size of the largest body so far is re-escalated by the very next block
+// that is one byte bigger — two requests for that height instead of one. The
+// headroom is applied when the allowance is handed out and never stored, so
+// grant stays what it says it is: a measurement. Nothing is ever learned from
+// the headroom itself.
+const fetchHeadroomShift = 3
+
+// reservation is the allowance a new fetch should ask for: the largest body
+// really seen, plus headroom, never above the budget.
+func (b *syncByteBudget) reservation() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := b.grant + b.grant>>fetchHeadroomShift
+	if n > b.max {
+		n = b.max
+	}
+	if n < b.grant {
+		return b.grant
+	}
+	return n
+}
+
+// wouldRaise reports whether observing n would move the working reservation.
+//
+// The caller uses it to decide whether a reply is worth measuring properly:
+// establishing a body's real size costs a re-encode, and it is only worth
+// paying when the answer would change the allowance every later fetch runs
+// under.
+func (b *syncByteBudget) wouldRaise(n int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return n > b.grant && b.grant < b.max
+}
+
+// observe raises the working reservation towards a body size that was really
+// seen. It never lowers it inside one pass, and never exceeds the budget:
+// one outsized block must not serialise every fetch after it.
+//
+// "Really seen" is the whole point, and it is why nothing here is ever fed a
+// projection. The escalation path used to widen its own guess by a factor of
+// four and hand THAT to this method, so two replies too large to fit — which
+// any peer can produce at will, and which say nothing about how big a block
+// actually is — raised the reservation to the entire budget. After that admit
+// allowed one outstanding fetch for the rest of the pass, and parallel sync
+// became serial for as long as such a peer stayed in the pool.
+func (b *syncByteBudget) observe(n int64) {
+	if n < 1 {
+		return
+	}
+	b.mu.Lock()
+	if n > b.grant {
+		b.grant = n
+		if b.grant > b.max {
+			b.grant = b.max
+		}
+	}
+	b.mu.Unlock()
+}
+
+// admit reserves n bytes for height h, waiting until the budget has room —
+// unless h is the height the applier is waiting for, which is admitted at
+// once (see the exception above).
+func (b *syncByteBudget) admit(ctx context.Context, h uint64, n int64) error {
 	if n < 1 {
 		n = 1
 	}
@@ -664,7 +761,7 @@ func (b *syncByteBudget) acquire(ctx context.Context, n int64) error {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for b.used > 0 && b.used+n > b.max {
+	for b.head != h && b.used+n > b.max {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -674,15 +771,18 @@ func (b *syncByteBudget) acquire(ctx context.Context, n int64) error {
 	return nil
 }
 
-func (b *syncByteBudget) adjust(old, new int64) {
-	if old < 1 {
-		old = 1
+// settle replaces a reservation with the size that actually arrived. actual
+// is never above reserved — the read was capped at the reservation — so this
+// only ever gives budget back.
+func (b *syncByteBudget) settle(reserved, actual int64) {
+	if actual < 1 {
+		actual = 1
 	}
-	if new < 1 {
-		new = 1
+	if actual > reserved {
+		actual = reserved
 	}
 	b.mu.Lock()
-	b.used += new - old
+	b.used -= reserved - actual
 	if b.used < 0 {
 		b.used = 0
 	}
@@ -692,7 +792,7 @@ func (b *syncByteBudget) adjust(old, new int64) {
 
 func (b *syncByteBudget) release(n int64) {
 	if n < 1 {
-		n = 1
+		return
 	}
 	b.mu.Lock()
 	b.used -= n
@@ -703,18 +803,151 @@ func (b *syncByteBudget) release(n int64) {
 	b.mu.Unlock()
 }
 
-func blockHeldBytes(b *types.Block) int64 {
-	if b == nil {
-		return 1
+// learnedSize is the body size worth remembering for later fetches.
+//
+// The wire size is what the budget is CHARGED, because that is what was read,
+// and charging it is conservative. It is not always what should be LEARNED: a
+// reply may be padded — JSON tolerates insignificant whitespace, and a block's
+// hash and signature cover the decoded struct rather than the byte count — so a
+// peer can inflate the wire size of a perfectly valid small block. The read cap
+// keeps that harmless most of the time, since a body is refused above the
+// allowance it was given, but an allowance widened by escalation opens a window
+// where a padded body could teach the reservation a size no block needs.
+//
+// So when a reply claims to justify a larger reservation, its real encoded size
+// is established before that claim is believed, and the smaller of the two is
+// what is remembered. The re-encode is paid only on that path, which is rare:
+// the reservation rises a handful of times per pass at most, and never once the
+// budget's ceiling is reached.
+func learnedSize(b *types.Block, wire int64, budget *syncByteBudget) int64 {
+	if b == nil || !budget.wouldRaise(wire) {
+		return wire
 	}
-	raw, err := json.Marshal(b)
+	enc, err := json.Marshal(b)
 	if err != nil {
-		return 1
+		return wire
 	}
-	if len(raw) == 0 {
-		return 1
+	if canon := int64(len(enc)); canon < wire {
+		return canon
 	}
-	return int64(len(raw))
+	return wire
+}
+
+// peerPenalties counts, for one sync pass, the replies a peer sent that no
+// valid block could account for.
+//
+// Bounded by the peer set and discarded with the pass, so there is no growing
+// state and no lasting ban: a peer that misbehaved during one pass is asked
+// again in the next. peerFor prefers unpenalised candidates and falls back to
+// the whole set when every candidate is penalised, because refusing to talk to
+// anyone is worse than talking to a peer that wastes some work.
+type peerPenalties struct {
+	mu       sync.Mutex
+	overruns map[string]int
+}
+
+// overrunTolerance is how many unaccountable replies a peer gets before other
+// peers are preferred. Above one, because a single such reply can be a
+// truncation or a genuine oddity, and the cost of one is a wasted fetch.
+const overrunTolerance = 2
+
+func newPeerPenalties() *peerPenalties {
+	return &peerPenalties{overruns: make(map[string]int)}
+}
+
+func (p *peerPenalties) overran(addr string) {
+	if addr == "" {
+		return
+	}
+	p.mu.Lock()
+	if len(p.overruns) < 1024 {
+		p.overruns[addr]++
+	}
+	p.mu.Unlock()
+}
+
+// suspect reports whether addr has exhausted its tolerance this pass.
+func (p *peerPenalties) suspect(addr string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.overruns[addr] >= overrunTolerance
+}
+
+// prefer returns the candidates worth asking: those still inside their
+// tolerance, or all of them when that would leave nobody.
+func (p *peerPenalties) prefer(cands []string) []string {
+	keep := make([]string, 0, len(cands))
+	for _, c := range cands {
+		if !p.suspect(c) {
+			keep = append(keep, c)
+		}
+	}
+	if len(keep) == 0 {
+		return cands
+	}
+	return keep
+}
+
+// fetchWithBudget reserves before it reads and never reads more than it
+// reserved, so what the pipeline holds is what the budget was charged for.
+//
+// A body that does not fit its allowance is not a failure: the allowance is
+// widened (x4, capped at the wire limit) and the block is asked for again.
+// While the widened allowance is above the whole budget only the head of the
+// line can be admitted, so an oversized block waits its turn instead of
+// squeezing in ahead of the applier. Ordering therefore cannot deadlock: the
+// height the applier wants is always admissible, applying it releases its
+// bytes, and the line moves.
+func (s *Syncer) fetchWithBudget(ctx context.Context, budget *syncByteBudget, h uint64,
+	peerFor func(uint64) string, onOverrun func(string)) (*types.Block, string, int64, error) {
+	want := budget.reservation()
+	peerAddr := ""
+	for {
+		if err := budget.admit(ctx, h, want); err != nil {
+			return nil, peerAddr, 0, err
+		}
+		peerAddr = peerFor(h)
+		block, wire, err := s.fetcher.fetchBlockLimited(ctx, peerAddr, h, want)
+		if err != nil && !errors.Is(err, errFetchBodyTooLarge) {
+			log.Warn().Err(err).Uint64("height", h).Str("peer", peerAddr).
+				Msg("sync: block fetch failed, will retry")
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+			case <-time.After(s.fetcher.cfg.RetryDelay):
+				retryPeer := peerFor(h)
+				block, wire, err = s.fetcher.fetchBlockLimited(ctx, retryPeer, h, want)
+				peerAddr = retryPeer
+			}
+		}
+		if errors.Is(err, errFetchBodyTooLarge) {
+			budget.release(want)
+			if want >= maxSyncBodyBytes {
+				// A reply that does not fit the wire limit is not a big block;
+				// no valid block is that size. Whoever sent it is either broken
+				// or doing it deliberately, and this is the only overrun that
+				// can be attributed with certainty — an overrun at a smaller
+				// allowance is what an honest peer serving a genuinely large
+				// block looks like.
+				onOverrun(peerAddr)
+				return nil, peerAddr, 0, fmt.Errorf("sync: block %d does not fit the %d-byte wire limit",
+					h, int64(maxSyncBodyBytes))
+			}
+			if want *= 4; want > maxSyncBodyBytes {
+				want = maxSyncBodyBytes
+			}
+			// Deliberately nothing learned here. want is this fetch's retry
+			// allowance, not a measurement: see observe.
+			continue
+		}
+		if err != nil {
+			budget.release(want)
+			return nil, peerAddr, 0, err
+		}
+		budget.settle(want, wire)
+		budget.observe(learnedSize(block, wire, budget))
+		return block, peerAddr, wire, nil
+	}
 }
 
 // SyncOnce performs one sync pass: check peers, download missing blocks.
@@ -824,19 +1057,6 @@ func (s *Syncer) SyncOnceContext(ctx context.Context) (int, error) {
 		}
 	}
 
-	// Fold the pre-fill into the per-round block budget: target was clamped to
-	// localH + MaxBlocksPerBatch BEFORE the pre-fill, and the pre-fill only
-	// advances localH toward target, so pre-fill + pipeline together can never
-	// exceed MaxBlocksPerBatch in one SyncOnce. The re-clamp below states that
-	// invariant explicitly so a future edit to the pre-fill cannot quietly
-	// blow the budget. The byte budget is folded the same way: the batch
-	// object is bounded by objects.DefaultMaxObjectSize and every block inside
-	// it by MaxBlockWireBytes (parseBlockBatch), so the pre-fill holds at most
-	// one bounded object at a time.
-	if s.fetcher.cfg.MaxBlocksPerBatch > 0 && target-localH > uint64(s.fetcher.cfg.MaxBlocksPerBatch) {
-		target = localH + uint64(s.fetcher.cfg.MaxBlocksPerBatch)
-	}
-
 	pApplied, err := s.pipelineFetchAndApply(ctx, localH, target, workers)
 	applied += pApplied
 	if err != nil {
@@ -861,6 +1081,7 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 	results := make(chan fetchResult, workers)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	s.resident.reset()
 
 	lookahead := s.fetcher.cfg.MaxFetchLookahead
 	if lookahead < 1 {
@@ -876,19 +1097,28 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 	if lookahead < 1 {
 		lookahead = 1
 	}
-	preReserve := defaultFetchReserveBytes
+	preReserve := s.fetcher.cfg.FetchReserveBytes
+	if preReserve < 1 {
+		preReserve = defaultFetchReserveBytes
+	}
 	if preReserve > maxBytes {
 		preReserve = maxBytes
 	}
 	if preReserve < 1 {
 		preReserve = 1
 	}
-	budget := newSyncByteBudget(maxBytes)
+	budget := newSyncByteBudget(maxBytes, preReserve)
+	budget.setHead(localH + 1)
 	window := make(chan struct{}, lookahead)
 	for i := 0; i < lookahead; i++ {
 		window <- struct{}{}
 	}
 
+	// Heights are dispatched strictly in ascending order, so the height the
+	// applier is waiting for has always been handed to a worker before any
+	// later one. That is what makes the head-of-line exception enough to keep
+	// the pipeline moving: whoever holds it is never blocked on the budget.
+	// Reservation happens in the worker, where the body is actually read.
 	go func() {
 		defer close(heights)
 		for h := localH + 1; h <= target; h++ {
@@ -897,12 +1127,8 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 				return
 			case <-window:
 			}
-			if err := budget.acquire(ctx, preReserve); err != nil {
-				return
-			}
 			select {
 			case <-ctx.Done():
-				budget.release(preReserve)
 				return
 			case heights <- h:
 			}
@@ -910,6 +1136,7 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 	}()
 
 	var peerIdx int32 = -1
+	pen := newPeerPenalties()
 	peerFor := func(h uint64) string {
 		cands := s.pool.PeersAboveHeight(0)
 		if h > 0 {
@@ -921,6 +1148,7 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 		if len(cands) == 0 {
 			return ""
 		}
+		cands = pen.prefer(cands)
 		i := atomic.AddInt32(&peerIdx, 1)
 		return cands[int(i)%len(cands)]
 	}
@@ -933,39 +1161,22 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 			for h := range heights {
 				if err := ctx.Err(); err != nil {
 					select {
-					case results <- fetchResult{height: h, err: err, held: preReserve}:
+					case results <- fetchResult{height: h, err: err}:
 					default:
-						budget.release(preReserve)
 					}
 					return
 				}
-				peerAddr := peerFor(h)
-				block, err := s.fetcher.FetchBlockContext(ctx, peerAddr, h)
-				if err != nil {
-					log.Warn().Err(err).Uint64("height", h).Str("peer", peerAddr).
-						Msg("sync: block fetch failed, will retry")
-					select {
-					case <-ctx.Done():
-						err = ctx.Err()
-					case <-time.After(s.fetcher.cfg.RetryDelay):
-						retryPeer := peerFor(h)
-						block, err = s.fetcher.FetchBlockContext(ctx, retryPeer, h)
-						peerAddr = retryPeer
-					}
-				}
-				held := preReserve
+				block, peerAddr, held, err := s.fetchWithBudget(ctx, budget, h, peerFor, pen.overran)
 				if block != nil {
-					held = blockHeldBytes(block)
+					s.resident.add(held)
 				}
-				// Charge the measured block size now, not when the ordered applier
-				// finally consumes it: a decoded block sitting out-of-order in
-				// `pending` already occupies memory, so the budget must reflect its
-				// real size to keep the aggregate in-flight+pending bytes bounded.
-				budget.adjust(preReserve, held)
 				select {
 				case results <- fetchResult{height: h, block: block, peer: peerAddr, err: err, held: held}:
 				case <-ctx.Done():
 					budget.release(held)
+					if block != nil {
+						s.resident.sub(held)
+					}
 					return
 				}
 			}
@@ -979,11 +1190,19 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 	pending := make(map[uint64]fetchResult)
 	next := localH + 1
 	applied := 0
+	defer func() {
+		for _, r := range pending {
+			if r.block != nil {
+				s.resident.sub(r.held)
+			}
+		}
+	}()
 
 	for next <= target {
 		if err := ctx.Err(); err != nil {
 			return applied, err
 		}
+		budget.setHead(next)
 		res, haveBuffered := pending[next]
 		if !haveBuffered {
 			r, ok := <-results
@@ -999,19 +1218,25 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 			delete(pending, next)
 		}
 
-		if res.err != nil {
+		releaseHeld := func() {
 			budget.release(res.held)
+			if res.block != nil {
+				s.resident.sub(res.held)
+			}
+		}
+		if res.err != nil {
+			releaseHeld()
 			return applied, fmt.Errorf("sync: failed to fetch block %d: %w", next, res.err)
 		}
 		if err := VerifyBlockProducer(res.block, s.fetcher.TrustedPubKey(), s.fetcher.cfg.LookupProducerKey); err != nil {
-			budget.release(res.held)
+			releaseHeld()
 			return applied, fmt.Errorf("sync: apply authentication failed for block %d: %w", next, err)
 		}
 		if err := s.applyBlock(res.block); err != nil {
-			budget.release(res.held)
+			releaseHeld()
 			return applied, fmt.Errorf("sync: failed to apply block %d: %w", next, err)
 		}
-		budget.release(res.held)
+		releaseHeld()
 		s.pool.UpdatePeerHeight(res.peer, next)
 		applied++
 		select {
@@ -1036,4 +1261,109 @@ func (s *Syncer) IsSynced() bool {
 	localH := s.localHeight()
 	bestH := s.pool.BestPeerHeight()
 	return bestH <= localH+1
+}
+
+// FetchBlockBatch downloads a coded batch of count consecutive blocks starting
+// at fromHeight over the sealed channel: the peer returns the batch's object
+// manifest in reply to get_block_batch_v1, the blocks travel as coded symbols,
+// and every decoded block is validated exactly like FetchBlock (structural,
+// then the pinned key / active producer set) before any of them is returned.
+// Any failure returns an error so the caller falls back to per-block fetches —
+// the batch is a transport accelerator, never a weaker trust path.
+func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count int) ([]*types.Block, error) {
+	// Reject degenerate ranges before any network work: an out-of-cap count
+	// or a fromHeight so large that fromHeight+count-1 wraps would otherwise
+	// let a forged manifest anchor match a wrapped height.
+	if count < 1 || count > MaxCodedBlockBatchBlocks {
+		return nil, fmt.Errorf("coded block batch: count %d outside [1,%d]", count, MaxCodedBlockBatchBlocks)
+	}
+	if fromHeight > math.MaxUint64-uint64(count-1) {
+		return nil, fmt.Errorf("coded block batch: range [%d, %d) overflows uint64", fromHeight, fromHeight+uint64(count))
+	}
+	if f.cfg.Identities == nil {
+		return nil, fmt.Errorf("coded block batch from %s: no sealed transport configured", peerAddr)
+	}
+	doc, err := f.cfg.Identities.Get(peerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("coded block batch from %s: peer identity: %w", peerAddr, err)
+	}
+	if !doc.ServesCodedBlocks() {
+		return nil, fmt.Errorf("coded block batch from %s: peer declares no coded block-batch service", peerAddr)
+	}
+	if doc.CodedBlocks == nil && f.cfg.Identities.CodedRecentlyRefused(peerAddr) {
+		return nil, fmt.Errorf("coded block batch from %s: peer recently refused coded-object service", peerAddr)
+	}
+	req, err := json.Marshal(GetBlockBatchRequest{FromHeight: fromHeight, Count: count})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetBlockBatch, req,
+		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
+	if err != nil {
+		if doc.CodedBlocks == nil {
+			f.cfg.Identities.NoteCodedRefusal(peerAddr)
+		}
+		return nil, fmt.Errorf("fetch coded block batch from %s: %w", peerAddr, err)
+	}
+	f.cfg.Identities.ForgetCodedRefusal(peerAddr)
+	manifest, err := objects.DecodeObjectManifest(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode block batch manifest from %s: %w", peerAddr, err)
+	}
+	// The manifest's anchor is the peer's signed statement about WHICH range
+	// the object carries. Refuse a mismatch before spending symbol work; the
+	// decoded blocks are re-checked per height below anyway.
+	if manifest.Anchor.Kind != "block" {
+		return nil, fmt.Errorf("block batch manifest from %s anchors kind %q", peerAddr, manifest.Anchor.Kind)
+	}
+	if manifest.Anchor.Height != fromHeight+uint64(count)-1 {
+		return nil, fmt.Errorf("block batch manifest from %s anchors height %d, want %d",
+			peerAddr, manifest.Anchor.Height, fromHeight+uint64(count)-1)
+	}
+	decoded, err := f.fetchDecodedObject(peerAddr, manifest, objects.DefaultLimits())
+	if err != nil {
+		return nil, fmt.Errorf("coded block batch from %s: %w", peerAddr, err)
+	}
+	var blocks []*types.Block
+	if err := json.Unmarshal(decoded, &blocks); err != nil {
+		return nil, fmt.Errorf("decode coded block batch from %s: %w", peerAddr, err)
+	}
+	if len(blocks) != count {
+		return nil, fmt.Errorf("coded block batch from %s: got %d blocks, asked for %d", peerAddr, len(blocks), count)
+	}
+	for i, b := range blocks {
+		if b == nil {
+			return nil, fmt.Errorf("coded block batch from %s: block %d is null", peerAddr, i)
+		}
+		want := fromHeight + uint64(i)
+		if b.Header.Height != want {
+			// Same rule as FetchBlock: a validly-signed block at the wrong
+			// height must never slip into the pipeline's slot for `want`.
+			return nil, fmt.Errorf("peer %s served height %d in place of requested height %d",
+				peerAddr, b.Header.Height, want)
+		}
+		if err := b.Validate(); err != nil {
+			return nil, fmt.Errorf("block %d from coded batch failed validation: %w", want, err)
+		}
+		if err := VerifyBlockProducer(b, f.TrustedPubKey(), f.cfg.LookupProducerKey); err != nil {
+			if !errors.Is(err, ErrProducerNotYetKnown) || f.cfg.LookupProducerKey == nil {
+				return nil, fmt.Errorf("coded block batch block %d: %w", want, err)
+			}
+		}
+	}
+	return blocks, nil
+}
+
+func blockHeldBytes(b *types.Block) int64 {
+	if b == nil {
+		return 1
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return 1
+	}
+	if len(raw) == 0 {
+		return 1
+	}
+	return int64(len(raw))
 }

@@ -354,7 +354,7 @@ func TestPinRefusalIsNeverRetriedInPlaintext(t *testing.T) {
 	cfg := DefaultSyncConfig(nil)
 	cfg.Identities = b.Identities()
 	cfg.AllowPlaintext = true
-	if _, err := NewBlockFetcher(cfg).fetchBlockJSON(context.Background(), srv.URL, KindGetLatest, []byte(`{}`), "/block/latest"); !errors.Is(err, ErrPeerNotPinned) {
+	if _, err := NewBlockFetcher(cfg).fetchBlockJSON(context.Background(), srv.URL, KindGetLatest, []byte(`{}`), "/block/latest", maxSyncBodyBytes); !errors.Is(err, ErrPeerNotPinned) {
 		t.Fatalf("catch-up pull from an unpinned peer should be refused, got: %v", err)
 	}
 
