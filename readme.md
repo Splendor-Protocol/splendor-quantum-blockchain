@@ -2061,6 +2061,15 @@ simulated loss with 50% repair, the coded codecs recover every trial while the
 uncoded baseline recovers none; the coded path is the join transfer only and
 never touches the vote/proposal hot path.
 
+Live-validated end to end: `scripts/validator-join/run-state-sync-join.sh`
+passes with the coded path default-on — the joiner logs
+`state sync: took the peer's coded snapshot`, follows the live chain, and the
+lab reaches a two-validator quorum with no consensus rejections; the fault lab
+exercises the plain fallback under peer failure. Every peer-supplied parser on
+this path (SQCO wire frames, sealed-read request bodies, adversarial symbol
+streams) is fuzzed on each CI run; `make fuzz` and `make vulncheck` run the same
+checks locally.
+
 ## 21. How a Release Reaches a Tier
 
 One command ships the node. Everything else in this section explains what that
