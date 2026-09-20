@@ -14,7 +14,8 @@
     "reset:test": "node scripts/release.mjs reset test",
     "reset:prod": "node scripts/release.mjs reset prod",
     "release:status": "node scripts/release.mjs status",
-    "readme:tiers": "node scripts/readme-tiers.mjs"
+    "readme:tiers": "node scripts/readme-tiers.mjs",
+    "forks": "node scripts/fork-schedule.mjs"
   },
   "engines": {
     "node": ">=20"

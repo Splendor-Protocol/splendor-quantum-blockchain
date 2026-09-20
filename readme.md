@@ -228,9 +228,13 @@ certification boundaries are separate claims.
   that terminates TLS at a proxy has a classical key exchange in front of it.
   Signature security (ML-DSA-65), sealed P2P (ML-KEM-768), and the TLS group
   a gateway client actually negotiated are three different claims.
-- **RLNC.** `network/coding` is a library plus `cmd/netbench`. There is no
-  live P2P transfer path. Random linear mixing is not encryption and does
-  not supply quantum confidentiality.
+- **RLNC.** The coded path is the default transfer for state-sync joins as of
+  v1.1.3, and it is a *transport*: random linear mixing is not encryption and
+  supplies no quantum confidentiality. Every coded fetch falls back to the
+  plain path on any failure, and decoded bytes go through the same
+  genesis-checkpoint validation the plain path uses, so it is an accelerator
+  and never a second trust path. What it buys is round trips, not bytes — see
+  §20.
 - **An unpinned first P2P contact.** P2P payloads are sealed by default, but an
   unpinned peer identity is initially accepted using trust on first use.
   Authenticated production clusters should supply `--peer-pin` values and set
@@ -1460,7 +1464,6 @@ production-readiness claim.
 - Historical-state queries (current-state `GET /state/proof/{address}` exists)
 - DEX, exchange, lending, oracle, multisig, governance, or QRC-4626 as
   routed native modules
-- A live RLNC object-transfer path (library and benchmark only)
 - Sanctions screening, KYC attestation, AML monitoring, or regulator dashboards
 - Packaged desktop or mobile wallet applications, NFC hardware signing, or a QR
   air-gapped signing application
@@ -2037,17 +2040,38 @@ numbers are in [docs/reports/2026-09-18-v1.1.x-validation.pdf](docs/reports/2026
 | 20,000 accounts | survived (all committed) but contaminated: a concurrent validator-set change on devnet overlapped the run | same, self-marked CONTAMINATED |
 | Multi-validator liveness | a three-validator set deadlocked under load on v1.1.1 and did not self-recover; root cause found (a leader re-minting a different block at the same height and round, so it equivocated against itself, while accepted proposals kept renewing the round timer so no view change fired), fixed, and covered by a regression test that fails on `main` | PR #44 |
 | Same burst, four validators, fixed build | **10,000 of 10,000 included**, no restarts — the case that deadlocked the released build twice. Three of the four ran the fix and the fourth was still on the defective build, so the set tolerated a faulty member | devnet |
-| Throughput by validator count | **four validators run at 2.00 blocks per second against 1.00 at one** — more validators raise the block rate roughly in line with the number of leaders proposing | devnet on `v1.1.2` |
+| Block rate by validator count | **four validators produced 2.00 blocks per second against 1.00 at one**, on that devnet set, that build and that workload. It is a block-rate measurement at two points: more leaders proposing produced more blocks per second there. It is not a demonstration that transaction throughput scales linearly with validators, and it has not been repeated at other set sizes, geographies or block fills | devnet on `v1.1.2`, four co-located nodes |
 | A validator 200 ms away | joins, follows, votes and produces; loses 34.5% of its own leader slots to the 3-second round timeout, now configurable with `--round-timeout`. The same injected latency also broke that host's image pulls | tune the timeout per deployment |
 | Validator add / remove / re-add (four real nodes, local lab) | pass: set 1→2→3→4, remove D and finalise the 2,500 SPLD bond after 32 blocks, re-add D | `scripts/validator-join/run-fault-lab.sh` |
 | Faulty validator at n=4 under `bft_rounds_v1` | pass: crashed member, leader that withholds (round change and commit in 4 s), forged blocks refused (HTTP 400), cleared-journal restart safe; all four nodes agree on every block | same |
-| Same lab without `bft_rounds_v1` (today's public-tier rules) | n=4 still survives a withholding leader; n=3 with one member down stalls and stays vote-locked | same, control run |
+| Same lab without `bft_rounds_v1` (testnet's and mainnet's rules) | n=4 still survives a withholding leader; n=3 with one member down stalls and stays vote-locked | same, control run |
 
 Consequences for operators: the quorum is ⌊2n/3⌋+1, so a set of 2 or 3 is
 unanimous and one faulty member stops it. Fault tolerance needs n ≥ 4 **and**
-`bft_rounds_v1` active. The fork is unscheduled on every public tier today; a
-running tier adopts it above head with the fork-extension rollout, no reset.
-Schedule it before growing a set beyond one validator.
+`bft_rounds_v1` active.
+
+Which rules a tier actually enforces is not decided by the release it runs —
+it is decided by that chain's genesis. Installing `v1.1.x` activates nothing.
+Read the live answer rather than trusting this page:
+
+```bash
+npm run forks                  # every tier's effective schedule, read from /status
+npm run forks -- --check       # non-zero when testnet has stopped rehearsing mainnet
+```
+
+As of 20 September 2026 that reads: **devnet enforces `bft_rounds_v1` from
+genesis** (it sits on a genesis that schedules it, after the v1.1.2 rebuild);
+**testnet and mainnet do not**, and no tier enforces `vm_gas_v1`, `vm_call_v1`,
+`verify_identity_v1`, `x402_settle_v1` or `min_fee_v1`. A running tier can adopt
+a fork above its head with the fork-extension rollout, no reset. Schedule
+`bft_rounds_v1` before growing a set beyond one validator.
+
+One divergence `--check` reported in that same reading: mainnet enforces
+`validators_admission_v1` and testnet does not, so testnet is not rehearsing
+mainnet's validator-admission rules. Whether it still holds is a question for
+the tool, not for this paragraph — a written-down schedule is only true on its
+date, which is how the sentence this replaced came to be false for a third of
+the fleet.
 
 RLNC (v1.1.1): the object format, transfer controller and authenticate-before-decode
 path are in the tree and are now the **default transfer for state-sync joins**:
@@ -2056,10 +2080,17 @@ as a signed multi-generation coded object), the receiving side is wired into
 state sync (`SyncConfig.CodedObjects`, default on), catch-up pre-fills gaps of
 16+ blocks with coded block batches, and any coded-path failure falls back to
 the plain single-shot/chunked snapshot and per-block transfers. `--object-codec=none`
-disables the coded path on both sides. Measured with `cmd/netbench`: at 20%
-simulated loss with 50% repair, the coded codecs recover every trial while the
-uncoded baseline recovers none; the coded path is the join transfer only and
-never touches the vote/proposal hot path.
+disables the coded path on both sides. The coded path is the join transfer only and never
+touches the vote/proposal hot path.
+
+What it buys is **round trips, not bytes**. The often-quoted figure — coded
+recovers every trial at 20% loss while uncoded recovers none — compares
+against a baseline that gives up after one pass. Give the uncoded baseline
+selective retransmission (`npm run netbench -- --retransmit-rounds 4`, or
+`go run ./cmd/netbench`) and it reaches every trial too, moving slightly fewer
+bytes and spending about a third of the authenticate CPU. The coded path needs
+one pass where the baseline needs up to four, which is worth having on a join
+across a 200 ms link and would not be worth having on a LAN.
 
 Live-validated end to end: `scripts/validator-join/run-state-sync-join.sh`
 passes with the coded path default-on — the joiner logs
