@@ -569,6 +569,12 @@ func (s *StateDB) importSnapshotJSONL(path string, height uint64, wantRoot [32]b
 	}
 
 	s.leaves = index
+	// The index just replaced the committed leaf set, so the cached committed
+	// root describes a state that no longer exists. It was verified equal to
+	// wantRoot above, so hand that over rather than making every later reader
+	// rebuild it.
+	s.invalidateCommittedRootLocked()
+	s.setCommittedRootLocked(wantRoot)
 	s.nativeSum = nil
 	s.touchLocked()
 	s.appliedHeight = height

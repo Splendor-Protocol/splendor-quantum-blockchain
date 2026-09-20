@@ -91,7 +91,7 @@ func TestSandboxRefusesPutMeta(t *testing.T) {
 	}
 	defer sdb.Close()
 
-	sim := sdb.Simulate()
+	sim := mustSpeculate(t, sdb)
 	if err := sim.PutMeta("forks", []byte("{}")); !errors.Is(err, ErrSandboxCommit) {
 		t.Fatalf("sandbox PutMeta = %v, want ErrSandboxCommit", err)
 	}

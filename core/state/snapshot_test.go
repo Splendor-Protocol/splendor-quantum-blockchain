@@ -61,7 +61,11 @@ func TestSnapshotIDsArePerStateDBUnderConcurrentSandboxes(t *testing.T) {
 					return
 				default:
 				}
-				sim := s.Simulate()
+				sim, serr := s.SimulateSpeculative()
+				if serr != nil {
+					errs <- serr
+					return
+				}
 				outer := sim.Snapshot()
 				set(sim, 1, 99)
 				inner := sim.Snapshot()
@@ -148,7 +152,7 @@ func TestSnapshotUnknownIDIsRejected(t *testing.T) {
 	}
 
 	// A sandbox's ids never touch the parent's map, in either direction.
-	sim := s.Simulate()
+	sim := mustSpeculate(t, s)
 	simID := sim.Snapshot()
 	if err := s.CommitSnapshot(simID); !errors.Is(err, ErrUnknownSnapshot) {
 		t.Fatalf("parent accepted a sandbox id: %v", err)

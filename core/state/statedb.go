@@ -49,7 +49,20 @@ const (
 	// consensus state and must not affect the root every node agrees on.
 	prefixMeta     = "meta:"
 	keyStateHeight = "meta:height"
+	// keyImportPending marks a snapshot import that has written leaf batches
+	// but has not been published. It is node-local bookkeeping like the
+	// height marker: outside the state root, never accepted from the wire,
+	// and cleared in the same batch that publishes the height marker.
+	keyImportPending = "meta:import_pending"
 )
+
+// importPendingMark is what keyImportPending holds: the identity of the
+// import that is mid-flight, so a restart can see WHICH snapshot the partial
+// leaves belong to.
+type importPendingMark struct {
+	Height    uint64   `json:"height"`
+	StateRoot [32]byte `json:"state_root"`
+}
 
 // stateEmptyRoot is the state root of a state with no leaves at all.
 var stateEmptyRoot = qcrypto.Hash32([]byte("splendor-quantum:empty-state-root:v1"))
@@ -105,13 +118,22 @@ type StateDB struct {
 	// Simulate() sandbox starts its own count at zero (see Snapshot).
 	nextSnap uint64
 
-	// sandbox marks a throwaway overlay produced by Simulate(). Its pending
-	// layer is private, so speculative execution cannot be committed and cannot
-	// disturb the consensus state db it was derived from.
+	// sandbox marks a throwaway overlay produced by SimulateCommitted or
+	// SimulateSpeculative. Its pending layer is private, so speculative
+	// execution cannot be committed and cannot disturb the consensus state db
+	// it was derived from.
 	sandbox bool
-	// snap is a LevelDB snapshot taken at Simulate() so the sandbox cannot
-	// observe later parent commits through the live handle.
+	// speculative marks a sandbox that was seeded with the parent's pending
+	// layer. A committed sandbox starts empty, so nothing an uncommitted (and
+	// possibly doomed) proposal wrote can reach a caller.
+	speculative bool
+	// snap is a LevelDB snapshot taken when the sandbox was created so it
+	// cannot observe later parent commits through the live handle.
 	snap *leveldb.Snapshot
+	// viewRoot is the committed state root the sandbox was pinned at. leaves
+	// is nil in a sandbox, so StateRoot cannot recompute it; this is what lets
+	// a simulated answer name the block it is true of.
+	viewRoot [32]byte
 
 	// nativeSum is the native balance total of the COMMITTED state, kept
 	// current by commit, or nil until it is first needed. It lets
@@ -125,9 +147,39 @@ type StateDB struct {
 	// advances it. pendingRoot is the root PendingStateRoot computed at
 	// generation pendingRootGen, so a commit that follows with the generation
 	// unchanged returns it instead of hashing the whole state a second time.
-	gen            uint64
-	pendingRoot    [32]byte
-	pendingRootGen uint64
+	gen uint64
+
+	// committedRoot is merkleRoot over the committed leaf index, kept beside
+	// that index so a reader does not have to rebuild it.
+	//
+	// Every reader of the committed root was paying a full rebuild: sort every
+	// key, then hash twice per leaf. That is fine for a block commit, which
+	// changes the index anyway, and much less fine for /readyz, /status and
+	// /state/account, which an unauthenticated caller can ask for in a loop
+	// and which reach it through CommittedHeadView. Readiness in particular
+	// used to read nothing but two heights.
+	//
+	// The value is written in the same critical section as the index it
+	// describes, so there is no window where one is newer than the other, and
+	// committedRootValid defaults to false: a path that changes the index
+	// without offering a root makes readers rebuild it, which is slow rather
+	// than wrong. Nothing here may ever return a root the index does not have.
+	committedRoot      [32]byte
+	committedRootValid bool
+	pendingRoot        [32]byte
+	pendingRootGen     uint64
+
+	// importBatches counts the LevelDB batches the last snapshot import
+	// wrote. Import peak memory is proportional to the size of ONE batch, so
+	// the batch count over a known leaf volume is the deterministic seam a
+	// test can assert bounded import against without measuring real memory.
+	importBatches int
+
+	// importPending mirrors keyImportPending: a snapshot import wrote leaf
+	// batches and was interrupted before it could publish them. Such a state
+	// is NOT committed state — it is the wreckage of an import — and the only
+	// thing allowed to replace it is the retry of that same import.
+	importPending bool
 
 	// failNextCommit, when set, is returned by the next commit() and then
 	// cleared. Tests use it to inject a state-write failure after the caller
@@ -157,47 +209,109 @@ func (s *StateDB) cachedRootLocked() ([32]byte, bool) {
 	return [32]byte{}, false
 }
 
+// committedRootLocked is the committed state root. Caller holds s.mu (read is
+// enough): a miss rebuilds without caching, because caching would need the
+// write lock and being slow is better than being racy.
+func (s *StateDB) committedRootLocked() [32]byte {
+	if s.committedRootValid {
+		return s.committedRoot
+	}
+	return merkleRoot(s.leaves)
+}
+
+// setCommittedRootLocked records the root for the leaf index as it stands.
+// Caller holds s.mu for writing, in the same critical section that changed the
+// index — pass a root computed from THAT index and nothing else.
+func (s *StateDB) setCommittedRootLocked(root [32]byte) {
+	s.committedRoot, s.committedRootValid = root, true
+}
+
+// invalidateCommittedRootLocked says the cached root no longer describes the
+// index. Caller holds s.mu for writing. Every path that changes the committed
+// leaf index calls this, and then sets the new root if it has one to hand.
+func (s *StateDB) invalidateCommittedRootLocked() {
+	s.committedRootValid = false
+}
+
 // ErrSandboxCommit is returned when a caller tries to persist a simulation.
 var ErrSandboxCommit = errors.New("state: cannot commit a simulation sandbox")
 
-// Simulate returns a throwaway StateDB for speculative execution — RPC view
-// calls and gas estimation.
+// SimulateCommitted returns a throwaway StateDB for execution against
+// COMMITTED state alone — the default view for RPC view calls and gas
+// estimation, and the analogue of eth_call at the `latest` block tag.
 //
-// It reads through to the same committed LevelDB state and starts from a copy
-// of the current pending layer, but owns that layer outright: its own dirty
-// map, code cache, raw overlay, journal, snapshot marks and snapshot-id
-// counter. Handing the live
-// StateDB to the VM instead (which /call and /estimate did) shares one journal
-// between an unauthenticated public endpoint and block execution. The engine
-// snapshots and reverts freely during a call, and RevertToSnapshot replays
-// undos past any earlier mark and drops the snapshot IDs above it — so a remote
-// caller could roll back the block being assembled.
+// It carries the committed root and applied height it was pinned at, so a
+// caller can label its answer with the block that answer is true of, and it
+// starts with an empty pending layer: the in-flight overlay belongs to a block
+// being assembled or validated, which DiscardPending may throw away, and a
+// simulation that reads it reports the result of a block that never happened.
 //
-// The copy is shallow, which is safe because pending entries are only ever
-// replaced, never mutated in place: SetAccount stores a copy and GetAccount
-// hands one back, and SetStorageValue does the same for raw slots. Writes made
-// during the simulation therefore land only in the sandbox's maps.
+// It fails when the LevelDB snapshot cannot be taken rather than reading
+// through to the live database.
+func (s *StateDB) SimulateCommitted() (*StateDB, error) {
+	return s.simulate(false)
+}
+
+// SimulateSpeculative is SimulateCommitted plus a copy of the current pending
+// layer. It answers "what would this call see if the work in flight commits",
+// which is a weaker and explicitly different claim; nothing guarantees that
+// work commits. Callers ask for it deliberately.
 //
-// The sandbox refuses to Commit. Callers simply drop it when the call returns.
-func (s *StateDB) Simulate() *StateDB {
+// The pending copy is shallow, which is safe because pending entries are only
+// ever replaced, never mutated in place: SetAccount stores a copy and
+// GetAccount hands one back, and SetStorageValue does the same for raw slots.
+// Writes made during the simulation therefore land only in the sandbox's maps.
+func (s *StateDB) SimulateSpeculative() (*StateDB, error) {
+	return s.simulate(true)
+}
+
+// simulate builds the sandbox. It owns its pending layer outright: its own
+// dirty map, code cache, raw overlay, journal, snapshot marks and snapshot-id
+// counter. Handing the live StateDB to the VM instead (which /call and
+// /estimate did) shares one journal between an unauthenticated public endpoint
+// and block execution. The engine snapshots and reverts freely during a call,
+// and RevertToSnapshot replays undos past any earlier mark and drops the
+// snapshot IDs above it — so a remote caller could roll back the block being
+// assembled.
+//
+// The sandbox refuses to Commit. Callers Close it when the call returns, which
+// releases the pinned snapshot.
+func (s *StateDB) simulate(speculative bool) (*StateDB, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	sim := &StateDB{
-		db:         s.db,
-		dirty:      make(map[qcrypto.Address]*types.Account, len(s.dirty)),
-		codeCache:  make(map[[32]byte][]byte, len(s.codeCache)),
-		pendingRaw: make(map[string][]byte, len(s.pendingRaw)),
-		leaves:     nil, // state roots are meaningless for a simulation
-		snapshots:  make(map[uint64]int),
-		sandbox:    true,
-		gen:        1,
+	if s.db == nil {
+		return nil, fmt.Errorf("%w: no database", ErrNoCommittedView)
 	}
-	if snap, err := s.db.GetSnapshot(); err == nil {
-		sim.snap = snap
+	head, err := s.committedHeadLocked()
+	if err != nil {
+		return nil, err
+	}
+	snap, err := s.db.GetSnapshot()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNoCommittedView, err)
+	}
+
+	sim := &StateDB{
+		db:            s.db,
+		dirty:         make(map[qcrypto.Address]*types.Account, len(s.dirty)),
+		codeCache:     make(map[[32]byte][]byte, len(s.codeCache)),
+		pendingRaw:    make(map[string][]byte, len(s.pendingRaw)),
+		leaves:        nil, // state roots are meaningless for a simulation
+		snapshots:     make(map[uint64]int),
+		sandbox:       true,
+		speculative:   speculative,
+		snap:          snap,
+		viewRoot:      head.Root,
+		appliedHeight: head.Height,
+		heightKnown:   head.HeightKnown,
+		gen:           1,
 	}
 	if s.nativeSum != nil {
 		sim.nativeSum = new(big.Int).Set(s.nativeSum)
+	}
+	if !speculative {
+		return sim, nil
 	}
 	for k, v := range s.dirty {
 		sim.dirty[k] = v
@@ -208,11 +322,25 @@ func (s *StateDB) Simulate() *StateDB {
 	for k, v := range s.pendingRaw {
 		sim.pendingRaw[k] = v
 	}
-	return sim
+	return sim, nil
 }
 
-// IsSandbox reports whether this StateDB is a Simulate() overlay.
+// IsSandbox reports whether this StateDB is a simulation overlay.
 func (s *StateDB) IsSandbox() bool { return s.sandbox }
+
+// IsSpeculative reports whether this sandbox carries the pending layer.
+func (s *StateDB) IsSpeculative() bool { return s.speculative }
+
+// SandboxView returns the committed root and height this sandbox was pinned
+// at, and false when this is not a sandbox. On a speculative sandbox it is
+// still the COMMITTED anchor; the pending writes layered on top are not part
+// of it, which is why the two sandbox kinds must be told apart in a response.
+func (s *StateDB) SandboxView() (CommittedHead, bool) {
+	if !s.sandbox {
+		return CommittedHead{}, false
+	}
+	return CommittedHead{Root: s.viewRoot, Height: s.appliedHeight, HeightKnown: s.heightKnown}, true
+}
 
 // NewStateDB opens (or creates) the state database at the given path.
 func NewStateDB(path string) (*StateDB, error) {
@@ -254,11 +382,32 @@ func (s *StateDB) loadLeaves() error {
 					s.heightKnown = true
 				}
 			}
+			if string(k) == keyImportPending {
+				s.importPending = true
+			}
 			continue
 		}
 		s.leaves[string(k)] = qcrypto.Hash32(iter.Value())
 	}
-	return iter.Error()
+	if err := iter.Error(); err != nil {
+		return err
+	}
+	// Computed once here, at open, rather than left for the first reader: the
+	// scan above already walked every leaf, so this is the same order of work
+	// on a path that is not yet serving anyone.
+	s.invalidateCommittedRootLocked()
+	s.setCommittedRootLocked(merkleRoot(s.leaves))
+	return nil
+}
+
+// HasPendingSnapshotImport reports a snapshot import that wrote leaf batches
+// and never published them. The leaves on disk are not committed state: the
+// executor's recovery treats such a store as "state absent" and re-runs the
+// import from its retained evidence.
+func (s *StateDB) HasPendingSnapshotImport() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.importPending
 }
 
 // SumNativeBalances totals every account's native SPLD balance, overlaying
@@ -461,28 +610,6 @@ func (s *StateDB) GetAccount(addr qcrypto.Address) (*types.Account, error) {
 		return nil, fmt.Errorf("state read error for %s: %w", addr, err)
 	}
 
-	var acc types.Account
-	if err := json.Unmarshal(data, &acc); err != nil {
-		return nil, fmt.Errorf("failed to decode account %s: %w", addr, err)
-	}
-	if acc.Balance == nil {
-		acc.Balance = big.NewInt(0)
-	}
-	return &acc, nil
-}
-
-// CommittedAccount reads the account from committed state only (the durable
-// LevelDB leaf set), ignoring the pending overlay. RPC responses that also carry
-// a committed root/height must use this instead of GetAccount, so a speculative
-// pending write cannot leak into a response labeled "committed".
-func (s *StateDB) CommittedAccount(addr qcrypto.Address) (*types.Account, error) {
-	data, err := s.rawGet([]byte(prefixAccount + addr.String()))
-	if err == leveldb.ErrNotFound {
-		return types.NewAccount(addr), nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("state read error for %s: %w", addr, err)
-	}
 	var acc types.Account
 	if err := json.Unmarshal(data, &acc); err != nil {
 		return nil, fmt.Errorf("failed to decode account %s: %w", addr, err)
@@ -930,6 +1057,7 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	}
 
 	// Durable — now advance the in-memory index and clear the pending layer.
+	s.invalidateCommittedRootLocked()
 	for _, u := range updates {
 		s.leaves[u.key] = u.hash
 	}
@@ -950,6 +1078,9 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	if !haveRoot {
 		root = merkleRoot(s.leaves)
 	}
+	// root is this index's root either way: the pending root was computed over
+	// exactly the updates just applied, so caching it costs nothing here.
+	s.setCommittedRootLocked(root)
 	return root, nil
 }
 
@@ -960,26 +1091,6 @@ func (s *StateDB) AppliedHeight() (uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.appliedHeight, s.heightKnown
-}
-
-// CommittedView is a consistent snapshot of the committed state: the root and
-// applied height read under one lock, so a concurrent commit cannot mix an old
-// root with a new height (or vice versa).
-type CommittedView struct {
-	Root        [32]byte
-	Height      uint64
-	HeightKnown bool
-}
-
-// CommittedView returns the committed root and applied height together.
-func (s *StateDB) CommittedView() CommittedView {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return CommittedView{
-		Root:        merkleRoot(s.leaves),
-		Height:      s.appliedHeight,
-		HeightKnown: s.heightKnown,
-	}
 }
 
 // FailNextCommit makes the next Commit/CommitWithHeight return err without
@@ -1060,7 +1171,7 @@ func (s *StateDB) StateRoot() ([32]byte, error) {
 	if s.sandbox {
 		return [32]byte{}, ErrSandboxCommit
 	}
-	return merkleRoot(s.leaves), nil
+	return s.committedRootLocked(), nil
 }
 
 // MerkleProof returns the Merkle inclusion proof for an account's leaf in the
@@ -1190,7 +1301,7 @@ func (s *StateDB) AccountProofContext(ctx context.Context, addr qcrypto.Address)
 		LeafPreimage: append([]byte(nil), preimage...),
 		LeafHash:     leafDigest(targetKey, valueHash),
 		Steps:        steps,
-		Root:         merkleRoot(s.leaves),
+		Root:         s.committedRootLocked(),
 		Height:       s.appliedHeight,
 		HeightKnown:  s.heightKnown,
 	}, nil

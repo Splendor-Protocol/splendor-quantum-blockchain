@@ -52,6 +52,12 @@ func TestCallHandlerModuleRead(t *testing.T) {
 	if dep.ContractAddress == nil {
 		t.Fatal("deploy: no contract address")
 	}
+	// /call answers from committed state by default, so the deploy has to be
+	// committed to be visible — an uncommitted module write belongs to a block
+	// that has not happened.
+	if _, err := sdb.Commit(); err != nil {
+		t.Fatalf("commit deploy: %v", err)
+	}
 	token := dep.ContractAddress.String()
 
 	// executor is nil: the module-read path must never dereference it.

@@ -114,9 +114,17 @@ func TestAccountProofIgnoresPendingOverlay(t *testing.T) {
 	}
 }
 
-// CommittedAccount is the committed read used by /state/account; it must ignore
-// the pending overlay exactly like the proof preimage does, so a response that
-// also carries a committed root/height never mixes in a speculative write.
+// The committed read used by /state/account must ignore the pending overlay
+// exactly like the proof preimage does, so a response that also carries a
+// committed root/height never mixes in a speculative write.
+//
+// Originally written against a bare StateDB.CommittedAccount. That read took
+// no lock and was one of TWO unsynchronized reads behind a single response --
+// the account came from one view and the root/height it was labelled with
+// from another, so a commit landing between them produced an answer that was
+// internally consistent with neither. The read now goes through a pinned
+// CommittedView, which is where the guarantee this test describes actually
+// lives; the assertion is unchanged.
 func TestCommittedAccountIgnoresPendingOverlay(t *testing.T) {
 	sdb, err := NewStateDB(t.TempDir())
 	if err != nil {
@@ -136,12 +144,17 @@ func TestCommittedAccountIgnoresPendingOverlay(t *testing.T) {
 	pending.AddBalance(big.NewInt(500))
 	sdb.SetAccount(pending)
 
-	got, err := sdb.CommittedAccount(a)
+	view, err := sdb.CommittedView()
 	if err != nil {
-		t.Fatalf("CommittedAccount: %v", err)
+		t.Fatalf("CommittedView: %v", err)
+	}
+	defer view.Release()
+	got, err := view.Account(a)
+	if err != nil {
+		t.Fatalf("CommittedView.Account: %v", err)
 	}
 	if got.Balance == nil || got.Balance.Cmp(big.NewInt(40)) != 0 {
-		t.Fatalf("CommittedAccount balance = %s, want committed 40 (pending 500 leaked)", got.Balance)
+		t.Fatalf("committed balance = %s, want committed 40 (pending 500 leaked)", got.Balance)
 	}
 	// GetAccount (the live read) still sees the pending value.
 	if live, _ := sdb.GetAccount(a); live.Balance.Cmp(big.NewInt(500)) != 0 {

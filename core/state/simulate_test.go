@@ -55,7 +55,7 @@ func TestSimulateDoesNotDisturbParentPendingState(t *testing.T) {
 	mid.Balance = big.NewInt(900)
 	s.SetAccount(mid)
 
-	sim := s.Simulate()
+	sim := mustSpeculate(t, s)
 
 	// The sandbox sees the parent's pending layer...
 	if got := mustBalance(t, sim, alice); got.Cmp(big.NewInt(900)) != 0 {
@@ -89,7 +89,7 @@ func TestSimulateDoesNotDisturbParentPendingState(t *testing.T) {
 // Sandbox writes must never reach disk, whatever the caller does with them.
 func TestSimulateRefusesToCommit(t *testing.T) {
 	s := newSimStateDB(t)
-	sim := s.Simulate()
+	sim := mustSpeculate(t, s)
 
 	acc := types.NewAccount(simAddr(0xc0))
 	acc.Balance = big.NewInt(42)
@@ -125,7 +125,7 @@ func TestSimulateReadsCommittedState(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if got := mustBalance(t, s.Simulate(), addr); got.Cmp(big.NewInt(555)) != 0 {
+	if got := mustBalance(t, mustSpeculate(t, s), addr); got.Cmp(big.NewInt(555)) != 0 {
 		t.Fatalf("sandbox balance = %s, want 555", got)
 	}
 }
@@ -143,7 +143,7 @@ func TestSimulateDoesNotSeeLaterParentCommit(t *testing.T) {
 		t.Fatalf("first commit: %v", err)
 	}
 
-	sim := s.Simulate()
+	sim := mustSpeculate(t, s)
 	t.Cleanup(func() { _ = sim.Close() })
 
 	next := types.NewAccount(addr)
@@ -170,11 +170,22 @@ func TestSimulateCloseDoesNotCloseParent(t *testing.T) {
 	if _, err := s.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	sim := s.Simulate()
+	sim := mustSpeculate(t, s)
 	if err := sim.Close(); err != nil {
 		t.Fatalf("sandbox Close: %v", err)
 	}
 	if got := mustBalance(t, s, addr); got.Cmp(big.NewInt(7)) != 0 {
 		t.Fatalf("parent unreadable after sandbox Close: %s", got)
 	}
+}
+
+// mustSpeculate is SimulateSpeculative for tests that assert the sandbox sees
+// the parent's uncommitted pending layer.
+func mustSpeculate(t *testing.T, s *StateDB) *StateDB {
+	t.Helper()
+	sim, err := s.SimulateSpeculative()
+	if err != nil {
+		t.Fatalf("SimulateSpeculative: %v", err)
+	}
+	return sim
 }

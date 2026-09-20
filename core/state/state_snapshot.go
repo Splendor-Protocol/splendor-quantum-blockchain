@@ -361,6 +361,11 @@ func (s *StateDB) ImportSnapshot(leaves []types.StateLeaf, height uint64, wantRo
 	}
 
 	s.leaves = index
+	// Same contract as the JSONL import: replacing the committed index
+	// invalidates the cached root, and wantRoot was checked against this very
+	// index a few lines above, so it is the root to publish.
+	s.invalidateCommittedRootLocked()
+	s.setCommittedRootLocked(wantRoot)
 	s.nativeSum = nil // the committed total is whatever the snapshot holds; scan it when asked
 	s.touchLocked()
 	s.appliedHeight = height

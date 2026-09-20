@@ -4,8 +4,13 @@
 // GET /state/account/{address}  — account state (balance, nonce, public key)
 // GET /state/proof/{address}    — Merkle inclusion proof for an account
 //
-// Account, proof, root and height come from one committed StateDB view so a
-// verifier never mixes pending overlay with a later head.
+// Every answer here is one block's. The root and the applied height are
+// captured together, the account bytes come from a LevelDB snapshot pinned at
+// that same moment, and block_hash is the block AT that height whose header
+// declares that root — not whatever the head happens to be by the time the
+// response is written. A caller that verifies a proof against state_root can
+// therefore take block_hash as naming the block the root belongs to, the way
+// eth_getProof's proof and state root belong to one block tag.
 package rpc
 
 import (
@@ -38,15 +43,34 @@ func writeStateJSON(w http.ResponseWriter, code int, v interface{}) {
 	json.NewEncoder(w).Encode(v) //nolint:errcheck
 }
 
-func committedHead(stateDB *state.StateDB, executor *block.Executor) (root [32]byte, height uint64, blockHash string) {
-	view := stateDB.CommittedView()
-	root, height = view.Root, view.Height
-	if executor != nil && view.HeightKnown {
-		if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil && latest.Header.Height == height && latest.Header.StateRoot == root {
-			blockHash = hex.EncodeToString(latest.Hash[:])
-		}
+// blockHashForHead resolves the hash of the block a committed view belongs to:
+// the block at the view's EXACT height whose header declares the view's root.
+// Anything else returns "" — a hash that names a different block is worse than
+// no hash, because a verifier has no way to tell.
+//
+// It used to read executor.LatestBlock() after the fact, which paired the head
+// at response-writing time with a root captured earlier; a commit landing in
+// between was invisible in the response.
+func blockHashForHead(executor *block.Executor, head state.CommittedHead) string {
+	if executor == nil || !head.HeightKnown {
+		return ""
 	}
-	return root, height, blockHash
+	blk, err := executor.GetBlockByHeight(head.Height)
+	if err != nil || blk == nil {
+		return ""
+	}
+	if blk.Header.StateRoot != head.Root {
+		return ""
+	}
+	return hex.EncodeToString(blk.Hash[:])
+}
+
+// writeViewError reports a committed view that could not be created. It is a
+// 503, not an empty answer: the node cannot currently speak for any block.
+func writeViewError(w http.ResponseWriter, err error) {
+	writeStateJSON(w, http.StatusServiceUnavailable, map[string]string{
+		"error": "committed state view unavailable: " + err.Error(),
+	})
 }
 
 func decodeCommittedAccount(preimage []byte) (*types.Account, error) {
@@ -63,12 +87,16 @@ func decodeCommittedAccount(preimage []byte) (*types.Account, error) {
 // stateRootHandler returns the current committed state root and block context.
 func stateRootHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		root, height, blockHash := committedHead(stateDB, executor)
-		resp := map[string]interface{}{
-			"state_root":   hex.EncodeToString(root[:]),
-			"block_height": height,
+		head, err := stateDB.CommittedHeadView()
+		if err != nil {
+			writeViewError(w, err)
+			return
 		}
-		if blockHash != "" {
+		resp := map[string]interface{}{
+			"state_root":   hex.EncodeToString(head.Root[:]),
+			"block_height": head.Height,
+		}
+		if blockHash := blockHashForHead(executor, head); blockHash != "" {
 			resp["block_hash"] = blockHash
 		}
 		if executor != nil {
@@ -91,13 +119,26 @@ func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 			return
 		}
 
-		// A committed read: the account bytes come from committed state, not the
-		// pending overlay, so they agree with the root/height below. Building the
-		// proof here would walk and hash every committed leaf under the state read
-		// lock for an unauthenticated, unguarded route, and each in-flight request
-		// would hold block commit off for the length of that walk. Proofs come
-		// from /state/proof, behind the simulation guard.
-		acc, err := stateDB.CommittedAccount(addr)
+		// One pinned view for the whole answer. GetAccount, which this used
+		// to call, reads the dirty overlay first — the block being assembled
+		// or the proposal being validated — and the response then wore the
+		// committed root and applied height regardless, so a proposal that
+		// DiscardPending threw away was served as chain state.
+		//
+		// A point read, as before this route existed alongside /state/proof.
+		// Building the proof here would walk and hash every committed leaf
+		// under the state read lock for an unauthenticated, unguarded route,
+		// and each in-flight request would hold block commit off for the
+		// length of that walk. Proofs come from /state/proof, behind the
+		// simulation guard.
+		view, err := stateDB.CommittedView()
+		if err != nil {
+			writeViewError(w, err)
+			return
+		}
+		defer view.Release()
+
+		acc, err := view.Account(addr)
 		if err != nil {
 			writeStateJSON(w, http.StatusNotFound, map[string]string{
 				"error": fmt.Sprintf("account %s not found: %s", addrStr, err.Error()),
@@ -105,16 +146,15 @@ func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 			return
 		}
 
-		root, height, blockHash := committedHead(stateDB, executor)
 		resp := map[string]interface{}{
 			"address":        addrStr,
 			"balance":        acc.Balance.String(),
 			"nonce":          acc.Nonce,
 			"has_public_key": acc.HasPublicKey(),
-			"state_root":     hex.EncodeToString(root[:]),
-			"block_height":   height,
+			"state_root":     hex.EncodeToString(view.Root[:]),
+			"block_height":   view.Height,
 		}
-		if blockHash != "" {
+		if blockHash := blockHashForHead(executor, view.CommittedHead); blockHash != "" {
 			resp["block_hash"] = blockHash
 		}
 		if acc.HasPublicKey() {
@@ -138,7 +178,7 @@ func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.H
 			return
 		}
 
-		proof, err := stateDB.AccountProofContext(r.Context(), addr)
+		proof, err := stateDB.CommittedAccountProof(r.Context(), addr)
 		if err != nil {
 			if r.Context().Err() != nil {
 				writeStateJSON(w, http.StatusRequestTimeout, map[string]string{
@@ -165,17 +205,9 @@ func merkleProofHandler(stateDB *state.StateDB, executor *block.Executor) http.H
 			})
 			return
 		}
-		// The block hash must identify the SAME block the proof commits to: resolve
-		// it by the proof's exact height and require the header state root to match
-		// the proof root. A concurrent commit cannot then associate a later head
-		// with this earlier proof.
-		var blockHash string
-		if executor != nil && proof.HeightKnown {
-			if b, berr := executor.GetBlockByHeight(proof.Height); berr == nil && b != nil &&
-				b.Header.Height == proof.Height && b.Header.StateRoot == proof.Root {
-				blockHash = hex.EncodeToString(b.Hash[:])
-			}
-		}
+		// The block the proof's own root and height name — resolved from the
+		// proof, never from the head as it stands now.
+		blockHash := blockHashForHead(executor, proof.Head())
 
 		steps := make([]map[string]interface{}, len(proof.Steps))
 		for i, step := range proof.Steps {

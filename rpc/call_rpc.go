@@ -16,10 +16,12 @@ package rpc
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -57,6 +59,12 @@ type callRequest struct {
 	Data     string `json:"data,omitempty"`
 	Encoding string `json:"encoding,omitempty"` // "hex" (default) | "base64"
 	Value    string `json:"value,omitempty"`    // decimal string, default "0"
+	// View selects the state the call runs against: "committed" (default, the
+	// applied state of the block named in the response) or "speculative"
+	// (committed state plus the uncommitted pending layer of the block being
+	// assembled or validated). "pending" and "latest" are accepted as the
+	// familiar spellings of the two.
+	View string `json:"view,omitempty"`
 }
 
 type callResponse struct {
@@ -65,6 +73,56 @@ type callResponse struct {
 	Reverted     bool        `json:"reverted"`
 	RevertReason string      `json:"revert_reason,omitempty"`
 	Decoded      interface{} `json:"decoded,omitempty"` // decoded value for native-module reads
+	// The state this answer is true of. ViewHeight/ViewRoot are the committed
+	// anchor even when View is "speculative": the pending writes on top of it
+	// may never commit.
+	View       string `json:"view"`
+	ViewHeight uint64 `json:"view_height"`
+	ViewRoot   string `json:"view_root"`
+}
+
+// View names for callRequest.View / callResponse.View.
+const (
+	ViewCommitted   = "committed"
+	ViewSpeculative = "speculative"
+)
+
+// parseView resolves the requested state view. An unknown name is refused
+// rather than quietly served from the default: a caller asking for a view this
+// node does not have must not be told the answer came from it.
+func parseView(name string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", ViewCommitted, "latest":
+		return ViewCommitted, nil
+	case ViewSpeculative, "pending":
+		return ViewSpeculative, nil
+	default:
+		return "", fmt.Errorf("unknown 'view' %q (want %q or %q)", name, ViewCommitted, ViewSpeculative)
+	}
+}
+
+// openSim creates the sandbox for a view. A sandbox that cannot pin its
+// LevelDB snapshot is an error, not a silent read of live state: the response
+// labels itself with a height and a root, and both would be lies.
+func openSim(stateDB *state.StateDB, view string) (*state.StateDB, state.CommittedHead, error) {
+	var (
+		sim *state.StateDB
+		err error
+	)
+	if view == ViewSpeculative {
+		sim, err = stateDB.SimulateSpeculative()
+	} else {
+		sim, err = stateDB.SimulateCommitted()
+	}
+	if err != nil {
+		return nil, state.CommittedHead{}, err
+	}
+	head, _ := sim.SandboxView()
+	return sim, head, nil
+}
+
+func writeViewUnavailable(w http.ResponseWriter, err error) {
+	writeError(w, http.StatusServiceUnavailable, "state view unavailable: "+err.Error())
 }
 
 func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.HandlerFunc {
@@ -85,14 +143,29 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 			return
 		}
 
-		// Speculative execution runs against a private overlay. The engine
-		// snapshots and reverts as it goes, and the live StateDB's journal is
-		// shared with block execution — so simulating on it lets an anonymous
-		// caller roll back the block being assembled.
-		sim := stateDB.Simulate()
+		view, err := parseView(req.View)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		// Execution runs against a private overlay. The engine snapshots and
+		// reverts as it goes, and the live StateDB's journal is shared with
+		// block execution — so simulating on it lets an anonymous caller roll
+		// back the block being assembled.
+		sim, head, err := openSim(stateDB, view)
+		if err != nil {
+			writeViewUnavailable(w, err)
+			return
+		}
 		// The sandbox pins a LevelDB snapshot; release it with the request
 		// rather than at GC, or every /call defers compaction for a while.
 		defer sim.Close()
+		viewFields := func(resp *callResponse) {
+			resp.View = view
+			resp.ViewHeight = head.Height
+			resp.ViewRoot = hex.EncodeToString(head.Root[:])
+		}
 
 		// Native-module read (token / DEX view calls). Routed explicitly: the
 		// module-router address is not a bytecode contract, and a write action
@@ -104,7 +177,9 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 				writeError(w, http.StatusBadRequest, derr.Error())
 				return
 			}
-			writeJSON(w, http.StatusOK, callResponse{Decoded: decoded})
+			resp := callResponse{Decoded: decoded}
+			viewFields(&resp)
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 
@@ -124,11 +199,8 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 			return
 		}
 
-		var height uint64
-		if executor != nil {
-			height, _ = executor.LatestHeight()
-		}
-		res, cerr := vm.NewEngine(sim).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
+		height := simHeight(sim, executor)
+		res, cerr := simEngine(sim, executor).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
 		if writeSimCancel(w, cerr) {
 			return
 		}
@@ -145,6 +217,7 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 			GasUsed:    res.GasUsed,
 			Reverted:   res.Reverted,
 		}
+		viewFields(&resp)
 		if res.Reverted || res.Err != nil {
 			resp.Reverted = true
 			if res.Err != nil {
@@ -164,6 +237,8 @@ type estimateRequest struct {
 	Data     string `json:"data,omitempty"`
 	Encoding string `json:"encoding,omitempty"`
 	Value    string `json:"value,omitempty"`
+	// View selects the state the estimate runs against; see callRequest.View.
+	View string `json:"view,omitempty"`
 }
 
 type estimateResponse struct {
@@ -173,6 +248,10 @@ type estimateResponse struct {
 	Reverted     bool   `json:"reverted"`
 	RevertReason string `json:"revert_reason,omitempty"`
 	Note         string `json:"note,omitempty"`
+	// The state this estimate is true of; see callResponse.
+	View       string `json:"view"`
+	ViewHeight uint64 `json:"view_height"`
+	ViewRoot   string `json:"view_root"`
 }
 
 func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool *mempool.Mempool) http.HandlerFunc {
@@ -192,6 +271,20 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		view, err := parseView(req.View)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// One view for the whole estimate: the affordability check below and
+		// the VM run must not read two different states.
+		sim, head, err := openSim(stateDB, view)
+		if err != nil {
+			writeViewUnavailable(w, err)
+			return
+		}
+		defer sim.Close()
+
 		txType := req.Type
 		if txType == 0 {
 			if len(calldata) > 0 {
@@ -212,6 +305,9 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 		resp := estimateResponse{
 			Fee:        fmt.Sprintf("%d", minFee),
 			FeeIsFloor: true,
+			View:       view,
+			ViewHeight: head.Height,
+			ViewRoot:   hex.EncodeToString(head.Root[:]),
 			Note:       "on Splendor Quantum the fee is a mempool floor a sender may exceed for priority; the floor rises while the pool is congested, so re-quote before signing. It is decoupled from VM gas — 'gas' is the VM meter and applies to contract calls only",
 		}
 
@@ -222,7 +318,7 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid 'from' address: %v", ferr))
 				return
 			}
-			if bal, berr := stateDB.GetBalance(from); berr == nil {
+			if bal, berr := sim.GetBalance(from); berr == nil {
 				need := new(big.Int).Add(value, big.NewInt(minFee))
 				if bal.Cmp(need) < 0 {
 					resp.Reverted = true
@@ -243,16 +339,11 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 				// Validate the envelope so a malformed call is flagged (no
 				// execution), against the live schedule at head+1 so a
 				// fork-gated action reads "not active" before it is signed.
-				var (
-					schedule forks.Schedule
-					next     uint64
-				)
+				var schedule forks.Schedule
 				if executor != nil {
 					schedule = executor.Forks()
-					head, _ := executor.LatestHeight()
-					next = head + 1
 				}
-				if _, verr := vm.PreflightModuleCall(calldata, schedule, next); verr != nil {
+				if _, verr := vm.PreflightModuleCall(calldata, schedule, simHeight(sim, executor)); verr != nil {
 					resp.Reverted = true
 					if resp.RevertReason == "" {
 						resp.RevertReason = verr.Error()
@@ -264,13 +355,11 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 				if req.From != "" {
 					from, _ = qcrypto.AddressFromString(req.From)
 				}
-				var height uint64
-				if executor != nil {
-					height, _ = executor.LatestHeight()
-				}
-				sim := stateDB.Simulate()
-				res, err := vm.NewEngine(sim).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
-				sim.Close() // releases the pinned LevelDB snapshot; res is a value copy
+				// The committed/speculative view opened above owns sim and
+				// closes it; run it under the same fork rules consensus uses,
+				// at head+1 so a fork activating there is already active.
+				height := simHeight(sim, executor)
+				res, err := simEngine(sim, executor).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
 				if writeSimCancel(w, err) {
 					return
 				}
@@ -296,6 +385,58 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// simEngine builds the VM engine the simulation endpoints run on.
+//
+// A bare vm.NewEngine carries no fork predicates, so gasV1/callV1 read false
+// however the chain is configured: once vm_gas_v1 or vm_call_v1 activate,
+// /call and /estimate would answer with rules consensus has already left
+// behind — a caller would be quoted a child-gas, copy-charge and CALL-value
+// model the block that executes the transaction does not use. Consensus
+// installs these in block.NewExecutor (SetGasRules / SetCallRules over the
+// live schedule); the simulation has to carry the same ones or it is not
+// simulating the chain. The schedule is read per request, so one installed
+// after the server was built is picked up, as /status picks it up.
+func simEngine(sim *state.StateDB, executor *block.Executor) *vm.Engine {
+	e := vm.NewEngine(sim)
+	if executor == nil {
+		return e
+	}
+	schedule := executor.Forks() // nil-safe: Schedule.Active on nil reports false
+	e.SetGasRules(func(h uint64) bool { return schedule.Active(forks.VMGasV1, h) })
+	e.SetCallRules(func(h uint64) bool { return schedule.Active(forks.VMCallV1, h) })
+	return e
+}
+
+// simHeight is the height a simulation is evaluated at: head+1, the block a
+// transaction sent now would land in — the same height the module preflight in
+// /estimate already uses. Simulating at the head itself re-runs the rules of a
+// block that has already been decided, so a fork activating at head+1 would be
+// reported inactive by /call and /estimate throughout the block in which it
+// first applies, which is exactly when a caller consults them.
+//
+// The height comes from the pinned view when there is one, not from the
+// executor. Asking the executor separately meant a commit landing between
+// opening the view and reading the height evaluated the call one block ahead of
+// the state it was actually running against — the same two-reads-of-one-thing
+// the committed view exists to prevent, reintroduced a line later. A sandbox
+// carries the applied height of the snapshot it pinned, so it can answer for
+// itself; the executor is the fallback for a caller that has no view.
+func simHeight(sim *state.StateDB, executor *block.Executor) uint64 {
+	if sim != nil {
+		if h, ok := sim.AppliedHeight(); ok {
+			return h + 1
+		}
+	}
+	if executor == nil {
+		return 0
+	}
+	head, err := executor.LatestHeight()
+	if err != nil {
+		return 0
+	}
+	return head + 1
+}
 
 // headReadContext describes the chain head for a native-module read. It is
 // zero when there is no executor to ask or the chain has no block yet; module
