@@ -78,14 +78,15 @@ type codegen struct {
 	// here. Saved and restored around branches and loop bodies.
 	slotLive map[string]bool
 
-	// ctx bounds codegen: emittedItemBudget counts down every asm item and
-	// inlineDepth bounds nested inlining. Recursion is rejected in the checker,
-	// but an expanding acyclic call graph (f0→f1→f2→…) still grows bytecode
-	// geometrically with no per-call source size, so a budget and a depth
-	// ceiling are the only bound that make the deadline meaningful.
-	ctx               context.Context
-	emittedItemBudget int
-	inlineDepth       int
+	// ctx bounds codegen: stepBudget counts down every statement/expression
+	// node walked and inlineDepth bounds nested inlining, while the emitted
+	// size is bounded on g.a (items and bytes). Recursion is rejected in the
+	// checker, but an expanding acyclic call graph (f0→f1→f2→…) still grows
+	// bytecode geometrically with no per-call source size, so these budgets
+	// are the only bound that make the deadline meaningful.
+	ctx         context.Context
+	stepBudget  int
+	inlineDepth int
 }
 
 // slotAddr is the memory offset of cache word i.
@@ -318,14 +319,45 @@ func countLocals(body []stmt) int {
 	return n
 }
 
-// MaxEmittedItems bounds the number of asm items codegen may produce for one
-// contract. Inlined body expansion is the only way a small source becomes a
-// large compile, and this is the ceiling that makes the compile-time budget
-// (and, with ctx, the HTTP deadline) actually bind. Chosen far above any real
-// contract in the subset — a 64 KiB bytecode ceiling needs, in practice, well
-// under this many items — but well under what an expanding call graph can
-// try to emit.
-const MaxEmittedItems = 1 << 20
+// The three generation budgets. Inlined body expansion is the only way a
+// small source becomes a large compile — an acyclic call graph f0<-f1<-f2 that
+// doubles at each level grows as 2^n from a couple of kilobytes of source —
+// so codegen has to be bounded from three directions at once, because each
+// bounds a different resource.
+//
+// Solidity meets the same problem: inlining "is an operation that can cause
+// much bigger code", bounded there by a size/frequency heuristic (the --runs
+// parameter) under the hard EIP-170 deployment ceiling. The equivalent hard
+// ceiling here is the assembler's: jump targets are fixed-width PUSH2, so
+// anything above 64 KiB cannot address its own labels and is refused. These
+// budgets sit above that ceiling — enough headroom that a contract which
+// merely overshoots it still gets the assembler's specific error — and far
+// below what an expanding graph tries to reach.
+//
+// Measured on the repository's corpus at the commit that set them: the four
+// shipped examples emit 111-382 bytes / 63-215 items, and a 1500-function
+// contract, the largest that still assembles under the 64 KiB ceiling, emits
+// 64249 bytes / 34507 items. So the byte budget leaves 8x headroom over the
+// largest contract that can exist and ~1400x over a real one.
+const (
+	// MaxGenerationSteps bounds how many statement/expression nodes codegen
+	// may walk. It is a work budget, not a size one: a walk step can emit many
+	// items or none.
+	MaxGenerationSteps = 1 << 20
+
+	// MaxAsmItems bounds how many asm items may be held at once. This is the
+	// memory budget: an item is ~32 bytes plus, for a push, its constant, and
+	// the whole list is live until assembly. Without it a single request held
+	// 362-432 MiB of live heap before the step budget stopped it — multiplied
+	// by the in-flight request caps, which is what made it a denial of service
+	// rather than a slow compile.
+	MaxAsmItems = 1 << 18
+
+	// MaxGeneratedBytes bounds the assembled length of what has been emitted
+	// so far: 8x the 64 KiB ceiling above which nothing can be deployed
+	// anyway.
+	MaxGeneratedBytes = 512 << 10
+)
 
 // MaxInlineDepth bounds nested inlining of internal functions. Recursive call
 // graphs are rejected by the checker, so this is defence in depth: a chain of
@@ -333,18 +365,31 @@ const MaxEmittedItems = 1 << 20
 // product of body sizes, and this ceiling stops pathological chains.
 const MaxInlineDepth = 64
 
-// spend consumes one unit of the emitted-item budget and returns an error when
-// the budget is exhausted or the compile context is cancelled. Called from the
-// statement/expression walks so a runaway inlining expansion stops with a
-// controlled error instead of running past the deadline.
+// spend charges one walk step and re-checks the size budgets, returning an
+// error when any of them is spent or the compile context is cancelled. Called
+// from the statement/expression walks and from genInlineCall, so a runaway
+// inlining expansion stops with a controlled error instead of running past the
+// deadline or filling memory.
+//
+// Checking size here rather than at each append keeps the emitters
+// signature-free; the overshoot is bounded by what one node emits, which is a
+// few tens of bytes.
 func (g *codegen) spend() error {
 	if err := g.ctx.Err(); err != nil {
 		return err
 	}
-	if g.emittedItemBudget <= 0 {
+	if g.a.bytes > MaxGeneratedBytes {
+		return fmt.Errorf("compiler: generated %d bytes, above the %d-byte generation ceiling (source expands too far)",
+			g.a.bytes, MaxGeneratedBytes)
+	}
+	if len(g.a.items) > MaxAsmItems {
+		return fmt.Errorf("compiler: generated %d instructions, above the %d-item generation ceiling (source expands too far)",
+			len(g.a.items), MaxAsmItems)
+	}
+	if g.stepBudget <= 0 {
 		return fmt.Errorf("compiler: emitted-item budget exhausted (source expands too far)")
 	}
-	g.emittedItemBudget--
+	g.stepBudget--
 	return nil
 }
 
@@ -356,7 +401,7 @@ func newCodegen(c *contractNode, ctx context.Context) *codegen {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &codegen{a: newAsm(), c: c, states: states, ctx: ctx, emittedItemBudget: MaxEmittedItems}
+	return &codegen{a: newAsm(), c: c, states: states, ctx: ctx, stepBudget: MaxGenerationSteps}
 }
 
 // FunctionSelector is the 4-byte selector of a function signature, computed the

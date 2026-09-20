@@ -223,6 +223,14 @@ func checkCallGraph(c *contractNode) error {
 			if target != nil {
 				edges[owner] = append(edges[owner], target)
 			}
+		case *indexExpr:
+			// `m[f(x)]`. The key is an expression like any other and can hold
+			// a call; missing it let a cycle reach codegen, where it showed up
+			// as an inlining-depth failure after 64 copies of the body had
+			// already been emitted.
+			if ex.key != nil {
+				return addExpr(owner, ex.key)
+			}
 		case *binaryExpr:
 			if err := addExpr(owner, ex.left); err != nil {
 				return err
@@ -230,6 +238,12 @@ func checkCallGraph(c *contractNode) error {
 			return addExpr(owner, ex.right)
 		case *unaryExpr:
 			return addExpr(owner, ex.operand)
+		case *numberExpr, *stringExpr, *identExpr, *msgExpr, nil:
+			// Leaves: nothing inside them can be a call. Listed rather than
+			// defaulted so a new expression form fails this switch's audit
+			// instead of quietly hiding calls from the cycle check.
+		default:
+			return fmt.Errorf("internal: call-graph walk does not handle %T", e)
 		}
 		return nil
 	}
@@ -308,6 +322,15 @@ func checkCallGraph(c *contractNode) error {
 				if err := addStmts(owner, st.body); err != nil {
 					return err
 				}
+			case *breakStmt, *continueStmt, nil:
+				// Leaves: no expression inside them, so nothing can hide a call.
+				// Listed rather than defaulted for the same reason addExpr lists
+				// its leaves — a statement form added later must fail this
+				// audit instead of quietly escaping the cycle check. A call the
+				// check never sees is a recursive contract that reaches code
+				// generation, which is what the budget exists to stop.
+			default:
+				return fmt.Errorf("internal: call-graph walk does not handle statement %T", s)
 			}
 		}
 		return nil

@@ -39,34 +39,46 @@ type item struct {
 // asm accumulates items and assembles them.
 type asm struct {
 	items []item
+	// bytes is the assembled length of items so far, kept as they are appended
+	// so codegen can bound the SIZE of what it generates and not only the
+	// number of walk steps it took to get there. It is exact, not an estimate:
+	// every append charges the same item.size() assemble() will charge.
+	bytes int
 }
 
 func newAsm() *asm { return &asm{} }
 
+// add appends one item and charges its assembled length. Every emitter goes
+// through here so the running size cannot drift from the item list.
+func (a *asm) add(it item) {
+	a.items = append(a.items, it)
+	a.bytes += it.size()
+}
+
 // op appends a bare opcode.
-func (a *asm) op(op byte) { a.items = append(a.items, item{kind: kindOp, op: op}) }
+func (a *asm) op(op byte) { a.add(item{kind: kindOp, op: op}) }
 
 // pushInt appends a minimal-width PUSH of a non-negative integer.
 func (a *asm) pushInt(v int64) { a.pushBig(big.NewInt(v)) }
 
 // pushBig appends a minimal-width PUSH of a non-negative big integer.
 func (a *asm) pushBig(v *big.Int) {
-	a.items = append(a.items, item{kind: kindPush, value: new(big.Int).Set(v)})
+	a.add(item{kind: kindPush, value: new(big.Int).Set(v)})
 }
 
 // pushBytes appends a PUSH of a fixed 32-byte value (e.g. an event topic).
 func (a *asm) pushBytes32(b [32]byte) {
-	a.items = append(a.items, item{kind: kindPush, value: new(big.Int).SetBytes(b[:])})
+	a.add(item{kind: kindPush, value: new(big.Int).SetBytes(b[:])})
 }
 
 // pushLabel appends a fixed PUSH2 of the address label resolves to.
 func (a *asm) pushLabel(name string) {
-	a.items = append(a.items, item{kind: kindPushLabel, label: name})
+	a.add(item{kind: kindPushLabel, label: name})
 }
 
 // label marks the current position with a JUMPDEST that name resolves to.
 func (a *asm) label(name string) {
-	a.items = append(a.items, item{kind: kindLabel, label: name})
+	a.add(item{kind: kindLabel, label: name})
 }
 
 // pushWidth returns the number of operand bytes a minimal PUSH of v needs
