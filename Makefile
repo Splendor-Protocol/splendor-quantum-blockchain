@@ -142,8 +142,8 @@ vulncheck:
 # ── Install Go 1.25 (if not present) ─────────────────────────────────────
 # Must match the `go` directive in go.mod: circl v1.6.5 (ML-DSA-65) needs 1.25.
 install-go:
-	@echo "Installing Go 1.25.0..."
-	wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz -O /tmp/go.tar.gz
+	@echo "Installing Go 1.25.14..."
+	wget -q https://go.dev/dl/go1.25.14.linux-amd64.tar.gz -O /tmp/go.tar.gz
 	sudo rm -rf /usr/local/go
 	sudo tar -C /usr/local -xzf /tmp/go.tar.gz
 	rm /tmp/go.tar.gz
