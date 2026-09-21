@@ -53,7 +53,7 @@ export DS_BUCKET="${DS_BUCKET:-splendor-devnet-stress-640}"
 export DS_WORK="${DS_WORK:-$HOME/.sqc-devnet-stress}"
 export DS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export DS_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.25.0}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.25.14}"
 # infra/bin/qkey (managed devnet/testnet keys); the infra repo is a sibling of the chain repo in the workspace.
 export DS_QKEY="${DS_QKEY:-$HOME/Workspace/splendor/infra/bin/qkey}"
 

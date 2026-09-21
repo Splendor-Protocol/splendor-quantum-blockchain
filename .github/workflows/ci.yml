@@ -28,10 +28,20 @@ concurrency:
 jobs:
   go:
     name: build and test
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 25
     steps:
+      # fetch-depth is pinned because the gofmt gate below needs the PR's base
+      # commit to exist locally. A hosted runner hands out a depth-1 clone, so
+      # that gate has been hitting its "shallow history, skipping" path and
+      # doing nothing. A self-hosted runner reuses its _work directory, so
+      # history accumulates and the gate would start firing on its own, at a
+      # moment nobody chose, against 141 files that are already unformatted.
+      # Fetching the history makes the behaviour the same on both and makes it
+      # a decision rather than a side effect.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -65,8 +75,16 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt would rewrite these files you changed:"; echo "$unformatted"; exit 1
           fi
+      # -p 4 is pinned, not inherited. `go test` defaults -p to NumCPU, so on
+      # ubuntu-24.04 this suite has always run at -p 4 by accident of the
+      # runner having 4 vCPUs. Several consensus tests race real wall-clock
+      # deadlines as short as 30ms (consensus/timer_hygiene_test.go), and they
+      # flake when more package binaries run at once. A self-hosted box with 8
+      # or 16 cores would silently become -p 8/-p 16 and start failing tests
+      # that have nothing wrong with them, so the value the suite was tuned
+      # against is now written down.
       - name: go test
-        run: go test -count=1 ./...
+        run: go test -count=1 -p 4 ./...
       # Scans the reachable dependency graph against the Go vulnerability
       # database. Unlike the GitHub advisory feed this checks what the code
       # actually calls, so a CVE in a required-but-unused module path does not
@@ -96,7 +114,7 @@ jobs:
 
   wasm-drift:
     name: signer WASM matches its source
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 25
     # To push the re-pin below. It writes only the two sqc.networks.json files,
     # and only values it derived from a build of this commit's own source.
@@ -204,7 +222,7 @@ jobs:
     name: tell the wallet extension to re-sync its signer
     needs: wasm-drift
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -216,6 +234,10 @@ jobs:
           CHAIN_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "::warning::the GitHub CLI is not installed on this runner, so the wallet extension was not told the signer may have moved. It will catch up on its own schedule. GitHub-hosted images bundle gh; a self-hosted runner has to install it (see scripts/ci-runner/README.md)."
+            exit 0
+          fi
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::warning::WALLET_DISPATCH_TOKEN is not set, so the wallet extension was not told the signer may have moved. It will catch up on its own schedule. To make it immediate, add a fine-grained PAT (resource owner Splendor-Protocol; only ${WALLET_REPO}; permissions Actions=Read and write, Metadata=Read) as this repo's WALLET_DISPATCH_TOKEN secret."
             exit 0
@@ -227,9 +249,25 @@ jobs:
           gh workflow run sync-signer.yml --repo "$WALLET_REPO" --ref main
           echo "dispatched for chain ${CHAIN_SHA}: https://github.com/${WALLET_REPO}/actions/workflows/sync-signer.yml"
 
+  # CodeQL uploads SARIF to the code-scanning API, and that API refuses a
+  # private repository unless GitHub Advanced Security is enabled on it. This
+  # org is on the free plan with GHAS off, so the API answers
+  #
+  #   403 Advanced Security must be enabled for this repository to use code scanning
+  #
+  # which means this job cannot go green here on ANY runner — hosted or
+  # self-hosted. It is gated off rather than deleted so that enabling GHAS (or
+  # making the repo public) is a one-variable change: set ENABLE_CODEQL=true.
+  # Left ungated it is a permanently red check that teaches people to ignore
+  # red checks.
+  #
+  # Worth knowing before turning it on for a self-hosted runner: the CodeQL
+  # bundle is preinstalled in the hosted image's tool cache and is about a
+  # gigabyte. A self-hosted runner downloads it on every cold run.
   codeql:
     name: CodeQL static analysis (Go)
-    runs-on: ubuntu-24.04
+    if: vars.ENABLE_CODEQL == 'true'
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -249,7 +287,7 @@ jobs:
 
   js:
     name: SDK typechecks and tests
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 20
     # There was no TypeScript or JS job here, only Go and the WASM digest, and
     # three separate breakages rode into main through one merge because of it:
