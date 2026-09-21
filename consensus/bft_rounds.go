@@ -797,6 +797,20 @@ func (e *BFTEngine) roundChangeJustified(rc *RoundChange) bool {
 			Msg("BFT: round-change body does not match the value its certificate proves")
 		return false
 	}
+	// Validate checks structure and signature presence, not authenticity. A
+	// faulty sender can copy a real certificate and corrupt only the attached
+	// body's signature without changing the voted hash. Selecting that body
+	// leaves the new leader unable to re-propose it and stuck in this round.
+	pk := e.findValidatorPubKey(rc.LockedBlock.Header.ValidatorAddr)
+	if pk == nil {
+		return false
+	}
+	if err := rc.LockedBlock.VerifySignature(pk); err != nil {
+		log.Debug().Err(err).Str("from", rc.ValidatorAddr.String()).
+			Uint64("height", rc.Height).Str("producer", rc.LockedBlock.Header.ValidatorAddr.String()).
+			Msg("BFT: round-change body has an invalid producer signature")
+		return false
+	}
 	return e.verifyPOL(rc.Height, uint32(rc.LockedRound), rc.LockedHash, rc.LockedCert)
 }
 
@@ -836,7 +850,14 @@ func (e *BFTEngine) addRoundChangeLocked(rc *RoundChange) {
 		rc, justified = &stripped, false
 	}
 	m[rc.ValidatorAddr] = &roundChangeRecord{rc: rc, justified: justified}
-	need := (e.activeCount()*2)/3 + 1
+	active := e.activeCount()
+	// With no validator set loaded there is no authority against which to
+	// measure a quorum. In particular, (2*0)/3+1 must not make one local
+	// recovery announcement sufficient to propose.
+	if active == 0 {
+		return
+	}
+	need := (active*2)/3 + 1
 	if len(m) >= need {
 		e.rcQCRound = int32(rc.Round)
 	}

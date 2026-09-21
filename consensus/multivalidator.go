@@ -108,8 +108,11 @@ func (m *MultiValidator) ready() bool {
 
 func (m *MultiValidator) Run(ctx context.Context) error {
 	head, _ := m.executor.LatestHeight()
-	m.engine.SetHeight(head + 1)
+	// Crash recovery may announce a durable prevote's round. Load the committed
+	// validator set first so the announcement is measured against the real
+	// quorum instead of the empty set's meaningless quorum of one.
 	m.RefreshSet()
+	m.engine.SetHeight(head + 1)
 
 	// Both callbacks are installed BEFORE the engine loop starts. They used to
 	// be assigned after `go m.engine.Run(ctx)`, which is a data race with the
