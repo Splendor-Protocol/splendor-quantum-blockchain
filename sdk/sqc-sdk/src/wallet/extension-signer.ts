@@ -1,0 +1,413 @@
+/**
+ * ExtensionSigner — Signer backed by the Splendor Quantum Wallet Chrome extension.
+ * Crypto stays in the extension; this class never holds seed/WASM session material.
+ */
+import type { Connection } from '../core/connection.js';
+import type { Signer, TxResult } from '../core/signer.js';
+import { BridgeError, wrapUnknown } from '../errors.js';
+import { BridgeEmitter, type BridgeEventMap } from '../events.js';
+import type {
+  CallOpts,
+  ConnectionState,
+  DeriveInfo,
+  DeployOpts,
+  ModuleCallOpts,
+  PreflightResult,
+  SendTxResult,
+  SignMessageOpts,
+  TransferOpts,
+  UnsignedTx,
+  WalletAccount,
+  X402PayOpts,
+} from '../types.js';
+import { prepareSignMessage } from '../message-domain.js';
+import { fromSPLD } from '../rpc.js';
+import { assertFeeAtLeastMin } from '../encoding.js';
+import {
+  getExtensionProvider,
+  requestWithAlias,
+  toExtensionMethod,
+  type SplendorProviderLike,
+} from './extension-provider.js';
+
+export type ExtensionSignerOptions = {
+  connection: Connection;
+  provider?: SplendorProviderLike;
+  networkId?: string;
+};
+
+function asAddresses(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(String).filter((a) => a.startsWith('SQ:'));
+  if (typeof raw === 'string' && raw.startsWith('SQ:')) return [raw];
+  if (raw && typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    if (typeof o.address === 'string') return [o.address];
+    if (Array.isArray(o.accounts)) return asAddresses(o.accounts);
+  }
+  return [];
+}
+
+export class ExtensionSigner implements Signer {
+  readonly connection: Connection;
+  private readonly provider: SplendorProviderLike;
+  private readonly emitter = new BridgeEmitter();
+  private info: DeriveInfo | null = null;
+  private readonly networkId: string;
+  private unsubs: Array<() => void> = [];
+  /** Serializes sign / submit RPCs so concurrent calls do not race. */
+  private opChain: Promise<unknown> = Promise.resolve();
+
+  constructor(opts: ExtensionSignerOptions) {
+    const provider = opts.provider ?? getExtensionProvider();
+    if (!provider) {
+      throw BridgeError.noProvider(
+        'Splendor Quantum Wallet extension not found (window.splendor)',
+      );
+    }
+    this.provider = provider;
+    this.connection = opts.connection;
+    this.networkId = opts.networkId ?? 'local';
+    this.wireProviderEvents();
+  }
+
+  private wireProviderEvents(): void {
+    const on = this.provider.on?.bind(this.provider);
+    const off = this.provider.removeListener?.bind(this.provider);
+    if (!on) return;
+
+    const onAccounts = (...args: unknown[]) => {
+      const addrs = asAddresses(args[0] ?? args);
+      if (!addrs.length) {
+        this.info = null;
+        this.emitter.emit('disconnect', {});
+        return;
+      }
+      const address = addrs[0]!;
+      this.info = {
+        address,
+        public_key_b64: this.info?.public_key_b64 ?? '',
+        public_key_hex: this.info?.public_key_hex ?? '',
+        keyOrigin: 'native',
+        postQuantumSecure: true,
+      };
+      this.emitter.emit('accountsChanged', { address });
+    };
+    const onDisconnect = () => {
+      this.info = null;
+      this.emitter.emit('disconnect', {});
+    };
+    const onConnect = (...args: unknown[]) => {
+      const addrs = asAddresses(args[0] ?? args);
+      if (addrs[0]) {
+        this.info = {
+          address: addrs[0],
+          public_key_b64: '',
+          public_key_hex: '',
+          keyOrigin: 'native',
+          postQuantumSecure: true,
+        };
+        this.emitter.emit('connect', { address: addrs[0] });
+      }
+    };
+
+    on('accountsChanged', onAccounts);
+    on('disconnect', onDisconnect);
+    on('connect', onConnect);
+    this.unsubs.push(() => {
+      off?.('accountsChanged', onAccounts);
+      off?.('disconnect', onDisconnect);
+      off?.('connect', onConnect);
+    });
+  }
+
+  private async req(method: string, params?: unknown): Promise<unknown> {
+    const preferred = toExtensionMethod(method);
+    try {
+      return await requestWithAlias(this.provider, preferred, params);
+    } catch (e) {
+      throw wrapUnknown(e, 'RPC');
+    }
+  }
+
+  /** Await previous sign/submit promise before running `fn` (simple serializing mutex). */
+  private withOpLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.opChain.then(fn, fn);
+    this.opChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** Request accounts from the extension (opens approval UI). */
+  async connect(): Promise<DeriveInfo> {
+    let accounts = asAddresses(await this.req('splendor_connect', {}));
+    if (!accounts.length) {
+      accounts = asAddresses(await this.req('splendor_accounts'));
+    }
+    if (!accounts.length) {
+      throw BridgeError.userRejected('Extension returned no accounts');
+    }
+    const address = accounts[0]!;
+    this.info = {
+      address,
+      public_key_b64: '',
+      public_key_hex: '',
+      keyOrigin: 'native',
+      postQuantumSecure: true,
+    };
+    this.emitter.emit('connect', { address });
+    return this.info;
+  }
+
+  get account(): WalletAccount | null {
+    if (!this.info) return null;
+    return {
+      address: this.info.address,
+      publicKeyB64: this.info.public_key_b64,
+      keyOrigin: 'native',
+      postQuantumSecure: true,
+    };
+  }
+
+  getAddress(): string {
+    if (!this.info?.address) throw BridgeError.notConnected();
+    return this.info.address;
+  }
+
+  getAddresses(): string[] {
+    return this.info?.address ? [this.info.address] : [];
+  }
+
+  getDeriveInfo(): DeriveInfo | null {
+    return this.info;
+  }
+
+  getConnectionState(): ConnectionState {
+    return this.info ? 'connected' : 'disconnected';
+  }
+
+  isUnlocked(): boolean {
+    return !!this.info;
+  }
+
+  on<K extends keyof BridgeEventMap>(
+    event: K,
+    handler: (payload: BridgeEventMap[K]) => void,
+  ): () => void {
+    return this.emitter.on(event, handler);
+  }
+
+  disconnect(): void {
+    for (const u of this.unsubs) u();
+    this.unsubs = [];
+    void this.req('splendor_disconnect').catch(() => {});
+    this.info = null;
+    this.emitter.emit('disconnect', {});
+  }
+
+  lock(): void {
+    // Extension owns lock UX; clear local session view.
+    this.info = null;
+    this.emitter.emit('lock', {});
+  }
+
+  notifyChainChanged(payload: { chainId: number | string; networkId: string }): void {
+    const chainId =
+      typeof payload.chainId === 'number'
+        ? payload.chainId
+        : Number.parseInt(String(payload.chainId).replace(/\D/g, ''), 10) || 0;
+    this.emitter.emit('chainChanged', { chainId, networkId: payload.networkId });
+  }
+
+  async signMessage(
+    message: string,
+    opts?: SignMessageOpts,
+  ): Promise<{ address: string; publicKeyB64: string; signatureB64: string; message: string }> {
+    if (opts?.raw === true) {
+      throw BridgeError.userRejected(
+        'splendor_signMessage rejects raw:true — domain separation required',
+      );
+    }
+    return this.withOpLock(() => this.signMessageUnlocked(message, opts));
+  }
+
+  private async signMessageUnlocked(
+    message: string,
+    opts?: SignMessageOpts,
+  ): Promise<{ address: string; publicKeyB64: string; signatureB64: string; message: string }> {
+    if (!this.info) throw BridgeError.notConnected();
+    const prepared = prepareSignMessage(message, opts);
+    const raw = await this.req('splendor_signMessage', { message: prepared });
+    if (raw && typeof raw === 'object') {
+      const o = raw as Record<string, unknown>;
+      return {
+        address: String(o.address ?? this.info.address),
+        publicKeyB64: String(o.publicKeyB64 ?? o.public_key_b64 ?? ''),
+        signatureB64: String(o.signatureB64 ?? o.signature ?? o.sig ?? ''),
+        message: String(o.message ?? prepared),
+      };
+    }
+    if (typeof raw === 'string') {
+      return {
+        address: this.info.address,
+        publicKeyB64: '',
+        signatureB64: raw,
+        message: prepared,
+      };
+    }
+    throw BridgeError.rpc('Extension signMessage returned unexpected payload');
+  }
+
+  async sendTransfer(opts: TransferOpts): Promise<SendTxResult> {
+    return this.sendTransaction({ type: 'transfer', ...opts });
+  }
+
+  async sendTransaction(
+    tx: UnsignedTx | object,
+    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+  ): Promise<SendTxResult> {
+    return this.withOpLock(() => this.sendTransactionUnlocked(tx, opts));
+  }
+
+  private async sendTransactionUnlocked(
+    tx: UnsignedTx | object,
+    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+  ): Promise<SendTxResult> {
+    if (!this.info) throw BridgeError.notConnected();
+    const raw = await this.req('splendor_sendTransaction', {
+      tx,
+      waitForConfirmation: opts?.waitForConfirmation,
+      confirmTimeoutMs: opts?.confirmTimeoutMs,
+    });
+    const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    return {
+      status: String(o.status ?? 'ok'),
+      hash: String(o.hash ?? o.tx_hash ?? ''),
+      signedTx: (o.signedTx as object) ?? {},
+      confirmation: o.confirmation as SendTxResult['confirmation'],
+    };
+  }
+
+  async sendModuleCall(opts: ModuleCallOpts): Promise<TxResult> {
+    return this.withOpLock(async () => {
+      // Prefer sqc_moduleCall on extension; fall back to sendTransaction module envelope.
+      try {
+        const raw = await requestWithAlias(this.provider, 'sqc_moduleCall', opts);
+        const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+        return {
+          status: String(o.status ?? 'ok'),
+          hash: String(o.hash ?? o.tx_hash ?? ''),
+          signedTx: (o.signedTx as object) ?? {},
+          confirmation: o.confirmation as TxResult['confirmation'],
+        };
+      } catch {
+        return this.sendTransactionUnlocked({ type: 'module', ...opts });
+      }
+    });
+  }
+
+  async callContract(opts: CallOpts): Promise<TxResult> {
+    return this.withOpLock(() => this.sendTransactionUnlocked({ type: 'call', ...opts }));
+  }
+
+  async deployContract(opts: DeployOpts): Promise<TxResult> {
+    return this.withOpLock(() => this.sendTransactionUnlocked({ type: 'deploy', ...opts }));
+  }
+
+  async waitForConfirmation(opts: {
+    nonceBefore: number;
+    from?: string;
+    hash?: string;
+    timeoutMs?: number;
+    pollMs?: number;
+  }) {
+    return this.connection.waitForConfirmation({
+      ...opts,
+      from: opts.from ?? this.getAddress(),
+    });
+  }
+
+  async getNonce(address?: string) {
+    const addr = address ?? this.getAddress();
+    try {
+      const raw = await requestWithAlias(this.provider, 'sqc_nonce', { address: addr });
+      if (raw && typeof raw === 'object' && 'nonce' in (raw as object)) {
+        return raw as { address: string; nonce: number };
+      }
+    } catch {
+      /* fall through */
+    }
+    return this.connection.getNonce(addr);
+  }
+
+  async getBalance(address?: string) {
+    const addr = address ?? this.getAddress();
+    try {
+      const raw = await requestWithAlias(this.provider, 'sqc_getBalance', { address: addr });
+      if (raw && typeof raw === 'object') return raw as Awaited<ReturnType<Connection['getBalance']>>;
+    } catch {
+      /* fall through */
+    }
+    return this.connection.getBalance(addr);
+  }
+
+  async getLatestBlock() {
+    try {
+      return await requestWithAlias(this.provider, 'sqc_getBlock', { latest: true });
+    } catch {
+      return this.connection.getLatestBlock();
+    }
+  }
+
+  async preflight(opts?: {
+    fee?: string;
+    amount?: string;
+    amountSPLD?: string;
+    address?: string;
+  }): Promise<PreflightResult> {
+    const from = opts?.address || this.getAddress();
+    await this.connection.assertChainId();
+    const bal = await this.getBalance(from);
+    const { nonce } = await this.getNonce(from);
+    const fee = assertFeeAtLeastMin(opts?.fee);
+    const amount =
+      opts?.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts?.amount || '0';
+    const need = BigInt(amount) + BigInt(fee);
+    const have = BigInt(bal.balance);
+    return {
+      from,
+      balance: bal.balance,
+      balance_spld: bal.balance_spld,
+      nonce,
+      fee,
+      chainId: this.connection.chainId,
+      sufficient: have >= need,
+    };
+  }
+
+  async payX402(_opts: X402PayOpts): Promise<{
+    payload: object;
+    verify?: { valid: boolean; reason?: string };
+    settle?: object;
+  }> {
+    throw BridgeError.rpc(
+      'payX402 requires an in-page WASM session — use the seed connector (extension path does not settle x402 yet)',
+    );
+  }
+}
+
+export type ConnectExtensionResult = {
+  wallet: ExtensionSigner;
+  info: DeriveInfo;
+  connection: Connection;
+};
+
+/** Unlock an ExtensionSigner against an existing Connection. */
+export async function connectExtension(
+  opts: ExtensionSignerOptions,
+): Promise<ConnectExtensionResult> {
+  const wallet = new ExtensionSigner(opts);
+  const info = await wallet.connect();
+  return { wallet, info, connection: opts.connection };
+}

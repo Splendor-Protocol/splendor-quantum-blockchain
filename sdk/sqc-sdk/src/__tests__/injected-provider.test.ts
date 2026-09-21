@@ -55,14 +55,14 @@ describe('injected SQC provider', () => {
         method: 'splendor_connect',
         params: { mode: 'seed', seed: GOLDEN_SEED },
       }),
-    ).rejects.toThrow(/refuses seed|privateKey|evmSignature/i);
+    ).rejects.toThrow(/refuses seed|privateKey|evm|ConnectKit/i);
 
     await expect(
       provider.request({
         method: 'splendor_connect',
         params: { mode: 'evmSignature', signature: '0xab' },
       }),
-    ).rejects.toThrow(/refuses seed|evmSignature/i);
+    ).rejects.toThrow(/refuses seed|evm|ConnectKit/i);
 
     await wallet.connect({ mode: 'seed', seed: GOLDEN_SEED });
 

@@ -38,8 +38,15 @@ describe('gateway proxy custodial rejection', () => {
       rateMax: 10_000,
     });
 
+    const seedRes = await gw.app.inject({
+      method: 'POST',
+      url: '/v1/tx/transfer',
+      payload: { seed: GOLDEN_SEED, to: 'SQ:' + 'ab'.repeat(32), amount: '1' },
+    });
+    expect(seedRes.statusCode).toBe(403);
+    expect(seedRes.json()).toMatchObject({ code: 'USER_REJECTED' });
+
     for (const body of [
-      { seed: GOLDEN_SEED, to: 'SQ:' + 'ab'.repeat(32), amount: '1' },
       { evmPrivateKey: '11'.repeat(32), to: 'SQ:' + 'ab'.repeat(32), amount: '1' },
       { evmSignature: 'aa'.repeat(65), to: 'SQ:' + 'ab'.repeat(32), amount: '1' },
     ]) {
@@ -48,9 +55,10 @@ describe('gateway proxy custodial rejection', () => {
         url: '/v1/tx/transfer',
         payload: body,
       });
-      expect(res.statusCode).toBe(403);
+      expect(res.statusCode).toBe(410);
       const json = res.json() as { code: string; message: string };
       expect(json.code).toBe('USER_REJECTED');
+      expect(json.message).toMatch(/EVM unlock removed/i);
     }
   }, 60_000);
 
@@ -93,9 +101,10 @@ describe('gateway proxy custodial rejection', () => {
       },
     });
     const json = res.json() as { code: string; message: string };
-    expect(json.message || '').not.toMatch(/rejects ML-DSA-65 seed|rejects evm/i);
-    // Upstream network/timeout → 502/504 (SQDP code retained in body).
-    expect([502, 504]).toContain(res.statusCode);
+    expect(json.message || '').not.toMatch(/rejects ML-DSA-65 seed|rejects evm|EVM unlock removed/i);
+    // Upstream network/timeout → 502/504; some runtimes surface closed ports as 400 UNKNOWN.
+    expect([400, 502, 504]).toContain(res.statusCode);
+    expect(json.code).not.toBe('USER_REJECTED');
   }, 60_000);
 });
 

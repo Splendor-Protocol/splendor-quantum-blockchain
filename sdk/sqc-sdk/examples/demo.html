@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Splendor PQ Bridge — MetaMask Demo</title>
+  <title>Splendor PQ Bridge — Seed Demo</title>
   <style>
     :root {
       --bg: #0c1210;
@@ -57,10 +57,10 @@
 </head>
 <body>
   <h1>Splendor PQ Bridge</h1>
-  <p class="sub">MetaMask → ML-DSA-65 PQ wallet (WASM signer). Serve this folder with the WASM files.</p>
+  <p class="sub">Native ML-DSA-65 seed wallet (WASM signer). Serve this folder with the WASM files.</p>
 
   <div class="row">
-    <button id="btnConnect">Connect MetaMask</button>
+    <button id="btnConnect">Connect with seed</button>
     <button id="btnBalance" class="secondary" disabled>Refresh balance</button>
     <button id="btnLock" class="secondary" disabled>Lock</button>
   </div>
@@ -100,7 +100,8 @@
     document.getElementById('btnConnect').onclick = async () => {
       try {
         await loadBridge();
-        const info = await bridge.connectFromMetaMask();
+        const seed = window.prompt('32-byte seed hex (64 chars)') || '';
+        const info = await bridge.connect({ mode: 'seed', seed });
         log('Connected');
         log(info);
         document.getElementById('btnBalance').disabled = false;

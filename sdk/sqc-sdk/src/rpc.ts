@@ -69,6 +69,8 @@ export class SqRpc {
   readonly retries: number;
   /** Sticky URL after a successful submit (`stickyOnSuccess`). */
   private stickyUrl: string | null = null;
+  /** Consecutive failovers that started on sticky — clear sticky after threshold. */
+  private stickyFailStreak = 0;
   /** Coalesce identical in-flight GETs. */
   private inflight = new Map<string, Promise<any>>();
 
@@ -118,9 +120,12 @@ export class SqRpc {
     return { ...data, balance_spld: toSPLD(data.balance) };
   }
 
-  async getNonce(address: string): Promise<{ address: string; nonce: number }> {
+  async getNonce(
+    address: string,
+    timeoutMs?: number,
+  ): Promise<{ address: string; nonce: number }> {
     const canonical = assertAddress(address);
-    return this.get(`/nonce/${encodeURIComponent(canonical)}`);
+    return this.get(`/nonce/${encodeURIComponent(canonical)}`, timeoutMs);
   }
 
   async getStatus(): Promise<Record<string, unknown>> {
@@ -237,9 +242,9 @@ export class SqRpc {
     return this.get(`/tx/${encodeURIComponent(h)}`);
   }
 
-  async getTxReceipt(hash: string): Promise<Record<string, unknown>> {
+  async getTxReceipt(hash: string, timeoutMs?: number): Promise<Record<string, unknown>> {
     const h = String(hash).replace(/^0x/i, '');
-    return this.get(`/tx/${encodeURIComponent(h)}/receipt`);
+    return this.get(`/tx/${encodeURIComponent(h)}/receipt`, timeoutMs);
   }
 
   async getContractInfo(address: string): Promise<Record<string, unknown>> {
@@ -375,14 +380,27 @@ export class SqRpc {
     onEvent: (ev: WsEvent) => void,
     onError?: (err: unknown) => void,
   ): Subscription {
-    return subscribe(this.rpcUrl, events, onEvent, onError);
+    const urls = this.orderedUrls();
+    return subscribe(urls, events, onEvent, onError);
+  }
+
+  /** Soft readiness probe — assert chain id against any healthy RPC. */
+  async probeNetwork(): Promise<{ ok: true; chainId: string } | { ok: false; error: BridgeError }> {
+    try {
+      await this.assertChainId();
+      return { ok: true, chainId: this.chainId };
+    } catch (e) {
+      const err = wrapUnknown(e, 'RPC');
+      return { ok: false, error: err };
+    }
   }
 
   /**
    * Confirmation: prefer receipt index when `hash` is set; fall back to nonce advance.
    * Receipt path requires status === 1 (success); status === 0 throws TX_FAILED.
-   * Caveat (nonce-only path, no hash): another tx from the same account can advance the
-   * nonce — weaker confirmation, use hash when available.
+   * Transport failures (NETWORK/TIMEOUT/RPC_UNAVAILABLE) fail fast after a few consecutive polls —
+   * they are not treated as “not indexed yet”.
+   * Caveat (nonce-only path): another tx from the same account can advance the nonce.
    */
   async waitForConfirmation(opts: {
     from: string;
@@ -397,11 +415,38 @@ export class SqRpc {
     const pollMs = opts.pollMs ?? 1_000;
     const deadline = Date.now() + timeoutMs;
     const hash = opts.hash?.replace(/^0x/i, '');
+    /** Cap each poll RPC so confirm wall-clock stays near timeoutMs. */
+    const pollRequestTimeoutMs = Math.min(5_000, Math.max(1_500, Math.floor(timeoutMs / 12)));
+    const MAX_INFRA = 3;
+    const NONCE_FALLBACK_AFTER = 5;
+    let consecutiveInfra = 0;
+    let receiptMissingStreak = 0;
+
+    const isInfra = (e: unknown): boolean => {
+      if (!(e instanceof BridgeError)) return false;
+      return (
+        e.code === 'NETWORK' ||
+        e.code === 'TIMEOUT' ||
+        e.code === 'RPC_UNAVAILABLE' ||
+        (e.code === 'RPC' && rpcHttpStatus(e) !== undefined && rpcHttpStatus(e)! >= 500)
+      );
+    };
+
+    const isNotFound = (e: unknown): boolean => {
+      if (!(e instanceof BridgeError) || e.code !== 'RPC') return false;
+      const status = rpcHttpStatus(e);
+      return status === 404;
+    };
 
     while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const attemptTimeout = Math.min(pollRequestTimeoutMs, remaining);
+
       if (hash) {
         try {
-          const receipt = await this.getTxReceipt(hash);
+          const receipt = await this.getTxReceipt(hash, attemptTimeout);
+          consecutiveInfra = 0;
           const statusRaw = receipt.status;
           let status: number | undefined;
           if (typeof statusRaw === 'number') {
@@ -426,21 +471,74 @@ export class SqRpc {
             throw BridgeError.txFailed(errMsg, receipt);
           }
           if (status === 1) {
-            const { nonce } = await this.getNonce(from);
+            const { nonce } = await this.getNonce(from, attemptTimeout);
             return { confirmed: true, nonce, receipt };
           }
-          // Receipt without a usable status — keep polling.
+          receiptMissingStreak += 1;
         } catch (e) {
           if (e instanceof BridgeError && e.code === 'TX_FAILED') throw e;
-          /* not indexed yet — keep polling */
+          if (isInfra(e)) {
+            consecutiveInfra += 1;
+            if (consecutiveInfra >= MAX_INFRA) {
+              throw BridgeError.rpcUnavailable(
+                `RPC unavailable while confirming ${hash}: ${e instanceof Error ? e.message : String(e)}`,
+                { cause: e, hash },
+              );
+            }
+          } else if (isNotFound(e)) {
+            consecutiveInfra = 0;
+            receiptMissingStreak += 1;
+          } else {
+            // Other RPC (e.g. malformed) — treat as not indexed yet.
+            consecutiveInfra = 0;
+            receiptMissingStreak += 1;
+          }
+        }
+
+        if (receiptMissingStreak >= NONCE_FALLBACK_AFTER) {
+          try {
+            const { nonce } = await this.getNonce(from, attemptTimeout);
+            consecutiveInfra = 0;
+            if (nonce > opts.nonceBefore) {
+              return { confirmed: true, nonce };
+            }
+          } catch (e) {
+            if (isInfra(e)) {
+              consecutiveInfra += 1;
+              if (consecutiveInfra >= MAX_INFRA) {
+                throw BridgeError.rpcUnavailable(
+                  `RPC unavailable while confirming (nonce fallback): ${e instanceof Error ? e.message : String(e)}`,
+                  { cause: e, hash },
+                );
+              }
+            }
+          }
         }
       } else {
-        const { nonce } = await this.getNonce(from);
-        if (nonce > opts.nonceBefore) {
-          return { confirmed: true, nonce };
+        try {
+          const { nonce } = await this.getNonce(from, attemptTimeout);
+          consecutiveInfra = 0;
+          if (nonce > opts.nonceBefore) {
+            return { confirmed: true, nonce };
+          }
+        } catch (e) {
+          if (isInfra(e)) {
+            consecutiveInfra += 1;
+            if (consecutiveInfra >= MAX_INFRA) {
+              throw BridgeError.rpcUnavailable(
+                `RPC unavailable while confirming: ${e instanceof Error ? e.message : String(e)}`,
+                { cause: e },
+              );
+            }
+          } else {
+            throw wrapUnknown(e, 'RPC');
+          }
         }
       }
-      await new Promise((r) => setTimeout(r, pollMs));
+
+      const sleepMs = Math.min(pollMs, Math.max(0, deadline - Date.now()));
+      if (sleepMs <= 0) break;
+      await new Promise((r) => setTimeout(r, sleepMs));
     }
     throw BridgeError.txNotConfirmed(
       `confirmation for ${from} did not complete within ${timeoutMs}ms` +
@@ -448,14 +546,17 @@ export class SqRpc {
     );
   }
 
-  private orderedUrls(preferSticky: boolean): string[] {
-    if (preferSticky && this.stickyUrl) {
+  private orderedUrls(): string[] {
+    if (this.stickyUrl) {
       return [this.stickyUrl, ...this.rpcUrls.filter((u) => u !== this.stickyUrl)];
     }
     return [...this.rpcUrls];
   }
 
-  private async get(path: string): Promise<any> {
+  private async get(path: string, timeoutMs?: number): Promise<any> {
+    if (timeoutMs != null) {
+      return this.request('GET', path, undefined, false, timeoutMs);
+    }
     const key = `GET:${path}`;
     const existing = this.inflight.get(key);
     if (existing) return existing;
@@ -485,9 +586,12 @@ export class SqRpc {
     path: string,
     body: unknown | undefined,
     stickyOnSuccess: boolean,
+    timeoutOverrideMs?: number,
   ): Promise<any> {
-    const urls = this.orderedUrls(stickyOnSuccess);
+    const urls = this.orderedUrls();
     let lastError: unknown;
+    const timeoutMs = timeoutOverrideMs ?? this.timeoutMs;
+    const stickyAtStart = this.stickyUrl;
 
     for (const base of urls) {
       for (let attempt = 0; attempt <= this.retries; attempt++) {
@@ -504,7 +608,7 @@ export class SqRpc {
           };
           if (method === 'POST') init.body = JSON.stringify(body);
 
-          const res = await fetchWithTimeout(base + path, init, this.timeoutMs);
+          const res = await fetchWithTimeout(base + path, init, timeoutMs);
 
           if (res.status >= 500 && attempt < this.retries) {
             await sleep(100 * (attempt + 1));
@@ -512,20 +616,23 @@ export class SqRpc {
           }
 
           const json = await parseResponse(res, path);
-          // Sticky only after successful submit — not on reads.
           if (stickyOnSuccess) {
             this.stickyUrl = base;
+            this.stickyFailStreak = 0;
+          } else if (!stickyAtStart || base === stickyAtStart) {
+            // Success on sticky (or no sticky) clears the fail streak.
+            // Success after failover away from sticky must NOT reset the streak —
+            // three consecutive sticky failovers clear sticky preference.
+            this.stickyFailStreak = 0;
           }
           return json;
         } catch (e) {
           lastError = e;
           if (e instanceof BridgeError && e.code === 'RPC') {
             const status = rpcHttpStatus(e);
-            // 4xx: fail closed — do not retry or failover.
             if (status !== undefined && status >= 400 && status < 500) {
               throw e;
             }
-            // 5xx: retry same URL, then failover.
             if (status !== undefined && status >= 500) {
               if (attempt < this.retries) {
                 await sleep(100 * (attempt + 1));
@@ -533,7 +640,6 @@ export class SqRpc {
               }
               break;
             }
-            // Other RPC (no status): do not failover.
             throw e;
           }
           const retryable =
@@ -544,13 +650,25 @@ export class SqRpc {
             continue;
           }
           if (retryable) {
-            break; // try next URL
+            break;
           }
           throw wrapUnknown(e, 'RPC');
         }
       }
+      // Failed over away from sticky — track streak.
+      if (stickyAtStart && base === stickyAtStart) {
+        this.stickyFailStreak += 1;
+        if (this.stickyFailStreak >= 3) {
+          this.stickyUrl = null;
+          this.stickyFailStreak = 0;
+        }
+      }
     }
-    throw wrapUnknown(lastError, 'RPC');
+    throw BridgeError.rpcUnavailable(
+      `All RPC endpoints failed for ${method} ${path}` +
+        (lastError instanceof Error ? `: ${lastError.message}` : ''),
+      { tried: urls, cause: lastError },
+    );
   }
 }
 
@@ -605,18 +723,22 @@ async function parseResponse(res: Response, path: string): Promise<any> {
   try {
     json = JSON.parse(text);
   } catch {
-    throw BridgeError.rpc(
-      `SQC RPC ${path}: non-JSON (${res.status}): ${text.slice(0, 200)}`,
-      { status: res.status },
-    );
+    throw BridgeError.rpc(`SQC RPC ${path} failed (${res.status})`, {
+      status: res.status,
+      bodyPreview: text.slice(0, 200),
+    });
   }
   if (!res.ok) {
     const details =
       json && typeof json === 'object'
         ? { ...json, status: res.status }
         : { status: res.status, body: json };
+    const short =
+      json && typeof json === 'object' && typeof json.error === 'string'
+        ? String(json.error).slice(0, 120)
+        : undefined;
     throw BridgeError.rpc(
-      `SQC RPC ${path}: ${res.status} ${json.error || text.slice(0, 200)}`,
+      short ? `SQC RPC ${path}: ${res.status} ${short}` : `SQC RPC ${path} failed (${res.status})`,
       details,
     );
   }

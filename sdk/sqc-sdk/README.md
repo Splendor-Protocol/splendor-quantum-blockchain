@@ -68,10 +68,10 @@ const s = await createSession({ network: 'local', mode: 'seed', seed: process.en
 await s.sendSPLD(recipient, '0.01');
 await s.token(tokenAddr).transfer(recipient, '100');
 await s.token(tokenAddr).transferHuman(recipient, '1.5'); // uses on-chain decimals
-await s.bridge(bridgeAddr).claim({ id, asset, amount, recipient, evmTx, attestations });
+await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
 ```
 
-**Browser demo:** [`examples/web-dapp`](examples/web-dapp) — connect, SPLD, QRC-20, Bridge claim. DEX/exchange helpers are unsupported adapters (opt-in only).
+**Browser demo:** [`examples/web-dapp`](examples/web-dapp) — connect, SPLD, QRC-20, DEX swap, Bridge claim.
 
 ### Recipes (bound session)
 
@@ -81,6 +81,7 @@ await s.bridge(bridgeAddr).claim({ id, asset, amount, recipient, evmTx, attestat
 | QRC-20 transfer | `await s.token(addr).transfer(to, '100')` |
 | Human token amount | `await s.token(addr).transferHuman(to, '1.5')` |
 | Deploy + use token | `const { token } = await s.deployToken({ name, symbol, decimals: 18, totalSupply })` |
+| DEX swap | `await s.dex(pool).swap({ tokenIn, amountIn, minAmountOut })` |
 | Bridge claim | `await s.bridge(addr).claim({ id, asset, amount, recipient, evmTx, attestations })` |
 | QRC-1155 mint | `await s.collection(addr).mint(to, id, amount)` |
 | Raw units helper | `fromUnits('1.5', 18)` / `toUnits(raw, 18)` |
@@ -95,17 +96,14 @@ Native modules are also on subpaths `/tokens`, `/defi`, `/bridge`. See [SDK_ARCH
 |------------|--------|
 | Native ML-DSA-65 seed wallet (WASM) | Built |
 | Transfers, deploy, call (Tx types 0x01–0x03) | Built |
-| QRC-20 / QRC-1155 module clients | Built (routed native modules) |
-| Verify / Validators clients | Built (`getVerify` / `getValidators`; routed) |
-| QRC-721 | Routed on-chain; use `sendModuleCall` (no dedicated Program client yet) |
-| DEX + Exchange leftover clients | Unsupported adapters — `registerUnsupportedApplicationAdapters()` or `@splendor/sqc-sdk/defi`. Not routed by the node |
+| QRC-20 / QRC-1155 module clients | Built |
+| DEX + Exchange Program clients | Built |
 | On-chain Bridge module client | Built (`/bridge`; ≠ `@splendor/pq-bridge` shim) |
 | Bytecode contracts (`/contracts`) | Built |
 | Explorer reads + `/ws` subscribe | Built |
 | `modules` factory registry | Built |
 | Connect UI (`@splendor/connect-react`) | Built — native PQ first |
-| Optional MetaMask → PQ derivation | Built — **not post-quantum secure** |
-| Browser wallet extension | Separate repo (`splendor-quantum-wallet-extension`) |
+| Browser wallet extension | Built — `ExtensionSigner` / `connect: 'extension'` |
 | Desktop / mobile wallet apps | Not in this package |
 | Python / Go SDKs | Not published |
 | QSol compile-from-source client | Not in SDK — use repo `sqc-solc` CLI for bytecode |
@@ -126,7 +124,7 @@ Set RPC URLs, gateway port, WASM paths, min fee, default network — SDK, gatewa
 
 ### One-touch connect (dApps)
 
-**React UI kit (recommended for browsers):** [`@splendor/connect-react`](../connect-react) — `ConnectKit` + modular connectors (native ML-DSA first; MetaMask under Legacy).
+**React UI kit (recommended for browsers):** [`@splendor/connect-react`](../connect-react) — `ConnectKit` + modular connectors (Splendor extension + native seed).
 
 **Headless (recommended):** `createSession` — bound modules, no wallet args on writes.
 
@@ -145,20 +143,13 @@ import { connectSplendor, createSplendorClient } from '@splendor/sqc-sdk';
 // Reads only — no signer unlocked yet
 const { provider, wallet, network } = createSplendorClient({ network: 'local' });
 
-// Or unlock in one call (headless) — native ML-DSA-65, no EVM key involved
+// Or unlock in one call (headless) — native ML-DSA-65
 const session = await connectSplendor({
   network: 'local',       // local | testnet | mainnet
-  connect: 'seed',        // seed (native, recommended) | none | evmKey | evmSignature | metamask
+  connect: 'seed',        // 'none' | 'seed' | 'extension'
   seed: process.env.SQC_SEED,   // 32-byte hex, post-quantum entropy
 });
 console.log(session.info.address, session.info.postQuantumSecure); // → true
-```
-
-Legacy fallback for a user whose funds already sit on an EVM-derived address —
-`postQuantumSecure: false`, and the `onWarning` callback fires:
-
-```js
-const session = await connectSplendor({ network: 'local', connect: 'metamask' });
 ```
 
 Preferred beginner API:
@@ -184,7 +175,7 @@ Your app (Node / browser)
                   └─ POST /tx/submit → SQC node
 ```
 
-On-chain public-key signatures use ML-DSA-65. The SDK also uses quantum-resistant hashing (SHA3-256) and, for optional MetaMask onboarding only, classical secp256k1 — that path is explicitly labelled not post-quantum secure.
+On-chain public-key signatures use ML-DSA-65. The SDK also uses quantum-resistant hashing (SHA3-256). Accounts unlock via a native seed or the Splendor browser extension — MetaMask / ECDSA derivation is no longer offered.
 
 ## Native ML-DSA-65 (recommended)
 
@@ -198,35 +189,11 @@ alone: `connectFromSeed` returns `postQuantumSecure: true` and
 [`@splendor/connect-react`](../connect-react) (create or import, first item in
 the modal); the CLI `sqc-wallet` keeps its own encrypted `.sqwallet` key file.
 
-## EVM → PQ mapping (legacy)
+## EVM → PQ mapping (removed)
 
-1. User signs a fixed domain message with MetaMask / EVM key:
+ECDSA / MetaMask derivation (`connectFromMetaMask`, `evmKey`, `evmSignature`) was removed in the Phase 0 hardening cleanup. Use `connectFromSeed` or `connect({ mode: 'extension' })` instead.
 
-```
-Splendor Quantum Chain
-Key derivation v1
-chain: splendor-quantum-1
-```
-
-2. `seed = SHA3-256(signature)`
-3. `ML-DSA-65 keypair = mldsa65.NewKeyFromSeed(seed)`
-4. `SQ address = "SQ:" + hex(SHA3-256(pubkey))`
-
-Same EVM account → same PQ wallet, every time. Non-custodial: the private ML-DSA key stays in WASM memory and is **zeroized** on `lock()` / `disconnect()`.
-
-> ### The EVM path is not quantum-safe
->
-> Transactions are signed with ML-DSA-65, but the key is derived from an ECDSA
-> signature, so the account is only as strong as secp256k1. A quantum adversary
-> can recover the EVM private key from any signature that account has published,
-> replay the deterministic derivation message, and reproduce this ML-DSA key.
->
-> `connectFromMetaMask` / `connectFromEvmPrivateKey` therefore return
-> `postQuantumSecure: false` and `keyOrigin: 'evm-derived'`, and fire the
-> `onWarning` callback. Use `connectFromSeed` with post-quantum entropy for any
-> account that holds value — it returns `postQuantumSecure: true`.
-
-**Important:** The derivation signature **is key material** (`seed = SHA3-256(sig)`). Never log it or post it to a public gateway. The `SQ:` address is **not** your MetaMask `0x` address. Funds live on the PQ address.
+Low-level `derive.ts` helpers (`seedFromEvmSignature`, recover helpers, etc.) remain exported as **`@deprecated` offline tooling only** — do not use them in dApps; ConnectKit no longer offers EVM→PQ unlock.
 
 ## Install / build
 
@@ -299,9 +266,6 @@ const wallet = Wallet.fromProvider(provider);
 // From a 32-byte ML-DSA-65 seed hex (native — backends / agents)
 await wallet.connectFromSeed(process.env.SQC_SEED);
 
-// Legacy: derive from an EVM private key (not post-quantum)
-// await wallet.connectFromEvmPrivateKey(process.env.EVM_KEY);
-
 console.log(wallet.getAddress());
 console.log(await wallet.getBalance());
 
@@ -319,7 +283,7 @@ wallet.disconnect();
 Example script:
 
 ```bash
-EVM_KEY=0x... SQC_RPC=http://localhost:8080 npm run example:node
+PQ_SEED=<64-hex> SQC_RPC=http://localhost:8080 npm run example:node
 ```
 
 ## Browser
@@ -336,17 +300,13 @@ const wallet = new Wallet({
 // Native ML-DSA-65 seed the user created or imported
 await wallet.connectFromSeed(seedHex);
 await wallet.sendTransfer({ to: 'SQ:...', amountSPLD: '1' });
-
-// Legacy fallback (labelled "not post-quantum" in the UI kit)
-// await wallet.connectFromMetaMask();
 ```
 
-Prefer [`@splendor/connect-react`](../connect-react) for the browser — it ships
-the create/import UI and the legacy labelling. See `examples/demo.html`.
+Prefer [`@splendor/connect-react`](../connect-react) for the browser — extension + seed connectors. See `examples/demo.html`.
 
 ## Contracts and QSol ABI
 
-- **Calling convention:** SHA3-256 selectors, compiler-canonical `address` (`4b40e901` for `transfer(address,uint256)`). Legacy `sqaddress` hashes as written (`14cde9ab`) — see SQDP-1 §5.
+- **Calling convention:** SHA3-256 selectors, `sqaddress` (not Solidity `address`), 32-byte words — see SQDP-1 §5.
 - **Deploy/call:** `@splendor/sqc-sdk/contracts` (`Contract`, `deployBytecode`, `getContract`).
 - **Compiler:** A prototype QSol-subset compiler (`compiler/`, `cmd/sqc-solc`) lives in the monorepo and emits SQC-VM bytecode. This SDK does **not** embed a compile API yet — deploy pre-built bytecode or use `sqc-solc` offline.
 
@@ -367,7 +327,7 @@ Env:
 |----------|---------|---------|
 | `SQC_RPC` | from network config | Chain node RPC |
 | `MODE` | `proxy` | `proxy` or `service-wallet` |
-| `ALLOW_CUSTODIAL_PROXY` | unset | Set `1` only on private backends to allow seed/evmSignature (refused with CORS `*`) |
+| `ALLOW_CUSTODIAL_PROXY` | unset | Set `1` only on private backends to allow seed unlock (refused with CORS `*`); prefer `signedTx` |
 | `GATEWAY_API_KEY` | — | Required for service-wallet mutating routes when set |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated allowlist (not `*` by default) |
 | `PUBLIC_HEALTH` | `1` on local, else unset/`0` | Set `1` to expose `sqc_rpc` on `/health` |
@@ -375,7 +335,6 @@ Env:
 | `RATE_LIMIT_MAX` | `120` | Global requests / minute |
 | `RATE_LIMIT_TX_MAX` | `30` | Stricter cap for `/v1/tx/*`, `/v1/derive` |
 | `SERVICE_SEED` | — | 32-byte hex ML-DSA-65 seed (service-wallet) |
-| `SERVICE_EVM_KEY` | — | EVM key to derive service PQ wallet |
 | `PORT` | `3090` | HTTP port |
 | `TLS_CERT_FILE` / `TLS_KEY_FILE` | — | Serve TLS 1.3 directly |
 | `ALLOW_CLASSICAL_TLS` | unset | Only if you terminate PQ TLS elsewhere |
@@ -405,7 +364,7 @@ sdk/sqc-sdk/
   wasm/            Go→WASM binding + build scripts
   src/             TypeScript SDK (core, wallet, tokens, contracts, …)
   gateway/         Fastify deployable server + Docker
-  examples/        Node script + MetaMask HTML demo
+  examples/        Node script + browser HTML demo
   docs/            SQDP-1, architecture, dApp guide
 ```
 
@@ -421,7 +380,7 @@ sdk/sqc-sdk/
 - **SQDP-1** — normative protocol + `PROTOCOL` / `SQDP_VERSION` exports
 - **`Connection`** — preferred read client (Transport-backed); `SqcProvider` deprecated alias
 - **`Wallet` / `SplendorPQBridge`** — signing wallet (`Wallet` preferred name)
-- **QSol ABI** — `encodeFunctionData` / decode helpers (SHA3-256 selectors; canonical `address`, legacy `sqaddress`)
+- **QSol ABI** — `encodeFunctionData` / decode helpers (SHA3-256 selectors, `sqaddress`)
 - **Events** — `connect` / `disconnect` / `accountsChanged` / `error` / `lock`
 - **`rpcUrls` + retries** — failover; sticky submit URL
 - Guide: [`docs/DAPP_INTEGRATION.md`](docs/DAPP_INTEGRATION.md) · Protocol: [`docs/SQDP-1.md`](docs/SQDP-1.md)

@@ -16,7 +16,11 @@ export function DexPanel() {
     return (
       <div className="panel">
         <h2>DEX swap</h2>
-        <p className="msg">Connect a wallet to swap on a pool.</p>
+        <p className="msg warn">
+          Unsupported leftover adapter — the node does not route a DEX module. Panel is for
+          hook experimentation only.
+        </p>
+        <p className="msg">Connect a wallet to experiment with the leftover DEX hook.</p>
       </div>
     );
   }
@@ -51,6 +55,9 @@ export function DexPanel() {
   return (
     <div className="panel">
       <h2>DEX — swap</h2>
+      <p className="msg warn">
+        Unsupported leftover adapter — not node-routed. Calls will fail on a stock Splendor node.
+      </p>
       <label htmlFor="dex-pool">Pool address (SQ:…)</label>
       <input
         id="dex-pool"

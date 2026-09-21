@@ -1,6 +1,6 @@
 # Basic dApp example
 
-Minimal Vite + React app using `@splendor/connect-react`.
+Minimal Vite + React app using `@splendor/connect-react` — reference kitchen-sink for shipped widgets.
 
 ## Run
 
@@ -12,6 +12,10 @@ cd examples/basic-dapp && npm install && npm run dev
 
 WASM is copied automatically by `sqcWasmPlugin()` from `@splendor/connect-react/vite`.
 
-Open http://localhost:5173 — **Connect** → create a new ML-DSA-65 wallet or import a 32-byte seed. MetaMask stays available under **Legacy** (labelled not post-quantum). Use the network badge to switch among selectable networks (local by default; placeholder testnet/mainnet URLs are filtered out).
+Open http://localhost:5173 — **Connect** → Splendor extension (when installed) or create/import an ML-DSA-65 seed. Includes:
 
-`autoReconnect` restores an authorized MetaMask session via `eth_accounts` without a cold prompt; a native seed is typed in each session and is never persisted.
+- `ConnectKit`
+- `AccountCard`, `TransferWidget`, `TokenPanel`, `DeployTokenWidget`
+- `TxToastHost`, `WrongNetworkBanner`
+
+`autoReconnect` restores an authorized extension session via `sqc_accounts` / `splendor_accounts`; a native seed is typed each session and is never persisted.

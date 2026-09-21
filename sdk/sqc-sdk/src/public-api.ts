@@ -1,9 +1,16 @@
 /**
  * Shared public API surface for Node (`index`) and browser (`browser`) entries.
  */
+
+/** Wire `chain_id` constant — still required for tx / assertChainId. */
+export { CHAIN_ID } from './derive.js';
+
+/**
+ * @deprecated Do not use in dApps — EVM→PQ derivation removed from ConnectKit.
+ * Historical offline / tooling helpers only (see SQDP-1 Appendix A).
+ */
 export {
   DERIVATION_DOMAIN_MESSAGE,
-  CHAIN_ID,
   seedFromEvmSignature,
   signDerivationMessage,
   recoverPersonalSignAddress,
@@ -14,6 +21,7 @@ export {
   eip712Hash,
   personalSignHash,
 } from './derive.js';
+/** @deprecated Do not use in dApps — EVM→PQ derivation removed from ConnectKit. */
 export type { DerivationScheme, Eip712DeriveTypedData } from './derive.js';
 export { fromSPLD, toSPLD, assertSafeRpcUrl } from './rpc.js';
 /** @deprecated Prefer Connection / Transport. SqRpc remains the private adapter behind RpcTransport. */
@@ -21,13 +29,6 @@ export { SqRpc } from './rpc.js';
 export type { RpcOptions } from './rpc.js';
 export { SqcProvider } from './provider.js';
 export type { ProviderOptions } from './provider.js';
-export {
-  connectMetaMask,
-  signDerivationWithMetaMask,
-  onMetaMaskAccountsChanged,
-  onMetaMaskDisconnect,
-} from './metamask.js';
-export type { EthereumProvider, SignDerivationOpts } from './metamask.js';
 export { BridgeError, isBridgeError, WalletError, isWalletError } from './errors.js';
 export type { BridgeErrorCode, WalletErrorCode } from './errors.js';
 export { isValidAddress, assertAddress, canonicalizeAddress } from './address.js';
@@ -42,7 +43,6 @@ export {
   decodeArgAddress,
   decodeArgUint256,
   assertQSolSignature,
-  canonicalizeAbiSignature,
 } from './abi.js';
 export type { AbiArg } from './abi.js';
 export type { BridgeEventMap, WalletEventMap } from './events.js';
@@ -146,17 +146,7 @@ export { BridgeModule, deployBridge, getBridge } from './bridge/module.js';
 export { VerifyClient, getVerify } from './verify.js';
 export type { VerifyInstruction } from './verify.js';
 export { ValidatorsClient, getValidators, VALIDATOR_BOND_SPLD } from './validators.js';
-export {
-  modules,
-  bindModules,
-  ensureBuiltInModulesRegistered,
-  registerUnsupportedApplicationAdapters,
-  unsupportedApplicationAdaptersEnabled,
-  assertUnsupportedApplicationAdaptersEnabled,
-  ROUTED_NATIVE_MODULE_IDS,
-  UNSUPPORTED_APPLICATION_ADAPTER_IDS,
-  UNSUPPORTED_ADAPTER_MESSAGE,
-} from './modules.js';
+export { modules, bindModules, ensureBuiltInModulesRegistered } from './modules.js';
 export type { Modules, BoundModules, SignedBoundModules } from './modules.js';
 export {
   registerModule,
@@ -170,15 +160,8 @@ export { withSigner } from './bound.js';
 export type { BoundClient, WalletLike } from './bound.js';
 export { fromUnits, toUnits } from './units.js';
 export { X402Client, createX402Middleware } from './x402/client.js';
-export type {
-  PaymentRequirements,
-  PaymentPayload,
-  X402SettleResult,
-  X402SettlementPolicy,
-  X402MiddlewareConfig,
-} from './x402/client.js';
+export type { PaymentRequirements, PaymentPayload } from './x402/client.js';
 export { subscribe } from './core/subscribe.js';
-export type { SubscribeOptions } from './core/subscribe.js';
 export type {
   EstimateGasRequest,
   EstimateGasResponse,
@@ -199,7 +182,24 @@ export type {
   WalletUnlockConnector,
   WalletUnlockContext,
 } from './wallet/connectors/index.js';
-export { seedConnector, metamaskConnector, evmKeyConnector } from './wallet/connectors/index.js';
+export { seedConnector, extensionConnector } from './wallet/connectors/index.js';
+export {
+  ExtensionSigner,
+  connectExtension,
+  type ExtensionSignerOptions,
+  type ConnectExtensionResult,
+} from './wallet/extension-signer.js';
+export {
+  METHOD_ALIASES,
+  toCanonicalMethod,
+  toExtensionMethod,
+  getExtensionProvider,
+  getSplendorInjected,
+  requestWithAlias,
+  isExtensionProvider,
+  isInPageProvider,
+} from './wallet/extension-provider.js';
+export type { SplendorProviderLike } from './wallet/extension-provider.js';
 export { createSession } from './session.js';
 export type { Session } from './session.js';
 export { SplendorClient } from './client.js';

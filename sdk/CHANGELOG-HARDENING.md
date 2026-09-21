@@ -1,5 +1,13 @@
 # Changelog
 
+## BREAKING — ConnectKit / unlock / RPC (hardening)
+
+- **MetaMask / ECDSA unlock removed** from ConnectKit and `@splendor/sqc-sdk` connect paths (`connectFromMetaMask`, MetaMask connector, EIP-6963 MetaMask primary). Normative unlock is **Splendor extension + native seed** only (SQDP-1 §3).
+- **`RPC_UNAVAILABLE`** error code when all RPC endpoints fail or confirmation polling fails closed on repeated transport errors (`security-rpc.test.ts`).
+- **Extension-first ConnectKit** — default browser connectors are Splendor extension + seed; `setSessionWallet` commits extension sessions without in-page WASM seed.
+- **Gateway public EVM unlock / derive removed** — public proxy rejects `seed` / `evmPrivateKey` / `evmSignature`; end users submit pre-signed `signedTx` only.
+- Deprecated exports: `seedFromEvmSignature` and related derive helpers — offline tooling only; not for dApps.
+
 ## @splendor/sqc-sdk architecture top-10
 
 - Transport owns chain IO; Connection no longer spawns a hidden `SqRpc` for MockTransport

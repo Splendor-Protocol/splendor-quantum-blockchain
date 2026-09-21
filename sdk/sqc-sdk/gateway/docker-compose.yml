@@ -17,6 +17,6 @@ services:
       # PUBLIC_HEALTH: "0"
       # CORS_ORIGINS: "https://app.example"
       # GATEWAY_API_KEY: "..."
-      # SERVICE_SEED / SERVICE_EVM_KEY only for MODE=service-wallet
+      # SERVICE_SEED only for MODE=service-wallet (SERVICE_EVM_KEY removed)
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -2,8 +2,6 @@
 import type { RpcOptions } from './rpc.js';
 import type { SqcProvider } from './provider.js';
 import type { AbiArg } from './abi.js';
-import type { EthereumProvider } from './metamask.js';
-import type { DerivationScheme } from './derive.js';
 
 export type BridgeOptions = RpcOptions & {
   wasmUrl?: string;
@@ -36,16 +34,10 @@ export type BridgeOptions = RpcOptions & {
    * Default false — only the idle timer locks (avoids surprise desync on tab switch).
    */
   lockOnHidden?: boolean;
-  /** When true (default), MetaMask account switches re-derive the PQ wallet. */
-  watchMetaMaskAccounts?: boolean;
   /** Optional shared read provider; RPC options are taken from it when provided. */
   provider?: SqcProvider;
   /** Prefer over provider — Transport-backed chain client. */
   connection?: import('./core/connection.js').Connection;
-  /** Injected EIP-1193 provider (defaults to window.ethereum). */
-  ethereumProvider?: EthereumProvider;
-  /** Derivation scheme: eip191-v1 (default) or eip712-v1. */
-  derivation?: DerivationScheme;
   /** Optional request/error middleware for observability. */
   onRequest?: (info: { method: string; path?: string }) => void;
   onError?: (err: unknown) => void;
@@ -146,7 +138,7 @@ export type PreflightResult = {
   sufficient: boolean;
 };
 
-/** Native module call write (qrc20, qrc1155, bridge, verify, validators, qrc721). */
+/** Native module call write (qrc20, dex, etc.). */
 export type ModuleCallOpts = {
   module: string;
   action: string;
@@ -274,19 +266,10 @@ export type WalletAccount = {
 };
 
 /**
- * Unified wallet.connect() options (market-standard single entry).
- * Prefer this over connectFromSeed / connectFromMetaMask in new code.
+ * Unified wallet.connect() options — seed-only (native ML-DSA).
+ * Extension unlock uses {@link ExtensionSigner} / connect({ mode: 'extension' }).
  */
-export type WalletConnectOpts =
-  | { mode: 'seed'; seed: string }
-  | { mode: 'metamask'; ethereumProvider?: EthereumProvider }
-  | {
-      mode: 'evmSignature';
-      signature: string;
-      evmAddress?: string;
-      scheme?: DerivationScheme;
-    }
-  | { mode: 'evmKey'; privateKey: string };
+export type WalletConnectOpts = { mode: 'seed'; seed: string };
 
 /** Unsigned transaction envelope for signTransaction / sendTransaction. */
 export type UnsignedTx =

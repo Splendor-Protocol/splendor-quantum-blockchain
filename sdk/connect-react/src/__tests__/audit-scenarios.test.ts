@@ -71,8 +71,10 @@ describe('audit scenarios (connect-react)', () => {
   it('5: tryAutoReconnect aborts when isStale before connect', async () => {
     let connectCalls = 0;
     const connector: Connector = {
-      id: 'metamask',
-      name: 'MetaMask',
+      id: 'splendor-extension',
+      name: 'Splendor Extension',
+      keyOrigin: 'native',
+      postQuantumSecure: true,
       ready: async () => {
         await new Promise((r) => setTimeout(r, 40));
         return true;
@@ -83,7 +85,7 @@ describe('audit scenarios (connect-react)', () => {
         return mockInfo;
       },
     };
-    memoryStore.set('splendor.connect.lastConnectorId', 'metamask');
+    memoryStore.set('splendor.connect.lastConnectorId', 'splendor-extension');
     const ctrl = createConnectController({
       network: 'local',
       connectors: [connector],

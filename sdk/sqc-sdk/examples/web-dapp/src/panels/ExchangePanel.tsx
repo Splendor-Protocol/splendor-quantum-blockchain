@@ -13,7 +13,10 @@ export function ExchangePanel() {
     return (
       <div className="panel">
         <h2>Exchange</h2>
-        <p className="msg">Connect a wallet to read exchange_info.</p>
+        <p className="msg warn">
+          Unsupported leftover adapter — the node does not route an Exchange module.
+        </p>
+        <p className="msg">Connect a wallet to experiment with the leftover Exchange hook.</p>
       </div>
     );
   }
@@ -21,6 +24,9 @@ export function ExchangePanel() {
   return (
     <div className="panel">
       <h2>Exchange — info</h2>
+      <p className="msg warn">
+        Unsupported leftover adapter — not node-routed. Calls will fail on a stock Splendor node.
+      </p>
       <label htmlFor="ex-addr">Exchange (SQ:…)</label>
       <input
         id="ex-addr"

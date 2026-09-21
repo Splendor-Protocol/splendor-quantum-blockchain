@@ -1,5 +1,6 @@
 import type {
   DeriveInfo,
+  ExtensionSigner,
   NetworkConfig,
   SplendorPQBridge,
   SqcProvider,
@@ -14,6 +15,11 @@ export type ConnectorContext = WalletUnlockContext & {
   /** @deprecated Prefer `connection` (same RPC). Kept for existing connectors. */
   provider: SqcProvider;
   network: NetworkConfig;
+  /**
+   * When connecting via ExtensionSigner, replace the session wallet so hooks
+   * (`useWallet`, transfers, etc.) route through the extension.
+   */
+  setSessionWallet?: (wallet: SplendorPQBridge | ExtensionSigner) => void;
 };
 
 export type ConnectorField = {

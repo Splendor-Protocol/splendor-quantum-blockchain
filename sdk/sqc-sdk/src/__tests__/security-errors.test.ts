@@ -141,7 +141,7 @@ describe('security-errors SQDP-1 codes', () => {
         timeoutMs: 30,
         retries: 0,
       });
-      await expect(rpc.getStatus()).rejects.toMatchObject({ code: 'TIMEOUT' });
+      await expect(rpc.getStatus()).rejects.toMatchObject({ code: 'RPC_UNAVAILABLE' });
     } finally {
       globalThis.fetch = original;
     }

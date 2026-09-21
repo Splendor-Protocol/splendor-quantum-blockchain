@@ -29,11 +29,9 @@ Deprecated root exports (still present one minor): `connectSplendor`, `createSpl
 
 ### Built-in Program clients vs on-chain modules
 
-Automatic `modules.*` / `bindModules` clients ship for: **qrc20**, **qrc1155**, **bridge**, **contract**.
+Typed `modules.*` / `bindModules` clients ship for: **qrc20**, **qrc1155**, **exchange**, **dex**, **bridge**, **contract**.
 
-Routed on-chain modules **without** a dedicated Program client (use `sendModuleCall`): **verify**, **validators**, **qrc721**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient`.
-
-DEX and exchange leftover clients are **unsupported application adapters**. They are not routed by `DispatchModuleCall`. Call `registerUnsupportedApplicationAdapters()` or import `@splendor/sqc-sdk/defi`. Lending, oracle, multisig, governance, and QRC-4626 are not routed and have no native SDK capability.
+On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall` / `registerModule` — do not stub fake Programs): **lending**, **oracle**, **multisig**, **governance**, **qrc721**, **qrc4626**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient` (Connection/Transport-backed).
 
 ## Package layout
 
@@ -46,7 +44,7 @@ DEX and exchange leftover clients are **unsupported application adapters**. They
 ├── /tokens/qrc20
 ├── /tokens/qrc1155
 ├── /contracts           # bytecode deploy/call
-├── /defi                # unsupported DEX + Exchange adapters (not routed)
+├── /defi                # DEX + Exchange
 ├── /bridge              # on-chain bridge_v1 (≠ pq-bridge shim)
 ├── /x402                # payment protocol helpers
 ├── /addresses           # MODULE_ROUTER, qrc20/1155/exchange/dex/bridge addresses
@@ -58,7 +56,7 @@ DEX and exchange leftover clients are **unsupported application adapters**. They
 
 1. **Transport (chain IO)** — owns balance, nonce, module reads, submit, confirmation, x402 verify/settle, subscribe. `RpcTransport` wraps `SqRpc` privately; `MockTransport` scripts the same surface for tests (no hidden live RPC).
 2. **Connection** — thin façade over Transport. Do not use a parallel `SqRpc` for production paths. `connection.rpc` is deprecated and only works when the transport is `RpcTransport`.
-3. **Signer / Wallet** — `Wallet` implements `Signer`. Crypto session lives in **`WasmSession`**. Browser idle/visibility is **`installBrowserSessionPolicy`** (host-owned; ConnectKit / Wallet opts install it). MetaMask account watch is **`attachMetaMaskAccountWatcher`** (not inline DOM in Wallet).
+3. **Signer / Wallet** — `Wallet` implements `Signer`. Crypto session lives in **`WasmSession`**. Browser idle/visibility is **`installBrowserSessionPolicy`** (host-owned; ConnectKit / Wallet opts install it). Extension unlock uses **`ExtensionSigner`** (keys stay in the Chrome extension).
 4. **Program** — typed native module clients. Writes take `Signer`; deploy actions use `isDeployAction()` overrides.
 5. **Module registry** — `registerModule` / `defineModule` / `listModules`.
 6. **Recipes** — `createSession()`, `connect()` via factory connectors on a **shared Connection**, `modules.*`, `deployQRC20()`, etc.
@@ -94,15 +92,14 @@ registerModule(
 
 | Module | SDK Program | Notes |
 |--------|-------------|--------|
-| QRC-20 | Built | deploy, transfer, approve, permit (routed) |
-| QRC-1155 | Built | deploy, mint, transfer, burn (routed) |
-| Bridge (`bridge_v1`) | Built | deploy, claim, operators (routed) |
-| Verify / Validators | Built helpers | `getVerify` / `getValidators` (routed) |
-| QRC-721 | Routed, no Program | `sendModuleCall({ module: 'qrc721', … })` |
+| QRC-20 | Built | deploy, transfer, approve, permit |
+| QRC-1155 | Built | deploy, mint, transfer, burn |
+| DEX | Built | deploy_pool, add_liquidity, swap, pool_info |
+| Exchange | Built | deploy, conditions, match, cancel, signing, position_id, order_hash |
+| Bridge (`bridge_v1`) | Built | deploy, claim, operators |
 | Bytecode contracts | Built | QSol ABI call + deployBytecode |
 | QSol compile-in-SDK | Not built | use monorepo `sqc-solc` offline |
-| DEX / Exchange | Unsupported adapters | not routed; opt-in only |
-| Lending / oracle / multisig / governance / QRC-4626 | Not routed | no native capability |
+| QRC-721 / lending / oracle | Roadmap | no stubs until on-chain ABI stable |
 | WalletConnect / mobile | Deferred | ConnectKit is browser-injected first |
 | ABI/codegen for QSol | Roadmap | viem-like typed contracts later |
 

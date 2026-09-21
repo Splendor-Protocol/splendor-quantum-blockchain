@@ -12,6 +12,7 @@
 import type { Connection } from '../../core/connection.js';
 import type { SplendorPQBridge } from '../../splendor-wallet.js';
 import type { BridgeOptions, DeriveInfo } from '../../types.js';
+import type { ExtensionSigner } from '../extension-signer.js';
 
 /** Context passed when unlocking an already-constructed wallet. */
 export type WalletUnlockContext = {
@@ -37,7 +38,10 @@ export interface WalletUnlockConnector {
  */
 export interface WalletFactoryConnector {
   readonly id: string;
-  connect(connection: Connection, options?: Record<string, unknown>): Promise<SplendorPQBridge>;
+  connect(
+    connection: Connection,
+    options?: Record<string, unknown>,
+  ): Promise<SplendorPQBridge | ExtensionSigner>;
 }
 
 /**
@@ -47,8 +51,4 @@ export type Connector = WalletFactoryConnector;
 
 export type ConnectorConnectOptions = BridgeOptions & {
   seed?: string;
-  evmPrivateKey?: string;
-  evmSignature?: string;
-  evmAddress?: string;
-  ethereumProvider?: BridgeOptions['ethereumProvider'];
 };
