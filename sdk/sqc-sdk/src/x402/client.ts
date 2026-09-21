@@ -322,11 +322,11 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
         return;
       }
 
-      // The reservation this request owns, if it took one. A replay holds no
-      // token: it did not reserve the payment, so it must not be able to give
-      // the reservation back — releasing on behalf of the request that is still
-      // settling would hand the payment to a different binding mid-flight.
-      const token = claim.status === 'claimed' ? claim.token : undefined;
+      // Every in-flight settlement owns a token, including a same-binding
+      // replay that arrived before the first settlement completed. Grant and
+      // release both present it so a stale completion cannot mutate a newer
+      // claim and one failed attempt cannot delete another attempt's claim.
+      const token = claim.token;
 
       if (requireSettlement) {
         const settlementTx = payload.settlement_tx;
@@ -368,7 +368,7 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
           });
         }
         if (granted === true) {
-          await consumption.grant(paymentId, settleResult.tx_hash);
+          await consumption.grant(paymentId, token, settleResult.tx_hash);
           next();
           return;
         }
@@ -376,7 +376,7 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
         return res.status(402).json(granted);
       }
 
-      await consumption.grant(paymentId);
+      await consumption.grant(paymentId, token);
       next();
     } catch {
       return res.status(400).json({ error: 'Malformed X-Payment header' });

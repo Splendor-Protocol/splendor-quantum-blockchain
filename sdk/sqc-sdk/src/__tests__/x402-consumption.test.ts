@@ -169,11 +169,55 @@ describe('x402 consumption store: what the bound must not break', () => {
   it('never releases a granted claim', () => {
     const s = store();
     const first = s.claim();
-    s.raw.grant(PAYMENT, 'tx-1');
-    s.raw.release(PAYMENT, first.status === 'claimed' ? first.token : undefined);
+    const token = first.status === 'claimed' ? first.token : '';
+    s.raw.grant(PAYMENT, token, 'tx-1');
+    s.raw.release(PAYMENT, token);
     // Releasing here would hand a settled payment to a second, different
     // request — the release path exists for unsettled claims only.
     expect(s.claim({ binding: 'GET /other' }).status).toBe('conflict');
+  });
+
+  it('keeps a granted payment spent after its authorization record expires', () => {
+    const s = store();
+    const first = s.claim({ now: T0, expiresAt: T0 + 60_000, maxGrants: 1 });
+    if (first.status !== 'claimed') throw new Error('expected first claim');
+    s.raw.grant(PAYMENT, first.token, 'settled-tx');
+
+    expect(
+      s.claim({ now: T0 + HOUR, binding: 'GET /other', expiresAt: T0 + 2 * HOUR }).status,
+    ).toBe('conflict');
+    expect(s.claim({ now: T0 + HOUR, expiresAt: T0 + 2 * HOUR, maxGrants: 1 }).status).toBe(
+      'exhausted',
+    );
+  });
+
+  it('keeps the reservation while another same-binding settlement is in flight', () => {
+    const s = store();
+    const first = s.claim({ maxGrants: 3 });
+    const replay = s.claim({ maxGrants: 3 });
+    if (first.status !== 'claimed' || replay.status !== 'replay') {
+      throw new Error('expected claimed then replay');
+    }
+
+    s.raw.release(PAYMENT, first.token);
+    expect(s.claim({ binding: 'GET /other' }).status).toBe('conflict');
+
+    s.raw.grant(PAYMENT, replay.token, 'settled-tx');
+    expect(s.claim({ binding: 'GET /other' }).status).toBe('conflict');
+  });
+
+  it('does not let a stale completion grant a replacement claim', () => {
+    const s = store();
+    const first = s.claim();
+    if (first.status !== 'claimed') throw new Error('expected first claim');
+    s.raw.release(PAYMENT, first.token);
+
+    const replacement = s.claim({ binding: 'GET /other' });
+    if (replacement.status !== 'claimed') throw new Error('expected replacement claim');
+    s.raw.grant(PAYMENT, first.token, 'stale-tx');
+    s.raw.release(PAYMENT, replacement.token);
+
+    expect(s.claim({ binding: 'GET /third' }).status).toBe('claimed');
   });
 
   it('lets exactly one concurrent claim reserve the payment', async () => {

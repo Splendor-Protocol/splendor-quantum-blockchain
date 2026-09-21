@@ -75,9 +75,10 @@ describe('only the holder of a reservation can give it back', () => {
     expect(first.status).toBe('claimed');
 
     // A second request with the same binding, arriving while the first is still
-    // settling: a replay, holding no token.
+    // settling: a replay with its own in-flight token.
     const second = claimNow(s, PAYMENT, 'GET /feed', opts);
     expect(second.status).toBe('replay');
+    if (second.status !== 'replay') throw new Error('expected a replay');
 
     // Its own settle attempt fails and it tries to release. It must not be able
     // to drop the reservation the first request is still relying on — doing so
@@ -86,8 +87,11 @@ describe('only the holder of a reservation can give it back', () => {
     s.release(PAYMENT, 'not-the-token');
     expect(claimNow(s, PAYMENT, 'GET /premium', opts).status).toBe('conflict');
 
-    // The holder can still release it.
+    // Releasing one holder keeps the other reservation. The payment becomes
+    // claimable elsewhere only after every in-flight attempt has failed.
     s.release(PAYMENT, first.token);
+    expect(claimNow(s, PAYMENT, 'GET /premium', opts).status).toBe('conflict');
+    s.release(PAYMENT, second.token);
     expect(claimNow(s, PAYMENT, 'GET /premium', opts).status).toBe('claimed');
   });
 

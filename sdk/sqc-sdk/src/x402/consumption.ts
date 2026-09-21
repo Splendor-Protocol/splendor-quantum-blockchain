@@ -35,10 +35,9 @@
  *
  * "Replay the same binding" without a bound is not idempotency, it is a
  * subscription: one payment for `GET /feed` serves an unlimited number of
- * `GET /feed` calls for as long as the record lives, and the record lives
- * until the payer's own authorisation window closes — which the payer chooses,
- * up to the 24 h clamp in `consumptionExpiry`. A defined behaviour, but not one
- * an operator pricing a request at 500 units would recognise as what they sold.
+ * `GET /feed` calls for as long as the record lives. Granted records are kept
+ * as spent-payment tombstones for the life of the store; the much shorter
+ * replay allowance below decides what the payment still buys.
  *
  * Both bounds are needed, because each alone leaves the other axis open:
  *
@@ -118,7 +117,7 @@ export type X402ClaimOutcome =
   /** First use of this payment. Proceed to settle. */
   | { status: 'claimed'; token: string }
   /** Same payment, same request, still inside both bounds: an idempotent retry. */
-  | { status: 'replay'; record: X402ConsumptionRecord }
+  | { status: 'replay'; record: X402ConsumptionRecord; token: string }
   /** Same payment, different request: refuse. */
   | { status: 'conflict'; record: X402ConsumptionRecord }
   /**
@@ -203,8 +202,14 @@ export interface X402ConsumptionStore {
       replayWindowMs?: number;
     },
   ): X402ClaimOutcome | Promise<X402ClaimOutcome>;
-  /** Mark a claimed payment as granted (settlement established). */
-  grant(paymentId: string, txHash?: string): void | Promise<void>;
+  /**
+   * Mark one in-flight claim as granted (settlement established).
+   *
+   * The token must belong to the current record. Without that check, a slow
+   * settlement from an older claim can grant a replacement record for another
+   * binding after the old owner released it.
+   */
+  grant(paymentId: string, token: string, txHash?: string): void | Promise<void>;
   /**
    * Drop a claim whose settlement never established, so the payer may retry.
    *
@@ -252,14 +257,11 @@ export function resolveReuseLimits(opts: Partial<X402ReuseLimits> = {}): X402Reu
 /**
  * The default store: a per-process Map, swept lazily.
  *
- * Records are kept until the payment's own authorisation window closes, which
- * is the moment a *claim* stops being possible anyway — `valid_before` is inside
- * the payer's signature, and the node refuses an expired payload outright. So
- * the record only has to outlive the window it guards, and holding it longer
- * buys nothing. Retention is not the same thing as reuse: for as long as the
- * record is held it refuses the payment to a different binding, while what it
- * *grants* to the binding it bought is bounded separately and much more tightly
- * by `maxGrants` and `replayWindowMs`.
+ * Unsettled reservations expire with their authorization window. Granted
+ * records do not: they are spent-payment tombstones. The payer can sign a new
+ * authorization over the same on-chain nonce after the old window ends, and
+ * the chain will correctly confirm the original settlement, so dropping a
+ * granted record would silently sell another allowance for the same money.
  *
  * Per-process. See the module doc comment for what a restart and a second
  * replica do to that, and for the shared-store seam that fixes it.
@@ -269,6 +271,7 @@ export function createMemoryConsumptionStore(
 ): X402ConsumptionStore {
   const maxEntries = opts.maxEntries ?? DEFAULT_MAX_ENTRIES;
   const records = new Map<string, X402ConsumptionRecord>();
+  const inFlight = new Map<string, Set<string>>();
   // Distinguishes two claims of the same payment id over the life of the store,
   // so a release cannot be satisfied by a token from an earlier, already-gone
   // claim that happened to share a timestamp.
@@ -276,7 +279,14 @@ export function createMemoryConsumptionStore(
 
   function sweep(now: number): void {
     for (const [id, rec] of records) {
-      if (rec.expiresAt <= now) records.delete(id);
+      // A granted payment is a spent-payment tombstone. Its payer can sign a
+      // fresh authorization window over the same chain/from/nonce tuple, and
+      // the chain will correctly confirm the old settlement. Deleting this
+      // record would turn that renewed signature into a fresh allowance.
+      if (!rec.granted && rec.expiresAt <= now) {
+        records.delete(id);
+        inFlight.delete(id);
+      }
     }
   }
 
@@ -284,7 +294,7 @@ export function createMemoryConsumptionStore(
     claim(paymentId, binding, { now, expiresAt, maxGrants, replayWindowMs }) {
       const limits = resolveReuseLimits({ maxGrants, replayWindowMs });
       const existing = records.get(paymentId);
-      if (existing && existing.expiresAt > now) {
+      if (existing && (existing.granted || existing.expiresAt > now)) {
         // A different request is a different answer from an exhausted one, and
         // they must not be conflated: the first says "change the request", the
         // second says "pay again". Bindings are compared first so a mismatch is
@@ -315,9 +325,21 @@ export function createMemoryConsumptionStore(
         // presentations cannot all pass a check that none of them has yet paid
         // for. Serving is the caller's business; being allowed to is ours.
         existing.grants += 1;
-        return { status: 'replay', record: { ...existing } };
+        const token = `${paymentId}#${now}#${(tokenSeq += 1)}`;
+        if (!existing.granted) {
+          let tokens = inFlight.get(paymentId);
+          if (!tokens) {
+            tokens = new Set<string>();
+            inFlight.set(paymentId, tokens);
+          }
+          tokens.add(token);
+        }
+        return { status: 'replay', record: { ...existing }, token };
       }
-      if (existing) records.delete(paymentId);
+      if (existing) {
+        records.delete(paymentId);
+        inFlight.delete(paymentId);
+      }
       if (records.size >= maxEntries) {
         sweep(now);
         if (records.size >= maxEntries) {
@@ -336,13 +358,22 @@ export function createMemoryConsumptionStore(
         granted: false,
         token,
       });
+      inFlight.set(paymentId, new Set([token]));
       return { status: 'claimed', token };
     },
-    grant(paymentId, txHash) {
+    grant(paymentId, token, txHash) {
       const rec = records.get(paymentId);
-      if (!rec) return;
+      const tokens = inFlight.get(paymentId);
+      // A completion may arrive after its record expired or was released and
+      // replaced. It must not grant whichever claim happens to own the same
+      // payment id now.
+      if (!rec || !tokens?.has(token)) return;
       rec.granted = true;
+      // Signal permanent retention to custom stores that derive TTL from the
+      // record rather than inspecting `granted` themselves.
+      rec.expiresAt = Number.MAX_SAFE_INTEGER;
       if (txHash) rec.txHash = txHash;
+      inFlight.delete(paymentId);
     },
     release(paymentId, token) {
       const rec = records.get(paymentId);
@@ -357,7 +388,12 @@ export function createMemoryConsumptionStore(
       // own settle attempt then failed it used to delete the record the first
       // request was relying on, and the payment became claimable for a different
       // binding while the original was in flight.
-      if (rec.token !== undefined && rec.token !== token) return;
+      const tokens = inFlight.get(paymentId);
+      if (!token || !tokens?.delete(token)) return;
+      // Other same-binding presentations may still be settling. Keep their
+      // reservation alive; only the last failed attempt may release the claim.
+      if (tokens.size > 0) return;
+      inFlight.delete(paymentId);
       records.delete(paymentId);
     },
   };
