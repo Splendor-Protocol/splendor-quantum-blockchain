@@ -88,12 +88,13 @@ func TestObjectManifestSignatureCoversObjectSize(t *testing.T) {
 	// Truncate the object by one symbol without touching anything else.
 	tampered := m
 	tampered.ObjectSize = m.ObjectSize - 64
-	if err := tampered.Verify(DefaultLimits().MaxSourceCount, DefaultLimits().MaxSymbolSize); err == nil {
+	limits := DefaultLimits()
+	if err := tampered.Verify(limits.MaxSourceCount, limits.MaxSymbolSize, limits.MaxObjectSize); err == nil {
 		t.Fatal("a manifest whose ObjectSize was altered after signing still verified; " +
 			"the signature does not cover the field that decides how much data the receiver keeps")
 	}
 	// The untouched manifest still verifies.
-	if err := m.Verify(DefaultLimits().MaxSourceCount, DefaultLimits().MaxSymbolSize); err != nil {
+	if err := m.Verify(limits.MaxSourceCount, limits.MaxSymbolSize, limits.MaxObjectSize); err != nil {
 		t.Fatalf("the genuine manifest was refused: %v", err)
 	}
 	_ = types.ChainID
