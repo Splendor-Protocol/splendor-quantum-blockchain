@@ -9,6 +9,7 @@ describe('connectErrorMessage', () => {
     expect(connectErrorMessage(BridgeError.wasm('fail'))).toMatch(/Signer failed/i);
     expect(connectErrorMessage(BridgeError.network('down'))).toMatch(/Network/i);
     expect(connectErrorMessage(BridgeError.rpc('boom'))).toMatch(/Network/i);
+    expect(connectErrorMessage(BridgeError.rpcUnavailable('all down'))).toMatch(/unavailable/i);
     expect(connectErrorMessage(BridgeError.chainMismatch('a', 'b'))).toMatch(/Chain mismatch/i);
     expect(connectErrorMessage(BridgeError.timeout('slow'))).toMatch(/timed out/i);
     expect(connectErrorMessage(BridgeError.notConnected())).toMatch(/not connected/i);

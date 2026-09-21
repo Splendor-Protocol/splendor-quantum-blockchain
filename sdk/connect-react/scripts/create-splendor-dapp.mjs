@@ -18,6 +18,8 @@ function usage() {
 Scaffolds a Vite + React dApp with:
   - SplendorConnectProvider + ConnectKit
   - TransferWidget + AccountCard
+  - TokenPanel + DeployTokenWidget
+  - TxToastHost + WrongNetworkBanner
   - sqcWasmPlugin for the ML-DSA signer
 
 Next steps after scaffolding:

@@ -3,6 +3,7 @@ import type {
   CallOpts,
   DeployOpts,
   DeriveInfo,
+  ExtensionSigner,
   NetworkConfig,
   NetworkId,
   PreflightResult,
@@ -109,6 +110,7 @@ export function useBalance(pollMs = 12_000): {
   refresh: () => Promise<void>;
   loading: boolean;
   error: Error | null;
+  errorMessage: string | null;
 } {
   const ctrl = useConnectController();
   const { address, isConnected } = useAccount();
@@ -143,7 +145,14 @@ export function useBalance(pollMs = 12_000): {
     return () => clearInterval(id);
   }, [refresh, isConnected, pollMs]);
 
-  return { balance, balanceSPLD, refresh, loading, error };
+  return {
+    balance,
+    balanceSPLD,
+    refresh,
+    loading,
+    error,
+    errorMessage: error ? connectErrorMessage(error) : null,
+  };
 }
 
 export function useNetwork(): {
@@ -170,7 +179,7 @@ export function useNetwork(): {
 }
 
 export function useWallet(): {
-  wallet: SplendorPQBridge | null;
+  wallet: SplendorPQBridge | ExtensionSigner | null;
   provider: SqcProvider | null;
   ready: boolean;
 } {
@@ -194,6 +203,7 @@ export function usePreflight(): {
   status: TxHookStatus;
   result: PreflightResult | null;
   error: Error | null;
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
@@ -227,7 +237,7 @@ export function usePreflight(): {
     [wallet, ready],
   );
 
-  return { preflight, status, result, error, reset };
+  return { preflight, status, result, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
 }
 
 export function useSendTransfer(): {
@@ -239,6 +249,7 @@ export function useSendTransfer(): {
   explorerUrl: string | null;
   confirmed: boolean;
   error: Error | null;
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
@@ -290,7 +301,7 @@ export function useSendTransfer(): {
     [wallet, ready, network],
   );
 
-  return { sendTransfer, status, hash, explorerUrl, confirmed, error, reset };
+  return { sendTransfer, status, hash, explorerUrl, confirmed, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
 }
 
 export function useCallContract(): {
@@ -299,6 +310,7 @@ export function useCallContract(): {
   hash: string | null;
   explorerUrl: string | null;
   error: Error | null;
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
@@ -340,7 +352,7 @@ export function useCallContract(): {
     [wallet, ready, network],
   );
 
-  return { callContract, status, hash, explorerUrl, error, reset };
+  return { callContract, status, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
 }
 
 /** @deprecated Prefer `useDeployBytecode` — same underlying deployBytecode helper. */
@@ -353,6 +365,7 @@ export function useDeployContract(): {
   address: string | null;
   explorerUrl: string | null;
   error: Error | null;
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
@@ -399,7 +412,7 @@ export function useDeployContract(): {
     [wallet, ready, network],
   );
 
-  return { deployContract, status, hash, address, explorerUrl, error, reset };
+  return { deployContract, status, hash, address, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
 }
 
 export function useWaitForConfirmation(): {

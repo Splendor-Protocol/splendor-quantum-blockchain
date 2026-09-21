@@ -21,8 +21,7 @@ export function isNativeConnector(c: Connector): boolean {
 
 /**
  * Split connectors for the modal. Grouping (not array position) decides the
- * order, so a dApp that lists MetaMask first still gets the post-quantum path
- * on top.
+ * order, so native ML-DSA connectors stay on top even if listed last.
  */
 export function groupConnectors(connectors: Connector[]): ConnectorGroups {
   const groups: ConnectorGroups = { native: [], legacy: [], advanced: [] };

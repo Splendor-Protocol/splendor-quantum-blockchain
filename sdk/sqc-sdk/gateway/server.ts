@@ -3,8 +3,9 @@
  * Modes: proxy (non-custodial relay) | service-wallet (holds derived PQ key).
  *
  * Public proxy accepts pre-signed `signedTx` only.
- * Custodial credentials (seed / evmSignature / evmPrivateKey) require
- * ALLOW_CUSTODIAL_PROXY=1 (private backends) or MODE=service-wallet.
+ * Custodial unlock is seed-only: ALLOW_CUSTODIAL_PROXY=1 (private backends) or
+ * MODE=service-wallet + SERVICE_SEED. EVM credentials (evmSignature / evmPrivateKey /
+ * SERVICE_EVM_KEY) are rejected — clients must submit signedTx or use a seed.
  *
  * Network defaults from sqc.networks.json (override with SQC_NETWORK / SQC_RPC / PORT).
  * Errors follow SQDP-1: { code, message }.
@@ -45,7 +46,6 @@ export type GatewayConfig = {
   rpcUrl?: string;
   mode?: GatewayMode;
   serviceSeed?: string;
-  serviceEvmKey?: string;
   allowCustodialProxy?: boolean;
   apiKey?: string;
   /** Bypass API key requirement for service-wallet (dev only). Env: ALLOW_INSECURE=1. */
@@ -346,9 +346,14 @@ function assertSignedTxChainId(
 
 type Creds = {
   seed?: string;
+  /** Accepted in schema only so we can return a clear removal error. */
   evmSignature?: string;
+  /** Accepted in schema only so we can return a clear removal error. */
   evmPrivateKey?: string;
 };
+
+const EVM_UNLOCK_REMOVED =
+  'EVM unlock removed — use seed or submit signedTx';
 
 type ApiError = { code: string; message: string; warning?: string };
 
@@ -365,7 +370,11 @@ function errorFromCaught(e: unknown): ApiError {
     return apiError(e.code, e.message);
   }
   const message = e instanceof Error ? e.message : String(e);
-  if (/proxy mode rejects|custodial credentials|proxy requires signedTx/i.test(message)) {
+  if (
+    /proxy mode rejects|custodial credentials|proxy requires signedTx|EVM unlock removed/i.test(
+      message,
+    )
+  ) {
     return apiError('USER_REJECTED', message);
   }
   if (/invalid sq address/i.test(message)) {
@@ -401,6 +410,9 @@ function httpStatusFromCaught(e: unknown): number {
     return 400;
   }
   const message = e instanceof Error ? e.message : String(e);
+  if (/EVM unlock removed/i.test(message)) {
+    return 410;
+  }
   if (/proxy mode rejects|custodial credentials|proxy requires signedTx/i.test(message)) {
     return 403;
   }
@@ -433,7 +445,6 @@ function configFromEnv(): GatewayConfig {
     rpcUrl: (process.env.SQC_RPC || net.rpcUrls[0]).replace(/\/$/, ''),
     mode: ((process.env.MODE || 'proxy').toLowerCase() as GatewayMode),
     serviceSeed: process.env.SERVICE_SEED || '',
-    serviceEvmKey: process.env.SERVICE_EVM_KEY || '',
     allowCustodialProxy: process.env.ALLOW_CUSTODIAL_PROXY === '1',
     apiKey: process.env.GATEWAY_API_KEY || '',
     allowInsecure: process.env.ALLOW_INSECURE === '1',
@@ -500,7 +511,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
   const ALLOW_INSECURE =
     overrides.allowInsecure ?? env.allowInsecure ?? process.env.ALLOW_INSECURE === '1';
   const SERVICE_SEED = overrides.serviceSeed ?? env.serviceSeed ?? '';
-  const SERVICE_EVM_KEY = overrides.serviceEvmKey ?? env.serviceEvmKey ?? '';
+  const SERVICE_EVM_KEY_ENV = (process.env.SERVICE_EVM_KEY || '').trim();
   const CORS_ORIGINS = overrides.corsOrigins ?? env.corsOrigins ?? [...DEFAULT_CORS_ORIGINS];
   const isLocalNet = net.id === 'local';
   const PUBLIC_HEALTH = overrides.publicHealth ?? env.publicHealth ?? isLocalNet;
@@ -543,15 +554,15 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     networkId: net.id,
   };
 
+  function assertNoEvmCreds(creds: Creds): void {
+    if (creds.evmSignature || creds.evmPrivateKey) {
+      throw Object.assign(new Error(EVM_UNLOCK_REMOVED), { code: 'USER_REJECTED' });
+    }
+  }
+
   function assertProxyAllowsCreds(creds: Creds): void {
     if (MODE !== 'proxy') return;
-    if (creds.evmPrivateKey) {
-      throw Object.assign(
-        new Error('proxy mode rejects evmPrivateKey — submit signedTx only'),
-        { code: 'USER_REJECTED' },
-      );
-    }
-    if (creds.seed) {
+    if (creds.seed && !ALLOW_CUSTODIAL_PROXY) {
       throw Object.assign(
         new Error(
           'proxy mode rejects ML-DSA-65 seed — sign client-side and POST signedTx',
@@ -559,17 +570,10 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
         { code: 'USER_REJECTED' },
       );
     }
-    if (creds.evmSignature && !ALLOW_CUSTODIAL_PROXY) {
-      throw Object.assign(
-        new Error(
-          'proxy mode rejects evmSignature (key material) — submit signedTx, or set ALLOW_CUSTODIAL_PROXY=1 with GATEWAY_API_KEY',
-        ),
-        { code: 'USER_REJECTED' },
-      );
-    }
   }
 
   async function connectEphemeral(creds: Creds): Promise<SplendorPQBridge> {
+    assertNoEvmCreds(creds);
     assertProxyAllowsCreds(creds);
     const tmp = new SplendorPQBridge({
       rpcUrls: bridgeRpcUrls,
@@ -581,17 +585,12 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     await tmp.init();
     if (creds.seed) {
       await tmp.connectFromSeed(creds.seed);
-    } else if (creds.evmSignature) {
-      await tmp.connectFromEvmSignature(creds.evmSignature);
-    } else if (creds.evmPrivateKey && MODE === 'service-wallet') {
-      await tmp.connectFromEvmPrivateKey(creds.evmPrivateKey);
     } else {
       throw Object.assign(
         new Error(
           MODE === 'proxy' && !ALLOW_CUSTODIAL_PROXY
             ? 'proxy requires signedTx (custodial credentials disabled)'
-            : 'provide seed or evmSignature' +
-                (MODE === 'service-wallet' ? ' or evmPrivateKey' : ''),
+            : 'provide seed (EVM unlock removed — submit signedTx otherwise)',
         ),
         { code: 'USER_REJECTED' },
       );
@@ -627,13 +626,12 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
       if (logger) {
         console.log(`[gateway] service-wallet from SERVICE_SEED → ${bridge.getAddress()}`);
       }
-    } else if (SERVICE_EVM_KEY) {
-      await bridge.connectFromEvmPrivateKey(SERVICE_EVM_KEY);
-      if (logger) {
-        console.log(`[gateway] service-wallet from SERVICE_EVM_KEY → ${bridge.getAddress()}`);
-      }
+    } else if (SERVICE_EVM_KEY_ENV) {
+      throw new Error(
+        'SERVICE_EVM_KEY is no longer supported — set SERVICE_SEED (EVM unlock removed)',
+      );
     } else {
-      throw new Error('MODE=service-wallet requires SERVICE_SEED or SERVICE_EVM_KEY');
+      throw new Error('MODE=service-wallet requires SERVICE_SEED');
     }
     if (!API_KEY && ALLOW_INSECURE && logger) {
       console.warn(
@@ -644,7 +642,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     console.log('[gateway] MODE=proxy (non-custodial — clients sign, gateway relays signedTx)');
     if (ALLOW_CUSTODIAL_PROXY) {
       console.warn(
-        '[gateway] ALLOW_CUSTODIAL_PROXY=1 — evmSignature accepted only with GATEWAY_API_KEY (private use)',
+        '[gateway] ALLOW_CUSTODIAL_PROXY=1 — seed unlock accepted only with GATEWAY_API_KEY (private use); prefer signedTx',
       );
     }
     console.log(`[gateway] SQDP-${SQDP_VERSION} network=${net.id} rpc=${bridgeRpcUrls.join(',')}`);
@@ -761,7 +759,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
   });
 
   app.post<{
-    Body: { evmSignature?: string; seed?: string; evmPrivateKey?: string };
+    Body: { seed?: string; evmSignature?: string; evmPrivateKey?: string };
   }>(
     '/v1/derive',
     {
@@ -771,6 +769,12 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     async (req, reply) => {
       let tmp: SplendorPQBridge | null = null;
       try {
+        const body = req.body || {};
+        if (body.evmSignature || body.evmPrivateKey) {
+          return reply
+            .code(410)
+            .send(apiError('USER_REJECTED', EVM_UNLOCK_REMOVED));
+        }
         if (MODE === 'proxy' && !ALLOW_CUSTODIAL_PROXY) {
           return reply.code(403).send(
             apiError(
@@ -779,7 +783,12 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
             ),
           );
         }
-        tmp = await connectEphemeral(req.body || {});
+        if (!body.seed) {
+          return reply
+            .code(400)
+            .send(apiError('USER_REJECTED', 'provide seed (EVM derive removed — submit signedTx otherwise)'));
+        }
+        tmp = await connectEphemeral({ seed: body.seed });
         const info = tmp.getDeriveInfo();
         tmp.disconnect();
         return { ...info };
@@ -832,6 +841,9 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
           assertSignedTxChainId(req.body.signedTx, net.chainId);
           await bridge.rpc.assertChainId();
           return await bridge.rpc.submitTransaction(req.body.signedTx);
+        }
+        if (req.body.evmSignature || req.body.evmPrivateKey) {
+          return reply.code(410).send(apiError('USER_REJECTED', EVM_UNLOCK_REMOVED));
         }
 
         let signer = bridge;
@@ -890,6 +902,9 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
           await bridge.rpc.assertChainId();
           return await bridge.rpc.submitTransaction(req.body.signedTx);
         }
+        if (req.body.evmSignature || req.body.evmPrivateKey) {
+          return reply.code(410).send(apiError('USER_REJECTED', EVM_UNLOCK_REMOVED));
+        }
         let signer = bridge;
         if (MODE === 'proxy') {
           ephemeral = await connectEphemeral(req.body);
@@ -936,6 +951,9 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
           assertSignedTxChainId(req.body.signedTx, net.chainId);
           await bridge.rpc.assertChainId();
           return await bridge.rpc.submitTransaction(req.body.signedTx);
+        }
+        if (req.body.evmSignature || req.body.evmPrivateKey) {
+          return reply.code(410).send(apiError('USER_REJECTED', EVM_UNLOCK_REMOVED));
         }
 
         let signer = bridge;

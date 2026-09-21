@@ -1,5 +1,7 @@
 import {
   SplendorConnectProvider,
+  TxToastHost,
+  WrongNetworkBanner,
   type NetworkId,
 } from '@splendor/connect-react';
 import { WalletBar } from './panels/WalletBar';
@@ -15,34 +17,43 @@ import { ContractPanel } from './panels/ContractPanel';
 const network = (import.meta.env.VITE_SQC_NETWORK as NetworkId | undefined) || 'local';
 
 export function App() {
+  const wasmSha256 = (import.meta.env.VITE_SQC_WASM_SHA256 as string | undefined)?.trim();
+  const isDev = import.meta.env.DEV;
+  if (!isDev && !wasmSha256) {
+    throw new Error(
+      'VITE_SQC_WASM_SHA256 is required for production builds (or run with import.meta.env.DEV).',
+    );
+  }
   return (
     <SplendorConnectProvider
       network={network}
       connectors="auto"
       theme="splendor"
       autoReconnect
-      // Local / monorepo only: WASM digest changes on rebuild.
-      // Deployed apps must pass wasmSha256 instead.
-      allowUnpinnedWasm
+      {...(wasmSha256 ? { wasmSha256 } : { allowUnpinnedWasm: true })}
     >
-      <div className="app-shell">
-        <WalletBar />
-        <section className="hero">
-          <h1>SDK demo — connect, SPLD, modules</h1>
-          <p>
-            Native ML-DSA-65 wallet via ConnectKit. Balance, send SPLD, QRC-20 / 1155, DEX, Exchange,
-            Bridge, and Contract using <code className="mono">@splendor/connect-react</code> hooks.
-          </p>
-        </section>
-        <BalancePanel />
-        <SendPanel />
-        <TokenPanel />
-        <CollectionPanel />
-        <DexPanel />
-        <ExchangePanel />
-        <BridgePanel />
-        <ContractPanel />
-      </div>
+      <TxToastHost>
+        <div className="app-shell">
+          <WalletBar />
+          <WrongNetworkBanner expectedNetworkId={network} />
+          <section className="hero">
+            <h1>SDK demo — connect, SPLD, modules</h1>
+            <p>
+              Extension or native ML-DSA-65 seed via ConnectKit. Balance, send SPLD, QRC-20 / 1155,
+              Bridge, and Contract hooks. DEX / Exchange panels are leftover adapters — not
+              node-routed (see banners below).
+            </p>
+          </section>
+          <BalancePanel />
+          <SendPanel />
+          <TokenPanel />
+          <CollectionPanel />
+          <DexPanel />
+          <ExchangePanel />
+          <BridgePanel />
+          <ContractPanel />
+        </div>
+      </TxToastHost>
     </SplendorConnectProvider>
   );
 }

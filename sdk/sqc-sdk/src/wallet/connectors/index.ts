@@ -6,4 +6,4 @@ export type {
   WalletUnlockContext,
 } from './types.js';
 export { seedConnector } from './seed.js';
-export { metamaskConnector, evmKeyConnector } from './metamask.js';
+export { extensionConnector } from './extension.js';

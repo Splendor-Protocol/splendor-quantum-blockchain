@@ -25,20 +25,16 @@ export {
 } from './core/storage.js';
 export type { ConnectBroadcastMessage } from './core/storage.js';
 export {
-  metamaskConnector,
-  injectedConnector,
   seedConnector,
-  hasAuthorizedAccounts,
+  extensionConnector,
   assertSeedHex,
   generateSeedHex,
-  discoverInjectedConnectors,
   defaultBrowserConnectors,
 } from './connectors/index.js';
 export type {
   Connector,
   ConnectorContext,
   ConnectorField,
-  MetamaskConnectorOpts,
-  InjectedConnectorOpts,
   SeedConnectorOpts,
+  ExtensionConnectorOpts,
 } from './connectors/index.js';

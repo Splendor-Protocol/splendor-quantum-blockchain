@@ -1,9 +1,12 @@
 import {
   SplendorConnectProvider,
-  ConnectButton,
+  ConnectKit,
   TransferWidget,
   AccountCard,
   DeployTokenWidget,
+  TokenPanel,
+  TxToastHost,
+  WrongNetworkBanner,
   useAccount,
 } from '@splendor/connect-react';
 
@@ -33,28 +36,32 @@ export function App() {
       autoReconnect
       {...(wasmSha256 ? { wasmSha256 } : { allowUnpinnedWasm: true })}
     >
-      <div className="app-shell">
-        <header className="app-header">
-          <p className="brand">
-            Splendor <span>Quantum</span>
-          </p>
-          <ConnectButton />
-        </header>
-        <section className="hero">
-          <h1>Connect once. PQ signing stays local.</h1>
-          <p>
-            Create a post-quantum ML-DSA-65 wallet in the browser, or import a seed you already
-            hold. Your dApp never sees the private key — only the SQ: address and signed
-            transactions.
-          </p>
-        </section>
-        <TokenNote />
-        <div className="grid">
-          <AccountCard />
-          <TransferWidget />
-          <DeployTokenWidget />
+      <TxToastHost>
+        <div className="app-shell">
+          <header className="app-header">
+            <p className="brand">
+              Splendor <span>Quantum</span>
+            </p>
+            <ConnectKit />
+          </header>
+          <WrongNetworkBanner expectedNetworkId="local" />
+          <section className="hero">
+            <h1>Connect with the Splendor extension or a native seed.</h1>
+            <p>
+              Prefer the Splendor Quantum Wallet extension when installed. Otherwise create or
+              import an ML-DSA-65 seed in the browser. Confirmation uses RPC receipts — explorer
+              links are optional and do not affect tx success.
+            </p>
+          </section>
+          <TokenNote />
+          <div className="grid">
+            <AccountCard />
+            <TransferWidget />
+            <TokenPanel />
+            <DeployTokenWidget />
+          </div>
         </div>
-      </div>
+      </TxToastHost>
     </SplendorConnectProvider>
   );
 }

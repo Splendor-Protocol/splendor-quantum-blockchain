@@ -4,6 +4,9 @@ import {
   AccountCard,
   TransferWidget,
   DeployTokenWidget,
+  TokenPanel,
+  TxToastHost,
+  WrongNetworkBanner,
 } from '@splendor/connect-react';
 
 const wasmSha256 = (import.meta.env.VITE_SQC_WASM_SHA256 as string | undefined)?.trim();
@@ -26,23 +29,30 @@ export function App() {
         ? { wasmSha256 }
         : { allowUnpinnedWasm: true })}
     >
-      <div className="app-shell">
-        <header className="app-header">
-          <p className="brand">
-            Splendor <span>dApp</span>
-          </p>
-          <ConnectKit />
-        </header>
-        <section className="hero">
-          <h1>Build on Splendor Quantum Chain</h1>
-          <p>Connect a post-quantum wallet, then transfer SPLD or deploy a QRC-20.</p>
-        </section>
-        <div className="grid">
-          <AccountCard />
-          <TransferWidget />
-          <DeployTokenWidget />
+      <TxToastHost>
+        <div className="app-shell">
+          <header className="app-header">
+            <p className="brand">
+              Splendor <span>dApp</span>
+            </p>
+            <ConnectKit />
+          </header>
+          <WrongNetworkBanner expectedNetworkId="local" />
+          <section className="hero">
+            <h1>Build on Splendor Quantum Chain</h1>
+            <p>
+              Connect the Splendor extension or a native ML-DSA-65 seed, then transfer SPLD or
+              deploy a QRC-20.
+            </p>
+          </section>
+          <div className="grid">
+            <AccountCard />
+            <TransferWidget />
+            <TokenPanel />
+            <DeployTokenWidget />
+          </div>
         </div>
-      </div>
+      </TxToastHost>
     </SplendorConnectProvider>
   );
 }

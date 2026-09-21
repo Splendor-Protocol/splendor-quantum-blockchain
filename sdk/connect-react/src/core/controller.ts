@@ -5,6 +5,7 @@ import {
   type BridgeErrorCode,
   type CreateClientOptions,
   type DeriveInfo,
+  type ExtensionSigner,
   type NetworkConfig,
   type SplendorClient,
   type SplendorPQBridge,
@@ -20,9 +21,11 @@ import type {
   ModalView,
 } from './types.js';
 
+export type SessionWallet = SplendorPQBridge | ExtensionSigner;
+
 export type CreateConnectControllerOptions = CreateClientOptions & {
   connectors: Connector[];
-  /** Attempt to reconnect last MetaMask/injected connector on init. Default false. */
+  /** Attempt to reconnect last resumable connector (e.g. extension) on init. Default false. */
   autoReconnect?: boolean;
   /** Called when connect/session errors occur (optional observability). */
   onError?: (err: Error) => void;
@@ -55,6 +58,7 @@ function errorFromWalletPayload(payload: { code: string; message: string }): Err
     'USER_REJECTED',
     'NO_PROVIDER',
     'RPC',
+    'RPC_UNAVAILABLE',
     'NETWORK',
     'WASM',
     'INVALID_ADDRESS',
@@ -85,7 +89,7 @@ export type ConnectController = {
   /** Tear down wallet without clearing lastConnectorId (network switch). */
   softDisconnect(): Promise<void>;
   /**
-   * Try last connector (MetaMask/injected only — never a connector whose secret
+   * Try last connector (extension / resumable only — never a connector whose secret
    * the user types in).
    * Pass `{ force: true }` after a soft network switch (ignores autoReconnect flag).
    * Pass `isStale` so rapid soft-switches abort before mutating state.
@@ -94,9 +98,11 @@ export type ConnectController = {
     force?: boolean;
     isStale?: () => boolean;
   }): Promise<boolean>;
-  getWallet(): SplendorPQBridge;
+  getWallet(): SessionWallet;
   getProvider(): SqcProvider;
   getNetwork(): NetworkConfig;
+  /** Replace the active signing wallet (used by extension connector). */
+  setSessionWallet(wallet: SessionWallet): void;
   destroy(): void;
 };
 
@@ -114,6 +120,9 @@ export function createConnectController(
   const connectors = [...options.connectors];
   const listeners = new Set<Listener>();
 
+  /** Active signing wallet — defaults to in-page WASM; extension connector replaces it. */
+  let sessionWallet: SessionWallet = client.wallet as SplendorPQBridge;
+
   let status: ConnectionStatus = 'disconnected';
   let connectingStep: ConnectingStep = null;
   let account: ConnectAccount | null = null;
@@ -122,6 +131,8 @@ export function createConnectController(
   let modal: ModalView = 'closed';
   let destroyed = false;
   let connectInFlight: Promise<DeriveInfo> | null = null;
+  /** Bumped on softDisconnect / disconnect / destroy so in-flight connect cannot commit. */
+  let connectEpoch = 0;
   let snapshot: ConnectControllerState = {
     status,
     connectingStep,
@@ -133,6 +144,7 @@ export function createConnectController(
     network: client.network,
   };
   let connectorAccountsUnsub: (() => void) | null = null;
+  let sessionWalletUnsubs: Array<() => void> = [];
 
   const unsubs: Array<() => void> = [];
 
@@ -140,6 +152,51 @@ export function createConnectController(
     if (connectorAccountsUnsub) {
       connectorAccountsUnsub();
       connectorAccountsUnsub = null;
+    }
+  };
+
+  const clearSessionWalletWatch = () => {
+    for (const off of sessionWalletUnsubs) off();
+    sessionWalletUnsubs = [];
+  };
+
+  const wireSessionWallet = (wallet: SessionWallet) => {
+    clearSessionWalletWatch();
+    sessionWalletUnsubs.push(
+      wallet.on('connect', () => {
+        syncFromWallet();
+      }),
+      wallet.on('accountsChanged', () => {
+        syncFromWallet();
+      }),
+      wallet.on('lock', () => {
+        account = null;
+        connectingStep = null;
+        status = 'locked';
+        emit();
+      }),
+      wallet.on('disconnect', () => {
+        account = null;
+        activeConnectorId = null;
+        status = 'disconnected';
+        emit();
+      }),
+      wallet.on('error', (payload) => {
+        error = errorFromWalletPayload(payload);
+        account = null;
+        activeConnectorId = null;
+        status = 'error';
+        options.onError?.(error);
+        emit();
+      }),
+    );
+  };
+
+  const setSessionWallet = (wallet: SessionWallet) => {
+    if (wallet !== sessionWallet) {
+      // Do not disconnect the previous in-page client.wallet — extension owns keys.
+      sessionWallet = wallet;
+      wireSessionWallet(wallet);
     }
   };
 
@@ -178,8 +235,8 @@ export function createConnectController(
   };
 
   const syncFromWallet = () => {
-    const info = client.wallet.getDeriveInfo();
-    if (info && client.wallet.getConnectionState() === 'connected') {
+    const info = sessionWallet.getDeriveInfo();
+    if (info && sessionWallet.getConnectionState() === 'connected') {
       account = toAccount(info);
       status = 'connected';
     } else if (status === 'locked') {
@@ -191,47 +248,12 @@ export function createConnectController(
     emit();
   };
 
-  unsubs.push(
-    client.wallet.on('connect', () => {
-      syncFromWallet();
-    }),
-  );
-  unsubs.push(
-    client.wallet.on('accountsChanged', () => {
-      syncFromWallet();
-    }),
-  );
-  unsubs.push(
-    client.wallet.on('lock', () => {
-      account = null;
-      connectingStep = null;
-      status = 'locked';
-      emit();
-    }),
-  );
-  unsubs.push(
-    client.wallet.on('disconnect', () => {
-      account = null;
-      activeConnectorId = null;
-      status = 'disconnected';
-      emit();
-    }),
-  );
-  unsubs.push(
-    client.wallet.on('error', (payload) => {
-      error = errorFromWalletPayload(payload);
-      account = null;
-      activeConnectorId = null;
-      status = 'error';
-      options.onError?.(error);
-      emit();
-    }),
-  );
+  wireSessionWallet(sessionWallet);
 
   unsubs.push(
     subscribeConnectBroadcast((msg) => {
       if (msg.type === 'disconnect' && (status === 'connected' || status === 'locked')) {
-        client.wallet.disconnect();
+        sessionWallet.disconnect();
         account = null;
         activeConnectorId = null;
         status = 'disconnected';
@@ -283,6 +305,8 @@ export function createConnectController(
       }
 
       connectInFlight = (async () => {
+        const epoch = connectEpoch;
+        const stillCurrent = () => epoch === connectEpoch && !destroyed;
         error = null;
         status = 'connecting';
         connectingStep = 'init';
@@ -291,26 +315,45 @@ export function createConnectController(
 
         try {
           const ready = await connector.ready();
+          if (!stillCurrent()) {
+            throw BridgeError.userRejected('Connect cancelled — session switched or disconnected');
+          }
           if (!ready) {
             throw BridgeError.noProvider(
-              connector.id === 'metamask'
-                ? 'MetaMask (or compatible wallet) not found. Install an EIP-1193 wallet.'
+              connector.id === 'splendor-extension' || connector.id === 'extension'
+                ? 'Splendor Quantum Wallet extension not found. Install the extension to continue.'
                 : `Connector "${connector.name}" is not ready`,
             );
           }
 
-          await client.wallet.init();
+          // Seed path needs WASM init on the in-page wallet; extension skips it.
+          if (connector.id !== 'splendor-extension' && connector.id !== 'extension') {
+            await (client.wallet as SplendorPQBridge).init();
+          }
+          if (!stillCurrent()) {
+            throw BridgeError.userRejected('Connect cancelled — session switched or disconnected');
+          }
           connectingStep = 'sign';
           emit();
           const info = await connector.connect(
             {
-              wallet: client.wallet,
-              connection: client.wallet.connection,
+              wallet: client.wallet as SplendorPQBridge,
+              connection: (client.wallet as SplendorPQBridge).connection,
               provider: client.provider,
               network: client.network,
+              setSessionWallet,
             },
             opts,
           );
+          if (!stillCurrent()) {
+            // Stale connect completed after soft-switch — do not commit session.
+            try {
+              await connector.disconnect?.();
+            } catch {
+              /* ignore */
+            }
+            throw BridgeError.userRejected('Connect cancelled — session switched or disconnected');
+          }
           account = toAccount(info);
           activeConnectorId = connectorId;
           const resumable = !needsUserSecret(connector);
@@ -320,8 +363,7 @@ export function createConnectController(
           modal = 'closed';
           clearConnectorAccountsWatch();
           if (connector.onAccountsChanged) {
-            connectorAccountsUnsub = connector.onAccountsChanged((_evm) => {
-              // Wallet MetaMask watch usually owns re-derive; this keeps custom connectors honest.
+            connectorAccountsUnsub = connector.onAccountsChanged((_addr) => {
               syncFromWallet();
             });
           }
@@ -333,8 +375,23 @@ export function createConnectController(
             });
           }
           emit();
+          // Soft RPC probe — keep session connected but surface network-down copy.
+          const probeEpoch = connectEpoch;
+          void sessionWallet.connection.probeNetwork?.().then((probe) => {
+            if (probeEpoch !== connectEpoch || destroyed) return;
+            if (probe && !probe.ok) {
+              error = probe.error;
+              emit();
+            }
+          }).catch(() => {});
           return info;
         } catch (e) {
+          if (!stillCurrent()) {
+            // Discard error state from cancelled connect.
+            connectingStep = null;
+            if (status === 'connecting') status = 'disconnected';
+            throw BridgeError.userRejected('Connect cancelled — session switched or disconnected');
+          }
           const err = e instanceof Error ? e : new Error(String(e));
           error = err;
           account = null;
@@ -345,13 +402,17 @@ export function createConnectController(
           emit();
           throw err;
         } finally {
-          connectInFlight = null;
+          if (epoch === connectEpoch) {
+            connectInFlight = null;
+          }
         }
       })();
 
       return connectInFlight;
     },
     async disconnect() {
+      connectEpoch += 1;
+      connectInFlight = null;
       const connector = connectors.find((c) => c.id === activeConnectorId);
       clearConnectorAccountsWatch();
       try {
@@ -359,7 +420,11 @@ export function createConnectController(
       } catch {
         /* ignore */
       }
-      client.wallet.disconnect();
+      sessionWallet.disconnect();
+      if (sessionWallet !== client.wallet) {
+        (client.wallet as SplendorPQBridge).disconnect();
+      }
+      setSessionWallet(client.wallet as SplendorPQBridge);
       account = null;
       activeConnectorId = null;
       connectingStep = null;
@@ -371,6 +436,8 @@ export function createConnectController(
       emit();
     },
     async softDisconnect() {
+      connectEpoch += 1;
+      connectInFlight = null;
       const connector = connectors.find((c) => c.id === activeConnectorId);
       clearConnectorAccountsWatch();
       try {
@@ -378,7 +445,10 @@ export function createConnectController(
       } catch {
         /* ignore */
       }
-      client.wallet.disconnect();
+      sessionWallet.disconnect();
+      if (sessionWallet !== client.wallet) {
+        setSessionWallet(client.wallet as SplendorPQBridge);
+      }
       account = null;
       connectingStep = null;
       error = null;
@@ -428,7 +498,7 @@ export function createConnectController(
       }
     },
     getWallet() {
-      return client.wallet;
+      return sessionWallet;
     },
     getProvider() {
       return client.provider;
@@ -436,13 +506,20 @@ export function createConnectController(
     getNetwork() {
       return client.network;
     },
+    setSessionWallet,
     destroy() {
       destroyed = true;
+      connectEpoch += 1;
+      connectInFlight = null;
       clearConnectorAccountsWatch();
+      clearSessionWalletWatch();
       for (const off of unsubs) off();
       unsubs.length = 0;
       listeners.clear();
-      client.wallet.disconnect();
+      sessionWallet.disconnect();
+      if (sessionWallet !== client.wallet) {
+        (client.wallet as SplendorPQBridge).disconnect();
+      }
     },
   };
 
@@ -523,6 +600,9 @@ export function createStubConnectController(
     getWallet: notReady,
     getProvider: notReady,
     getNetwork: notReady,
+    setSessionWallet() {
+      /* no-op during SSR */
+    },
     destroy() {
       listeners.clear();
     },
@@ -532,6 +612,7 @@ export function createStubConnectController(
 /** Map bridge / connector errors to short UI copy. */
 export function connectErrorMessage(err: unknown): string {
   if (isBridgeError(err)) {
+    if (err.userHint) return err.userHint;
     switch (err.code) {
       case 'USER_REJECTED':
         return 'Request rejected in wallet';
@@ -539,7 +620,10 @@ export function connectErrorMessage(err: unknown): string {
         return 'No browser wallet found';
       case 'WASM':
         return 'Signer failed to load — check WASM hosting';
+      case 'RPC_UNAVAILABLE':
+        return 'Network unavailable — check your connection or try again later';
       case 'NETWORK':
+        return 'Network error — cannot reach the chain';
       case 'RPC':
         return 'Network error';
       case 'CHAIN_MISMATCH':
@@ -568,7 +652,11 @@ export function connectErrorMessage(err: unknown): string {
     if ((err as Error & { code?: string }).code === 'NO_PROVIDER') {
       return 'No browser wallet found';
     }
-    if (/EIP-1193|ethereum.*not found|MetaMask/i.test(err.message)) {
+    if (
+      /extension.*not found|Splendor Quantum Wallet|EIP-1193|provider.*not found|window\.ethereum/i.test(
+        err.message,
+      )
+    ) {
       return 'No browser wallet found';
     }
     if (/user rejected|denied/i.test(err.message)) {
