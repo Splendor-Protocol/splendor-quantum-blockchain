@@ -2,7 +2,7 @@
 
 AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors unlock [`@splendor/sqc-sdk`](../sqc-sdk) WASM ML-DSA-65 wallets — PQ crypto stays internal.
 
-The first action in the modal is a **native ML-DSA-65 wallet** — create one from browser CSPRNG entropy, or import a 32-byte seed. MetaMask and other injected wallets are still there, last, under a **Legacy** heading: they derive the ML-DSA key from an ECDSA signature, so those accounts are only as strong as secp256k1.
+The first action in the modal is a **native ML-DSA-65 wallet** — create one from browser CSPRNG entropy, or import a 32-byte seed. When the Splendor Quantum Wallet extension is installed, it appears first via `extensionConnector`. ECDSA / MetaMask derivation is no longer offered.
 
 `@splendor/pq-bridge` remains a deprecated shim; new apps should depend on `@splendor/sqc-sdk`.
 
@@ -23,7 +23,7 @@ Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plug
 | Provider-hosted modals | Yes (`hostModals`, default) |
 | SSR-safe hooks | Yes — stub until client |
 | Native ML-DSA wallet (create / import) | Yes — first item in the modal |
-| Auto connectors (EIP-6963) | Yes — `connectors="auto"`, listed after native |
+| Auto connectors | Yes — `connectors="auto"` → extension + seed |
 | Soft network switch + reconnect | Yes (`chainChanged` emitted) |
 | Idle lock syncs UI | Yes — bridge `lock` event → `status: 'locked'` |
 | Inline / custom networks | Yes — `networks` / `networkConfig` / `registerNetwork` |
@@ -34,11 +34,11 @@ Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plug
 | ML-DSA Sign-In | Yes — `useSignIn` / `createAuthMessage` |
 | Tx toasts | Yes — `<TxToastHost />` + `useTxToast` |
 | Wrong-network banner | Yes — `<WrongNetworkBanner expectedNetworkId="…" />` |
-| Module hooks | Yes — bridge plus leftover DEX/exchange adapter hooks (not routed native modules) |
+| Module hooks | Yes — DEX/bridge/exchange hooks for app-level UI (no Swap/Bridge widgets) |
 
 ### Widget scope
 
-Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Routed QRC-1155 and bridge are available as **hooks** for app-built UI. DEX and exchange hooks wrap unsupported leftover adapters — the node router does not dispatch those modules. WalletConnect remains deferred.
+Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. DEX, bridge, exchange, and QRC-1155 are available as **hooks** for app-built UI — not as packaged AppKit widgets. WalletConnect remains deferred.
 
 ### Hook coverage matrix
 
@@ -49,8 +49,8 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Routed QRC-11
 | QRC-20 read / transfer / approve | `useQRC20` |
 | Deploy QRC-20 | `useDeployToken` |
 | QRC-1155 | `useQRC1155`, `useDeployCollection` |
-| DEX swap / liquidity | `useDex`, `useDeployPool` — **unsupported adapter**, not a routed module |
-| Exchange | `useExchange`, `useDeployExchange` — **unsupported adapter**, not a routed module |
+| DEX swap / liquidity | `useDex`, `useDeployPool` |
+| Exchange | `useExchange`, `useDeployExchange` |
 | Bridge claim | `useBridge`, `useDeployBridge` |
 | Bytecode contract | `useContract`, `useDeployBytecode` (`useDeployContract` deprecated alias) |
 | Bound module factory | `useModules()` |
@@ -92,7 +92,7 @@ import {
   AccountCard,
 } from '@splendor/connect-react';
 
-// connectors="auto" (default): native ML-DSA first, MetaMask/EIP-6963 after it.
+// connectors="auto" (default): Splendor extension + native seed.
 // wasmSha256 pins the signer bundle — see "Pin the signer" below.
 <SplendorConnectProvider network="testnet" wasmSha256="<digest>">
   <ConnectKit />
@@ -103,7 +103,7 @@ import {
 
 Widgets are also available as `@splendor/connect-react/widgets`.
 
-`autoReconnect` only ever resumes an injected wallet — a native seed is typed in
+`autoReconnect` only ever resumes the extension connector — a native seed is typed in
 by the user, so it is never persisted and never silently reconnected.
 
 ### Pin the signer
@@ -163,24 +163,22 @@ Or inline:
 ```tsx
 import {
   SplendorConnectProvider,
+  extensionConnector,
   seedConnector,
-  metamaskConnector,
 } from '@splendor/connect-react';
 
 <SplendorConnectProvider
   network="testnet"
   connectors={[
-    seedConnector(),      // native ML-DSA-65 — the happy path
-    metamaskConnector(),  // fallback, rendered under "Legacy / not post-quantum"
+    extensionConnector(), // Splendor Quantum Wallet extension
+    seedConnector(),      // in-page native ML-DSA-65
   ]}
 />
 ```
 
-The modal groups by `keyOrigin`, not by array position: `native` connectors lead,
-everything else falls to the legacy group. A connector that declares nothing is
-grouped as legacy — an account is never shown as quantum-safe by omission.
+Or use the default: `connectors="auto"` → `defaultBrowserConnectors()` (extension + seed).
 
-**Native only** (no ECDSA path at all):
+**Seed only:**
 
 ```tsx
 <SplendorConnectProvider network="testnet" connectors={[seedConnector()]} />

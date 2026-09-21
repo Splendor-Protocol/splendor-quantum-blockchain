@@ -3,9 +3,11 @@
  *
  *   const { provider, wallet, network } = await connectSplendor({
  *     network: 'local',
- *     connect: 'metamask',
+ *     connect: 'seed',
+ *     seed,
  *   });
  */
+import { Connection } from './core/connection.js';
 import { SqcProvider } from './provider.js';
 import { SplendorPQBridge } from './splendor-wallet.js';
 import type { BridgeOptions, DeriveInfo } from './types.js';
@@ -18,10 +20,9 @@ import {
   type NetworkId,
 } from './networks.js';
 import { BridgeError } from './errors.js';
-import type { EthereumProvider } from './metamask.js';
-import type { DerivationScheme } from './derive.js';
+import { connectExtension, type ExtensionSigner } from './wallet/extension-signer.js';
 
-export type ConnectMode = 'none' | 'metamask' | 'seed' | 'evmKey' | 'evmSignature';
+export type ConnectMode = 'none' | 'seed' | 'extension';
 
 export type CreateClientOptions = {
   /** Network id from sqc.networks.json (default: file defaultNetwork). */
@@ -55,9 +56,6 @@ export type CreateClientOptions = {
   sessionIdleMs?: number;
   /** Lock immediately when tab is hidden (default false). */
   lockOnHidden?: boolean;
-  watchMetaMaskAccounts?: boolean;
-  ethereumProvider?: EthereumProvider;
-  derivation?: DerivationScheme;
   onRequest?: BridgeOptions['onRequest'];
   onError?: BridgeOptions['onError'];
 };
@@ -66,15 +64,13 @@ export type ConnectSplendorOptions = CreateClientOptions & {
   /** How to unlock the signing wallet. Default: none (provider-only ready). */
   connect?: ConnectMode;
   seed?: string;
-  evmPrivateKey?: string;
-  evmSignature?: string;
-  evmAddress?: string;
 };
 
 export type ClientSession = {
   network: NetworkConfig;
   provider: SqcProvider;
-  wallet: SplendorPQBridge;
+  /** In-page WASM wallet, or ExtensionSigner when connect:'extension'. */
+  wallet: SplendorPQBridge | ExtensionSigner;
   info: DeriveInfo | null;
 };
 
@@ -162,9 +158,6 @@ export function buildBridgeOptions(opts: CreateClientOptions = {}): {
     allowInsecureHttp: opts.allowInsecureHttp,
     sessionIdleMs: opts.sessionIdleMs,
     lockOnHidden: opts.lockOnHidden,
-    watchMetaMaskAccounts: opts.watchMetaMaskAccounts,
-    ethereumProvider: opts.ethereumProvider,
-    derivation: opts.derivation,
     onRequest: opts.onRequest,
     onError: opts.onError,
   };
@@ -191,39 +184,32 @@ export function createSplendorClient(opts: CreateClientOptions = {}): ClientSess
  * `@splendor/sqc-sdk`. For React UI use `@splendor/connect-react` ConnectKit.
  */
 export async function connectSplendor(opts: ConnectSplendorOptions = {}): Promise<ClientSession> {
-  const client = createSplendorClient(opts);
   const mode = opts.connect ?? 'none';
+
+  if (mode === 'extension') {
+    const { network, bridgeOpts } = buildBridgeOptions(opts);
+    const provider = new SqcProvider(bridgeOpts);
+    const connection = new Connection(bridgeOpts);
+    const { wallet, info } = await connectExtension({
+      connection,
+      networkId: network.id,
+    });
+    return { network, provider, wallet, info };
+  }
+
+  const client = createSplendorClient(opts);
 
   if (mode === 'none') {
     return client;
   }
 
-  await client.wallet.init();
+  await (client.wallet as SplendorPQBridge).init();
   let info: DeriveInfo;
 
   switch (mode) {
-    case 'metamask':
-      info = await client.wallet.connectFromMetaMask(opts.ethereumProvider);
-      break;
     case 'seed':
       if (!opts.seed) throw BridgeError.notConnected('connect: seed requires opts.seed');
-      info = await client.wallet.connectFromSeed(opts.seed);
-      break;
-    case 'evmKey':
-      if (!opts.evmPrivateKey) {
-        throw BridgeError.notConnected('connect: evmKey requires opts.evmPrivateKey');
-      }
-      info = await client.wallet.connectFromEvmPrivateKey(opts.evmPrivateKey);
-      break;
-    case 'evmSignature':
-      if (!opts.evmSignature) {
-        throw BridgeError.notConnected('connect: evmSignature requires opts.evmSignature');
-      }
-      info = await client.wallet.connectFromEvmSignature(
-        opts.evmSignature,
-        opts.evmAddress,
-        opts.derivation || 'eip191-v1',
-      );
+      info = await (client.wallet as SplendorPQBridge).connectFromSeed(opts.seed);
       break;
     default:
       throw BridgeError.rpc(`Unknown connect mode: ${mode}`);

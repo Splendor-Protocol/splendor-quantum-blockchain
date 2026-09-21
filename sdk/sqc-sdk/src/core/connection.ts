@@ -5,7 +5,7 @@
 import type { Transport } from './transport/types.js';
 import { RpcTransport } from './transport/rpc-transport.js';
 import { SqRpc, fromSPLD, toSPLD, type RpcOptions } from '../rpc.js';
-import { BridgeError } from '../errors.js';
+import { BridgeError, wrapUnknown } from '../errors.js';
 import type { ModuleCall } from './module-call.js';
 import type {
   EstimateGasRequest,
@@ -181,6 +181,18 @@ export class Connection {
 
   async waitForConfirmation(opts: ConfirmationOpts) {
     return this.transport.waitForConfirmation(opts);
+  }
+
+  /** Soft readiness probe (chain id via Transport / RPC). */
+  async probeNetwork(): Promise<
+    { ok: true; chainId: string } | { ok: false; error: BridgeError }
+  > {
+    try {
+      await this.assertChainId();
+      return { ok: true, chainId: this.chainId };
+    } catch (e) {
+      return { ok: false, error: wrapUnknown(e, 'RPC') };
+    }
   }
 }
 

@@ -43,7 +43,7 @@ async function main() {
     console.log('Connected SQ:', connected.info?.address);
     connected.wallet.disconnect();
   } else {
-    console.log('Set PQ_SEED=… to demo connect:seed (or use connect:metamask in browser)');
+    console.log('Set PQ_SEED=… to demo connect:seed (or connect:extension in browser)');
     wallet.disconnect();
   }
 }

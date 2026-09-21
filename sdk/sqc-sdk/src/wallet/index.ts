@@ -10,10 +10,22 @@ export type {
   SplendorClient,
   ConnectorConnectOptions,
 } from './connect.js';
-export { seedConnector, metamaskConnector, evmKeyConnector } from './connectors/index.js';
+export { seedConnector, extensionConnector } from './connectors/index.js';
 export type { Connector } from './connectors/types.js';
 export { installBrowserSessionPolicy } from './browser-session-policy.js';
 export { WasmSession } from './wasm-session.js';
+export {
+  ExtensionSigner,
+  connectExtension,
+} from './extension-signer.js';
+export {
+  METHOD_ALIASES,
+  toCanonicalMethod,
+  toExtensionMethod,
+  getExtensionProvider,
+  getSplendorInjected,
+  requestWithAlias,
+} from './extension-provider.js';
 export {
   SplendorPQBridge,
   Wallet,

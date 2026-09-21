@@ -11,7 +11,10 @@ import { BridgeError } from './errors.js';
 import type { BridgeErrorCode } from './errors.js';
 import type { ConnectionState, DeriveInfo } from './types.js';
 
-export type UseSplendorPQOpts = CreateClientOptions;
+export type UseSplendorPQOpts = CreateClientOptions & {
+  /** Optional seed for connect(); when omitted, connect() requires an explicit seed arg. */
+  seed?: string;
+};
 
 /** @deprecated Prefer `@splendor/connect-react` ConnectKit hooks. */
 export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
@@ -31,23 +34,17 @@ export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
     chainId: opts.chainId,
     timeoutMs: opts.timeoutMs,
     retries: opts.retries,
-    derivation: opts.derivation || 'eip191-v1',
     allowUnpinnedWasm: opts.allowUnpinnedWasm === true,
     allowInsecureHttp: opts.allowInsecureHttp === true,
     sessionIdleMs: opts.sessionIdleMs,
     lockOnHidden: opts.lockOnHidden === true,
-    watchMetaMaskAccounts: opts.watchMetaMaskAccounts,
   });
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const createOpts: CreateClientOptions = {
-      ...optsRef.current,
-      ethereumProvider: optsRef.current.ethereumProvider,
-    };
-    const next = createSplendorClient(createOpts);
+    const next = createSplendorClient(optsRef.current);
     setClient(next);
     setInfo(null);
     setState('disconnected');
@@ -89,19 +86,26 @@ export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
     };
   }, [client]);
 
-  const connect = useCallback(async () => {
-    if (!client) throw new Error('Splendor client not ready (SSR or initializing)');
-    setError(null);
-    try {
-      const derived = await client.wallet.connectFromMetaMask(optsRef.current.ethereumProvider);
-      setInfo(derived);
-      setState('connected');
-      return derived;
-    } catch (e) {
-      setError(e instanceof Error ? e : new Error(String(e)));
-      throw e;
-    }
-  }, [client]);
+  const connect = useCallback(
+    async (seed?: string) => {
+      if (!client) throw new Error('Splendor client not ready (SSR or initializing)');
+      const seedHex = seed ?? optsRef.current.seed;
+      if (!seedHex) throw BridgeError.notConnected('useSplendorPQ.connect requires a seed');
+      setError(null);
+      try {
+        const derived = await (client.wallet as import('./splendor-wallet.js').SplendorPQBridge).connectFromSeed(
+          seedHex,
+        );
+        setInfo(derived);
+        setState('connected');
+        return derived;
+      } catch (e) {
+        setError(e instanceof Error ? e : new Error(String(e)));
+        throw e;
+      }
+    },
+    [client],
+  );
 
   const disconnect = useCallback(() => {
     client?.wallet.disconnect();

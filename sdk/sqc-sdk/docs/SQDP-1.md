@@ -9,7 +9,7 @@ This document is the **single source of truth** for how dApps, wallets, and gate
 
 Machine-readable constants are exported as `PROTOCOL` / `SQDP_VERSION` from `@splendor/sqc-sdk`.
 
-**Single config file:** network RPCs, gateway ports, WASM paths, min fee, and default network MUST be taken from `src/config/sqc.networks.json` (or the published `config/sqc.networks.json` mirror). dApps SHOULD use `createSplendorClient` / `connectSplendor({ network })` instead of hardcoding URLs.
+**Single config file:** network RPCs, gateway ports, WASM paths, min fee, and default network MUST be taken from `src/config/sqc.networks.json` (or the published `config/sqc.networks.json` mirror). dApps SHOULD use `createSession` / `createWalletClient` / `connect({ network })` instead of hardcoding URLs.
 
 ---
 
@@ -26,34 +26,20 @@ Machine-readable constants are exported as `PROTOCOL` / `SQDP_VERSION` from `@sp
 
 1. The network `chain_id` MUST be the string `splendor-quantum-1` unless a future SQDP revision defines another network.
 2. Clients MUST call status / `assertChainId` (or equivalent) before submitting signed transactions and MUST reject a mismatch (`CHAIN_MISMATCH`).
-3. MetaMask (or other EVM) chain switches MUST NOT be interpreted as Splendor chain changes. Derivation does not require a specific EVM chain id.
+3. External EVM wallet chain switches (if any legacy tooling is present) MUST NOT be interpreted as Splendor chain changes.
 
 ---
 
-## 3. Key derivation (EVM → PQ)
+## 3. Account unlock (normative)
 
-1. Clients that map an EVM account to a PQ wallet MUST use this exact UTF-8 domain message (version `v1`):
+dApps and ConnectKit MUST unlock accounts **only** via:
 
-```
-Splendor Quantum Chain
-Key derivation v1
-chain: splendor-quantum-1
-```
+1. **Splendor Quantum Wallet browser extension** — native ML-DSA-65 keys held in the extension (`connect` / `extensionConnector` / `ExtensionSigner`). The dApp MUST NOT receive the seed.
+2. **Native seed** — 32-byte CSPRNG seed → `mldsa65.NewKeyFromSeed(seed)` in WASM (`connectFromSeed` / seed connector). Returns `postQuantumSecure: true`, `keyOrigin: 'native'`.
 
-2. The user MUST authenticate via EIP-191 `personal_sign` of that message (MetaMask or local secp256k1).
-3. The ML-DSA seed MUST be `SHA3-256(signature_bytes)` (65-byte Ethereum-style signature).
-4. Keypair MUST be Cloudflare circl **ML-DSA-65 (NIST FIPS 204)** `mldsa65.NewKeyFromSeed(seed)`.
-5. Changing the domain message is a **breaking** protocol change (new address map).
+ECDSA / MetaMask / EVM→PQ derivation is **not** a normative unlock path. Historical derivation text lives in [Appendix A](#appendix-a-historical-evm--pq-derivation-informative).
 
-> **This derivation path is NOT post-quantum secure.** The signatures it produces
-> are ML-DSA-65, but the *key* is a deterministic function of an ECDSA
-> signature. An adversary with a quantum computer can recover the secp256k1
-> private key from any signature the EVM account has ever published, recompute
-> the derivation signature, and obtain this exact ML-DSA key. Implementations
-> MUST surface this to the user (see `DeriveInfo.postQuantumSecure`) and SHOULD
-> present native seed generation as the default for accounts holding value.
-
-Exported: `DERIVATION_DOMAIN_MESSAGE`, `CHAIN_ID`.
+Exported for identity: `CHAIN_ID`, `PROTOCOL`.
 
 ---
 
@@ -77,10 +63,9 @@ and submits calls against this ABI; it does not embed a compile-from-source API.
 
 1. Function selector MUST be the first **4 bytes** of `SHA3-256(UTF-8 signature)` — **not** Keccak-256.
 2. Arguments MUST be packed as 32-byte big-endian words after the selector.
-3. Address-typed parameters in **new** signatures MUST use the compiler-canonical type name **`address`**. The legacy alias **`sqaddress`** is hashed as written so already-deployed selectors keep working.
-4. Canonical golden: `transfer(address,uint256)` selector = `4b40e901` (`PROTOCOL.canonicalTransferSelector`).
-5. Legacy pin: `transfer(sqaddress,uint256)` selector = `14cde9ab` (`PROTOCOL.goldenTransferSelector`).
-6. Encoding an `SQ:` address into a word MUST use the 32 raw bytes (strip `SQ:`), right-aligned in the 32-byte slot (full 32 bytes occupied).
+3. Address-typed parameters in signatures MUST use the type name **`sqaddress`** (not `address`).
+4. Golden test: `transfer(sqaddress,uint256)` selector = `14cde9ab`.
+5. Encoding an `SQ:` address into a word MUST use the 32 raw bytes (strip `SQ:`), right-aligned in the 32-byte slot (full 32 bytes occupied).
 
 Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
 
@@ -126,8 +111,8 @@ Clients using `@splendor/sqc-sdk` MUST use these event names and payloads (`Wall
 | `chainChanged` | `{ chainId: number, networkId: string }` |
 | `error` | `{ code: string, message: string }` |
 
-1. After MetaMask `accountsChanged`, wallets SHOULD re-`personal_sign` and re-derive (SDK default). Empty accounts SHOULD lock and emit `disconnect`.
-2. `lock()` MUST clear the ML-DSA-65 key from WASM memory and emit a `lock` event. `disconnect()` MUST destroy the session and emit `disconnect`.
+1. After extension `accountsChanged`, wallets SHOULD refresh the connected `SQ:` account (SDK / ConnectKit default). Empty accounts SHOULD lock and emit `disconnect`.
+2. `lock()` MUST clear the ML-DSA-65 key from WASM memory (seed sessions) and emit a `lock` event. `disconnect()` MUST destroy the session and emit `disconnect`.
 3. Soft network switches (ConnectKit) SHOULD emit `chainChanged` via `wallet.notifyChainChanged`.
 
 ### 8.1 Injected SQC provider (`window.splendor`)
@@ -150,7 +135,9 @@ WalletConnect v2 and Ethereum EIP-1193/`eth_*` for wagmi remain **out of scope**
 
 Clients MUST handle these `WalletError` / `BridgeError` codes (string `code` field):
 
-`NOT_CONNECTED`, `USER_REJECTED`, `NO_PROVIDER`, `RPC`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `TX_FAILED`, `CHAIN_MISMATCH`, `UNKNOWN`.
+`NOT_CONNECTED`, `USER_REJECTED`, `NO_PROVIDER`, `RPC`, `RPC_UNAVAILABLE`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `TX_FAILED`, `CHAIN_MISMATCH`, `UNKNOWN`.
+
+`RPC_UNAVAILABLE` MUST be used when all configured RPC endpoints fail (failover exhausted) or when confirmation polling fails closed on repeated transport errors. Covered by `security-rpc.test.ts`.
 
 Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` using the same code strings when applicable.
 
@@ -161,7 +148,8 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 1. Clients MAY supply `rpcUrls: string[]` for read failover. Empty lists MUST be rejected.
 2. On timeout / HTTP 5xx, clients SHOULD retry (per-URL) then fail over to the next URL.
 3. After a successful submit, clients SHOULD sticky-route subsequent submits to the accepting URL.
-4. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `1.4.0`).
+4. After **3 consecutive sticky-URL failures** (failover away from sticky), clients SHOULD clear sticky and resume from the first configured URL (`security-rpc.test.ts`).
+5. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `1.4.0`).
 
 ---
 
@@ -173,8 +161,8 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 | `service-wallet` | Operator automation only — holds one PQ key |
 
 1. Public gateways MUST run `proxy` mode for end users.
-2. Public proxy MUST reject `seed`, `evmPrivateKey`, and (unless `ALLOW_CUSTODIAL_PROXY=1`) `evmSignature`. Prefer client-side WASM signing + `POST /v1/tx/submit`.
-3. Posting an ML-DSA-65 `seed` or derivation signature to a gateway is **custodial** for that request. `ALLOW_CUSTODIAL_PROXY=1` is for private backends only.
+2. Public proxy MUST reject `seed`, `evmPrivateKey`, and `evmSignature`. Prefer client-side WASM signing + `POST /v1/tx/submit`. Custodial EVM unlock / derive endpoints are removed for public hosts.
+3. Posting an ML-DSA-65 `seed` to a gateway is **custodial** for that request. `ALLOW_CUSTODIAL_PROXY=1` is for private backends only (seed / signedTx automation — not end-user EVM derive).
 4. `service-wallet` MUST NOT be used to hold end-user keys. Production service-wallet SHOULD require `GATEWAY_API_KEY`.
 5. Gateways SHOULD enable rate limiting, CORS allowlists, and body size limits.
 
@@ -184,19 +172,16 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 
 | Threat | Mitigation |
 |--------|------------|
-| Phishing a different derivation message | MUST use exact SQDP-1 domain text; show it in UI before sign — the signature **is key material** |
 | Confusing `0x` with `SQ:` | UI MUST display `SQ:` after connect; never send EVM ETH as “funding” |
 | Wrong chain | MUST `assertChainId` before submit (all tx types) |
-| Seed / EVM key / derivation sig theft via gateway | Public proxy MUST reject custodial credentials; submit `signedTx` only |
-| Session residue | MUST `lock` / `disconnect` on logout (`lock` zeroizes ML-DSA-65 key material) |
+| Seed theft via gateway | Public proxy MUST reject custodial credentials; submit `signedTx` only |
+| Session residue | MUST `lock` / `disconnect` on logout (`lock` zeroizes ML-DSA-65 key material in WASM sessions) |
 | Fake confirmation | MUST NOT treat missing receipt as success without nonce fallback; nonce poll can race with other txs |
-| MetaMask account race | MUST fail-closed (lock + disconnect) if re-derive fails after `accountsChanged` |
+| Extension account race | MUST fail-closed (lock + disconnect) if session refresh fails after `accountsChanged` |
 | Tampered WASM | Browser SHOULD set `wasmSha256` network pin and fail closed on mismatch |
-| Signature / address mismatch | MUST `ecrecover` and bind claimed EVM address before derive |
+| All RPCs down | MUST surface `RPC_UNAVAILABLE` (not an infinite hang) |
 
-Encrypted browser session cache of ML-DSA-65 seeds is **out of scope** for SQDP-1 (default remains re-sign each session).
-
-Optional SQDP-1.1 path: EIP-712 `SplendorPQDerive` typed data (`derivation: 'eip712-v1'`). Seed rule remains `SHA3-256(signature_bytes)`. Default remains EIP-191 `personal_sign` (`eip191-v1`).
+Encrypted browser session cache of ML-DSA-65 seeds is **out of scope** for SQDP-1 (default remains re-unlock each session for seed connectors).
 
 Wire `chain_id` remains `splendor-quantum-1` for all deployments until the node defines otherwise. Client configs expose distinct `networkId` values (`splendor-local` / `splendor-testnet` / `splendor-mainnet`) for UX and failover selection.
 
@@ -204,8 +189,31 @@ Wire `chain_id` remains `splendor-quantum-1` for all deployments until the node 
 
 ## 13. Provider vs wallet
 
-1. Read-only access SHOULD use `SqcProvider` (no WASM) until the user connects.
-2. Signing MUST use `SplendorPQBridge` (or `fromProvider`) after connect.
+1. Read-only access SHOULD use `Connection` / `SqcProvider` (no WASM) until the user connects.
+2. Signing MUST use `Wallet` / `SplendorPQBridge` / `ExtensionSigner` after connect.
+
+---
+
+## Appendix A — Historical EVM → PQ derivation (informative)
+
+> **Not normative for ConnectKit or new dApps.** Low-level `derive.ts` helpers remain exported as **deprecated** offline tooling only. Keys produced this way are **not** post-quantum secure: the ML-DSA seed is a deterministic function of an ECDSA signature.
+
+Historical clients that mapped an EVM account to a PQ wallet used this UTF-8 domain message (version `v1`):
+
+```
+Splendor Quantum Chain
+Key derivation v1
+chain: splendor-quantum-1
+```
+
+1. Authenticate via EIP-191 `personal_sign` of that message (or local secp256k1).
+2. ML-DSA seed = `SHA3-256(signature_bytes)` (65-byte Ethereum-style signature).
+3. Keypair = Cloudflare circl **ML-DSA-65** `mldsa65.NewKeyFromSeed(seed)`.
+4. Changing the domain message remaps addresses (breaking).
+
+Optional historical path: EIP-712 `SplendorPQDerive` typed data (`derivation: 'eip712-v1'`). Seed rule remains `SHA3-256(signature_bytes)`.
+
+Exports (deprecated): `DERIVATION_DOMAIN_MESSAGE`, `seedFromEvmSignature`, related recover helpers. See `security-derive.test.ts` for vectors only.
 
 ---
 
@@ -214,3 +222,4 @@ Wire `chain_id` remains `splendor-quantum-1` for all deployments until the node 
 | Version | Notes |
 |---------|--------|
 | SQDP-1 | Initial normative protocol aligned with `@splendor/sqc-sdk` 2.x / legacy `@splendor/pq-bridge` |
+| SQDP-1 (hardening) | Normative unlock = extension + native seed; ECDSA derive → Appendix A; `RPC_UNAVAILABLE` |

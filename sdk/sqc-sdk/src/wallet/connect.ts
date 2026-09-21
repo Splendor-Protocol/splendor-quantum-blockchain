@@ -14,11 +14,12 @@ import {
   type ConnectSplendorOptions,
   type ClientSession,
 } from '../connect.js';
-import { seedConnector, metamaskConnector, evmKeyConnector } from './connectors/index.js';
+import { seedConnector, extensionConnector } from './connectors/index.js';
 import type { ConnectorConnectOptions } from './connectors/types.js';
 import type { DeriveInfo } from '../types.js';
 import type { NetworkConfig } from '../networks.js';
 import { BridgeError } from '../errors.js';
+import type { ExtensionSigner } from './extension-signer.js';
 
 export type ConnectOptions = ConnectSplendorOptions & {
   /** Alias for connectSplendor `connect` field. */
@@ -28,7 +29,7 @@ export type ConnectOptions = ConnectSplendorOptions & {
 export type ConnectResult = {
   client: ClientSession;
   connection: Connection;
-  wallet: SplendorPQBridge;
+  wallet: SplendorPQBridge | ExtensionSigner;
   network: NetworkConfig;
   info: DeriveInfo | null;
 };
@@ -52,46 +53,28 @@ export async function connect(opts: ConnectOptions = {}): Promise<ConnectResult>
     return { client, connection, wallet, network, info: null };
   }
 
-  if (mode === 'evmSignature') {
-    const legacy = await connectSplendor({ ...opts, connect: 'evmSignature' });
-    return {
-      client: legacy,
-      connection: legacy.wallet.connection,
-      wallet: legacy.wallet,
-      network: legacy.network,
-      info: legacy.info,
-    };
-  }
-
   const connectorOpts: ConnectorConnectOptions = {
     ...bridgeOpts,
     seed: opts.seed,
-    ethereumProvider: opts.ethereumProvider,
-    evmPrivateKey: opts.evmPrivateKey,
+    networkId: network.id,
   };
 
-  let wallet: SplendorPQBridge;
-  switch (mode) {
-    case 'seed':
-      if (!opts.seed) throw BridgeError.notConnected('connect: seed requires opts.seed');
-      wallet = await seedConnector.connect(connection, connectorOpts);
-      break;
-    case 'metamask':
-      wallet = await metamaskConnector.connect(connection, connectorOpts);
-      break;
-    case 'evmKey':
-      if (!opts.evmPrivateKey) {
-        throw BridgeError.notConnected('connect: evmKey requires opts.evmPrivateKey');
-      }
-      wallet = await evmKeyConnector.connect(connection, connectorOpts);
-      break;
-    default:
-      throw BridgeError.rpc(`Unknown connect mode: ${mode}`);
+  if (mode === 'extension') {
+    const wallet = await extensionConnector.connect(connection, connectorOpts);
+    const info = wallet.getDeriveInfo();
+    const client: ClientSession = { network, provider, wallet, info };
+    return { client, connection: wallet.connection, wallet, network, info };
   }
 
-  const info = wallet.getDeriveInfo();
-  const client: ClientSession = { network, provider, wallet, info };
-  return { client, connection: wallet.connection, wallet, network, info };
+  if (mode === 'seed') {
+    if (!opts.seed) throw BridgeError.notConnected('connect: seed requires opts.seed');
+    const wallet = await seedConnector.connect(connection, connectorOpts);
+    const info = wallet.getDeriveInfo();
+    const client: ClientSession = { network, provider, wallet, info };
+    return { client, connection: wallet.connection, wallet, network, info };
+  }
+
+  throw BridgeError.rpc(`Unknown connect mode: ${mode}`);
 }
 
 /** @deprecated Use ClientSession — type name collided with SplendorClient class. */
@@ -101,7 +84,7 @@ export type SplendorClient = ClientSession;
 
 export { createSplendorClient, connectSplendor, buildBridgeOptions };
 export type { ConnectMode, CreateClientOptions, ConnectSplendorOptions, ClientSession };
-export { seedConnector, metamaskConnector, evmKeyConnector };
+export { seedConnector, extensionConnector };
 export type { ConnectorConnectOptions };
 export { installBrowserSessionPolicy } from './browser-session-policy.js';
 export { WasmSession } from './wasm-session.js';

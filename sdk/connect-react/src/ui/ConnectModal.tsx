@@ -35,6 +35,8 @@ export function ConnectModal() {
    */
   const [newSeed, setNewSeed] = useState<string | null>(null);
   const [seedCopied, setSeedCopied] = useState(false);
+  const [seedRevealed, setSeedRevealed] = useState(false);
+  const [seedBackupConfirmed, setSeedBackupConfirmed] = useState(false);
   /** Seed generation fails before any connect attempt, so it has its own slot. */
   const [seedError, setSeedError] = useState<string | null>(null);
   const advancedPanelId = useId();
@@ -52,6 +54,8 @@ export function ConnectModal() {
     setNativeId(null);
     setNewSeed(null);
     setSeedCopied(false);
+    setSeedRevealed(false);
+    setSeedBackupConfirmed(false);
     setSeedError(null);
   }, []);
 
@@ -202,7 +206,16 @@ export function ConnectModal() {
                 <div className="sqc-account-row">
                   <span className="sqc-account-row__label">Recovery seed — save it now</span>
                   <div className="sqc-account-row__value">
-                    <span>{newSeed}</span>
+                    <span className={seedRevealed ? undefined : 'sqc-seed-masked'}>
+                      {seedRevealed ? newSeed : '•'.repeat(Math.min(64, newSeed.length))}
+                    </span>
+                    <button
+                      type="button"
+                      className="sqc-copy"
+                      onClick={() => setSeedRevealed((v) => !v)}
+                    >
+                      {seedRevealed ? 'Hide' : 'Reveal'}
+                    </button>
                     <button type="button" className="sqc-copy" onClick={() => void copySeed()}>
                       {seedCopied ? 'Copied' : 'Copy'}
                     </button>
@@ -212,6 +225,14 @@ export function ConnectModal() {
                   This seed <strong>is</strong> the account. It is never sent anywhere and nobody
                   can restore it for you — put it in a password manager before continuing.
                 </p>
+                <label className="sqc-native__confirm">
+                  <input
+                    type="checkbox"
+                    checked={seedBackupConfirmed}
+                    onChange={(e) => setSeedBackupConfirmed(e.target.checked)}
+                  />
+                  <span>I saved this seed in a safe place</span>
+                </label>
                 <div className="sqc-modal__actions">
                   <button
                     type="button"
@@ -220,6 +241,8 @@ export function ConnectModal() {
                     onClick={() => {
                       setNewSeed(null);
                       setSeedCopied(false);
+                      setSeedRevealed(false);
+                      setSeedBackupConfirmed(false);
                     }}
                   >
                     Discard
@@ -227,10 +250,10 @@ export function ConnectModal() {
                   <button
                     type="button"
                     className="sqc-btn sqc-btn--primary"
-                    disabled={busyNative}
+                    disabled={busyNative || !seedBackupConfirmed}
                     onClick={() => void onConnect(nativeConnector.id, { seed: newSeed })}
                   >
-                    {busyNative ? 'Unlocking…' : 'I saved it — unlock'}
+                    {busyNative ? 'Unlocking…' : 'Unlock'}
                   </button>
                 </div>
               </div>

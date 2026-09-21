@@ -3,7 +3,6 @@
  * Does not require a running chain node.
  */
 import { SplendorPQBridge } from '../dist/index.js';
-import { seedFromEvmSignature, signDerivationMessage } from '../dist/derive.js';
 
 const FIXED_SEED = '01'.repeat(32);
 
@@ -37,23 +36,15 @@ async function main() {
   console.log('   wire from[0..3]:', signed.from.slice(0, 4));
   console.log('   sig bytes:', signed.signature.length);
 
-  console.log('4) EVM key → same derivation path...');
-  const evmKey = '11'.repeat(32);
-  const sig = signDerivationMessage(evmKey);
-  const seed = seedFromEvmSignature(sig);
-  console.log('   seed:', seed.slice(0, 16) + '...');
+  console.log('4) Re-derive same seed is stable...');
   const bridge2 = new SplendorPQBridge();
   await bridge2.init();
-  const info2 = await bridge2.connectFromEvmPrivateKey(evmKey);
-  const info3 = await (async () => {
-    const b = new SplendorPQBridge();
-    await b.init();
-    return b.connectFromEvmSignature(sig);
-  })();
-  if (info2.address !== info3.address) {
-    throw new Error('EVM key path != signature path');
+  const info2 = await bridge2.connectFromSeed(FIXED_SEED);
+  if (info2.address !== info.address) {
+    throw new Error('same seed must derive same address');
   }
-  console.log('   mapped SQ:', info2.address);
+  console.log('   address match:', info2.address);
+  bridge2.lock();
 
   console.log('5) Lock / disconnect...');
   bridge.lock();

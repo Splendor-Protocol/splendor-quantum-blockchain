@@ -10,7 +10,7 @@ import {
   type NetworkId,
 } from '@splendor/sqc-sdk';
 import type { Connector } from '../connectors/types.js';
-import { defaultBrowserConnectors } from '../connectors/eip6963.js';
+import { defaultBrowserConnectors } from '../connectors/defaultBrowserConnectors.js';
 import {
   createConnectController,
   createStubConnectController,
@@ -36,7 +36,7 @@ export type { ConnectBrandLabels };
 
 export type SplendorConnectProviderProps = Omit<CreateClientOptions, 'network'> & {
   network?: NetworkId;
-  /** Explicit connectors, or `'auto'` for native ML-DSA first, then MetaMask + EIP-6963. */
+  /** Explicit connectors, or `'auto'` for extension + native seed. */
   connectors?: Connector[] | 'auto';
   autoReconnect?: boolean;
   theme?: ThemeProp;
@@ -209,7 +209,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     execUrl: clientOpts.execUrl,
     wasmSha256: clientOpts.wasmSha256,
     execSha256: clientOpts.execSha256,
-    derivation: clientOpts.derivation || 'eip191-v1',
     autoReconnect,
     connectorsKey,
     customNetsKey,
@@ -223,7 +222,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     lockOnHidden: clientOpts.lockOnHidden === true,
     allowUnpinnedWasm: clientOpts.allowUnpinnedWasm === true,
     allowInsecureHttp: clientOpts.allowInsecureHttp === true,
-    watchMetaMaskAccounts: clientOpts.watchMetaMaskAccounts,
     connectorsReady,
   });
 
@@ -253,7 +251,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       wasmUrl?: string;
       execUrl?: string;
       wasmSha256?: string;
-      derivation?: CreateClientOptions['derivation'];
       autoReconnect?: boolean;
       allowUnpinnedWasm?: boolean;
       allowInsecureHttp?: boolean;
@@ -264,7 +261,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       retries?: number;
       sessionIdleMs?: number;
       lockOnHidden?: boolean;
-      watchMetaMaskAccounts?: boolean;
     };
     try {
       const createOpts: CreateConnectControllerOptions = {
@@ -274,7 +270,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
         wasmUrl: parsed.wasmUrl,
         execUrl: parsed.execUrl,
         wasmSha256: parsed.wasmSha256,
-        derivation: parsed.derivation,
         allowUnpinnedWasm: parsed.allowUnpinnedWasm,
         allowInsecureHttp: parsed.allowInsecureHttp,
         rpcUrls: parsed.rpcUrls,
@@ -284,7 +279,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
         retries: parsed.retries,
         sessionIdleMs: parsed.sessionIdleMs,
         lockOnHidden: parsed.lockOnHidden,
-        watchMetaMaskAccounts: parsed.watchMetaMaskAccounts,
         connectors: connectorsRef.current,
         autoReconnect: parsed.autoReconnect,
         onError: (err) => onErrorRef.current?.(err),
@@ -346,19 +340,23 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     }
     const net = controller.getNetwork();
     if (exposeInjectedProvider) {
-      installSplendorProvider({
-        wallet,
-        connection: wallet.connection,
-        networkId: net.id,
-        onSwitchNetwork: async (id) => {
-          await softSwitchTo(id as NetworkId);
-        },
-        onApprove: async (args) => {
-          const cb = injectedOnApproveRef.current;
-          if (!cb) return false;
-          return cb(args);
-        },
-      });
+      // Extension sessions already own window.splendor — never overlay an in-page inject.
+      const isWasmWallet = typeof (wallet as { connectFromSeed?: unknown }).connectFromSeed === 'function';
+      if (isWasmWallet) {
+        installSplendorProvider({
+          wallet: wallet as import('@splendor/sqc-sdk').SplendorPQBridge,
+          connection: wallet.connection,
+          networkId: net.id,
+          onSwitchNetwork: async (id) => {
+            await softSwitchTo(id as NetworkId);
+          },
+          onApprove: async (args) => {
+            const cb = injectedOnApproveRef.current;
+            if (!cb) return false;
+            return cb(args);
+          },
+        });
+      }
     }
     if (chainAnnounceSkipRef.current) {
       chainAnnounceSkipRef.current = false;

@@ -94,4 +94,82 @@ describe('subscribe functional', () => {
     expect(second['Last-Event-ID']).toBe('7');
     expect(errors.length).toBeGreaterThan(0);
   });
+
+  it('accepts string[] rpcUrls without throw', () => {
+    vi.stubGlobal('EventSource', undefined);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: async () => ({ done: true, value: undefined }),
+            cancel: async () => undefined,
+          }),
+        },
+      })),
+    );
+    const sub = subscribe(
+      ['http://rpc-a.test', 'http://rpc-b.test'],
+      'new_block',
+      () => undefined,
+      undefined,
+      { reconnect: false },
+    );
+    expect(sub).toHaveProperty('close');
+    sub.close();
+  });
+
+  it('rotates multi-URL on Node stream error', async () => {
+    vi.stubGlobal('EventSource', undefined);
+    const urlsHit: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        urlsHit.push(url);
+        if (url.startsWith('http://rpc-a.test')) {
+          throw new TypeError('primary down');
+        }
+        let i = 0;
+        const chunks = ['data: {"type":"new_block","height":9}\n'];
+        return {
+          ok: true,
+          body: {
+            getReader: () => ({
+              read: async () => {
+                if (i >= chunks.length) return { done: true, value: undefined };
+                return { done: false, value: new TextEncoder().encode(chunks[i++]) };
+              },
+              cancel: async () => undefined,
+            }),
+          },
+        };
+      }),
+    );
+
+    const events: unknown[] = [];
+    let sub!: { close: () => void };
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        sub.close();
+        reject(new Error('timed out waiting for rotated subscribe event'));
+      }, 2000);
+      sub = subscribe(
+        ['http://rpc-a.test', 'http://rpc-b.test'],
+        'new_block',
+        (ev) => {
+          events.push(ev);
+          clearTimeout(timer);
+          sub.close();
+          resolve();
+        },
+        undefined,
+        { reconnect: true, backoffMs: 5, maxRetries: 0 },
+      );
+    });
+    expect(urlsHit.some((u) => u.startsWith('http://rpc-a.test'))).toBe(true);
+    expect(urlsHit.some((u) => u.startsWith('http://rpc-b.test'))).toBe(true);
+    expect(events).toEqual([{ type: 'new_block', height: 9 }]);
+  });
 });

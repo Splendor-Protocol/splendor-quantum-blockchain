@@ -1,13 +1,12 @@
 /**
- * Node example: derive PQ wallet from an EVM private key and query/send.
+ * Node example: derive PQ wallet from a 32-byte ML-DSA-65 seed and query/send.
  *
  * Usage:
- *   SQC_RPC=http://localhost:8080 EVM_KEY=0x... node examples/node-transfer.mjs
+ *   SQC_RPC=http://localhost:8080 PQ_SEED=<64-hex> node examples/node-transfer.mjs
  */
 import { SplendorPQBridge, DERIVATION_DOMAIN_MESSAGE } from '../dist/index.js';
 
 const rpcUrl = process.env.SQC_RPC || 'http://localhost:8080';
-const evmKey = process.env.EVM_KEY;
 const seed = process.env.PQ_SEED; // optional: direct 32-byte hex seed
 
 async function main() {
@@ -17,12 +16,10 @@ async function main() {
 
   if (seed) {
     await bridge.connectFromSeed(seed);
-  } else if (evmKey) {
-    await bridge.connectFromEvmPrivateKey(evmKey);
   } else {
     // Demo seed for offline derive (will not have funds)
     const demoSeed = '01'.repeat(32);
-    console.log('No EVM_KEY/PQ_SEED set — using demo seed');
+    console.log('No PQ_SEED set — using demo seed');
     await bridge.connectFromSeed(demoSeed);
   }
 

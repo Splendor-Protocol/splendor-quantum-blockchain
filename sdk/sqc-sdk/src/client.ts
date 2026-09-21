@@ -23,6 +23,6 @@ export class SplendorClient {
   }
 
   static wallet(opts: CreateClientOptions = {}): SplendorPQBridge {
-    return createSplendorClient(opts).wallet;
+    return createSplendorClient(opts).wallet as SplendorPQBridge;
   }
 }

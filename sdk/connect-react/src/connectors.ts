@@ -1,19 +1,15 @@
 /** Subpath: @splendor/connect-react/connectors */
 export {
-  metamaskConnector,
-  injectedConnector,
   seedConnector,
-  hasAuthorizedAccounts,
+  extensionConnector,
   assertSeedHex,
   generateSeedHex,
-  discoverInjectedConnectors,
   defaultBrowserConnectors,
 } from './connectors/index.js';
 export type {
   Connector,
   ConnectorContext,
   ConnectorField,
-  MetamaskConnectorOpts,
-  InjectedConnectorOpts,
   SeedConnectorOpts,
+  ExtensionConnectorOpts,
 } from './connectors/index.js';

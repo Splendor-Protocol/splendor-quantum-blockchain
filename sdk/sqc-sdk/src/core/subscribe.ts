@@ -136,47 +136,82 @@ async function nodeStreamSubscribe(
 
 /**
  * Subscribe to node events. Uses EventSource in browser, fetch stream in Node.
+ * Accepts one URL or a failover list (rotates on error / disconnect).
  */
 export function subscribe(
-  rpcUrl: string,
+  rpcUrl: string | string[],
   events: WsEventType | WsEventType[],
   onEvent: (ev: WsEvent) => void,
   onError?: (err: unknown) => void,
   options?: SubscribeOptions,
 ): Subscription {
-  const base = rpcUrl.replace(/\/$/, '');
-  const url = `${base}/ws?subscribe=${encodeURIComponent(eventsParam(events))}`;
+  const urls = (Array.isArray(rpcUrl) ? rpcUrl : [rpcUrl])
+    .map((u) => String(u).trim().replace(/\/$/, ''))
+    .filter(Boolean);
+  if (!urls.length) {
+    throw BridgeError.rpc('subscribe requires at least one rpcUrl');
+  }
+
   const opts: SubscribeOptions = { ...options, onError: options?.onError ?? onError };
-
-  if (typeof EventSource !== 'undefined') {
-    const source = new EventSource(url);
-    source.onmessage = (event) => {
-      try {
-        onEvent(JSON.parse(event.data) as WsEvent);
-      } catch {
-        /* heartbeat */
-      }
-    };
-    source.onerror = (err) => {
-      if (opts.onError) opts.onError(err);
-    };
-    return { close: () => source.close() };
-  }
-
-  const controller = new AbortController();
-  if (opts.signal) {
-    if (opts.signal.aborted) controller.abort();
-    else opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
-  }
-  opts.signal = controller.signal;
+  let urlIndex = 0;
   let closed = false;
-  void nodeStreamSubscribe(url, onEvent, opts, () => closed).catch((e) => {
-    if (!closed && opts.onError) opts.onError(e);
-  });
+  let activeClose: (() => void) | null = null;
+
+  const startAt = (index: number) => {
+    if (closed) return;
+    urlIndex = index % urls.length;
+    const base = urls[urlIndex]!;
+    const url = `${base}/ws?subscribe=${encodeURIComponent(eventsParam(events))}`;
+
+    if (typeof EventSource !== 'undefined') {
+      const source = new EventSource(url);
+      source.onmessage = (event) => {
+        try {
+          onEvent(JSON.parse(event.data) as WsEvent);
+        } catch {
+          /* heartbeat */
+        }
+      };
+      source.onerror = (err) => {
+        opts.onError?.(err);
+        source.close();
+        if (!closed && urls.length > 1) {
+          // Rotate to next RPC on stream error.
+          setTimeout(() => startAt(urlIndex + 1), opts.backoffMs ?? 250);
+        }
+      };
+      activeClose = () => source.close();
+      return;
+    }
+
+    const controller = new AbortController();
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+    const localOpts: SubscribeOptions = { ...opts, signal: controller.signal };
+    activeClose = () => {
+      controller.abort();
+    };
+    void nodeStreamSubscribe(url, onEvent, localOpts, () => closed)
+      .then(() => {
+        if (!closed && urls.length > 1 && localOpts.reconnect !== false) {
+          startAt(urlIndex + 1);
+        }
+      })
+      .catch((e) => {
+        if (!closed && opts.onError) opts.onError(e);
+        if (!closed && urls.length > 1 && localOpts.reconnect !== false) {
+          startAt(urlIndex + 1);
+        }
+      });
+  };
+
+  startAt(0);
   return {
     close: () => {
       closed = true;
-      controller.abort();
+      activeClose?.();
     },
   };
 }

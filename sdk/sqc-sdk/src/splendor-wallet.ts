@@ -3,16 +3,11 @@
  * @deprecated Prefer importing `Wallet` — SplendorPQBridge remains an alias.
  */
 import {
-  assertSignatureMatchesAddress,
-  evmAddressFromPrivateKey,
-  signDerivationMessage,
   strip0x,
-  type DerivationScheme,
 } from './derive.js';
 import { parseWasmJson, unwrap } from './wasm-loader.js';
 import { SqRpc, fromSPLD } from './rpc.js';
 import { SqcProvider } from './provider.js';
-import { signDerivationWithMetaMask, type EthereumProvider } from './metamask.js';
 import { BridgeError, wrapUnknown } from './errors.js';
 import { assertAddress } from './address.js';
 import {
@@ -30,7 +25,6 @@ import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import { encodeModuleCallHex } from './core/module-call.js';
 import { prepareSignMessage } from './message-domain.js';
 import { WasmSession } from './wallet/wasm-session.js';
-import { attachMetaMaskAccountWatcher } from './wallet/metamask-account-watcher.js';
 import { installBrowserSessionPolicy } from './wallet/browser-session-policy.js';
 import type {
   BridgeOptions,
@@ -93,11 +87,7 @@ export class SplendorPQBridge {
   private info: DeriveInfo | null = null;
   private readonly opts: BridgeOptions;
   private readonly emitter = new BridgeEmitter();
-  private unwatchMetaMask: (() => void) | null = null;
   private disposeBrowserPolicy: (() => void) | null = null;
-  private metaMaskWatchEnabled: boolean;
-  private readonly ethereumProvider?: EthereumProvider;
-  private readonly derivation: DerivationScheme;
 
   /**
    * @deprecated Prefer `connection` (Transport-backed). Only available when
@@ -109,9 +99,6 @@ export class SplendorPQBridge {
 
   constructor(options: BridgeOptions = {}) {
     this.opts = options;
-    this.metaMaskWatchEnabled = options.watchMetaMaskAccounts !== false;
-    this.ethereumProvider = options.ethereumProvider;
-    this.derivation = options.derivation || 'eip191-v1';
     if (options.connection) {
       this.connection = options.connection;
       if (options.provider) {
@@ -249,34 +236,6 @@ export class SplendorPQBridge {
     else this.emitter.emit('connect', payload);
   }
 
-  private failAccountSwitch(err: unknown): void {
-    const be = wrapUnknown(err, 'USER_REJECTED');
-    this.emitter.emit('error', { code: be.code, message: be.message });
-    this.disconnect();
-  }
-
-  private ensureMetaMaskWatch(): void {
-    if (!this.metaMaskWatchEnabled || this.unwatchMetaMask) return;
-    this.unwatchMetaMask = attachMetaMaskAccountWatcher(
-      {
-        getEvmAddress: () => this.info?.evmAddress,
-        init: () => this.init(),
-        api: () => this.api(),
-        sid: () => this.sid(),
-        setInfo: (info) => {
-          this.info = info;
-        },
-        emitAccountsChanged: (info) => this.emitConnect(info, true),
-        disconnect: () => this.disconnect(),
-        failAccountSwitch: (err) => this.failAccountSwitch(err),
-      },
-      {
-        ethereumProvider: this.ethereumProvider,
-        derivation: this.derivation,
-      },
-    );
-  }
-
   /**
    * Connect from post-quantum seed entropy. This is the recommended path: the
    * resulting account's security rests on ML-DSA-65 alone.
@@ -292,88 +251,14 @@ export class SplendorPQBridge {
   }
 
   /**
-   * Connect by deriving an ML-DSA key from an Ethereum signature.
-   *
-   * NOT quantum-safe. The seed is SHA3-256 of a deterministic ECDSA signature,
-   * so anyone who can break secp256k1 can recover the EVM key, recompute that
-   * signature, and derive this exact ML-DSA key. Use for onboarding
-   * convenience; use connectFromSeed for accounts holding value.
-   */
-  async connectFromEvmSignature(
-    signatureHex: string,
-    evmAddress?: string,
-    scheme: DerivationScheme = this.derivation,
-  ): Promise<DeriveInfo> {
-    const recovered = assertSignatureMatchesAddress(signatureHex, evmAddress, scheme);
-    await this.init();
-    const raw = unwrap(this.api().sqDeriveFromSigHex(this.sid(), strip0x(signatureHex)));
-    this.info = parseWasmJson<DeriveInfo>(raw as string);
-    this.info.evmAddress = evmAddress || recovered;
-    this.info.keyOrigin = 'evm-derived';
-    this.info.postQuantumSecure = false;
-    this.opts.onWarning?.({
-      code: 'NOT_POST_QUANTUM',
-      message:
-        'This account was derived from an Ethereum signature. Signing uses ML-DSA-65, but the key ' +
-        'is only as strong as secp256k1 — a quantum adversary could reproduce it from any ECDSA ' +
-        'signature this EVM account has published. Use a native seed for funds you intend to hold.',
-    });
-    this.emitConnect(this.info);
-    return this.info;
-  }
-
-  async connectFromEvmPrivateKey(evmPrivateKeyHex: string): Promise<DeriveInfo> {
-    const sig = signDerivationMessage(evmPrivateKeyHex, this.derivation);
-    const addr = evmAddressFromPrivateKey(evmPrivateKeyHex);
-    return this.connectFromEvmSignature(sig, addr, this.derivation);
-  }
-
-  async connectFromMetaMask(provider?: EthereumProvider): Promise<DeriveInfo> {
-    try {
-      const { evmAddress, signatureHex, scheme } = await signDerivationWithMetaMask({
-        provider: provider || this.ethereumProvider,
-        scheme: this.derivation,
-      });
-      const info = await this.connectFromEvmSignature(signatureHex, evmAddress, scheme);
-      try {
-        this.ensureMetaMaskWatch();
-      } catch (e) {
-        this.disconnect();
-        throw e;
-      }
-      return info;
-    } catch (e) {
-      this.opts.onError?.(e);
-      // Only map clear user-reject signals; preserve BridgeError and other failures.
-      const msg = e instanceof Error ? e.message : String(e);
-      const code = (e as { code?: number | string })?.code;
-      const rejected =
-        code === 4001 ||
-        code === 'ACTION_REJECTED' ||
-        /user rejected|user denied|rejected by user/i.test(msg);
-      throw wrapUnknown(e, rejected ? 'USER_REJECTED' : 'UNKNOWN');
-    }
-  }
-
-  /**
-   * Single connect entry (wallet-adapter / viem style).
-   * Wraps connectFromSeed / MetaMask / EVM derivation paths.
+   * Single connect entry — seed-only (native ML-DSA).
+   * For browser extension unlock use ExtensionSigner / connect({ mode: 'extension' }).
    */
   async connect(opts: WalletConnectOpts): Promise<DeriveInfo> {
-    switch (opts.mode) {
-      case 'seed':
-        return this.connectFromSeed(opts.seed);
-      case 'metamask':
-        return this.connectFromMetaMask(opts.ethereumProvider);
-      case 'evmSignature':
-        return this.connectFromEvmSignature(opts.signature, opts.evmAddress, opts.scheme);
-      case 'evmKey':
-        return this.connectFromEvmPrivateKey(opts.privateKey);
-      default: {
-        const _exhaustive: never = opts;
-        throw BridgeError.rpc(`Unknown connect mode: ${JSON.stringify(_exhaustive)}`);
-      }
+    if (opts.mode !== 'seed') {
+      throw BridgeError.rpc(`Unknown connect mode: ${JSON.stringify(opts)}`);
     }
+    return this.connectFromSeed(opts.seed);
   }
 
   /**
@@ -448,10 +333,6 @@ export class SplendorPQBridge {
   }
 
   disconnect(): void {
-    if (this.unwatchMetaMask) {
-      this.unwatchMetaMask();
-      this.unwatchMetaMask = null;
-    }
     this.wasmSession.destroy();
     this.info = null;
     this.emitter.emit('disconnect', {});
@@ -984,7 +865,7 @@ export class SplendorPQBridge {
   }
 
   /**
-   * Submit a native module call (qrc20, qrc1155, bridge, verify, validators, qrc721) via the module router.
+   * Submit a native module call (qrc20, dex, etc.) via the module router.
    */
   async sendModuleCall(opts: ModuleCallOpts): Promise<{
     status: string;

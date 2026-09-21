@@ -17,6 +17,7 @@ import {
   networkToRpcOptions,
   type NetworkConfig,
 } from './networks.js';
+import type { ExtensionSigner } from './wallet/extension-signer.js';
 
 export type PublicClientOptions = CreateClientOptions & ConnectionOptions;
 
@@ -80,7 +81,7 @@ export function createPublicClient(opts: PublicClientOptions = {}): Connection {
  * ```
  */
 export function createWalletClient(opts: CreateClientOptions = {}): SplendorPQBridge {
-  return createSplendorClient(opts).wallet;
+  return createSplendorClient(opts).wallet as SplendorPQBridge;
 }
 
 /**
@@ -92,7 +93,7 @@ export function createWalletClient(opts: CreateClientOptions = {}): SplendorPQBr
  */
 export async function createWalletClientAsync(
   opts: ConnectSplendorOptions = {},
-): Promise<SplendorPQBridge> {
+): Promise<SplendorPQBridge | ExtensionSigner> {
   const session = await connectSplendor(opts);
   return session.wallet;
 }

@@ -5,6 +5,7 @@ export type BridgeErrorCode =
   | 'USER_REJECTED'
   | 'NO_PROVIDER'
   | 'RPC'
+  | 'RPC_UNAVAILABLE'
   | 'NETWORK'
   | 'WASM'
   | 'INVALID_ADDRESS'
@@ -19,12 +20,20 @@ export type BridgeErrorCode =
 export class BridgeError extends Error {
   readonly code: BridgeErrorCode;
   readonly details?: unknown;
+  /** Short UI-safe hint when `message` is technical. */
+  readonly userHint?: string;
 
-  constructor(code: BridgeErrorCode, message: string, details?: unknown) {
+  constructor(
+    code: BridgeErrorCode,
+    message: string,
+    details?: unknown,
+    userHint?: string,
+  ) {
     super(message);
     this.name = 'BridgeError';
     this.code = code;
     this.details = details;
+    this.userHint = userHint;
   }
 
   static notConnected(msg = 'Not connected — call connect*() first'): BridgeError {
@@ -37,6 +46,16 @@ export class BridgeError extends Error {
 
   static rpc(msg: string, details?: unknown): BridgeError {
     return new BridgeError('RPC', msg, details);
+  }
+
+  /** All configured RPC endpoints failed (timeout / network / 5xx). */
+  static rpcUnavailable(msg: string, details?: unknown): BridgeError {
+    return new BridgeError(
+      'RPC_UNAVAILABLE',
+      msg,
+      details,
+      'Network unavailable — check your connection or try again later',
+    );
   }
 
   static network(msg: string, details?: unknown): BridgeError {
@@ -76,7 +95,7 @@ export class BridgeError extends Error {
   }
 
   static noProvider(
-    msg = 'EIP-1193 provider (window.ethereum) not found',
+    msg = 'Splendor Quantum Wallet extension not found (window.splendor)',
   ): BridgeError {
     return new BridgeError('NO_PROVIDER', msg);
   }

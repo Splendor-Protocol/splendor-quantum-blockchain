@@ -16,6 +16,7 @@ import type { SplendorPQBridge } from './splendor-wallet.js';
 import type { UnsignedTx, SignedTx } from './types.js';
 import { BridgeError } from './errors.js';
 import { getNetwork, resolveNetwork, type NetworkId } from './networks.js';
+import { toCanonicalMethod } from './wallet/extension-provider.js';
 
 export type SplendorProviderRequestArgs = {
   method: string;
@@ -158,9 +159,10 @@ export function createSplendorProvider(
       provider.on(event, wrap);
     },
     async request({ method, params }) {
+      const canonical = toCanonicalMethod(method);
       const p = asRecord(params);
-      await approve(method, params);
-      switch (method) {
+      await approve(canonical, params);
+      switch (canonical) {
         case 'splendor_accounts': {
           return wallet.getAddresses();
         }
@@ -174,29 +176,11 @@ export function createSplendorProvider(
           };
         }
         case 'splendor_connect': {
+          // In-page inject never accepts key material; unlock via ConnectKit / extension.
           if (wallet.account) return wallet.getAddresses();
-          const mode = (p.mode as string) || 'metamask';
-          // Never accept key material via injected API (XSS / silent theft).
-          if (
-            mode === 'seed' ||
-            mode === 'evmKey' ||
-            mode === 'evmSignature' ||
-            p.seed != null ||
-            p.privateKey != null ||
-            p.signature != null
-          ) {
-            throw BridgeError.userRejected(
-              'splendor_connect refuses seed/privateKey/evmSignature — unlock via ConnectKit UI',
-            );
-          }
-          if (mode === 'metamask') {
-            await wallet.connect({ mode: 'metamask' });
-          } else {
-            throw BridgeError.rpc(
-              `splendor_connect supports metamask only via inject (got ${String(mode)})`,
-            );
-          }
-          return wallet.getAddresses();
+          throw BridgeError.userRejected(
+            'splendor_connect refuses seed/privateKey/evm — unlock via ConnectKit (seed or extension)',
+          );
         }
         case 'splendor_disconnect': {
           wallet.disconnect();
@@ -258,7 +242,7 @@ export function createSplendorProvider(
         }
         default:
           throw BridgeError.rpc(
-            `Unsupported method "${method}" — SQC provider uses splendor_* methods (not eth_*)`,
+            `Unsupported method "${method}" — SQC provider uses splendor_* / sqc_* methods (not eth_*)`,
           );
       }
     },

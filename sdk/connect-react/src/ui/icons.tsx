@@ -15,19 +15,6 @@ export function IconWallet(props: IconProps) {
   );
 }
 
-export function IconMetaMask(props: IconProps) {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden {...props}>
-      <path
-        d="M12 3 5 8l1.5 5L5 16l2 3 2.5-1.5L12 19l2.5-1.5L17 19l2-3-1.5-3L19 8l-7-5Z"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 export function IconKey(props: IconProps) {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden {...props}>
@@ -51,7 +38,7 @@ export function IconClose(props: IconProps) {
 }
 
 export function connectorIcon(id: string): ReactNode {
-  if (id === 'metamask' || id === 'injected') return <IconMetaMask />;
   if (id === 'seed') return <IconKey />;
+  if (id === 'splendor-extension' || id === 'extension') return <IconWallet />;
   return <IconWallet />;
 }

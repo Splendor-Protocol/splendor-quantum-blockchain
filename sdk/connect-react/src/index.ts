@@ -2,26 +2,22 @@
  * @splendor/connect-react — AppKit-style connect UI for Splendor Quantum Chain.
  *
  *   import '@splendor/connect-react/style.css';
- *   import { SplendorConnectProvider, ConnectButton, metamaskConnector } from '@splendor/connect-react';
+ *   import { SplendorConnectProvider, ConnectButton, seedConnector } from '@splendor/connect-react';
  */
 
 export {
-  metamaskConnector,
-  injectedConnector,
   seedConnector,
-  hasAuthorizedAccounts,
+  extensionConnector,
   assertSeedHex,
   generateSeedHex,
-  discoverInjectedConnectors,
   defaultBrowserConnectors,
 } from './connectors/index.js';
 export type {
   Connector,
   ConnectorContext,
   ConnectorField,
-  MetamaskConnectorOpts,
-  InjectedConnectorOpts,
   SeedConnectorOpts,
+  ExtensionConnectorOpts,
   WalletUnlockContext,
   WalletUnlockConnector,
 } from './connectors/index.js';
@@ -35,6 +31,7 @@ export {
 export type {
   ConnectController,
   CreateConnectControllerOptions,
+  SessionWallet,
 } from './core/controller.js';
 export type {
   ConnectionStatus,
