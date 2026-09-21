@@ -1,6 +1,6 @@
 module github.com/splendor-protocol/splendor-quantum-blockchain
 
-go 1.25.0
+go 1.25.14
 
 require (
 	github.com/cloudflare/circl v1.6.5

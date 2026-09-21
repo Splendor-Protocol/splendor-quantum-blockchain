@@ -17,9 +17,12 @@ mkdir -p "$OUT"
 # therefore invalidates the wasmSha256 pin in sqc.networks.json for everyone
 # else — and a pin nobody can reproduce is a pin that gets dropped. GOTOOLCHAIN
 # makes any Go >= 1.21 fetch and use exactly this release instead.
-# 1.25.0 is the floor go.mod declares and the family the node Dockerfile builds
-# with; circl v1.6.5 (FIPS-204 ML-DSA-65) requires it.
-export GOTOOLCHAIN="${SQC_GO_TOOLCHAIN:-go1.25.0}"
+# 1.25.14 is what go.mod declares and the family the node Dockerfile builds
+# with; circl v1.6.5 (FIPS-204 ML-DSA-65) requires >= 1.25. Kept in step with
+# go.mod on purpose: govulncheck in CI scans the stdlib of the toolchain that
+# runs it, and go1.25.0 carries 28 published CVEs that later patch releases
+# fix. Bumping here changes the signer bytes, and wasm-drift re-pins them.
+export GOTOOLCHAIN="${SQC_GO_TOOLCHAIN:-go1.25.14}"
 
 # ── Find Go binary ─────────────────────────────────────────────────────────
 # Prefer /usr/local/go/bin/go (installed by install.sh), then PATH fallback.

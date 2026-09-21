@@ -90,10 +90,10 @@ that executes pull-request code. That trades a workspace-hygiene problem for a
 credential-exposure problem, and the second is worse. So the registration is
 persistent, and a `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` hook wipes `_work`
 after every job instead: nothing a pull request leaves behind — an edited
-file, a poisoned checkout, a stray temp dir — survives to the next one. The Go
-module cache and the `setup-go`/`setup-node` tool cache live under `$HOME`
-and are kept on purpose; they are what makes the second run faster than the
-first. One consequence for `ci.yml`: the gofmt gate needs the PR's base commit
+file, a poisoned checkout, a stray temp dir — survives to the next one. The
+`setup-go`/`setup-node` tool cache lives in `_work/_tool` and is kept on
+purpose, as is `_work/_actions`; they are what makes the second run faster
+than the first. One consequence for `ci.yml`: the gofmt gate needs the PR's base commit
 locally, a hosted runner's depth-1 clone meant it had been quietly skipping,
 and any runner whose checkout persisted history would make it start firing on
 its own — against **141 files that are already unformatted**. `ci.yml` now

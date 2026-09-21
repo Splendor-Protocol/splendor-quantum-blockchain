@@ -77,7 +77,7 @@ head_ "toolchains"
 # /usr/local/go/bin/go over PATH, and a different version there silently
 # changes the signer bytes and re-pins sqc.networks.json to a digest nobody
 # else can reproduce.
-want_go="1.25.0"
+want_go="1.25.14"
 if [ -x /usr/local/go/bin/go ]; then
 	have="$(/usr/local/go/bin/go env GOVERSION 2>/dev/null | sed 's/^go//')"
 	if [ "$have" = "$want_go" ]; then ok "/usr/local/go is go${have}"

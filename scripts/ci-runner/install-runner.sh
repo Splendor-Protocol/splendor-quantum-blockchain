@@ -39,7 +39,7 @@ RUNNER_VERSION="${RUNNER_VERSION:-2.337.0}"
 # The label the workflows select on. Keep it in step with the repo variable
 # CI_RUNNER_LABEL; see README.md in this directory.
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,x64,splendor-ci}"
-GO_VERSION="${GO_VERSION:-1.25.0}"
+GO_VERSION="${GO_VERSION:-1.25.14}"
 
 say() { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mFATAL\033[0m %s\n' "$*" >&2; exit 1; }
@@ -130,17 +130,28 @@ fi
 # ------------------------------------------------------------------ hooks ---
 #
 # Runs after every job, as the runner user, before the next job is accepted.
-# _work holds the checkout and the job's temp files; the Go module cache and
-# the setup-go/setup-node tool cache live under $HOME and are kept on purpose
-# — they are what makes the second run faster than the first, and nothing in
-# them is writable by a job in a way the next job would trust.
+# _work holds three kinds of thing and only one of them is per-job:
+#   _work/<owner>/<repo>  the checkout — wiped
+#   _work/_temp           the job's scratch — wiped
+#   _work/_tool           setup-go/setup-node's tool cache — KEPT
+#   _work/_actions        downloaded actions — KEPT
+# The tool cache is what makes the second run faster than the first (no
+# 60 MB Go tarball per job), and a job cannot write to it in a way the next
+# job would trust. The first version of this hook wiped all of _work and
+# re-downloaded Go and Node on every run.
 say "installing the job-completed hook"
 cat >"$RUNNER_HOME/job-completed.sh" <<'HOOK'
 #!/usr/bin/env bash
 # Leave nothing from this job for the next one.
 set -u
 work="$(dirname "$0")/_work"
-[ -d "$work" ] && find "$work" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+[ -d "$work" ] || exit 0
+for d in "$work"/*/; do
+	case "$(basename "$d")" in
+		_tool|_actions|_PipelineMapping) ;;   # caches and runner bookkeeping: keep
+		*) rm -rf "$d" ;;                      # checkouts and _temp: wipe
+	esac
+done
 exit 0
 HOOK
 chmod 0755 "$RUNNER_HOME/job-completed.sh"
