@@ -207,7 +207,17 @@ func TestByteWindowBoundsInFlightFetches(t *testing.T) {
 	if _, err := s.SyncOnce(); err != nil {
 		t.Fatalf("SyncOnce: %v", err)
 	}
-	if got := atomic.LoadInt32(&maxInFlight); got > 2 {
-		t.Fatalf("max in-flight fetches = %d, want <=2 under a 2000-byte window", got)
+	// The window is 2000 bytes and a block here is about a kilobyte, so two
+	// fit. The budget admits ONE more: the height the applier is waiting for
+	// is let through over the allowance, because making it wait is a
+	// deadlock rather than backpressure (network/sync.go, the documented
+	// exception; pinned exactly by TestOversizedBlockSyncsUnderTheDocumented
+	// Exception). So the bound this test protects is window/body + 1, not a
+	// bare 2 -- and the number that would mean the window is not working is
+	// MaxParallelFetch, which is 8.
+	const fit = 2
+	if got := atomic.LoadInt32(&maxInFlight); got > fit+1 {
+		t.Fatalf("max in-flight fetches = %d, want <= %d (window/body + the one awaited block) under a 2000-byte window",
+			got, fit+1)
 	}
 }
