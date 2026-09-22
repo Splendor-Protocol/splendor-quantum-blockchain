@@ -2,34 +2,14 @@
 
 **Date:** 2026-09-23  
 **Branch:** `sdk/hardening-audit`  
-**Companion:** [SDK_SCENARIO_AUDIT.md](./SDK_SCENARIO_AUDIT.md) (automated suite results)
 
-## Verdict
+**Authoritative deep rubric:** [SDK_DEEP_AUDIT.md](./SDK_DEEP_AUDIT.md) (~100 parameters, evidence, P0/P1 fix log).  
+**Companion scenario matrix:** [SDK_SCENARIO_AUDIT.md](./SDK_SCENARIO_AUDIT.md).
 
-Channels for future modules are correct: `Transport → Connection → Program → registerModule` plus ConnectKit UI `Connector`. Standard production features (seed, extension, QRC-20/1155, bridge, contract, RPC resilience, gateway custodial gates, WASM pins) are at or above first-party SDK practice vs ethers/viem/wagmi-class stacks. Live DEX/Exchange need **node routing** — SDK leftover clients are hidden from public DX until then.
+## Verdict (short)
 
-## Scorecard vs market practice
-
-| Area | Grade | Notes |
-|------|-------|--------|
-| Extensibility channels | At | Open registry + Program; typed Session hand-wires routed modules only |
-| RPC failover / sticky / timeouts | At | No health-weighted quorum (deferred) |
-| Connect races / epoch fencing | At | Mutex + softDisconnect + BroadcastChannel |
-| Provider inject trust | At for first-party; below WC | Spoofable inject documented; secrets refused |
-| Gateway custodial boundaries | Above typical bridge demos | Public = signedTx only; EVM unlock 410 |
-| WASM / key pins | At / above WASM peers | Pin required for non-local browser |
-| Cross-wallet / mobile (WC) | Deferred | Documented; UI Connector is the future plug-in point |
-| Public DEX / Exchange DX | Hidden (this pass) | `/defi` leftover only; not Session / root / ConnectKit |
-
-## Honesty changes (this pass)
-
-- Root `@splendor/sqc-sdk` no longer re-exports DEX/Exchange.
-- `modules` / `bindModules` / `createSession` expose qrc20, qrc1155, bridge, contract only.
-- Connect-react no longer exports `useDex` / `useExchange` / deploy-pool hooks.
-- Docs and web-dapp demo aligned; leftover adapters remain under `@splendor/sqc-sdk/defi`.
+Channels for future modules remain correct: `Transport → Connection → Program → registerModule` plus ConnectKit UI `Connector`. After the deep-audit fix pass, gateway error leakage, connect-mutex overlap, seed wipe-on-fail, RPC details/URL noise, userHints, SSRF denylist, and X402/DEX honesty gaps are addressed. Live DEX still needs node routing; WalletConnect remains deferred.
 
 ## Explicit limits
 
-- No live RPC / real Chrome extension in automated audit.
-- No on-chain DEX/Exchange routing in this workstream.
-- Explorer remains link-only.
+See [SDK_DEEP_AUDIT.md](./SDK_DEEP_AUDIT.md) — no live RPC, no real extension, no WC, no on-chain DEX, no CI load harness.

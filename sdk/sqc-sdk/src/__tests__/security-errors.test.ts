@@ -32,6 +32,8 @@ describe('security-errors SQDP-1 codes', () => {
     expect(errors.map((e) => e.code).sort()).toEqual([...codes].sort());
     for (const e of errors) {
       expect(isBridgeError(e)).toBe(true);
+      expect(typeof e.userHint).toBe('string');
+      expect(e.userHint!.length).toBeGreaterThan(0);
     }
   });
 

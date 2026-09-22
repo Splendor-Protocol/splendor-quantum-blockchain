@@ -391,8 +391,11 @@ export class ExtensionSigner implements Signer {
     verify?: { valid: boolean; reason?: string };
     settle?: object;
   }> {
-    throw BridgeError.rpc(
+    throw new BridgeError(
+      'RPC',
       'payX402 requires an in-page WASM session — use the seed connector (extension path does not settle x402 yet)',
+      undefined,
+      'X402 payments need the seed wallet — extension settle is not available yet',
     );
   }
 }

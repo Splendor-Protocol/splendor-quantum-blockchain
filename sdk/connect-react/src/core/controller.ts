@@ -304,7 +304,7 @@ export function createConnectController(
         return Promise.reject(new Error(`Unknown connector: ${connectorId}`));
       }
 
-      connectInFlight = (async () => {
+      const flight = (async () => {
         const epoch = connectEpoch;
         const stillCurrent = () => epoch === connectEpoch && !destroyed;
         error = null;
@@ -402,17 +402,18 @@ export function createConnectController(
           emit();
           throw err;
         } finally {
-          if (epoch === connectEpoch) {
+          // Always release mutex when this flight ends (even if epoch was bumped).
+          if (connectInFlight === flight) {
             connectInFlight = null;
           }
         }
       })();
-
-      return connectInFlight;
+      connectInFlight = flight;
+      return flight;
     },
     async disconnect() {
       connectEpoch += 1;
-      connectInFlight = null;
+      // Do not null connectInFlight here — mutex stays until the flight's finally.
       const connector = connectors.find((c) => c.id === activeConnectorId);
       clearConnectorAccountsWatch();
       try {
@@ -437,7 +438,7 @@ export function createConnectController(
     },
     async softDisconnect() {
       connectEpoch += 1;
-      connectInFlight = null;
+      // Epoch discards stale commit; keep connectInFlight until unlock settles so overlapping connect is rejected.
       const connector = connectors.find((c) => c.id === activeConnectorId);
       clearConnectorAccountsWatch();
       try {
@@ -510,6 +511,7 @@ export function createConnectController(
     destroy() {
       destroyed = true;
       connectEpoch += 1;
+      // Flight's finally clears mutex; drop ref so destroy does not await unlock.
       connectInFlight = null;
       clearConnectorAccountsWatch();
       clearSessionWalletWatch();

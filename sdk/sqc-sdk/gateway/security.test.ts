@@ -346,4 +346,32 @@ describe('gateway custodial + CORS and chain_id', () => {
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ ready: false, ok: false });
   }, 60_000);
+
+  it('sanitizes public error bodies (no ECONNREFUSED / stack / URL noise)', async () => {
+    gw = await buildServer({
+      mode: 'proxy',
+      rpcUrl: 'http://127.0.0.1:1',
+      logger: false,
+      listen: false,
+      rateMax: 10_000,
+    });
+    const res = await gw.app.inject({
+      method: 'POST',
+      url: '/v1/tx/submit',
+      payload: {
+        signedTx: {
+          chain_id: gw.config.chainId,
+          type: 'transfer',
+          amount: '1',
+        },
+      },
+    });
+    const json = res.json() as { code: string; message: string };
+    expect([400, 502, 504]).toContain(res.statusCode);
+    expect(json.message).not.toMatch(/ECONNREFUSED|ENOTFOUND|127\.0\.0\.1|stack|at Object/i);
+    expect(json.message.length).toBeLessThan(120);
+    expect(['NETWORK', 'TIMEOUT', 'RPC', 'RPC_UNAVAILABLE', 'UNKNOWN', 'INVALID_AMOUNT']).toContain(
+      json.code,
+    );
+  }, 60_000);
 });

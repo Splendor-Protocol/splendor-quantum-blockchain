@@ -53,7 +53,7 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Bridge, QRC-1
 | Bytecode contract | `useContract`, `useDeployBytecode` (`useDeployContract` deprecated alias) |
 | Bound module factory | `useModules()` |
 | Raw module router | `useModuleCall` (power user) |
-| X402 micropayment | `usePayX402` |
+| X402 micropayment | `usePayX402` (seed / WASM wallet only; extension settle not available yet) |
 | ML-DSA Sign-In | `useSignIn`, `createAuthMessage` |
 | Account / tx DTOs | `useAccountDto`, `toTxResultDto` |
 

@@ -548,6 +548,46 @@ describe('createConnectController', () => {
     ctrl.destroy();
   });
 
+  it('softDisconnect keeps connect mutex until in-flight unlock settles', async () => {
+    let releaseReady!: () => void;
+    const readyGate = new Promise<void>((r) => {
+      releaseReady = r;
+    });
+    const slow: Connector = {
+      id: 'splendor-extension',
+      name: 'Ext',
+      keyOrigin: 'native',
+      postQuantumSecure: true,
+      ready: async () => {
+        await readyGate;
+        return true;
+      },
+      connect: async () => mockInfo,
+    };
+    const other: Connector = {
+      id: 'other-ext',
+      name: 'Other',
+      keyOrigin: 'native',
+      postQuantumSecure: true,
+      ready: async () => true,
+      connect: async () => mockInfo,
+    };
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [slow, other],
+      allowUnpinnedWasm: true,
+    });
+    const first = ctrl.connect('splendor-extension');
+    await ctrl.softDisconnect();
+    await expect(ctrl.connect('other-ext')).rejects.toMatchObject({
+      message: /already in progress/i,
+    });
+    releaseReady();
+    await expect(first).rejects.toMatchObject({ code: 'USER_REJECTED' });
+    await expect(ctrl.connect('other-ext')).resolves.toMatchObject({ address: mockInfo.address });
+    ctrl.destroy();
+  });
+
   it('probeNetwork fail surfaces error after connect', async () => {
     const probeErr = BridgeError.rpcUnavailable('all endpoints down');
     nextProbeResult = { ok: false, error: probeErr };

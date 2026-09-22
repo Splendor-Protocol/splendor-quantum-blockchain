@@ -41,13 +41,16 @@ export type RpcOptions = {
   allowPrivateRpcHosts?: boolean;
 };
 
-/** Block SSRF-prone targets in Node (cloud metadata, link-local). */
+/** Block SSRF-prone targets in Node (cloud metadata, link-local, file:). Localhost is allowed for local nodes. */
 export function assertSafeRpcUrl(url: string, opts?: { allowPrivateRpcHosts?: boolean }): void {
   let u: URL;
   try {
     u = new URL(url);
   } catch {
     throw BridgeError.rpc(`Invalid RPC URL: ${url}`);
+  }
+  if (u.protocol === 'file:') {
+    throw BridgeError.rpc('RPC URL scheme blocked (file:)');
   }
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (opts?.allowPrivateRpcHosts) return;
@@ -56,8 +59,15 @@ export function assertSafeRpcUrl(url: string, opts?: { allowPrivateRpcHosts?: bo
     host === 'metadata.google.internal' ||
     host.startsWith('169.254.') ||
     host === 'metadata' ||
-    host.endsWith('.internal')
+    host.endsWith('.internal') ||
+    host === 'metadata.aws.internal' ||
+    host === 'instance-data' ||
+    /^0x[0-9a-f]+$/i.test(host)
   ) {
+    throw BridgeError.rpc(`RPC host blocked (SSRF/metadata): ${host}`);
+  }
+  // IPv6 link-local and mapped metadata
+  if (host.startsWith('fe80:') || host.includes('169.254.169.254')) {
     throw BridgeError.rpc(`RPC host blocked (SSRF/metadata): ${host}`);
   }
 }
@@ -700,7 +710,7 @@ async function fetchWithTimeout(
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') {
-      throw BridgeError.timeout(`RPC request timed out after ${timeoutMs}ms: ${url}`);
+      throw BridgeError.timeout(`RPC request timed out after ${timeoutMs}ms`);
     }
     throw BridgeError.network(e instanceof Error ? e.message : String(e));
   } finally {
@@ -725,21 +735,16 @@ async function parseResponse(res: Response, path: string): Promise<any> {
   } catch {
     throw BridgeError.rpc(`SQC RPC ${path} failed (${res.status})`, {
       status: res.status,
-      bodyPreview: text.slice(0, 200),
     });
   }
   if (!res.ok) {
-    const details =
-      json && typeof json === 'object'
-        ? { ...json, status: res.status }
-        : { status: res.status, body: json };
     const short =
       json && typeof json === 'object' && typeof json.error === 'string'
         ? String(json.error).slice(0, 120)
         : undefined;
     throw BridgeError.rpc(
       short ? `SQC RPC ${path}: ${res.status} ${short}` : `SQC RPC ${path} failed (${res.status})`,
-      details,
+      { status: res.status },
     );
   }
   return json;

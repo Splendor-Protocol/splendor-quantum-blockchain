@@ -98,13 +98,14 @@ Native modules are also on subpaths `/tokens`, `/defi`, `/bridge`. See [SDK_ARCH
 | Native ML-DSA-65 seed wallet (WASM) | Built |
 | Transfers, deploy, call (Tx types 0x01–0x03) | Built |
 | QRC-20 / QRC-1155 module clients | Built |
-| DEX + Exchange Program clients | Built |
+| DEX + Exchange Program clients | Leftover `/defi` only — not node-routed |
 | On-chain Bridge module client | Built (`/bridge`; ≠ `@splendor/pq-bridge` shim) |
 | Bytecode contracts (`/contracts`) | Built |
 | Explorer reads + `/ws` subscribe | Built |
 | `modules` factory registry | Built |
 | Connect UI (`@splendor/connect-react`) | Built — native PQ first |
 | Browser wallet extension | Built — `ExtensionSigner` / `connect: 'extension'` |
+| Legacy root APIs (`SqRpc`, `connectSplendor`, EVM derive helpers) | Deprecated — prefer `Connection` / `createSession`; kept for semver |
 | Desktop / mobile wallet apps | Not in this package |
 | Python / Go SDKs | Not published |
 | QSol compile-from-source client | Not in SDK — use repo `sqc-solc` CLI for bytecode |

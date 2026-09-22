@@ -1,3 +1,7 @@
+/**
+ * X402 micropayment hook — works with in-page WASM / seed wallets.
+ * ExtensionSigner.payX402 fails closed until the extension settles x402.
+ */
 import { useCallback, useState } from 'react';
 import { useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet } from './core.js';

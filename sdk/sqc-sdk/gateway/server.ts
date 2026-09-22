@@ -357,6 +357,33 @@ const EVM_UNLOCK_REMOVED =
 
 type ApiError = { code: string; message: string; warning?: string };
 
+/** Stable public phrases — never echo upstream stacks, URLs, or body previews. */
+const PUBLIC_CODE_MESSAGE: Record<string, string> = {
+  NOT_CONNECTED: 'Not connected',
+  USER_REJECTED: 'Request rejected',
+  NO_PROVIDER: 'Wallet provider not found',
+  RPC: 'Upstream RPC error',
+  RPC_UNAVAILABLE: 'RPC unavailable',
+  NETWORK: 'Upstream network error',
+  WASM: 'Signer error',
+  INVALID_ADDRESS: 'Invalid address',
+  INVALID_AMOUNT: 'Invalid amount',
+  INVALID_FEE: 'Invalid fee',
+  TIMEOUT: 'Request timed out',
+  TX_NOT_CONFIRMED: 'Transaction not confirmed',
+  TX_FAILED: 'Transaction failed',
+  CHAIN_MISMATCH: 'Chain ID mismatch',
+  UNKNOWN: 'Request failed',
+};
+
+const SAFE_PUBLIC_PHRASES = [
+  EVM_UNLOCK_REMOVED,
+  'invalid or missing API key',
+  'to is required',
+  'amount or amountSPLD required',
+  'provide seed (EVM derive removed — submit signedTx otherwise)',
+];
+
 function apiError(
   code: BridgeErrorCode | string,
   message: string,
@@ -365,9 +392,25 @@ function apiError(
   return { code, message, ...extra };
 }
 
+function sanitizePublicMessage(code: string, raw: string): string {
+  const trimmed = raw.trim();
+  if (SAFE_PUBLIC_PHRASES.some((p) => trimmed === p || trimmed.includes(p))) {
+    for (const p of SAFE_PUBLIC_PHRASES) {
+      if (trimmed === p || trimmed.includes(p)) return p;
+    }
+  }
+  if (/EVM unlock removed/i.test(trimmed)) return EVM_UNLOCK_REMOVED;
+  if (/proxy mode rejects|custodial credentials|proxy requires signedTx/i.test(trimmed)) {
+    return 'Proxy requires signedTx — custodial credentials rejected';
+  }
+  return PUBLIC_CODE_MESSAGE[code] ?? PUBLIC_CODE_MESSAGE.UNKNOWN;
+}
+
 function errorFromCaught(e: unknown): ApiError {
   if (isBridgeError(e)) {
-    return apiError(e.code, e.message);
+    const hint = typeof e.userHint === 'string' && e.userHint.trim() ? e.userHint.trim() : '';
+    const msg = hint || sanitizePublicMessage(e.code, e.message);
+    return apiError(e.code, msg);
   }
   const message = e instanceof Error ? e.message : String(e);
   if (
@@ -375,21 +418,24 @@ function errorFromCaught(e: unknown): ApiError {
       message,
     )
   ) {
-    return apiError('USER_REJECTED', message);
+    return apiError('USER_REJECTED', sanitizePublicMessage('USER_REJECTED', message));
   }
   if (/invalid sq address/i.test(message)) {
-    return apiError('INVALID_ADDRESS', message);
+    return apiError('INVALID_ADDRESS', PUBLIC_CODE_MESSAGE.INVALID_ADDRESS);
   }
   if (/fee/i.test(message) && /minimum|invalid/i.test(message)) {
-    return apiError('INVALID_FEE', message);
+    return apiError('INVALID_FEE', PUBLIC_CODE_MESSAGE.INVALID_FEE);
   }
   if (/chain_id mismatch/i.test(message)) {
-    return apiError('CHAIN_MISMATCH', message);
+    return apiError('CHAIN_MISMATCH', PUBLIC_CODE_MESSAGE.CHAIN_MISMATCH);
   }
   if (/timeout|abort/i.test(message)) {
-    return apiError('TIMEOUT', message);
+    return apiError('TIMEOUT', PUBLIC_CODE_MESSAGE.TIMEOUT);
   }
-  return apiError('UNKNOWN', message);
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|network/i.test(message)) {
+    return apiError('NETWORK', PUBLIC_CODE_MESSAGE.NETWORK);
+  }
+  return apiError('UNKNOWN', PUBLIC_CODE_MESSAGE.UNKNOWN);
 }
 
 /** Map caught errors to HTTP status; SQDP codes stay in the body. */

@@ -1,5 +1,7 @@
 /**
- * SQDP-1 security: WASM session lock/disconnect, re-derive Zeroize, pin integrity, fee floor.
+ * SQDP-1 security: WASM session lock/disconnect, re-derive replaces keys, pin integrity, fee floor.
+ * "Zeroize" here means lock prevents further signing and re-derive replaces the key binding —
+ * tests assert unlock state / cannot-sign, not hardware memory forensics.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { MIN_FEE, SplendorPQBridge, resetWasmLoader } from '../index.js';

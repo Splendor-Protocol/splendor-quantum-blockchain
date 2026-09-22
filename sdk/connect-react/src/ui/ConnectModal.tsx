@@ -93,13 +93,13 @@ export function ConnectModal() {
     setBusyId(id);
     try {
       await connect(id, opts);
-      setFieldValues({});
       setAdvancedOpen(false);
-      // Wipe seed material from React state after successful unlock.
-      resetNative();
     } catch {
       /* error surfaced via useConnect */
     } finally {
+      // Always wipe seed / typed secrets — success and failure (JS strings are immutable; drop refs).
+      setFieldValues({});
+      resetNative();
       setBusyId(null);
     }
   };

@@ -235,6 +235,12 @@ describe('audit scenarios', () => {
     );
   });
 
+  it('12b: Node SqRpc rejects file: and google metadata host', () => {
+    expect(() => assertSafeRpcUrl('file:///etc/passwd')).toThrow(/file:/i);
+    expect(() => assertSafeRpcUrl('http://metadata.google.internal/')).toThrow(/blocked|metadata/i);
+    expect(() => assertSafeRpcUrl('http://127.0.0.1:8080/')).not.toThrow();
+  });
+
   it('14/15: SqRpc GET coalescing + SignedTx networkId fail-closed', async () => {
     let hits = 0;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
