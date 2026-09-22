@@ -1,3 +1,7 @@
+/**
+ * Unsupported leftover — NOT exported from `@splendor/connect-react`.
+ * Node does not route DEX. Prefer `@splendor/sqc-sdk/defi` for experiments only.
+ */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useConnectState } from '../context.js';
 import { useTxAction, type TxHookStatus } from '../useTxAction.js';

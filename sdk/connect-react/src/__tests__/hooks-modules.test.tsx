@@ -4,57 +4,28 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import React, { type ReactNode } from 'react';
 import { renderHook, act } from '@testing-library/react';
-import { useDex, useBridge, useModules, useQRC1155, useExchange, useContract, usePayX402 } from '../react/hooks.js';
+import { useBridge, useModules, useQRC1155, useContract, usePayX402 } from '../react/hooks.js';
 import { ControllerContext } from '../react/context.js';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState } from '../core/types.js';
 
 const ADDR = 'SQ:' + 'ab'.repeat(32);
-const POOL = 'SQ:' + 'cc'.repeat(32);
 const BRIDGE = 'SQ:' + 'dd'.repeat(32);
-const TOKEN = 'SQ:' + 'aa'.repeat(32);
 const COLLECTION = 'SQ:' + 'ee'.repeat(32);
-const EXCHANGE = 'SQ:' + 'ff'.repeat(32);
 const CONTRACT = 'SQ:' + '11'.repeat(32);
 
 const {
-  dexSwap,
-  dexReserves,
   bridgeClaim,
   bridgeInfo,
   q1155Balance,
-  exchangeInfo,
   contractRead,
   payX402,
 } = vi.hoisted(() => ({
-  dexSwap: vi.fn(async () => ({ hash: '0xdex' })),
-  dexReserves: vi.fn(async () => ({ reserve0: '1', reserve1: '2' })),
   bridgeClaim: vi.fn(async () => ({ hash: '0xbr' })),
   bridgeInfo: vi.fn(async () => ({ paused: false })),
   q1155Balance: vi.fn(async () => '7'),
-  exchangeInfo: vi.fn(async () => ({ name: 'ex' })),
   contractRead: vi.fn(async () => ({ decoded: true })),
   payX402: vi.fn(async () => ({ hash: '0x402' })),
-}));
-
-vi.mock('@splendor/sqc-sdk/defi', () => ({
-  DEX: class {
-    swap(...args: unknown[]) {
-      return dexSwap(...args);
-    }
-    reserves(...args: unknown[]) {
-      return dexReserves(...args);
-    }
-    addLiquidity = vi.fn();
-  },
-  Exchange: class {
-    info(...args: unknown[]) {
-      return exchangeInfo(...args);
-    }
-    redeem = vi.fn(async () => ({ hash: '0xrd' }));
-    resolve = vi.fn(async () => ({ hash: '0xrs' }));
-  },
-  deployPool: vi.fn(),
 }));
 
 vi.mock('@splendor/sqc-sdk/tokens', () => ({
@@ -153,31 +124,6 @@ function wrapperFor(ctrl: ConnectController) {
   };
 }
 
-describe('useDex', () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it('swap sets status/hash success', async () => {
-    const ctrl = makeController(makeState());
-    const { result } = renderHook(() => useDex(POOL), { wrapper: wrapperFor(ctrl) });
-    await act(async () => {
-      await result.current.swap({ tokenIn: 0, amountIn: '100', minAmountOut: '1' });
-    });
-    expect(dexSwap).toHaveBeenCalled();
-    expect(result.current.status).toBe('success');
-    expect(result.current.hash).toBe('0xdex');
-  });
-
-  it('reserves reads pool state', async () => {
-    const ctrl = makeController(makeState());
-    const { result } = renderHook(() => useDex(POOL), { wrapper: wrapperFor(ctrl) });
-    let reserves: Record<string, unknown> | undefined;
-    await act(async () => {
-      reserves = await result.current.reserves();
-    });
-    expect(reserves).toMatchObject({ reserve0: '1' });
-  });
-});
-
 describe('useBridge', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -201,13 +147,14 @@ describe('useBridge', () => {
 });
 
 describe('useModules', () => {
-  it('returns bound factories when connected', () => {
+  it('returns bound factories when connected (no public dex/exchange)', () => {
     const ctrl = makeController(makeState());
     const { result } = renderHook(() => useModules(), { wrapper: wrapperFor(ctrl) });
     expect(result.current).not.toBeNull();
     expect(result.current!.qrc20(ADDR).getAddress()).toBe(ADDR);
     expect(result.current!.bridge(ADDR).getAddress()).toBe(ADDR);
-    expect(() => result.current!.dex(POOL)).toThrow(/unsupported application adapter/i);
+    expect(result.current!).not.toHaveProperty('dex');
+    expect(result.current!).not.toHaveProperty('exchange');
   });
 
   it('returns null when wallet missing', () => {
@@ -230,20 +177,6 @@ describe('useQRC1155', () => {
     });
     expect(bal).toBe('7');
     expect(q1155Balance).toHaveBeenCalled();
-  });
-});
-
-describe('useExchange', () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it('info reads exchange_info', async () => {
-    const ctrl = makeController(makeState());
-    const { result } = renderHook(() => useExchange(EXCHANGE), { wrapper: wrapperFor(ctrl) });
-    let info: Record<string, unknown> | undefined;
-    await act(async () => {
-      info = await result.current.info();
-    });
-    expect(info).toMatchObject({ name: 'ex' });
   });
 });
 

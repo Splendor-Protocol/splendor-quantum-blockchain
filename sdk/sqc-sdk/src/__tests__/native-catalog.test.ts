@@ -36,17 +36,20 @@ describe('routed native catalog vs unsupported adapters', () => {
     expect(unsupportedApplicationAdaptersEnabled()).toBe(false);
   });
 
-  it('gates leftover DEX/exchange factories until opt-in', () => {
+  it('keeps DEX/exchange off public modules; opt-in only via registry', () => {
     const conn = fakeConnection();
-    expect(() => modules.dex(conn, ADDR)).toThrow(UNSUPPORTED_ADAPTER_MESSAGE);
-    expect(() => modules.exchange(conn, ADDR)).toThrow(UNSUPPORTED_ADAPTER_MESSAGE);
+    expect(modules).not.toHaveProperty('dex');
+    expect(modules).not.toHaveProperty('exchange');
+    expect(UNSUPPORTED_ADAPTER_MESSAGE).toMatch(/@splendor\/sqc-sdk\/defi/);
 
     registerUnsupportedApplicationAdapters();
     expect(unsupportedApplicationAdaptersEnabled()).toBe(true);
-    expect(modules.dex(conn, ADDR).getAddress()).toBe(ADDR);
-    expect(modules.exchange(conn, ADDR).getAddress()).toBe(ADDR);
     expect(listModules().map((m) => m.id)).toEqual(
       expect.arrayContaining(['dex', 'exchange', 'qrc20']),
     );
+    const bound = modules.bind(conn);
+    expect(bound).not.toHaveProperty('dex');
+    expect((bound.registered.dex(ADDR) as { getAddress(): string }).getAddress()).toBe(ADDR);
+    expect((bound.registered.exchange(ADDR) as { getAddress(): string }).getAddress()).toBe(ADDR);
   });
 });

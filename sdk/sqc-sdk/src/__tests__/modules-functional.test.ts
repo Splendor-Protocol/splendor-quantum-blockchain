@@ -131,7 +131,7 @@ describe('module clients functional', () => {
     expect(modules.qrc20(conn, A).getAddress()).toBe(A);
     expect(modules.bridge(conn, A).getAddress()).toBe(A);
     expect(modules.qrc1155(conn, A).getAddress()).toBe(A);
-    expect(() => modules.exchange(conn, A)).toThrow(/unsupported application adapter/i);
-    expect(() => modules.dex(conn, A)).toThrow(/unsupported application adapter/i);
+    expect(modules).not.toHaveProperty('exchange');
+    expect(modules).not.toHaveProperty('dex');
   });
 });

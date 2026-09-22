@@ -34,11 +34,11 @@ Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plug
 | ML-DSA Sign-In | Yes — `useSignIn` / `createAuthMessage` |
 | Tx toasts | Yes — `<TxToastHost />` + `useTxToast` |
 | Wrong-network banner | Yes — `<WrongNetworkBanner expectedNetworkId="…" />` |
-| Module hooks | Yes — DEX/bridge/exchange hooks for app-level UI (no Swap/Bridge widgets) |
+| Module hooks | Yes — QRC-1155 / bridge / contract / bound modules (no Swap widgets) |
 
 ### Widget scope
 
-Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. DEX, bridge, exchange, and QRC-1155 are available as **hooks** for app-built UI — not as packaged AppKit widgets. WalletConnect remains deferred.
+Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Bridge, QRC-1155, and bytecode contracts are available as **hooks** for app-built UI — not as packaged AppKit widgets. **DEX / Exchange are not public** until the node routes them (leftover adapters live under `@splendor/sqc-sdk/defi` only). WalletConnect remains deferred.
 
 ### Hook coverage matrix
 
@@ -49,8 +49,6 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. DEX, bridge, 
 | QRC-20 read / transfer / approve | `useQRC20` |
 | Deploy QRC-20 | `useDeployToken` |
 | QRC-1155 | `useQRC1155`, `useDeployCollection` |
-| DEX swap / liquidity | `useDex`, `useDeployPool` |
-| Exchange | `useExchange`, `useDeployExchange` |
 | Bridge claim | `useBridge`, `useDeployBridge` |
 | Bytecode contract | `useContract`, `useDeployBytecode` (`useDeployContract` deprecated alias) |
 | Bound module factory | `useModules()` |
@@ -60,14 +58,11 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. DEX, bridge, 
 | Account / tx DTOs | `useAccountDto`, `toTxResultDto` |
 
 ```tsx
-const { swap, status, hash } = useDex(poolAddress);
-await swap({ tokenIn: 0, amountIn: '100', minAmountOut: '1' });
-
 const { claim } = useBridge(bridgeAddress);
 await claim({ id, asset: 'spld', amount, recipient, evmTx, attestations });
 ```
 
-**Out of scope:** WalletConnect v2, Ethereum `eth_*` / wagmi adapters, CDN WASM, desktop/mobile wallet apps, browser extension (separate repo).  
+**Out of scope:** WalletConnect v2, Ethereum `eth_*` / wagmi adapters, CDN WASM, desktop/mobile wallet apps, browser extension (separate repo), public DEX/Exchange hooks.  
 **In scope:** SQC `window.splendor` via `exposeInjectedProvider` (`splendor_*` methods).
 
 ## 5-minute integrate

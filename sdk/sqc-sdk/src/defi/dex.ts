@@ -1,7 +1,7 @@
 /**
- * Unsupported DEX adapter (constant-product AMM client).
- * Not routed by DispatchModuleCall — opt in via registerUnsupportedApplicationAdapters()
- * or import this file directly. Node calls with module "dex" are unknown-module errors.
+ * Unsupported leftover DEX adapter (constant-product AMM client) — not for production dapps.
+ * Not routed by DispatchModuleCall. Import via `@splendor/sqc-sdk/defi` only.
+ * Node calls with module "dex" are unknown-module errors until chain routing exists.
  */
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';

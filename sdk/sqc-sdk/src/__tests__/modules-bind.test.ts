@@ -26,7 +26,8 @@ describe('modules.bind / bindModules', () => {
     expect(bound.qrc20(ADDR).getAddress()).toBe(ADDR);
     expect(bound.bridge(ADDR).getAddress()).toBe(ADDR);
     expect(bound.contract(ADDR).getAddress()).toBe(ADDR);
-    expect(() => bound.dex(POOL)).toThrow(/unsupported application adapter/i);
+    expect(bound).not.toHaveProperty('dex');
+    expect(bound).not.toHaveProperty('exchange');
   });
 
   it('with wallet injects signer on writes', async () => {
@@ -39,7 +40,7 @@ describe('modules.bind / bindModules', () => {
       })),
     };
     const signed = bindModules(connection, wallet);
-    expect(() => signed.dex(POOL)).toThrow(/unsupported application adapter/i);
+    expect(signed).not.toHaveProperty('dex');
     expect(wallet.sendModuleCall).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 /**
- * Unsupported exchange adapter (CTF + orders client).
- * Not routed by DispatchModuleCall — opt in via registerUnsupportedApplicationAdapters()
- * or import this file directly. Node calls with module "exchange" are unknown-module errors.
+ * Unsupported leftover exchange adapter (CTF + orders client) — not for production dapps.
+ * Not routed by DispatchModuleCall. Import via `@splendor/sqc-sdk/defi` only.
+ * Node calls with module "exchange" are unknown-module errors until chain routing exists.
  */
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';

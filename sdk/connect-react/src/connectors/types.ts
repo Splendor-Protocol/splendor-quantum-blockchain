@@ -1,3 +1,10 @@
+/**
+ * Connect-react UI connector — metadata + unlock for ConnectKit / SplendorConnectProvider.
+ *
+ * This is **not** the same type as `@splendor/sqc-sdk` `WalletFactoryConnector`
+ * (headless `connect()` recipes). Future WalletConnect / mobile unlocks must
+ * implement this UI `Connector` shape — do not pass SDK factory connectors here.
+ */
 import type {
   DeriveInfo,
   ExtensionSigner,

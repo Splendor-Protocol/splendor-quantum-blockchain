@@ -9,7 +9,8 @@ Unified JavaScript/TypeScript SDK for Splendor Quantum Chain — wallet, native 
 | `@splendor/sqc-sdk` → `createSession`, `createPublicClient`, `createWalletClient`, `connect` | Recipes (happy path) |
 | `@splendor/sqc-sdk/core` | `Connection`, `Transport`, `Program`, `Signer`, module-call |
 | `@splendor/sqc-sdk/wallet` | `Keypair`, factory connectors, `WasmSession`, `installBrowserSessionPolicy` |
-| `@splendor/sqc-sdk/tokens`, `/defi`, `/bridge`, `/contracts`, `/x402` | Domain Program clients |
+| `@splendor/sqc-sdk/tokens`, `/bridge`, `/contracts`, `/x402` | Domain Program clients (production) |
+| `@splendor/sqc-sdk/defi` | Leftover DEX/Exchange adapters — **not node-routed**; not for production dapps |
 | `@splendor/sqc-sdk/errors` | `BridgeError` / `WalletError` / `isBridgeError` |
 | `@splendor/connect-react` | ConnectKit UI (connect + SPLD/QRC-20 widgets) |
 
@@ -29,7 +30,9 @@ Deprecated root exports (still present one minor): `connectSplendor`, `createSpl
 
 ### Built-in Program clients vs on-chain modules
 
-Typed `modules.*` / `bindModules` clients ship for: **qrc20**, **qrc1155**, **exchange**, **dex**, **bridge**, **contract**.
+Typed `modules.*` / `bindModules` / Session clients ship for: **qrc20**, **qrc1155**, **bridge**, **contract**.
+
+Leftover **DEX** / **Exchange** clients exist only under `@splendor/sqc-sdk/defi` (optional `registerUnsupportedApplicationAdapters()` + registry). The node does **not** route `module: "dex"|"exchange"`.
 
 On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall` / `registerModule` — do not stub fake Programs): **lending**, **oracle**, **multisig**, **governance**, **qrc721**, **qrc4626**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient` (Connection/Transport-backed).
 
@@ -44,7 +47,7 @@ On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall`
 ├── /tokens/qrc20
 ├── /tokens/qrc1155
 ├── /contracts           # bytecode deploy/call
-├── /defi                # DEX + Exchange
+├── /defi                # Leftover DEX + Exchange (unsupported; not node-routed)
 ├── /bridge              # on-chain bridge_v1 (≠ pq-bridge shim)
 ├── /x402                # payment protocol helpers
 ├── /addresses           # MODULE_ROUTER, qrc20/1155/exchange/dex/bridge addresses
@@ -94,10 +97,10 @@ registerModule(
 |--------|-------------|--------|
 | QRC-20 | Built | deploy, transfer, approve, permit |
 | QRC-1155 | Built | deploy, mint, transfer, burn |
-| DEX | Built | deploy_pool, add_liquidity, swap, pool_info |
-| Exchange | Built | deploy, conditions, match, cancel, signing, position_id, order_hash |
 | Bridge (`bridge_v1`) | Built | deploy, claim, operators |
 | Bytecode contracts | Built | QSol ABI call + deployBytecode |
+| DEX | Leftover `/defi` only | Not node-routed — do not use in production dapps |
+| Exchange | Leftover `/defi` only | Not node-routed — do not use in production dapps |
 | QSol compile-in-SDK | Not built | use monorepo `sqc-solc` offline |
 | QRC-721 / lending / oracle | Roadmap | no stubs until on-chain ABI stable |
 | WalletConnect / mobile | Deferred | ConnectKit is browser-injected first |
@@ -113,7 +116,7 @@ Reads: `connection.moduleCall(envelope)` → Transport `POST /call` with the sam
 
 - **Headless** (`WalletFactoryConnector`): `connect(connection) → Wallet` — used by `connect()`; **must reuse** the passed Connection (never `toRpcOptions()` clone).
 - **Unlock** (`WalletUnlockConnector`): `unlock({ wallet, connection }) → DeriveInfo` — canonical for UI.
-- **connect-react** wraps unlock with UI metadata (`name`, `icon`, `keyOrigin`).
+- **connect-react** uses a **different** UI `Connector` type (metadata + unlock). Future WalletConnect plugs into that UI shape — do not pass SDK factory connectors into `SplendorConnectProvider`.
 
 ## Errors
 

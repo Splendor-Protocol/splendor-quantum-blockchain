@@ -68,10 +68,10 @@ const s = await createSession({ network: 'local', mode: 'seed', seed: process.en
 await s.sendSPLD(recipient, '0.01');
 await s.token(tokenAddr).transfer(recipient, '100');
 await s.token(tokenAddr).transferHuman(recipient, '1.5'); // uses on-chain decimals
-await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
+await s.bridge(bridgeAddr).claim({ /* … */ });
 ```
 
-**Browser demo:** [`examples/web-dapp`](examples/web-dapp) — connect, SPLD, QRC-20, DEX swap, Bridge claim.
+**Browser demo:** [`examples/web-dapp`](examples/web-dapp) — connect, SPLD, QRC-20 / 1155, Bridge, Contract.
 
 ### Recipes (bound session)
 
@@ -81,12 +81,13 @@ await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
 | QRC-20 transfer | `await s.token(addr).transfer(to, '100')` |
 | Human token amount | `await s.token(addr).transferHuman(to, '1.5')` |
 | Deploy + use token | `const { token } = await s.deployToken({ name, symbol, decimals: 18, totalSupply })` |
-| DEX swap | `await s.dex(pool).swap({ tokenIn, amountIn, minAmountOut })` |
 | Bridge claim | `await s.bridge(addr).claim({ id, asset, amount, recipient, evmTx, attestations })` |
 | QRC-1155 mint | `await s.collection(addr).mint(to, id, amount)` |
 | Raw units helper | `fromUnits('1.5', 18)` / `toUnits(raw, 18)` |
 
 Advanced (unbound): `modules.qrc20(connection, addr).transfer(wallet, to, amt)` still works.
+
+DEX / Exchange: import from `@splendor/sqc-sdk/defi` only (not Session / root / ConnectKit). Node does not route them yet.
 
 Native modules are also on subpaths `/tokens`, `/defi`, `/bridge`. See [SDK_ARCHITECTURE.md](docs/SDK_ARCHITECTURE.md).
 

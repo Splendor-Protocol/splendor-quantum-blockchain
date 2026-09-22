@@ -8,7 +8,8 @@ Small Vite + React app that exercises `@splendor/sqc-sdk` + `@splendor/connect-r
 4. **Send** — native SPLD transfer
 5. **QRC-20** — paste token address; read + transfer / approve
 6. **QRC-1155 / Bridge / Contract** — hook-driven panels
-7. **DEX / Exchange** — leftover unsupported adapters (banners in UI; not node-routed)
+
+DEX / Exchange are **not** in this demo. Leftover clients remain under `@splendor/sqc-sdk/defi` only until the node routes those modules.
 
 For drop-in widgets (`TransferWidget`, `TokenPanel`, `TxToastHost`, …) see
 [`../../connect-react/examples/basic-dapp`](../../connect-react/examples/basic-dapp).

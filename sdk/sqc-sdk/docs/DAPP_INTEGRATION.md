@@ -29,7 +29,8 @@ Connect → fund → transfer → wait. Use a read-only `Connection` / `SqcProvi
 | No bridge markup fee | Only chain `minFee` (`PROTOCOL.minFee`); under congestion node may require higher — handle reject and retry |
 | Deploy QRC-20 token | `deployQRC20(wallet, …)` or `useDeployToken()` / `DeployTokenWidget` |
 | Token balance / transfer | `modules.qrc20(connection, addr)` / `useQRC20(addr)` / `TokenPanel` |
-| QRC-1155 / DEX / Exchange / Bridge | `modules.qrc1155` / `modules.dex` / `modules.exchange` / `modules.bridge` |
+| QRC-1155 / Bridge / Contract | `modules.qrc1155` / `modules.bridge` / `modules.contract` (hooks: `useQRC1155`, `useBridge`, `useContract`) |
+| DEX / Exchange | **Not public** — leftover under `@splendor/sqc-sdk/defi` until node routes them |
 | Confirmation that is not fake | `waitForConfirmation` / `waitForConfirmation: true` — receipt-first, nonce fallback ([SQDP §7](./SQDP-1.md)) |
 
 **Out of scope (documented):** WalletConnect v2, Ethereum `eth_*` / wagmi EIP-1193 adapters, CDN-hosted WASM.
@@ -64,7 +65,7 @@ import {
 
 Full guide: [`../../connect-react/README.md`](../../connect-react/README.md).
 
-**Runnable demo:** [`../examples/web-dapp`](../examples/web-dapp) — ConnectKit + balance + send SPLD + QRC-20 / 1155 + DEX + Exchange + Bridge + Contract.
+**Runnable demo:** [`../examples/web-dapp`](../examples/web-dapp) — ConnectKit + balance + send SPLD + QRC-20 / 1155 + Bridge + Contract.
 
 ### Minimal React checklist
 
@@ -77,7 +78,7 @@ Lower-level (no UI): `createSession` / `createWalletClient` / `connect` from `@s
 
 ```ts
 import { PROTOCOL, SQDP_VERSION, createSession, createWalletClient, createPublicClient } from '@splendor/sqc-sdk';
-// createSession → bound sendSPLD / token / dex / bridge / modules (no wallet args on writes)
+// createSession → bound sendSPLD / token / bridge / modules (no wallet args on writes)
 // createWalletClient → wallet.connect({ mode: 'seed', seed }) / signAndSendTransaction
 // PROTOCOL.chainId, PROTOCOL.minFee, PROTOCOL.signMessageDomain, PROTOCOL.confirmationCaveat
 ```
@@ -88,7 +89,7 @@ import { PROTOCOL, SQDP_VERSION, createSession, createWalletClient, createPublic
 const s = await createSession({ network: 'local', mode: 'seed', seed });
 await s.sendSPLD(to, '0.01');
 await s.token(token).transfer(to, '100');
-await s.modules.dex(pool).swap({ tokenIn, amountIn: '100', minAmountOut: '1' });
+await s.bridge(bridgeAddr).claim({ /* … */ });
 ```
 
 ### WalletClient (alternative headless)
