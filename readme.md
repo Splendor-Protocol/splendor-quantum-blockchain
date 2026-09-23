@@ -937,14 +937,15 @@ write that arrived after a module first shipped is gated by a fork the
 genesis document schedules (`forks` in `genesis.json`, see `DEPLOY.md` —
 "Fork Schedule"). Before that height the action is a hard "fork not active"
 error: refused at `/tx/submit`, unappliable in a block. A scheduled fork for
-an unrouted name (for example `exchange_v1` or `lending_v1` in some genesis
-documents) does not add a router case.
+an unrouted name (for example `lending_v1` in some genesis documents) does
+not add a router case.
 
 | Module | Writes | Fork gate | Reads (`POST /call`) |
 |---|---|---|---|
 | `qrc20` | `deploy`, `mint`, `transfer`, `approve`, `burn` | — (since launch) | `balance_of`, `total_supply`, `allowance`, `token_info`, `permit_nonce`, `paused`, `owner` |
 | `qrc20` | `permit`, `transfer_from`, `increase_allowance`, `decrease_allowance`, `burn_from`, `transfer_ownership`, `pause`, `unpause` | `qrc20_v2` | (as above) |
 | `qrc1155` | `deploy`, `mint`, `mint_batch`, `transfer`, `batch_transfer`, `set_approval_for_all`, `burn`, `burn_batch`, `transfer_ownership` | `qrc1155_v1` | `balance_of`, `balance_of_batch`, `is_approved_for_all`, `uri`, `total_supply`, `token_info` |
+| `exchange` | `deploy`, `create_condition`, `split`, `merge`, `match`, `cancel_order`, `increment_nonce`, `resolve`, `redeem`, `redeem_for`, `pause`, `unpause`, `set_redeem_fee_bps`, `set_fee_recipient`, `set_operator`, `transfer_ownership` | `exchange_v1` (requires `module_revert_v1`) | `exchange_info`, `condition_info`, `order_status`, `order_remaining`, `order_hash`, `nonce`, `is_operator`, `position`, `position_id`, `simulate_match` (also `GET /exchange/...`) — see `docs/modules/exchange.md` |
 | `bridge` | `deploy`, `claim` (M-of-N attested), `set_operator`, `set_threshold`, `pause`, `unpause`, `transfer_ownership` | `bridge_v1` (requires `module_revert_v1`) | `bridge_info`, `claim_status` (also `GET /bridge/...`) — see `docs/modules/bridge.md` |
 | `verify` | `deploy`, `register`, `attest`, `finalize`, `spend`, `set_operator`, `set_threshold`, `pause`, `unpause` | `verify_v1` | `proof`, `instance` |
 | `validators` | `register`, `unregister`, `finalize_exit` | `validators_v1` | `validator`, `list`, `count`, `bond`, `approved` |
@@ -954,12 +955,15 @@ documents) does not add a router case.
 `module_revert_v1` is not a module but the failure rule: under it a module
 call that errors is included with a failed receipt (fee kept, nonce
 consumed) instead of being dropped. Wire formats for routed modules are in
-`docs/modules/qrc20-permit.md`, `docs/modules/bridge.md`,
-`docs/modules/verify.md`, `docs/modules/validators.md`, and
-`docs/modules/qrc721.md`.
+`docs/modules/qrc20-permit.md`, `docs/modules/exchange.md`,
+`docs/modules/bridge.md`, `docs/modules/verify.md`,
+`docs/modules/validators.md`, and `docs/modules/qrc721.md`.
 
-DEX, exchange, lending, governance, oracle, multisig, and QRC-4626 are not
-routed native modules. A leftover SDK adapter or a genesis fork name does
+The `exchange` module is the chain's own prediction-market settlement layer
+(conditions, complete sets, operator-submitted settlement of signed orders)
+on top of the QRC-20 and QRC-1155 Core Modules; Blockpeak settles on it. It
+is not a DEX. DEX, lending, governance, oracle, multisig, and QRC-4626 are
+not routed native modules. A leftover SDK adapter or a genesis fork name does
 not add a router case. `vm/staking.go` is the `validators` implementation,
 not a separate lending-style staking product. The dated deployment snapshot
 in [`docs/readme-claim-evidence.md`](docs/readme-claim-evidence.md) records
@@ -1272,10 +1276,10 @@ This section separates reachable code from product direction.
 - Contract events, current-state reads, and current-state account proofs
 
 The live availability of a fork-gated action depends on the tier's persisted
-fork schedule. DEX, exchange, lending, governance, oracle, multisig, and
-QRC-4626 are not routed. They are not product features because a leftover
-SDK adapter, a planned application, or a genesis fork name exists. QRC-721
-**is** routed (`qrc721_v1`).
+fork schedule. DEX, lending, governance, oracle, multisig, and QRC-4626 are
+not routed. They are not product features because a leftover SDK adapter, a
+planned application, or a genesis fork name exists. QRC-721 **is** routed
+(`qrc721_v1`), and so is the `exchange` settlement module (`exchange_v1`).
 
 ### Product directions, not current deployments
 
@@ -1458,8 +1462,8 @@ production-readiness claim.
 
 - Decentralized economic finality at global scale, or an HSM/remote signer
 - Historical-state queries (current-state `GET /state/proof/{address}` exists)
-- DEX, exchange, lending, oracle, multisig, governance, or QRC-4626 as
-  routed native modules
+- DEX, lending, oracle, multisig, governance, or QRC-4626 as routed native
+  modules
 - A live RLNC object-transfer path (library and benchmark only)
 - Sanctions screening, KYC attestation, AML monitoring, or regulator dashboards
 - Packaged desktop or mobile wallet applications, NFC hardware signing, or a QR
@@ -1879,8 +1883,10 @@ hand; edit `scripts/readme-tiers.mjs` and regenerate.
 <!-- tiers:end -->
 
 A name in `/status.forks` is a scheduled rule change, not proof the module is
-routed. `exchange_v1` on a live tier does not make `module: "exchange"` a
-valid `DispatchModuleCall`. The write catalog remains §8.
+routed; the write catalog remains §8. `exchange_v1` routes `module:
+"exchange"` only on a node running a build that carries the module, so a
+tier is rolled binary-first — every validator upgraded before the first
+exchange transaction is submitted — testnet before mainnet.
 
 Every tier has been reset at least once since the earlier snapshots in this
 file, so the genesis block hashes above are the ones a `--genesis-hash` pin
@@ -2287,8 +2293,8 @@ rule to a running chain is an extension, never an edit: the new upgrade must
 activate above the current head, the deploy workflow must be dispatched with
 `allow_fork_extension=true` once, and the tier's `SQC_GENESIS_FORKS` variable
 must carry the full schedule. Testnet's `bridge_v1` at height 11,000 was
-activated this way. A scheduled `exchange_v1` still does not route an
-exchange module; see §8.
+activated this way. A scheduled `exchange_v1` routes the exchange module
+once every validator on the tier runs a build that carries it; see §8.
 
 ---
 
@@ -2319,7 +2325,7 @@ exchange module; see §8.
 | `sdk/bridge` | `@splendor/pq-bridge`: deprecated re-export shim, nothing else |
 | `sdk/sqc-sdk.js` | Legacy single-file SDK, deprecated; its X402 middleware omits `settlement_tx` (§11) |
 | `contracts/legacy-burn` | `QuantumMigrationBurn`, the Solidity burn gate on the legacy Splendor mainnet (chain 2691) |
-| `docs/modules` | Wire formats for routed modules (`verify`, `validators`, `qrc20-permit`, `bridge`, `qrc721`, `standards`). `exchange.md` is historical/unrouted library design |
+| `docs/modules` | Wire formats for routed modules (`exchange`, `verify`, `validators`, `qrc20-permit`, `bridge`, `qrc721`, `standards`) |
 | `docs/performance` | The dated TPS/GPU experiment behind every throughput number in this file |
 | `docs/plans` | Design documents: compiler, migration bridge, Blockpeak settlement module |
 | `docs/readme-claim-evidence.md` | The claim–evidence matrix and dated deployment snapshots behind this README |

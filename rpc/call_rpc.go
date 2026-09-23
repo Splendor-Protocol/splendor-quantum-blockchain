@@ -94,7 +94,7 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 		// rather than at GC, or every /call defers compaction for a while.
 		defer sim.Close()
 
-		// Native-module read (token / DEX view calls). Routed explicitly: the
+		// Native-module read (token / exchange view calls). Routed explicitly: the
 		// module-router address is not a bytecode contract, and a write action
 		// has no signature here to authorise it — so /call serves only the
 		// module read set via the read-only dispatch, never CallWithContext.
@@ -310,6 +310,13 @@ func headReadContext(executor *block.Executor) vm.ReadContext {
 		return vm.ReadContext{}
 	}
 	return vm.ReadContext{Height: head.Header.Height, Time: head.Header.Timestamp}
+}
+
+// HeadFunc is headReadContext as a closure, read at request time, for route
+// registrars that take a head func (RegisterExchangeRoutes). executor may be
+// nil: the closure then always reads a zero head.
+func HeadFunc(executor *block.Executor) func() vm.ReadContext {
+	return func() vm.ReadContext { return headReadContext(executor) }
 }
 
 // decodeCallData decodes calldata from hex (default) or base64.

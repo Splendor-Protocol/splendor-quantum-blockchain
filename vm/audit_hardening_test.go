@@ -86,6 +86,59 @@ func TestQRC20DeployStringCapsGatedByV2(t *testing.T) {
 	}
 }
 
+// The exchange's position collection carries the same name/uri_prefix caps.
+func TestExchangeDeployStringCaps(t *testing.T) {
+	f := newExFixture(t)
+	ok := strings.Repeat("u", MaxModuleURIBytes)
+	if _, err := f.call(t, f.owner, "deploy", map[string]any{"name": strings.Repeat("n", MaxModuleNameBytes), "uri_prefix": ok}); err != nil {
+		t.Fatalf("a deploy at the caps: %v", err)
+	}
+	_, err := f.call(t, f.owner, "deploy", map[string]any{"name": "Positions", "uri_prefix": ok + "u"})
+	mustCapped(t, err, "uri_prefix")
+	_, err = f.call(t, f.owner, "deploy", map[string]any{"name": strings.Repeat("n", MaxModuleNameBytes+1)})
+	mustCapped(t, err, "name")
+}
+
+// A StateDB read error must surface as an error, never as the empty-slot
+// zero: a node whose disk faults would otherwise compute a different
+// successful result (no operator, no condition, nothing filled) than the rest
+// of the network. Committing and then closing the store makes every slot read
+// fail; each entry point must return that failure, not its own complaint
+// about the zero it would have read.
+func TestExchangeReadErrorsPropagate(t *testing.T) {
+	f := newExFixture(t)
+	f.split(t, f.alice, 10)
+	taker := f.order(t, f.alice, types.OrderSideSell, 0, 10, 500_000)
+	maker := f.order(t, f.bob, types.OrderSideBuy, 0, 10, 500_000)
+	if _, err := f.sdb.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := f.sdb.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	const closed = "leveldb: closed"
+
+	if _, err := f.x.Condition(f.cond); err == nil || !strings.Contains(err.Error(), closed) {
+		t.Fatalf("Condition: %v, want the read error", err)
+	}
+	_, err := f.match(t, f.operator, taker, []exchangeOrderWire{maker}, 10)
+	if err == nil || !strings.Contains(err.Error(), closed) || strings.Contains(err.Error(), "not an operator") {
+		t.Fatalf("Match: %v, want the read error", err)
+	}
+	if err := f.x.Merge(f.ctx(f.alice.addr), f.cond, big.NewInt(1), nil); err == nil || !strings.Contains(err.Error(), closed) {
+		t.Fatalf("Merge: %v, want the read error", err)
+	}
+	if _, err := f.x.OrderFilled(f.hash(t, taker)); err == nil || !strings.Contains(err.Error(), closed) {
+		t.Fatalf("OrderFilled: %v, want the read error", err)
+	}
+	if _, err := f.tok.BalanceOf(f.alice.addr); err == nil || !strings.Contains(err.Error(), closed) {
+		t.Fatalf("qrc20 BalanceOf: %v, want the read error", err)
+	}
+	if _, err := f.pos.BalanceOf(f.alice.addr, ExchangePositionID(f.cond, 0)); err == nil || !strings.Contains(err.Error(), closed) {
+		t.Fatalf("qrc1155 BalanceOf: %v, want the read error", err)
+	}
+}
+
 // ── L13: event word bounds ──────────────────────────────────────────────────
 
 // An event helper must never be able to take a block down: a value at or
@@ -243,5 +296,60 @@ func TestTransferOwnershipRefusesUnownableTargets(t *testing.T) {
 	}
 	if _, err := r.call(t, v2Ctx(r.holder, 6, 1), "transfer_ownership", qrc20TokenAction{Token: r.token.String(), NewOwner: addr(0x77).String()}); err != nil {
 		t.Fatalf("qrc20 transfer to a normal address: %v", err)
+	}
+
+	// The exchange refuses a deployed contract too (self/router were already refused).
+	x := newExFixture(t)
+	if err := x.x.TransferOwnership(x.owner, x.token, nil); err == nil || !strings.Contains(err.Error(), "is a contract") {
+		t.Fatalf("exchange transfer_ownership to a contract: %v", err)
+	}
+	if info, _ := x.x.Info(); info.Owner != x.owner.String() {
+		t.Fatalf("exchange owner = %s", info.Owner)
+	}
+}
+
+// ── L15: operator slots ─────────────────────────────────────────────────────
+
+// A revoke of an address that was never granted writes nothing and emits
+// nothing, so 65 such revokes leave the bounded list untouched and a later
+// grant still fits. The cap counts addresses granted at least once.
+func TestRevokingUnlistedOperatorsConsumesNoSlots(t *testing.T) {
+	f := newExFixture(t)
+	before, _ := f.sdb.PendingStateRoot()
+	for i := 0; i <= MaxExchangeOperators; i++ {
+		rc := &types.Receipt{}
+		if err := f.x.SetOperator(f.owner, addr(byte(0x80+i)), false, rc); err != nil {
+			t.Fatalf("revoke %d of an unlisted address: %v", i, err)
+		}
+		if len(rc.Logs) != 0 {
+			t.Fatalf("revoke %d of an unlisted address emitted %d logs", i, len(rc.Logs))
+		}
+	}
+	if after, _ := f.sdb.PendingStateRoot(); after != before {
+		t.Fatal("revokes of unlisted addresses wrote state")
+	}
+	if n, _ := f.x.getU64(slotEXOperatorCount); n != 1 {
+		t.Fatalf("operator list grew to %d on revokes", n)
+	}
+	rc := &types.Receipt{}
+	if err := f.x.SetOperator(f.owner, addr(0xf0), true, rc); err != nil {
+		t.Fatalf("grant after the revokes: %v", err)
+	}
+	wantExTopics(t, rc, "OperatorSet")
+	ops, _ := f.x.Operators()
+	if len(ops) != 2 || ops[1] != addr(0xf0) {
+		t.Fatalf("operators = %v", ops)
+	}
+	if ok, _ := f.x.IsOperator(addr(0xf0)); !ok {
+		t.Fatal("granted operator is not active")
+	}
+	// A listed operator's revoke still lands and still emits.
+	rc = &types.Receipt{}
+	if err := f.x.SetOperator(f.owner, addr(0xf0), false, rc); err != nil {
+		t.Fatal(err)
+	}
+	wantExTopics(t, rc, "OperatorSet")
+	if ok, _ := f.x.IsOperator(addr(0xf0)); ok {
+		t.Fatal("revoked operator is still active")
 	}
 }

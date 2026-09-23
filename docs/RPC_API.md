@@ -68,6 +68,11 @@ fields in block, tx, and receipt bodies (Go `encoding/json` defaults):
 | GET | `/verify/proof/{id}` | Verify-module proof |
 | GET | `/bridge/{addr}` | Bridge instance |
 | GET | `/bridge/{addr}/claim/{id}` | Claim status |
+| GET | `/exchange/{addr}` | Exchange instance (`exchange_info`: owner, operators, paused, redeem fee, condition count) |
+| GET | `/exchange/{addr}/condition/{id}` | Condition (`condition_info`: collateral, resolver, end time, resolved, winning outcome, locked, position ids) |
+| GET | `/exchange/{addr}/order/{hash}` | Order status (`filled`, `cancelled`) |
+| GET | `/exchange/{addr}/nonce/{maker}` | Maker order nonce |
+| GET | `/exchange/{addr}/position/{condition}/{holder}` | Holder's position balances per outcome |
 | GET | `/vm/opcodes` | Opcode catalog |
 | GET | `/p2p/identity` | This node's signed ML-DSA-65 node key plus its rotating ML-KEM-768 key |
 | GET | `/peers` | Known peers |
@@ -78,8 +83,8 @@ fields in block, tx, and receipt bodies (Go `encoding/json` defaults):
 | GET | `/readyz` | Readiness: `{"status":"ready"}` once height is above 0 |
 | GET | `/ai/stats` | AI-stats snapshot |
 
-`/dex/*`, `/exchange/*`, `/lending/*`, and `/gov/*` are **not registered**.
-Those names are not routed native modules.
+`/dex/*`, `/lending/*`, and `/gov/*` are **not registered**. Those names are
+not routed native modules.
 
 ## Examples
 

@@ -76,6 +76,23 @@ var KnownModuleActions = map[string]ModuleActions{
 			"uri": true, "total_supply": true, "token_info": true,
 		},
 	},
+	"exchange": {
+		// exchange_v1: the settlement module, routed whole.
+		Writes: map[string]string{
+			"deploy": forks.ExchangeV1, "create_condition": forks.ExchangeV1,
+			"split": forks.ExchangeV1, "merge": forks.ExchangeV1, "match": forks.ExchangeV1,
+			"cancel_order": forks.ExchangeV1, "increment_nonce": forks.ExchangeV1,
+			"resolve": forks.ExchangeV1, "redeem": forks.ExchangeV1, "redeem_for": forks.ExchangeV1,
+			"pause": forks.ExchangeV1, "unpause": forks.ExchangeV1,
+			"set_redeem_fee_bps": forks.ExchangeV1, "set_fee_recipient": forks.ExchangeV1,
+			"set_operator": forks.ExchangeV1, "transfer_ownership": forks.ExchangeV1,
+		},
+		Reads: map[string]bool{
+			"exchange_info": true, "condition_info": true, "order_status": true,
+			"order_remaining": true, "order_hash": true, "nonce": true, "is_operator": true,
+			"position": true, "position_id": true, "simulate_match": true,
+		},
+	},
 	"bridge": {
 		// bridge_v1: the legacy-mainnet migration bridge, routed whole.
 		Writes: map[string]string{
@@ -151,9 +168,8 @@ type ReadContext struct {
 // JSON-serialisable map.
 //
 // rctx describes the chain head the read runs against; it is advisory (see
-// ReadContext). No routed read consumes it today; it stays in the signature so
-// a read that labels its answer with the head can take it without an API
-// change.
+// ReadContext). The only action that consumes it is exchange.simulate_match,
+// which dry-runs a settlement against the head time and reverts everything.
 func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byte) (interface{}, error) {
 	var mc ModuleCall
 	if err := json.Unmarshal(data, &mc); err != nil {
@@ -174,6 +190,8 @@ func DispatchModuleReadCall(stateDB *state.StateDB, rctx ReadContext, data []byt
 		return dispatchQRC20Read(stateDB, mc.Action, mc.Params)
 	case "qrc1155":
 		return dispatchQRC1155Read(stateDB, mc.Action, mc.Params)
+	case "exchange":
+		return dispatchExchangeRead(stateDB, rctx, mc.Action, mc.Params)
 	case "bridge":
 		return dispatchBridgeRead(stateDB, mc.Action, mc.Params)
 	case "verify":

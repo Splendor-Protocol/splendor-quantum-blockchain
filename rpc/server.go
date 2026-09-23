@@ -358,7 +358,12 @@ func (s *Server) admitTx(w http.ResponseWriter, tx *types.Transaction) {
 	}
 	if tx.Type == types.TxCall && tx.To == vm.ModuleRouterAddress {
 		head, _ := s.executor.LatestHeight()
-		if _, err := preflightModuleCall(tx.Data, s.executor.Forks(), head+1); err != nil {
+		mc, err := preflightModuleCall(tx.Data, s.executor.Forks(), head+1)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
+			return
+		}
+		if err := vm.PreflightExchangeMatch(s.stateDB, mc, tx.From); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 			return
 		}

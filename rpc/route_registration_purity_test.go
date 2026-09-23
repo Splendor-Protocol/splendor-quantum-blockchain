@@ -6,6 +6,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/vm"
 )
 
 // No route registrar may touch consensus state.
@@ -26,6 +27,9 @@ import (
 func TestNoRouteRegistrarMutatesConsensusState(t *testing.T) {
 	registrars := map[string]func(*mux.Router, *state.StateDB){
 		"bridge": RegisterBridgeRoutes,
+		"exchange": func(r *mux.Router, sdb *state.StateDB) {
+			RegisterExchangeRoutes(r, sdb, func() vm.ReadContext { return vm.ReadContext{} })
+		},
 		"state": func(r *mux.Router, sdb *state.StateDB) {
 			RegisterStateRoutes(r, sdb, nil, nil)
 		},

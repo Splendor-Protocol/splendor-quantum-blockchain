@@ -125,10 +125,14 @@ func TestKnownModuleActionsCoverEveryDispatchCase(t *testing.T) {
 	_, extraRead := dispatchCases(t, "extra_dispatch.go")
 	_, verifyWrite := dispatchCases(t, "verify.go")
 	_, verifyRead := dispatchCases(t, "verify.go")
+	_, exchangeWrite := dispatchCases(t, "exchange_router.go")
+	_, exchangeRead := dispatchCases(t, "exchange_router.go")
 	mergeActionCases(writeCases, extraWrite)
 	mergeActionCases(writeCases, verifyWrite)
+	mergeActionCases(writeCases, exchangeWrite)
 	mergeActionCases(readCases, extraRead)
 	mergeActionCases(readCases, verifyRead)
+	mergeActionCases(readCases, exchangeRead)
 	for k, v := range writeCases {
 		writeCases[k] = uniqueSorted(v)
 	}

@@ -1423,6 +1423,10 @@ func runNode(cmd *cobra.Command, args []string) error {
 	// Migration bridge read routes — the GET mirrors of the bridge /call reads.
 	rpc.RegisterBridgeRoutes(router, stateDB)
 
+	// Exchange (settlement module) read routes — the GET mirrors of the
+	// exchange /call reads, labelled with the live chain head.
+	rpc.RegisterExchangeRoutes(router, stateDB, rpc.HeadFunc(executor))
+
 	// Contract-interaction routes (/call view calls, /estimate gas+fee) — issue #4
 	rpc.RegisterCallRoutes(router, stateDB, executor, pool, coreRPC.SimGuard())
 	// Source verification shares the metered plane: it compiles submitted

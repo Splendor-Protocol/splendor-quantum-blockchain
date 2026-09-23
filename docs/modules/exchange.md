@@ -1,22 +1,28 @@
 # Exchange: the settlement module (`exchange_v1`)
 
-> **Not a routed native module.** `DispatchModuleCall` does not accept
-> `module: "exchange"`. This page is the historical/library design. Do not
-> treat exchange as a live chain capability. The routed catalog is `qrc20`,
-> `qrc1155`, `bridge`, `verify`, `validators`, `qrc721`.
+> Built on the Core Modules that stay routed on tip: collateral is any QRC-20
+> (Blockpeak's BPC), positions are a module-managed QRC-1155 collection. This
+> is the chain's own prediction-market settlement layer, not a DEX: the DEX,
+> AMM pools, lending and the rest of the removed DeFi surface stay unrouted.
 
-The leftover `exchange` design was an app-agnostic, Polymarket-shaped
+The `exchange` native module is the chain's app-agnostic, Polymarket-shaped
 settlement layer: **conditions** (a collateral token, a resolver, an end time,
 two outcomes), **complete sets** (split collateral into YES+NO positions and
 merge them back), and **operator-submitted atomic settlement of orders users
-signed off-chain**. Matching, pricing and market metadata were meant to live
-in an off-chain ledger. This page is that design. It is not a live write
-path.
+signed off-chain**. Matching, pricing and market metadata live in an off-chain
+ledger (the gateway); what reaches consensus is *authorisation* (a maker's
+ML-DSA-65 signature over an order) and *settlement* (moving exactly what that
+order allows). There is no market logic in consensus.
 
-A `TxCall` with `{"module":"exchange",…}` is an **unknown module** at
-`DispatchModuleCall`, even if a genesis document schedules `exchange_v1`.
-Do not treat a scheduled fork name as a routed action. The rest of this
-file is historical parameter and event shape only.
+Every write is a `TxCall` to `vm.ModuleRouterAddress` carrying the JSON
+envelope `{"module":"exchange","action":…,"params":{…}}`, gated by the
+`exchange_v1` fork: before its scheduled height every action is a HARD
+"fork not active" error (refused at `/tx/submit`, unappliable in a block), so
+a node lacking the fork rejects a block carrying one instead of diverging.
+`exchange_v1` requires `module_revert_v1` scheduled at the same or an earlier
+height (`forks.Schedule.Validate` refuses a document that gets this wrong): a
+failed `match` must be a failed receipt, never a dropped transaction that jams
+the operator's nonce.
 
 ## Custody model
 
@@ -269,12 +275,11 @@ address as in the Solidity exchange).
 5. Index `OrderFilled`/`MintMatched`/`MergeMatched` from receipts (`POST /logs`).
 6. After the resolver's `resolve`, trigger `redeem_for` for holders.
 
-## Reads (historical design — not served)
+## Reads
 
-`POST /call` rejects `module: "exchange"` (`KnownModuleActions` has no such
-name). There are no GET mirrors: `/exchange/{addr}` and the condition/order/
-nonce/position paths are **not registered**. The table below is leftover
-parameter shape only.
+On `POST /call` (envelope to `vm.ModuleRouterAddress`), never fork-gated. Every
+answer carries `module`, `action`, `exchange` and `exists` (the instance is a
+deployed contract) except the pure `position_id`.
 
 | action | params | answer |
 |---|---|---|
@@ -289,7 +294,11 @@ parameter shape only.
 | `position_id` | `condition, outcome` | `condition, outcome, id` — pure |
 | `simulate_match` | `exchange, caller, taker_order, maker_orders, fill_shares` | `caller, ok, error, logs, head_height, head_time` — dry run at the head, always reverted |
 
-Those GET paths and `/call` exchange reads are not live. Do not use them.
+GET mirrors (identical bodies, same read dispatch): `/exchange/{addr}`,
+`/exchange/{addr}/condition/{id}`, `/exchange/{addr}/order/{hash}`,
+`/exchange/{addr}/nonce/{maker}`, `/exchange/{addr}/position/{condition}/{holder}`.
+`order_hash`, `order_remaining` and `simulate_match` carry a body and are
+`/call`-only.
 
 ## Events
 
