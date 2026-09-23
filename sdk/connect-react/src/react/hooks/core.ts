@@ -184,14 +184,26 @@ export function useWallet(): {
   ready: boolean;
 } {
   const ctrl = useConnectController();
-  if (ctrl.isStub) {
-    return { wallet: null, provider: null, ready: false };
-  }
-  return {
-    wallet: ctrl.getWallet(),
-    provider: ctrl.getProvider(),
-    ready: true,
-  };
+  const status = useConnectState((s) => s.status);
+  const activeConnectorId = useConnectState((s) => s.activeConnectorId);
+  // Re-render when session wallet identity changes (extension swap).
+  const epoch =
+    ctrl.isStub || typeof ctrl.getWalletEpoch !== 'function' ? 0 : ctrl.getWalletEpoch();
+  return useMemo(() => {
+    if (ctrl.isStub) {
+      return { wallet: null, provider: null, ready: false };
+    }
+    const connected = status === 'connected' || status === 'locked';
+    if (!connected) {
+      return { wallet: null, provider: ctrl.getProvider(), ready: false };
+    }
+    return {
+      wallet: ctrl.getWallet(),
+      provider: ctrl.getProvider(),
+      ready: true,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctrl, status, activeConnectorId, epoch]);
 }
 
 export function usePreflight(): {

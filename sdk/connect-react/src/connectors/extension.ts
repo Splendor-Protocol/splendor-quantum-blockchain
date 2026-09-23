@@ -19,7 +19,7 @@ export function extensionConnector(opts: ExtensionConnectorOpts = {}): Connector
 
   return {
     id: 'splendor-extension',
-    name: opts.name ?? 'Splendor Extension',
+    name: opts.name ?? 'Splendor Quantum Wallet',
     icon: opts.icon,
     keyOrigin: 'native',
     postQuantumSecure: true,

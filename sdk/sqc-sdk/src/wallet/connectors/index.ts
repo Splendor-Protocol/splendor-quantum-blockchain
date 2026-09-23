@@ -5,5 +5,5 @@ export type {
   WalletUnlockConnector,
   WalletUnlockContext,
 } from './types.js';
-export { seedConnector } from './seed.js';
-export { extensionConnector } from './extension.js';
+export { seedWalletFactory, seedConnector } from './seed.js';
+export { extensionWalletFactory, extensionConnector } from './extension.js';

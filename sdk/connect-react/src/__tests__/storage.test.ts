@@ -28,17 +28,17 @@ describe('storage', () => {
 
   it('get/set/remove last connector id in localStorage', () => {
     expect(getLastConnectorId()).toBeNull();
-    setLastConnectorId('metamask');
-    expect(getLastConnectorId()).toBe('metamask');
-    expect(localStore.get('splendor.connect.lastConnectorId')).toBe('metamask');
+    setLastConnectorId('splendor-extension');
+    expect(getLastConnectorId()).toBe('splendor-extension');
+    expect(localStore.get('splendor.connect.lastConnectorId')).toBe('splendor-extension');
     setLastConnectorId(null);
     expect(getLastConnectorId()).toBeNull();
   });
 
   it('migrates sessionStorage → localStorage', () => {
-    sessionStore.set('splendor.connect.lastConnectorId', 'injected');
-    expect(getLastConnectorId()).toBe('injected');
-    expect(localStore.get('splendor.connect.lastConnectorId')).toBe('injected');
+    sessionStore.set('splendor.connect.lastConnectorId', 'seed');
+    expect(getLastConnectorId()).toBe('seed');
+    expect(localStore.get('splendor.connect.lastConnectorId')).toBe('seed');
     expect(sessionStore.has('splendor.connect.lastConnectorId')).toBe(false);
   });
 

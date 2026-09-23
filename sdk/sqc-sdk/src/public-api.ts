@@ -189,7 +189,7 @@ export type {
   WalletUnlockConnector,
   WalletUnlockContext,
 } from './wallet/connectors/index.js';
-export { seedConnector, extensionConnector } from './wallet/connectors/index.js';
+export { seedWalletFactory, seedConnector, extensionWalletFactory, extensionConnector } from './wallet/connectors/index.js';
 export {
   ExtensionSigner,
   connectExtension,

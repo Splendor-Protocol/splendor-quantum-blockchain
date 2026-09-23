@@ -118,12 +118,29 @@
   background: var(--sqc-accent-hover);
 }
 
+.sqc-connect-btn--error {
+  background: var(--sqc-danger-soft);
+  color: var(--sqc-danger);
+  box-shadow: none;
+  border: 1px solid var(--sqc-danger);
+}
+
+.sqc-connect-btn--error:hover:not(:disabled) {
+  background: var(--sqc-danger-soft);
+  filter: brightness(0.97);
+}
+
 .sqc-account-chip {
   background: var(--sqc-surface);
   color: var(--sqc-text);
   border: 1px solid var(--sqc-border);
   padding: 0.4rem 0.55rem 0.4rem 0.75rem;
   gap: 0.65rem;
+}
+
+.sqc-account-chip--warn {
+  border-color: var(--sqc-danger);
+  box-shadow: inset 0 0 0 1px var(--sqc-danger);
 }
 
 .sqc-account-chip__balance {
@@ -286,8 +303,7 @@
   margin-top: 0.15rem;
 }
 
-/* Marks a connector whose key is derived from an ECDSA signature and is
-   therefore not post-quantum, so the user is never shown one as if it were. */
+/* Marks connector / account status chips in the connect UI. */
 .sqc-connector-item__badge {
   display: inline-block;
   margin-left: 0.4rem;
@@ -301,6 +317,11 @@
   color: var(--sqc-danger);
 }
 
+.sqc-connector-item__badge--ok {
+  background: var(--sqc-success-soft, rgba(16, 185, 129, 0.12));
+  color: var(--sqc-success, #059669);
+}
+
 .sqc-error {
   margin: 0.75rem 0 0;
   padding: 0.65rem 0.75rem;
@@ -308,30 +329,6 @@
   color: var(--sqc-danger);
   border-radius: var(--sqc-radius-sm);
   font-size: 0.8125rem;
-}
-
-/* Ethereum-derived wallets sit under a labelled rule, below the native
-   ML-DSA path, so the quantum-safe option is the one a user reaches first. */
-.sqc-legacy {
-  margin-top: 1rem;
-  border-top: 1px solid var(--sqc-border);
-  padding-top: 0.75rem;
-}
-
-.sqc-legacy__label {
-  margin: 0;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--sqc-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.sqc-legacy__note {
-  margin: 0.3rem 0 0.65rem;
-  font-size: 0.75rem;
-  line-height: 1.45;
-  color: var(--sqc-text-muted);
 }
 
 /* Native ML-DSA create / import step. */

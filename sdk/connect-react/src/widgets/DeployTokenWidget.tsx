@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { fromUnits } from '@splendor/sqc-sdk/units';
 import { useAccount, useConnect, useDeployToken, useNetwork } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
@@ -13,11 +13,17 @@ export type DeployTokenWidgetProps = {
   decimals?: number;
 };
 
-function isValidSupply(v: string): boolean {
+const SUPPLY_RE = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+function isValidSupply(v: string, decimals: number): boolean {
   const t = v.trim();
-  if (!t) return false;
-  const n = Number(t);
-  return Number.isFinite(n) && n > 0;
+  if (!t || !SUPPLY_RE.test(t) || t === '0' || /^0\.0+$/.test(t)) return false;
+  try {
+    fromUnits(t, decimals);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -30,6 +36,7 @@ export function DeployTokenWidget({
   defaultSupply = '1000000',
   decimals = 18,
 }: DeployTokenWidgetProps) {
+  const uid = useId();
   const { isConnected } = useAccount();
   const { status: connStatus, openModal } = useConnect();
   const { network } = useNetwork();
@@ -55,12 +62,15 @@ export function DeployTokenWidget({
       <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
         <h3 className="sqc-widget__title">Deploy QRC-20</h3>
         <p className="sqc-widget__hint">Connect a wallet to deploy a token.</p>
+        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
+          Connect
+        </button>
       </div>
     );
   }
 
   const canDeploy =
-    !!name.trim() && !!symbol.trim() && isValidSupply(supply) && status !== 'pending';
+    !!name.trim() && !!symbol.trim() && isValidSupply(supply, decimals) && status !== 'pending';
 
   const onDeploy = async () => {
     if (!canDeploy) return;
@@ -84,33 +94,36 @@ export function DeployTokenWidget({
   return (
     <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
       <h3 className="sqc-widget__title">Deploy QRC-20</h3>
-      <label className="sqc-widget__label" htmlFor="sqc-dep-name">
+      <label className="sqc-widget__label" htmlFor={`${uid}-name`}>
         Name
       </label>
       <input
-        id="sqc-dep-name"
+        id={`${uid}-name`}
         className="sqc-input"
         value={name}
         onChange={(e) => setName(e.target.value)}
       />
-      <label className="sqc-widget__label" htmlFor="sqc-dep-sym">
+      <label className="sqc-widget__label" htmlFor={`${uid}-sym`}>
         Symbol
       </label>
       <input
-        id="sqc-dep-sym"
+        id={`${uid}-sym`}
         className="sqc-input"
         value={symbol}
         onChange={(e) => setSymbol(e.target.value)}
       />
-      <label className="sqc-widget__label" htmlFor="sqc-dep-sup">
-        Total supply (human, {decimals} decimals)
+      <label className="sqc-widget__label" htmlFor={`${uid}-supply`}>
+        Total supply (human)
       </label>
       <input
-        id="sqc-dep-sup"
+        id={`${uid}-supply`}
         className="sqc-input"
         value={supply}
         onChange={(e) => setSupply(e.target.value)}
       />
+      {supply.trim() && !isValidSupply(supply, decimals) ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error">Enter a valid supply greater than zero</p>
+      ) : null}
       <button
         type="button"
         className="sqc-btn sqc-btn--primary"
@@ -118,7 +131,7 @@ export function DeployTokenWidget({
         disabled={!canDeploy}
         onClick={() => void onDeploy()}
       >
-        {status === 'pending' ? 'Deploying…' : 'Deploy token'}
+        {status === 'pending' ? 'Deploying…' : 'Deploy'}
       </button>
       {address ? <p className="sqc-widget__msg">Token: {address}</p> : null}
       {hash ? (

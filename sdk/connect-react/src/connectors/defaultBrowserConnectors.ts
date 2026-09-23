@@ -3,8 +3,8 @@ import { extensionConnector } from './extension.js';
 import type { Connector } from './types.js';
 
 /**
- * Native ML-DSA paths only: Splendor extension (when installed) + in-page seed.
- * MetaMask / EIP-6963 removed — ECDSA-derived accounts are no longer offered.
+ * Splendor PQ only: Quantum Wallet extension (when installed) + in-page seed.
+ * No MetaMask / EIP-6963 / WalletConnect.
  */
 export async function defaultBrowserConnectors(opts?: {
   /** Drop the native seed connector. */

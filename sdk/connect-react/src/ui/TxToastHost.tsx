@@ -108,6 +108,11 @@ export function TxToastHost({
 export function useTxToast(): TxToastApi {
   const ctx = useContext(TxToastContext);
   if (!ctx) {
+    if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+      console.warn(
+        '@splendor/connect-react: useTxToast() called without <TxToastHost> — toasts are no-ops. Wrap your app in TxToastHost.',
+      );
+    }
     return {
       push: () => '',
       dismiss: () => {},

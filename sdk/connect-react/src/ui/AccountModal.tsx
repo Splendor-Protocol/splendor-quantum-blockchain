@@ -14,24 +14,18 @@ async function copyText(text: string): Promise<boolean> {
 
 export function AccountModal() {
   const { modal, closeModal, disconnect } = useConnect();
-  const { address, evmAddress } = useAccount();
+  const { address } = useAccount();
   const { balanceSPLD, refresh, loading } = useBalance();
   const { network } = useNetwork();
-  const [copied, setCopied] = useState<'sq' | 'evm' | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const open = modal === 'account';
 
-  // Only an EVM-derived account has an EVM address to warn about; saying it to
-  // someone holding a native ML-DSA key would just be wrong.
-  const subtitle = evmAddress
-    ? 'Funds live on your SQ: address — not the EVM address.'
-    : 'Post-quantum ML-DSA-65 account. Funds live on your SQ: address.';
-
-  const onCopy = async (kind: 'sq' | 'evm', value: string) => {
+  const onCopy = async (value: string) => {
     const ok = await copyText(value);
     if (!ok) return;
-    setCopied(kind);
-    setTimeout(() => setCopied(null), 1400);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1400);
   };
 
   const onDisconnect = async () => {
@@ -42,7 +36,7 @@ export function AccountModal() {
     <ModalShell
       open={open}
       title="Account"
-      subtitle={subtitle}
+      subtitle="Post-quantum ML-DSA-65 account (Splendor Quantum Wallet). Funds live on your SQ: address."
       onClose={closeModal}
     >
       <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -62,36 +56,12 @@ export function AccountModal() {
         <div className="sqc-account-row__value">
           <span>{address ?? '—'}</span>
           {address ? (
-            <button type="button" className="sqc-copy" onClick={() => void onCopy('sq', address)}>
-              {copied === 'sq' ? 'Copied' : 'Copy'}
+            <button type="button" className="sqc-copy" onClick={() => void onCopy(address)}>
+              {copied ? 'Copied' : 'Copy'}
             </button>
           ) : null}
         </div>
       </div>
-
-      {evmAddress ? (
-        <div className="sqc-account-row">
-          <span className="sqc-account-row__label">
-            Linked EVM (derivation only)
-            <span
-              className="sqc-connector-item__badge"
-              title="This account's ML-DSA key was derived from an Ethereum signature, so it is only as strong as secp256k1. Create a native wallet for funds you intend to hold."
-            >
-              Not quantum-safe
-            </span>
-          </span>
-          <div className="sqc-account-row__value">
-            <span>{evmAddress}</span>
-            <button
-              type="button"
-              className="sqc-copy"
-              onClick={() => void onCopy('evm', evmAddress)}
-            >
-              {copied === 'evm' ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-        </div>
-      ) : null}
 
       <div className="sqc-account-row">
         <span className="sqc-account-row__label">Balance</span>

@@ -29,7 +29,7 @@ export function ConnectButton({
 }: ConnectButtonProps) {
   const hostModals = useHostModals();
   const mountModals = includeModals && !hostModals;
-  const { openModal, status, connectingStep, connectors } = useConnect();
+  const { openModal, status, connectingStep, connectors, errorMessage, clearError } = useConnect();
   const { address, isConnected } = useAccount();
   const showBalance = isConnected && !!address;
   const { balanceSPLD } = useBalance(showBalance ? balancePollMs : 0);
@@ -42,6 +42,7 @@ export function ConnectButton({
         : 'Connecting…';
 
   const detecting = status !== 'connecting' && connectors.length === 0;
+  const showError = status === 'error' || (!!errorMessage && isConnected);
 
   const button =
     status === 'locked' ? (
@@ -52,12 +53,34 @@ export function ConnectButton({
       >
         Unlock wallet
       </button>
+    ) : showError && !isConnected ? (
+      <button
+        type="button"
+        className={['sqc-btn', 'sqc-connect-btn', 'sqc-connect-btn--error', className]
+          .filter(Boolean)
+          .join(' ')}
+        onClick={() => {
+          clearError();
+          openModal('connect');
+        }}
+        title={errorMessage ?? 'Connection error'}
+      >
+        {errorMessage ? 'Retry connect' : label}
+      </button>
     ) : isConnected && address ? (
       <button
         type="button"
-        className={['sqc-btn', 'sqc-account-chip', className].filter(Boolean).join(' ')}
+        className={[
+          'sqc-btn',
+          'sqc-account-chip',
+          errorMessage ? 'sqc-account-chip--warn' : '',
+          className,
+        ]
+          .filter(Boolean)
+          .join(' ')}
         onClick={() => openModal('account')}
-        aria-label="Account"
+        aria-label={errorMessage ? `Account — ${errorMessage}` : 'Account'}
+        title={errorMessage ?? undefined}
       >
         {balanceSPLD != null ? (
           <span className="sqc-account-chip__balance">{balanceSPLD} SPLD</span>

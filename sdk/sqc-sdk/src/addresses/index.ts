@@ -88,8 +88,8 @@ export function bytecodeContractAddress(deployer: string, nonce: number): string
 }
 
 /**
- * Exchange instance: SHA3(deployer ‖ decimal(nonce) ‖ u64be(height) ‖ "exchange")
- * Height is the including block height at execution time.
+ * Exchange instance address helper — leftover adapter (not node-routed). Prefer @splendor/sqc-sdk/defi.
+ * SHA3(deployer ‖ decimal(nonce) ‖ u64be(height) ‖ "exchange")
  */
 export function exchangeAddress(deployer: string, nonce: number, height: number): string {
   const depBytes = addressBytes(deployer);
@@ -116,6 +116,7 @@ export function bridgeSplvAddress(bridge: string): string {
 }
 
 /**
+ * DEX pool address helper — leftover adapter (not node-routed). Prefer @splendor/sqc-sdk/defi.
  * DEX pool: SHA3(token0 ‖ token1 ‖ "pool") with canonical token order
  * (smaller address bytes first).
  */

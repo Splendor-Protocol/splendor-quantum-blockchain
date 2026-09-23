@@ -1,12 +1,16 @@
 import {
   BridgeError,
+  Connection,
   createSplendorClient,
+  getNetwork,
   isBridgeError,
+  networkToRpcOptions,
   type BridgeErrorCode,
   type CreateClientOptions,
   type DeriveInfo,
   type ExtensionSigner,
   type NetworkConfig,
+  type NetworkId,
   type SplendorClient,
   type SplendorPQBridge,
   type SqcProvider,
@@ -25,7 +29,7 @@ export type SessionWallet = SplendorPQBridge | ExtensionSigner;
 
 export type CreateConnectControllerOptions = CreateClientOptions & {
   connectors: Connector[];
-  /** Attempt to reconnect last resumable connector (e.g. extension) on init. Default false. */
+  /** Attempt to reconnect last resumable connector (e.g. extension) on init. Default true in SplendorConnectProvider. */
   autoReconnect?: boolean;
   /** Called when connect/session errors occur (optional observability). */
   onError?: (err: Error) => void;
@@ -57,6 +61,7 @@ function errorFromWalletPayload(payload: { code: string; message: string }): Err
     'NOT_CONNECTED',
     'USER_REJECTED',
     'NO_PROVIDER',
+    'BUSY',
     'RPC',
     'RPC_UNAVAILABLE',
     'NETWORK',
@@ -103,6 +108,13 @@ export type ConnectController = {
   getNetwork(): NetworkConfig;
   /** Replace the active signing wallet (used by extension connector). */
   setSessionWallet(wallet: SessionWallet): void;
+  /**
+   * Soft network switch: rebind RPC/Connection without destroying WASM or revoking extension.
+   * Keeps an unlocked seed/extension session across networks.
+   */
+  rebindNetwork(networkId: NetworkId): Promise<void>;
+  /** Bumps when session wallet identity changes (for reactive hooks). */
+  getWalletEpoch(): number;
   destroy(): void;
 };
 
@@ -133,6 +145,8 @@ export function createConnectController(
   let connectInFlight: Promise<DeriveInfo> | null = null;
   /** Bumped on softDisconnect / disconnect / destroy so in-flight connect cannot commit. */
   let connectEpoch = 0;
+  /** Bumped when setSessionWallet changes the active signer (hook reactivity). */
+  let walletEpoch = 0;
   let snapshot: ConnectControllerState = {
     status,
     connectingStep,
@@ -183,9 +197,7 @@ export function createConnectController(
       }),
       wallet.on('error', (payload) => {
         error = errorFromWalletPayload(payload);
-        account = null;
-        activeConnectorId = null;
-        status = 'error';
+        // Keep session — rejected sign / RPC should not force a full disconnect.
         options.onError?.(error);
         emit();
       }),
@@ -196,7 +208,9 @@ export function createConnectController(
     if (wallet !== sessionWallet) {
       // Do not disconnect the previous in-page client.wallet — extension owns keys.
       sessionWallet = wallet;
+      walletEpoch += 1;
       wireSessionWallet(wallet);
+      emit();
     }
   };
 
@@ -250,18 +264,6 @@ export function createConnectController(
 
   wireSessionWallet(sessionWallet);
 
-  unsubs.push(
-    subscribeConnectBroadcast((msg) => {
-      if (msg.type === 'disconnect' && (status === 'connected' || status === 'locked')) {
-        sessionWallet.disconnect();
-        account = null;
-        activeConnectorId = null;
-        status = 'disconnected';
-        emit();
-      }
-    }),
-  );
-
   const getState = (): ConnectControllerState => snapshot;
 
   const controller: ConnectController = {
@@ -292,8 +294,7 @@ export function createConnectController(
       }
       if (connectInFlight) {
         return Promise.reject(
-          new BridgeError(
-            'USER_REJECTED',
+          BridgeError.busy(
             'Another connect is already in progress — wait or cancel before switching connectors',
           ),
         );
@@ -508,6 +509,39 @@ export function createConnectController(
       return client.network;
     },
     setSessionWallet,
+    getWalletEpoch() {
+      return walletEpoch;
+    },
+    async rebindNetwork(networkId) {
+      if (destroyed) return;
+      const net = getNetwork(String(networkId));
+      if (!net) {
+        throw BridgeError.rpc(`Unknown network: ${String(networkId)}`);
+      }
+      const next = new Connection(networkToRpcOptions(net));
+      const pageWallet = client.wallet as SplendorPQBridge;
+      if (typeof pageWallet.rebindConnection === 'function') {
+        pageWallet.rebindConnection(next, { networkId: String(networkId) });
+      }
+      if (sessionWallet !== pageWallet && typeof (sessionWallet as ExtensionSigner).rebindConnection === 'function') {
+        (sessionWallet as ExtensionSigner).rebindConnection(next, {
+          networkId: String(networkId),
+        });
+      }
+      // ClientSession is a plain object from createSplendorClient.
+      (client as { network: NetworkConfig }).network = net;
+      (client as { provider: SqcProvider }).provider = pageWallet.provider;
+      error = null;
+      emit();
+      const probeEpoch = connectEpoch;
+      void sessionWallet.connection.probeNetwork?.().then((probe) => {
+        if (probeEpoch !== connectEpoch || destroyed) return;
+        if (probe && !probe.ok) {
+          error = probe.error;
+          emit();
+        }
+      }).catch(() => {});
+    },
     destroy() {
       destroyed = true;
       connectEpoch += 1;
@@ -524,6 +558,22 @@ export function createConnectController(
       }
     },
   };
+
+  unsubs.push(
+    subscribeConnectBroadcast((msg) => {
+      if (msg.type === 'disconnect' && (status === 'connected' || status === 'locked')) {
+        sessionWallet.disconnect();
+        account = null;
+        activeConnectorId = null;
+        status = 'disconnected';
+        emit();
+        return;
+      }
+      if (msg.type === 'connected' && status === 'disconnected') {
+        void controller.tryAutoReconnect({ force: true }).catch(() => undefined);
+      }
+    }),
+  );
 
   refreshSnapshot();
   return controller;
@@ -605,6 +655,12 @@ export function createStubConnectController(
     setSessionWallet() {
       /* no-op during SSR */
     },
+    getWalletEpoch() {
+      return 0;
+    },
+    async rebindNetwork() {
+      /* no-op during SSR */
+    },
     destroy() {
       listeners.clear();
     },
@@ -618,6 +674,8 @@ export function connectErrorMessage(err: unknown): string {
     switch (err.code) {
       case 'USER_REJECTED':
         return 'Request rejected in wallet';
+      case 'BUSY':
+        return 'Connection already in progress — wait a moment';
       case 'NO_PROVIDER':
         return 'No browser wallet found';
       case 'WASM':

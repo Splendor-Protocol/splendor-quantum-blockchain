@@ -1,34 +1,37 @@
 import type { Connector } from '../connectors/types.js';
 
 export type ConnectorGroups = {
-  /** Native ML-DSA-65 wallets — what the modal offers first. */
+  /** Splendor PQ wallets — extension + native seed (what the modal offers). */
   native: Connector[];
-  /** Offered after the native path, under a "Legacy" heading. */
+  /**
+   * @deprecated MetaMask / ECDSA-derived paths removed. Always empty from
+   * default connectors; non-native entries are dropped (not shown).
+   */
   legacy: Connector[];
   /** Hidden behind the Advanced accordion (dev / agent connectors). */
   advanced: Connector[];
 };
 
 /**
- * Only a connector that declares native post-quantum entropy earns the first
- * slot. Anything else — including a third-party connector that declares
- * nothing — falls to legacy, so an account is never presented as quantum-safe
- * on the strength of an omission.
+ * Only native post-quantum connectors (Splendor extension / in-page seed).
  */
 export function isNativeConnector(c: Connector): boolean {
   return c.keyOrigin === 'native' && c.postQuantumSecure !== false;
 }
 
 /**
- * Split connectors for the modal. Grouping (not array position) decides the
- * order, so native ML-DSA connectors stay on top even if listed last.
+ * Split connectors for the modal. Non-native (legacy EVM) connectors are
+ * dropped — ConnectKit only supports Splendor Quantum Wallet + native seed.
  */
 export function groupConnectors(connectors: Connector[]): ConnectorGroups {
   const groups: ConnectorGroups = { native: [], legacy: [], advanced: [] };
   for (const c of connectors) {
-    if (c.advanced) groups.advanced.push(c);
-    else if (isNativeConnector(c)) groups.native.push(c);
-    else groups.legacy.push(c);
+    if (c.advanced) {
+      if (isNativeConnector(c)) groups.advanced.push(c);
+      continue;
+    }
+    if (isNativeConnector(c)) groups.native.push(c);
+    // Non-native / MetaMask-style connectors intentionally omitted.
   }
   return groups;
 }

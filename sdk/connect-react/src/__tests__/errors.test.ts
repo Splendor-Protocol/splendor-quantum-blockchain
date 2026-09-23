@@ -18,6 +18,12 @@ describe('connectErrorMessage', () => {
     expect(connectErrorMessage(new BridgeError('UNKNOWN', 'weird'))).toBe('Connection failed');
   });
 
+  it('maps BUSY without leaking raw mutex text', () => {
+    const msg = connectErrorMessage(BridgeError.busy('internal mutex hold'));
+    expect(msg).toMatch(/progress|busy|wait|connecting/i);
+    expect(msg).not.toMatch(/mutex/i);
+  });
+
   it('maps plain Error heuristics without leaking raw text', () => {
     expect(connectErrorMessage(new Error('EIP-1193 provider not found'))).toMatch(/wallet/i);
     expect(connectErrorMessage(new Error('User rejected the request'))).toMatch(/rejected/i);

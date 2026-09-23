@@ -81,48 +81,76 @@ export type {
 };
 
 export class SplendorPQBridge {
-  readonly provider: SqcProvider;
-  readonly connection: Connection;
+  private _provider: SqcProvider;
+  private _connection: Connection;
   private readonly wasmSession = new WasmSession();
   private info: DeriveInfo | null = null;
   private readonly opts: BridgeOptions;
   private readonly emitter = new BridgeEmitter();
   private disposeBrowserPolicy: (() => void) | null = null;
 
+  get provider(): SqcProvider {
+    return this._provider;
+  }
+
+  get connection(): Connection {
+    return this._connection;
+  }
+
   /**
    * @deprecated Prefer `connection` (Transport-backed). Only available when
    * Connection uses RpcTransport.
    */
   get rpc(): SqRpc {
-    return this.connection.rpc;
+    return this._connection.rpc;
   }
 
   constructor(options: BridgeOptions = {}) {
     this.opts = options;
     if (options.connection) {
-      this.connection = options.connection;
+      this._connection = options.connection;
       if (options.provider) {
-        this.provider = options.provider;
+        this._provider = options.provider;
       } else {
         try {
-          this.provider = new SqcProvider(options, this.connection.rpc);
+          this._provider = new SqcProvider(options, this._connection.rpc);
         } catch {
           // Non-RpcTransport: provider is deprecated and gets a detached SqRpc.
-          this.provider = new SqcProvider(this.connection.toRpcOptions());
+          this._provider = new SqcProvider(this._connection.toRpcOptions());
         }
       }
     } else if (options.provider) {
-      this.provider = options.provider;
-      this.connection = Connection.fromSqRpc(options.provider.rpc);
+      this._provider = options.provider;
+      this._connection = Connection.fromSqRpc(options.provider.rpc);
     } else {
-      this.connection = new Connection(options);
-      this.provider = new SqcProvider(options, this.connection.rpc);
+      this._connection = new Connection(options);
+      this._provider = new SqcProvider(options, this._connection.rpc);
     }
     // Host-owned idle/visibility policy (no document listeners inside Wallet methods).
     if (options.sessionIdleMs || options.lockOnHidden) {
       this.disposeBrowserPolicy = installBrowserSessionPolicy(this, {
         sessionIdleMs: options.sessionIdleMs,
         lockOnHidden: options.lockOnHidden,
+      });
+    }
+  }
+
+  /**
+   * Soft network switch — keep WASM session; point reads/writes at a new Connection.
+   * Does not lock or disconnect.
+   */
+  rebindConnection(next: Connection, meta?: { networkId?: string }): void {
+    this._connection = next;
+    try {
+      this._provider = new SqcProvider(next.toRpcOptions(), next.rpc);
+    } catch {
+      this._provider = new SqcProvider(next.toRpcOptions());
+    }
+    this.syncWasmChainId();
+    if (meta?.networkId) {
+      this.notifyChainChanged({
+        chainId: next.chainId,
+        networkId: meta.networkId,
       });
     }
   }

@@ -269,16 +269,19 @@ describe('createConnectController', () => {
     ctrl.destroy();
   });
 
-  it('preserves BridgeError code from wallet error event', () => {
+  it('preserves BridgeError code from wallet error event without nuking session', async () => {
     const connector = extensionConnector();
     const ctrl = createConnectController({
       network: 'local',
       connectors: [connector],
       allowUnpinnedWasm: true,
     });
+    await ctrl.connect('splendor-extension');
+    expect(ctrl.getState().status).toBe('connected');
     lastWallet.emit('error', { code: 'USER_REJECTED', message: 'rejected' });
     const state = ctrl.getState();
-    expect(state.status).toBe('error');
+    expect(state.status).toBe('connected');
+    expect(state.account).not.toBeNull();
     expect(state.error).toBeInstanceOf(BridgeError);
     expect((state.error as BridgeError).code).toBe('USER_REJECTED');
     expect(connectErrorMessage(state.error)).toMatch(/rejected/i);
@@ -466,7 +469,7 @@ describe('createConnectController', () => {
     });
     const a = ctrl.connect('splendor-extension');
     await expect(ctrl.connect('seed')).rejects.toMatchObject({
-      code: 'USER_REJECTED',
+      code: 'BUSY',
       message: expect.stringMatching(/already in progress/i),
     });
     await vi.waitFor(() => {
@@ -580,6 +583,7 @@ describe('createConnectController', () => {
     const first = ctrl.connect('splendor-extension');
     await ctrl.softDisconnect();
     await expect(ctrl.connect('other-ext')).rejects.toMatchObject({
+      code: 'BUSY',
       message: /already in progress/i,
     });
     releaseReady();

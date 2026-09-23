@@ -48,14 +48,18 @@ function asAddresses(raw: unknown): string[] {
 }
 
 export class ExtensionSigner implements Signer {
-  readonly connection: Connection;
+  private _connection: Connection;
   private readonly provider: SplendorProviderLike;
   private readonly emitter = new BridgeEmitter();
   private info: DeriveInfo | null = null;
-  private readonly networkId: string;
+  private networkId: string;
   private unsubs: Array<() => void> = [];
   /** Serializes sign / submit RPCs so concurrent calls do not race. */
   private opChain: Promise<unknown> = Promise.resolve();
+
+  get connection(): Connection {
+    return this._connection;
+  }
 
   constructor(opts: ExtensionSignerOptions) {
     const provider = opts.provider ?? getExtensionProvider();
@@ -65,9 +69,24 @@ export class ExtensionSigner implements Signer {
       );
     }
     this.provider = provider;
-    this.connection = opts.connection;
+    this._connection = opts.connection;
     this.networkId = opts.networkId ?? 'local';
     this.wireProviderEvents();
+  }
+
+  /**
+   * Soft network switch — keep extension session; point RPC at a new Connection.
+   * Does not call splendor_disconnect.
+   */
+  rebindConnection(next: Connection, meta?: { networkId?: string }): void {
+    this._connection = next;
+    if (meta?.networkId) {
+      this.networkId = meta.networkId;
+      this.notifyChainChanged({
+        chainId: next.chainId,
+        networkId: meta.networkId,
+      });
+    }
   }
 
   private wireProviderEvents(): void {

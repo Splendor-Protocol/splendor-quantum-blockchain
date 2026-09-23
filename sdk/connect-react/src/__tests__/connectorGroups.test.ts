@@ -9,7 +9,21 @@ describe('groupConnectors', () => {
     expect(groups.legacy).toEqual([]);
   });
 
-  it('isNativeConnector accepts seed', () => {
+  it('drops non-native (MetaMask-style) connectors', () => {
+    const fake = {
+      id: 'metamask',
+      name: 'MetaMask',
+      keyOrigin: 'evm-derived' as const,
+      postQuantumSecure: false,
+      ready: () => true,
+      connect: async () => ({}) as never,
+    };
+    const groups = groupConnectors([extensionConnector(), fake]);
+    expect(groups.native.map((c) => c.id)).toEqual(['splendor-extension']);
+    expect(groups.legacy).toEqual([]);
+  });
+
+  it('isNativeConnector accepts seed and extension', () => {
     expect(isNativeConnector(seedConnector())).toBe(true);
     expect(isNativeConnector(extensionConnector())).toBe(true);
   });

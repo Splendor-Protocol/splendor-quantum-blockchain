@@ -21,11 +21,7 @@ export function assertSeedHex(raw: string): string {
 
 /**
  * Fresh 32-byte ML-DSA-65 seed from the platform CSPRNG.
- *
- * The whole point of this path is that no secp256k1 key stands behind the
- * account, so the entropy has to be unguessable on its own — a seed anyone can
- * predict is worth no more than one derived from an ECDSA signature. Throws
- * rather than falling back to Math.random when no CSPRNG is available.
+ * Throws rather than falling back to Math.random when no CSPRNG is available.
  */
 export function generateSeedHex(): string {
   const csprng = globalThis.crypto;
@@ -38,19 +34,13 @@ export function generateSeedHex(): string {
 }
 
 /**
- * Native ML-DSA-65 connector — the primary way to hold a Splendor account.
- *
- * The seed is post-quantum entropy the user creates or imports, so the
- * account's security rests on ML-DSA-65 alone: no Ethereum key exists that an
- * adversary could break to reproduce it. Not marked `advanced` — this is the
- * first action in the connect modal, not a developer escape hatch. Its
- * `connectFields` presence is what keeps the controller from persisting or
- * silently resuming it, since the secret is typed in each session.
+ * In-page native ML-DSA-65 seed — create or import when the Splendor Quantum
+ * Wallet extension is not used. Secret is typed each session (not auto-resumed).
  */
 export function seedConnector(opts: SeedConnectorOpts = {}): Connector {
   return {
     id: 'seed',
-    name: opts.name ?? 'Splendor Quantum Wallet',
+    name: opts.name ?? 'Native seed (this page)',
     icon: opts.icon,
     keyOrigin: 'native',
     postQuantumSecure: true,

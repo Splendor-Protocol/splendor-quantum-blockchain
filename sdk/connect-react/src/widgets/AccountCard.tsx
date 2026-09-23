@@ -10,10 +10,11 @@ export type AccountCardProps = {
 };
 
 /**
- * Drop-in account summary: address, PQ badge, balance, copy, lock/unlock CTA.
+ * Drop-in account summary: address, PQ badge, balance, copy, connect/unlock/disconnect CTAs.
+ * (Idle lock is driven by the wallet `lock` event — use Unlock when status is locked.)
  */
 export function AccountCard({ className, showDisconnect = true }: AccountCardProps) {
-  const { address, evmAddress, isConnected, info } = useAccount();
+  const { address, isConnected, info } = useAccount();
   const { balanceSPLD, refresh, loading } = useBalance();
   const { status, openModal, disconnect } = useConnect();
   const { network } = useNetwork();
@@ -43,7 +44,7 @@ export function AccountCard({ className, showDisconnect = true }: AccountCardPro
     );
   }
 
-  const pq = info?.postQuantumSecure !== false && !evmAddress;
+  const pq = info?.postQuantumSecure !== false;
 
   const onCopy = async () => {
     if (!(await copyText(address))) return;
@@ -61,10 +62,10 @@ export function AccountCard({ className, showDisconnect = true }: AccountCardPro
         <span className="sqc-account-row__label">
           SQ address
           <span
-            className="sqc-connector-item__badge"
-            title={pq ? 'Native ML-DSA-65 account' : 'EVM-derived — not quantum-safe for long-term value'}
+            className="sqc-connector-item__badge sqc-connector-item__badge--ok"
+            title="Native ML-DSA-65 (Splendor Quantum Wallet / seed)"
           >
-            {pq ? 'Post-quantum' : 'Not quantum-safe'}
+            {pq ? 'Post-quantum' : 'Check key origin'}
           </span>
         </span>
         <div className="sqc-account-row__value">

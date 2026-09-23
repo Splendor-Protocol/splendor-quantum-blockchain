@@ -106,7 +106,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   const {
     children,
     connectors: connectorsProp = 'auto',
-    autoReconnect = false,
+    autoReconnect = true,
     theme = 'splendor',
     onError,
     labels,
@@ -124,7 +124,10 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   syncRegisterCustomNetworks(customNetworks);
 
   const [networkId, setNetworkId] = useState<NetworkId>(() =>
-    initialNetworkId(networkProp, persistNetwork, customNetworks, allowPlaceholderNetworks),
+    // SSR-safe: never read localStorage during first paint (avoids hydration mismatch).
+    networkProp && isUsableNetworkId(String(networkProp), allowPlaceholderNetworks)
+      ? networkProp
+      : 'local',
   );
   const [autoConnectors, setAutoConnectors] = useState<Connector[] | null>(null);
   const [switching, setSwitching] = useState(false);
@@ -132,7 +135,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   const controllerRef = useRef<ConnectController | null>(null);
   const networkIdRef = useRef(networkId);
   networkIdRef.current = networkId;
-  const reconnectAfterSwitchRef = useRef(false);
   const reconnectGenRef = useRef(0);
   const mountedRef = useRef(false);
 
@@ -142,18 +144,14 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       setSwitching(true);
       try {
         const ctrl = controllerRef.current;
-        const wasConnected =
-          !!ctrl &&
-          !ctrl.isStub &&
-          (ctrl.getState().status === 'connected' || ctrl.getState().status === 'locked');
-        if (ctrl && !ctrl.isStub) {
+        if (ctrl && !ctrl.isStub && typeof ctrl.rebindNetwork === 'function') {
           try {
-            await ctrl.softDisconnect();
-          } catch {
-            /* ignore */
+            await ctrl.rebindNetwork(id);
+          } catch (e) {
+            onErrorRef.current?.(e instanceof Error ? e : new Error(String(e)));
+            // Fall through to still update UI network id so the badge reflects intent.
           }
         }
-        if (wasConnected) reconnectAfterSwitchRef.current = true;
         if (persistNetwork) setLastNetworkId(String(id));
         setNetworkId(id);
       } finally {
@@ -168,6 +166,16 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       void softSwitchTo(networkProp);
     }
   }, [networkProp, softSwitchTo]);
+
+  // After mount: restore persisted network (SSR-safe).
+  useEffect(() => {
+    if (!persistNetwork || networkProp) return;
+    const last = getLastNetworkId();
+    if (last && isUsableNetworkId(last, allowPlaceholderNetworks) && last !== networkIdRef.current) {
+      void softSwitchTo(last as NetworkId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (connectorsProp !== 'auto') {
@@ -188,12 +196,9 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
 
   const connectorsReady = connectorsProp !== 'auto' || autoConnectors != null;
 
+  // Idle policy is fixed for the controller lifetime (avoid rebuild on soft network switch).
   const effectiveIdle =
-    sessionIdleMs !== undefined
-      ? sessionIdleMs
-      : networkId !== 'local'
-        ? DEFAULT_IDLE_MS
-        : undefined;
+    sessionIdleMs !== undefined ? sessionIdleMs : DEFAULT_IDLE_MS;
 
   const connectorsKey = useMemo(
     () => connectors.map((c) => c.id).join(','),
@@ -204,7 +209,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     [customNetworks],
   );
   const optsKey = JSON.stringify({
-    network: networkId,
+    // Network is soft-rebound via controller.rebindNetwork — do not rebuild (keeps WASM/extension).
     wasmUrl: clientOpts.wasmUrl,
     execUrl: clientOpts.execUrl,
     wasmSha256: clientOpts.wasmSha256,
@@ -247,7 +252,6 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       return createStubConnectController([], { connectorsLoading: !connectorsReady });
     }
     const parsed = JSON.parse(optsKey) as {
-      network?: NetworkId;
       wasmUrl?: string;
       execUrl?: string;
       wasmSha256?: string;
@@ -265,7 +269,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     try {
       const createOpts: CreateConnectControllerOptions = {
         ...clientOptsRef.current,
-        network: parsed.network,
+        network: networkIdRef.current,
         networks: customNetworksRef.current,
         wasmUrl: parsed.wasmUrl,
         execUrl: parsed.execUrl,
@@ -296,14 +300,12 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
 
   useEffect(() => {
     if (controller.isStub) return;
-    const force = reconnectAfterSwitchRef.current;
-    reconnectAfterSwitchRef.current = false;
-    const shouldReconnect = force || autoReconnect;
+    const shouldReconnect = autoReconnect;
 
     const gen = ++reconnectGenRef.current;
     const isStale = () => gen !== reconnectGenRef.current;
     if (shouldReconnect) {
-      void controller.tryAutoReconnect({ force, isStale });
+      void controller.tryAutoReconnect({ isStale });
     }
 
     return () => {

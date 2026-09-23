@@ -53,6 +53,13 @@ describe('security-errors SQDP-1 codes', () => {
     expect(be.code).toBe('INVALID_FEE');
   });
 
+  it('BUSY is constructible alongside SQDP-1 codes', () => {
+    const busy = BridgeError.busy();
+    expect(busy.code).toBe('BUSY');
+    expect(isBridgeError(busy)).toBe(true);
+    expect(busy.userHint).toBeTruthy();
+  });
+
   it('CHAIN_MISMATCH from assertChainId with missing remote', async () => {
     const original = globalThis.fetch;
     globalThis.fetch = (async () =>

@@ -1,9 +1,10 @@
 /**
  * Connect-react UI connector — metadata + unlock for ConnectKit / SplendorConnectProvider.
  *
- * This is **not** the same type as `@splendor/sqc-sdk` `WalletFactoryConnector`
- * (headless `connect()` recipes). Future WalletConnect / mobile unlocks must
- * implement this UI `Connector` shape — do not pass SDK factory connectors here.
+ * Supported wallets: **Splendor Quantum Wallet extension** and **native in-page seed**.
+ * This is **not** MetaMask / EIP-1193 / WalletConnect. Do not pass
+ * `@splendor/sqc-sdk` headless `WalletFactoryConnector` factories here
+ * (`seedWalletFactory` / `extensionWalletFactory`) — different shape.
  */
 import type {
   DeriveInfo,
@@ -37,16 +38,9 @@ export type ConnectorField = {
 };
 
 /**
- * How strong the key this connector produces actually is.
- *
- * - `native`: the key comes from post-quantum entropy. Security rests on
- *   ML-DSA-65 alone.
- *
- * - `evm-derived`: the ML-DSA seed is SHA3-256 of an ECDSA signature. Signing
- *   is post-quantum, but the key is only as strong as secp256k1: an adversary
- *   with a quantum computer recovers the EVM private key from any signature
- *   that account has published, replays the deterministic derivation message,
- *   and reproduces this exact ML-DSA key.
+ * Key provenance for ConnectKit.
+ * Only `native` (ML-DSA-65 from extension or CSPRNG seed) is supported.
+ * `evm-derived` is retained for type compatibility but is not offered in UI.
  */
 export type ConnectorKeyOrigin = 'native' | 'evm-derived';
 
@@ -62,27 +56,24 @@ export type Connector = {
   /** When true, UI shows this under Advanced. */
   advanced?: boolean;
   /**
-   * How this connector's key is produced. Connectors MUST declare this so the
-   * UI can tell the user when an account is not quantum-safe.
+   * How this connector's key is produced. Must be `native` for ConnectKit
+   * (extension or in-page seed).
    */
   keyOrigin: ConnectorKeyOrigin;
-  /**
-   * False when the key inherits secp256k1's weakness. The ConnectModal renders
-   * a warning for these, so a user is never shown an EVM-derived account as if
-   * it were post-quantum.
-   */
+  /** Must be true for supported Splendor PQ connectors. */
   postQuantumSecure: boolean;
-  /** Form fields for advanced connectors (rendered by ConnectModal). */
+  /** Form fields for seed / advanced connectors (rendered by ConnectModal). */
   connectFields?: ConnectorField[];
   ready: () => boolean | Promise<boolean>;
   /**
-   * Optional: already authorized (e.g. eth_accounts non-empty).
+   * Optional: already authorized (e.g. extension `sqc_accounts` / `splendor_accounts`).
    * Used by autoReconnect to avoid wallet popups.
    */
   authorized?: () => boolean | Promise<boolean>;
   connect: (ctx: ConnectorContext, opts?: Record<string, unknown>) => Promise<DeriveInfo>;
   disconnect?: () => Promise<void>;
-  onAccountsChanged?: (cb: (evmAddress: string) => void) => () => void;
+  /** Extension account switch — callback receives SQ: address (not EVM). */
+  onAccountsChanged?: (cb: (address: string) => void) => () => void;
 };
 
 // Re-export SDK unlock types for addon authors.

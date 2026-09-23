@@ -3,7 +3,7 @@
  * ExtensionSigner.payX402 fails closed until the extension settles x402.
  */
 import { useCallback, useState } from 'react';
-import { useTxAction, type TxHookStatus } from '../useTxAction.js';
+import type { TxHookStatus } from '../useTxAction.js';
 import { useWallet } from './core.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
@@ -39,12 +39,15 @@ export function usePayX402(): {
       fee?: string;
     }) => {
       if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (opts.amount == null && opts.amountSPLD == null) {
+        throw new Error('usePayX402 requires amount or amountSPLD');
+      }
       setStatus('pending');
       setError(null);
       try {
         const result = await wallet.payX402({
           to: opts.to,
-          amount: opts.amount ?? '0',
+          amount: opts.amount,
           amountSPLD: opts.amountSPLD,
           requirements: opts.requirements,
           settle: opts.settle,

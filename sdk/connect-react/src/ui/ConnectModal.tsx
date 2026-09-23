@@ -3,7 +3,7 @@ import { generateSeedHex } from '../connectors/seed.js';
 import type { Connector } from '../connectors/types.js';
 import { useConnect, useNetwork } from '../react/hooks.js';
 import { sanitizeIconUrl } from '../widgets/utils.js';
-import { groupConnectors, isNativeConnector } from './connectorGroups.js';
+import { groupConnectors } from './connectorGroups.js';
 import { connectorIcon } from './icons.js';
 import { ModalShell } from './ModalShell.js';
 import { NetworkBadge } from './NetworkBadge.js';
@@ -41,7 +41,7 @@ export function ConnectModal() {
   const [seedError, setSeedError] = useState<string | null>(null);
   const advancedPanelId = useId();
 
-  const { native, legacy, advanced } = useMemo(() => groupConnectors(connectors), [connectors]);
+  const { native, advanced } = useMemo(() => groupConnectors(connectors), [connectors]);
   const selectable = useMemo(() => [...native, ...legacy], [native, legacy]);
   const nativeConnector = useMemo(
     () => native.find((c) => c.id === nativeId) ?? null,
@@ -94,12 +94,20 @@ export function ConnectModal() {
     try {
       await connect(id, opts);
       setAdvancedOpen(false);
-    } catch {
-      /* error surfaced via useConnect */
-    } finally {
-      // Always wipe seed / typed secrets — success and failure (JS strings are immutable; drop refs).
+      // Wipe secrets only after successful unlock.
       setFieldValues({});
       resetNative();
+    } catch {
+      /* error surfaced via useConnect — keep newSeed / import fields for retry */
+      setFieldValues((prev) => {
+        // Clear non-seed password fields if any; keep seed field for import retry.
+        const next: Record<string, Record<string, string>> = {};
+        for (const [cid, fields] of Object.entries(prev)) {
+          next[cid] = { ...fields };
+        }
+        return next;
+      });
+    } finally {
       setBusyId(null);
     }
   };
@@ -122,7 +130,20 @@ export function ConnectModal() {
     const readyKnown = c.id in readyMap;
     const unavailable = readyMap[c.id] === false;
     const pendingReady = readyLoading && !readyKnown;
-    const notPQ = c.postQuantumSecure === false;
+    const hint =
+      busyId === c.id
+        ? connectingStep === 'init'
+          ? 'Loading signer…'
+          : 'Approve in wallet…'
+        : pendingReady
+          ? 'Checking…'
+          : unavailable
+            ? 'Extension not installed'
+            : c.id === 'splendor-extension'
+              ? 'Browser extension — ML-DSA-65 keys stay in the wallet'
+              : c.id === 'seed'
+                ? 'Create or import an ML-DSA-65 seed in this page'
+                : 'Post-quantum ML-DSA-65 wallet';
     return (
       <li key={c.id}>
         <button
@@ -134,27 +155,7 @@ export function ConnectModal() {
           <span className="sqc-connector-item__icon">{renderIcon(c)}</span>
           <span className="sqc-connector-item__meta">
             {c.name}
-            {notPQ ? (
-              <span
-                className="sqc-connector-item__badge"
-                title="This account's key is derived from an Ethereum signature, so it is only as strong as secp256k1. Transactions are signed with ML-DSA-65, but a quantum adversary who breaks ECDSA could reproduce this key. Create a native wallet for funds you intend to hold."
-              >
-                Not quantum-safe
-              </span>
-            ) : null}
-            <span className="sqc-connector-item__hint">
-              {busyId === c.id
-                ? connectingStep === 'init'
-                  ? 'Loading signer…'
-                  : 'Sign to unlock…'
-                : pendingReady
-                  ? 'Checking…'
-                  : unavailable
-                    ? 'Wallet not detected'
-                    : isNativeConnector(c)
-                      ? 'Create or import an ML-DSA-65 key — no Ethereum involved'
-                      : 'Key derived from ECDSA — convenient, not post-quantum'}
-            </span>
+            <span className="sqc-connector-item__hint">{hint}</span>
           </span>
         </button>
       </li>
@@ -163,9 +164,9 @@ export function ConnectModal() {
 
   const title = labels.connectTitle ?? 'Connect to Splendor';
   const subtitle = nativeConnector
-    ? 'ML-DSA-65 (FIPS-204) key, generated on this device. No Ethereum key stands behind it.'
+    ? 'ML-DSA-65 (FIPS-204) key from a native seed on this device.'
     : (labels.connectSubtitle ??
-      'Start with a post-quantum ML-DSA-65 wallet. Keys stay in the local signer.');
+      'Use the Splendor Quantum Wallet extension, or create/import a native ML-DSA-65 seed.');
 
   const nativeFields = nativeConnector?.connectFields ?? [];
   const nativeValues = nativeConnector ? (fieldValues[nativeConnector.id] ?? {}) : {};
@@ -197,7 +198,7 @@ export function ConnectModal() {
       {nativeConnector ? (
         <div className="sqc-native">
           <button type="button" className="sqc-native__back" onClick={resetNative}>
-            ← All wallets
+            ← Back
           </button>
 
           {canCreate ? (
@@ -331,10 +332,7 @@ export function ConnectModal() {
           {native.length > 0 ? (
             <ul className="sqc-connector-list">
               {native.map((c) =>
-                // The create/import step exists to collect a secret. A native
-                // connector that asks for nothing — an extension or a deeplink
-                // wallet holding its own ML-DSA key — would land on an empty
-                // panel with a disabled button, so it connects straight away.
+                // Seed needs create/import; extension connects immediately.
                 connectorItem(c, () =>
                   (c.connectFields?.length ?? 0) > 0
                     ? setNativeId(c.id)
@@ -342,20 +340,6 @@ export function ConnectModal() {
                 ),
               )}
             </ul>
-          ) : null}
-
-          {legacy.length > 0 ? (
-            <div className="sqc-legacy">
-              <p className="sqc-legacy__label">Legacy</p>
-              <p className="sqc-legacy__note">
-                These derive your ML-DSA-65 key from an Ethereum signature. Convenient if your
-                funds already live on such an address — but the account is only as strong as
-                secp256k1, so it is not post-quantum.
-              </p>
-              <ul className="sqc-connector-list">
-                {legacy.map((c) => connectorItem(c, () => void onConnect(c.id)))}
-              </ul>
-            </div>
           ) : null}
 
           {advanced.length > 0 ? (

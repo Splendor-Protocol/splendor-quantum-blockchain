@@ -2,18 +2,6 @@ const CONNECTOR_KEY = 'splendor.connect.lastConnectorId';
 const NETWORK_KEY = 'splendor.connect.lastNetworkId';
 const CHANNEL = 'splendor-connect';
 
-let sharedChannel: BroadcastChannel | null = null;
-
-function getSharedChannel(): BroadcastChannel | null {
-  try {
-    if (typeof BroadcastChannel === 'undefined') return null;
-    if (!sharedChannel) sharedChannel = new BroadcastChannel(CHANNEL);
-    return sharedChannel;
-  } catch {
-    return null;
-  }
-}
-
 function readKey(store: Storage | undefined, key: string): string | null {
   try {
     if (!store) return null;
@@ -83,9 +71,17 @@ export type ConnectBroadcastMessage =
   | { type: 'disconnect' }
   | { type: 'connected'; connectorId: string; address: string };
 
+/**
+ * Cross-tab sync. Uses a short-lived BroadcastChannel per post so other contexts
+ * (and other subscribers in-process) receive the message — a shared singleton
+ * never delivers to its own listeners.
+ */
 export function broadcastConnectEvent(msg: ConnectBroadcastMessage): void {
   try {
-    getSharedChannel()?.postMessage(msg);
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel(CHANNEL);
+    ch.postMessage(msg);
+    ch.close();
   } catch {
     /* ignore */
   }
@@ -95,15 +91,20 @@ export function subscribeConnectBroadcast(
   handler: (msg: ConnectBroadcastMessage) => void,
 ): () => void {
   try {
-    const ch = getSharedChannel();
-    if (!ch) return () => undefined;
+    if (typeof BroadcastChannel === 'undefined') return () => undefined;
+    const ch = new BroadcastChannel(CHANNEL);
     const onMsg = (ev: MessageEvent) => {
       const data = ev.data as ConnectBroadcastMessage;
       if (data && typeof data === 'object' && 'type' in data) handler(data);
     };
     ch.addEventListener('message', onMsg);
     return () => {
-      ch.removeEventListener('message', onMsg);
+      try {
+        ch.removeEventListener('message', onMsg);
+        ch.close();
+      } catch {
+        /* ignore */
+      }
     };
   } catch {
     return () => undefined;

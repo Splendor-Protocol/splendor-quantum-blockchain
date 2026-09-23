@@ -4,6 +4,7 @@ export type BridgeErrorCode =
   | 'NOT_CONNECTED'
   | 'USER_REJECTED'
   | 'NO_PROVIDER'
+  | 'BUSY'
   | 'RPC'
   | 'RPC_UNAVAILABLE'
   | 'NETWORK'
@@ -112,6 +113,15 @@ export class BridgeError extends Error {
 
   static userRejected(msg = 'User rejected the request'): BridgeError {
     return new BridgeError('USER_REJECTED', msg, undefined, 'Request was rejected');
+  }
+
+  static busy(msg = 'Another connect is already in progress'): BridgeError {
+    return new BridgeError(
+      'BUSY',
+      msg,
+      undefined,
+      'Connection already in progress — wait a moment',
+    );
   }
 
   static noProvider(

@@ -1,5 +1,6 @@
 /**
- * @splendor/connect-react — AppKit-style connect UI for Splendor Quantum Chain.
+ * @splendor/connect-react — ConnectKit for Splendor Quantum Chain.
+ * Wallets: Splendor Quantum Wallet extension + native ML-DSA-65 seed only.
  *
  *   import '@splendor/connect-react/style.css';
  *   import { SplendorConnectProvider, ConnectButton, seedConnector } from '@splendor/connect-react';

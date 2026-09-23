@@ -65,6 +65,7 @@ function makeController(state: ConnectControllerState): ConnectController {
     closeModal: vi.fn(),
     getWallet: () => null,
     getProvider: () => null,
+    getWalletEpoch: () => 0,
   } as unknown as ConnectController;
 }
 

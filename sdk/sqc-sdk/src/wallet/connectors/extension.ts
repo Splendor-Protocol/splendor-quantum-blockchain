@@ -3,10 +3,11 @@ import type { Connector, ConnectorConnectOptions } from './types.js';
 import { connectExtension, ExtensionSigner } from '../extension-signer.js';
 
 /**
- * Factory connector — attaches to the Splendor Quantum Wallet extension.
+ * Headless factory — attaches to the Splendor Quantum Wallet extension.
  * Returns ExtensionSigner (not an in-page WASM Wallet).
+ * **Not** the ConnectKit UI connector — use `@splendor/connect-react` `extensionConnector` for UI.
  */
-export const extensionConnector: Connector & {
+export const extensionWalletFactory: Connector & {
   connect(
     connection: Connection,
     options?: ConnectorConnectOptions,
@@ -21,5 +22,8 @@ export const extensionConnector: Connector & {
     return wallet;
   },
 };
+
+/** @deprecated Use {@link extensionWalletFactory}. Name collides with connect-react UI connector. */
+export const extensionConnector = extensionWalletFactory;
 
 export type { ExtensionSigner };

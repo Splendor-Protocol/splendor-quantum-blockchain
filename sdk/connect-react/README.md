@@ -2,7 +2,7 @@
 
 AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors unlock [`@splendor/sqc-sdk`](../sqc-sdk) WASM ML-DSA-65 wallets — PQ crypto stays internal.
 
-The first action in the modal is a **native ML-DSA-65 wallet** — create one from browser CSPRNG entropy, or import a 32-byte seed. When the Splendor Quantum Wallet extension is installed, it appears first via `extensionConnector`. ECDSA / MetaMask derivation is no longer offered.
+**Supported wallets only:** Splendor Quantum Wallet **browser extension** and **native in-page seed** (create/import). MetaMask, WalletConnect, and other EIP-1193 / ECDSA wallets are not offered.
 
 `@splendor/pq-bridge` remains a deprecated shim; new apps should depend on `@splendor/sqc-sdk`.
 
@@ -98,8 +98,10 @@ import {
 
 Widgets are also available as `@splendor/connect-react/widgets`.
 
-`autoReconnect` only ever resumes the extension connector — a native seed is typed in
-by the user, so it is never persisted and never silently reconnected.
+`autoReconnect` defaults to **true**. It only resumes the **Splendor Quantum Wallet
+extension** (via `sqc_accounts` / `splendor_accounts`). A native seed is typed each
+session and is never persisted or silently reconnected. MetaMask / EIP-1193 /
+WalletConnect are not supported — ConnectKit offers extension + native seed only.
 
 ### Pin the signer
 

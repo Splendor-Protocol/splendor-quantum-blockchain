@@ -8,6 +8,8 @@
  *
  * `@splendor/connect-react` uses its own UI `Connector` type (different shape + metadata).
  * Do not pass SDK factory connectors into SplendorConnectProvider.
+ * Prefer {@link seedWalletFactory} / {@link extensionWalletFactory} over the deprecated
+ * `seedConnector` / `extensionConnector` names (those collide with connect-react exports).
  */
 import type { Connection } from '../../core/connection.js';
 import type { SplendorPQBridge } from '../../splendor-wallet.js';
