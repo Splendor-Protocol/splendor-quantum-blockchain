@@ -179,7 +179,7 @@ func (p *Processor) Verify(req *PaymentRequirements, payload *PaymentPayload) *V
 	// has necessarily already debited the payer and must still be recognised as
 	// the same payment rather than "insufficient balance".
 	nonceKey := NonceKey(payload.From, payload.Nonce)
-	used, err := p.state.IsX402NonceUsed(nonceKey)
+	used, err := p.state.IsX402NonceUsedCommitted(nonceKey)
 	if err != nil {
 		return &VerifyResult{Reason: fmt.Sprintf("nonce registry error: %v", err)}
 	}
@@ -231,7 +231,7 @@ func (p *Processor) SettlementMatch(payload *PaymentPayload) (bool, error) {
 		return false, fmt.Errorf("nil payment payload")
 	}
 	nonceKey := NonceKey(payload.From, payload.Nonce)
-	rec, err := p.state.GetX402Settlement(nonceKey)
+	rec, err := p.state.GetX402SettlementCommitted(nonceKey)
 	if err != nil {
 		return false, err
 	}

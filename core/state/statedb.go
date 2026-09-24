@@ -806,6 +806,24 @@ func (s *StateDB) IsX402NonceUsed(nonceKey [32]byte) (bool, error) {
 	return true, nil
 }
 
+// IsX402NonceUsedCommitted reports whether the X402 payment nonce is already
+// recorded in COMMITTED state, ignoring the pending overlay. External
+// confirmation (RPC /x402/verify, /x402/settle) must use this rather than
+// IsX402NonceUsed: the pending overlay can hold a speculative settlement that
+// proposal construction executes against before discarding, so a pending read
+// would confirm a payment that never durably settled.
+func (s *StateDB) IsX402NonceUsedCommitted(nonceKey [32]byte) (bool, error) {
+	k := prefixX402Nonce + string(nonceKey[:])
+	_, err := s.rawGet([]byte(k))
+	if err == leveldb.ErrNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // MarkX402NonceSettled stages BOTH the used marker and the authoritative
 // settlement record for an X402 payment nonce on the pending layer, atomically
 // with the balance transfer that settled it. The settlement record binds the
@@ -851,6 +869,23 @@ func (s *StateDB) GetX402Settlement(nonceKey [32]byte) (*types.X402Settlement, e
 	}
 	s.mu.RUnlock()
 
+	data, err := s.rawGet([]byte(ks))
+	if err == leveldb.ErrNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return decodeX402Settlement(data)
+}
+
+// GetX402SettlementCommitted returns the COMMITTED settlement record for a
+// nonce, ignoring the pending overlay. External confirmation must use this:
+// a settlement staged only on the pending layer has not durably settled, and a
+// proposal construction discards that overlay, so it must not be reported as
+// confirmed to a client (see IsX402NonceUsedCommitted).
+func (s *StateDB) GetX402SettlementCommitted(nonceKey [32]byte) (*types.X402Settlement, error) {
+	ks := prefixX402Settle + string(nonceKey[:])
 	data, err := s.rawGet([]byte(ks))
 	if err == leveldb.ErrNotFound {
 		return nil, nil
