@@ -80,9 +80,11 @@ type SyncConfig struct {
 	MaxFetchLookahead int
 
 	// MaxFetchBufferBytes caps the reserved size of in-flight + pending
-	// fetched blocks. 0 uses 16 MiB. The pipeline reserves bytes before
-	// issuing a fetch and accounts the measured body after it returns,
-	// so this is a byte window, not only a batch-count cap.
+	// fetched blocks. 0 uses 128 MiB (four blocks' worth of the wire cap).
+	// Each in-flight request reserves the block wire cap before it is
+	// admitted, so the aggregate reservation is a hard upper bound on the
+	// memory a burst of parallel fetches can occupy; a block smaller than
+	// the cap releases the difference once measured.
 	MaxFetchBufferBytes int64
 
 	// RequestTimeout is the timeout for individual block download requests.
@@ -632,8 +634,18 @@ type fetchResult struct {
 	held   int64
 }
 
-const defaultFetchReserveBytes int64 = 2 << 20
-const typicalFetchBlockBytes int64 = 4 << 20
+// fetchReserveBytes is the per-request reservation charged to the byte budget
+// BEFORE a block fetch is admitted. It is the block wire cap — the worst case a
+// single decoded block can occupy — so the aggregate reservation is a TRUE
+// upper bound on in-flight + pending memory, not a guess. A block that actually
+// uses less (the common case) releases the difference once measured via
+// budget.adjust, so the cap costs concurrency only during the fetch phase.
+const fetchReserveBytes = int64(block.MaxBlockWireBytes)
+
+// defaultFetchBufferBytes is the aggregate reservation budget when
+// MaxFetchBufferBytes is zero: four blocks' worth of wire cap, matching the
+// historical effective concurrency while keeping the worst case bounded.
+const defaultFetchBufferBytes int64 = 128 << 20
 
 type syncByteBudget struct {
 	mu   sync.Mutex
@@ -868,21 +880,15 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 	}
 	maxBytes := s.fetcher.cfg.MaxFetchBufferBytes
 	if maxBytes < 1 {
-		maxBytes = 16 << 20
+		maxBytes = defaultFetchBufferBytes
 	}
-	if est := int(maxBytes / typicalFetchBlockBytes); est > 0 && lookahead > est {
+	if est := int(maxBytes / fetchReserveBytes); est > 0 && lookahead > est {
 		lookahead = est
 	}
 	if lookahead < 1 {
 		lookahead = 1
 	}
-	preReserve := defaultFetchReserveBytes
-	if preReserve > maxBytes {
-		preReserve = maxBytes
-	}
-	if preReserve < 1 {
-		preReserve = 1
-	}
+	reserve := fetchReserveBytes
 	budget := newSyncByteBudget(maxBytes)
 	window := make(chan struct{}, lookahead)
 	for i := 0; i < lookahead; i++ {
@@ -897,12 +903,12 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 				return
 			case <-window:
 			}
-			if err := budget.acquire(ctx, preReserve); err != nil {
+			if err := budget.acquire(ctx, reserve); err != nil {
 				return
 			}
 			select {
 			case <-ctx.Done():
-				budget.release(preReserve)
+				budget.release(reserve)
 				return
 			case heights <- h:
 			}
@@ -933,9 +939,9 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 			for h := range heights {
 				if err := ctx.Err(); err != nil {
 					select {
-					case results <- fetchResult{height: h, err: err, held: preReserve}:
+					case results <- fetchResult{height: h, err: err, held: reserve}:
 					default:
-						budget.release(preReserve)
+						budget.release(reserve)
 					}
 					return
 				}
@@ -953,7 +959,7 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 						peerAddr = retryPeer
 					}
 				}
-				held := preReserve
+				held := reserve
 				if block != nil {
 					held = blockHeldBytes(block)
 				}
@@ -961,7 +967,7 @@ func (s *Syncer) pipelineFetchAndApply(ctx context.Context, localH, target uint6
 				// finally consumes it: a decoded block sitting out-of-order in
 				// `pending` already occupies memory, so the budget must reflect its
 				// real size to keep the aggregate in-flight+pending bytes bounded.
-				budget.adjust(preReserve, held)
+				budget.adjust(reserve, held)
 				select {
 				case results <- fetchResult{height: h, block: block, peer: peerAddr, err: err, held: held}:
 				case <-ctx.Done():
