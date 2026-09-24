@@ -236,7 +236,7 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
         const settleResult = await client.settle(requirements, payload, settlementTx);
         const granted = await grantAfterSettle(config, payload, settleResult, settlementPolicy);
         if (granted === true) {
-          const consumptionError = await consumePayment(config, payload, settleResult, req);
+          const consumptionError = await consumePayment(config, payload, req);
           if (consumptionError) {
             return res.status(402).json(consumptionError);
           }
@@ -330,7 +330,6 @@ async function grantAfterSettle(
 async function consumePayment(
   config: X402MiddlewareConfig,
   payload: PaymentPayload,
-  settleResult: X402SettleResult,
   req: ReqLike,
 ): Promise<{ error: string; reason: string } | undefined> {
   const store = config.consumptionStore;
@@ -338,10 +337,12 @@ async function consumePayment(
     // Legacy: no application-level consumption record configured.
     return undefined;
   }
-  // A payment that never confirmed must not be consumed.
-  if (!(settleConfirmed(settleResult) || (settleSubmitted(settleResult) && config.settlementPolicy === 'optimistic-submitted'))) {
-    return undefined;
-  }
+  // The caller invokes this only after grantAfterSettle returned true, i.e. the
+  // payment is confirmed (receipt policy) or admitted under the optimistic
+  // policy. Do NOT re-derive confirmation from a settle result here: the result
+  // is the pre-wait "submitted" admission, so re-checking it under the default
+  // receipt policy would skip the consumption record and let a second request
+  // re-claim the same confirmed payment.
   const expectedEntitlement = config.requestKey
     ? config.requestKey(req)
     : req.path;

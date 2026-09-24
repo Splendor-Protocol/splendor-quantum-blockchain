@@ -176,9 +176,56 @@ func TestVerifyMarksNonceUsed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
+	// A payment only confirms externally once it has committed: Verify reads
+	// committed state, so stage the settlement durably before checking.
+	if _, err := proc.state.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 	res := proc.Verify(reqs, payload)
 	if res.Valid || !res.NonceUsed {
 		t.Fatalf("used nonce: valid=%v nonce_used=%v reason=%q", res.Valid, res.NonceUsed, res.Reason)
+	}
+}
+
+// A settlement staged only on the pending overlay (before the settling block
+// commits) must NOT confirm externally: Verify treats the nonce as fresh and
+// SettlementMatch reports no committed record. This is the regression guard for
+// the speculative-payment confirmation bug — a proposal construction executes
+// against the pending overlay before discarding it, so reading it would confirm
+// a payment that never durably settled.
+func TestVerifyIgnoresPendingSettlement(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	proc, payload, reqs := newVerifyFixture(t, pub, priv, true)
+	if err := proc.state.MarkX402NonceSettled(NonceKey(payload.From, payload.Nonce), &types.X402Settlement{
+		From:    payload.From,
+		To:      payload.To,
+		Amount:  new(big.Int).Set(payload.Amount),
+		ChainID: types.ChainID,
+		Height:  4,
+	}); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+
+	// No commit yet: the settlement exists only on the pending overlay.
+	if res := proc.Verify(reqs, payload); !res.Valid || res.NonceUsed {
+		t.Fatalf("pending-only settlement must look fresh: valid=%v nonce_used=%v", res.Valid, res.NonceUsed)
+	}
+	if ok, err := proc.SettlementMatch(payload); err != nil || ok {
+		t.Fatalf("pending-only settlement must not match: ok=%v err=%v", ok, err)
+	}
+
+	// After the settling block commits, the same payment is confirmed.
+	if _, err := proc.state.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if res := proc.Verify(reqs, payload); res.Valid || !res.NonceUsed {
+		t.Fatalf("committed settlement must be used: valid=%v nonce_used=%v", res.Valid, res.NonceUsed)
+	}
+	if ok, err := proc.SettlementMatch(payload); err != nil || !ok {
+		t.Fatalf("committed settlement must match: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -231,6 +278,7 @@ func TestPaymentPayloadHashExcludesPublicKey(t *testing.T) {
 		t.Fatal("public_key did not round-trip through JSON")
 	}
 }
+
 // A used nonce must not confirm a payment with changed recipient/amount: the
 // on-chain settlement record binds the nonce to the payment that actually
 // happened, and SettlementMatch must refuse any other claim.
@@ -248,6 +296,11 @@ func TestSettlementMatchRejectsChangedPayment(t *testing.T) {
 		Height:  4,
 	}); err != nil {
 		t.Fatalf("mark: %v", err)
+	}
+	// SettlementMatch reads committed state: commit the staged settlement so the
+	// record is durable, as it would be after the settling block commits.
+	if _, err := proc.state.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
 
 	// Identical details: matches.
@@ -288,6 +341,11 @@ func TestVerifyUsedNonceStillChecksSignature(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
+	// Verify reads committed state for the nonce check; commit first so the used
+	// nonce is durably recorded.
+	if _, err := proc.state.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 
 	// Correct signature + used nonce: NonceUsed, not Valid.
 	res := proc.Verify(reqs, payload)
@@ -307,4 +365,3 @@ func TestVerifyUsedNonceStillChecksSignature(t *testing.T) {
 		t.Fatalf("unsigned used nonce reported Valid")
 	}
 }
-
