@@ -3,7 +3,9 @@ package network
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
@@ -29,6 +31,12 @@ const (
 	objectFetchFloor     = 2 * time.Minute
 	objectFetchPerSymbol = 2 * time.Second
 	objectFetchCap       = 10 * time.Minute
+	// objectSymbolRetries bounds per-symbol transport/decode retries before the
+	// fetcher moves on to the next codebook index: the repair symbols that
+	// follow the systematic ones in a generation's codebook cover a lost
+	// systematic symbol, so a bounded retry + advance is enough to tolerate
+	// loss without ever relaxing the fail-closed authentication check.
+	objectSymbolRetries = 2
 )
 
 // objectFetchDeadline is the aggregate budget for fetching n committed symbols.
@@ -58,7 +66,7 @@ func objectFetchDeadline(n uint32) time.Duration {
 // The reconstructed bytes are then validated by the caller against the
 // chain-level commitments of whatever the object claims to be (a block or a
 // state snapshot) — this method only authenticates the transfer.
-func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) ([]byte, error) {
+func (f *BlockFetcher) FetchCodedObject(ctx context.Context, peerAddr string, limits objects.Limits) ([]byte, error) {
 	if f.cfg.Identities == nil {
 		return nil, fmt.Errorf("coded object from %s: no sealed transport configured", peerAddr)
 	}
@@ -74,8 +82,8 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 	if doc.CodedObjects == nil && f.cfg.Identities.CodedRecentlyRefused(peerAddr) {
 		return nil, fmt.Errorf("coded object from %s: peer recently refused coded-object service", peerAddr)
 	}
-	raw, err := f.cfg.Identities.QuerySealedTimeout(peerAddr, KindGetObjectManifest, []byte(`{}`),
-		sealedReplyBound(maxObjectManifestReplyBytes), objectFetchTimeout)
+	raw, err := f.cfg.Identities.QuerySealedContext(ctx, peerAddr, KindGetObjectManifest, []byte(`{}`),
+		sealedReplyBound(maxObjectManifestReplyBytes))
 	if err != nil {
 		if doc.CodedObjects == nil {
 			f.cfg.Identities.NoteCodedRefusal(peerAddr)
@@ -87,14 +95,21 @@ func (f *BlockFetcher) FetchCodedObject(peerAddr string, limits objects.Limits) 
 	if err != nil {
 		return nil, fmt.Errorf("decode object manifest from %s: %w", peerAddr, err)
 	}
-	return f.fetchDecodedObject(peerAddr, manifest, limits)
+	return f.fetchDecodedObject(ctx, peerAddr, manifest, limits)
 }
 
 // fetchDecodedObject reconstructs the object committed by manifest: symbols
 // are fetched over the sealed channel, every proof authenticated against its
 // generation's codebook root before it reaches a decoder, under one deadline
-// sized by the total codebook.
-func (f *BlockFetcher) fetchDecodedObject(peerAddr string, manifest *objects.ObjectManifest, limits objects.Limits) ([]byte, error) {
+// sized by the total codebook and bounded by the caller's context.
+//
+// The symbol phase is repair-aware: a symbol whose transport or wire decode
+// fails is retried a bounded number of times and then skipped, because the
+// repair symbols that follow the systematic ones in a generation's codebook
+// can cover the loss. A proof that decodes but fails authentication against
+// the committed codebook root is fail-closed immediately — that is a peer
+// lying about a symbol, not a lost packet, and it is never fed to the decoder.
+func (f *BlockFetcher) fetchDecodedObject(ctx context.Context, peerAddr string, manifest *objects.ObjectManifest, limits objects.Limits) ([]byte, error) {
 	doc, err := f.cfg.Identities.Get(peerAddr)
 	if err != nil {
 		return nil, fmt.Errorf("coded object from %s: peer identity: %w", peerAddr, err)
@@ -105,33 +120,37 @@ func (f *BlockFetcher) fetchDecodedObject(peerAddr string, manifest *objects.Obj
 	}
 	// One client for every symbol so the loop reuses a connection instead of
 	// building a transport per request, under one deadline for the whole loop,
-	// sized by the total codebook across all generations.
+	// sized by the total codebook across all generations and derived from the
+	// caller's context so cancelling the enclosing sync stops this transfer.
 	var total uint32
 	for _, g := range manifest.Generations {
 		total += g.CodebookSize
 	}
 	client := PeerHTTPClient(objectFetchTimeout)
-	ctx, cancel := context.WithTimeout(context.Background(), objectFetchDeadline(total))
+	ctx, cancel := context.WithTimeout(ctx, objectFetchDeadline(total))
 	defer cancel()
 	descID := manifest.DescriptorID()
+	symbols := 0
 	for gen := 0; gen < recv.GenerationCount(); gen++ {
-		for i := uint32(0); i < manifest.Generations[gen].CodebookSize && !recv.GenReady(gen); i++ {
-			reqBody, err := json.Marshal(GetObjectSymbolRequest{DescriptorID: descID[:], Generation: uint32(gen), Index: i})
-			if err != nil {
-				return nil, err
-			}
-			proofRaw, err := f.cfg.Identities.querySealed(ctx, client, peerAddr, KindGetObjectSymbol, reqBody,
-				sealedReplyBound(maxObjectSymbolReplyBytes))
-			if err != nil {
-				return nil, fmt.Errorf("fetch object symbol %d/%d from %s: %w", gen, i, peerAddr, err)
-			}
-			proof, err := objects.DecodeSymbolProof(proofRaw)
-			if err != nil {
-				return nil, fmt.Errorf("decode object symbol %d/%d from %s: %w", gen, i, peerAddr, err)
+		cb := manifest.Generations[gen].CodebookSize
+		for i := uint32(0); i < cb && !recv.GenReady(gen); i++ {
+			proof, ok := f.fetchObjectSymbol(ctx, client, peerAddr, descID, gen, i)
+			if !ok {
+				// Lost after retries; the loop advances to the next codebook
+				// index, where the repair symbols cover the gap.
+				continue
 			}
 			if _, err := recv.AbsorbProof(gen, proof); err != nil {
-				return nil, fmt.Errorf("object symbol %d/%d from %s: %w", gen, i, peerAddr, err)
+				if errors.Is(err, objects.ErrUnauthenticatedSymbol) {
+					return nil, fmt.Errorf("object symbol %d/%d from %s failed authentication: %w", gen, i, peerAddr, err)
+				}
+				// Duplicate or out-of-range index is a no-op, not a failure.
+				continue
 			}
+			symbols++
+		}
+		if !recv.GenReady(gen) {
+			return nil, fmt.Errorf("object generation %d from %s did not reach full rank (%d symbols absorbed)", gen, peerAddr, symbols)
 		}
 	}
 	got, err := recv.Decode()
@@ -139,4 +158,33 @@ func (f *BlockFetcher) fetchDecodedObject(peerAddr string, manifest *objects.Obj
 		return nil, fmt.Errorf("decode coded object from %s: %w", peerAddr, err)
 	}
 	return got, nil
+}
+
+// fetchObjectSymbol retrieves one symbol proof, retrying transient transport
+// and wire-decode failures a bounded number of times. It returns ok=false only
+// when the symbol could not be obtained after retries (the caller then moves
+// on to a repair symbol). A proof that verifies against the codebook root is
+// returned with ok=true; authentication happens at absorb time, so this method
+// never has to decide trust.
+func (f *BlockFetcher) fetchObjectSymbol(ctx context.Context, client *http.Client, peerAddr string, descID [32]byte, gen int, index uint32) (objects.SymbolProof, bool) {
+	reqBody, err := json.Marshal(GetObjectSymbolRequest{DescriptorID: descID[:], Generation: uint32(gen), Index: index})
+	if err != nil {
+		return objects.SymbolProof{}, false
+	}
+	for attempt := 0; attempt <= objectSymbolRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return objects.SymbolProof{}, false
+		}
+		proofRaw, err := f.cfg.Identities.querySealed(ctx, client, peerAddr, KindGetObjectSymbol, reqBody,
+			sealedReplyBound(maxObjectSymbolReplyBytes))
+		if err != nil {
+			continue
+		}
+		proof, err := objects.DecodeSymbolProof(proofRaw)
+		if err != nil {
+			continue
+		}
+		return proof, true
+	}
+	return objects.SymbolProof{}, false
 }

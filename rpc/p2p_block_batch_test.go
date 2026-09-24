@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
@@ -82,7 +83,7 @@ func TestSealedCodedBlockBatchRoundTrip(t *testing.T) {
 
 	cfg := network.DefaultSyncConfig(genesisPub.Bytes())
 	cfg.Identities = network.NewIdentityCache()
-	got, err := network.NewBlockFetcher(cfg).FetchBlockBatch(srv.URL, 1, batch)
+	got, err := network.NewBlockFetcher(cfg).FetchBlockBatch(context.Background(), srv.URL, 1, batch)
 	if err != nil {
 		t.Fatalf("coded block batch fetch failed: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestFetchBlockBatchRefusesWrongRange(t *testing.T) {
 
 	cfg := network.DefaultSyncConfig(genesisPub.Bytes())
 	cfg.Identities = network.NewIdentityCache()
-	if _, err := network.NewBlockFetcher(cfg).FetchBlockBatch(srv.URL, 1, 2); err == nil {
+	if _, err := network.NewBlockFetcher(cfg).FetchBlockBatch(context.Background(), srv.URL, 1, 2); err == nil {
 		t.Fatal("a batch manifest anchoring the wrong range was accepted")
 	}
 }

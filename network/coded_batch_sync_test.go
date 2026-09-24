@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -228,13 +229,13 @@ func TestSyncOncePrefillsCodedBlockBatch(t *testing.T) {
 // or the anchor arithmetic.
 func TestFetchBlockBatchRejectsDegenerateRanges(t *testing.T) {
 	f := NewBlockFetcher(DefaultSyncConfig(nil)) // no Identities needed: guards fire first
-	if _, err := f.FetchBlockBatch("http://peer", 10, MaxCodedBlockBatchBlocks+1); err == nil {
+	if _, err := f.FetchBlockBatch(context.Background(), "http://peer", 10, MaxCodedBlockBatchBlocks+1); err == nil {
 		t.Fatal("over-cap count accepted")
 	}
-	if _, err := f.FetchBlockBatch("http://peer", 10, 0); err == nil {
+	if _, err := f.FetchBlockBatch(context.Background(), "http://peer", 10, 0); err == nil {
 		t.Fatal("zero count accepted")
 	}
-	if _, err := f.FetchBlockBatch("http://peer", ^uint64(0), 2); err == nil {
+	if _, err := f.FetchBlockBatch(context.Background(), "http://peer", ^uint64(0), 2); err == nil {
 		t.Fatal("wrapping range accepted")
 	}
 	// The guard is strict about the serve-side range [fromHeight,
@@ -243,7 +244,7 @@ func TestFetchBlockBatchRejectsDegenerateRanges(t *testing.T) {
 	cfg := DefaultSyncConfig(nil)
 	cfg.Identities = NewIdentityCache()
 	f2 := NewBlockFetcher(cfg)
-	if _, err := f2.FetchBlockBatch("http://127.0.0.1:1", ^uint64(0)-1, 2); err == nil || !strings.Contains(err.Error(), "overflows") {
+	if _, err := f2.FetchBlockBatch(context.Background(), "http://127.0.0.1:1", ^uint64(0)-1, 2); err == nil || !strings.Contains(err.Error(), "overflows") {
 		t.Fatalf("wrapping range end was not refused: %v", err)
 	}
 }

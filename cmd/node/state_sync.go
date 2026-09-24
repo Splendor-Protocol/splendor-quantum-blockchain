@@ -247,7 +247,7 @@ func runStateSync(ctx context.Context, d stateSyncDeps) error {
 	}
 
 	for {
-		err := d.syncer.StateSync(d.executor.ImportStateSnapshot)
+		err := d.syncer.StateSync(ctx, d.executor.ImportStateSnapshot)
 		if err == nil {
 			return nil
 		}

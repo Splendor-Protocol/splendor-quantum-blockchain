@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
@@ -171,7 +172,7 @@ func TestStateSyncTriesEveryPeer(t *testing.T) {
 	syncer := network.NewSyncer(cfg, pool, func() uint64 { return 0 }, func(*types.Block) error { return nil })
 
 	imported := 0
-	err := syncer.StateSync(func(s *types.StateSnapshot) error {
+	err := syncer.StateSync(context.Background(), func(s *types.StateSnapshot) error {
 		imported++
 		if s.Height != 42 {
 			return errors.New("wrong snapshot")
@@ -188,7 +189,7 @@ func TestStateSyncTriesEveryPeer(t *testing.T) {
 	onlyBroken := network.NewPeerPool("http://self", 10)
 	onlyBroken.Add(&network.PeerInfo{Addr: broken.URL})
 	syncer = network.NewSyncer(cfg, onlyBroken, func() uint64 { return 0 }, func(*types.Block) error { return nil })
-	err = syncer.StateSync(func(*types.StateSnapshot) error { t.Fatal("importer called with nothing to import"); return nil })
+	err = syncer.StateSync(context.Background(), func(*types.StateSnapshot) error { t.Fatal("importer called with nothing to import"); return nil })
 	if err == nil || !strings.Contains(err.Error(), broken.URL) {
 		t.Fatalf("state sync with no serving peer = %v, want an error naming the peer", err)
 	}
@@ -216,7 +217,7 @@ func TestFetchStateSnapshotCodedAuthenticatesTransferAndContent(t *testing.T) {
 	}
 	hub.Put(send)
 
-	got, err := snapshotFetcher(genesisPub.Bytes()).FetchStateSnapshotCoded(srv.URL)
+	got, err := snapshotFetcher(genesisPub.Bytes()).FetchStateSnapshotCoded(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("coded snapshot fetch failed: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestFetchStateSnapshotCodedRefusesUnanchoredHead(t *testing.T) {
 	}
 	hub.Put(send)
 
-	_, err = snapshotFetcher(genesisPub.Bytes()).FetchStateSnapshotCoded(srv.URL)
+	_, err = snapshotFetcher(genesisPub.Bytes()).FetchStateSnapshotCoded(context.Background(), srv.URL)
 	if !errors.Is(err, network.ErrSnapshotNotAnchored) {
 		t.Fatalf("coded snapshot with unanchored head = %v, want ErrSnapshotNotAnchored", err)
 	}
@@ -291,7 +292,7 @@ func TestStateSyncSkipsCodedProbeWhenPeerDeclaresNone(t *testing.T) {
 	syncer := network.NewSyncer(cfg, pool, func() uint64 { return 0 }, func(*types.Block) error { return nil })
 
 	imported := 0
-	if err := syncer.StateSync(func(s *types.StateSnapshot) error {
+	if err := syncer.StateSync(context.Background(), func(s *types.StateSnapshot) error {
 		imported++
 		return nil
 	}); err != nil {
@@ -323,7 +324,7 @@ func TestStateSyncFallsBackToPlainWhenPeerServesNoCodedObjects(t *testing.T) {
 	syncer := network.NewSyncer(cfg, pool, func() uint64 { return 0 }, func(*types.Block) error { return nil })
 
 	imported := 0
-	if err := syncer.StateSync(func(s *types.StateSnapshot) error {
+	if err := syncer.StateSync(context.Background(), func(s *types.StateSnapshot) error {
 		imported++
 		return nil
 	}); err != nil {

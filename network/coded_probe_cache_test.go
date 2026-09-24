@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -64,7 +65,7 @@ func TestCodedProbeRefusalIsRememberedForUndeclaredPeers(t *testing.T) {
 	cfg.Identities = NewIdentityCache()
 	f := NewBlockFetcher(cfg)
 
-	if _, err := f.FetchCodedObject(peer.srv.URL, objects.DefaultLimits()); err == nil {
+	if _, err := f.FetchCodedObject(context.Background(), peer.srv.URL, objects.DefaultLimits()); err == nil {
 		t.Fatal("coded fetch succeeded against a refusing peer")
 	}
 	if peer.probes.Load() != 1 {
@@ -72,7 +73,7 @@ func TestCodedProbeRefusalIsRememberedForUndeclaredPeers(t *testing.T) {
 	}
 
 	// Second attempt must not probe again: the refusal is remembered.
-	if _, err := f.FetchCodedObject(peer.srv.URL, objects.DefaultLimits()); err == nil {
+	if _, err := f.FetchCodedObject(context.Background(), peer.srv.URL, objects.DefaultLimits()); err == nil {
 		t.Fatal("coded fetch succeeded against a refusing peer")
 	}
 	if peer.probes.Load() != 1 {
@@ -85,14 +86,14 @@ func TestCodedProbeRefusalIsRememberedForUndeclaredPeers(t *testing.T) {
 	codedProbeRefusalTTL = 20 * time.Millisecond
 	t.Cleanup(func() { codedProbeRefusalTTL = oldTTL })
 	f.cfg.Identities.ForgetCodedRefusal(peer.srv.URL)
-	if _, err := f.FetchCodedObject(peer.srv.URL, objects.DefaultLimits()); err == nil {
+	if _, err := f.FetchCodedObject(context.Background(), peer.srv.URL, objects.DefaultLimits()); err == nil {
 		t.Fatal("coded fetch succeeded against a refusing peer")
 	}
 	if peer.probes.Load() != 2 {
 		t.Fatalf("cleared refusal did not re-enable probing: %d sealed requests", peer.probes.Load())
 	}
 	time.Sleep(30 * time.Millisecond)
-	if _, err := f.FetchCodedObject(peer.srv.URL, objects.DefaultLimits()); err == nil {
+	if _, err := f.FetchCodedObject(context.Background(), peer.srv.URL, objects.DefaultLimits()); err == nil {
 		t.Fatal("coded fetch succeeded against a refusing peer")
 	}
 	if peer.probes.Load() != 3 {
@@ -110,10 +111,10 @@ func TestCodedProbeRefusalIsNotRememberedForDeclaredPeers(t *testing.T) {
 	cfg.Identities = NewIdentityCache()
 	f := NewBlockFetcher(cfg)
 
-	if _, err := f.FetchCodedObject(peer.srv.URL, objects.DefaultLimits()); err == nil {
+	if _, err := f.FetchCodedObject(context.Background(), peer.srv.URL, objects.DefaultLimits()); err == nil {
 		t.Fatal("coded fetch succeeded against a failing peer")
 	}
-	if _, err := f.FetchCodedObject(peer.srv.URL, objects.DefaultLimits()); err == nil {
+	if _, err := f.FetchCodedObject(context.Background(), peer.srv.URL, objects.DefaultLimits()); err == nil {
 		t.Fatal("coded fetch succeeded against a failing peer")
 	}
 	if peer.probes.Load() != 2 {
