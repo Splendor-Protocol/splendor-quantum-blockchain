@@ -228,9 +228,12 @@ certification boundaries are separate claims.
   that terminates TLS at a proxy has a classical key exchange in front of it.
   Signature security (ML-DSA-65), sealed P2P (ML-KEM-768), and the TLS group
   a gateway client actually negotiated are three different claims.
-- **RLNC.** `network/coding` is a library plus `cmd/netbench`. There is no
-  live P2P transfer path. Random linear mixing is not encryption and does
-  not supply quantum confidentiality.
+- **RLNC.** Random linear network coding is now the default state-sync object
+  transfer (`--object-codec` defaults to `rlnc-gf256-v1`, repair-aware and
+  authenticate-before-decode; see the RLNC release note below). Coding is
+  error correction, not encryption: mixing symbols does not supply quantum
+  confidentiality — that comes from the ML-KEM-sealed P2P layer the coded
+  symbols travel over.
 - **An unpinned first P2P contact.** P2P payloads are sealed by default, but an
   unpinned peer identity is initially accepted using trust on first use.
   Authenticated production clusters should supply `--peer-pin` values and set
@@ -1460,7 +1463,6 @@ production-readiness claim.
 - Historical-state queries (current-state `GET /state/proof/{address}` exists)
 - DEX, exchange, lending, oracle, multisig, governance, or QRC-4626 as
   routed native modules
-- A live RLNC object-transfer path (library and benchmark only)
 - Sanctions screening, KYC attestation, AML monitoring, or regulator dashboards
 - Packaged desktop or mobile wallet applications, NFC hardware signing, or a QR
   air-gapped signing application
@@ -2045,9 +2047,9 @@ numbers are in [docs/reports/2026-09-18-v1.1.x-validation.pdf](docs/reports/2026
 
 Consequences for operators: the quorum is ⌊2n/3⌋+1, so a set of 2 or 3 is
 unanimous and one faulty member stops it. Fault tolerance needs n ≥ 4 **and**
-`bft_rounds_v1` active. The fork is unscheduled on every public tier today; a
-running tier adopts it above head with the fork-extension rollout, no reset.
-Schedule it before growing a set beyond one validator.
+`bft_rounds_v1` active. The fork is at 1 on devnet and unscheduled on the higher
+tiers today; a running tier adopts it above head with the fork-extension
+rollout, no reset. Schedule it before growing a set beyond one validator.
 
 RLNC (v1.1.1): the object format, transfer controller and authenticate-before-decode
 path are in the tree and are now the **default transfer for state-sync joins**:
