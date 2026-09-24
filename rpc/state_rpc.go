@@ -91,21 +91,29 @@ func accountStateHandler(stateDB *state.StateDB, executor *block.Executor) http.
 			return
 		}
 
-		// A committed read: the account bytes come from committed state, not the
-		// pending overlay, so they agree with the root/height below. Building the
-		// proof here would walk and hash every committed leaf under the state read
-		// lock for an unauthenticated, unguarded route, and each in-flight request
-		// would hold block commit off for the length of that walk. Proofs come
-		// from /state/proof, behind the simulation guard.
-		acc, err := stateDB.CommittedAccount(addr)
+		// A committed read in ONE coherent view: the account bytes and the
+		// root/height they belong to are read under a single state read lock,
+		// so a block committing between the reads cannot pair an old account
+		// with a newer head. Building a proof here would walk and hash every
+		// committed leaf under that lock for an unauthenticated, unguarded
+		// route; proofs come from /state/proof, behind the simulation guard.
+		view, err := stateDB.CommittedAccountView(addr)
 		if err != nil {
 			writeStateJSON(w, http.StatusNotFound, map[string]string{
 				"error": fmt.Sprintf("account %s not found: %s", addrStr, err.Error()),
 			})
 			return
 		}
+		acc := view.Account
 
-		root, height, blockHash := committedHead(stateDB, executor)
+		root, height := view.Root, view.Height
+		var blockHash string
+		if executor != nil && view.HeightKnown {
+			if latest, latErr := executor.LatestBlock(); latErr == nil && latest != nil &&
+				latest.Header.Height == height && latest.Header.StateRoot == root {
+				blockHash = hex.EncodeToString(latest.Hash[:])
+			}
+		}
 		resp := map[string]interface{}{
 			"address":        addrStr,
 			"balance":        acc.Balance.String(),

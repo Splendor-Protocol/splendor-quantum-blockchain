@@ -493,6 +493,47 @@ func (s *StateDB) CommittedAccount(addr qcrypto.Address) (*types.Account, error)
 	return &acc, nil
 }
 
+// CommittedAccountView is an account and the committed head identity read in a
+// single coherent committed view.
+type CommittedAccountView struct {
+	Account     *types.Account
+	Root        [32]byte
+	Height      uint64
+	HeightKnown bool
+}
+
+// CommittedAccountView reads the account from committed state and returns it
+// together with the committed root and height, all under one read lock, so a
+// response cannot pair an old account with a newer head (or vice versa) when a
+// block commits between the two reads. It mirrors CommittedAccount plus
+// CommittedView, but atomically.
+func (s *StateDB) CommittedAccountView(addr qcrypto.Address) (CommittedAccountView, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	view := CommittedAccountView{
+		Root:        merkleRoot(s.leaves),
+		Height:      s.appliedHeight,
+		HeightKnown: s.heightKnown,
+	}
+	data, err := s.rawGet([]byte(prefixAccount + addr.String()))
+	if err == leveldb.ErrNotFound {
+		view.Account = types.NewAccount(addr)
+		return view, nil
+	}
+	if err != nil {
+		return CommittedAccountView{}, fmt.Errorf("state read error for %s: %w", addr, err)
+	}
+	var acc types.Account
+	if err := json.Unmarshal(data, &acc); err != nil {
+		return CommittedAccountView{}, fmt.Errorf("failed to decode account %s: %w", addr, err)
+	}
+	if acc.Balance == nil {
+		acc.Balance = big.NewInt(0)
+	}
+	view.Account = &acc
+	return view, nil
+}
+
 // SetAccount writes an account to the dirty cache.
 // Changes are not persisted until Commit() is called.
 func (s *StateDB) SetAccount(acc *types.Account) {
