@@ -128,7 +128,7 @@ func makeCallHandler(stateDB *state.StateDB, executor *block.Executor) http.Hand
 		if executor != nil {
 			height, _ = executor.LatestHeight()
 		}
-		res, cerr := vm.NewEngine(sim).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
+		res, cerr := newVMEngine(sim, executor).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
 		if writeSimCancel(w, cerr) {
 			return
 		}
@@ -269,7 +269,7 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 					height, _ = executor.LatestHeight()
 				}
 				sim := stateDB.Simulate()
-				res, err := vm.NewEngine(sim).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
+				res, err := newVMEngine(sim, executor).CallWithCancel(r.Context(), from, from, to, calldata, value, height, time.Now().Unix(), true)
 				sim.Close() // releases the pinned LevelDB snapshot; res is a value copy
 				if writeSimCancel(w, err) {
 					return
@@ -296,6 +296,21 @@ func makeEstimateHandler(stateDB *state.StateDB, executor *block.Executor, pool 
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// newVMEngine returns a VM engine whose gas and call rules mirror the
+// executor's active fork schedule, so a simulated call behaves like real
+// execution at the target height once vm_gas_v1 / vm_call_v1 are active. A
+// default engine would apply default rules and could disagree with what
+// ExecuteBlock actually enforces.
+func newVMEngine(sim *state.StateDB, executor *block.Executor) *vm.Engine {
+	e := vm.NewEngine(sim)
+	if executor != nil {
+		schedule := executor.Forks()
+		e.SetGasRules(func(h uint64) bool { return schedule.Active(forks.VMGasV1, h) })
+		e.SetCallRules(func(h uint64) bool { return schedule.Active(forks.VMCallV1, h) })
+	}
+	return e
+}
 
 // headReadContext describes the chain head for a native-module read. It is
 // zero when there is no executor to ask or the chain has no block yet; module
