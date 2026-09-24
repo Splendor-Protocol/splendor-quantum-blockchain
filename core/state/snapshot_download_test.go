@@ -239,3 +239,52 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+func TestSnapshotDownloadResetQuarantinesObsolete(t *testing.T) {
+	dir := t.TempDir()
+	leaves := testDownloadLeaves()
+	head := &types.Block{Header: types.BlockHeader{Height: 2, StateRoot: SnapshotRoot(leaves)}, Hash: [32]byte{0x05}}
+	d, err := OpenSnapshotDownload(dir, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AcceptHead(head, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AppendPage(leaves[:1], leaves[0].Key, false, "sess-old"); err != nil {
+		t.Fatal(err)
+	}
+	if !d.HasHead() {
+		t.Fatal("expected a staged head before reset")
+	}
+
+	// Reset quarantines the obsolete staging and returns to empty.
+	if err := d.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if d.HasHead() || d.Height() != 0 || d.LeafBytes() != 0 || d.Done() {
+		t.Fatalf("after reset: head=%v height=%d bytes=%d done=%v", d.HasHead(), d.Height(), d.LeafBytes(), d.Done())
+	}
+	// The obsolete staging is preserved under an .obsolete- suffix, not deleted.
+	matches, _ := filepath.Glob(dir + ".obsolete-*")
+	if len(matches) == 0 {
+		t.Fatal("obsolete staging was not quarantined (no .obsolete-* directory)")
+	}
+
+	// A fresh transfer against a new head must proceed normally.
+	newHead := &types.Block{Header: types.BlockHeader{Height: 9, StateRoot: SnapshotRoot(leaves)}, Hash: [32]byte{0x06}}
+	if err := d.AcceptHead(newHead, 9); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AppendPage(leaves, leaves[2].Key, true, "sess-new"); err != nil {
+		t.Fatal(err)
+	}
+	if !d.Done() {
+		t.Fatal("expected done after fresh transfer")
+	}
+
+	// A completed download is never reset (its leaves are import evidence).
+	if err := d.Reset(); err == nil {
+		t.Fatal("Reset on a completed download should be refused")
+	}
+}

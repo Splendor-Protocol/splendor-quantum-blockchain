@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/crypto/sha3"
 
@@ -407,6 +408,35 @@ func (d *SnapshotDownload) Remove() error {
 	return RemoveSnapshotDownload(d.dir)
 }
 
+// Reset quarantines an obsolete partial download whose head/cursor is no
+// longer available from any peer (the peer's snapshot moved), and returns the
+// store to an empty state in the same directory, so the next fetch starts
+// against a freshly authenticated head. A completed (Done) download is refused:
+// its staged leaves are the evidence for an import that may already be in
+// flight, and must be adopted or removed by the importer, never silently
+// overwritten.
+func (d *SnapshotDownload) Reset() error {
+	if d.Done() {
+		return fmt.Errorf("state: refusing to reset a completed snapshot download")
+	}
+	if d.head == nil && d.progress.LeafCount == 0 {
+		return nil // already empty
+	}
+	quarantine := fmt.Sprintf("%s.obsolete-%d", d.dir, time.Now().Unix())
+	if err := os.Rename(d.dir, quarantine); err != nil {
+		return fmt.Errorf("state: quarantine obsolete snapshot download: %w", err)
+	}
+	if err := persist.SyncDir(filepath.Dir(d.dir)); err != nil {
+		return fmt.Errorf("state: sync after snapshot download quarantine: %w", err)
+	}
+	if err := os.MkdirAll(d.dir, 0o700); err != nil {
+		return fmt.Errorf("state: recreate snapshot download dir: %w", err)
+	}
+	d.progress = SnapshotDownloadProgress{}
+	d.head = nil
+	return nil
+}
+
 func hashFileSHA3(path string) ([32]byte, error) {
 	var zero [32]byte
 	f, err := os.Open(path)
@@ -501,9 +531,10 @@ func (s *StateDB) importSnapshotJSONL(path string, height uint64, wantRoot [32]b
 		return ErrStateNotFresh
 	}
 
-	// Pass 1 — verify. Build the leaf-hash index (32 bytes per leaf) and check
-	// the root. No leaf VALUES are retained: the memory is bounded by the hash
-	// index, not by the snapshot's value bytes.
+	// Pass 1 — verify. Build the leaf-hash index (32 bytes per leaf, plus the
+	// leaf key string the map indexes by) and check the root. No leaf VALUES
+	// are retained: the memory is bounded by the hash index, not by the
+	// snapshot's value bytes.
 	index := make(map[string][32]byte)
 	if err := forEachLeafJSONL(path, func(l types.StateLeaf) error {
 		if len(l.Key) == 0 {
@@ -527,20 +558,28 @@ func (s *StateDB) importSnapshotJSONL(path string, height uint64, wantRoot [32]b
 		return fmt.Errorf("%w: leaves hash to %x, header says %x", ErrSnapshotRootMismatch, got[:8], wantRoot[:8])
 	}
 
-	// Pass 2 — publish in bounded batches. Each batch holds at most
-	// snapshotImportBatchLeaves leaf values, so RAM stays flat regardless of
-	// snapshot size. The height marker is written last and is what makes the
-	// import committed; an interrupted pass leaves values but no marker, which
-	// the resume path (and the executor's recovery marker) re-imports.
-	const snapshotImportBatchLeaves = 10000
+	// Pass 2 — publish in bounded batches. A batch is flushed at
+	// snapshotImportBatchLeaves leaves OR snapshotImportBatchBytes of
+	// key+value bytes, whichever comes first, so RAM stays flat regardless of
+	// snapshot size and regardless of how large a single leaf's value is
+	// (10,000 leaves of large values must not pile up in one batch). The
+	// height marker is written last and is what makes the import committed; an
+	// interrupted pass leaves values but no marker, which the resume path (and
+	// the executor's recovery marker) re-imports.
+	const (
+		snapshotImportBatchLeaves = 10000
+		snapshotImportBatchBytes  = 64 << 20
+	)
 	batch := new(leveldb.Batch)
 	n := 0
+	batchBytes := 0
 	flush := func() error {
 		if err := persist.Write(s.db, batch); err != nil {
 			return fmt.Errorf("state: snapshot import failed: %w", err)
 		}
 		batch = new(leveldb.Batch)
 		n = 0
+		batchBytes = 0
 		return nil
 	}
 	if err := forEachLeafJSONL(path, func(l types.StateLeaf) error {
@@ -552,7 +591,8 @@ func (s *StateDB) importSnapshotJSONL(path string, height uint64, wantRoot [32]b
 		}
 		batch.Put(l.Key, l.Value)
 		n++
-		if n >= snapshotImportBatchLeaves {
+		batchBytes += len(l.Key) + len(l.Value)
+		if n >= snapshotImportBatchLeaves || batchBytes >= snapshotImportBatchBytes {
 			return flush()
 		}
 		return nil
