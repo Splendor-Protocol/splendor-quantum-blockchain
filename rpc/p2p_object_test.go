@@ -2,9 +2,11 @@ package rpc
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -141,7 +143,7 @@ func TestSealedCodedObjectRoundTrip(t *testing.T) {
 	}
 	hub.Put(send)
 
-	got, err := objectFetcher().FetchCodedObject(srv.URL, objects.DefaultLimits())
+	got, err := objectFetcher().FetchCodedObject(context.Background(), srv.URL, objects.DefaultLimits())
 	if err != nil {
 		t.Fatalf("sealed coded fetch: %v", err)
 	}
@@ -167,7 +169,7 @@ func TestFetchCodedObjectRefusesForeignSigner(t *testing.T) {
 	}
 	hub.Put(send)
 
-	_, err = objectFetcher().FetchCodedObject(srv.URL, objects.DefaultLimits())
+	_, err = objectFetcher().FetchCodedObject(context.Background(), srv.URL, objects.DefaultLimits())
 	if !errors.Is(err, objects.ErrUnauthorizedSigner) {
 		t.Fatalf("foreign-signed object = %v, want ErrUnauthorizedSigner", err)
 	}
@@ -229,5 +231,61 @@ func TestCodedObjectKindsNotImplementedWhenUnwired(t *testing.T) {
 		256<<10, time.Minute)
 	if err == nil {
 		t.Fatal("manifest query succeeded against a node that does not serve coded objects")
+	}
+}
+
+// TestFetchCodedObjectRepairsLostSymbol: a lost systematic symbol must not
+// abort the whole coded transfer. The fetcher retries, then advances to the
+// repair symbols that follow the systematic ones in the codebook, and still
+// reconstructs the object — while a proof that fails authentication would be
+// refused fail-closed (covered elsewhere).
+func TestFetchCodedObjectRepairsLostSymbol(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := network.NewNodeIdentity(pub, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := objects.NewHub()
+	object := bytes.Repeat([]byte("repair-me-"), 40) // 400 bytes -> 7 source symbols at 64
+	send, err := objects.NewObjectSender(object, objects.ObjectDescriptor{
+		Anchor:     objects.Anchor{Kind: "block", ID: [32]byte{9, 9}, Height: 3},
+		SymbolSize: 64,
+	}, coding.NewRLNCCodec(), 4, priv, objects.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.Put(send)
+
+	var dropped atomic.Int32
+	router := mux.NewRouter()
+	RegisterP2PRoutes(router, P2PConfig{
+		Identity: identity,
+		Token:    "write-secret",
+		ServeObjectManifest: func(id []byte) ([]byte, error) {
+			return hub.ServeManifest(id)
+		},
+		ServeObjectSymbol: func(id []byte, generation uint32, index uint32) ([]byte, error) {
+			if index == 1 {
+				dropped.Add(1)
+				return nil, errors.New("injected symbol loss")
+			}
+			return hub.ServeSymbol(id, generation, index)
+		},
+	})
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+
+	got, err := objectFetcher().FetchCodedObject(context.Background(), srv.URL, objects.DefaultLimits())
+	if err != nil {
+		t.Fatalf("coded fetch should recover from a lost systematic symbol: %v", err)
+	}
+	if !bytes.Equal(got, object) {
+		t.Fatal("reconstructed object does not match the published bytes")
+	}
+	if dropped.Load() == 0 {
+		t.Fatal("the loss injection never fired")
 	}
 }

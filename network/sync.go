@@ -444,7 +444,7 @@ func (f *BlockFetcher) FetchLatestBlock(peerAddr string) (*types.Block, error) {
 // then the pinned key / active producer set) before any of them is returned.
 // Any failure returns an error so the caller falls back to per-block fetches —
 // the batch is a transport accelerator, never a weaker trust path.
-func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count int) ([]*types.Block, error) {
+func (f *BlockFetcher) FetchBlockBatch(ctx context.Context, peerAddr string, fromHeight uint64, count int) ([]*types.Block, error) {
 	// Reject degenerate ranges before any network work: an out-of-cap count
 	// or a range end that would wrap would otherwise let a forged manifest
 	// anchor match a wrapped height or a serve-side loop truncate the batch.
@@ -491,7 +491,7 @@ func (f *BlockFetcher) FetchBlockBatch(peerAddr string, fromHeight uint64, count
 		return nil, fmt.Errorf("block batch manifest from %s anchors height %d, want %d",
 			peerAddr, manifest.Anchor.Height, fromHeight+uint64(count)-1)
 	}
-	decoded, err := f.fetchDecodedObject(peerAddr, manifest, objects.DefaultLimits())
+	decoded, err := f.fetchDecodedObject(ctx, peerAddr, manifest, objects.DefaultLimits())
 	if err != nil {
 		return nil, fmt.Errorf("coded block batch from %s: %w", peerAddr, err)
 	}
@@ -790,7 +790,7 @@ func (s *Syncer) SyncOnceContext(ctx context.Context) (int, error) {
 			if n > batchSize {
 				n = batchSize
 			}
-			blocks, err := s.fetcher.FetchBlockBatch(peer, localH+1, n)
+			blocks, err := s.fetcher.FetchBlockBatch(ctx, peer, localH+1, n)
 			if err != nil {
 				log.Debug().Err(err).Str("peer", peer).
 					Msg("sync: coded block batch unavailable, falling back to per-block fetching")

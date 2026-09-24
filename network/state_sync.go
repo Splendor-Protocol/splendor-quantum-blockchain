@@ -12,6 +12,7 @@ package network
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -87,13 +88,13 @@ func (f *BlockFetcher) FetchStateSnapshot(peerAddr string) (*types.StateSnapshot
 // by the genesis validator seal on the head block. A peer that does not serve
 // coded objects, or a transfer failure of any kind, returns an error so the
 // caller falls back to the plain paths.
-func (f *BlockFetcher) FetchStateSnapshotCoded(peerAddr string) (*types.StateSnapshot, error) {
+func (f *BlockFetcher) FetchStateSnapshotCoded(ctx context.Context, peerAddr string) (*types.StateSnapshot, error) {
 	trusted := f.TrustedPubKey()
 	if len(trusted) == 0 {
 		return nil, fmt.Errorf("state sync from %s: no trusted validator pubkey yet "+
 			"(set --validator-pubkey-hex, or --genesis-hash to bootstrap it)", peerAddr)
 	}
-	raw, err := f.FetchCodedObject(peerAddr, objects.DefaultLimits())
+	raw, err := f.FetchCodedObject(ctx, peerAddr, objects.DefaultLimits())
 	if err != nil {
 		return nil, fmt.Errorf("coded state snapshot from %s: %w", peerAddr, err)
 	}
@@ -340,7 +341,7 @@ func (f *BlockFetcher) fetchChunkedInto(peerAddr string, chunkSize int, store *s
 // A configured SnapshotStagingDir lets a failed peer (or a restart) resume
 // the same authenticated snapshot from the persisted cursor instead of
 // starting over in RAM.
-func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
+func (s *Syncer) StateSync(ctx context.Context, importer func(*types.StateSnapshot) error) error {
 	peers := s.pool.Addrs()
 	if len(peers) == 0 {
 		return errors.New("state sync: no peers to take a snapshot from")
@@ -362,7 +363,7 @@ func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
 
 	var refusals []string
 	for _, peer := range peers {
-		snap, err := s.fetchSnapshotFromPeer(peer, store)
+		snap, err := s.fetchSnapshotFromPeer(ctx, peer, store)
 		if err != nil {
 			log.Warn().Err(err).Str("peer", peer).Msg("state sync: snapshot not usable")
 			refusals = append(refusals, fmt.Sprintf("%s: %v", peer, err))
@@ -404,7 +405,7 @@ func (s *Syncer) StateSync(importer func(*types.StateSnapshot) error) error {
 	return fmt.Errorf("state sync: no peer served a usable snapshot: %s", strings.Join(refusals, "; "))
 }
 
-func (s *Syncer) fetchSnapshotFromPeer(peer string, store *state.SnapshotDownload) (*types.StateSnapshot, error) {
+func (s *Syncer) fetchSnapshotFromPeer(ctx context.Context, peer string, store *state.SnapshotDownload) (*types.StateSnapshot, error) {
 	if store != nil && store.HasHead() {
 		if err := s.fetcher.fetchChunkedInto(peer, 0, store); err != nil {
 			return nil, err
@@ -418,7 +419,7 @@ func (s *Syncer) fetchSnapshotFromPeer(peer string, store *state.SnapshotDownloa
 	// identically by validateFetchedSnapshot, so the fallback never relaxes
 	// trust, only transport resilience.
 	if s.fetcher.cfg.CodedObjects {
-		if snap, err := s.fetcher.FetchStateSnapshotCoded(peer); err == nil {
+		if snap, err := s.fetcher.FetchStateSnapshotCoded(ctx, peer); err == nil {
 			log.Info().Str("peer", peer).Uint64("height", snap.Height).
 				Msg("state sync: took the peer's coded snapshot")
 			return snap, nil
