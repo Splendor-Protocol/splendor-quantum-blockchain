@@ -53,6 +53,11 @@ const (
 	maxSnapshotReplyBytes = 192 << 20
 )
 
+// ErrSnapshotCheckpointMoved means a chunked resume found the peer's snapshot
+// at a different height than the staged head — the staged head/cursor is
+// obsolete and no further resume at that cursor can complete.
+var ErrSnapshotCheckpointMoved = errors.New("state snapshot: checkpoint moved")
+
 // FetchStateSnapshot pulls a peer's state at its head over the sealed channel
 // and authenticates the head block against the pinned genesis validator key.
 // There is no plaintext form: the snapshot is only ever served sealed.
@@ -296,8 +301,8 @@ func (f *BlockFetcher) fetchChunkedInto(peerAddr string, chunkSize int, store *s
 			}
 		} else {
 			if chunk.Height != store.Height() {
-				return fmt.Errorf("state snapshot from %s changed height mid-transfer (%d -> %d); the peer's "+
-					"state moved during the transfer, retry from scratch", peerAddr, store.Height(), chunk.Height)
+				return fmt.Errorf("%w: peer %s moved from height %d to %d mid-transfer, retry from scratch",
+					ErrSnapshotCheckpointMoved, peerAddr, store.Height(), chunk.Height)
 			}
 			if chunk.Block != nil {
 				if err := authenticateSnapshotHead(peerAddr, trusted, chunk.Block, chunk.Height); err != nil {
@@ -407,10 +412,24 @@ func (s *Syncer) StateSync(ctx context.Context, importer func(*types.StateSnapsh
 
 func (s *Syncer) fetchSnapshotFromPeer(ctx context.Context, peer string, store *state.SnapshotDownload) (*types.StateSnapshot, error) {
 	if store != nil && store.HasHead() {
-		if err := s.fetcher.fetchChunkedInto(peer, 0, store); err != nil {
+		err := s.fetcher.fetchChunkedInto(peer, 0, store)
+		switch {
+		case err == nil:
+			return nil, nil
+		case errors.Is(err, ErrSnapshotCheckpointMoved):
+			// The staged head is obsolete — the peer (and, for a moving
+			// chain, every peer) has advanced past it, so resuming at the
+			// saved cursor can never complete. Quarantine the stale staging
+			// and fall through to a fresh coded/plain transfer at a newly
+			// authenticated head. A completed download is never reset here.
+			log.Warn().Err(err).Str("peer", peer).
+				Msg("state sync: staged snapshot checkpoint moved, quarantining staging for a fresh transfer")
+			if rerr := store.Reset(); rerr != nil {
+				return nil, rerr
+			}
+		default:
 			return nil, err
 		}
-		return nil, nil
 	}
 	// Negotiation: prefer the coded-object path when enabled — it is the
 	// resilient transfer — and fall back to the plain paths on ANY failure
