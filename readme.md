@@ -238,11 +238,12 @@ certification boundaries are separate claims.
   unpinned peer identity is initially accepted using trust on first use.
   Authenticated production clusters should supply `--peer-pin` values and set
   `--require-peer-pins`.
-- **The browser SDK's MetaMask derivation path.** `sdk/sqc-sdk/src/derive.ts`
-  derives the PQ key from a secp256k1 signature. The key's *use* is
-  post-quantum; its *origin* is not, because anyone who can break secp256k1 can
-  reproduce it. The SDK says so at the call site. It is a convenience, not a
-  security boundary.
+- **The SDK's legacy EVM/MetaMask derivation path.** `sdk/sqc-sdk/src/derive.ts`
+  still exposes secp256k1-signature → seed derivation for backward
+  compatibility, but it is `@deprecated` and warns at the call site. The key's
+  *use* is post-quantum; its *origin* is not, because anyone who can break
+  secp256k1 can reproduce it. New wallets use a native random seed. It is a
+  convenience, not a security boundary.
 - **WASM integrity pinning in the browser.** The signer bundle is pinned by
   SHA-256 digest, because that is what Web Crypto offers. Not a break, but not
   part of the NIST PQ suite the rest of the chain sticks to.
