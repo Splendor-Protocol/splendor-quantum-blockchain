@@ -357,9 +357,13 @@ type BFTEngine struct {
 	// (polHeight, polRound). Retained — not just the hash/round — so a leader
 	// re-proposing the locked value can attach the actual certificate and let a
 	// peer that missed the quorum verify and unlock to it.
-	polVotes  []*Vote
-	rcByRound map[uint32]map[qcrypto.Address]*RoundChange
-	rcQCRound int32
+	polVotes []*Vote
+	// polRestoredHeight is the height at which the journaled POL was last
+	// re-hydrated into the in-memory lock, so the certificate is re-read and
+	// re-verified once per height rather than on every lockAt.
+	polRestoredHeight uint64
+	rcByRound         map[uint32]map[qcrypto.Address]*RoundChange
+	rcQCRound         int32
 	// rcValue* is the safe value selected from the current round-change quorum:
 	// the one with the highest locked round, plus its certificate. A leader must
 	// re-propose this value (or hold for its body) instead of minting a value
@@ -1440,6 +1444,7 @@ func (e *BFTEngine) commitBlock(b *types.Block) {
 	e.hasQuorum = false
 	e.hasPOL = false
 	e.polVotes = nil
+	e.polRestoredHeight = 0
 	e.clearRoundChangeLocked()
 
 	// Cleanup
@@ -1488,6 +1493,7 @@ func (e *BFTEngine) SetHeight(h uint64) {
 	e.hasQuorum = false
 	e.hasPOL = false
 	e.polVotes = nil
+	e.polRestoredHeight = 0
 	e.precommits = nil
 	e.clearRoundChangeLocked()
 	e.lockedProposal = nil
