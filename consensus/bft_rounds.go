@@ -375,6 +375,15 @@ func (e *BFTEngine) onPrevoteQuorum(b *types.Block, round uint32) {
 	if e.voteSet != nil {
 		e.polVotes = e.voteSet.Votes()
 	}
+	// Persist the certificate so a restart can re-attach it to a round-change
+	// instead of losing the lock — and the ability to unlock peers — with the
+	// in-memory copy. Gated on the fork: the single-vote path has no POL.
+	if e.roundsV1(b.Header.Height) && e.journal != nil {
+		if err := e.journal.SavePOL(b.Header.Height, round, b.Hash, e.polVotes); err != nil {
+			log.Warn().Err(err).Uint64("height", b.Header.Height).
+				Msg("BFT: failed to persist the POL certificate")
+		}
+	}
 	e.lockedProposal = b
 	if !e.isMember() {
 		return
@@ -627,7 +636,38 @@ func (e *BFTEngine) handleRoundChange(rc *RoundChange) {
 	}
 }
 
+// restorePOLOnceLocked re-hydrates the POL certificate this node witnessed in a
+// previous process from the journal, so a crash does not lose the lock (or the
+// ability to attach a verifiable certificate to a round-change). It runs once
+// per height; the certificate is re-verified against the LIVE validator set
+// before it is trusted, so one that no longer matches the set is dropped rather
+// than used to unlock peers. Caller holds stateMu.
+func (e *BFTEngine) restorePOLOnceLocked(height uint64) {
+	if e.polRestoredHeight == height {
+		return
+	}
+	e.polRestoredHeight = height
+	if !e.roundsV1(height) || e.hasPOL || e.journal == nil {
+		return
+	}
+	h, r, hash, votes, ok := e.journal.LoadPOL()
+	if !ok || h != height {
+		return
+	}
+	if !e.verifyPOL(h, r, hash, votes) {
+		log.Warn().Uint64("height", h).Uint32("round", r).
+			Msg("BFT: dropping a journaled POL that does not verify against the current validator set")
+		return
+	}
+	e.hasPOL = true
+	e.polHeight = h
+	e.polRound = r
+	e.polHash = hash
+	e.polVotes = votes
+}
+
 func (e *BFTEngine) lockAt(height uint64) (hash [32]byte, round uint32, ok bool) {
+	e.restorePOLOnceLocked(height)
 	if e.hasVoted && e.votedHeight == height {
 		return e.votedHash, e.signedRound, true
 	}
