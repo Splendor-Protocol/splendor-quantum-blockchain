@@ -2,9 +2,10 @@
  * Audit scenarios for connect-react (reconnect abort, icons, locked UX, errors).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { BridgeError, fromUnits } from '@splendor/sqc-sdk';
+import { BridgeError, fromUnits, clearExtensionDiscoveryCache } from '@splendor/sqc-sdk';
 import { createConnectController, connectErrorMessage } from '../core/controller.js';
 import { sanitizeIconUrl } from '../widgets/utils.js';
+import { extensionConnector } from '../connectors/extension.js';
 import type { Connector } from '../connectors/types.js';
 import type { DeriveInfo } from '@splendor/sqc-sdk';
 
@@ -103,5 +104,31 @@ describe('audit scenarios (connect-react)', () => {
     expect(ok).toBe(false);
     expect(connectCalls).toBe(0);
     ctrl.destroy();
+  });
+
+  it('extension ready() completes under 1s when wallet missing', async () => {
+    clearExtensionDiscoveryCache();
+    const g = globalThis as { window?: Record<string, unknown> };
+    g.window = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    };
+    try {
+      const connector = extensionConnector({ readyTimeoutMs: 400 });
+      const t0 = Date.now();
+      const ready = await connector.ready();
+      expect(ready).toBe(false);
+      expect(Date.now() - t0).toBeLessThan(1_000);
+    } finally {
+      delete g.window;
+      clearExtensionDiscoveryCache();
+    }
+  });
+
+  it('connectErrorMessage for NOT_CONNECTED / NO_PROVIDER matches unlock/install copy', () => {
+    expect(connectErrorMessage(BridgeError.notConnected())).toMatch(/unlock|connect/i);
+    expect(connectErrorMessage(BridgeError.noProvider())).toBe('Install Splendor Quantum Wallet');
+    expect(connectErrorMessage(BridgeError.chainMismatch('x', 'y'))).toMatch(/Chain mismatch/i);
   });
 });

@@ -38,6 +38,20 @@ Connect → fund → transfer → wait. Use a read-only `Connection` / `SqcProvi
 
 **Injected provider trust:** any page script can spoof `window.splendor` (`isSplendor`, method names). Prefer the official Splendor Quantum Wallet extension (`isExtension` / non–in-page inject) and harden with CSP so untrusted scripts cannot redefine the inject. Treat in-page `installSplendorProvider` as same-origin only — never as proof of a third-party wallet.
 
+### Splendor Quantum Wallet extension contract
+
+ConnectKit talks to the official extension via `ExtensionSigner`. The inject speaks **`sqc_*` + `wallet_*`** (content script accepts **array params only**):
+
+| Action | Method | Notes |
+|--------|--------|-------|
+| Connect | `sqc_requestAccounts` | Opens approval UI |
+| Silent resume | `sqc_accounts` | Used by `autoReconnect` |
+| Disconnect | `wallet_disconnect` | Revokes **this origin only** |
+| Sign | `sqc_sign` with `[message, { encoding }]` | Domain-separated by SDK |
+| Send SPLD | `sqc_sendTransaction` with `[{ to, amount\|amountSPLD, fee? }]` | Returns hash string |
+
+Install the extension before opening Connect. Soft network switch in the dApp rebinds SDK RPC only — the extension chain is changed in **wallet Settings** (listen for `chainChanged`). Use `<WrongNetworkBanner />` when chains may diverge.
+
 ## Recommended: Connect UI kit (React)
 
 For browser dApps, use **`@splendor/connect-react`** — AppKit-style modal + connectors + widgets. PQ ML-DSA-65 stays inside WASM; your UI only shows `SQ:` identity.

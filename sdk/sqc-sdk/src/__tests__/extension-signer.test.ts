@@ -7,6 +7,7 @@ import { CHAIN_ID } from '../derive.js';
 import {
   toCanonicalMethod,
   toExtensionMethod,
+  toExtensionParams,
   requestWithAlias,
   isExtensionProvider,
 } from '../wallet/extension-provider.js';
@@ -23,9 +24,29 @@ describe('extension method aliases', () => {
     expect(toCanonicalMethod('sqc_sign')).toBe('splendor_signMessage');
   });
 
-  it('maps splendor_* to sqc_* for extension calls', () => {
+  it('maps splendor_* to sqc_* / wallet_* for extension calls', () => {
     expect(toExtensionMethod('splendor_accounts')).toBe('sqc_accounts');
     expect(toExtensionMethod('splendor_signMessage')).toBe('sqc_sign');
+    expect(toExtensionMethod('splendor_disconnect')).toBe('wallet_disconnect');
+    expect(toCanonicalMethod('wallet_disconnect')).toBe('splendor_disconnect');
+  });
+
+  it('toExtensionParams coerces objects to a one-element array', () => {
+    expect(toExtensionParams(undefined)).toEqual([]);
+    expect(toExtensionParams(null)).toEqual([]);
+    expect(toExtensionParams([1, 2])).toEqual([1, 2]);
+    expect(toExtensionParams({ to: 'SQ:ab' })).toEqual([{ to: 'SQ:ab' }]);
+  });
+
+  it('requestWithAlias always sends array params', async () => {
+    const provider = {
+      request: vi.fn(async () => ['SQ:' + 'ab'.repeat(32)]),
+    };
+    await requestWithAlias(provider, 'sqc_accounts', { ignored: true });
+    expect(provider.request).toHaveBeenCalledWith({
+      method: 'sqc_accounts',
+      params: [{ ignored: true }],
+    });
   });
 
   it('requestWithAlias falls back on unsupported', async () => {
@@ -45,9 +66,10 @@ describe('extension method aliases', () => {
     expect(isExtensionProvider({ isSplendor: true, request: req })).toBe(true);
     expect(isExtensionProvider({ isSplendor: true, isInPage: true, request: req })).toBe(false);
     expect(isExtensionProvider({ isExtension: true, request: req })).toBe(true);
+    // Page scripts must not spoof via isExtension + isInPage.
     expect(
       isExtensionProvider({ isExtension: true, isInPage: true, isSplendor: true, request: req }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -57,19 +79,32 @@ describe('ExtensionSigner', () => {
   function mockProvider(
     handlers: Record<string, (params?: unknown) => unknown> = {},
   ) {
+    const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
     return {
       isSplendor: true as const,
       request: vi.fn(async ({ method, params }: { method: string; params?: unknown }) => {
         if (handlers[method]) return handlers[method]!(params);
         if (method === 'sqc_requestAccounts' || method === 'splendor_connect') return [addr];
         if (method === 'sqc_accounts' || method === 'splendor_accounts') return [addr];
+        if (method === 'wallet_disconnect' || method === 'sqc_disconnect') return null;
         if (method === 'sqc_sign' || method === 'splendor_signMessage') {
-          return { address: addr, signatureB64: 'c2ln', publicKeyB64: 'cGs=', message: 'hi' };
+          return { address: addr, signature: 'c2ln', publicKeyB64: 'cGs=', message: 'hi' };
+        }
+        if (method === 'sqc_sendTransaction') {
+          return '0xdeadbeef';
         }
         throw new Error(`unexpected ${method}`);
       }),
-      on() {},
-      removeListener() {},
+      on(event: string, fn: (...args: unknown[]) => void) {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)!.add(fn);
+      },
+      removeListener(event: string, fn: (...args: unknown[]) => void) {
+        listeners.get(event)?.delete(fn);
+      },
+      emit(event: string, ...args: unknown[]) {
+        listeners.get(event)?.forEach((fn) => fn(...args));
+      },
     };
   }
 
@@ -122,6 +157,133 @@ describe('ExtensionSigner', () => {
       from: addr,
     });
     wallet.disconnect();
+  });
+
+  it('signMessage sends array params [message, encoding]', async () => {
+    const provider = mockProvider();
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    await wallet.signMessage('hello');
+    const signCall = provider.request.mock.calls.find(
+      (c) => c[0]?.method === 'sqc_sign' || c[0]?.method === 'splendor_signMessage',
+    );
+    expect(Array.isArray(signCall?.[0]?.params)).toBe(true);
+    expect(signCall?.[0]?.params?.[1]).toEqual({ encoding: 'utf8' });
+    wallet.disconnect();
+  });
+
+  it('sendTransfer uses flat body and normalizes hash string', async () => {
+    const provider = mockProvider();
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    const out = await wallet.sendTransfer({
+      to: addr,
+      amountSPLD: '0.01',
+      fee: '1000',
+    });
+    expect(out.hash).toBe('0xdeadbeef');
+    expect(out.status).toBe('ok');
+    const sendCall = provider.request.mock.calls.find((c) => c[0]?.method === 'sqc_sendTransaction');
+    expect(sendCall?.[0]?.params).toEqual([
+      expect.objectContaining({ to: addr, amountSPLD: '0.01', fee: '1000' }),
+    ]);
+    wallet.disconnect();
+  });
+
+  it('disconnect calls wallet_disconnect', async () => {
+    const provider = mockProvider();
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    wallet.disconnect();
+    expect(
+      provider.request.mock.calls.some((c) => c[0]?.method === 'wallet_disconnect'),
+    ).toBe(true);
+  });
+
+  it('lock event from provider emits wallet lock', async () => {
+    const provider = mockProvider();
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    const locks: unknown[] = [];
+    wallet.on('lock', (p) => locks.push(p));
+    provider.emit('lock');
+    expect(locks).toHaveLength(1);
+    expect(wallet.getConnectionState()).toBe('disconnected');
+  });
+
+  it('chainChanged string from provider maps to structured event', async () => {
+    const provider = mockProvider();
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    const seen: unknown[] = [];
+    wallet.on('chainChanged', (p) => seen.push(p));
+    provider.emit('chainChanged', 'splendor-quantum-testnet-1');
+    expect(seen[0]).toMatchObject({ networkId: 'local' });
+    wallet.disconnect();
+  });
+
+  it('sendModuleCall does not fall back to send on USER_REJECTED', async () => {
+    const provider = mockProvider({
+      sqc_moduleCall: () => {
+        const e = new Error('User rejected') as Error & { code: number };
+        e.code = 4001;
+        throw e;
+      },
+      sqc_sendTransaction: () => '0xshould-not-run',
+    });
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    await expect(
+      wallet.sendModuleCall({ module: 'qrc20', action: 'transfer', params: {} }),
+    ).rejects.toMatchObject({ code: 'USER_REJECTED' });
+    expect(provider.request.mock.calls.some((c) => c[0]?.method === 'sqc_sendTransaction')).toBe(
+      false,
+    );
+    wallet.disconnect();
+  });
+
+  it('maps 4100 / 4902 via req to BridgeError codes', async () => {
+    const provider = mockProvider({
+      sqc_sign: () => {
+        const e = new Error('Wallet locked') as Error & { code: number };
+        e.code = 4100;
+        throw e;
+      },
+    });
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    await expect(wallet.signMessage('x')).rejects.toMatchObject({ code: 'NOT_CONNECTED' });
+
+    const provider2 = mockProvider({
+      sqc_sign: () => {
+        const e = new Error('chain mismatch') as Error & { code: number };
+        e.code = 4902;
+        throw e;
+      },
+    });
+    const wallet2 = new ExtensionSigner({
+      connection: connection(),
+      provider: provider2,
+      networkId: 'local',
+    });
+    await wallet2.connect();
+    await expect(wallet2.signMessage('x')).rejects.toMatchObject({ code: 'CHAIN_MISMATCH' });
+    wallet.disconnect();
+    wallet2.disconnect();
+  });
+
+  it('4001 does not trigger alias retry on requestWithAlias', async () => {
+    const provider = {
+      request: vi.fn(async () => {
+        const e = new Error('User rejected') as Error & { code: number };
+        e.code = 4001;
+        throw e;
+      }),
+    };
+    await expect(requestWithAlias(provider, 'splendor_accounts')).rejects.toMatchObject({
+      code: 4001,
+    });
+    expect(provider.request).toHaveBeenCalledTimes(1);
   });
 });
 

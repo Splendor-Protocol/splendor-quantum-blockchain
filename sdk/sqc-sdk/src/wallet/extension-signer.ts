@@ -1,10 +1,12 @@
 /**
  * ExtensionSigner — Signer backed by the Splendor Quantum Wallet Chrome extension.
  * Crypto stays in the extension; this class never holds seed/WASM session material.
+ *
+ * Wire format matches the official extension inject (array params, wallet_disconnect).
  */
 import type { Connection } from '../core/connection.js';
 import type { Signer, TxResult } from '../core/signer.js';
-import { BridgeError, wrapUnknown } from '../errors.js';
+import { BridgeError, mapProviderError } from '../errors.js';
 import { BridgeEmitter, type BridgeEventMap } from '../events.js';
 import type {
   CallOpts,
@@ -24,6 +26,7 @@ import { prepareSignMessage } from '../message-domain.js';
 import { fromSPLD } from '../rpc.js';
 import { assertFeeAtLeastMin } from '../encoding.js';
 import {
+  discoverExtensionProvider,
   getExtensionProvider,
   requestWithAlias,
   toExtensionMethod,
@@ -45,6 +48,36 @@ function asAddresses(raw: unknown): string[] {
     if (Array.isArray(o.accounts)) return asAddresses(o.accounts);
   }
   return [];
+}
+
+function normalizeTxResult(raw: unknown): SendTxResult {
+  if (typeof raw === 'string' && raw.length > 0) {
+    return { status: 'ok', hash: raw, signedTx: {} };
+  }
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return {
+    status: String(o.status ?? 'ok'),
+    hash: String(o.hash ?? o.txHash ?? o.tx_hash ?? ''),
+    signedTx: (o.signedTx as object) ?? {},
+    confirmation: o.confirmation as SendTxResult['confirmation'],
+  };
+}
+
+/** Flatten UnsignedTx / TransferOpts into extension sendTransaction body. */
+function toExtensionTransferBody(tx: UnsignedTx | object): Record<string, unknown> {
+  const t = tx as Record<string, unknown>;
+  if (t.type === 'transfer' || (!t.type && (t.to || t.amount || t.amountSPLD))) {
+    const body: Record<string, unknown> = {
+      to: t.to,
+    };
+    if (t.amountSPLD != null) body.amountSPLD = t.amountSPLD;
+    else if (t.amount != null) body.amount = t.amount;
+    if (t.fee != null) body.fee = t.fee;
+    if (t.memo != null) body.memo = t.memo;
+    return body;
+  }
+  // Non-transfer envelopes: pass through as flat object for module/call/deploy fallbacks.
+  return { ...t };
 }
 
 export class ExtensionSigner implements Signer {
@@ -76,7 +109,7 @@ export class ExtensionSigner implements Signer {
 
   /**
    * Soft network switch — keep extension session; point RPC at a new Connection.
-   * Does not call splendor_disconnect.
+   * Does not call wallet_disconnect. Extension chain is owned by wallet Settings.
    */
   rebindConnection(next: Connection, meta?: { networkId?: string }): void {
     this._connection = next;
@@ -115,8 +148,14 @@ export class ExtensionSigner implements Signer {
       this.info = null;
       this.emitter.emit('disconnect', {});
     };
+    const onLock = () => {
+      this.info = null;
+      this.emitter.emit('lock', {});
+    };
     const onConnect = (...args: unknown[]) => {
-      const addrs = asAddresses(args[0] ?? args);
+      // Extension may emit { chainId } or accounts array.
+      const first = args[0];
+      const addrs = asAddresses(first);
       if (addrs[0]) {
         this.info = {
           address: addrs[0],
@@ -126,16 +165,38 @@ export class ExtensionSigner implements Signer {
           postQuantumSecure: true,
         };
         this.emitter.emit('connect', { address: addrs[0] });
+        return;
+      }
+      if (this.info?.address) {
+        this.emitter.emit('connect', { address: this.info.address });
+      }
+    };
+    const onChainChanged = (...args: unknown[]) => {
+      const raw = args[0];
+      if (typeof raw === 'string') {
+        this.notifyChainChanged({ chainId: raw, networkId: this.networkId });
+        return;
+      }
+      if (raw && typeof raw === 'object') {
+        const o = raw as Record<string, unknown>;
+        this.notifyChainChanged({
+          chainId: (o.chainId as string | number) ?? this.connection.chainId,
+          networkId: String(o.networkId ?? this.networkId),
+        });
       }
     };
 
     on('accountsChanged', onAccounts);
     on('disconnect', onDisconnect);
+    on('lock', onLock);
     on('connect', onConnect);
+    on('chainChanged', onChainChanged);
     this.unsubs.push(() => {
       off?.('accountsChanged', onAccounts);
       off?.('disconnect', onDisconnect);
+      off?.('lock', onLock);
       off?.('connect', onConnect);
+      off?.('chainChanged', onChainChanged);
     });
   }
 
@@ -144,7 +205,7 @@ export class ExtensionSigner implements Signer {
     try {
       return await requestWithAlias(this.provider, preferred, params);
     } catch (e) {
-      throw wrapUnknown(e, 'RPC');
+      throw mapProviderError(e, 'RPC');
     }
   }
 
@@ -160,7 +221,7 @@ export class ExtensionSigner implements Signer {
 
   /** Request accounts from the extension (opens approval UI). */
   async connect(): Promise<DeriveInfo> {
-    let accounts = asAddresses(await this.req('splendor_connect', {}));
+    let accounts = asAddresses(await this.req('splendor_connect'));
     if (!accounts.length) {
       accounts = asAddresses(await this.req('splendor_accounts'));
     }
@@ -220,7 +281,8 @@ export class ExtensionSigner implements Signer {
   disconnect(): void {
     for (const u of this.unsubs) u();
     this.unsubs = [];
-    void this.req('splendor_disconnect').catch(() => {});
+    // Origin-scoped revoke on the extension (wallet_disconnect).
+    void this.req('wallet_disconnect').catch(() => undefined);
     this.info = null;
     this.emitter.emit('disconnect', {});
   }
@@ -257,7 +319,11 @@ export class ExtensionSigner implements Signer {
   ): Promise<{ address: string; publicKeyB64: string; signatureB64: string; message: string }> {
     if (!this.info) throw BridgeError.notConnected();
     const prepared = prepareSignMessage(message, opts);
-    const raw = await this.req('splendor_signMessage', { message: prepared });
+    // Extension: params [message, { encoding }]
+    const raw = await this.req('splendor_signMessage', [
+      prepared,
+      { encoding: 'utf8' },
+    ]);
     if (raw && typeof raw === 'object') {
       const o = raw as Record<string, unknown>;
       return {
@@ -291,36 +357,28 @@ export class ExtensionSigner implements Signer {
 
   private async sendTransactionUnlocked(
     tx: UnsignedTx | object,
-    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+    _opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
   ): Promise<SendTxResult> {
     if (!this.info) throw BridgeError.notConnected();
-    const raw = await this.req('splendor_sendTransaction', {
-      tx,
-      waitForConfirmation: opts?.waitForConfirmation,
-      confirmTimeoutMs: opts?.confirmTimeoutMs,
-    });
-    const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-    return {
-      status: String(o.status ?? 'ok'),
-      hash: String(o.hash ?? o.tx_hash ?? ''),
-      signedTx: (o.signedTx as object) ?? {},
-      confirmation: o.confirmation as SendTxResult['confirmation'],
-    };
+    const body = toExtensionTransferBody(tx);
+    // Extension: params [{ to, amount|amountSPLD, fee?, memo? }] → hash string
+    const raw = await this.req('splendor_sendTransaction', [body]);
+    return normalizeTxResult(raw);
   }
 
   async sendModuleCall(opts: ModuleCallOpts): Promise<TxResult> {
     return this.withOpLock(async () => {
-      // Prefer sqc_moduleCall on extension; fall back to sendTransaction module envelope.
       try {
-        const raw = await requestWithAlias(this.provider, 'sqc_moduleCall', opts);
-        const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-        return {
-          status: String(o.status ?? 'ok'),
-          hash: String(o.hash ?? o.tx_hash ?? ''),
-          signedTx: (o.signedTx as object) ?? {},
-          confirmation: o.confirmation as TxResult['confirmation'],
-        };
-      } catch {
+        const raw = await this.req('sqc_moduleCall', [opts]);
+        return normalizeTxResult(raw);
+      } catch (e) {
+        // Only fall back when the method is unsupported — never swallow USER_REJECTED / lock / chain errors.
+        const err = mapProviderError(e, 'RPC');
+        const msg = err.message;
+        const unsupported =
+          err.code === 'RPC' &&
+          /unsupported|unknown method|not support|4200/i.test(msg);
+        if (!unsupported) throw err;
         return this.sendTransactionUnlocked({ type: 'module', ...opts });
       }
     });
@@ -350,7 +408,8 @@ export class ExtensionSigner implements Signer {
   async getNonce(address?: string) {
     const addr = address ?? this.getAddress();
     try {
-      const raw = await requestWithAlias(this.provider, 'sqc_nonce', { address: addr });
+      const raw = await this.req('sqc_nonce', [addr]);
+      if (typeof raw === 'number') return { address: addr, nonce: raw };
       if (raw && typeof raw === 'object' && 'nonce' in (raw as object)) {
         return raw as { address: string; nonce: number };
       }
@@ -363,7 +422,15 @@ export class ExtensionSigner implements Signer {
   async getBalance(address?: string) {
     const addr = address ?? this.getAddress();
     try {
-      const raw = await requestWithAlias(this.provider, 'sqc_getBalance', { address: addr });
+      const raw = await this.req('sqc_getBalance', [addr]);
+      if (typeof raw === 'string') {
+        return {
+          address: addr,
+          balance: raw,
+          balance_spld: raw,
+          unit: 'atto',
+        };
+      }
       if (raw && typeof raw === 'object') return raw as Awaited<ReturnType<Connection['getBalance']>>;
     } catch {
       /* fall through */
@@ -373,7 +440,7 @@ export class ExtensionSigner implements Signer {
 
   async getLatestBlock() {
     try {
-      return await requestWithAlias(this.provider, 'sqc_getBlock', { latest: true });
+      return await this.req('sqc_getBlock', []);
     } catch {
       return this.connection.getLatestBlock();
     }
@@ -425,11 +492,18 @@ export type ConnectExtensionResult = {
   connection: Connection;
 };
 
-/** Unlock an ExtensionSigner against an existing Connection. */
+/** Unlock an ExtensionSigner against an existing Connection (async provider discovery). */
 export async function connectExtension(
-  opts: ExtensionSignerOptions,
+  opts: ExtensionSignerOptions & { discoveryTimeoutMs?: number },
 ): Promise<ConnectExtensionResult> {
-  const wallet = new ExtensionSigner(opts);
+  const provider =
+    opts.provider ??
+    (await discoverExtensionProvider(opts.discoveryTimeoutMs ?? 5_000).catch(() => {
+      throw BridgeError.noProvider(
+        'Splendor Quantum Wallet extension not found. Please install it.',
+      );
+    }));
+  const wallet = new ExtensionSigner({ ...opts, provider });
   const info = await wallet.connect();
   return { wallet, info, connection: opts.connection };
 }

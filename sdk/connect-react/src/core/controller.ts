@@ -147,6 +147,9 @@ export function createConnectController(
   let connectEpoch = 0;
   /** Bumped when setSessionWallet changes the active signer (hook reactivity). */
   let walletEpoch = 0;
+  /** Debounce soft RPC probes after connect / network switch. */
+  let lastProbeAt = 0;
+  const PROBE_TTL_MS = 10_000;
   let snapshot: ConnectControllerState = {
     status,
     connectingStep,
@@ -172,6 +175,24 @@ export function createConnectController(
   const clearSessionWalletWatch = () => {
     for (const off of sessionWalletUnsubs) off();
     sessionWalletUnsubs = [];
+  };
+
+  /** Soft /status probe — TTL so rapid connect + rebind does not spam RPC. */
+  const scheduleProbe = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastProbeAt < PROBE_TTL_MS) return;
+    lastProbeAt = now;
+    const probeEpoch = connectEpoch;
+    void sessionWallet.connection
+      .probeNetwork?.()
+      .then((probe) => {
+        if (probeEpoch !== connectEpoch || destroyed) return;
+        if (probe && !probe.ok) {
+          error = probe.error;
+          emit();
+        }
+      })
+      .catch(() => {});
   };
 
   const wireSessionWallet = (wallet: SessionWallet) => {
@@ -377,14 +398,7 @@ export function createConnectController(
           }
           emit();
           // Soft RPC probe — keep session connected but surface network-down copy.
-          const probeEpoch = connectEpoch;
-          void sessionWallet.connection.probeNetwork?.().then((probe) => {
-            if (probeEpoch !== connectEpoch || destroyed) return;
-            if (probe && !probe.ok) {
-              error = probe.error;
-              emit();
-            }
-          }).catch(() => {});
+          scheduleProbe();
           return info;
         } catch (e) {
           if (!stillCurrent()) {
@@ -533,14 +547,7 @@ export function createConnectController(
       (client as { provider: SqcProvider }).provider = pageWallet.provider;
       error = null;
       emit();
-      const probeEpoch = connectEpoch;
-      void sessionWallet.connection.probeNetwork?.().then((probe) => {
-        if (probeEpoch !== connectEpoch || destroyed) return;
-        if (probe && !probe.ok) {
-          error = probe.error;
-          emit();
-        }
-      }).catch(() => {});
+      scheduleProbe();
     },
     destroy() {
       destroyed = true;
@@ -667,9 +674,14 @@ export function createStubConnectController(
   };
 }
 
-/** Map bridge / connector errors to short UI copy. */
+/** Map bridge / connector errors to short UI copy. Never surface raw messages with secrets. */
 export function connectErrorMessage(err: unknown): string {
   if (isBridgeError(err)) {
+    // Prefer modal-aligned install / unlock copy over generic BridgeError hints.
+    if (err.code === 'NO_PROVIDER') return 'Install Splendor Quantum Wallet';
+    if (err.code === 'NOT_CONNECTED') {
+      return err.userHint ?? 'Unlock or connect your Splendor Quantum Wallet';
+    }
     if (err.userHint) return err.userHint;
     switch (err.code) {
       case 'USER_REJECTED':
@@ -677,7 +689,7 @@ export function connectErrorMessage(err: unknown): string {
       case 'BUSY':
         return 'Connection already in progress — wait a moment';
       case 'NO_PROVIDER':
-        return 'No browser wallet found';
+        return 'Install Splendor Quantum Wallet';
       case 'WASM':
         return 'Signer failed to load — check WASM hosting';
       case 'RPC_UNAVAILABLE':
@@ -691,7 +703,7 @@ export function connectErrorMessage(err: unknown): string {
       case 'TIMEOUT':
         return 'Request timed out';
       case 'NOT_CONNECTED':
-        return 'Wallet not connected';
+        return 'Unlock or connect your Splendor Quantum Wallet';
       case 'TX_FAILED':
         return 'Transaction failed';
       case 'TX_NOT_CONFIRMED':
@@ -710,14 +722,17 @@ export function connectErrorMessage(err: unknown): string {
   }
   if (err instanceof Error) {
     if ((err as Error & { code?: string }).code === 'NO_PROVIDER') {
-      return 'No browser wallet found';
+      return 'Install Splendor Quantum Wallet';
     }
     if (
       /extension.*not found|Splendor Quantum Wallet|EIP-1193|provider.*not found|window\.ethereum/i.test(
         err.message,
       )
     ) {
-      return 'No browser wallet found';
+      return 'Install Splendor Quantum Wallet';
+    }
+    if (/wallet locked|not connected|4100/i.test(err.message)) {
+      return 'Unlock or connect your Splendor Quantum Wallet';
     }
     if (/user rejected|denied/i.test(err.message)) {
       return 'Request rejected in wallet';

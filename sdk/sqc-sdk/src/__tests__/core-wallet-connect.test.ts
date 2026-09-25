@@ -115,7 +115,8 @@ describe('ExtensionSigner core', () => {
         if (handlers[method]) return handlers[method]!(params);
         if (method === 'sqc_requestAccounts' || method === 'splendor_connect') return [addr];
         if (method === 'sqc_accounts' || method === 'splendor_accounts') return [addr];
-        if (method === 'sqc_disconnect' || method === 'splendor_disconnect') return null;
+        if (method === 'sqc_disconnect' || method === 'splendor_disconnect' || method === 'wallet_disconnect')
+          return null;
         if (method === 'sqc_sign' || method === 'splendor_signMessage') {
           return { address: addr, signatureB64: 'c2ln', publicKeyB64: 'cGs=', message: 'hi' };
         }
@@ -190,7 +191,7 @@ describe('ExtensionSigner core', () => {
     expect(events).toEqual(['disconnect']);
     expect(
       provider.request.mock.calls.some((c) =>
-        /disconnect/i.test(String(c[0]?.method ?? '')),
+        /wallet_disconnect|sqc_disconnect/i.test(String(c[0]?.method ?? '')),
       ),
     ).toBe(true);
   });
@@ -265,7 +266,7 @@ describe('extension method aliases matrix', () => {
     ['splendor_accounts', 'sqc_accounts'],
     ['splendor_connect', 'sqc_requestAccounts'],
     ['splendor_signMessage', 'sqc_sign'],
-    ['splendor_disconnect', 'sqc_disconnect'],
+    ['splendor_disconnect', 'wallet_disconnect'],
   ] as const)('toExtensionMethod(%s) → %s', (from, to) => {
     expect(toExtensionMethod(from)).toBe(to);
   });

@@ -29,7 +29,7 @@ export { SqRpc } from './rpc.js';
 export type { RpcOptions } from './rpc.js';
 export { SqcProvider } from './provider.js';
 export type { ProviderOptions } from './provider.js';
-export { BridgeError, isBridgeError, WalletError, isWalletError } from './errors.js';
+export { BridgeError, isBridgeError, WalletError, isWalletError, wrapUnknown, mapProviderError } from './errors.js';
 export type { BridgeErrorCode, WalletErrorCode } from './errors.js';
 export { isValidAddress, assertAddress, canonicalizeAddress } from './address.js';
 export { MIN_FEE, bytesToHex, hexToBytes, isHexString } from './encoding.js';
@@ -200,8 +200,11 @@ export {
   METHOD_ALIASES,
   toCanonicalMethod,
   toExtensionMethod,
+  toExtensionParams,
   getExtensionProvider,
   getSplendorInjected,
+  discoverExtensionProvider,
+  clearExtensionDiscoveryCache,
   requestWithAlias,
   isExtensionProvider,
   isInPageProvider,

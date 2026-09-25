@@ -22,8 +22,11 @@ export {
   METHOD_ALIASES,
   toCanonicalMethod,
   toExtensionMethod,
+  toExtensionParams,
   getExtensionProvider,
   getSplendorInjected,
+  discoverExtensionProvider,
+  clearExtensionDiscoveryCache,
   requestWithAlias,
 } from './extension-provider.js';
 export {

@@ -161,3 +161,22 @@ describe('TransferWidget', () => {
     expect(ctrl.openModal).toHaveBeenCalledWith('connect');
   });
 });
+
+describe('ConnectModal', () => {
+  it('opens without ReferenceError (no legacy group)', async () => {
+    const { ConnectModal } = await import('../ui/ConnectModal.js');
+    const { seedConnector, extensionConnector } = await import('../connectors/index.js');
+    const state = makeState({
+      status: 'disconnected',
+      account: null,
+      info: null,
+      modal: 'connect',
+      connectors: [extensionConnector({ discoveryTimeoutMs: 50 }), seedConnector()],
+    });
+    const ctrl = makeController(state);
+    expect(() =>
+      render(React.createElement(ConnectModal), { wrapper: providerWrap(ctrl) }),
+    ).not.toThrow();
+    expect(screen.getByText(/Connect to Splendor/i)).toBeTruthy();
+  });
+});

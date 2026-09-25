@@ -23,3 +23,6 @@
 
 # macOS finder metadata — never belongs in the tree
 .DS_Store
+
+# Local R&D / reference clones (e.g. Splendor Quantum Wallet extension) — never push
+/research/

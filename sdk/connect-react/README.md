@@ -103,6 +103,11 @@ extension** (via `sqc_accounts` / `splendor_accounts`). A native seed is typed e
 session and is never persisted or silently reconnected. MetaMask / EIP-1193 /
 WalletConnect are not supported — ConnectKit offers extension + native seed only.
 
+The extension uses **`wallet_disconnect`** (origin-scoped) and **array** RPC params.
+ConnectKit’s `ExtensionSigner` matches that wire format. Network changes in the
+extension Settings emit `chainChanged`; dApp soft-switch updates SDK RPC only —
+pair with `<WrongNetworkBanner expectedNetworkId="…" />` when needed.
+
 ### Pin the signer
 
 `wasmSha256` is the SHA-256 of the `@splendor/sqc-sdk` signer bundle. The

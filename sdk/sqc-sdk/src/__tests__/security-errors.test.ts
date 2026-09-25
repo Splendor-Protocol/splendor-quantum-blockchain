@@ -2,7 +2,7 @@
  * SQDP-1 required error codes are constructible and thrown from real APIs where cheap.
  */
 import { describe, expect, it } from 'vitest';
-import { BridgeError, isBridgeError, wrapUnknown } from '../errors.js';
+import { BridgeError, isBridgeError, wrapUnknown, mapProviderError } from '../errors.js';
 import { assertAddress } from '../address.js';
 import { assertFeeAtLeastMin } from '../encoding.js';
 import { SqRpc } from '../rpc.js';
@@ -181,5 +181,42 @@ describe('wrapUnknown', () => {
   it('maps user reject messages to USER_REJECTED', () => {
     const w = wrapUnknown(new Error('User rejected the request'));
     expect(w.code).toBe('USER_REJECTED');
+  });
+});
+
+describe('mapProviderError SQDP numeric matrix', () => {
+  function withCode(code: number, message = 'x') {
+    const e = new Error(message) as Error & { code: number };
+    e.code = code;
+    return e;
+  }
+
+  it('maps 4001 → USER_REJECTED', () => {
+    expect(mapProviderError(withCode(4001)).code).toBe('USER_REJECTED');
+  });
+
+  it('maps 4100 → NOT_CONNECTED with unlock hint when locked', () => {
+    const err = mapProviderError(withCode(4100, 'Wallet locked'));
+    expect(err.code).toBe('NOT_CONNECTED');
+    expect(err.userHint).toMatch(/unlock|locked/i);
+  });
+
+  it('maps 4200 → RPC (unsupported for alias retry)', () => {
+    expect(mapProviderError(withCode(4200, 'unsupported method')).code).toBe('RPC');
+  });
+
+  it('maps 4900 / 4901 / 4902', () => {
+    expect(mapProviderError(withCode(4900)).code).toBe('INVALID_ADDRESS');
+    expect(mapProviderError(withCode(4901)).code).toBe('INVALID_FEE');
+    expect(mapProviderError(withCode(4902)).code).toBe('CHAIN_MISMATCH');
+  });
+
+  it('accepts string numeric codes', () => {
+    const e = { code: '4100', message: 'Not connected' };
+    expect(mapProviderError(e).code).toBe('NOT_CONNECTED');
+  });
+
+  it('wrapUnknown delegates to mapProviderError', () => {
+    expect(wrapUnknown(withCode(4902)).code).toBe('CHAIN_MISMATCH');
   });
 });

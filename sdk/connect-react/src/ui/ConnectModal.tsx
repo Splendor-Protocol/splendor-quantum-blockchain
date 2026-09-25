@@ -42,7 +42,7 @@ export function ConnectModal() {
   const advancedPanelId = useId();
 
   const { native, advanced } = useMemo(() => groupConnectors(connectors), [connectors]);
-  const selectable = useMemo(() => [...native, ...legacy], [native, legacy]);
+  const selectable = useMemo(() => [...native, ...advanced], [native, advanced]);
   const nativeConnector = useMemo(
     () => native.find((c) => c.id === nativeId) ?? null,
     [native, nativeId],

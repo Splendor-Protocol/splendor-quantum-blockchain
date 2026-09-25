@@ -14,6 +14,8 @@ import {
   fromUnits,
   WalletError,
   CHAIN_ID,
+  discoverExtensionProvider,
+  clearExtensionDiscoveryCache,
 } from '../index.js';
 import golden from '../../testdata/golden-vectors.json';
 
@@ -290,6 +292,51 @@ describe('audit scenarios', () => {
     ).rejects.toMatchObject({ code: 'CHAIN_MISMATCH' });
     expect(WalletError.txFailed('x').name).toBe('WalletError');
   }, 60_000);
+});
+
+describe('extension discovery performance', () => {
+  afterEach(() => {
+    clearExtensionDiscoveryCache();
+    delete (globalThis as { window?: unknown }).window;
+    vi.useRealTimers();
+  });
+
+  it('fast-hit returns immediately when inject present', async () => {
+    const provider = {
+      isSplendor: true,
+      isExtension: true,
+      request: async () => [],
+    };
+    (globalThis as { window: unknown }).window = {
+      splendor: provider,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    };
+    const t0 = Date.now();
+    const p = await discoverExtensionProvider(5_000);
+    expect(p).toBe(provider);
+    expect(Date.now() - t0).toBeLessThan(200);
+  });
+
+  it('timeout miss caches negative result so second call is instant', async () => {
+    vi.useFakeTimers();
+    (globalThis as { window: unknown }).window = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => true,
+    };
+    const first = discoverExtensionProvider(300);
+    // Attach rejection handler before advancing timers (avoids unhandled rejection).
+    const firstAssert = expect(first).rejects.toMatchObject({ code: 'NO_PROVIDER' });
+    await vi.advanceTimersByTimeAsync(400);
+    await firstAssert;
+
+    const t0 = Date.now();
+    await expect(discoverExtensionProvider(5_000)).rejects.toMatchObject({ code: 'NO_PROVIDER' });
+    // Negative cache: no second wait for full timeout.
+    expect(Date.now() - t0).toBeLessThan(50);
+  });
 });
 
 function createWalletClientish(): Wallet {

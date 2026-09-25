@@ -55,13 +55,14 @@ describe('extensionConnector', () => {
     delete (globalThis as { window?: unknown }).window;
   });
 
-  it('ready is false without window.splendor', () => {
+  it('ready is false without window.splendor', async () => {
     (globalThis as { window?: Window }).window = globalThis as unknown as Window;
     delete (window as { splendor?: unknown }).splendor;
-    expect(extensionConnector().ready()).toBe(false);
+    // discoveryTimeoutMs short so the test does not wait 5s
+    await expect(extensionConnector({ discoveryTimeoutMs: 50 }).ready()).resolves.toBe(false);
   });
 
-  it('ready is true for extension inject', () => {
+  it('ready is true for extension inject', async () => {
     (globalThis as { window?: Window }).window = globalThis as unknown as Window;
     window.splendor = {
       isSplendor: true,
@@ -70,7 +71,7 @@ describe('extensionConnector', () => {
       removeListener() {},
       once() {},
     };
-    expect(extensionConnector().ready()).toBe(true);
+    await expect(extensionConnector({ discoveryTimeoutMs: 50 }).ready()).resolves.toBe(true);
   });
 });
 

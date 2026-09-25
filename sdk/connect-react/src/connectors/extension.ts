@@ -1,13 +1,19 @@
 import {
   connectExtension,
+  discoverExtensionProvider,
   getExtensionProvider,
   type DeriveInfo,
+  type SplendorProviderLike,
 } from '@splendor/sqc-sdk';
 import type { Connector, ConnectorContext } from './types.js';
 
 export type ExtensionConnectorOpts = {
   name?: string;
   icon?: string;
+  /** Max ms to wait for window.splendor on connect. Default 5000. */
+  discoveryTimeoutMs?: number;
+  /** Max ms for modal `ready()` when inject is missing. Default 400. */
+  readyTimeoutMs?: number;
 };
 
 /**
@@ -16,6 +22,9 @@ export type ExtensionConnectorOpts = {
  */
 export function extensionConnector(opts: ExtensionConnectorOpts = {}): Connector {
   let sessionDisconnect: (() => void) | null = null;
+  let cachedProvider: SplendorProviderLike | undefined;
+  const discoveryTimeoutMs = opts.discoveryTimeoutMs ?? 5_000;
+  const readyTimeoutMs = opts.readyTimeoutMs ?? 400;
 
   return {
     id: 'splendor-extension',
@@ -23,18 +32,36 @@ export function extensionConnector(opts: ExtensionConnectorOpts = {}): Connector
     icon: opts.icon,
     keyOrigin: 'native',
     postQuantumSecure: true,
-    ready() {
-      return !!getExtensionProvider();
+    async ready() {
+      const existing = getExtensionProvider();
+      if (existing) {
+        cachedProvider = existing;
+        return true;
+      }
+      try {
+        // Short burst for ConnectModal — do not wait a full 5s when wallet is missing.
+        cachedProvider = await discoverExtensionProvider(readyTimeoutMs);
+        return true;
+      } catch {
+        return !!getExtensionProvider();
+      }
     },
     async authorized() {
-      const p = getExtensionProvider();
-      if (!p) return false;
+      let p = cachedProvider ?? getExtensionProvider();
+      if (!p) {
+        try {
+          p = await discoverExtensionProvider(Math.min(discoveryTimeoutMs, 2_000));
+          cachedProvider = p;
+        } catch {
+          return false;
+        }
+      }
       try {
-        const accounts = await p.request({ method: 'sqc_accounts' });
+        const accounts = await p.request({ method: 'sqc_accounts', params: [] });
         return Array.isArray(accounts) && accounts.length > 0;
       } catch {
         try {
-          const accounts = await p.request({ method: 'splendor_accounts' });
+          const accounts = await p.request({ method: 'splendor_accounts', params: [] });
           return Array.isArray(accounts) && accounts.length > 0;
         } catch {
           return false;
@@ -42,9 +69,16 @@ export function extensionConnector(opts: ExtensionConnectorOpts = {}): Connector
       }
     },
     async connect(ctx: ConnectorContext): Promise<DeriveInfo> {
+      const provider =
+        cachedProvider ??
+        getExtensionProvider() ??
+        (await discoverExtensionProvider(discoveryTimeoutMs));
+      cachedProvider = provider;
       const { wallet, info } = await connectExtension({
         connection: ctx.connection,
         networkId: ctx.network.id,
+        discoveryTimeoutMs,
+        provider,
       });
       ctx.setSessionWallet?.(wallet);
       sessionDisconnect = () => wallet.disconnect();
@@ -55,7 +89,7 @@ export function extensionConnector(opts: ExtensionConnectorOpts = {}): Connector
       sessionDisconnect = null;
     },
     onAccountsChanged(cb) {
-      const p = getExtensionProvider();
+      const p = cachedProvider ?? getExtensionProvider();
       if (!p?.on) return () => {};
       const handler = (...args: unknown[]) => {
         const raw = args[0];
