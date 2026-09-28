@@ -2,15 +2,7 @@ import { useState } from 'react';
 import { useAccount, useBalance, useConnect, useNetwork } from '../react/hooks.js';
 import { ModalShell } from './ModalShell.js';
 import { NetworkBadge } from './NetworkBadge.js';
-
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { addressExplorerUrl, copyText } from '../widgets/utils.js';
 
 export function AccountModal() {
   const { modal, closeModal, disconnect } = useConnect();
@@ -20,6 +12,7 @@ export function AccountModal() {
   const [copied, setCopied] = useState(false);
 
   const open = modal === 'account';
+  const explorerHref = addressExplorerUrl(network?.explorerUrl, address) ?? network?.explorerUrl;
 
   const onCopy = async (value: string) => {
     const ok = await copyText(value);
@@ -77,12 +70,12 @@ export function AccountModal() {
         </div>
       </div>
 
-      {network?.explorerUrl ? (
+      {explorerHref ? (
         <div className="sqc-account-row">
           <span className="sqc-account-row__label">Explorer</span>
           <div className="sqc-account-row__value">
             <a
-              href={network.explorerUrl}
+              href={explorerHref}
               target="_blank"
               rel="noreferrer"
               className="sqc-account-link"

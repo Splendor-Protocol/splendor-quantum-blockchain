@@ -85,7 +85,14 @@ export {
 export type { TxHookStatus } from './react/hooks.js';
 export type { AccountDto, TxResultDto } from './core/dto.js';
 export { toAccountDto, toTxResultDto } from './core/dto.js';
-export type { AuthMessageParams, SignedAuth } from './react/auth.js';
+export { parseAuthMessage, checkAuthMessage, authCheckMessage } from './react/auth.js';
+export type {
+  AuthMessageParams,
+  SignedAuth,
+  ParsedAuthMessage,
+  AuthCheckReason,
+  AuthCheckResult,
+} from './react/auth.js';
 
 export {
   ConnectKit,
@@ -109,13 +116,23 @@ export {
   TransferWidget,
   TokenPanel,
   DeployTokenWidget,
+  SignInButton,
   sanitizeIconUrl,
+  normalizeSqAddress,
+  compareDecimal,
+  reviewTransfer,
+  getRecentRecipients,
+  rememberRecipient,
+  addressExplorerUrl,
 } from './widgets/index.js';
 export type {
   AccountCardProps,
   TransferWidgetProps,
   TokenPanelProps,
   DeployTokenWidgetProps,
+  SignInButtonProps,
+  TransferReview,
+  TransferReviewReason,
 } from './widgets/index.js';
 
 export type { ThemeName, ThemeOverrides, ThemeProp } from './theme/themes.js';

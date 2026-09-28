@@ -1,6 +1,7 @@
 export {
   useConnect,
   useAccount,
+  useAccountDto,
   useBalance,
   useNetwork,
   useWallet,
@@ -20,8 +21,18 @@ export {
   useContract,
   useDeployBytecode,
   useModules,
+  useSignIn,
+  createAuthMessage,
 } from './react/hooks.js';
 export type { TxHookStatus } from './react/hooks.js';
+export { parseAuthMessage, checkAuthMessage, authCheckMessage } from './react/auth.js';
+export type {
+  AuthMessageParams,
+  SignedAuth,
+  ParsedAuthMessage,
+  AuthCheckReason,
+  AuthCheckResult,
+} from './react/auth.js';
 export {
   SplendorConnectProvider,
   useConnectController,

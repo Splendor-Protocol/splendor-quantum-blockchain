@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAccount, useBalance, useConnect, useNetwork } from '../react/hooks.js';
 import { NetworkBadge } from '../ui/NetworkBadge.js';
-import { copyText, truncateAddress } from './utils.js';
+import { addressExplorerUrl, copyText, truncateAddress } from './utils.js';
 
 export type AccountCardProps = {
   className?: string;
@@ -45,6 +45,7 @@ export function AccountCard({ className, showDisconnect = true }: AccountCardPro
   }
 
   const pq = info?.postQuantumSecure !== false;
+  const explorerHref = addressExplorerUrl(network?.explorerUrl, address);
 
   const onCopy = async () => {
     if (!(await copyText(address))) return;
@@ -73,6 +74,11 @@ export function AccountCard({ className, showDisconnect = true }: AccountCardPro
           <button type="button" className="sqc-copy" onClick={() => void onCopy()}>
             {copied ? 'Copied' : 'Copy'}
           </button>
+          {explorerHref ? (
+            <a href={explorerHref} target="_blank" rel="noreferrer" className="sqc-account-link">
+              Explorer
+            </a>
+          ) : null}
         </div>
       </div>
       <div className="sqc-account-row">

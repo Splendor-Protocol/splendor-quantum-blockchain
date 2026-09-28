@@ -1,9 +1,17 @@
 import { useId, useState } from 'react';
 import { toUnits } from '@splendor/sqc-sdk/units';
-import { useAccount, useConnect, useQRC20 } from '../react/hooks.js';
+import { useAccount, useConnect, useNetwork, useQRC20 } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
-
-const AMOUNT_RE = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+import {
+  compareDecimal,
+  getRecentRecipients,
+  isPositiveAmount,
+  normalizeSqAddress,
+  rememberRecipient,
+  reviewTransfer,
+  transferReviewMessage,
+} from './utils.js';
+import { RecentRecipients, TransferReviewPanel } from './TransferReview.js';
 
 export type TokenPanelProps = {
   /** QRC-20 token address. Optional — panel shows an address field when omitted. */
@@ -16,14 +24,17 @@ export type TokenPanelProps = {
  */
 export function TokenPanel({ tokenAddress: tokenAddressProp, className }: TokenPanelProps) {
   const uid = useId();
-  const { isConnected } = useAccount();
+  const { address, isConnected } = useAccount();
   const { status: connStatus, openModal } = useConnect();
+  const { network } = useNetwork();
   const [addrInput, setAddrInput] = useState(tokenAddressProp?.trim() ?? '');
   const tokenAddress = (tokenAddressProp?.trim() || addrInput.trim()) || null;
   const { balance, tokenInfo, transferHuman, status, hash, explorerUrl, error, reset, loading } =
     useQRC20(tokenAddress);
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('1');
+  const [reviewing, setReviewing] = useState(false);
+  const [recents, setRecents] = useState<string[]>(() => getRecentRecipients());
 
   const symbol =
     tokenInfo && typeof tokenInfo.symbol === 'string' ? tokenInfo.symbol : 'TOKEN';
@@ -63,18 +74,33 @@ export function TokenPanel({ tokenAddress: tokenAddressProp, className }: TokenP
     );
   }
 
-  const amountOk = AMOUNT_RE.test(amount.trim());
-  const canSend =
-    !!tokenAddress &&
-    !!to.trim() &&
-    amountOk &&
-    status !== 'pending';
+  const review = reviewTransfer({ to, amount, balance: humanBalance, self: address });
+  const toInvalid = !!to.trim() && !normalizeSqAddress(to);
+  const isSelf = !review.ok && review.reason === 'self';
+  const amountInvalid = !!amount.trim() && !isPositiveAmount(amount);
+  const overBalance =
+    !amountInvalid &&
+    humanBalance != null &&
+    !!amount.trim() &&
+    compareDecimal(amount, humanBalance) === 1;
+  const canReview = !!tokenAddress && review.ok && status !== 'pending';
 
-  const onTransfer = async () => {
-    if (!tokenAddress || !amountOk) return;
+  const editTo = (v: string) => {
+    setTo(v);
+    setReviewing(false);
+  };
+  const editAmount = (v: string) => {
+    setAmount(v);
+    setReviewing(false);
+  };
+
+  const onConfirm = async () => {
+    if (!tokenAddress || !review.ok) return;
     reset();
     try {
-      await transferHuman(to.trim(), amount.trim());
+      await transferHuman(review.to, review.amount);
+      setRecents(rememberRecipient(review.to));
+      setReviewing(false);
     } catch {
       /* error state */
     }
@@ -107,39 +133,74 @@ export function TokenPanel({ tokenAddress: tokenAddressProp, className }: TokenP
               ? `Balance: ${humanBalance} ${symbol}`
               : '—'}
       </p>
-      <label className="sqc-widget__label" htmlFor={`${uid}-to`}>
-        To (SQ:…)
-      </label>
-      <input
-        id={`${uid}-to`}
-        className="sqc-input"
-        value={to}
-        onChange={(e) => setTo(e.target.value)}
-        placeholder="SQ:…"
-        autoComplete="off"
-      />
-      <label className="sqc-widget__label" htmlFor={`${uid}-amt`}>
-        Amount (human, e.g. 1.5)
-      </label>
-      <input
-        id={`${uid}-amt`}
-        className="sqc-input"
-        value={amount}
-        onChange={(e) => setAmount(e.target.value)}
-        autoComplete="off"
-      />
-      {amount.trim() && !amountOk ? (
-        <p className="sqc-widget__msg sqc-widget__msg--error">Enter a valid decimal amount</p>
-      ) : null}
-      <button
-        type="button"
-        className="sqc-btn sqc-btn--primary"
-        style={{ marginTop: '0.75rem', width: '100%' }}
-        disabled={!canSend}
-        onClick={() => void onTransfer()}
-      >
-        {status === 'pending' ? 'Sending…' : `Transfer ${symbol}`}
-      </button>
+      {reviewing && review.ok ? (
+        <TransferReviewPanel
+          to={review.to}
+          amount={review.amount}
+          symbol={symbol}
+          networkName={network?.name}
+          pending={status === 'pending'}
+          onBack={() => setReviewing(false)}
+          onConfirm={() => void onConfirm()}
+        />
+      ) : (
+        <>
+          <label className="sqc-widget__label" htmlFor={`${uid}-to`}>
+            To (SQ:…)
+          </label>
+          <input
+            id={`${uid}-to`}
+            className="sqc-input"
+            value={to}
+            onChange={(e) => editTo(e.target.value)}
+            placeholder="SQ:…"
+            autoComplete="off"
+            aria-invalid={toInvalid || isSelf}
+          />
+          <RecentRecipients recipients={recents} onPick={editTo} />
+          {toInvalid ? (
+            <p className="sqc-widget__msg sqc-widget__msg--error">
+              {transferReviewMessage('invalid-address')}
+            </p>
+          ) : isSelf ? (
+            <p className="sqc-widget__msg sqc-widget__msg--error">{transferReviewMessage('self')}</p>
+          ) : null}
+          <label className="sqc-widget__label" htmlFor={`${uid}-amt`}>
+            Amount (human, e.g. 1.5)
+          </label>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <input
+              id={`${uid}-amt`}
+              className="sqc-input"
+              value={amount}
+              onChange={(e) => editAmount(e.target.value)}
+              autoComplete="off"
+              aria-invalid={amountInvalid || overBalance}
+            />
+            {humanBalance != null ? (
+              <button type="button" className="sqc-copy" onClick={() => editAmount(humanBalance)}>
+                Max
+              </button>
+            ) : null}
+          </div>
+          {amountInvalid ? (
+            <p className="sqc-widget__msg sqc-widget__msg--error">Enter a valid decimal amount</p>
+          ) : overBalance ? (
+            <p className="sqc-widget__msg sqc-widget__msg--error">
+              {transferReviewMessage('insufficient', symbol)}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            className="sqc-btn sqc-btn--primary"
+            style={{ marginTop: '0.75rem', width: '100%' }}
+            disabled={!canReview}
+            onClick={() => setReviewing(true)}
+          >
+            {status === 'pending' ? 'Sending…' : 'Review'}
+          </button>
+        </>
+      )}
       {hash ? (
         <p className="sqc-widget__msg">
           Tx: {hash}

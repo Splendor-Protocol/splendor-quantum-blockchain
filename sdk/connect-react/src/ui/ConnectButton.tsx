@@ -2,11 +2,7 @@ import { useAccount, useBalance, useConnect } from '../react/hooks.js';
 import { useHostModals } from '../react/context.js';
 import { AccountModal } from './AccountModal.js';
 import { ConnectModal } from './ConnectModal.js';
-
-function truncateAddress(addr: string, left = 6, right = 4): string {
-  if (addr.length <= left + right + 1) return addr;
-  return `${addr.slice(0, left)}…${addr.slice(-right)}`;
-}
+import { truncateAddress } from '../widgets/utils.js';
 
 export type ConnectButtonProps = {
   label?: string;

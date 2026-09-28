@@ -47,7 +47,7 @@ export function usePayX402(): {
       try {
         const result = await wallet.payX402({
           to: opts.to,
-          amount: opts.amount,
+          amount: opts.amount ?? '',
           amountSPLD: opts.amountSPLD,
           requirements: opts.requirements,
           settle: opts.settle,

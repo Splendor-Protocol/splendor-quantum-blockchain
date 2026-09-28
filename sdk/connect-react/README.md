@@ -54,8 +54,17 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Bridge, QRC-1
 | Bound module factory | `useModules()` |
 | Raw module router | `useModuleCall` (power user) |
 | X402 micropayment | `usePayX402` (seed / WASM wallet only; extension settle not available yet) |
-| ML-DSA Sign-In | `useSignIn`, `createAuthMessage` |
+| ML-DSA Sign-In | `useSignIn`, `createAuthMessage`, `checkAuthMessage`, `<SignInButton />` |
 | Account / tx DTOs | `useAccountDto`, `toTxResultDto` |
+| Send safety helpers | `reviewTransfer`, `normalizeSqAddress`, `compareDecimal`, `getRecentRecipients` |
+
+`TransferWidget` and `TokenPanel` reject `0x` / malformed recipients, self-sends, and amounts above the
+displayed balance, and show a review step before signing. Recent recipients (public `SQ:` addresses
+only, max 5) are kept in `localStorage` under `sqc.connect.recentRecipients`.
+
+`checkAuthMessage(message, { domain })` checks the Connect v2 layout, domain, expiry, and
+future-dated `Issued At`. It does **not** verify the signature — the server must still verify it
+and consume the nonce once.
 
 ```tsx
 const { claim } = useBridge(bridgeAddress);

@@ -326,7 +326,8 @@ export function createConnectController(
         return Promise.reject(new Error(`Unknown connector: ${connectorId}`));
       }
 
-      const flight = (async () => {
+      let flight: Promise<DeriveInfo> | undefined;
+      flight = (async () => {
         const epoch = connectEpoch;
         const stillCurrent = () => epoch === connectEpoch && !destroyed;
         error = null;
@@ -688,8 +689,6 @@ export function connectErrorMessage(err: unknown): string {
         return 'Request rejected in wallet';
       case 'BUSY':
         return 'Connection already in progress — wait a moment';
-      case 'NO_PROVIDER':
-        return 'Install Splendor Quantum Wallet';
       case 'WASM':
         return 'Signer failed to load — check WASM hosting';
       case 'RPC_UNAVAILABLE':
@@ -702,8 +701,6 @@ export function connectErrorMessage(err: unknown): string {
         return 'Chain mismatch — check network config';
       case 'TIMEOUT':
         return 'Request timed out';
-      case 'NOT_CONNECTED':
-        return 'Unlock or connect your Splendor Quantum Wallet';
       case 'TX_FAILED':
         return 'Transaction failed';
       case 'TX_NOT_CONFIRMED':

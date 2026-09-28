@@ -4,7 +4,7 @@
  *   import { sqcWasmPlugin } from '@splendor/connect-react/vite';
  *   plugins: [react(), sqcWasmPlugin()]
  */
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,9 +69,16 @@ export function copySqcWasmAssets(destDir: string, srcDir?: string | null): stri
     if (!existsSync(from)) {
       throw new Error(`@splendor/connect-react/vite: missing ${from}`);
     }
-    copyFileSync(from, join(destDir, f));
+    copyWritable(from, join(destDir, f));
   }
   return src;
+}
+
+/** Go ships wasm_exec.js read-only; copyFileSync keeps that mode, which breaks the next copy. */
+function copyWritable(from: string, to: string): void {
+  if (existsSync(to)) chmodSync(to, 0o644);
+  copyFileSync(from, to);
+  chmodSync(to, 0o644);
 }
 
 export function sqcWasmPlugin(options: SqcWasmPluginOptions = {}): Plugin {

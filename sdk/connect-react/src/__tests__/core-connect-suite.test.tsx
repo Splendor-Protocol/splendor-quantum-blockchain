@@ -53,6 +53,7 @@ const mockInfo: DeriveInfo = {
   keyOrigin: 'native',
   postQuantumSecure: true,
 };
+const RECIPIENT = 'SQ:' + 'cd'.repeat(32);
 
 let nextProbeResult:
   | { ok: true; chainId?: string }
@@ -520,8 +521,8 @@ describe('widgets core', () => {
       });
       const root = within(container);
       fireEvent.change(root.getByLabelText(/Amount \(SPLD\)/i), { target: { value: amount } });
-      fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: mockInfo.address } });
-      expect((root.getByRole('button', { name: /^Send$/i }) as HTMLButtonElement).disabled).toBe(
+      fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: RECIPIENT } });
+      expect((root.getByRole('button', { name: /^Review$/i }) as HTMLButtonElement).disabled).toBe(
         true,
       );
     },
@@ -533,9 +534,9 @@ describe('widgets core', () => {
       wrapper: widgetWrap(ctrl),
     });
     const root = within(container);
-    fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: mockInfo.address } });
+    fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: RECIPIENT } });
     fireEvent.change(root.getByLabelText(/Amount \(SPLD\)/i), { target: { value: '0.01' } });
-    expect((root.getByRole('button', { name: /^Send$/i }) as HTMLButtonElement).disabled).toBe(
+    expect((root.getByRole('button', { name: /^Review$/i }) as HTMLButtonElement).disabled).toBe(
       false,
     );
   });
@@ -558,7 +559,7 @@ describe('widgets core', () => {
     expect(screen.getByRole('button', { name: /^Connect$/i })).toBeTruthy();
   });
 
-  it.each(['0', '1.5', '10', '0.01'] as const)(
+  it.each(['1.5', '10', '0.01'] as const)(
     'TokenPanel accepts decimal amount shape %s when address filled',
     (amount) => {
       const ctrl = makeHookController(makeState());
@@ -567,25 +568,25 @@ describe('widgets core', () => {
         { wrapper: widgetWrap(ctrl) },
       );
       const root = within(container);
-      fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: mockInfo.address } });
+      fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: RECIPIENT } });
       fireEvent.change(root.getByLabelText(/Amount \(human/i), { target: { value: amount } });
       expect(
-        (root.getByRole('button', { name: /Transfer/i }) as HTMLButtonElement).disabled,
+        (root.getByRole('button', { name: /^Review$/i }) as HTMLButtonElement).disabled,
       ).toBe(false);
     },
   );
 
-  it.each(['abc', '01', '1.'] as const)('TokenPanel rejects bad amount %s', (amount) => {
+  it.each(['abc', '01', '1.', '0', '0.0', '0.000'] as const)('TokenPanel rejects bad amount %s', (amount) => {
     const ctrl = makeHookController(makeState());
     const { container } = render(
       React.createElement(TokenPanel, { tokenAddress: mockInfo.address }),
       { wrapper: widgetWrap(ctrl) },
     );
     const root = within(container);
-    fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: mockInfo.address } });
+    fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: RECIPIENT } });
     fireEvent.change(root.getByLabelText(/Amount \(human/i), { target: { value: amount } });
     expect(
-      (root.getByRole('button', { name: /Transfer/i }) as HTMLButtonElement).disabled,
+      (root.getByRole('button', { name: /^Review$/i }) as HTMLButtonElement).disabled,
     ).toBe(true);
   });
 });

@@ -8,7 +8,7 @@
  *
  * Default dest: ./public (cwd-relative)
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -62,7 +62,11 @@ for (const f of files) {
     console.error('Missing', from);
     process.exit(1);
   }
-  copyFileSync(from, join(dest, f));
+  const to = join(dest, f);
+  // Go ships wasm_exec.js read-only; copyFileSync keeps that mode, which breaks the next copy.
+  if (existsSync(to)) chmodSync(to, 0o644);
+  copyFileSync(from, to);
+  chmodSync(to, 0o644);
   console.log('Copied', f, '→', join(dest, f));
 }
 
