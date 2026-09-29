@@ -34,7 +34,15 @@ set -euo pipefail
 REPO="${REPO:?set REPO=owner/name}"
 TOKEN="${TOKEN:?set TOKEN=<registration token>}"
 RUNNER_USER="${RUNNER_USER:-ghrunner}"
-RUNNER_HOME="${RUNNER_HOME:-/opt/actions-runner}"
+# One box serves several repos, and a runner registration is per repo. Set
+# RUNNER_INSTANCE (e.g. explorer) for every repo but the first, so each gets
+# its own directory, unit and runner name. Unset keeps the original layout.
+RUNNER_INSTANCE="${RUNNER_INSTANCE:-}"
+case "$RUNNER_INSTANCE" in *[!a-z0-9-]*) echo "RUNNER_INSTANCE must be [a-z0-9-]" >&2; exit 2 ;; esac
+suffix="${RUNNER_INSTANCE:+-$RUNNER_INSTANCE}"
+RUNNER_HOME="${RUNNER_HOME:-/opt/actions-runner$suffix}"
+RUNNER_UNIT="actions-runner$suffix"
+RUNNER_NAME="${RUNNER_NAME:-$(hostname -s)$suffix}"
 RUNNER_VERSION="${RUNNER_VERSION:-2.337.0}"
 # The label the workflows select on. Keep it in step with the repo variable
 # CI_RUNNER_LABEL; see README.md in this directory.
@@ -92,6 +100,16 @@ say "installing actions-runner $RUNNER_VERSION into $RUNNER_HOME"
 mkdir -p "$RUNNER_HOME"
 cd "$RUNNER_HOME"
 
+# Re-running for a different repo without RUNNER_INSTANCE would deregister
+# the runner already here and point its unit at the new repo.
+if [ -f .runner ] && ! grep -qF "\"https://github.com/${REPO}\"" .runner; then
+	die "$RUNNER_HOME is registered to another repo; set RUNNER_INSTANCE"
+fi
+unit_file="/etc/systemd/system/${RUNNER_UNIT}.service"
+if [ -f "$unit_file" ] && ! grep -qxF "WorkingDirectory=${RUNNER_HOME}" "$unit_file"; then
+	die "$unit_file runs a different runner; set RUNNER_INSTANCE"
+fi
+
 if [ ! -x ./run.sh ] || [ "$(cat .installed-version 2>/dev/null || true)" != "$RUNNER_VERSION" ]; then
 	# A registered runner must be told to go away before its files are
 	# replaced, or GitHub keeps offering it jobs it can no longer accept.
@@ -121,7 +139,7 @@ if [ ! -f .runner ]; then
 		--unattended \
 		--url "https://github.com/${REPO}" \
 		--token "$TOKEN" \
-		--name "$(hostname -s)" \
+		--name "$RUNNER_NAME" \
 		--labels "$RUNNER_LABELS" \
 		--work _work \
 		--replace
@@ -166,7 +184,7 @@ chown "$RUNNER_USER:$RUNNER_USER" "$RUNNER_HOME/.env"
 # The runner ships svc.sh, which writes a unit much like this one; writing it
 # here keeps the whole install in one reviewable file.
 say "installing the systemd unit"
-cat >/etc/systemd/system/actions-runner.service <<UNIT
+cat >"$unit_file" <<UNIT
 [Unit]
 Description=GitHub Actions runner (${REPO})
 After=network-online.target
@@ -192,16 +210,17 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now actions-runner.service
+systemctl enable --now "$RUNNER_UNIT.service"
 sleep 3
-systemctl is-active --quiet actions-runner.service \
-	|| die "the service did not come up; journalctl -u actions-runner -n 50"
+systemctl is-active --quiet "$RUNNER_UNIT.service" \
+	|| die "the service did not come up; journalctl -u $RUNNER_UNIT -n 50"
 
 say "runner is up"
 echo
 echo "  labels : $RUNNER_LABELS"
 echo "  repo   : https://github.com/${REPO}/settings/actions/runners"
-echo "  logs   : journalctl -u actions-runner -f"
+echo "  name   : $RUNNER_NAME"
+echo "  logs   : journalctl -u $RUNNER_UNIT -f"
 echo
 echo "Nothing routes to it until the repo variable CI_RUNNER_LABEL is set."
 echo "Point CI at it with:"
