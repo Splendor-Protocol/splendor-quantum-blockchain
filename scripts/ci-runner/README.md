@@ -80,6 +80,19 @@ gh api /repos/$REPO/actions/runners --jq '.runners[] | {name, status, labels: [.
 Then set `CI_RUNNER_LABEL` and open a throwaway pull request to watch a real
 job land on it.
 
+### Another repository on the same box
+
+Registrations are per repository, so each extra repo needs its own runner.
+Pass `RUNNER_INSTANCE` so it gets `/opt/actions-runner-<instance>`,
+`actions-runner-<instance>.service` and the name `<host>-<instance>`, leaving
+the existing runner alone (the script refuses to reuse a directory or unit that
+belongs to another repo):
+
+```bash
+sudo REPO=Splendor-Protocol/splendor-quantum-explorer TOKEN=$TOKEN \
+     RUNNER_INSTANCE=explorer bash install-runner.sh
+```
+
 ## The decisions baked in, and why
 
 **Persistent registration, wiped workspace.** The obvious choice is
