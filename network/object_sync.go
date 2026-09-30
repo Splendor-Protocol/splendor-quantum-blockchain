@@ -2,10 +2,12 @@ package network
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/network/coding"
@@ -58,6 +60,111 @@ func objectFetchDeadline(n uint32) time.Duration {
 		return d
 	}
 	return objectFetchFloor
+}
+
+// objectProgress retains partially-decoded coded-object receivers so a retry
+// against the SAME peer resumes from already-authenticated symbols instead of
+// restarting from rank zero. It is bounded in both entry count and committed
+// payload bytes: a receiver holds one decoder per generation, so the worst case
+// is the object's committed payload (capped by objects.DefaultMaxObjectSize).
+// The key is (peer, descriptor ID): an object's manifest is signed by the
+// serving peer's node key, so a receiver is only ever resumed against the peer
+// it was built for — never across signers. Failure modes stay fail-closed: only
+// lossy/liveness failures (a generation that does not reach full rank) are
+// retained; a proof that fails authentication aborts and is never cached.
+type objectProgress struct {
+	mu      sync.Mutex
+	entries map[string]*objectProgressEntry
+	order   []string // FIFO, oldest first
+	bytes   uint64
+	resumes uint64 // metric: transfers that resumed from retained progress
+}
+
+type objectProgressEntry struct {
+	recv *objects.ObjectReceiver
+	size uint64
+}
+
+const (
+	maxObjectProgressReceivers = 4
+	maxObjectProgressBytes     = 256 << 20 // 256 MiB aggregate decoder state
+)
+
+func newObjectProgress() *objectProgress {
+	return &objectProgress{entries: make(map[string]*objectProgressEntry)}
+}
+
+func objectProgressKey(peerAddr string, descID [32]byte) string {
+	return peerAddr + "|" + hex.EncodeToString(descID[:])
+}
+
+// take removes and returns the retained receiver for (peer, descID), or nil.
+func (p *objectProgress) take(peerAddr string, descID [32]byte) *objects.ObjectReceiver {
+	if p == nil {
+		return nil
+	}
+	key := objectProgressKey(peerAddr, descID)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.entries[key]
+	if !ok {
+		return nil
+	}
+	delete(p.entries, key)
+	for i, k := range p.order {
+		if k == key {
+			p.order = append(p.order[:i], p.order[i+1:]...)
+			break
+		}
+	}
+	p.bytes -= e.size
+	p.resumes++
+	return e.recv
+}
+
+// keep retains a partially-decoded receiver for a later retry, evicting the
+// oldest entry when a bound would be exceeded. An object larger than the whole
+// byte budget is not retained.
+func (p *objectProgress) keep(peerAddr string, descID [32]byte, recv *objects.ObjectReceiver, size uint64) {
+	if p == nil || recv == nil || size == 0 || size > maxObjectProgressBytes {
+		return
+	}
+	key := objectProgressKey(peerAddr, descID)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.entries[key]; exists {
+		return
+	}
+	for (len(p.entries) >= maxObjectProgressReceivers || p.bytes+size > maxObjectProgressBytes) && len(p.order) > 0 {
+		oldest := p.order[0]
+		p.order = p.order[1:]
+		if e, ok := p.entries[oldest]; ok {
+			p.bytes -= e.size
+			delete(p.entries, oldest)
+		}
+	}
+	if len(p.entries) >= maxObjectProgressReceivers || p.bytes+size > maxObjectProgressBytes {
+		return
+	}
+	p.order = append(p.order, key)
+	p.entries[key] = &objectProgressEntry{recv: recv, size: size}
+	p.bytes += size
+}
+
+// Resumes reports how many transfers resumed from retained progress.
+func (p *objectProgress) Resumes() uint64 {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.resumes
+}
+
+// CodedProgressResumes reports how many coded-object transfers resumed from a
+// partially-decoded receiver retained by an earlier attempt, for observability.
+func (f *BlockFetcher) CodedProgressResumes() uint64 {
+	return f.progress.Resumes()
 }
 
 // FetchCodedObject pulls a peer's currently published coded object over the
@@ -114,9 +221,16 @@ func (f *BlockFetcher) fetchDecodedObject(ctx context.Context, peerAddr string, 
 	if err != nil {
 		return nil, fmt.Errorf("coded object from %s: peer identity: %w", peerAddr, err)
 	}
-	recv, err := objects.NewObjectReceiver(manifest, limits, objects.AllowObjectSignerBytes(doc.NodePubKey))
-	if err != nil {
-		return nil, fmt.Errorf("object manifest from %s: %w", peerAddr, err)
+	descID := manifest.DescriptorID()
+	// Resume a partially-decoded receiver from a previous attempt against the
+	// same peer (same descriptor, same signer) rather than restarting from
+	// rank zero.
+	recv := f.progress.take(peerAddr, descID)
+	if recv == nil {
+		recv, err = objects.NewObjectReceiver(manifest, limits, objects.AllowObjectSignerBytes(doc.NodePubKey))
+		if err != nil {
+			return nil, fmt.Errorf("object manifest from %s: %w", peerAddr, err)
+		}
 	}
 	// One client for every symbol so the loop reuses a connection instead of
 	// building a transport per request, under one deadline for the whole loop,
@@ -129,7 +243,6 @@ func (f *BlockFetcher) fetchDecodedObject(ctx context.Context, peerAddr string, 
 	client := PeerHTTPClient(objectFetchTimeout)
 	ctx, cancel := context.WithTimeout(ctx, objectFetchDeadline(total))
 	defer cancel()
-	descID := manifest.DescriptorID()
 	symbols := 0
 	for gen := 0; gen < recv.GenerationCount(); gen++ {
 		cb := manifest.Generations[gen].CodebookSize
@@ -150,11 +263,13 @@ func (f *BlockFetcher) fetchDecodedObject(ctx context.Context, peerAddr string, 
 			symbols++
 		}
 		if !recv.GenReady(gen) {
+			f.progress.keep(peerAddr, descID, recv, manifest.ObjectSize)
 			return nil, fmt.Errorf("object generation %d from %s did not reach full rank (%d symbols absorbed)", gen, peerAddr, symbols)
 		}
 	}
 	got, err := recv.Decode()
 	if err != nil {
+		f.progress.keep(peerAddr, descID, recv, manifest.ObjectSize)
 		return nil, fmt.Errorf("decode coded object from %s: %w", peerAddr, err)
 	}
 	return got, nil

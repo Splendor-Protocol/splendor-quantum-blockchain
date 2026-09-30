@@ -165,6 +165,10 @@ type BlockFetcher struct {
 	cfg    SyncConfig
 	client *http.Client
 
+	// progress retains partially-decoded coded-object receivers across a retry
+	// against the same peer (see object_sync.go).
+	progress *objectProgress
+
 	// trustedPK is the genesis validator key every block is authenticated
 	// against (with the active set as the second key ring, see
 	// VerifyBlockProducer). It starts as cfg.ValidatorPubKey and may be
@@ -179,6 +183,7 @@ func NewBlockFetcher(cfg SyncConfig) *BlockFetcher {
 	return &BlockFetcher{
 		cfg:       cfg,
 		trustedPK: append([]byte(nil), cfg.ValidatorPubKey...),
+		progress:  newObjectProgress(),
 		client: &http.Client{
 			Timeout:       cfg.RequestTimeout,
 			CheckRedirect: noRedirect,
