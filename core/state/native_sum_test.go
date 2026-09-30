@@ -127,10 +127,7 @@ func TestCommitReusesThePendingRootOnlyWhileUnchanged(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", step, err)
 		}
-		full, err := sdb.StateRoot()
-		if err != nil {
-			t.Fatal(err)
-		}
+		full := diskRoot(t, sdb)
 		if got != full {
 			t.Fatalf("%s: commit returned %x, a full recomputation gives %x", step, got[:8], full[:8])
 		}

@@ -1148,6 +1148,8 @@ func runNode(cmd *cobra.Command, args []string) error {
 			case <-ticker.C:
 				h, _ := executor.LatestHeight()
 				nodeMetrics.SetChainHeight(h)
+				rs := stateDB.RootStats()
+				nodeMetrics.SetStateRoots(rs.Computed, rs.Reused)
 				nodeMetrics.SetMempoolSize(pool.Size())
 				nodeMetrics.SetPeerCount(peerPool.Count())
 				nodeMetrics.SetWSClientCount(wsHub.ClientCount())
