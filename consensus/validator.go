@@ -44,6 +44,12 @@ type Config struct {
 	// the syncer, so a validator that is still catching up votes on peers'
 	// proposals but never proposes on top of a stale head.
 	Ready func() bool
+
+	// FetchBlock retrieves the block body with the given hash at the given
+	// height, used to recover a round-change-selected value this node does not
+	// hold. nil keeps the pre-fetch behaviour (hold until a peer re-proposes
+	// it). Wired to the syncer's block fetcher on validator nodes.
+	FetchBlock func(height uint64, hash [32]byte) (*types.Block, error)
 }
 
 // ErrBFTRequired is returned by Validator.Run when the block this node would

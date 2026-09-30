@@ -623,6 +623,31 @@ func (s *Syncer) TrustedPubKey() []byte {
 	return s.fetcher.TrustedPubKey()
 }
 
+// FetchBlockByHash asks each known peer for the block at height and returns the
+// first whose hash matches the requested one. It lets a BFT leader retrieve the
+// body of a round-change-selected value it does not hold. Fails closed: a peer
+// that serves a different hash at the height is skipped, and every block is
+// authenticated exactly like FetchBlock (pinned key / active producer set).
+func (s *Syncer) FetchBlockByHash(height uint64, hash [32]byte) (*types.Block, error) {
+	var lastErr error
+	for _, peer := range s.pool.Addrs() {
+		b, err := s.fetcher.FetchBlock(peer, height)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if b.Hash != hash {
+			lastErr = fmt.Errorf("peer %s served %x at height %d, not the selected %x", peer, b.Hash[:8], height, hash[:8])
+			continue
+		}
+		return b, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no peers to fetch the selected block from")
+	}
+	return nil, lastErr
+}
+
 // fetchResult carries one height's outcome back to the ordered applier. held is
 // the measured size of the decoded block (or the reservation, on error), already
 // charged to the byte budget by the worker before the result is enqueued.

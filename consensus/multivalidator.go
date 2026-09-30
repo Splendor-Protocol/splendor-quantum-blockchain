@@ -200,6 +200,29 @@ func (m *MultiValidator) propose() error {
 		m.engine.ProposeBlock(locked)
 		return nil
 	}
+	// A round-change quorum selected a value this node does not hold the body
+	// for. It takes precedence over this node's own lock (see
+	// BFTEngine.LockedProposal): fetch the selected body from peers and hold
+	// only if it is unavailable. Minting a fresh block here could conflict with
+	// the selected value.
+	if hash, _, _, ok := m.engine.JustifiedValue(); ok {
+		if m.cfg.FetchBlock != nil {
+			if fetched, err := m.cfg.FetchBlock(height, hash); err == nil && fetched != nil && fetched.Hash == hash {
+				log.Info().Uint64("height", height).Hex("selected", hash[:8]).
+					Msg("BFT: fetched the round-change-selected body from a peer")
+				m.engine.ProposeBlock(fetched)
+				return nil
+			}
+			if err != nil {
+				log.Warn().Err(err).Uint64("height", height).Hex("selected", hash[:8]).
+					Msg("BFT: failed to fetch the round-change-selected body; holding")
+			}
+			return nil
+		}
+		log.Warn().Uint64("height", height).Hex("selected", hash[:8]).
+			Msg("BFT: round-change selected a value this node does not hold; holding (no fetch hook wired)")
+		return nil
+	}
 	if m.engine.VoteLockedAt(height) {
 		log.Warn().Uint64("height", height).
 			Msg("BFT: vote-locked at this height but proposal body missing; holding (will not mint an alternative hash)")
@@ -217,15 +240,6 @@ func (m *MultiValidator) propose() error {
 			Uint32("round", m.engine.Round()).
 			Msg("BFT: re-sending the value already adopted at this view")
 		m.engine.ProposeBlock(held)
-		return nil
-	}
-
-	// A round-change quorum selected a value this node does not hold the body
-	// for. Minting a fresh block here could conflict with that selected value,
-	// so hold until a peer re-proposes the selected body (or we receive it).
-	if hash, _, _, ok := m.engine.JustifiedValue(); ok {
-		log.Warn().Uint64("height", height).Hex("selected", hash[:8]).
-			Msg("BFT: round-change selected a value this node does not hold; holding")
 		return nil
 	}
 
