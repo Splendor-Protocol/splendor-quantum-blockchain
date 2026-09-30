@@ -1537,8 +1537,15 @@ func (e *BFTEngine) LockedProposal() *types.Block {
 	if e.lockedProposal == nil {
 		return nil
 	}
-	if e.rcValueSet && e.lockedProposal.Header.Height == e.currentHeight && e.lockedProposal.Hash == e.rcValueHash {
-		return e.lockedProposal
+	// A round-change selected value takes precedence over this node's own lock:
+	// if the selected value differs from the body this node holds, returning the
+	// held body would re-propose a value that contradicts the selection. Return
+	// nil so the caller fetches or waits for the selected body instead.
+	if e.rcValueSet && e.lockedProposal.Header.Height == e.currentHeight {
+		if e.lockedProposal.Hash == e.rcValueHash {
+			return e.lockedProposal
+		}
+		return nil
 	}
 	if e.hasVoted && e.lockedProposal.Header.Height == e.votedHeight && e.lockedProposal.Hash == e.votedHash {
 		return e.lockedProposal

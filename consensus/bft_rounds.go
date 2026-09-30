@@ -555,31 +555,53 @@ func (e *BFTEngine) addRoundChangeLocked(rc *RoundChange) {
 
 // selectJustifiedValueLocked picks the value with the highest locked round from
 // the round-change quorum and retains its certificate. Called with stateMu held.
-// A nil certificate means the lock was a bare vote with no witnessed quorum; the
-// hash still constrains the leader (safety) even though it cannot unlock peers.
+//
+// A lock is only treated as "justified" when the round-change carries a prevote
+// quorum (POL) that VERIFIES for the advertised (height, round, hash). A signed
+// round-change can name any lock round; without a matching quorum a fabricated
+// high round must not steer selection. A bare lock — no POL, or a POL that does
+// not verify — is retained only as a fallback so the leader is still constrained
+// by some validator's vote, but it never out-ranks a lower round that IS
+// justified.
 func (e *BFTEngine) selectJustifiedValueLocked(m map[qcrypto.Address]*RoundChange) {
-	var best *RoundChange
+	var (
+		justified *RoundChange
+		bare      *RoundChange
+	)
 	for _, rc := range m {
-		if rc == nil {
+		if rc == nil || rc.LockedRound < 0 {
 			continue
 		}
-		if rc.LockedRound < 0 {
+		if len(rc.POLVotes) > 0 && e.verifyPOL(rc.Height, uint32(rc.LockedRound), rc.LockedHash, rc.POLVotes) {
+			if justified == nil || rc.LockedRound > justified.LockedRound ||
+				(rc.LockedRound == justified.LockedRound && bytes.Compare(rc.LockedHash[:], justified.LockedHash[:]) > 0) {
+				justified = rc
+			}
 			continue
 		}
-		if best == nil || rc.LockedRound > best.LockedRound ||
-			(rc.LockedRound == best.LockedRound && bytes.Compare(rc.LockedHash[:], best.LockedHash[:]) > 0) {
-			best = rc
+		if bare == nil || rc.LockedRound > bare.LockedRound ||
+			(rc.LockedRound == bare.LockedRound && bytes.Compare(rc.LockedHash[:], bare.LockedHash[:]) > 0) {
+			bare = rc
 		}
 	}
-	if best == nil {
+
+	switch {
+	case justified != nil:
+		e.rcValueHash = justified.LockedHash
+		e.rcValueRound = uint32(justified.LockedRound)
+		e.rcValueVotes = justified.POLVotes
+		e.rcValueSet = true
+	case bare != nil:
+		// A bare vote still constrains the leader (safety) even without a
+		// quorum: it cannot be silently replaced by a fresh block.
+		e.rcValueHash = bare.LockedHash
+		e.rcValueRound = uint32(bare.LockedRound)
+		e.rcValueVotes = nil
+		e.rcValueSet = true
+	default:
 		e.rcValueSet = false
 		e.rcValueVotes = nil
-		return
 	}
-	e.rcValueHash = best.LockedHash
-	e.rcValueRound = uint32(best.LockedRound)
-	e.rcValueVotes = best.POLVotes
-	e.rcValueSet = true
 }
 
 // JustifiedValue returns the value selected from the current round-change quorum

@@ -929,6 +929,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 			PrivateKey:    validatorPriv,
 			// A validator behind its peers votes but does not propose.
 			Ready: readyToPropose,
+			// A round-change-selected value this node does not hold is fetched
+			// from peers by hash before the leader holds for it.
+			FetchBlock: syncer.FetchBlockByHash,
 		}
 		if gv, ok := genesisValidatorInfo(executor, trustedPK); ok {
 			vCfg.GenesisValidator = gv
