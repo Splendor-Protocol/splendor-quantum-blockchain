@@ -313,7 +313,7 @@ func (s *StateDB) CanResumeSnapshotImport() bool {
 }
 
 func (s *StateDB) freshLocked() bool {
-	return len(s.leaves) == 0 && !s.heightKnown &&
+	return s.committed.size() == 0 && !s.heightKnown &&
 		len(s.dirty) == 0 && len(s.codeCache) == 0 && len(s.pendingRaw) == 0
 }
 
@@ -348,7 +348,11 @@ func (s *StateDB) ImportSnapshot(leaves []types.StateLeaf, height uint64, wantRo
 		index[string(l.Key)] = qcrypto.Hash32(l.Value)
 		batch.Put(l.Key, l.Value)
 	}
-	if got := merkleRoot(index); got != wantRoot {
+	tree, err := leafTreeFromIndex(index)
+	if err != nil {
+		return err
+	}
+	if got := tree.root; got != wantRoot {
 		return fmt.Errorf("%w: leaves hash to %x, header says %x", ErrSnapshotRootMismatch, got[:8], wantRoot[:8])
 	}
 	hb, err := json.Marshal(height)
@@ -360,9 +364,10 @@ func (s *StateDB) ImportSnapshot(leaves []types.StateLeaf, height uint64, wantRo
 		return fmt.Errorf("state: snapshot import failed: %w", err)
 	}
 
-	s.leaves = index
+	s.committed = tree
+	s.memo = nil
+	s.rootsComputed.Add(1)
 	s.nativeSum = nil // the committed total is whatever the snapshot holds; scan it when asked
-	s.touchLocked()
 	s.appliedHeight = height
 	s.heightKnown = true
 	return nil

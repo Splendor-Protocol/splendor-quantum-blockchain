@@ -6,9 +6,10 @@
 // length-prefixed and domain-separated before hashing, so distinct (key,value)
 // pairs can never collide through concatenation ambiguity.
 //
-// The root is computed from an in-memory leaf-hash index that is populated once
-// at open and kept in sync exclusively through Commit(), so it can never drift
-// from what is durably on disk. All writes land on an in-memory pending layer
+// The root comes from an in-memory tree of the committed leaves (leaftree.go)
+// that is built once at open and replaced only by a durable Commit() or a
+// snapshot import, so it can never drift from what is on disk, and reading it
+// hashes nothing. All writes land on an in-memory pending layer
 // (dirty accounts, code cache, raw storage/nonce overlay) and are committed
 // atomically; the same layer is captured by Snapshot()/RevertToSnapshot() so a
 // failed transaction — including its storage writes — leaves no residue.
@@ -23,6 +24,7 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
@@ -77,10 +79,23 @@ type StateDB struct {
 	// else.
 	pendingRaw map[string][]byte
 
-	// leaves is the in-memory committed leaf-hash index: LevelDB key -> SHA3-256
-	// of the committed value. It mirrors the durable state and is the sole input
-	// to the Merkle state root. Populated at open, mutated only by Commit().
-	leaves map[string][32]byte
+	// committed is the committed leaf set as an immutable tree: every leaf key
+	// in order, its digest, and the Merkle state root over them. It mirrors the
+	// durable state. Built at open; a commit or snapshot import installs a new
+	// tree rather than modifying this one, so a reader can hold it unlocked.
+	committed *leafTree
+
+	// memo holds trees already built from committed with a set of pending
+	// changes applied. The same writes executed twice over one committed state
+	// — a block built and then applied, a proposal validated and then applied —
+	// are hashed once. An entry is only an answer over the tree it was built
+	// from; a commit or import clears the memo.
+	memo []rootMemo
+
+	// rootsComputed and rootsReused count how state roots were answered; see
+	// RootStats.
+	rootsComputed atomic.Uint64
+	rootsReused   atomic.Uint64
 
 	// appliedHeight is the block height the committed state reflects (persisted
 	// under meta: alongside the state batch). heightKnown is false until the
@@ -121,14 +136,6 @@ type StateDB struct {
 	// block once the chain held tens of thousands of accounts.
 	nativeSum *big.Int
 
-	// gen counts changes to the pending layer and the leaf index; touchLocked
-	// advances it. pendingRoot is the root PendingStateRoot computed at
-	// generation pendingRootGen, so a commit that follows with the generation
-	// unchanged returns it instead of hashing the whole state a second time.
-	gen            uint64
-	pendingRoot    [32]byte
-	pendingRootGen uint64
-
 	// failNextCommit, when set, is returned by the next commit() and then
 	// cleared. Tests use it to inject a state-write failure after the caller
 	// has already persisted the block/head (C2).
@@ -142,19 +149,67 @@ type StateDB struct {
 	failNextAccount error
 }
 
-// touchLocked records a change to the pending layer or the leaf index, which
-// retires the cached pending root. Caller holds s.mu.
-func (s *StateDB) touchLocked() {
-	s.gen++
+// rootMemo is one tree built from base with a change set applied.
+type rootMemo struct {
+	base  *leafTree
+	delta []leafChange
+	tree  *leafTree
 }
 
-// cachedRootLocked returns the root PendingStateRoot computed for the
-// current generation, if there is one. Caller holds s.mu.
-func (s *StateDB) cachedRootLocked() ([32]byte, bool) {
-	if s.pendingRootGen != 0 && s.pendingRootGen == s.gen {
-		return s.pendingRoot, true
+// rootMemoSize bounds the memo: the block being built or validated, and one
+// competing proposal at the same height. A miss only costs a rehash.
+const rootMemoSize = 2
+
+// memoTreeLocked returns the tree already built from base with delta applied,
+// or nil. Caller holds s.mu for reading or writing.
+func (s *StateDB) memoTreeLocked(base *leafTree, delta []leafChange) *leafTree {
+	for _, m := range s.memo {
+		if m.base == base && equalChanges(m.delta, delta) {
+			return m.tree
+		}
 	}
-	return [32]byte{}, false
+	return nil
+}
+
+// rememberLocked records tree as base with delta applied, dropping the oldest
+// entry when full. Caller holds s.mu for writing.
+func (s *StateDB) rememberLocked(base *leafTree, delta []leafChange, tree *leafTree) {
+	if len(s.memo) >= rootMemoSize {
+		s.memo = append(s.memo[:0], s.memo[len(s.memo)-rootMemoSize+1:]...)
+	}
+	s.memo = append(s.memo, rootMemo{base: base, delta: delta, tree: tree})
+}
+
+// buildTree applies delta to base and counts whether that hashed anything.
+func (s *StateDB) buildTree(base *leafTree, delta []leafChange) (*leafTree, error) {
+	tree, err := base.apply(delta)
+	if err != nil {
+		return nil, err
+	}
+	if tree == base {
+		s.rootsReused.Add(1)
+	} else {
+		s.rootsComputed.Add(1)
+	}
+	return tree, nil
+}
+
+// RootStats counts how state roots have been answered since the StateDB was
+// opened. Computed is every time the leaf set was hashed: at open, on a
+// snapshot import, and the first time a set of pending changes is seen over
+// a committed state. Reused is every answer that hashed nothing: an unchanged
+// state, or changes whose tree was already built, such as a block applied
+// after it was built or validated. Computed normally grows by one per block
+// that changes state; more when a node judges several proposals for one
+// height (a round change) or the memo has let the needed tree go.
+type RootStats struct {
+	Computed uint64
+	Reused   uint64
+}
+
+// RootStats reports how state roots have been answered; see RootStats.
+func (s *StateDB) RootStats() RootStats {
+	return RootStats{Computed: s.rootsComputed.Load(), Reused: s.rootsReused.Load()}
 }
 
 // ErrSandboxCommit is returned when a caller tries to persist a simulation.
@@ -188,10 +243,9 @@ func (s *StateDB) Simulate() *StateDB {
 		dirty:      make(map[qcrypto.Address]*types.Account, len(s.dirty)),
 		codeCache:  make(map[[32]byte][]byte, len(s.codeCache)),
 		pendingRaw: make(map[string][]byte, len(s.pendingRaw)),
-		leaves:     nil, // state roots are meaningless for a simulation
+		committed:  nil, // state roots are meaningless for a simulation
 		snapshots:  make(map[uint64]int),
 		sandbox:    true,
-		gen:        1,
 	}
 	if snap, err := s.db.GetSnapshot(); err == nil {
 		sim.snap = snap
@@ -225,9 +279,7 @@ func NewStateDB(path string) (*StateDB, error) {
 		dirty:      make(map[qcrypto.Address]*types.Account),
 		codeCache:  make(map[[32]byte][]byte),
 		pendingRaw: make(map[string][]byte),
-		leaves:     make(map[string][32]byte),
 		snapshots:  make(map[uint64]int),
-		gen:        1,
 	}
 	if err := s.loadLeaves(); err != nil {
 		db.Close()
@@ -236,13 +288,14 @@ func NewStateDB(path string) (*StateDB, error) {
 	return s, nil
 }
 
-// loadLeaves scans the committed state once and builds the in-memory leaf-hash
-// index the Merkle root is computed from. Every key/value in the state DB is a
-// state leaf (acc:/code:/store:/x402nonce:), so a full scan is exactly the leaf
-// set.
+// loadLeaves scans the committed state once and builds the committed leaf tree
+// the Merkle root comes from. Every key/value in the state DB is a state leaf
+// (acc:/code:/store:/x402nonce:), so a full scan is exactly the leaf set, and
+// LevelDB iterates it in bytewise key order — the order the root is built in.
 func (s *StateDB) loadLeaves() error {
 	iter := s.db.NewIterator(nil, nil)
 	defer iter.Release()
+	var b leafTreeBuilder
 	for iter.Next() {
 		k := iter.Key()
 		// meta: keys are node-local bookkeeping, not consensus leaves.
@@ -256,9 +309,16 @@ func (s *StateDB) loadLeaves() error {
 			}
 			continue
 		}
-		s.leaves[string(k)] = qcrypto.Hash32(iter.Value())
+		if err := b.add(k, leafDigest(string(k), qcrypto.Hash32(iter.Value()))); err != nil {
+			return err
+		}
 	}
-	return iter.Error()
+	if err := iter.Error(); err != nil {
+		return err
+	}
+	s.committed = b.build()
+	s.rootsComputed.Add(1)
+	return nil
 }
 
 // SumNativeBalances totals every account's native SPLD balance, overlaying
@@ -508,7 +568,6 @@ func (s *StateDB) SetAccount(acc *types.Account) {
 		}
 	})
 	s.dirty[addr] = acc.Copy()
-	s.touchLocked()
 }
 
 // GetBalance returns the SPLD balance of an account (in smallest unit).
@@ -608,7 +667,6 @@ func (s *StateDB) SetCode(codeHash [32]byte, code []byte) {
 		}
 	})
 	s.codeCache[codeHash] = code
-	s.touchLocked()
 }
 
 // GetCode retrieves contract bytecode by its hash.
@@ -653,7 +711,6 @@ func (s *StateDB) SetStorageValue(contract qcrypto.Address, slot [32]byte, value
 	defer s.mu.Unlock()
 	s.journalRaw(k)
 	s.pendingRaw[k] = cp
-	s.touchLocked()
 	return nil
 }
 
@@ -739,7 +796,6 @@ func (s *StateDB) MarkX402NonceUsed(nonceKey [32]byte, blockHeight uint64) error
 	defer s.mu.Unlock()
 	s.journalRaw(k)
 	s.pendingRaw[k] = val
-	s.touchLocked()
 	return nil
 }
 
@@ -790,7 +846,6 @@ func (s *StateDB) MarkX402NonceSettled(nonceKey [32]byte, rec *types.X402Settlem
 	ks := prefixX402Settle + string(nonceKey[:])
 	s.journalRaw(ks)
 	s.pendingRaw[ks] = recVal
-	s.touchLocked()
 	return nil
 }
 
@@ -846,9 +901,9 @@ func (s *StateDB) CommitWithHeight(height uint64) ([32]byte, error) {
 }
 
 // commit stages every pending write into one LevelDB batch and, only AFTER the
-// durable write succeeds, advances the in-memory leaf index and clears the
-// pending layer. Mutating the index only on success means a failed write can
-// never leave the in-memory root ahead of what is on disk.
+// durable write succeeds, installs the new leaf tree and clears the pending
+// layer. Installing the tree only on success means a failed write can never
+// leave the in-memory root ahead of what is on disk.
 func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -862,17 +917,24 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 
-	batch := new(leveldb.Batch)
-
-	type leafUpd struct {
-		key  string
-		hash [32]byte
+	writes, err := s.pendingWritesLocked()
+	if err != nil {
+		return [32]byte{}, err
 	}
-	updates := make([]leafUpd, 0, len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
 
-	// The root this commit will produce, if PendingStateRoot computed it over
-	// exactly this pending layer. Decided before anything moves.
-	root, haveRoot := s.cachedRootLocked()
+	// The tree this commit installs: the one PendingStateRoot already built for
+	// exactly these changes if there is one, otherwise built here. Leaves are
+	// only ever inserted or updated — nothing deletes a state key — so the
+	// change set is everything the commit does to the tree.
+	next := s.committed
+	if delta := changeSet(writes); len(delta) == 0 {
+		s.rootsReused.Add(1)
+	} else if tree := s.memoTreeLocked(s.committed, delta); tree != nil {
+		next = tree
+		s.rootsReused.Add(1)
+	} else if next, err = s.buildTree(s.committed, delta); err != nil {
+		return [32]byte{}, err
+	}
 
 	// What this commit does to the committed native total, taken BEFORE the
 	// write while the committed records still hold the old balances. Only
@@ -880,18 +942,7 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	var sumDelta *big.Int
 	if s.nativeSum != nil {
 		sumDelta = new(big.Int)
-	}
-
-	// Dirty accounts.
-	for addr, acc := range s.dirty {
-		data, err := json.Marshal(acc)
-		if err != nil {
-			return [32]byte{}, fmt.Errorf("failed to marshal account %s: %w", addr, err)
-		}
-		key := prefixAccount + addr.String()
-		batch.Put([]byte(key), data)
-		updates = append(updates, leafUpd{key, qcrypto.Hash32(data)})
-		if sumDelta != nil {
+		for addr, acc := range s.dirty {
 			was, err := s.committedBalance(addr)
 			if err != nil {
 				return [32]byte{}, err
@@ -903,17 +954,9 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 		}
 	}
 
-	// Contract code.
-	for hash, code := range s.codeCache {
-		key := prefixCode + string(hash[:])
-		batch.Put([]byte(key), code)
-		updates = append(updates, leafUpd{key, qcrypto.Hash32(code)})
-	}
-
-	// Raw storage + X402 nonce overlay.
-	for key, val := range s.pendingRaw {
-		batch.Put([]byte(key), val)
-		updates = append(updates, leafUpd{key, qcrypto.Hash32(val)})
+	batch := new(leveldb.Batch)
+	for _, w := range writes {
+		batch.Put([]byte(w.key), w.data)
 	}
 
 	// Height marker — meta: namespace, NOT a state leaf.
@@ -929,10 +972,9 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 		return [32]byte{}, fmt.Errorf("state commit failed: %w", err)
 	}
 
-	// Durable — now advance the in-memory index and clear the pending layer.
-	for _, u := range updates {
-		s.leaves[u.key] = u.hash
-	}
+	// Durable — now install the tree and clear the pending layer.
+	s.committed = next
+	s.memo = nil
 	if sumDelta != nil {
 		s.nativeSum.Add(s.nativeSum, sumDelta)
 	}
@@ -945,12 +987,28 @@ func (s *StateDB) commit(setHeight bool, height uint64) ([32]byte, error) {
 	s.pendingRaw = make(map[string][]byte)
 	s.journal = nil
 	s.snapshots = make(map[uint64]int)
-	s.touchLocked()
+	return next.root, nil
+}
 
-	if !haveRoot {
-		root = merkleRoot(s.leaves)
+// pendingWritesLocked lists every value the pending layer would commit, in the
+// order commit writes them: accounts, then contract code, then raw storage and
+// X402 records. Caller holds s.mu.
+func (s *StateDB) pendingWritesLocked() ([]leafWrite, error) {
+	writes := make([]leafWrite, 0, len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
+	for addr, acc := range s.dirty {
+		data, err := json.Marshal(acc)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal account %s: %w", addr, err)
+		}
+		writes = append(writes, leafWrite{key: prefixAccount + addr.String(), data: data, hash: qcrypto.Hash32(data)})
 	}
-	return root, nil
+	for hash, code := range s.codeCache {
+		writes = append(writes, leafWrite{key: prefixCode + string(hash[:]), data: code, hash: qcrypto.Hash32(code)})
+	}
+	for key, val := range s.pendingRaw {
+		writes = append(writes, leafWrite{key: key, data: val, hash: qcrypto.Hash32(val)})
+	}
+	return writes, nil
 }
 
 // AppliedHeight returns the block height the committed state reflects, and
@@ -976,7 +1034,7 @@ func (s *StateDB) CommittedView() CommittedView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return CommittedView{
-		Root:        merkleRoot(s.leaves),
+		Root:        s.committed.rootOrEmpty(),
 		Height:      s.appliedHeight,
 		HeightKnown: s.heightKnown,
 	}
@@ -1060,7 +1118,7 @@ func (s *StateDB) StateRoot() ([32]byte, error) {
 	if s.sandbox {
 		return [32]byte{}, ErrSandboxCommit
 	}
-	return merkleRoot(s.leaves), nil
+	return s.committed.rootOrEmpty(), nil
 }
 
 // MerkleProof returns the Merkle inclusion proof for an account's leaf in the
@@ -1117,11 +1175,10 @@ type AccountProof struct {
 }
 
 // AccountProofContext returns account bytes, sibling directions, leaf encoding
-// and the committed root/height under one lock so they are one view.
+// and the committed root/height as one view. The tree, the account bytes and
+// the height are taken under one read lock; the tree is immutable, so the walk
+// up to the root runs after the lock is released and cannot hold up a commit.
 func (s *StateDB) AccountProofContext(ctx context.Context, addr qcrypto.Address) (*AccountProof, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1130,69 +1187,35 @@ func (s *StateDB) AccountProofContext(ctx context.Context, addr qcrypto.Address)
 	}
 
 	targetKey := prefixAccount + addr.String()
-	valueHash, ok := s.leaves[targetKey]
+	s.mu.RLock()
+	tree := s.committed
+	height, heightKnown := s.appliedHeight, s.heightKnown
+	idx, ok := tree.find(targetKey)
 	if !ok {
+		s.mu.RUnlock()
 		return nil, fmt.Errorf("account %s not in committed state", addr)
 	}
-
+	// Read the account under the same lock as the tree: a commit between the
+	// two would pair one block's account bytes with another block's tree.
 	preimage, err := s.rawGet([]byte(targetKey))
+	s.mu.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("committed account preimage: %w", err)
 	}
 
-	keys := make([]string, 0, len(s.leaves))
-	for k := range s.leaves {
-		keys = append(keys, k)
+	steps, err := tree.proofSteps(ctx, idx)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(keys)
-
-	level := make([][32]byte, len(keys))
-	targetIdx := -1
-	for i, k := range keys {
-		if i&63 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-		}
-		level[i] = leafDigest(k, s.leaves[k])
-		if k == targetKey {
-			targetIdx = i
-		}
-	}
-	if targetIdx < 0 {
-		return nil, fmt.Errorf("account %s vanished from leaves during proof generation", addr)
-	}
-
-	var steps []MerkleStep
-	idx := targetIdx
-	for len(level) > 1 {
-		next := make([][32]byte, 0, (len(level)+1)/2)
-		for i := 0; i < len(level); i += 2 {
-			if i+1 == len(level) {
-				next = append(next, level[i])
-				break
-			}
-			left, right := level[i], level[i+1]
-			next = append(next, internalHash(left, right))
-			if idx == i {
-				steps = append(steps, MerkleStep{Sibling: right, Left: false})
-			} else if idx == i+1 {
-				steps = append(steps, MerkleStep{Sibling: left, Left: true})
-			}
-		}
-		idx /= 2
-		level = next
-	}
-
 	return &AccountProof{
 		Address:      addr,
 		LeafKey:      targetKey,
 		LeafPreimage: append([]byte(nil), preimage...),
-		LeafHash:     leafDigest(targetKey, valueHash),
+		LeafHash:     tree.dig[idx],
 		Steps:        steps,
-		Root:         merkleRoot(s.leaves),
-		Height:       s.appliedHeight,
-		HeightKnown:  s.heightKnown,
+		Root:         tree.root,
+		Height:       height,
+		HeightKnown:  heightKnown,
 	}, nil
 }
 
@@ -1226,63 +1249,68 @@ func VerifyAccountProof(p *AccountProof) error {
 }
 
 // PendingStateRoot computes the state root that Commit() WOULD produce, without
-// persisting anything. It overlays the pending layer (dirty accounts, code cache,
-// raw storage/nonce writes) onto a copy of the committed leaf index and hashes it
-// with the identical Merkle construction Commit uses — so the two roots are equal
-// by construction whenever the same writes are pending.
+// persisting anything. It applies the pending layer's changes (dirty accounts,
+// code cache, raw storage/nonce writes) to the committed leaf tree exactly as
+// Commit does — so the two roots are equal by construction whenever the same
+// writes are pending.
 //
 // This lets a caller verify a block's declared state root BEFORE durably
 // committing: on a mismatch it can DiscardPending() and leave nothing on disk.
+//
+// The tree it builds is remembered against the committed tree and the exact
+// change set, so the commit that follows, or the same block executed again,
+// reuses it instead of hashing the leaf set a second time.
 func (s *StateDB) PendingStateRoot() ([32]byte, error) {
-	root, gen, err := s.pendingStateRoot()
+	base, delta, known, err := s.pendingChanges()
 	if err != nil {
 		return [32]byte{}, err
 	}
-	// Remember it for the commit that follows, unless something changed
-	// while the lock was released.
+	if known != nil {
+		s.rootsReused.Add(1)
+		return known.rootOrEmpty(), nil
+	}
+
+	// Hash without the lock. The answer depends only on base, which is
+	// immutable, and on delta, so a commit landing meanwhile cannot make it
+	// wrong — only no longer worth remembering.
+	tree, err := s.buildTree(base, delta)
+	if err != nil {
+		return [32]byte{}, err
+	}
 	s.mu.Lock()
-	if s.gen == gen {
-		s.pendingRoot, s.pendingRootGen = root, gen
+	if s.committed == base {
+		s.rememberLocked(base, delta, tree)
 	}
 	s.mu.Unlock()
-	return root, nil
+	return tree.root, nil
 }
 
-// pendingStateRoot computes the pending root under the read lock and reports
-// the generation it was computed at.
-func (s *StateDB) pendingStateRoot() ([32]byte, uint64, error) {
+// pendingChanges takes, under the read lock, the committed tree and the change
+// set the pending layer makes to it, with the tree those changes give when it
+// is already known: the committed tree itself when nothing changes, or a tree
+// the memo holds.
+func (s *StateDB) pendingChanges() (base *leafTree, delta []leafChange, known *leafTree, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	if s.sandbox {
-		return [32]byte{}, 0, ErrSandboxCommit
+		return nil, nil, nil, ErrSandboxCommit
 	}
-	gen := s.gen
-
-	eff := make(map[string][32]byte, len(s.leaves)+len(s.dirty)+len(s.codeCache)+len(s.pendingRaw))
-	for k, v := range s.leaves {
-		eff[k] = v
+	writes, err := s.pendingWritesLocked()
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	for addr, acc := range s.dirty {
-		data, err := json.Marshal(acc)
-		if err != nil {
-			return [32]byte{}, 0, fmt.Errorf("failed to marshal account %s: %w", addr, err)
-		}
-		eff[prefixAccount+addr.String()] = qcrypto.Hash32(data)
+	base, delta = s.committed, changeSet(writes)
+	if len(delta) == 0 {
+		return base, nil, base, nil
 	}
-	for hash, code := range s.codeCache {
-		eff[prefixCode+string(hash[:])] = qcrypto.Hash32(code)
-	}
-	for k, v := range s.pendingRaw {
-		eff[k] = qcrypto.Hash32(v)
-	}
-	return merkleRoot(eff), gen, nil
+	return base, delta, s.memoTreeLocked(base, delta), nil
 }
 
 // DiscardPending drops all uncommitted writes (accounts, code, storage/nonce)
 // without persisting them. Used to abandon a block whose computed state root does
 // not match its header, so a rejected block leaves committed state untouched. The
-// committed leaf index is not touched (it only advances on Commit).
+// committed leaf tree is not touched (only Commit replaces it), and neither is
+// the memo: executing the same block again finds its tree already built.
 func (s *StateDB) DiscardPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1291,5 +1319,4 @@ func (s *StateDB) DiscardPending() {
 	s.pendingRaw = make(map[string][]byte)
 	s.journal = nil
 	s.snapshots = make(map[uint64]int)
-	s.touchLocked()
 }

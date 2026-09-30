@@ -523,7 +523,11 @@ func (s *StateDB) importSnapshotJSONL(path string, height uint64, wantRoot [32]b
 	if len(index) == 0 {
 		return errors.New("state snapshot carries no leaves")
 	}
-	if got := merkleRoot(index); got != wantRoot {
+	tree, err := leafTreeFromIndex(index)
+	if err != nil {
+		return err
+	}
+	if got := tree.root; got != wantRoot {
 		return fmt.Errorf("%w: leaves hash to %x, header says %x", ErrSnapshotRootMismatch, got[:8], wantRoot[:8])
 	}
 
@@ -568,9 +572,10 @@ func (s *StateDB) importSnapshotJSONL(path string, height uint64, wantRoot [32]b
 		return fmt.Errorf("state: snapshot import failed: %w", err)
 	}
 
-	s.leaves = index
+	s.committed = tree
+	s.memo = nil
+	s.rootsComputed.Add(1)
 	s.nativeSum = nil
-	s.touchLocked()
 	s.appliedHeight = height
 	s.heightKnown = true
 	return nil
@@ -587,7 +592,7 @@ func (s *StateDB) importAllowedLocked(resume bool) bool {
 	if s.heightKnown {
 		return false
 	}
-	if len(s.leaves) == 0 {
+	if s.committed.size() == 0 {
 		return true
 	}
 	return resume

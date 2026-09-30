@@ -74,7 +74,6 @@ func (s *StateDB) RevertToSnapshot(id uint64) error {
 		s.journal[i]()
 	}
 	s.journal = s.journal[:mark]
-	s.touchLocked()
 
 	// Drop this checkpoint and any newer ones (their marks are now past the tail).
 	for snapID, m := range s.snapshots {
