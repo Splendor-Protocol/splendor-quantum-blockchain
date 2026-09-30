@@ -58,7 +58,7 @@ func seedAccounts(tb testing.TB, sdb *state.StateDB, n int, pk []byte) {
 		acc.AddBalance(big.NewInt(1_000_000))
 		acc.PublicKey = pk
 		sdb.SetAccount(acc)
-		if i%2000 == 1999 {
+		if i%50_000 == 49_999 {
 			if _, err := sdb.Commit(); err != nil {
 				tb.Fatal(err)
 			}
@@ -73,7 +73,11 @@ func seedAccounts(tb testing.TB, sdb *state.StateDB, n int, pk []byte) {
 // of a one-transfer block against a state holding N accounts, and reports the
 // per-phase cost that dominates each.
 func BenchmarkApplyOneTxBlock(b *testing.B) {
-	for _, n := range []int{1_000, 10_000, 50_000} {
+	sizes := []int{1_000, 10_000, 50_000}
+	if !testing.Short() {
+		sizes = append(sizes, 370_000) // testnet's account count, September 2026
+	}
+	for _, n := range sizes {
 		b.Run(fmt.Sprintf("accounts=%d", n), func(b *testing.B) {
 			pub, priv, _ := qcrypto.GenerateKeypair()
 			from := qcrypto.DeriveAddress(pub)

@@ -20,6 +20,8 @@ package rpc
 //   sqc_ai_batch_size             - current AI-recommended batch size (gauge)
 //   sqc_ai_anomaly_active         - 1 if AI anomaly detected, 0 otherwise (gauge)
 //   sqc_rpc_requests_total        - total RPC HTTP requests received (counter)
+//   sqc_state_roots_hashed_total  - times the state leaf set was hashed (counter)
+//   sqc_state_roots_reused_total  - state roots answered without hashing (counter)
 //   sqc_uptime_seconds            - node uptime in seconds (gauge)
 
 import (
@@ -54,6 +56,10 @@ type NodeMetrics struct {
 
 	// RPC metrics
 	RPCRequests atomic.Uint64
+
+	// State root metrics, copied from the state DB's RootStats.
+	StateRootsHashed atomic.Uint64
+	StateRootsReused atomic.Uint64
 
 	// Custom labels
 	mu     sync.RWMutex
@@ -94,6 +100,13 @@ func (m *NodeMetrics) IncrTxsProcessed(n uint64) {
 // IncrTxsFailed increments the failed transactions counter.
 func (m *NodeMetrics) IncrTxsFailed(n uint64) {
 	m.TxsFailed.Add(n)
+}
+
+// SetStateRoots records the state DB's root counts: how many times the leaf
+// set was hashed, and how many roots were answered without hashing.
+func (m *NodeMetrics) SetStateRoots(hashed, reused uint64) {
+	m.StateRootsHashed.Store(hashed)
+	m.StateRootsReused.Store(reused)
 }
 
 // SetChainHeight updates the current chain height.
@@ -190,6 +203,14 @@ func (m *NodeMetrics) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeMetric(w, "sqc_rpc_requests_total", "counter",
 		"Total number of HTTP RPC requests received",
 		labelStr, float64(m.RPCRequests.Load()))
+
+	writeMetric(w, "sqc_state_roots_hashed_total", "counter",
+		"Times the state leaf set was hashed: at open, on a snapshot import, and once per new set of pending changes",
+		labelStr, float64(m.StateRootsHashed.Load()))
+
+	writeMetric(w, "sqc_state_roots_reused_total", "counter",
+		"State roots answered without hashing: unchanged state, or changes already hashed",
+		labelStr, float64(m.StateRootsReused.Load()))
 
 	writeMetric(w, "sqc_uptime_seconds", "gauge",
 		"Node uptime in seconds",
