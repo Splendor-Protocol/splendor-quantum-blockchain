@@ -2061,7 +2061,10 @@ state sync (`SyncConfig.CodedObjects`, default on), catch-up pre-fills gaps of
 the plain single-shot/chunked snapshot and per-block transfers. `--object-codec=none`
 disables the coded path on both sides. Measured with `cmd/netbench`: at 20%
 simulated loss with 50% repair, the coded codecs recover every trial while the
-uncoded baseline recovers none; the coded path is the join transfer only and
+uncoded baseline (no retransmission) recovers none. That establishes repair
+under loss, not an end-to-end throughput or latency advantage over a reliable
+transport that retransmits — encoding, bandwidth and decode cost are not yet
+benchmarked head-to-head. The coded path is the join transfer only and
 never touches the vote/proposal hot path.
 
 Live-validated end to end: `scripts/validator-join/run-state-sync-join.sh`
