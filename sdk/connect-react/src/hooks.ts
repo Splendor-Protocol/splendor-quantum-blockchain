@@ -12,7 +12,6 @@ export {
   useWaitForConfirmation,
   useQRC20,
   useDeployToken,
-  usePayX402,
   useModuleCall,
   useQRC1155,
   useDeployCollection,

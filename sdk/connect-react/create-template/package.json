@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@splendor/connect-react": "^1.3.0",
+    "@splendor/connect-react": "^2.0.0",
     "@splendor/sqc-sdk": "^2.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

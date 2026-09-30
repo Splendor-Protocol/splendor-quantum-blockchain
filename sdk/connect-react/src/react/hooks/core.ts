@@ -155,6 +155,21 @@ export function useBalance(pollMs = 12_000): {
   };
 }
 
+/**
+ * Network whose chain id matches the wallet's. Prefers the app's current network, then
+ * a public one over `local` (local shares mainnet's chain id).
+ */
+export function resolveWalletNetwork(
+  walletChainId: string | null | undefined,
+  networks: NetworkConfig[],
+  current: NetworkConfig | null,
+): NetworkConfig | null {
+  if (!walletChainId) return null;
+  if (current?.chainId === walletChainId) return current;
+  const matches = networks.filter((n) => n.chainId === walletChainId);
+  return matches.find((n) => n.id !== 'local') ?? matches[0] ?? null;
+}
+
 export function useNetwork(): {
   network: NetworkConfig | null;
   chainId: string | null;
@@ -162,12 +177,23 @@ export function useNetwork(): {
   switchNetwork: (id: NetworkId) => Promise<void>;
   networks: NetworkConfig[];
   switching: boolean;
+  /** Chain id the connected wallet reports (extension), or null when unknown / not applicable. */
+  walletChainId: string | null;
+  /** App network matching the wallet's chain id, when one is configured. */
+  walletNetwork: NetworkConfig | null;
+  /** True while connected and the wallet is on a different chain than the app. */
+  walletMismatch: boolean;
 } {
   const network = useConnectState((s) => s.network);
+  const walletChainId = useConnectState((s) => s.walletChainId ?? null);
+  const status = useConnectState((s) => s.status);
   const { switchNetwork, allowPlaceholderNetworks, networkId, switching } = useNetworkSwitch();
   const networks = listSelectableNetworks({
     allowPlaceholder: allowPlaceholderNetworks,
   });
+  const connected = status === 'connected' || status === 'locked';
+  const walletMismatch =
+    connected && !!walletChainId && !!network?.chainId && walletChainId !== network.chainId;
   return {
     network,
     chainId: network?.chainId ?? null,
@@ -175,6 +201,9 @@ export function useNetwork(): {
     switchNetwork,
     networks,
     switching,
+    walletChainId: connected ? walletChainId : null,
+    walletNetwork: connected ? resolveWalletNetwork(walletChainId, networks, network) : null,
+    walletMismatch,
   };
 }
 

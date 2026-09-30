@@ -13,16 +13,36 @@ import {
 } from './utils.js';
 import { RecentRecipients, TransferReviewPanel } from './TransferReview.js';
 
+export type TokenSentResult = {
+  token: string;
+  to: string;
+  /** Token amount as entered (decimal, before applying decimals). */
+  amount: string;
+  hash?: string;
+};
+
 export type TokenPanelProps = {
   /** QRC-20 token address. Optional — panel shows an address field when omitted. */
   tokenAddress?: string;
   className?: string;
+  /** Default transfer amount (decimal). Default "1". */
+  defaultAmount?: string;
+  /** Called after the wallet submits the token transfer. */
+  onSent?: (result: TokenSentResult) => void;
+  /** Called when signing or submitting fails (including a wallet rejection). */
+  onError?: (error: Error) => void;
 };
 
 /**
  * Drop-in QRC-20 balance + human-amount transfer panel.
  */
-export function TokenPanel({ tokenAddress: tokenAddressProp, className }: TokenPanelProps) {
+export function TokenPanel({
+  tokenAddress: tokenAddressProp,
+  className,
+  defaultAmount = '1',
+  onSent,
+  onError,
+}: TokenPanelProps) {
   const uid = useId();
   const { address, isConnected } = useAccount();
   const { status: connStatus, openModal } = useConnect();
@@ -32,7 +52,7 @@ export function TokenPanel({ tokenAddress: tokenAddressProp, className }: TokenP
   const { balance, tokenInfo, transferHuman, status, hash, explorerUrl, error, reset, loading } =
     useQRC20(tokenAddress);
   const [to, setTo] = useState('');
-  const [amount, setAmount] = useState('1');
+  const [amount, setAmount] = useState(defaultAmount);
   const [reviewing, setReviewing] = useState(false);
   const [recents, setRecents] = useState<string[]>(() => getRecentRecipients());
 
@@ -97,13 +117,16 @@ export function TokenPanel({ tokenAddress: tokenAddressProp, className }: TokenP
   const onConfirm = async () => {
     if (!tokenAddress || !review.ok) return;
     reset();
+    let res: { hash?: string };
     try {
-      await transferHuman(review.to, review.amount);
-      setRecents(rememberRecipient(review.to));
-      setReviewing(false);
-    } catch {
-      /* error state */
+      res = await transferHuman(review.to, review.amount);
+    } catch (e) {
+      onError?.(e instanceof Error ? e : new Error(String(e)));
+      return;
     }
+    setRecents(rememberRecipient(review.to));
+    setReviewing(false);
+    onSent?.({ token: tokenAddress, to: review.to, amount: review.amount, hash: res.hash });
   };
 
   return (

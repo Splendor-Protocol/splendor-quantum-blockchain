@@ -21,7 +21,6 @@ import { ControllerContext, NetworkSwitchContext } from '../react/context.js';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState } from '../core/types.js';
 import { useWallet, useAccount, useConnect } from '../react/hooks/core.js';
-import { usePayX402 } from '../react/hooks/x402.js';
 import { TokenPanel } from '../widgets/TokenPanel.js';
 import { TransferWidget } from '../widgets/TransferWidget.js';
 import { DeployTokenWidget } from '../widgets/DeployTokenWidget.js';
@@ -95,7 +94,6 @@ function mockWallet() {
       info = null;
       listeners.get('lock')?.forEach((fn) => fn({}));
     }),
-    payX402: vi.fn(async () => ({ payload: {} })),
   };
   return wallet;
 }
@@ -207,6 +205,49 @@ describe('controller rebindNetwork + epoch', () => {
     const epoch0 = ctrl.getWalletEpoch();
     await ctrl.connect('splendor-extension');
     expect(ctrl.getWalletEpoch()).toBeGreaterThan(epoch0);
+    ctrl.destroy();
+  });
+
+  it('tracks the wallet chain id from getChainId and onChainChanged', async () => {
+    let fireChain: ((id: string) => void) | null = null;
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [
+        extensionConn({
+          getChainId: async () => 'splendor-quantum-testnet-1',
+          onChainChanged: (cb) => {
+            fireChain = cb;
+            return () => {
+              fireChain = null;
+            };
+          },
+        }),
+      ],
+      allowUnpinnedWasm: true,
+    });
+    expect(ctrl.getState().walletChainId).toBeNull();
+    await ctrl.connect('splendor-extension');
+    await vi.waitFor(() => {
+      expect(ctrl.getState().walletChainId).toBe('splendor-quantum-testnet-1');
+    });
+    fireChain!('splendor-quantum-1');
+    expect(ctrl.getState().walletChainId).toBe('splendor-quantum-1');
+    await ctrl.rebindNetwork('testnet');
+    expect(ctrl.getState().walletChainId).toBe('splendor-quantum-1');
+    await ctrl.disconnect();
+    expect(ctrl.getState().walletChainId).toBeNull();
+    expect(fireChain).toBeNull();
+    ctrl.destroy();
+  });
+
+  it('leaves walletChainId null for connectors that follow the app network', async () => {
+    const ctrl = createConnectController({
+      network: 'local',
+      connectors: [extensionConn()],
+      allowUnpinnedWasm: true,
+    });
+    await ctrl.connect('splendor-extension');
+    expect(ctrl.getState().walletChainId).toBeNull();
     ctrl.destroy();
   });
 
@@ -405,7 +446,7 @@ function makeState(overrides: Partial<ConnectControllerState> = {}): ConnectCont
   } as ConnectControllerState;
 }
 
-function makeHookController(state: ConnectControllerState, wallet: unknown = { payX402: vi.fn() }) {
+function makeHookController(state: ConnectControllerState, wallet: unknown = {}) {
   let epoch = 0;
   return {
     getState: () => state,
@@ -473,30 +514,6 @@ describe('useWallet readiness', () => {
     const { result } = renderHook(() => useAccount(), { wrapper: wrapperFor(ctrl) });
     expect(result.current.isConnected).toBe(true);
     expect(result.current.address).toBe(mockInfo.address);
-  });
-});
-
-describe('usePayX402 amount guard', () => {
-  it('throws when amount and amountSPLD omitted', async () => {
-    const payX402 = vi.fn();
-    const ctrl = makeHookController(makeState(), { payX402 });
-    const { result } = renderHook(() => usePayX402(), { wrapper: wrapperFor(ctrl) });
-    await expect(result.current.pay({ to: mockInfo.address })).rejects.toThrow(
-      /requires amount or amountSPLD/i,
-    );
-    expect(payX402).not.toHaveBeenCalled();
-  });
-
-  it('forwards amountSPLD when provided', async () => {
-    const payX402 = vi.fn(async () => ({ payload: { ok: true } }));
-    const ctrl = makeHookController(makeState(), { payX402 });
-    const { result } = renderHook(() => usePayX402(), { wrapper: wrapperFor(ctrl) });
-    await act(async () => {
-      await result.current.pay({ to: mockInfo.address, amountSPLD: '0.01' });
-    });
-    expect(payX402).toHaveBeenCalledWith(
-      expect.objectContaining({ to: mockInfo.address, amountSPLD: '0.01' }),
-    );
   });
 });
 

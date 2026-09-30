@@ -184,9 +184,19 @@ describe('ExtensionSigner', () => {
     expect(out.hash).toBe('0xdeadbeef');
     expect(out.status).toBe('ok');
     const sendCall = provider.request.mock.calls.find((c) => c[0]?.method === 'sqc_sendTransaction');
-    expect(sendCall?.[0]?.params).toEqual([
-      expect.objectContaining({ to: addr, amountSPLD: '0.01', fee: '1000' }),
-    ]);
+    expect(sendCall?.[0]?.params).toEqual([{ to: addr, amount: '10000000000000000', fee: '1000' }]);
+    wallet.disconnect();
+  });
+
+  it('sendTransfer converts decimal amountSPLD to integer base units', async () => {
+    const provider = mockProvider();
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    await wallet.sendTransfer({ to: addr, amountSPLD: '0.001' });
+    const sendCall = provider.request.mock.calls.find((c) => c[0]?.method === 'sqc_sendTransaction');
+    const body = sendCall?.[0]?.params?.[0] as Record<string, unknown>;
+    expect(body.amount).toBe('1000000000000000');
+    expect(body).not.toHaveProperty('amountSPLD');
     wallet.disconnect();
   });
 
@@ -219,6 +229,90 @@ describe('ExtensionSigner', () => {
     wallet.on('chainChanged', (p) => seen.push(p));
     provider.emit('chainChanged', 'splendor-quantum-testnet-1');
     expect(seen[0]).toMatchObject({ networkId: 'local' });
+    wallet.disconnect();
+  });
+
+  it('refreshWalletChainId reads sqc_chainId and chainChanged keeps it current', async () => {
+    const provider = mockProvider({ sqc_chainId: () => CHAIN_ID });
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    expect(wallet.walletChainId).toBeNull();
+    expect(await wallet.refreshWalletChainId()).toBe(CHAIN_ID);
+    provider.emit('chainChanged', 'splendor-quantum-testnet-1');
+    expect(wallet.walletChainId).toBe('splendor-quantum-testnet-1');
+    wallet.disconnect();
+  });
+
+  it('sendTransfer refuses with CHAIN_MISMATCH when the extension is on another chain', async () => {
+    const provider = mockProvider({ sqc_chainId: () => 'splendor-quantum-testnet-1' });
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    const err = await wallet.sendTransfer({ to: addr, amountSPLD: '1' }).catch((e) => e);
+    expect(err).toBeInstanceOf(BridgeError);
+    expect(err).toMatchObject({ code: 'CHAIN_MISMATCH' });
+    expect(err.userHint).toContain('splendor-quantum-testnet-1');
+    expect(provider.request.mock.calls.some((c) => c[0]?.method === 'sqc_sendTransaction')).toBe(
+      false,
+    );
+    wallet.disconnect();
+  });
+
+  it('sendModuleCall and preflight refuse on chain mismatch before touching the wallet', async () => {
+    const provider = mockProvider({
+      sqc_chainId: () => 'splendor-quantum-devnet-1',
+      sqc_moduleCall: () => '0xshould-not-run',
+    });
+    const conn = connection();
+    vi.spyOn(conn, 'assertChainId').mockResolvedValue(undefined as never);
+    const wallet = new ExtensionSigner({ connection: conn, provider, networkId: 'local' });
+    await wallet.connect();
+    await expect(
+      wallet.sendModuleCall({ module: 'qrc20', action: 'transfer', params: {} }),
+    ).rejects.toMatchObject({ code: 'CHAIN_MISMATCH' });
+    await expect(wallet.preflight({ amountSPLD: '1' })).rejects.toMatchObject({
+      code: 'CHAIN_MISMATCH',
+    });
+    expect(provider.request.mock.calls.some((c) => c[0]?.method === 'sqc_moduleCall')).toBe(false);
+    wallet.disconnect();
+  });
+
+  it('sends normally when the extension chain matches or sqc_chainId is unsupported', async () => {
+    const matching = mockProvider({ sqc_chainId: () => CHAIN_ID });
+    const w1 = new ExtensionSigner({ connection: connection(), provider: matching, networkId: 'local' });
+    await w1.connect();
+    expect((await w1.sendTransfer({ to: addr, amountSPLD: '1' })).hash).toBe('0xdeadbeef');
+    w1.disconnect();
+
+    const legacy = mockProvider();
+    const w2 = new ExtensionSigner({ connection: connection(), provider: legacy, networkId: 'local' });
+    await w2.connect();
+    expect((await w2.sendTransfer({ to: addr, amountSPLD: '1' })).hash).toBe('0xdeadbeef');
+    w2.disconnect();
+  });
+
+  it('sendModuleCall refuses params the extension cannot base64-encode', async () => {
+    const provider = mockProvider({ sqc_moduleCall: () => '0xshould-not-run' });
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    const err = await wallet
+      .sendModuleCall({ module: 'qrc20', action: 'transfer', params: { token: 'SQ:…', to: addr, amount: '1' } })
+      .catch((e) => e);
+    expect(err).toMatchObject({ code: 'INVALID_PARAMS' });
+    expect(err.message).toContain('U+2026');
+    expect(err.userHint).toMatch(/cannot encode/);
+    expect(provider.request.mock.calls.some((c) => c[0]?.method === 'sqc_moduleCall')).toBe(false);
+    wallet.disconnect();
+  });
+
+  it('sendModuleCall accepts Latin-1 params', async () => {
+    const provider = mockProvider({ sqc_moduleCall: () => '0xmod' });
+    const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
+    await wallet.connect();
+    const out = await wallet.sendModuleCall({
+      module: 'qrc20',
+      action: 'transfer',
+      params: { token: addr, to: addr, amount: '1', memo: 'café' },
+    });
+    expect(out.hash).toBe('0xmod');
     wallet.disconnect();
   });
 

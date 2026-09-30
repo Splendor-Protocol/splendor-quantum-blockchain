@@ -1,5 +1,23 @@
 # Changelog
 
+## @splendor/connect-react 2.0.0
+
+- **BREAKING:** `usePayX402` removed. The wallet extension cannot pay x402, so the hook only ever
+  worked with seed wallets. Use `wallet.payX402` / the `x402` helpers from `@splendor/sqc-sdk`.
+- `useModuleCall` moved to `react/hooks/modules.ts`; the public import is unchanged.
+- Widget callbacks: `TransferWidget` (`onSent`, `onError`, `defaultTo`), `TokenPanel` (`onSent`,
+  `onError`, `defaultAmount`), `DeployTokenWidget` (`onDeployed`, `onError`).
+- Wallet network tracking: `useNetwork()` returns `walletChainId`, `walletNetwork`,
+  `walletMismatch`; `<WrongNetworkBanner />` warns when the extension is on another network.
+
+## @splendor/sqc-sdk (unreleased)
+
+- `ExtensionSigner` converts `amountSPLD` to base units before `sqc_sendTransaction` (the extension
+  rejects decimal amounts), and refuses sends when the extension is on another chain
+  (`CHAIN_MISMATCH`).
+- SQDP `4200` rejections keep the wallet's own message in `userHint` instead of the generic
+  "Network request failed".
+
 ## BREAKING — ConnectKit / unlock / RPC (hardening)
 
 - **MetaMask / ECDSA unlock removed** from ConnectKit and `@splendor/sqc-sdk` connect paths (`connectFromMetaMask`, MetaMask connector, EIP-6963 MetaMask primary). Normative unlock is **Splendor extension + native seed** only (SQDP-1 §3).

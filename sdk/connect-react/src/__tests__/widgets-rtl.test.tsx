@@ -131,6 +131,45 @@ describe('WrongNetworkBanner', () => {
     });
     expect(screen.getByRole('status').textContent).toMatch(/Switching network/i);
   });
+
+  it('warns when the wallet is on another chain and offers to follow it', () => {
+    cleanup();
+    const switchNetwork = vi.fn(async () => undefined);
+    const ctrl = makeController(makeState({ walletChainId: 'splendor-quantum-testnet-1' }));
+    const { container } = render(React.createElement(WrongNetworkBanner), {
+      wrapper: providerWrap(ctrl, { networkId: 'local', switchNetwork }),
+    });
+    const alert = within(container).getByRole('alert');
+    expect(alert.getAttribute('data-reason')).toBe('wallet-network');
+    expect(alert.textContent).toMatch(/wallet is on Splendor Quantum Testnet/);
+    expect(alert.textContent).toMatch(/this app is on Local/);
+    fireEvent.click(within(container).getByRole('button', { name: /Use Splendor Quantum Testnet/ }));
+    expect(switchNetwork).toHaveBeenCalledWith('testnet');
+  });
+
+  it('with a pinned network only asks to switch the wallet', () => {
+    cleanup();
+    const ctrl = makeController(makeState({ walletChainId: 'splendor-quantum-testnet-1' }));
+    const { container } = render(
+      React.createElement(WrongNetworkBanner, { expectedNetworkId: 'local' }),
+      { wrapper: providerWrap(ctrl, { networkId: 'local' }) },
+    );
+    const alert = within(container).getByRole('alert');
+    expect(alert.textContent).toMatch(/Switch the network in\s+your Splendor wallet/);
+    expect(within(container).queryByRole('button', { name: /^Use / })).toBeNull();
+  });
+
+  it('stays hidden when the wallet chain matches or the wallet is disconnected', () => {
+    cleanup();
+    const match = makeController(makeState({ walletChainId: 'splendor-quantum-1' }));
+    const a = render(React.createElement(WrongNetworkBanner), { wrapper: providerWrap(match) });
+    expect(a.container.querySelector('.sqc-wrong-network')).toBeNull();
+    const gone = makeController(
+      makeState({ walletChainId: 'splendor-quantum-testnet-1', status: 'disconnected', account: null }),
+    );
+    const b = render(React.createElement(WrongNetworkBanner), { wrapper: providerWrap(gone) });
+    expect(b.container.querySelector('.sqc-wrong-network')).toBeNull();
+  });
 });
 
 describe('TxToastHost', () => {

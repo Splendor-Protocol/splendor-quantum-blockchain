@@ -11,6 +11,10 @@ export type DeployTokenWidgetProps = {
   /** Human total supply (converted with decimals before deploy). Default 1_000_000. */
   defaultSupply?: string;
   decimals?: number;
+  /** Called after the deploy transaction confirms, with the new token address. */
+  onDeployed?: (result: { address: string; hash?: string }) => void;
+  /** Called when signing or submitting the deploy fails (including a wallet rejection). */
+  onError?: (error: Error) => void;
 };
 
 const SUPPLY_RE = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
@@ -35,6 +39,8 @@ export function DeployTokenWidget({
   defaultSymbol = 'DMO',
   defaultSupply = '1000000',
   decimals = 18,
+  onDeployed,
+  onError,
 }: DeployTokenWidgetProps) {
   const uid = useId();
   const { isConnected } = useAccount();
@@ -75,18 +81,21 @@ export function DeployTokenWidget({
   const onDeploy = async () => {
     if (!canDeploy) return;
     reset();
+    let res: { address: string; hash?: string };
     try {
       const totalSupply = fromUnits(supply.trim(), decimals);
-      await deploy({
+      res = await deploy({
         name: name.trim(),
         symbol: symbol.trim(),
         decimals,
         totalSupply,
         waitForConfirmation: true,
       });
-    } catch {
-      /* error state */
+    } catch (e) {
+      onError?.(e instanceof Error ? e : new Error(String(e)));
+      return;
     }
+    onDeployed?.({ address: res.address, hash: res.hash });
   };
 
   const explorer = network && hash ? txExplorerUrl(network, hash) : null;

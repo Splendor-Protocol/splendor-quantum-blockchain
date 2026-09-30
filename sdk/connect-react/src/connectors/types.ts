@@ -74,6 +74,13 @@ export type Connector = {
   disconnect?: () => Promise<void>;
   /** Extension account switch — callback receives SQ: address (not EVM). */
   onAccountsChanged?: (cb: (address: string) => void) => () => void;
+  /**
+   * Chain id the wallet itself is on (e.g. extension Settings). Wallets that sign for
+   * their own network implement this so the app can warn when it points elsewhere.
+   */
+  getChainId?: () => Promise<string | null>;
+  /** Wallet-side network switch — callback receives the new chain id string. */
+  onChainChanged?: (cb: (chainId: string) => void) => () => void;
 };
 
 // Re-export SDK unlock types for addon authors.

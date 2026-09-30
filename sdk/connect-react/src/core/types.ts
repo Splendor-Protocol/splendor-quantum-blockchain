@@ -23,6 +23,11 @@ export type ConnectControllerState = {
   modal: ModalView;
   connectors: Connector[];
   network: NetworkConfig | null;
+  /**
+   * Chain id reported by the connected wallet (extension Settings), or null when the
+   * wallet signs for whatever the app selects (native seed) or has not reported yet.
+   */
+  walletChainId?: string | null;
   /** True while wallets are still being discovered (connectors="auto"). */
   connectorsLoading?: boolean;
 };

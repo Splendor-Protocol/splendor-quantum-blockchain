@@ -70,7 +70,6 @@ export {
   useWaitForConfirmation,
   useQRC20,
   useDeployToken,
-  usePayX402,
   useModuleCall,
   useQRC1155,
   useDeployCollection,
@@ -128,7 +127,9 @@ export {
 export type {
   AccountCardProps,
   TransferWidgetProps,
+  TransferSentResult,
   TokenPanelProps,
+  TokenSentResult,
   DeployTokenWidgetProps,
   SignInButtonProps,
   TransferReview,

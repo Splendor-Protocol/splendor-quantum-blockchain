@@ -205,6 +205,15 @@ describe('mapProviderError SQDP numeric matrix', () => {
     expect(mapProviderError(withCode(4200, 'unsupported method')).code).toBe('RPC');
   });
 
+  it('surfaces the wallet message for a 4200 rejection, not the generic network hint', () => {
+    const err = mapProviderError(withCode(4200, 'amount must be an integer string in base units'));
+    expect(err.code).toBe('RPC');
+    expect(err.userHint).toContain('amount must be an integer string in base units');
+    expect(mapProviderError(withCode(4200, 'Method not supported: x')).userHint).toBe(
+      'Network request failed — try again',
+    );
+  });
+
   it('maps 4900 / 4901 / 4902', () => {
     expect(mapProviderError(withCode(4900)).code).toBe('INVALID_ADDRESS');
     expect(mapProviderError(withCode(4901)).code).toBe('INVALID_FEE');

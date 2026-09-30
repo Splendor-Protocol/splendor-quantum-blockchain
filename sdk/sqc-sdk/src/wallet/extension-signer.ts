@@ -63,6 +63,26 @@ function normalizeTxResult(raw: unknown): SendTxResult {
   };
 }
 
+/**
+ * The extension base64-encodes the module-call JSON with `btoa`, which throws on any character
+ * above U+00FF, so such params must be refused here with a readable error.
+ */
+function assertExtensionEncodable(opts: ModuleCallOpts): void {
+  const json = JSON.stringify({ module: opts.module, action: opts.action, params: opts.params });
+  const bad = [...json].find((ch) => ch.codePointAt(0)! > 0xff);
+  if (bad === undefined) return;
+  throw new BridgeError(
+    'INVALID_PARAMS',
+    `Module call contains a character the extension cannot encode: "${bad}" (U+${bad
+      .codePointAt(0)!
+      .toString(16)
+      .toUpperCase()
+      .padStart(4, '0')})`,
+    undefined,
+    'Module call params contain characters the Splendor wallet cannot encode (for example the placeholder "SQ:…"). Use plain ASCII values such as real SQ: addresses.',
+  );
+}
+
 /** Flatten UnsignedTx / TransferOpts into extension sendTransaction body. */
 function toExtensionTransferBody(tx: UnsignedTx | object): Record<string, unknown> {
   const t = tx as Record<string, unknown>;
@@ -70,8 +90,9 @@ function toExtensionTransferBody(tx: UnsignedTx | object): Record<string, unknow
     const body: Record<string, unknown> = {
       to: t.to,
     };
-    if (t.amountSPLD != null) body.amountSPLD = t.amountSPLD;
-    else if (t.amount != null) body.amount = t.amount;
+    // The extension only accepts whole base units in `amount`; decimal SPLD is rejected.
+    if (t.amountSPLD != null) body.amount = fromSPLD(String(t.amountSPLD));
+    else if (t.amount != null) body.amount = String(t.amount);
     if (t.fee != null) body.fee = t.fee;
     if (t.memo != null) body.memo = t.memo;
     return body;
@@ -86,6 +107,8 @@ export class ExtensionSigner implements Signer {
   private readonly emitter = new BridgeEmitter();
   private info: DeriveInfo | null = null;
   private networkId: string;
+  /** Chain id the extension is signing for (its own Settings), as reported by sqc_chainId / chainChanged. */
+  private _walletChainId: string | null = null;
   private unsubs: Array<() => void> = [];
   /** Serializes sign / submit RPCs so concurrent calls do not race. */
   private opChain: Promise<unknown> = Promise.resolve();
@@ -174,11 +197,13 @@ export class ExtensionSigner implements Signer {
     const onChainChanged = (...args: unknown[]) => {
       const raw = args[0];
       if (typeof raw === 'string') {
+        if (raw) this._walletChainId = raw;
         this.notifyChainChanged({ chainId: raw, networkId: this.networkId });
         return;
       }
       if (raw && typeof raw === 'object') {
         const o = raw as Record<string, unknown>;
+        if (typeof o.chainId === 'string' && o.chainId) this._walletChainId = o.chainId;
         this.notifyChainChanged({
           chainId: (o.chainId as string | number) ?? this.connection.chainId,
           networkId: String(o.networkId ?? this.networkId),
@@ -206,6 +231,40 @@ export class ExtensionSigner implements Signer {
       return await requestWithAlias(this.provider, preferred, params);
     } catch (e) {
       throw mapProviderError(e, 'RPC');
+    }
+  }
+
+  /** Last chain id reported by the extension (null until known or when unsupported). */
+  get walletChainId(): string | null {
+    return this._walletChainId;
+  }
+
+  /** Ask the extension which chain it is on. Returns the cached value when the call is unsupported. */
+  async refreshWalletChainId(): Promise<string | null> {
+    try {
+      const raw = await this.req('sqc_chainId');
+      if (typeof raw === 'string' && raw) this._walletChainId = raw;
+    } catch {
+      /* older extensions: keep cached */
+    }
+    return this._walletChainId;
+  }
+
+  /**
+   * The extension signs and submits on its own selected network while this signer
+   * reads confirmations from `connection`. Refuse to send when they disagree, so a tx
+   * never lands on a chain the app is not watching.
+   */
+  private async assertWalletChain(): Promise<void> {
+    const wallet = await this.refreshWalletChainId();
+    const app = this.connection.chainId;
+    if (wallet && app && wallet !== app) {
+      throw new BridgeError(
+        'CHAIN_MISMATCH',
+        `Extension is on chain ${wallet}, app is on ${app}`,
+        { walletChainId: wallet, appChainId: app },
+        `Your Splendor wallet is on ${wallet} but this app uses ${app} — switch the network in the wallet (or in the app) so they match`,
+      );
     }
   }
 
@@ -360,6 +419,7 @@ export class ExtensionSigner implements Signer {
     _opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
   ): Promise<SendTxResult> {
     if (!this.info) throw BridgeError.notConnected();
+    await this.assertWalletChain();
     const body = toExtensionTransferBody(tx);
     // Extension: params [{ to, amount|amountSPLD, fee?, memo? }] → hash string
     const raw = await this.req('splendor_sendTransaction', [body]);
@@ -367,7 +427,9 @@ export class ExtensionSigner implements Signer {
   }
 
   async sendModuleCall(opts: ModuleCallOpts): Promise<TxResult> {
+    assertExtensionEncodable(opts);
     return this.withOpLock(async () => {
+      await this.assertWalletChain();
       try {
         const raw = await this.req('sqc_moduleCall', [opts]);
         return normalizeTxResult(raw);
@@ -454,6 +516,7 @@ export class ExtensionSigner implements Signer {
   }): Promise<PreflightResult> {
     const from = opts?.address || this.getAddress();
     await this.connection.assertChainId();
+    await this.assertWalletChain();
     const bal = await this.getBalance(from);
     const { nonce } = await this.getNonce(from);
     const fee = assertFeeAtLeastMin(opts?.fee);

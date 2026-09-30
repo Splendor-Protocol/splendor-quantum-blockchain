@@ -141,6 +141,7 @@ export function createConnectController(
   let error: Error | null = null;
   let activeConnectorId: string | null = null;
   let modal: ModalView = 'closed';
+  let walletChainId: string | null = null;
   let destroyed = false;
   let connectInFlight: Promise<DeriveInfo> | null = null;
   /** Bumped on softDisconnect / disconnect / destroy so in-flight connect cannot commit. */
@@ -159,8 +160,10 @@ export function createConnectController(
     modal,
     connectors,
     network: client.network,
+    walletChainId,
   };
   let connectorAccountsUnsub: (() => void) | null = null;
+  let connectorChainUnsub: (() => void) | null = null;
   let sessionWalletUnsubs: Array<() => void> = [];
 
   const unsubs: Array<() => void> = [];
@@ -169,6 +172,32 @@ export function createConnectController(
     if (connectorAccountsUnsub) {
       connectorAccountsUnsub();
       connectorAccountsUnsub = null;
+    }
+    if (connectorChainUnsub) {
+      connectorChainUnsub();
+      connectorChainUnsub = null;
+    }
+    walletChainId = null;
+  };
+
+  const watchConnectorChain = (connector: Connector) => {
+    if (connector.onChainChanged) {
+      connectorChainUnsub = connector.onChainChanged((id) => {
+        if (destroyed || id === walletChainId) return;
+        walletChainId = id;
+        emit();
+      });
+    }
+    if (connector.getChainId) {
+      const epoch = connectEpoch;
+      void connector
+        .getChainId()
+        .then((id) => {
+          if (epoch !== connectEpoch || destroyed || !id || id === walletChainId) return;
+          walletChainId = id;
+          emit();
+        })
+        .catch(() => {});
     }
   };
 
@@ -245,6 +274,7 @@ export function createConnectController(
       modal,
       connectors,
       network: client.network,
+      walletChainId,
     };
     const prev = snapshot;
     if (
@@ -256,6 +286,7 @@ export function createConnectController(
       prev.modal === next.modal &&
       prev.connectors === next.connectors &&
       prev.network === next.network &&
+      prev.walletChainId === next.walletChainId &&
       prev.connectorsLoading === next.connectorsLoading
     ) {
       return prev;
@@ -390,6 +421,7 @@ export function createConnectController(
               syncFromWallet();
             });
           }
+          watchConnectorChain(connector);
           if (resumable) {
             broadcastConnectEvent({
               type: 'connected',

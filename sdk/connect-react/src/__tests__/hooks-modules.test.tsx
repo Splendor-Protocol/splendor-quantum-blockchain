@@ -4,7 +4,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import React, { type ReactNode } from 'react';
 import { renderHook, act } from '@testing-library/react';
-import { useBridge, useModules, useQRC1155, useContract, usePayX402 } from '../react/hooks.js';
+import { useBridge, useModules, useQRC1155, useContract } from '../react/hooks.js';
+import { useModuleCall } from '../react/hooks/modules.js';
 import { ControllerContext } from '../react/context.js';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState } from '../core/types.js';
@@ -19,13 +20,11 @@ const {
   bridgeInfo,
   q1155Balance,
   contractRead,
-  payX402,
 } = vi.hoisted(() => ({
   bridgeClaim: vi.fn(async () => ({ hash: '0xbr' })),
   bridgeInfo: vi.fn(async () => ({ paused: false })),
   q1155Balance: vi.fn(async () => '7'),
   contractRead: vi.fn(async () => ({ decoded: true })),
-  payX402: vi.fn(async () => ({ hash: '0x402' })),
 }));
 
 vi.mock('@splendor/sqc-sdk/tokens', () => ({
@@ -102,7 +101,6 @@ function makeController(state: ConnectControllerState): ConnectController {
   const wallet = {
     connection: {},
     sendModuleCall: vi.fn(async () => ({ hash: '0xm', status: 'ok' })),
-    payX402: (...args: unknown[]) => payX402(...args),
     callContract: vi.fn(async () => ({ hash: '0xc', status: 'ok' })),
   };
   return {
@@ -194,16 +192,34 @@ describe('useContract', () => {
   });
 });
 
-describe('usePayX402', () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it('pay delegates to wallet.payX402', async () => {
+describe('useModuleCall', () => {
+  it('call forwards { module, action, params } to wallet.sendModuleCall and keeps the hash', async () => {
     const ctrl = makeController(makeState());
-    const { result } = renderHook(() => usePayX402(), { wrapper: wrapperFor(ctrl) });
+    const wallet = ctrl.getWallet() as unknown as { sendModuleCall: ReturnType<typeof vi.fn> };
+    const { result } = renderHook(() => useModuleCall(), { wrapper: wrapperFor(ctrl) });
+    const opts = { module: 'verify', action: 'register', params: { name: 'x' } };
     await act(async () => {
-      await result.current.pay({ to: ADDR, amountSPLD: '0.01' });
+      await result.current.call(opts);
     });
-    expect(payX402).toHaveBeenCalled();
+    expect(wallet.sendModuleCall).toHaveBeenCalledWith(opts);
     expect(result.current.status).toBe('success');
+    expect(result.current.hash).toBe('0xm');
+  });
+
+  it.each([
+    ['empty module', { module: ' ', action: 'transfer', params: {} }, /needs a module/],
+    ['empty action', { module: 'qrc20', action: '', params: {} }, /needs an action/],
+    ['array params', { module: 'qrc20', action: 'transfer', params: [] as never }, /JSON object/],
+  ])('rejects %s without calling the wallet', async (_label, opts, msg) => {
+    const ctrl = makeController(makeState());
+    const wallet = ctrl.getWallet() as unknown as { sendModuleCall: ReturnType<typeof vi.fn> };
+    wallet.sendModuleCall.mockClear();
+    const { result } = renderHook(() => useModuleCall(), { wrapper: wrapperFor(ctrl) });
+    await act(async () => {
+      await expect(result.current.call(opts)).rejects.toThrow(msg);
+    });
+    expect(wallet.sendModuleCall).not.toHaveBeenCalled();
+    expect(result.current.status).toBe('error');
+    expect(result.current.error?.message).toMatch(msg);
   });
 });

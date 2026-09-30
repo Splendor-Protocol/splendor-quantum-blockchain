@@ -12,6 +12,7 @@ export type BridgeErrorCode =
   | 'INVALID_ADDRESS'
   | 'INVALID_AMOUNT'
   | 'INVALID_FEE'
+  | 'INVALID_PARAMS'
   | 'TIMEOUT'
   | 'TX_NOT_CONFIRMED'
   | 'TX_FAILED'
@@ -252,6 +253,10 @@ export function mapProviderError(e: unknown, fallback: BridgeErrorCode = 'RPC'):
           ? 'Wallet locked — unlock the Splendor Quantum Wallet'
           : 'Wallet is not connected — connect to continue',
       );
+    }
+    if (mapped === 'RPC' && msg && !/method not supported/i.test(msg)) {
+      // The wallet rejected the request itself; its message is the actionable part.
+      return new BridgeError('RPC', msg, e, `Wallet rejected the request: ${msg}`);
     }
     return factoryForCode(mapped, msg);
   }

@@ -18,24 +18,45 @@ import {
 } from './utils.js';
 import { RecentRecipients, TransferReviewPanel } from './TransferReview.js';
 
+export type TransferSentResult = {
+  to: string;
+  /** SPLD amount as entered (decimal). */
+  amount: string;
+  hash?: string;
+  confirmed?: boolean;
+  explorerUrl?: string | null;
+};
+
 export type TransferWidgetProps = {
   className?: string;
   /** Default amount in SPLD. */
   defaultAmount?: string;
+  /** Prefilled recipient (SQ: address). */
+  defaultTo?: string;
+  /** Called after the wallet submits the transfer. */
+  onSent?: (result: TransferSentResult) => void;
+  /** Called when signing or submitting fails (including a wallet rejection). */
+  onError?: (error: Error) => void;
 };
 
 /**
  * Drop-in SPLD transfer panel (uses useSendTransfer / useBalance).
  * Validates the SQ: recipient and balance, then asks for review before signing.
  */
-export function TransferWidget({ className, defaultAmount = '0.01' }: TransferWidgetProps) {
+export function TransferWidget({
+  className,
+  defaultAmount = '0.01',
+  defaultTo = '',
+  onSent,
+  onError,
+}: TransferWidgetProps) {
   const uid = useId();
   const { address, isConnected } = useAccount();
   const { status: connStatus, openModal } = useConnect();
   const { balanceSPLD } = useBalance();
   const { network } = useNetwork();
   const { sendTransfer, status, hash, explorerUrl, confirmed, error, reset } = useSendTransfer();
-  const [to, setTo] = useState('');
+  const [to, setTo] = useState(defaultTo);
   const [amount, setAmount] = useState(defaultAmount);
   const [reviewing, setReviewing] = useState(false);
   const [recents, setRecents] = useState<string[]>(() => getRecentRecipients());
@@ -87,17 +108,26 @@ export function TransferWidget({ className, defaultAmount = '0.01' }: TransferWi
   const onConfirm = async () => {
     if (!review.ok) return;
     reset();
+    let res: Awaited<ReturnType<typeof sendTransfer>>;
     try {
-      await sendTransfer({
+      res = await sendTransfer({
         to: review.to,
         amountSPLD: review.amount,
         waitForConfirmation: true,
       });
-      setRecents(rememberRecipient(review.to));
-      setReviewing(false);
-    } catch {
-      /* error state */
+    } catch (e) {
+      onError?.(e instanceof Error ? e : new Error(String(e)));
+      return;
     }
+    setRecents(rememberRecipient(review.to));
+    setReviewing(false);
+    onSent?.({
+      to: review.to,
+      amount: review.amount,
+      hash: res.hash,
+      confirmed: res.confirmed,
+      explorerUrl: res.explorerUrl,
+    });
   };
 
   return (

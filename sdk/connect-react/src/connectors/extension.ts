@@ -103,5 +103,33 @@ export function extensionConnector(opts: ExtensionConnectorOpts = {}): Connector
       p.on('accountsChanged', handler);
       return () => p.removeListener?.('accountsChanged', handler);
     },
+    async getChainId() {
+      const p = cachedProvider ?? getExtensionProvider();
+      if (!p) return null;
+      try {
+        const id = await p.request({ method: 'sqc_chainId', params: [] });
+        if (typeof id === 'string' && id) return id;
+      } catch {
+        /* older extensions */
+      }
+      const fallback = (p as { chainId?: unknown }).chainId;
+      return typeof fallback === 'string' && fallback ? fallback : null;
+    },
+    onChainChanged(cb) {
+      const p = cachedProvider ?? getExtensionProvider();
+      if (!p?.on) return () => {};
+      const handler = (...args: unknown[]) => {
+        const raw = args[0];
+        const id =
+          typeof raw === 'string'
+            ? raw
+            : raw && typeof raw === 'object' && typeof (raw as { chainId?: unknown }).chainId === 'string'
+              ? (raw as { chainId: string }).chainId
+              : '';
+        if (id) cb(id);
+      };
+      p.on('chainChanged', handler);
+      return () => p.removeListener?.('chainChanged', handler);
+    },
   };
 }

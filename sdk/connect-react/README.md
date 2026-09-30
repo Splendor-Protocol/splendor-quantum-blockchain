@@ -6,6 +6,10 @@ AppKit-style **Connect UI kit** for Splendor Quantum Chain. Modular connectors u
 
 `@splendor/pq-bridge` remains a deprecated shim; new apps should depend on `@splendor/sqc-sdk`.
 
+**New here?** Read the [SDK guide](docs/GUIDE.md): setup, every hook and widget, chain modules
+and `useModuleCall`, error handling, and the same flows in plain Node with `@splendor/sqc-sdk`,
+each with a working example.
+
 ## Scaffold a dApp
 
 ```bash
@@ -14,6 +18,13 @@ cd my-dapp && npm install && npm run dev
 ```
 
 Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plugin.
+
+## Feature Lab
+
+`npm run lab` builds the SDKs, runs the unit tests, and starts `examples/basic-dapp`: one card per
+feature against a live network (the one set by `VITE_SQC_NETWORK` in `.env.local`, testnet out of
+the box), each with a checklist and a Done / Failed result. See
+[examples/basic-dapp/README.md](examples/basic-dapp/README.md) for the step-by-step test guide.
 
 ## Production readiness
 
@@ -51,16 +62,42 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Bridge, QRC-1
 | QRC-1155 | `useQRC1155`, `useDeployCollection` |
 | Bridge claim | `useBridge`, `useDeployBridge` |
 | Bytecode contract | `useContract`, `useDeployBytecode` (`useDeployContract` deprecated alias) |
-| Bound module factory | `useModules()` |
-| Raw module router | `useModuleCall` (power user) |
-| X402 micropayment | `usePayX402` (seed / WASM wallet only; extension settle not available yet) |
+| Typed module clients (qrc20, qrc1155, bridge, contract) | `useModules()` |
+| Routed modules without a typed client (verify, validators, qrc721) | `useModuleCall({ module, action, params })` |
 | ML-DSA Sign-In | `useSignIn`, `createAuthMessage`, `checkAuthMessage`, `<SignInButton />` |
 | Account / tx DTOs | `useAccountDto`, `toTxResultDto` |
 | Send safety helpers | `reviewTransfer`, `normalizeSqAddress`, `compareDecimal`, `getRecentRecipients` |
 
+x402 payments are not part of connect-react (removed in 2.0.0; the wallet extension cannot pay
+them). Seed wallets and servers can still use `wallet.payX402` and the `x402` helpers from
+`@splendor/sqc-sdk`.
+
 `TransferWidget` and `TokenPanel` reject `0x` / malformed recipients, self-sends, and amounts above the
 displayed balance, and show a review step before signing. Recent recipients (public `SQ:` addresses
 only, max 5) are kept in `localStorage` under `sqc.connect.recentRecipients`.
+
+### Widget props
+
+| Widget | Prop | Description |
+|--------|------|-------------|
+| `TransferWidget` | `defaultTo` | Prefilled recipient (`SQ:` address) |
+| | `defaultAmount` | Prefilled amount in SPLD |
+| | `onSent({ to, amount, hash, confirmed, explorerUrl })` | Called after the wallet submits the transfer |
+| | `onError(error)` | Called when signing or submitting fails, including a wallet rejection |
+| `TokenPanel` | `tokenAddress` | QRC-20 address; the panel shows an address field when omitted |
+| | `defaultAmount` | Prefilled transfer amount in whole tokens (default `"1"`) |
+| | `onSent({ token, to, amount, hash })` | Called after the wallet submits the token transfer |
+| | `onError(error)` | Called when signing or submitting fails |
+| `DeployTokenWidget` | `defaultName`, `defaultSymbol`, `defaultSupply`, `decimals` | Form defaults; the supply is in whole tokens (default 1,000,000) |
+| | `onDeployed({ address, hash })` | Called after the deploy confirms, with the new token address |
+| | `onError(error)` | Called when signing or submitting the deploy fails |
+
+All widgets also take `className`.
+
+```tsx
+<DeployTokenWidget onDeployed={({ address }) => setToken(address)} />
+<TokenPanel tokenAddress={token} onSent={({ hash }) => toast(`Sent: ${hash}`)} />
+```
 
 `checkAuthMessage(message, { domain })` checks the Connect v2 layout, domain, expiry, and
 future-dated `Issued At`. It does **not** verify the signature — the server must still verify it
@@ -113,9 +150,14 @@ session and is never persisted or silently reconnected. MetaMask / EIP-1193 /
 WalletConnect are not supported — ConnectKit offers extension + native seed only.
 
 The extension uses **`wallet_disconnect`** (origin-scoped) and **array** RPC params.
-ConnectKit’s `ExtensionSigner` matches that wire format. Network changes in the
-extension Settings emit `chainChanged`; dApp soft-switch updates SDK RPC only —
-pair with `<WrongNetworkBanner expectedNetworkId="…" />` when needed.
+ConnectKit’s `ExtensionSigner` matches that wire format. The extension signs and
+submits on the network picked in its own Settings, so the kit tracks it:
+`useNetwork()` returns `walletChainId`, `walletNetwork` and `walletMismatch`
+(updated live from the extension’s `chainChanged`), `<WrongNetworkBanner />` shows
+“Your wallet is on …, but this app is on …” with a one-click “Use …” when no
+`expectedNetworkId` is pinned, and `ExtensionSigner` refuses sends, module calls
+and preflight with `CHAIN_MISMATCH` until both sides match — a tx never lands on a
+chain the app is not watching.
 
 ### Pin the signer
 
