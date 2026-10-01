@@ -23,6 +23,7 @@ const CARD_GUIDE: Record<string, { slug: string; title: string }> = {
   confirm: { slug: 'send-spld', title: 'Send SPLD' },
   signin: { slug: 'sign-in-with-the-wallet', title: 'Sign-In with the wallet' },
   qrc20: { slug: 'qrc-20-tokens', title: 'QRC-20 tokens' },
+  compose: { slug: 'build-your-own-widget', title: 'Build your own widget' },
   qrc1155: { slug: 'qrc-1155-collections', title: 'QRC-1155 collections' },
   contract: { slug: 'bridge-and-bytecode-contracts', title: 'Bridge and bytecode contracts' },
   modules: { slug: 'chain-modules', title: 'Chain modules' },

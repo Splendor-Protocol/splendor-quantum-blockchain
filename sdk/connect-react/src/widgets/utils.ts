@@ -1,5 +1,6 @@
 /** Shared helpers for dApp widgets. */
 import { canonicalizeAddress } from '@splendor/sqc-sdk';
+import { COMMON_LABELS, formatLabel, type CommonWidgetLabels } from './labels.js';
 
 export function truncateAddress(addr: string, left = 6, right = 4): string {
   if (addr.length <= left + right + 1) return addr;
@@ -76,16 +77,20 @@ export function reviewTransfer(input: {
   return { ok: true, to, amount };
 }
 
-export function transferReviewMessage(reason: TransferReviewReason, symbol = 'SPLD'): string {
+export function transferReviewMessage(
+  reason: TransferReviewReason,
+  symbol = 'SPLD',
+  labels: Pick<CommonWidgetLabels, 'invalidAddress' | 'selfSend' | 'badAmount' | 'insufficient'> = COMMON_LABELS,
+): string {
   switch (reason) {
     case 'invalid-address':
-      return 'Enter a valid SQ: address (0x and raw hex are not accepted)';
+      return labels.invalidAddress;
     case 'self':
-      return 'You cannot send to your own address';
+      return labels.selfSend;
     case 'bad-amount':
-      return 'Enter a valid amount greater than zero';
+      return labels.badAmount;
     case 'insufficient':
-      return `Amount exceeds your ${symbol} balance`;
+      return formatLabel(labels.insufficient, { symbol });
   }
 }
 

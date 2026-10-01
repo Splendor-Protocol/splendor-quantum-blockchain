@@ -1,17 +1,16 @@
-import { useId, useState } from 'react';
+import { useState } from 'react';
 import { toUnits } from '@splendor/sqc-sdk/units';
-import { useAccount, useConnect, useNetwork, useQRC20 } from '../react/hooks.js';
+import { useAccount, useNetwork, useQRC20 } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
-import {
-  compareDecimal,
-  getRecentRecipients,
-  isPositiveAmount,
-  normalizeSqAddress,
-  rememberRecipient,
-  reviewTransfer,
-  transferReviewMessage,
-} from './utils.js';
-import { RecentRecipients, TransferReviewPanel } from './TransferReview.js';
+import { normalizeSqAddress } from './utils.js';
+import { TOKEN_LABELS, formatLabel, useWidgetLabels, type TokenPanelLabels } from './labels.js';
+import type { BaseWidgetProps } from './types.js';
+import { WidgetShell } from './parts/WidgetShell.js';
+import { AddressInput, AmountInput } from './parts/inputs.js';
+import { ReviewPanel } from './parts/ReviewPanel.js';
+import { TxResult } from './parts/TxResult.js';
+import { useTransferForm } from './parts/useTransferForm.js';
+import { toError, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
 
 export type TokenSentResult = {
   token: string;
@@ -21,16 +20,13 @@ export type TokenSentResult = {
   hash?: string;
 };
 
-export type TokenPanelProps = {
+export type TokenPanelProps = BaseWidgetProps<TokenSentResult, TokenPanelLabels> & {
   /** QRC-20 token address. Optional — panel shows an address field when omitted. */
   tokenAddress?: string;
-  className?: string;
   /** Default transfer amount (decimal). Default "1". */
   defaultAmount?: string;
-  /** Called after the wallet submits the token transfer. */
+  /** @deprecated Use `onSuccess`. */
   onSent?: (result: TokenSentResult) => void;
-  /** Called when signing or submitting fails (including a wallet rejection). */
-  onError?: (error: Error) => void;
 };
 
 /**
@@ -39,27 +35,30 @@ export type TokenPanelProps = {
 export function TokenPanel({
   tokenAddress: tokenAddressProp,
   className,
+  style,
+  title,
+  hideTitle,
+  labels,
   defaultAmount = '1',
+  onSuccess,
   onSent,
   onError,
+  onStatusChange,
+  toast = true,
 }: TokenPanelProps) {
-  const uid = useId();
-  const { address, isConnected } = useAccount();
-  const { status: connStatus, openModal } = useConnect();
+  const l = useWidgetLabels(TOKEN_LABELS, labels, 'token');
+  const { address } = useAccount();
   const { network } = useNetwork();
   const [addrInput, setAddrInput] = useState(tokenAddressProp?.trim() ?? '');
-  const tokenAddress = (tokenAddressProp?.trim() || addrInput.trim()) || null;
+  const typed = addrInput.trim();
+  const typedValid = !!normalizeSqAddress(typed);
+  const tokenAddress = tokenAddressProp?.trim() || (typedValid ? typed : '') || null;
   const { balance, tokenInfo, transferHuman, status, hash, explorerUrl, error, reset, loading } =
     useQRC20(tokenAddress);
-  const [to, setTo] = useState('');
-  const [amount, setAmount] = useState(defaultAmount);
-  const [reviewing, setReviewing] = useState(false);
-  const [recents, setRecents] = useState<string[]>(() => getRecentRecipients());
 
-  const symbol =
-    tokenInfo && typeof tokenInfo.symbol === 'string' ? tokenInfo.symbol : 'TOKEN';
-  const decimals =
-    tokenInfo && typeof tokenInfo.decimals === 'number' ? tokenInfo.decimals : 18;
+  const knownSymbol = tokenInfo && typeof tokenInfo.symbol === 'string' ? tokenInfo.symbol : null;
+  const symbol = knownSymbol ?? 'TOKEN';
+  const decimals = tokenInfo && typeof tokenInfo.decimals === 'number' ? tokenInfo.decimals : 18;
 
   let humanBalance: string | null = null;
   if (balance != null) {
@@ -70,176 +69,110 @@ export function TokenPanel({
     }
   }
 
-  if (connStatus === 'locked') {
-    return (
-      <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
-        <h3 className="sqc-widget__title">{symbol}</h3>
-        <p className="sqc-widget__hint">Wallet locked — unlock to manage this token.</p>
-        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
-          Unlock
-        </button>
-      </div>
-    );
-  }
+  const form = useTransferForm({ balance: humanBalance, symbol, self: address, defaultAmount, labels: l });
+  const toasts = useWidgetToast(toast);
+  useStatusChange(status, onStatusChange);
 
-  if (!isConnected) {
-    return (
-      <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
-        <h3 className="sqc-widget__title">{symbol}</h3>
-        <p className="sqc-widget__hint">Connect a wallet to manage this token.</p>
-        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
-          Connect
-        </button>
-      </div>
-    );
-  }
-
-  const review = reviewTransfer({ to, amount, balance: humanBalance, self: address });
-  const toInvalid = !!to.trim() && !normalizeSqAddress(to);
-  const isSelf = !review.ok && review.reason === 'self';
-  const amountInvalid = !!amount.trim() && !isPositiveAmount(amount);
-  const overBalance =
-    !amountInvalid &&
-    humanBalance != null &&
-    !!amount.trim() &&
-    compareDecimal(amount, humanBalance) === 1;
-  const canReview = !!tokenAddress && review.ok && status !== 'pending';
-
-  const editTo = (v: string) => {
-    setTo(v);
-    setReviewing(false);
-  };
-  const editAmount = (v: string) => {
-    setAmount(v);
-    setReviewing(false);
-  };
+  const loadError = status !== 'error' && error ? error : null;
+  const hint = !tokenAddress
+    ? l.enterToken
+    : loading
+      ? l.loading
+      : humanBalance != null
+        ? formatLabel(l.balance, { balance: humanBalance, symbol })
+        : loadError
+          ? formatLabel(l.loadFailed, { error: connectErrorMessage(loadError) })
+          : '—';
 
   const onConfirm = async () => {
+    const review = form.review;
     if (!tokenAddress || !review.ok) return;
     reset();
+    toasts.pending(formatLabel(l.toastPending, { symbol }));
     let res: { hash?: string };
     try {
       res = await transferHuman(review.to, review.amount);
     } catch (e) {
-      onError?.(e instanceof Error ? e : new Error(String(e)));
+      toasts.error(formatLabel(l.toastError, { symbol }), e);
+      onError?.(toError(e));
       return;
     }
-    setRecents(rememberRecipient(review.to));
-    setReviewing(false);
-    onSent?.({ token: tokenAddress, to: review.to, amount: review.amount, hash: res.hash });
+    toasts.success(formatLabel(l.toastSuccess, { symbol }), { hash: res.hash });
+    form.remember(review.to);
+    form.cancelReview();
+    const result: TokenSentResult = { token: tokenAddress, to: review.to, amount: review.amount, hash: res.hash };
+    onSuccess?.(result);
+    onSent?.(result);
   };
 
   return (
-    <div className={['sqc-widget', className].filter(Boolean).join(' ')}>
-      <h3 className="sqc-widget__title">{symbol}</h3>
+    <WidgetShell
+      kind="token"
+      status={status}
+      className={className}
+      style={style}
+      title={title ?? knownSymbol ?? l.title}
+      hideTitle={hideTitle}
+      gateLabels={l}
+    >
       {!tokenAddressProp ? (
-        <>
-          <label className="sqc-widget__label" htmlFor={`${uid}-addr`}>
-            Token (SQ:…)
-          </label>
-          <input
-            id={`${uid}-addr`}
-            className="sqc-input"
-            value={addrInput}
-            onChange={(e) => setAddrInput(e.target.value)}
-            placeholder="SQ:…"
-            autoComplete="off"
-          />
-        </>
+        <AddressInput
+          label={l.tokenLabel}
+          placeholder={l.tokenPlaceholder}
+          value={addrInput}
+          onChange={setAddrInput}
+          error={typed && !typedValid ? l.invalidToken : null}
+          labels={l}
+        />
       ) : null}
-      <p className="sqc-widget__hint">
-        {!tokenAddress
-          ? 'Enter a QRC-20 token address.'
-          : loading
-            ? 'Loading…'
-            : humanBalance != null
-              ? `Balance: ${humanBalance} ${symbol}`
-              : '—'}
-      </p>
-      {reviewing && review.ok ? (
-        <TransferReviewPanel
-          to={review.to}
-          amount={review.amount}
+      <p className="sqc-widget__hint">{hint}</p>
+      {form.reviewing && form.review.ok ? (
+        <ReviewPanel
+          to={form.review.to}
+          amount={form.review.amount}
           symbol={symbol}
           networkName={network?.name}
           pending={status === 'pending'}
-          onBack={() => setReviewing(false)}
+          onBack={form.cancelReview}
           onConfirm={() => void onConfirm()}
+          labels={l}
         />
       ) : (
         <>
-          <label className="sqc-widget__label" htmlFor={`${uid}-to`}>
-            To (SQ:…)
-          </label>
-          <input
-            id={`${uid}-to`}
-            className="sqc-input"
-            value={to}
-            onChange={(e) => editTo(e.target.value)}
-            placeholder="SQ:…"
-            autoComplete="off"
-            aria-invalid={toInvalid || isSelf}
+          <AddressInput
+            label={l.toLabel}
+            placeholder={l.toPlaceholder}
+            value={form.to}
+            onChange={form.setTo}
+            error={form.errors.to}
+            recents={form.recents}
+            labels={l}
           />
-          <RecentRecipients recipients={recents} onPick={editTo} />
-          {toInvalid ? (
-            <p className="sqc-widget__msg sqc-widget__msg--error">
-              {transferReviewMessage('invalid-address')}
-            </p>
-          ) : isSelf ? (
-            <p className="sqc-widget__msg sqc-widget__msg--error">{transferReviewMessage('self')}</p>
-          ) : null}
-          <label className="sqc-widget__label" htmlFor={`${uid}-amt`}>
-            Amount (human, e.g. 1.5)
-          </label>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <input
-              id={`${uid}-amt`}
-              className="sqc-input"
-              value={amount}
-              onChange={(e) => editAmount(e.target.value)}
-              autoComplete="off"
-              aria-invalid={amountInvalid || overBalance}
-            />
-            {humanBalance != null ? (
-              <button type="button" className="sqc-copy" onClick={() => editAmount(humanBalance)}>
-                Max
-              </button>
-            ) : null}
-          </div>
-          {amountInvalid ? (
-            <p className="sqc-widget__msg sqc-widget__msg--error">Enter a valid decimal amount</p>
-          ) : overBalance ? (
-            <p className="sqc-widget__msg sqc-widget__msg--error">
-              {transferReviewMessage('insufficient', symbol)}
-            </p>
-          ) : null}
+          <AmountInput
+            label={l.amountLabel}
+            value={form.amount}
+            onChange={form.setAmount}
+            error={form.errors.amount}
+            balance={humanBalance}
+            symbol={symbol}
+            labels={l}
+          />
           <button
             type="button"
-            className="sqc-btn sqc-btn--primary"
-            style={{ marginTop: '0.75rem', width: '100%' }}
-            disabled={!canReview}
-            onClick={() => setReviewing(true)}
+            className="sqc-btn sqc-btn--primary sqc-btn--block"
+            disabled={!tokenAddress || !form.canReview || status === 'pending'}
+            onClick={form.startReview}
           >
-            {status === 'pending' ? 'Sending…' : 'Review'}
+            {status === 'pending' ? l.sending : l.review}
           </button>
         </>
       )}
-      {hash ? (
-        <p className="sqc-widget__msg">
-          Tx: {hash}
-          {explorerUrl ? (
-            <>
-              {' · '}
-              <a href={explorerUrl} target="_blank" rel="noreferrer" className="sqc-account-link">
-                Explorer
-              </a>
-            </>
-          ) : null}
+      <TxResult hash={hash} explorerUrl={explorerUrl} labels={l} />
+      {status === 'error' && error ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
+          {connectErrorMessage(error)}
         </p>
       ) : null}
-      {error ? (
-        <p className="sqc-widget__msg sqc-widget__msg--error">{connectErrorMessage(error)}</p>
-      ) : null}
-    </div>
+    </WidgetShell>
   );
 }

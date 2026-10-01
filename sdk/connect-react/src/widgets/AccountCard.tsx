@@ -1,109 +1,108 @@
-import { useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useAccount, useBalance, useConnect, useNetwork } from '../react/hooks.js';
 import { NetworkBadge } from '../ui/NetworkBadge.js';
-import { addressExplorerUrl, copyText, truncateAddress } from './utils.js';
+import { addressExplorerUrl } from './utils.js';
+import { ACCOUNT_LABELS, useWidgetLabels, type AccountCardLabels } from './labels.js';
+import { WidgetShell } from './parts/WidgetShell.js';
+import { AddressDisplay } from './parts/AddressDisplay.js';
 
 export type AccountCardProps = {
   className?: string;
+  style?: CSSProperties;
+  title?: ReactNode;
+  hideTitle?: boolean;
+  labels?: Partial<AccountCardLabels>;
   /** Show disconnect button. Default true. */
   showDisconnect?: boolean;
+  /** Show the SPLD balance row with Refresh. Default true. */
+  showBalance?: boolean;
+  /** Show the network badge and network name. Default true. */
+  showNetwork?: boolean;
+  /** Show the explorer link for the address. Default true. */
+  showExplorer?: boolean;
+  /** Called after the address is copied. */
+  onCopy?: (address: string) => void;
+  /** Called after the wallet disconnects. */
+  onDisconnect?: () => void;
 };
 
 /**
  * Drop-in account summary: address, PQ badge, balance, copy, connect/unlock/disconnect CTAs.
  * (Idle lock is driven by the wallet `lock` event — use Unlock when status is locked.)
  */
-export function AccountCard({ className, showDisconnect = true }: AccountCardProps) {
-  const { address, isConnected, info } = useAccount();
+export function AccountCard({
+  className,
+  style,
+  title,
+  hideTitle,
+  labels,
+  showDisconnect = true,
+  showBalance = true,
+  showNetwork = true,
+  showExplorer = true,
+  onCopy,
+  onDisconnect,
+}: AccountCardProps) {
+  const l = useWidgetLabels(ACCOUNT_LABELS, labels, 'account');
+  const { address, info } = useAccount();
   const { balanceSPLD, refresh, loading } = useBalance();
-  const { status, openModal, disconnect } = useConnect();
+  const { disconnect } = useConnect();
   const { network } = useNetwork();
-  const [copied, setCopied] = useState(false);
-
-  if (status === 'locked') {
-    return (
-      <div className={['sqc-widget', 'sqc-account-card', className].filter(Boolean).join(' ')}>
-        <h3 className="sqc-widget__title">Account</h3>
-        <p className="sqc-widget__hint">Wallet locked — unlock to continue.</p>
-        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
-          Unlock
-        </button>
-      </div>
-    );
-  }
-
-  if (!isConnected || !address) {
-    return (
-      <div className={['sqc-widget', 'sqc-account-card', className].filter(Boolean).join(' ')}>
-        <h3 className="sqc-widget__title">Account</h3>
-        <p className="sqc-widget__hint">Connect a wallet to view your SQ: identity.</p>
-        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
-          Connect
-        </button>
-      </div>
-    );
-  }
 
   const pq = info?.postQuantumSecure !== false;
-  const explorerHref = addressExplorerUrl(network?.explorerUrl, address);
-
-  const onCopy = async () => {
-    if (!(await copyText(address))) return;
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
-  };
+  const explorerHref = showExplorer ? addressExplorerUrl(network?.explorerUrl, address) : null;
 
   return (
-    <div className={['sqc-widget', 'sqc-account-card', className].filter(Boolean).join(' ')}>
-      <div className="sqc-widget__header">
-        <h3 className="sqc-widget__title">Account</h3>
-        <NetworkBadge />
-      </div>
-      <div className="sqc-account-row">
-        <span className="sqc-account-row__label">
-          SQ address
-          <span
-            className="sqc-connector-item__badge sqc-connector-item__badge--ok"
-            title="Native ML-DSA-65 (Splendor Quantum Wallet / seed)"
-          >
-            {pq ? 'Post-quantum' : 'Check key origin'}
+    <WidgetShell
+      kind="account"
+      className={['sqc-account-card', className].filter(Boolean).join(' ')}
+      style={style}
+      title={title ?? l.title}
+      hideTitle={hideTitle}
+      headerExtra={showNetwork ? <NetworkBadge /> : null}
+      gateLabels={l}
+    >
+      {address ? (
+        <div className="sqc-account-row">
+          <span className="sqc-account-row__label">
+            {l.addressLabel}
+            <span
+              className="sqc-connector-item__badge sqc-connector-item__badge--ok"
+              title="Native ML-DSA-65 (Splendor Quantum Wallet / seed)"
+            >
+              {pq ? l.pqBadge : l.pqCheck}
+            </span>
           </span>
-        </span>
-        <div className="sqc-account-row__value">
-          <span title={address}>{truncateAddress(address, 10, 8)}</span>
-          <button type="button" className="sqc-copy" onClick={() => void onCopy()}>
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-          {explorerHref ? (
-            <a href={explorerHref} target="_blank" rel="noreferrer" className="sqc-account-link">
-              Explorer
-            </a>
-          ) : null}
+          <div className="sqc-account-row__value">
+            <AddressDisplay value={address} href={explorerHref} labels={l} onCopy={onCopy} />
+          </div>
         </div>
-      </div>
-      <div className="sqc-account-row">
-        <span className="sqc-account-row__label">Balance</span>
-        <div className="sqc-account-row__value">
-          <span>
-            {balanceSPLD != null ? `${balanceSPLD} SPLD` : '—'}
-            {network?.name ? (
-              <span style={{ color: 'var(--sqc-text-muted)', marginLeft: '0.5rem' }}>
-                · {network.name}
-              </span>
-            ) : null}
-          </span>
-          <button type="button" className="sqc-copy" onClick={() => void refresh()} disabled={loading}>
-            {loading ? '…' : 'Refresh'}
-          </button>
+      ) : null}
+      {showBalance ? (
+        <div className="sqc-account-row">
+          <span className="sqc-account-row__label">{l.balanceLabel}</span>
+          <div className="sqc-account-row__value">
+            <span>
+              {balanceSPLD != null ? `${balanceSPLD} SPLD` : '—'}
+              {showNetwork && network?.name ? <span className="sqc-account-row__muted"> · {network.name}</span> : null}
+            </span>
+            <button type="button" className="sqc-copy" onClick={() => void refresh()} disabled={loading}>
+              {loading ? '…' : l.refresh}
+            </button>
+          </div>
         </div>
-      </div>
+      ) : null}
       {showDisconnect ? (
-        <div className="sqc-modal__actions" style={{ marginTop: '0.75rem' }}>
-          <button type="button" className="sqc-btn sqc-btn--danger" onClick={() => void disconnect()}>
-            Disconnect
+        <div className="sqc-widget__actions">
+          <button
+            type="button"
+            className="sqc-btn sqc-btn--danger"
+            onClick={() => void disconnect().then(() => onDisconnect?.())}
+          >
+            {l.disconnect}
           </button>
         </div>
       ) : null}
-    </div>
+    </WidgetShell>
   );
 }

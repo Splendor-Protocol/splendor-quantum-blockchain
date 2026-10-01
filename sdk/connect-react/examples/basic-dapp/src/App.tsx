@@ -11,6 +11,7 @@ import { RpcHealth } from './lab/RpcHealth';
 import { labNetworks } from './rpcProxy';
 import {
   AccountCardSection,
+  ComposeCard,
   ConfirmationCard,
   ConnectCard,
   NetworkCard,
@@ -41,6 +42,7 @@ const SECTIONS: Array<{ id: string; label: string }> = [
   { id: 'confirm', label: 'Confirmation' },
   { id: 'signin', label: 'Sign-in' },
   { id: 'qrc20', label: 'QRC-20' },
+  { id: 'compose', label: 'Build your own' },
   { id: 'qrc1155', label: 'QRC-1155' },
   { id: 'contract', label: 'Contract' },
   { id: 'modules', label: 'Chain modules' },
@@ -72,10 +74,11 @@ function LabBody() {
             <ConfirmationCard step={7} />
             <SignInCard step={8} />
             <TokenCard step={9} />
-            <Qrc1155Card step={10} />
-            <ContractCard step={11} />
-            <ModulesCard step={12} />
-            <BridgeCard step={13} />
+            <ComposeCard step={10} />
+            <Qrc1155Card step={11} />
+            <ContractCard step={12} />
+            <ModulesCard step={13} />
+            <BridgeCard step={14} />
           </main>
         </div>
       </div>

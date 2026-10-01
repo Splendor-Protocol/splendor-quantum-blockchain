@@ -40,7 +40,7 @@ Open http://localhost:5173.
 
 | Command | What it does |
 |---------|--------------|
-| `npm run lab` | Build both SDKs, run 290 + 227 unit tests, typecheck, start the dev server |
+| `npm run lab` | Build both SDKs, run 290 + 277 unit tests, typecheck, start the dev server |
 | `npm run lab -- --skip-tests` | Same without the unit tests (faster restart) |
 | `npm run lab -- --skip-build` | Only start the dev server (SDKs already built) |
 | `npm run lab -- --network=devnet` | Use devnet (free faucet coins); also `testnet`, `local` |
@@ -102,8 +102,8 @@ Card 3. Click **Connect**:
 
 Card 3 then shows your `SQ:` address with `postQuantumSecure: true`. These checks work with an
 empty wallet: card 5 **Preflight** (`sufficient: false`), card 7 **Read nonce**, card 8 **Sign in**
-and the other-site challenge, the address, self and over-balance errors in card 6, and the module
-list and **Check availability** in card 12.
+and the other-site challenge, the address, self and over-balance errors in cards 6 and 10, and the
+module list and **Check availability** in card 13.
 
 ### 3. Fund the account
 
@@ -117,18 +117,19 @@ choose **Import an existing seed** and paste your saved seed.
 | Card | How to test |
 |------|-------------|
 | 5 Account | The explorer link opens `…/address/<your SQ:>`; Preflight 0.01 returns `sufficient: true`. |
-| 6 SPLD transfer | Send 0.001 to another `SQ:` address: Review, then Confirm send, then "Confirmed: <hash>". The recipient then shows under "Recent:". |
+| 6 SPLD transfer | Send 0.001 to another `SQ:` address: Review, then Confirm send, then "Confirmed: <hash>". The recipient then shows under "Recent:", and the panel under the widget shows the `onSuccess` result. |
 | 7 Confirmation | Read nonce, click Wait for next tx, and send from card 6 within 60 seconds. The wait finishes when the nonce moves. |
-| 9 QRC-20 | Deploy "Lab Token", paste its address into the token panel (balance 1000 LAB), then transfer with the review step. |
-| 10 QRC-1155 | Deploy a collection (the address fills in), Collection info, Mint to me, Balance of me returns 10, Transfer 3. |
-| 12 Chain modules | Check availability shows which modules are live on this network. Pick the **qrc20 transfer** preset, paste a real token and recipient, and send to get a hash. Amounts are in the token's smallest unit. An empty `token` / `to`, broken JSON, or a blank Module / Action is caught locally and nothing is sent. |
+| 9 QRC-20 | Deploy "Lab Token" (the widget title and button text come from `labels`), paste its address into the token panel (balance 1000 LAB), then transfer with the review step. |
+| 10 Build your own | A tip jar made from the exported parts (`WalletGate`, `useTransferForm`, `AddressInput`, `AmountInput`, `ReviewPanel`, `TxResult`). Same checks as card 6. |
+| 11 QRC-1155 | Deploy a collection (the address fills in), Collection info, Mint to me, Balance of me returns 10, Transfer 3. |
+| 13 Chain modules | Check availability shows which modules are live on this network. Pick the **qrc20 transfer** preset, paste a real token and recipient, and send to get a hash. Amounts are in the token's smallest unit. An empty `token` / `to`, broken JSON, or a blank Module / Action is caught locally and nothing is sent. |
 
 ### 5. Needs extra inputs
 
 | Card | Input |
 |------|-------|
-| 11 Contract | Compiled SQC-VM bytecode hex (e.g. from the QSol compiler in `/compiler`). Deploy, then `read("get()")`, then `call("set(uint256)", ["42"])`. |
-| 13 Bridge | The `SQ:` address of a deployed bridge, from the relayer or deploy logs. Read-only: bridge info and claim status. Claims need relayer attestations. |
+| 12 Contract | Compiled SQC-VM bytecode hex (e.g. from the QSol compiler in `/compiler`). Deploy, then `read("get()")`, then `call("set(uint256)", ["42"])`. |
+| 14 Bridge | The `SQ:` address of a deployed bridge, from the relayer or deploy logs. Read-only: bridge info and claim status. Claims need relayer attestations. |
 
 ### What chain modules are
 
@@ -146,7 +147,7 @@ deployed bytecode. A module call is a signed transaction sent to the node's modu
 | `qrc721` | `useModuleCall` | `qrc721_v1` |
 
 `useModules().contract` is the client for SQC-VM bytecode contracts; it is not a module. A module
-only works on a network where its fork is active; card 12's **Check availability** reads that from
+only works on a network where its fork is active; card 13's **Check availability** reads that from
 the node's `/status`. DEX and exchange are not chain modules.
 
 ### What a failure means
@@ -167,6 +168,6 @@ the node's `/status`. DEX and exchange are not chain modules.
 The browser lab is for manual end-to-end checks. The automated suites run without a network:
 
 ```bash
-cd sdk/connect-react && npm test   # 227 tests: hooks, widgets, send safety, sign-in, connectors
+cd sdk/connect-react && npm test   # 277 tests: hooks, widgets, widget contract, send safety, sign-in, connectors
 cd sdk/sqc-sdk && npm test         # 290 tests: SDK core, signer, RPC, modules
 ```

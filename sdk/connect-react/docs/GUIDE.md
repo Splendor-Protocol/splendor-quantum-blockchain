@@ -286,26 +286,77 @@ import { AccountCard, DeployTokenWidget, TokenPanel, TransferWidget } from '@spl
 <TransferWidget
   defaultTo="SQ:…"
   defaultAmount="0.1"
-  onSent={({ to, amount, hash, explorerUrl }) => console.log('sent', amount, 'to', to, hash)}
+  onSuccess={({ to, amount, hash, explorerUrl }) => console.log('sent', amount, 'to', to, hash)}
   onError={(err) => console.error(err.message)}
 />
 <TokenPanel
   tokenAddress={tokenAddress}
   defaultAmount="1"
-  onSent={({ token, to, amount, hash }) => console.log(token, to, amount, hash)}
+  onSuccess={({ token, to, amount, hash }) => console.log(token, to, amount, hash)}
   onError={(err) => console.error(err.message)}
 />
 <DeployTokenWidget
   defaultName="Lab Token"
   defaultSymbol="LAB"
-  onDeployed={({ address }) => setTokenAddress(address)}
+  onSuccess={({ address }) => setTokenAddress(address)}
   onError={(err) => console.error(err.message)}
 />
 ```
 
 `TransferWidget` and `TokenPanel` validate the recipient, block self-sends and amounts above the
 balance, and show a review step before the wallet is asked to sign.
+
+All five widgets share one contract: `className`, `style`, `title`, `hideTitle`, `labels`, `onSuccess`,
+`onError`, `onStatusChange` and `toast`. A widget only renders its form when an unlocked wallet is
+connected; otherwise it shows a Connect or Unlock button. The older `onSent`, `onDeployed` and
+`onSignedIn` callbacks still fire but are deprecated.
 The full prop list is in the [README](../README.md#widget-props).
+
+### Customize text and styling
+
+Pass `labels` to one widget, or set `labels.widgets` on the provider to change every widget at once:
+
+```tsx
+<SplendorConnectProvider labels={{ widgets: { common: { review: 'Check' }, transfer: { title: 'Pay' } } }}>
+  …
+  <TransferWidget labels={{ amountLabel: 'How much?' }} hideTitle />
+</SplendorConnectProvider>
+```
+
+Restyle with CSS variables (`--sqc-accent`, `--sqc-widget-padding`, `--sqc-success`, …) or target the
+stable hooks: `.sqc-widget--transfer`, `[data-sqc-widget="token"]`, `[data-status="pending"]`.
+
+```css
+.sqc-widget[data-status='pending'] { opacity: 0.85; }
+.sqc-widget--transfer { --sqc-widget-max-width: 420px; }
+```
+
+### Build your own widget
+
+The parts the widgets are built from are exported: `WidgetShell`, `WalletGate`, `AddressInput`,
+`AmountInput`, `ReviewPanel`, `TxResult`, `AddressDisplay` and the headless `useTransferForm`.
+
+```tsx
+const { address } = useAccount();
+const { balanceSPLD } = useBalance();
+const { sendTransfer, status, hash, confirmed, explorerUrl } = useSendTransfer();
+const form = useTransferForm({ balance: balanceSPLD, self: address });
+
+<WidgetShell kind="tip" title="Tip the author" status={status}>
+  <AddressInput label="To" value={form.to} onChange={form.setTo} self={address} />
+  <AmountInput label="Amount" value={form.amount} onChange={form.setAmount} balance={balanceSPLD} />
+  <button
+    className="sqc-btn sqc-btn--primary sqc-btn--block"
+    disabled={!form.canReview}
+    onClick={() => form.review.ok && sendTransfer({ to: form.review.to, amountSPLD: form.review.amount })}
+  >
+    Send tip
+  </button>
+  {hash && <TxResult hash={hash} confirmed={confirmed} explorerUrl={explorerUrl} />}
+</WidgetShell>
+```
+
+The lab's **Build your own** card runs this pattern.
 
 ## 10. Toasts and the wrong-network banner
 

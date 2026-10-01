@@ -1,7 +1,15 @@
 import { useState } from 'react';
 import {
   AccountCard,
+  AddressInput,
+  AmountInput,
   ConnectButton,
+  ReviewPanel,
+  TxResult,
+  WalletGate,
+  connectErrorMessage,
+  useSendTransfer,
+  useTransferForm,
   DeployTokenWidget,
   NetworkBadge,
   SignInButton,
@@ -24,6 +32,10 @@ import {
   useWaitForConfirmation,
   useWallet,
   type SignedAuth,
+  type TokenDeployedResult,
+  type TokenSentResult,
+  type TransferSentResult,
+  type WidgetStatus,
 } from '@splendor/connect-react';
 import { Btn, Card, Field, Hint, Result, Row, toJson, useAction } from './ui';
 
@@ -227,7 +239,27 @@ export function AccountCardSection({ step }: { step: number }) {
   );
 }
 
+/** Wires a widget's onStatusChange / onSuccess / onError into a lab Result panel. */
+function useWidgetLog<T>() {
+  const [status, setStatus] = useState<WidgetStatus>('idle');
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const props = {
+    onStatusChange: (s: WidgetStatus) => {
+      setStatus(s);
+      if (s === 'pending') {
+        setData(null);
+        setError(null);
+      }
+    },
+    onSuccess: (r: T) => setData(r),
+    onError: (e: Error) => setError(e.message),
+  };
+  return { status, data, error, props };
+}
+
 export function TransferCard({ step }: { step: number }) {
+  const log = useWidgetLog<TransferSentResult>();
   return (
     <Card
       id="transfer"
@@ -241,16 +273,21 @@ export function TransferCard({ step }: { step: number }) {
         'Valid recipient and a small amount, then Review: shows To, Amount and Network. Back returns to the form.',
         'Confirm send: the wallet asks for approval, then the widget shows "Confirmed: <hash>" with an Explorer link.',
         'After a send, the recipient is listed under "Recent:"; clicking it fills in the To field.',
+        'The panel below the widget follows onStatusChange (Working…, then Done or Failed) and shows the onSuccess result.',
+        'With the wallet locked or disconnected, the widget shows an Unlock / Connect button instead of the form.',
       ]}
     >
       <div className="lab-widget">
-        <TransferWidget defaultAmount="0.001" />
+        <TransferWidget defaultAmount="0.001" {...log.props} />
       </div>
+      <Result status={log.status} data={log.data} error={log.error} />
     </Card>
   );
 }
 
 export function TokenCard({ step }: { step: number }) {
+  const deployLog = useWidgetLog<TokenDeployedResult>();
+  const tokenLog = useWidgetLog<TokenSentResult>();
   return (
     <Card
       id="qrc20"
@@ -258,15 +295,30 @@ export function TokenCard({ step }: { step: number }) {
       title="QRC-20 token (DeployTokenWidget, TokenPanel)"
       tag="Wallet + SPLD"
       checks={[
-        'Deploy with a name, symbol and supply: the widget shows "Token: <address>" and the tx hash.',
+        'The deploy widget is titled "Deploy a QRC-20" and the button reads "Deploy token" (both set with labels).',
+        'Deploy with a name, symbol, supply and decimals: the widget shows "Token: <address>" and "Confirmed: <hash>" with copy and Explorer.',
         'Paste the token address into the token panel: the balance shows the full supply with the token symbol.',
         'Transfer runs the same checks as the SPLD transfer (0x, self, over-balance) and has the same Review step.',
-        'Confirm: shows "Tx: <hash>", and the balance drops by the amount sent.',
+        'Confirm: shows "Submitted: <hash>" or "Confirmed: <hash>", and the balance drops by the amount sent.',
+        'Each widget\'s onSuccess result (token address, transfer hash) appears in the panel under it.',
       ]}
     >
       <div className="lab-grid">
-        <DeployTokenWidget defaultName="Lab Token" defaultSymbol="LAB" defaultSupply="1000" />
-        <TokenPanel />
+        <div>
+          <DeployTokenWidget
+            defaultName="Lab Token"
+            defaultSymbol="LAB"
+            defaultSupply="1000"
+            showDecimals
+            labels={{ title: 'Deploy a QRC-20', deploy: 'Deploy token' }}
+            {...deployLog.props}
+          />
+          <Result status={deployLog.status} data={deployLog.data} error={deployLog.error} />
+        </div>
+        <div>
+          <TokenPanel {...tokenLog.props} />
+          <Result status={tokenLog.status} data={tokenLog.data} error={tokenLog.error} />
+        </div>
       </div>
     </Card>
   );
@@ -392,6 +444,103 @@ export function ConfirmationCard({ step }: { step: number }) {
       </Row>
       <Result {...nonce} />
       <Result status={status} data="Nonce advanced: the transaction is confirmed." error={error?.message} />
+    </Card>
+  );
+}
+
+/** A custom "tip jar" built only from exported parts, as an SDK user would. */
+function TipJar() {
+  const { address } = useAccount();
+  const { balanceSPLD } = useBalance();
+  const { network } = useNetwork();
+  const { sendTransfer, status, hash, confirmed, explorerUrl, error, reset } = useSendTransfer();
+  const form = useTransferForm({ balance: balanceSPLD, self: address, defaultAmount: '0.001' });
+
+  const confirm = async () => {
+    if (!form.review.ok) return;
+    reset();
+    try {
+      await sendTransfer({ to: form.review.to, amountSPLD: form.review.amount, waitForConfirmation: true });
+      form.remember(form.review.to);
+      form.cancelReview();
+    } catch {
+      /* shown via `error` below */
+    }
+  };
+
+  return (
+    <div className="sqc-widget lab-tip-jar" data-status={status}>
+      <h3 className="sqc-widget__title">Tip jar</h3>
+      <WalletGate disconnectedText="Connect to leave a tip.">
+        {form.reviewing && form.review.ok ? (
+          <ReviewPanel
+            to={form.review.to}
+            amount={form.review.amount}
+            symbol="SPLD"
+            networkName={network?.name}
+            pending={status === 'pending'}
+            onBack={form.cancelReview}
+            onConfirm={() => void confirm()}
+            labels={{ confirmSend: 'Send tip' }}
+          />
+        ) : (
+          <>
+            <AddressInput
+              label="Creator (SQ:…)"
+              value={form.to}
+              onChange={form.setTo}
+              self={address}
+              recents={form.recents}
+            />
+            <AmountInput
+              label="Tip (SPLD)"
+              value={form.amount}
+              onChange={form.setAmount}
+              balance={balanceSPLD}
+              symbol="SPLD"
+            />
+            <button
+              type="button"
+              className="sqc-btn sqc-btn--primary sqc-btn--block"
+              disabled={!form.canReview}
+              onClick={form.startReview}
+            >
+              Review tip
+            </button>
+          </>
+        )}
+        <TxResult hash={hash} confirmed={confirmed} explorerUrl={explorerUrl} />
+        {error ? (
+          <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
+            {connectErrorMessage(error)}
+          </p>
+        ) : null}
+      </WalletGate>
+    </div>
+  );
+}
+
+export function ComposeCard({ step }: { step: number }) {
+  return (
+    <Card
+      id="compose"
+      step={step}
+      title="Build your own (WalletGate, useTransferForm, AddressInput, AmountInput, TxResult)"
+      tag="Wallet + SPLD"
+      checks={[
+        'Disconnected: the card shows "Connect to leave a tip." and a Connect button. Locked: an Unlock button.',
+        'The Creator and Tip fields reject 0x addresses, self-sends and amounts above the balance, like the stock widget.',
+        'Max fills in the balance; Review tip shows To, Amount and Network, and the confirm button reads "Send tip".',
+        'After the wallet approves, the card shows "Confirmed: <hash>" with copy and Explorer, using the same styles as the stock widgets.',
+      ]}
+    >
+      <div className="lab-widget">
+        <TipJar />
+      </div>
+      <Hint>
+        This card is about 80 lines of app code: the parts and the headless hook do validation, review and the result
+        display. See the guide section on building your own widget.
+      </Hint>
     </Card>
   );
 }

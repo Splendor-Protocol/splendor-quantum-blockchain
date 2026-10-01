@@ -78,26 +78,137 @@ only, max 5) are kept in `localStorage` under `sqc.connect.recentRecipients`.
 
 ### Widget props
 
+Every widget takes the same base props (`BaseWidgetProps`):
+
+| Prop | Description |
+|------|-------------|
+| `className`, `style` | Added to the widget root (`.sqc-widget`) |
+| `title`, `hideTitle` | Replace or hide the heading |
+| `labels` | Partial text overrides for this widget (see [Text and labels](#text-and-labels)) |
+| `onSuccess(result)` | Called once the action succeeds |
+| `onError(error)` | Called when the action fails, including a wallet rejection |
+| `onStatusChange(status)` | Called on every change of `'idle' \| 'pending' \| 'success' \| 'error'` after mount |
+| `toast` | Push pending / success / error toasts when a `<TxToastHost>` is mounted (default `true`; `SignInButton` has no toasts) |
+
+`AccountCard` has no action, so it takes only `className`, `style`, `title`, `hideTitle` and `labels`, plus its own props below.
+
 | Widget | Prop | Description |
 |--------|------|-------------|
-| `TransferWidget` | `defaultTo` | Prefilled recipient (`SQ:` address) |
-| | `defaultAmount` | Prefilled amount in SPLD |
-| | `onSent({ to, amount, hash, confirmed, explorerUrl })` | Called after the wallet submits the transfer |
-| | `onError(error)` | Called when signing or submitting fails, including a wallet rejection |
+| `TransferWidget` | `defaultTo`, `defaultAmount` | Prefilled recipient (`SQ:` address) and amount in SPLD (default `"0.01"`) |
+| | `onSuccess({ to, amount, hash, confirmed, explorerUrl })` | Result after the wallet submits the transfer |
 | `TokenPanel` | `tokenAddress` | QRC-20 address; the panel shows an address field when omitted |
-| | `defaultAmount` | Prefilled transfer amount in whole tokens (default `"1"`) |
-| | `onSent({ token, to, amount, hash })` | Called after the wallet submits the token transfer |
-| | `onError(error)` | Called when signing or submitting fails |
-| `DeployTokenWidget` | `defaultName`, `defaultSymbol`, `defaultSupply`, `decimals` | Form defaults; the supply is in whole tokens (default 1,000,000) |
-| | `onDeployed({ address, hash })` | Called after the deploy confirms, with the new token address |
-| | `onError(error)` | Called when signing or submitting the deploy fails |
+| | `defaultAmount` | Prefilled amount in whole tokens (default `"1"`) |
+| | `onSuccess({ token, to, amount, hash })` | Result after the wallet submits the token transfer |
+| `DeployTokenWidget` | `defaultName`, `defaultSymbol`, `defaultSupply`, `decimals` | Form defaults; the supply is in whole tokens (default 1,000,000, 18 decimals) |
+| | `showDecimals` | Show an editable Decimals field (0–18) |
+| | `maxSupply` | Optional cap in whole tokens; must be at least the total supply |
+| | `onSuccess({ address, hash, explorerUrl })` | Result after the deploy confirms |
+| `AccountCard` | `showBalance`, `showNetwork`, `showExplorer`, `showDisconnect` | Toggle rows (all default `true`) |
+| | `onCopy(address)`, `onDisconnect()` | Called after copy / disconnect |
+| `SignInButton` | `domain`, `expectedDomain`, `statement`, `nonce`, `expiresInSec` | Challenge options (see [Sign-In](docs/GUIDE.md#8-sign-in-with-the-wallet)) |
+| | `onSuccess(auth)` | The signed `{ message, signature, publicKey, address }` |
+| | `label` | Button text (same as `labels.button`) |
 
-All widgets also take `className`.
+`onSent` (transfer, token), `onDeployed` (deploy) and `onSignedIn` (sign-in) still work but are deprecated;
+when both are passed, both fire.
 
 ```tsx
-<DeployTokenWidget onDeployed={({ address }) => setToken(address)} />
-<TokenPanel tokenAddress={token} onSent={({ hash }) => toast(`Sent: ${hash}`)} />
+<DeployTokenWidget onSuccess={({ address }) => setToken(address)} />
+<TokenPanel
+  tokenAddress={token}
+  labels={{ title: 'Send LAB' }}
+  onStatusChange={(s) => setBusy(s === 'pending')}
+  onSuccess={({ hash }) => track('sent', hash)}
+/>
 ```
+
+### Text and labels
+
+Text is resolved in this order: English defaults, then provider `labels.widgets.common`, then
+`labels.widgets.<kind>` (`transfer`, `token`, `deploy`, `account`, `signIn`), then the widget's `labels` prop.
+Values like `'Balance: {balance} {symbol}'` are templates; keep the `{placeholders}`.
+
+```tsx
+<SplendorConnectProvider
+  labels={{
+    widgets: {
+      common: { review: 'Vérifier', back: 'Retour' },
+      transfer: { title: 'Envoyer SPLD' },
+    },
+  }}
+>
+```
+
+The defaults are exported (`TRANSFER_LABELS`, `TOKEN_LABELS`, `DEPLOY_TOKEN_LABELS`, `ACCOUNT_LABELS`,
+`SIGN_IN_LABELS`, `COMMON_LABELS`) so you can see every key.
+
+### Compose your own widget
+
+The widgets are built from exported parts. Use them to build a flow the stock widgets don't cover:
+
+| Part | What it does |
+|------|--------------|
+| `WidgetShell` | Card root with title, `data-sqc-widget` / `data-status`, and the wallet gate |
+| `WalletGate` | Renders children only when an unlocked wallet is connected; otherwise a Connect / Unlock prompt |
+| `AddressInput`, `AmountInput` | Labeled fields with `SQ:` / amount validation, recent recipients and a Max button |
+| `ReviewPanel` | To / amount / network summary with Back and Confirm |
+| `TxResult` | Submitted / confirmed hash with copy and explorer link |
+| `AddressDisplay`, `CopyButton` | Truncated address with copy and explorer link |
+| `useTransferForm` | Headless state for recipient + amount + review (`errors`, `canReview`, `startReview`, `remember`, `reset`) |
+| `useWidgetLabels`, `formatLabel` | Same label merge the widgets use |
+| `useOptionalTxToast` | Toast API, or `null` when no `<TxToastHost>` is mounted |
+
+```tsx
+import {
+  WidgetShell, AddressInput, AmountInput, TxResult,
+  useAccount, useBalance, useSendTransfer, useTransferForm,
+} from '@splendor/connect-react';
+
+function PayInvoice({ to, amount }: { to: string; amount: string }) {
+  const { address } = useAccount();
+  const { balanceSPLD } = useBalance();
+  const { sendTransfer, status, hash, confirmed, explorerUrl } = useSendTransfer();
+  const form = useTransferForm({ balance: balanceSPLD, self: address, defaultTo: to, defaultAmount: amount });
+
+  const pay = () => {
+    if (form.review.ok) void sendTransfer({ to: form.review.to, amountSPLD: form.review.amount });
+  };
+
+  return (
+    <WidgetShell kind="invoice" title="Pay invoice" status={status}>
+      <AddressInput label="To" value={form.to} onChange={form.setTo} self={address} />
+      <AmountInput label="Amount (SPLD)" value={form.amount} onChange={form.setAmount} balance={balanceSPLD} />
+      <button className="sqc-btn sqc-btn--primary sqc-btn--block" disabled={!form.canReview} onClick={pay}>
+        Pay
+      </button>
+      {hash && <TxResult hash={hash} confirmed={confirmed} explorerUrl={explorerUrl} />}
+    </WidgetShell>
+  );
+}
+```
+
+### Styling reference
+
+Widgets use the theme tokens from `@splendor/connect-react/style.css`. Override them with CSS variables
+or `theme` on the provider (`accent`, `bg`, `surface`, `text`, `textMuted`, `border`, `danger`,
+`success`, `radius`, `widgetPadding`).
+
+| Selector / attribute | Element |
+|----------------------|---------|
+| `.sqc-widget`, `.sqc-widget--<kind>` | Widget root (`kind` = `transfer`, `token`, `deploy`, `account`, `signin`) |
+| `[data-sqc-widget="<kind>"]`, `[data-status]` | Same root; `data-status` is the current `WidgetStatus` |
+| `.sqc-widget__title`, `.sqc-widget__hint`, `.sqc-widget__msg`, `.sqc-widget__actions` | Heading, hints, messages, button row |
+| `.sqc-field`, `.sqc-field__row`, `.sqc-label`, `.sqc-input` | Form fields |
+| `.sqc-wallet-gate`, `[data-sqc-gate="locked" \| "disconnected"]` | Connect / unlock prompt |
+| `.sqc-tx-result`, `.sqc-tx-result__row` | Transaction result |
+| `.sqc-address`, `.sqc-address__value`, `.sqc-copy` | Address display |
+
+| Token | Default |
+|-------|---------|
+| `--sqc-widget-padding` | `1.1rem 1.25rem` |
+| `--sqc-widget-gap` | `0.5rem` |
+| `--sqc-widget-max-width` | `none` |
+| `--sqc-success` | `#4ade80` (dark), `#15803d` (light) |
 
 `checkAuthMessage(message, { domain })` checks the Connect v2 layout, domain, expiry, and
 future-dated `Issued At`. It does **not** verify the signature — the server must still verify it

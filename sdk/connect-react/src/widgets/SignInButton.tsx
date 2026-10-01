@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAccount, useConnect, useNetwork, useSignIn } from '../react/hooks.js';
+import { useAccount, useNetwork, useSignIn } from '../react/hooks.js';
 import {
   authCheckMessage,
   checkAuthMessage,
@@ -7,8 +7,12 @@ import {
   type AuthMessageParams,
   type SignedAuth,
 } from '../react/auth.js';
+import { SIGN_IN_LABELS, formatLabel, useWidgetLabels, type SignInButtonLabels } from './labels.js';
+import type { BaseWidgetProps } from './types.js';
+import { WidgetShell } from './parts/WidgetShell.js';
+import { toError, useStatusChange } from './parts/useWidgetEffects.js';
 
-export type SignInButtonProps = {
+export type SignInButtonProps = Omit<BaseWidgetProps<SignedAuth, SignInButtonLabels>, 'toast'> & {
   /** Relying-party origin put in the challenge. Defaults to `window.location.origin`. */
   domain?: string;
   /**
@@ -21,8 +25,9 @@ export type SignInButtonProps = {
   nonce?: string | (() => string | Promise<string>);
   /** Challenge lifetime in seconds. Default 300. */
   expiresInSec?: number;
+  /** @deprecated Use `onSuccess`. */
   onSignedIn?: (auth: SignedAuth) => void;
-  className?: string;
+  /** Button text; same as `labels.button`. */
   label?: string;
 };
 
@@ -45,45 +50,29 @@ export function SignInButton({
   statement,
   nonce,
   expiresInSec = 300,
+  onSuccess,
   onSignedIn,
+  onError,
+  onStatusChange,
   className,
-  label = 'Sign in',
+  style,
+  title,
+  hideTitle,
+  labels,
+  label,
 }: SignInButtonProps) {
-  const { address, isConnected } = useAccount();
-  const { status: connStatus, openModal } = useConnect();
+  const l = useWidgetLabels(SIGN_IN_LABELS, labels, 'signIn');
+  const { address } = useAccount();
   const { chainId } = useNetwork();
   const { signIn, status, result, errorMessage, reset } = useSignIn();
   const [checkError, setCheckError] = useState<string | null>(null);
+  useStatusChange(checkError ? 'error' : status, onStatusChange);
 
-  const cls = ['sqc-widget', className].filter(Boolean).join(' ');
   const rpDomain = domain ?? currentOrigin() ?? '';
   const mustMatch = expectedDomain ?? currentOrigin() ?? rpDomain;
 
-  if (connStatus === 'locked') {
-    return (
-      <div className={cls}>
-        <h3 className="sqc-widget__title">Sign in</h3>
-        <p className="sqc-widget__hint">Wallet locked — unlock to sign in.</p>
-        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
-          Unlock
-        </button>
-      </div>
-    );
-  }
-
-  if (!isConnected || !address) {
-    return (
-      <div className={cls}>
-        <h3 className="sqc-widget__title">Sign in</h3>
-        <p className="sqc-widget__hint">Connect a wallet to sign in.</p>
-        <button type="button" className="sqc-btn sqc-btn--primary" onClick={() => openModal('connect')}>
-          Connect
-        </button>
-      </div>
-    );
-  }
-
   const onSignIn = async () => {
+    if (!address) return;
     reset();
     setCheckError(null);
     let signing = false;
@@ -99,44 +88,51 @@ export function SignInButton({
         address,
         chainId: chainId ?? undefined,
       };
-      const check = checkAuthMessage(createAuthMessage(params), {
-        domain: mustMatch,
-        now: issuedAt,
-      });
+      const check = checkAuthMessage(createAuthMessage(params), { domain: mustMatch, now: issuedAt });
       if (!check.ok) {
-        setCheckError(authCheckMessage(check.reason));
+        const msg = authCheckMessage(check.reason);
+        setCheckError(msg);
+        onError?.(new Error(msg));
         return;
       }
       signing = true;
       const signed = await signIn(params);
+      onSuccess?.(signed);
       onSignedIn?.(signed);
     } catch (e) {
       // Wallet errors are already surfaced by useSignIn's errorMessage.
       if (!signing) setCheckError(e instanceof Error ? e.message : String(e));
+      onError?.(toError(e));
     }
   };
 
   const shownError = checkError ?? errorMessage;
 
   return (
-    <div className={cls}>
-      <h3 className="sqc-widget__title">Sign in</h3>
+    <WidgetShell
+      kind="signin"
+      status={checkError ? 'error' : status}
+      className={className}
+      style={style}
+      title={title ?? l.title}
+      hideTitle={hideTitle}
+      gateLabels={l}
+    >
       <p className="sqc-widget__hint">
         {statement ? `${statement} · ` : ''}
-        {rpDomain || 'this site'}
+        {rpDomain || l.thisSite}
       </p>
       <button
         type="button"
-        className="sqc-btn sqc-btn--primary"
-        style={{ width: '100%' }}
+        className="sqc-btn sqc-btn--primary sqc-btn--block"
         disabled={status === 'pending'}
         onClick={() => void onSignIn()}
       >
-        {status === 'pending' ? 'Waiting for signature…' : label}
+        {status === 'pending' ? l.waiting : (label ?? l.button)}
       </button>
       {status === 'success' && result ? (
         <p className="sqc-widget__msg" role="status">
-          Signed in as {result.address}
+          {formatLabel(l.signedInAs, { address: result.address })}
         </p>
       ) : null}
       {shownError ? (
@@ -144,6 +140,6 @@ export function SignInButton({
           {shownError}
         </p>
       ) : null}
-    </div>
+    </WidgetShell>
   );
 }

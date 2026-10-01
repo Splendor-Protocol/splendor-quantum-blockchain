@@ -105,6 +105,11 @@ export function TxToastHost({
   );
 }
 
+/** Toast API when a `<TxToastHost>` is mounted, otherwise null (no warning). */
+export function useOptionalTxToast(): TxToastApi | null {
+  return useContext(TxToastContext);
+}
+
 export function useTxToast(): TxToastApi {
   const ctx = useContext(TxToastContext);
   if (!ctx) {

@@ -9,7 +9,12 @@ export type ThemeOverrides = {
   surface?: string;
   text?: string;
   textMuted?: string;
+  border?: string;
+  danger?: string;
+  success?: string;
   radius?: string;
+  /** Inner padding of the drop-in widgets, e.g. "1rem 1.25rem". */
+  widgetPadding?: string;
   fontDisplay?: string;
   fontBody?: string;
   fontMono?: string;
@@ -31,7 +36,11 @@ export function themeOverridesToStyle(theme: ThemeProp | undefined): CSSProperti
   if (theme.surface) style['--sqc-surface'] = theme.surface;
   if (theme.text) style['--sqc-text'] = theme.text;
   if (theme.textMuted) style['--sqc-text-muted'] = theme.textMuted;
+  if (theme.border) style['--sqc-border'] = theme.border;
+  if (theme.danger) style['--sqc-danger'] = theme.danger;
+  if (theme.success) style['--sqc-success'] = theme.success;
   if (theme.radius) style['--sqc-radius'] = theme.radius;
+  if (theme.widgetPadding) style['--sqc-widget-padding'] = theme.widgetPadding;
   if (theme.fontDisplay) style['--sqc-font-display'] = theme.fontDisplay;
   if (theme.fontBody) style['--sqc-font-body'] = theme.fontBody;
   if (theme.fontMono) style['--sqc-font-mono'] = theme.fontMono;

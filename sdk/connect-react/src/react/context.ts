@@ -7,10 +7,13 @@ import {
 import type { NetworkId } from '@splendor/sqc-sdk';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState } from '../core/types.js';
+import type { WidgetLabelOverrides } from '../widgets/labels.js';
 
 export type ConnectBrandLabels = {
   connectTitle?: string;
   connectSubtitle?: string;
+  /** Text overrides for the drop-in widgets (`common` applies to all of them). */
+  widgets?: WidgetLabelOverrides;
 };
 
 export const ControllerContext = createContext<ConnectController | null>(null);

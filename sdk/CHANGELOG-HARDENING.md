@@ -9,6 +9,21 @@
   `onError`, `defaultAmount`), `DeployTokenWidget` (`onDeployed`, `onError`).
 - Wallet network tracking: `useNetwork()` returns `walletChainId`, `walletNetwork`,
   `walletMismatch`; `<WrongNetworkBanner />` warns when the extension is on another network.
+- Standard widget contract (`BaseWidgetProps`): every widget takes `className`, `style`, `title`,
+  `hideTitle`, `labels`, `onSuccess`, `onError`, `onStatusChange` and `toast`. `onSent`,
+  `onDeployed` and `onSignedIn` are deprecated aliases and still fire.
+- Widget text is overridable per widget (`labels`) or globally (`labels.widgets` on the provider);
+  defaults are exported as `TRANSFER_LABELS`, `TOKEN_LABELS`, etc.
+- Widgets render a Connect / Unlock prompt when no unlocked wallet is connected, push toasts when a
+  `<TxToastHost>` is mounted, and expose `data-sqc-widget` / `data-status` on the root.
+- New exported parts: `WidgetShell`, `WalletGate`, `AddressInput`, `AmountInput`, `ReviewPanel`,
+  `TxResult`, `AddressDisplay`, `CopyButton`, `useTransferForm`, `useWidgetLabels`,
+  `useOptionalTxToast`.
+- `DeployTokenWidget`: `showDecimals`, `maxSupply`, and `onSuccess` gets `explorerUrl`.
+  `AccountCard`: `showBalance`, `showNetwork`, `showExplorer`, `onCopy`, `onDisconnect`.
+- Theme: `--sqc-widget-padding`, `--sqc-widget-gap`, `--sqc-widget-max-width`, `--sqc-success`;
+  `ThemeOverrides` gains `border`, `danger`, `success`, `widgetPadding`. Widget inline styles
+  replaced by `.sqc-field`, `.sqc-widget__actions`, `.sqc-tx-result`, `.sqc-address` and friends.
 
 ## @splendor/sqc-sdk (unreleased)
 
