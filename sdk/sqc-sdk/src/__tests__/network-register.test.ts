@@ -70,12 +70,14 @@ describe('registerNetwork / resolveNetwork overrides', () => {
   });
 
   it('txExplorerUrl prefers txUrlTemplate then explorerUrl', () => {
-    expect(txExplorerUrl(sample, '0xabc')).toBe(
-      'https://explorer.custom.example.test/tx/0xabc',
-    );
+    const h = '0x' + 'ab'.repeat(32);
+    expect(txExplorerUrl(sample, h)).toBe(`https://explorer.custom.example.test/tx/${h}`);
     const noTpl = { ...sample, txUrlTemplate: undefined };
-    expect(txExplorerUrl(noTpl, '0xabc')).toBe(
-      'https://explorer.custom.example.test/tx/0xabc',
+    expect(txExplorerUrl(noTpl, h)).toBe(`https://explorer.custom.example.test/tx/${h}`);
+    expect(txExplorerUrl(sample, '0xabc')).toBeNull();
+    expect(txExplorerUrl(sample, h + '/../evil')).toBeNull();
+    expect(txExplorerUrl({ ...sample, txUrlTemplate: 'javascript:alert({hash})' }, h)).toBe(
+      `https://explorer.custom.example.test/tx/${h}`,
     );
     expect(txExplorerUrl({ ...sample, explorerUrl: undefined, txUrlTemplate: undefined }, '0x')).toBeNull();
   });

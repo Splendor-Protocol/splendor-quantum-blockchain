@@ -57,6 +57,16 @@ export type QRC20Balance = {
   exists?: boolean;
 };
 
+export const MAX_TOKEN_DECIMALS = 36;
+
+/** Token decimals must be an integer in 0..MAX_TOKEN_DECIMALS. */
+export function assertDecimals(decimals: unknown): number {
+  if (typeof decimals !== 'number' || !Number.isInteger(decimals) || decimals < 0 || decimals > MAX_TOKEN_DECIMALS) {
+    throw BridgeError.invalidParams(`token decimals must be an integer from 0 to ${MAX_TOKEN_DECIMALS}`);
+  }
+  return decimals;
+}
+
 function assertAmount(amount: string, label = 'amount'): string {
   const s = String(amount).trim();
   if (!/^(0|[1-9]\d*)$/.test(s)) {
@@ -79,12 +89,27 @@ export class QRC20 extends Program {
     return qrc20Address(deployer, nonce);
   }
 
+  private pinnedDecimals: number | null = null;
+
+  /**
+   * Pin the decimals this app expects. Human-amount helpers then refuse to run when the
+   * chain reports a different value, so a hostile RPC cannot inflate amounts by lying.
+   */
+  pinDecimals(decimals: number): this {
+    this.pinnedDecimals = assertDecimals(decimals);
+    return this;
+  }
+
   private async decimalsOrThrow(): Promise<number> {
     const info = await this.tokenInfo();
     if (typeof info.decimals !== 'number') {
       throw BridgeError.rpc('tokenInfo().decimals unavailable');
     }
-    return info.decimals;
+    const decimals = assertDecimals(info.decimals);
+    if (this.pinnedDecimals != null && decimals !== this.pinnedDecimals) {
+      throw BridgeError.rpc(`token decimals ${decimals} do not match the pinned ${this.pinnedDecimals}`);
+    }
+    return decimals;
   }
 
   /** Transfer using a human-readable amount (uses on-chain decimals). */
@@ -232,17 +257,26 @@ export async function deployQRC20(
   params: QRC20DeployParams,
   opts?: { fee?: string; waitForConfirmation?: boolean },
 ): Promise<{ address: string; result: Awaited<ReturnType<Signer['sendModuleCall']>> }> {
+  const name = String(params.name ?? '').trim();
+  const symbol = String(params.symbol ?? '').trim();
+  if (!name || !symbol) throw BridgeError.invalidParams('token name and symbol are required');
+  const decimals = assertDecimals(params.decimals);
+  const totalSupply = assertAmount(params.totalSupply, 'totalSupply');
+  const maxSupply = params.maxSupply ? assertAmount(params.maxSupply, 'maxSupply') : undefined;
+  if (maxSupply != null && BigInt(maxSupply) < BigInt(totalSupply)) {
+    throw BridgeError.invalidAmount('maxSupply must be at least totalSupply');
+  }
   const nonce = await signerAccountNonce(wallet);
   const predicted = QRC20.predictAddress(wallet.getAddress(), nonce);
   const result = await wallet.sendModuleCall({
     module: 'qrc20',
     action: 'deploy',
     params: {
-      name: params.name,
-      symbol: params.symbol,
-      decimals: params.decimals,
-      total_supply: params.totalSupply,
-      ...(params.maxSupply ? { max_supply: params.maxSupply } : {}),
+      name,
+      symbol,
+      decimals,
+      total_supply: totalSupply,
+      ...(maxSupply ? { max_supply: maxSupply } : {}),
     },
     fee: opts?.fee,
     waitForConfirmation: opts?.waitForConfirmation,

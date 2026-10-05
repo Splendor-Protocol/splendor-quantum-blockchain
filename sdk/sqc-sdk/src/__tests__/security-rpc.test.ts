@@ -24,7 +24,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe('security-rpc assertChainId', () => {
   it('fails closed when chain_id is missing', async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({})) as typeof fetch;
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
     await expect(rpc.assertChainId()).rejects.toMatchObject({
       code: 'CHAIN_MISMATCH',
     });
@@ -32,7 +32,7 @@ describe('security-rpc assertChainId', () => {
 
   it('fails closed when chain_id is empty', async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({ chain_id: '' })) as typeof fetch;
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
     await expect(rpc.assertChainId()).rejects.toThrow(BridgeError);
     try {
       await rpc.assertChainId();
@@ -47,7 +47,7 @@ describe('security-rpc assertChainId', () => {
     globalThis.fetch = vi.fn(async () =>
       jsonResponse({ chain_id: 'other-chain' }),
     ) as typeof fetch;
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
     await expect(rpc.assertChainId()).rejects.toMatchObject({
       code: 'CHAIN_MISMATCH',
       message: expect.stringContaining('other-chain'),
@@ -59,7 +59,7 @@ describe('security-rpc assertChainId', () => {
       jsonResponse({ chain_id: golden.chainId }),
     ) as typeof fetch;
     const rpc = new SqRpc({
-      rpcUrl: 'http://rpc-a.test',
+      rpcUrl: 'https://rpc-a.test',
       chainId: golden.chainId,
       retries: 0,
     });
@@ -73,7 +73,7 @@ describe('security-rpc submitTransaction', () => {
       jsonResponse({ status: 'ok', hash: 'h' }),
     ) as typeof fetch;
     globalThis.fetch = fetchMock;
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
     await expect(
       rpc.submitTransaction({ chain_id: 'evil-chain', type: 'transfer' }),
     ).rejects.toMatchObject({ code: 'CHAIN_MISMATCH' });
@@ -85,7 +85,7 @@ describe('security-rpc submitTransaction', () => {
       jsonResponse({ status: 'ok', hash: 'h' }),
     ) as typeof fetch;
     globalThis.fetch = fetchMock;
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
     await expect(
       rpc.submitTransaction({ type: 'transfer', amount: '1' }),
     ).rejects.toMatchObject({ code: 'CHAIN_MISMATCH', message: expect.stringContaining('(missing)') });
@@ -97,7 +97,7 @@ describe('security-rpc failover and sticky submit', () => {
   it('fails over from 5xx primary to secondary URL', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.startsWith('http://rpc-bad.test')) {
+      if (url.startsWith('https://rpc-bad.test')) {
         return jsonResponse({ error: 'down' }, 503);
       }
       return jsonResponse({ chain_id: CHAIN_ID });
@@ -105,20 +105,20 @@ describe('security-rpc failover and sticky submit', () => {
     globalThis.fetch = fetchMock;
 
     const rpc = new SqRpc({
-      rpcUrls: ['http://rpc-bad.test', 'http://rpc-good.test'],
+      rpcUrls: ['https://rpc-bad.test', 'https://rpc-good.test'],
       chainId: CHAIN_ID,
       retries: 0,
     });
     await rpc.assertChainId();
     expect(fetchMock).toHaveBeenCalled();
     const urls = (fetchMock as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    expect(urls.some((u) => u.startsWith('http://rpc-good.test'))).toBe(true);
+    expect(urls.some((u) => u.startsWith('https://rpc-good.test'))).toBe(true);
   });
 
   it('does not failover on 4xx from URL A to URL B', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.startsWith('http://rpc-a.test')) {
+      if (url.startsWith('https://rpc-a.test')) {
         return jsonResponse({ error: 'bad request' }, 400);
       }
       return jsonResponse({ chain_id: CHAIN_ID });
@@ -126,20 +126,20 @@ describe('security-rpc failover and sticky submit', () => {
     globalThis.fetch = fetchMock;
 
     const rpc = new SqRpc({
-      rpcUrls: ['http://rpc-a.test', 'http://rpc-b.test'],
+      rpcUrls: ['https://rpc-a.test', 'https://rpc-b.test'],
       chainId: CHAIN_ID,
       retries: 0,
     });
     await expect(rpc.assertChainId()).rejects.toMatchObject({ code: 'RPC' });
     const urls = (fetchMock as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    expect(urls.every((u) => u.startsWith('http://rpc-a.test'))).toBe(true);
-    expect(urls.some((u) => u.startsWith('http://rpc-b.test'))).toBe(false);
+    expect(urls.every((u) => u.startsWith('https://rpc-a.test'))).toBe(true);
+    expect(urls.some((u) => u.startsWith('https://rpc-b.test'))).toBe(false);
   });
 
   it('does not set sticky URL on successful read', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.startsWith('http://rpc-a.test')) {
+      if (url.startsWith('https://rpc-a.test')) {
         return jsonResponse({ error: 'down' }, 503);
       }
       return jsonResponse({ chain_id: CHAIN_ID });
@@ -147,13 +147,13 @@ describe('security-rpc failover and sticky submit', () => {
     globalThis.fetch = fetchMock;
 
     const rpc = new SqRpc({
-      rpcUrls: ['http://rpc-a.test', 'http://rpc-b.test'],
+      rpcUrls: ['https://rpc-a.test', 'https://rpc-b.test'],
       chainId: CHAIN_ID,
       retries: 0,
     });
     await rpc.assertChainId();
     // Read failover succeeded on B, but sticky only applies after submit.
-    expect(rpc.rpcUrl).toBe('http://rpc-a.test');
+    expect(rpc.rpcUrl).toBe('https://rpc-a.test');
   });
 
   it('sticks submit to accepting URL', async () => {
@@ -162,12 +162,12 @@ describe('security-rpc failover and sticky submit', () => {
       const url = String(input);
       if (url.endsWith('/tx/submit')) {
         submitHits += 1;
-        if (url.startsWith('http://rpc-a.test')) {
+        if (url.startsWith('https://rpc-a.test')) {
           return jsonResponse({ error: 'busy' }, 503);
         }
         return jsonResponse({ status: 'ok', hash: 'abc' });
       }
-      if (url.startsWith('http://rpc-a.test')) {
+      if (url.startsWith('https://rpc-a.test')) {
         return jsonResponse({ error: 'down' }, 503);
       }
       return jsonResponse({ ok: true });
@@ -175,7 +175,7 @@ describe('security-rpc failover and sticky submit', () => {
     globalThis.fetch = fetchMock;
 
     const rpc = new SqRpc({
-      rpcUrls: ['http://rpc-a.test', 'http://rpc-b.test'],
+      rpcUrls: ['https://rpc-a.test', 'https://rpc-b.test'],
       chainId: CHAIN_ID,
       retries: 0,
     });
@@ -186,13 +186,13 @@ describe('security-rpc failover and sticky submit', () => {
     });
     expect(out.hash).toBe('abc');
     expect(submitHits).toBeGreaterThanOrEqual(1);
-    expect(rpc.rpcUrl).toBe('http://rpc-b.test');
+    expect(rpc.rpcUrl).toBe('https://rpc-b.test');
 
     await rpc.submitTransaction({ type: 'transfer', amount: '2', chain_id: CHAIN_ID });
     const submitUrls = (fetchMock as ReturnType<typeof vi.fn>).mock.calls
       .map((c) => String(c[0]))
       .filter((u) => u.endsWith('/tx/submit'));
-    expect(submitUrls[submitUrls.length - 1].startsWith('http://rpc-b.test')).toBe(true);
+    expect(submitUrls[submitUrls.length - 1].startsWith('https://rpc-b.test')).toBe(true);
   });
 
   it('clears sticky after 3 consecutive sticky URL NETWORK failures', async () => {
@@ -201,7 +201,7 @@ describe('security-rpc failover and sticky submit', () => {
       const url = String(input);
       if (phase === 'submit') {
         if (url.endsWith('/tx/submit')) {
-          if (url.startsWith('http://rpc-a.test')) {
+          if (url.startsWith('https://rpc-a.test')) {
             return jsonResponse({ error: 'busy' }, 503);
           }
           return jsonResponse({ status: 'ok', hash: 'sticky-set' });
@@ -209,7 +209,7 @@ describe('security-rpc failover and sticky submit', () => {
         return jsonResponse({ chain_id: CHAIN_ID });
       }
       // sticky-down: sticky is rpc-b — fail it with NETWORK; allow rpc-a reads.
-      if (url.startsWith('http://rpc-b.test')) {
+      if (url.startsWith('https://rpc-b.test')) {
         throw new TypeError('fetch failed');
       }
       return jsonResponse({ chain_id: CHAIN_ID });
@@ -217,7 +217,7 @@ describe('security-rpc failover and sticky submit', () => {
     globalThis.fetch = fetchMock;
 
     const rpc = new SqRpc({
-      rpcUrls: ['http://rpc-a.test', 'http://rpc-b.test'],
+      rpcUrls: ['https://rpc-a.test', 'https://rpc-b.test'],
       chainId: CHAIN_ID,
       retries: 0,
       timeoutMs: 100,
@@ -227,16 +227,16 @@ describe('security-rpc failover and sticky submit', () => {
       amount: '1',
       chain_id: CHAIN_ID,
     });
-    expect(rpc.rpcUrl).toBe('http://rpc-b.test');
+    expect(rpc.rpcUrl).toBe('https://rpc-b.test');
 
     phase = 'sticky-down';
     await rpc.assertChainId();
-    expect(rpc.rpcUrl).toBe('http://rpc-b.test'); // streak 1 — sticky still preferred
+    expect(rpc.rpcUrl).toBe('https://rpc-b.test'); // streak 1 — sticky still preferred
     await rpc.assertChainId();
-    expect(rpc.rpcUrl).toBe('http://rpc-b.test'); // streak 2
+    expect(rpc.rpcUrl).toBe('https://rpc-b.test'); // streak 2
     await rpc.assertChainId();
     // streak 3 → sticky cleared; getter falls back to first list URL
-    expect(rpc.rpcUrl).toBe('http://rpc-a.test');
+    expect(rpc.rpcUrl).toBe('https://rpc-a.test');
   });
 
   it('throws RPC_UNAVAILABLE when all endpoints fail', async () => {
@@ -244,7 +244,7 @@ describe('security-rpc failover and sticky submit', () => {
       throw BridgeError.network('ECONNREFUSED');
     }) as typeof fetch;
     const rpc = new SqRpc({
-      rpcUrls: ['http://rpc-a.test', 'http://rpc-b.test'],
+      rpcUrls: ['https://rpc-a.test', 'https://rpc-b.test'],
       chainId: CHAIN_ID,
       retries: 0,
       timeoutMs: 50,
@@ -263,7 +263,7 @@ describe('waitForConfirmation resilience', () => {
       throw BridgeError.network('offline');
     }) as typeof fetch;
     const rpc = new SqRpc({
-      rpcUrl: 'http://rpc-down.test',
+      rpcUrl: 'https://rpc-down.test',
       chainId: CHAIN_ID,
       retries: 0,
       timeoutMs: 100,
@@ -295,7 +295,7 @@ describe('waitForConfirmation resilience', () => {
       return jsonResponse({ error: 'unexpected' }, 500);
     }) as typeof fetch;
     const rpc = new SqRpc({
-      rpcUrl: 'http://rpc.test',
+      rpcUrl: 'https://rpc.test',
       chainId: CHAIN_ID,
       retries: 0,
       timeoutMs: 200,

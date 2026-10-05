@@ -38,7 +38,7 @@ describe('Connection functional (mocked RPC)', () => {
     globalThis.fetch = fetchMock;
 
     const conn = new Connection({
-      rpcUrl: 'http://rpc.test',
+      rpcUrl: 'https://rpc.test',
       chainId: CHAIN_ID,
       retries: 0,
     });
@@ -56,7 +56,7 @@ describe('Connection functional (mocked RPC)', () => {
 
   it('assertChainId delegates to RPC fail-closed', async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({ chain_id: CHAIN_ID })) as typeof fetch;
-    const conn = new Connection({ rpcUrl: 'http://rpc.test', chainId: CHAIN_ID, retries: 0 });
+    const conn = new Connection({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 });
     await expect(conn.assertChainId()).resolves.toBeUndefined();
   });
 
@@ -72,7 +72,7 @@ describe('Connection functional (mocked RPC)', () => {
     }) as typeof fetch;
     globalThis.fetch = fetchMock;
 
-    const conn = new Connection({ rpcUrl: 'http://rpc.test', chainId: CHAIN_ID, retries: 0 });
+    const conn = new Connection({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 });
     const res = await conn.moduleCall<{ balance: string }>({
       module: 'qrc20',
       action: 'balance_of',
@@ -82,7 +82,7 @@ describe('Connection functional (mocked RPC)', () => {
   });
 
   it('fromSqRpc shares rpc instance', () => {
-    const conn = new Connection({ rpcUrl: 'http://rpc.test', chainId: CHAIN_ID });
+    const conn = new Connection({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID });
     const again = Connection.fromSqRpc(conn.rpc);
     expect(again.rpc).toBe(conn.rpc);
     expect(again.chainId).toBe(CHAIN_ID);

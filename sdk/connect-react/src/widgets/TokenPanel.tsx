@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { toUnits } from '@splendor/sqc-sdk/units';
-import { useAccount, useNetwork, useQRC20 } from '../react/hooks.js';
+import { useAccount, useEstimateFee, useNetwork, useQRC20 } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import { normalizeSqAddress } from './utils.js';
 import { TOKEN_LABELS, formatLabel, useWidgetLabels, type TokenPanelLabels } from './labels.js';
@@ -8,6 +8,7 @@ import type { BaseWidgetProps } from './types.js';
 import { WidgetShell } from './parts/WidgetShell.js';
 import { AddressInput, AmountInput } from './parts/inputs.js';
 import { ReviewPanel } from './parts/ReviewPanel.js';
+import { FeeRow } from './parts/FeeRow.js';
 import { TxResult } from './parts/TxResult.js';
 import { useTransferForm } from './parts/useTransferForm.js';
 import { toError, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
@@ -27,6 +28,8 @@ export type TokenPanelProps = BaseWidgetProps<TokenSentResult, TokenPanelLabels>
   defaultAmount?: string;
   /** @deprecated Use `onSuccess`. */
   onSent?: (result: TokenSentResult) => void;
+  /** Show the node's fee estimate in the review step (default true). */
+  showFee?: boolean;
 };
 
 /**
@@ -45,31 +48,45 @@ export function TokenPanel({
   onError,
   onStatusChange,
   toast = true,
+  showFee = true,
 }: TokenPanelProps) {
   const l = useWidgetLabels(TOKEN_LABELS, labels, 'token');
   const { address } = useAccount();
-  const { network } = useNetwork();
+  const { network, walletMismatch } = useNetwork();
   const [addrInput, setAddrInput] = useState(tokenAddressProp?.trim() ?? '');
   const typed = addrInput.trim();
   const typedValid = !!normalizeSqAddress(typed);
   const tokenAddress = tokenAddressProp?.trim() || (typedValid ? typed : '') || null;
-  const { balance, tokenInfo, transferHuman, status, hash, explorerUrl, error, reset, loading } =
+  const { balance, tokenInfo, decimals, transferHuman, status, hash, explorerUrl, error, reset, loading } =
     useQRC20(tokenAddress);
 
   const knownSymbol = tokenInfo && typeof tokenInfo.symbol === 'string' ? tokenInfo.symbol : null;
   const symbol = knownSymbol ?? 'TOKEN';
-  const decimals = tokenInfo && typeof tokenInfo.decimals === 'number' ? tokenInfo.decimals : 18;
 
+  // No human balance until the token's decimals are known: guessing would misstate amounts.
   let humanBalance: string | null = null;
-  if (balance != null) {
+  if (balance != null && decimals != null) {
     try {
       humanBalance = toUnits(balance, decimals);
     } catch {
-      humanBalance = balance;
+      humanBalance = null;
     }
   }
 
-  const form = useTransferForm({ balance: humanBalance, symbol, self: address, defaultAmount, labels: l });
+  const form = useTransferForm({
+    balance: humanBalance,
+    symbol,
+    self: address,
+    defaultAmount,
+    decimals: decimals ?? undefined,
+    contextKey: `${network?.chainId ?? ''}|${tokenAddress ?? ''}`,
+    labels: l,
+  });
+  const feeRequest = useMemo(() => {
+    if (!showFee || !form.reviewing || !form.review.ok || !address || !tokenAddress) return null;
+    return { from: address, to: tokenAddress };
+  }, [showFee, form.reviewing, form.review.ok, address, tokenAddress]);
+  const fee = useEstimateFee(feeRequest);
   const toasts = useWidgetToast(toast);
   useStatusChange(status, onStatusChange);
 
@@ -86,7 +103,7 @@ export function TokenPanel({
 
   const onConfirm = async () => {
     const review = form.review;
-    if (!tokenAddress || !review.ok) return;
+    if (!tokenAddress || !review.ok || walletMismatch) return;
     reset();
     toasts.pending(formatLabel(l.toastPending, { symbol }));
     let res: { hash?: string };
@@ -115,7 +132,7 @@ export function TokenPanel({
       hideTitle={hideTitle}
       gateLabels={l}
     >
-      {!tokenAddressProp ? (
+      {!tokenAddressProp && !form.reviewing ? (
         <AddressInput
           label={l.tokenLabel}
           placeholder={l.tokenPlaceholder}
@@ -128,15 +145,21 @@ export function TokenPanel({
       <p className="sqc-widget__hint">{hint}</p>
       {form.reviewing && form.review.ok ? (
         <ReviewPanel
+          from={address}
           to={form.review.to}
           amount={form.review.amount}
           symbol={symbol}
+          contract={tokenAddress}
           networkName={network?.name}
           pending={status === 'pending'}
+          confirmDisabled={walletMismatch}
           onBack={form.cancelReview}
           onConfirm={() => void onConfirm()}
           labels={l}
-        />
+        >
+          {/* Without calldata the node cannot predict a token revert, so only the fee is shown. */}
+          {showFee ? <FeeRow estimate={{ ...fee, reverted: false }} labels={l} /> : null}
+        </ReviewPanel>
       ) : (
         <>
           <AddressInput
@@ -155,12 +178,13 @@ export function TokenPanel({
             error={form.errors.amount}
             balance={humanBalance}
             symbol={symbol}
+            decimals={decimals ?? undefined}
             labels={l}
           />
           <button
             type="button"
             className="sqc-btn sqc-btn--primary sqc-btn--block"
-            disabled={!tokenAddress || !form.canReview || status === 'pending'}
+            disabled={!tokenAddress || decimals == null || !form.canReview || status === 'pending'}
             onClick={form.startReview}
           >
             {status === 'pending' ? l.sending : l.review}

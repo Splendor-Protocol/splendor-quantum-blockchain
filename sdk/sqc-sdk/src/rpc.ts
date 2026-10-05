@@ -8,7 +8,7 @@ import { BridgeError, wrapUnknown } from './errors.js';
 import { assertAddress } from './address.js';
 import { BRIDGE_CLIENT_VERSION } from './protocol.js';
 import { CHAIN_ID } from './derive.js';
-import { getDefaultNetwork } from './networks.js';
+import { getDefaultNetwork, isLoopbackOrLocalhostUrl } from './networks.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import type { ModuleCall } from './core/module-call.js';
 import { encodeModuleCallHex } from './core/module-call.js';
@@ -39,7 +39,44 @@ export type RpcOptions = {
    * Browser CORS still applies client-side.
    */
   allowPrivateRpcHosts?: boolean;
+  /** Allow plain `http://` to non-loopback hosts. Default false. */
+  allowInsecureHttp?: boolean;
 };
+
+/** Origin only — drops credentials, path and query (which may carry API keys) from error details. */
+export function redactRpcUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '[invalid url]';
+  }
+}
+
+/**
+ * IPv4 octets for a dotted host or an IPv4-mapped / compatible IPv6 host
+ * (`::ffff:169.254.169.254`, which WHATWG URL normalizes to `::ffff:a9fe:a9fe`).
+ */
+function ipv4Octets(host: string): number[] | null {
+  const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (dotted) return dotted.slice(1).map(Number);
+  const mappedDotted = /^::(?:ffff:)?(\d{1,3}(?:\.\d{1,3}){3})$/.exec(host);
+  if (mappedDotted) return ipv4Octets(mappedDotted[1]!);
+  const mappedHex = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1]!, 16);
+    const lo = parseInt(mappedHex[2]!, 16);
+    return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff];
+  }
+  return null;
+}
+
+const METADATA_HOSTS = new Set([
+  'metadata',
+  'metadata.google.internal',
+  'metadata.aws.internal',
+  'instance-data',
+  'fd00:ec2::254',
+]);
 
 /** Block SSRF-prone targets in Node (cloud metadata, link-local, file:). Localhost is allowed for local nodes. */
 export function assertSafeRpcUrl(url: string, opts?: { allowPrivateRpcHosts?: boolean }): void {
@@ -47,29 +84,26 @@ export function assertSafeRpcUrl(url: string, opts?: { allowPrivateRpcHosts?: bo
   try {
     u = new URL(url);
   } catch {
-    throw BridgeError.rpc(`Invalid RPC URL: ${url}`);
+    throw BridgeError.rpc(`Invalid RPC URL: ${redactRpcUrl(url)}`);
   }
-  if (u.protocol === 'file:') {
-    throw BridgeError.rpc('RPC URL scheme blocked (file:)');
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw BridgeError.rpc(`RPC URL scheme blocked (${u.protocol})`);
   }
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (opts?.allowPrivateRpcHosts) return;
-  if (
-    host === '169.254.169.254' ||
-    host === 'metadata.google.internal' ||
-    host.startsWith('169.254.') ||
-    host === 'metadata' ||
-    host.endsWith('.internal') ||
-    host === 'metadata.aws.internal' ||
-    host === 'instance-data' ||
-    /^0x[0-9a-f]+$/i.test(host)
-  ) {
-    throw BridgeError.rpc(`RPC host blocked (SSRF/metadata): ${host}`);
+  const blocked = () => BridgeError.rpc(`RPC host blocked (SSRF/metadata): ${host}`);
+  if (METADATA_HOSTS.has(host) || host.endsWith('.internal') || /^0x[0-9a-f]+$/i.test(host)) {
+    throw blocked();
   }
-  // IPv6 link-local and mapped metadata
-  if (host.startsWith('fe80:') || host.includes('169.254.169.254')) {
-    throw BridgeError.rpc(`RPC host blocked (SSRF/metadata): ${host}`);
+  const v4 = ipv4Octets(host);
+  if (v4) {
+    const [a, b, c, d] = v4;
+    // Link-local (AWS/GCP/Azure metadata live here) and Alibaba Cloud metadata.
+    if ((a === 169 && b === 254) || (a === 100 && b === 100 && c === 100 && d === 200)) throw blocked();
+    return;
   }
+  // IPv6 link-local fe80::/10.
+  if (/^fe[89ab][0-9a-f]:/.test(host)) throw blocked();
 }
 
 export class SqRpc {
@@ -108,6 +142,14 @@ export class SqRpc {
       process.versions.node != null;
     if (isNode) {
       for (const u of list) assertSafeRpcUrl(u, options);
+    }
+    if (!options.allowInsecureHttp) {
+      for (const u of list) {
+        if (u.startsWith('https://') || isLoopbackOrLocalhostUrl(u)) continue;
+        throw BridgeError.rpc(
+          `RPC URL must use https:// for non-loopback hosts (${redactRpcUrl(u)}). Pass allowInsecureHttp: true to override.`,
+        );
+      }
     }
     this.rpcUrls = list;
     this.timeoutMs = options.timeoutMs ?? defaults.timeoutMs;
@@ -164,7 +206,9 @@ export class SqRpc {
   }
 
   async getBlockByHeight(height: number | string): Promise<unknown> {
-    return this.get(`/block/${height}`);
+    const h = typeof height === 'number' ? (Number.isSafeInteger(height) && height >= 0 ? String(height) : '') : String(height).trim();
+    if (!/^(0|[1-9]\d*)$/.test(h)) throw BridgeError.invalidParams('block height must be a non-negative integer');
+    return this.get(`/block/${h}`);
   }
 
   async getBlockByHash(hash: string): Promise<unknown> {
@@ -419,6 +463,8 @@ export class SqRpc {
     pollMs?: number;
     /** When set, poll GET /tx/{hash}/receipt first. */
     hash?: string;
+    /** With `hash`: only a successful receipt confirms (no nonce-advance fallback). */
+    requireReceipt?: boolean;
   }): Promise<{ confirmed: true; nonce: number; receipt?: Record<string, unknown> }> {
     const from = assertAddress(opts.from);
     const timeoutMs = opts.timeoutMs ?? 60_000;
@@ -505,7 +551,7 @@ export class SqRpc {
           }
         }
 
-        if (receiptMissingStreak >= NONCE_FALLBACK_AFTER) {
+        if (!opts.requireReceipt && receiptMissingStreak >= NONCE_FALLBACK_AFTER) {
           try {
             const { nonce } = await this.getNonce(from, attemptTimeout);
             consecutiveInfra = 0;
@@ -608,6 +654,8 @@ export class SqRpc {
         try {
           const init: RequestInit = {
             method,
+            // A redirect could bounce a vetted RPC URL to a metadata or internal host.
+            redirect: 'error',
             headers: {
               Accept: 'application/json',
               'X-SQC-Bridge': BRIDGE_CLIENT_VERSION,
@@ -677,7 +725,7 @@ export class SqRpc {
     throw BridgeError.rpcUnavailable(
       `All RPC endpoints failed for ${method} ${path}` +
         (lastError instanceof Error ? `: ${lastError.message}` : ''),
-      { tried: urls, cause: lastError },
+      { tried: urls.map(redactRpcUrl), cause: lastError },
     );
   }
 }

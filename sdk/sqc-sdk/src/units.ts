@@ -10,17 +10,13 @@ const DECIMAL_RE = /^(0|[1-9]\d*)(\.\d+)?$/;
 
 function parseDecimalParts(amount: string | number, label: string): { whole: string; frac: string } {
   if (typeof amount === 'number') {
-    if (!Number.isFinite(amount) || amount < 0) {
-      throw BridgeError.invalidAmount(`${label}: invalid number ${amount}`);
-    }
-    // Reject scientific notation from Number#toString (e.g. 1e+21).
-    const s = String(amount);
-    if (/[eE]/.test(s)) {
+    // Fractional JS numbers carry float error (0.1 + 0.2); fractions must be decimal strings.
+    if (!Number.isSafeInteger(amount) || amount < 0) {
       throw BridgeError.invalidAmount(
-        `${label}: use a decimal string (scientific notation not allowed): ${s}`,
+        `${label}: numbers must be non-negative safe integers; pass fractional amounts as a decimal string (got ${amount})`,
       );
     }
-    amount = s;
+    amount = String(amount);
   }
   const trimmed = String(amount).trim();
   if (!trimmed || !DECIMAL_RE.test(trimmed)) {
@@ -58,7 +54,7 @@ export function toUnits(raw: string | number | bigint, decimals: number): string
     if (typeof raw === 'bigint') {
       u = raw;
     } else if (typeof raw === 'number') {
-      if (!Number.isFinite(raw) || !Number.isInteger(raw) || raw < 0) {
+      if (!Number.isSafeInteger(raw) || raw < 0) {
         throw BridgeError.invalidAmount(`toUnits: invalid raw number ${raw}`);
       }
       u = BigInt(raw);
@@ -82,4 +78,23 @@ export function toUnits(raw: string | number | bigint, decimals: number): string
   if (d === 0) return String(whole);
   const fracStr = frac.toString().padStart(d, '0').replace(/0+$/, '') || '0';
   return `${whole}.${fracStr}`;
+}
+
+/**
+ * Strict raw base-unit amount: a non-negative integer string, bigint or safe-integer number.
+ * Returns the canonical decimal string; anything else throws INVALID_AMOUNT.
+ */
+export function parseRawAmount(raw: unknown, label = 'amount'): string {
+  if (typeof raw === 'bigint') {
+    if (raw < 0n) throw BridgeError.invalidAmount(`${label}: negative amount`);
+    return raw.toString();
+  }
+  if (typeof raw === 'number') {
+    if (!Number.isSafeInteger(raw) || raw < 0) {
+      throw BridgeError.invalidAmount(`${label}: expected a non-negative safe integer, got ${raw}`);
+    }
+    return String(raw);
+  }
+  if (typeof raw === 'string' && /^(0|[1-9]\d*)$/.test(raw.trim())) return raw.trim();
+  throw BridgeError.invalidAmount(`${label}: expected a non-negative integer string in base units`);
 }

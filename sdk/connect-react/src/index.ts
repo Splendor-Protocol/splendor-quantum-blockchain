@@ -41,6 +41,8 @@ export type {
   ModalView,
   ConnectControllerState,
 } from './core/types.js';
+export { describeSignRequest, withSignApproval } from './core/signApproval.js';
+export type { SignRequest, SignApprover } from './core/signApproval.js';
 export {
   getLastConnectorId,
   setLastConnectorId,
@@ -79,9 +81,22 @@ export {
   useDeployBytecode,
   useModules,
   useSignIn,
+  useReadConnection,
+  useTokenInfo,
+  useTokenBalance,
+  useReadContract,
+  useEstimateFee,
+  usePendingTransactions,
   createAuthMessage,
 } from './react/hooks.js';
-export type { TxHookStatus } from './react/hooks.js';
+export type { TxHookStatus, TokenInfo, ReadState, ReadContractResult, FeeEstimate, PendingTx } from './react/hooks.js';
+export {
+  PENDING_TX_KEY,
+  loadPendingTxs,
+  addPendingTx,
+  removePendingTx,
+  clearPendingTxs,
+} from './core/pendingTx.js';
 export type { AccountDto, TxResultDto } from './core/dto.js';
 export { toAccountDto, toTxResultDto } from './core/dto.js';
 export { parseAuthMessage, checkAuthMessage, authCheckMessage } from './react/auth.js';
@@ -101,6 +116,7 @@ export {
   NetworkBadge,
   ModalShell,
   ModalHost,
+  SignApprovalModal,
   TxToastHost,
   useTxToast,
   WrongNetworkBanner,
@@ -141,6 +157,8 @@ export {
   amountFieldError,
   ReviewPanel,
   TransferReviewPanel,
+  FeeRow,
+  PendingTxList,
   TxResult,
   AddressDisplay,
   CopyButton,
@@ -175,6 +193,8 @@ export type {
   AddressInputProps,
   AmountInputProps,
   ReviewPanelProps,
+  FeeRowProps,
+  PendingTxListProps,
   TxResultProps,
   AddressDisplayProps,
   CopyButtonProps,

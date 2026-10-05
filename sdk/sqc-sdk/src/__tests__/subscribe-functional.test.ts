@@ -33,7 +33,7 @@ describe('subscribe functional', () => {
     // Force Node path
     vi.stubGlobal('EventSource', undefined);
 
-    const sub = subscribe('http://rpc.test', ['new_block', 'new_tx'], (ev) => events.push(ev), undefined, {
+    const sub = subscribe('https://rpc.test', ['new_block', 'new_tx'], (ev) => events.push(ev), undefined, {
       reconnect: false,
     });
     await new Promise((r) => setTimeout(r, 30));
@@ -77,7 +77,7 @@ describe('subscribe functional', () => {
     );
 
     const sub = subscribe(
-      'http://rpc.test',
+      'https://rpc.test',
       'new_block',
       (ev) => events.push(ev),
       (err) => errors.push(err),
@@ -110,7 +110,7 @@ describe('subscribe functional', () => {
       })),
     );
     const sub = subscribe(
-      ['http://rpc-a.test', 'http://rpc-b.test'],
+      ['https://rpc-a.test', 'https://rpc-b.test'],
       'new_block',
       () => undefined,
       undefined,
@@ -128,7 +128,7 @@ describe('subscribe functional', () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         urlsHit.push(url);
-        if (url.startsWith('http://rpc-a.test')) {
+        if (url.startsWith('https://rpc-a.test')) {
           throw new TypeError('primary down');
         }
         let i = 0;
@@ -156,7 +156,7 @@ describe('subscribe functional', () => {
         reject(new Error('timed out waiting for rotated subscribe event'));
       }, 2000);
       sub = subscribe(
-        ['http://rpc-a.test', 'http://rpc-b.test'],
+        ['https://rpc-a.test', 'https://rpc-b.test'],
         'new_block',
         (ev) => {
           events.push(ev);
@@ -168,8 +168,8 @@ describe('subscribe functional', () => {
         { reconnect: true, backoffMs: 5, maxRetries: 0 },
       );
     });
-    expect(urlsHit.some((u) => u.startsWith('http://rpc-a.test'))).toBe(true);
-    expect(urlsHit.some((u) => u.startsWith('http://rpc-b.test'))).toBe(true);
+    expect(urlsHit.some((u) => u.startsWith('https://rpc-a.test'))).toBe(true);
+    expect(urlsHit.some((u) => u.startsWith('https://rpc-b.test'))).toBe(true);
     expect(events).toEqual([{ type: 'new_block', height: 9 }]);
   });
 });

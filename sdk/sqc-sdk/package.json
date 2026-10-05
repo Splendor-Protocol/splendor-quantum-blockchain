@@ -63,6 +63,10 @@
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.js"
     },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "import": "./dist/auth.js"
+    },
     "./verify": {
       "types": "./dist/verify.d.ts",
       "import": "./dist/verify.js"

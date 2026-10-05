@@ -16,6 +16,7 @@ import {
   type SqcProvider,
 } from '@splendor/sqc-sdk';
 import type { Connector } from '../connectors/types.js';
+import { withSignApproval, type SignApprover, type SignRequest } from './signApproval.js';
 import { broadcastConnectEvent, getLastConnectorId, setLastConnectorId, subscribeConnectBroadcast } from './storage.js';
 import type {
   ConnectAccount,
@@ -33,6 +34,12 @@ export type CreateConnectControllerOptions = CreateClientOptions & {
   autoReconnect?: boolean;
   /** Called when connect/session errors occur (optional observability). */
   onError?: (err: Error) => void;
+  /**
+   * Approve each signature made with the in-page (seed) key. `'modal'` puts the request
+   * in `state.signRequest` for the built-in approval modal; omit to sign without asking
+   * (headless use). Extension sessions are never gated — the extension prompts itself.
+   */
+  onBeforeSign?: SignApprover | 'modal';
 };
 
 type Listener = () => void;
@@ -115,6 +122,12 @@ export type ConnectController = {
   rebindNetwork(networkId: NetworkId): Promise<void>;
   /** Bumps when session wallet identity changes (for reactive hooks). */
   getWalletEpoch(): number;
+  /** Replace the seed-session approver (see `onBeforeSign`). */
+  setSignApprover?(approver: SignApprover | 'modal' | undefined): void;
+  /** Answer the pending `state.signRequest` (used by the approval modal). */
+  resolveSignRequest?(approved: boolean): void;
+  /** Called by a mounted approval modal; returns the detach function. */
+  attachSignApprovalUi?(): () => void;
   destroy(): void;
 };
 
@@ -148,6 +161,12 @@ export function createConnectController(
   let connectEpoch = 0;
   /** Bumped when setSessionWallet changes the active signer (hook reactivity). */
   let walletEpoch = 0;
+  let signApprover: SignApprover | 'modal' | undefined = options.onBeforeSign;
+  let signRequest: SignRequest | null = null;
+  let resolvePendingSign: ((ok: boolean) => void) | null = null;
+  let signUiMounts = 0;
+  /** Gated view of the in-page wallet; rebuilt only when the wallet object changes. */
+  let gatedWallet: { target: SessionWallet; proxy: SessionWallet } | null = null;
   /** Debounce soft RPC probes after connect / network switch. */
   let lastProbeAt = 0;
   const PROBE_TTL_MS = 10_000;
@@ -275,6 +294,7 @@ export function createConnectController(
       connectors,
       network: client.network,
       walletChainId,
+      signRequest,
     };
     const prev = snapshot;
     if (
@@ -287,7 +307,8 @@ export function createConnectController(
       prev.connectors === next.connectors &&
       prev.network === next.network &&
       prev.walletChainId === next.walletChainId &&
-      prev.connectorsLoading === next.connectorsLoading
+      prev.connectorsLoading === next.connectorsLoading &&
+      prev.signRequest === next.signRequest
     ) {
       return prev;
     }
@@ -315,6 +336,43 @@ export function createConnectController(
   };
 
   wireSessionWallet(sessionWallet);
+
+  const settleSignRequest = (ok: boolean) => {
+    const resolve = resolvePendingSign;
+    resolvePendingSign = null;
+    if (signRequest) {
+      signRequest = null;
+      emit();
+    }
+    resolve?.(ok);
+  };
+
+  const approveSign = async (req: SignRequest): Promise<boolean> => {
+    const approver = signApprover;
+    if (!approver) return true;
+    if (approver !== 'modal') return approver(req);
+    if (signUiMounts === 0) {
+      // Nobody can answer the request, so refuse rather than hang or sign silently.
+      throw BridgeError.userRejected(
+        'No signing approval UI is mounted — render <SignApprovalModal /> or pass onBeforeSign',
+      );
+    }
+    if (resolvePendingSign) throw BridgeError.busy('Another signature is waiting for approval');
+    return new Promise<boolean>((resolve) => {
+      resolvePendingSign = resolve;
+      signRequest = req;
+      emit();
+    });
+  };
+
+  /** The in-page signer holds the key, so the app must ask before each signature. */
+  const walletForHooks = (): SessionWallet => {
+    if (sessionWallet !== client.wallet) return sessionWallet;
+    if (gatedWallet?.target !== sessionWallet) {
+      gatedWallet = { target: sessionWallet, proxy: withSignApproval(sessionWallet, approveSign) };
+    }
+    return gatedWallet.proxy;
+  };
 
   const getState = (): ConnectControllerState => snapshot;
 
@@ -461,6 +519,7 @@ export function createConnectController(
     },
     async disconnect() {
       connectEpoch += 1;
+      settleSignRequest(false);
       // Do not null connectInFlight here — mutex stays until the flight's finally.
       const connector = connectors.find((c) => c.id === activeConnectorId);
       clearConnectorAccountsWatch();
@@ -486,6 +545,7 @@ export function createConnectController(
     },
     async softDisconnect() {
       connectEpoch += 1;
+      settleSignRequest(false);
       // Epoch discards stale commit; keep connectInFlight until unlock settles so overlapping connect is rejected.
       const connector = connectors.find((c) => c.id === activeConnectorId);
       clearConnectorAccountsWatch();
@@ -547,7 +607,7 @@ export function createConnectController(
       }
     },
     getWallet() {
-      return sessionWallet;
+      return walletForHooks();
     },
     getProvider() {
       return client.provider;
@@ -558,6 +618,24 @@ export function createConnectController(
     setSessionWallet,
     getWalletEpoch() {
       return walletEpoch;
+    },
+    setSignApprover(approver) {
+      signApprover = approver;
+      // A pending modal request cannot be answered once the modal is gone.
+      if (approver !== 'modal' && resolvePendingSign) settleSignRequest(false);
+    },
+    resolveSignRequest(approved) {
+      settleSignRequest(approved);
+    },
+    attachSignApprovalUi() {
+      signUiMounts += 1;
+      let attached = true;
+      return () => {
+        if (!attached) return;
+        attached = false;
+        signUiMounts -= 1;
+        if (signUiMounts === 0 && resolvePendingSign) settleSignRequest(false);
+      };
     },
     async rebindNetwork(networkId) {
       if (destroyed) return;
@@ -583,6 +661,7 @@ export function createConnectController(
       scheduleProbe();
     },
     destroy() {
+      settleSignRequest(false);
       destroyed = true;
       connectEpoch += 1;
       // Flight's finally clears mutex; drop ref so destroy does not await unlock.

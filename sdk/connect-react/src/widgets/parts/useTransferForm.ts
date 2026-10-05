@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getRecentRecipients, rememberRecipient, reviewTransfer, type TransferReview } from '../utils.js';
 import { COMMON_LABELS, useWidgetLabels, type CommonWidgetLabels } from '../labels.js';
 import { addressFieldError, amountFieldError } from './inputs.js';
@@ -11,6 +11,13 @@ export type UseTransferFormOptions = {
   self?: string | null;
   defaultTo?: string;
   defaultAmount?: string;
+  /** Maximum fractional digits (18 for SPLD, token decimals for QRC-20). */
+  decimals?: number;
+  /**
+   * Anything that invalidates an open review (chain id, token address, …). When it or
+   * `self` changes, the review closes so the user never confirms stale details.
+   */
+  contextKey?: string;
   labels?: Partial<CommonWidgetLabels>;
 };
 
@@ -47,6 +54,8 @@ export function useTransferForm({
   self = null,
   defaultTo = '',
   defaultAmount = '',
+  decimals,
+  contextKey = '',
   labels,
 }: UseTransferFormOptions = {}): TransferForm {
   const l = useWidgetLabels(COMMON_LABELS, labels);
@@ -54,6 +63,10 @@ export function useTransferForm({
   const [amount, setAmountState] = useState(defaultAmount);
   const [reviewingState, setReviewing] = useState(false);
   const [recents, setRecents] = useState<string[]>(() => getRecentRecipients());
+
+  useEffect(() => {
+    setReviewing(false);
+  }, [self, contextKey]);
 
   const setTo = useCallback((v: string) => {
     setToState(v);
@@ -64,10 +77,10 @@ export function useTransferForm({
     setReviewing(false);
   }, []);
 
-  const review = reviewTransfer({ to, amount, balance, self });
+  const review = reviewTransfer({ to, amount, balance, self, decimals });
   const errors = {
     to: addressFieldError(to, self, l),
-    amount: amountFieldError(amount, balance, symbol, l),
+    amount: amountFieldError(amount, balance, symbol, l, decimals),
   };
 
   return {

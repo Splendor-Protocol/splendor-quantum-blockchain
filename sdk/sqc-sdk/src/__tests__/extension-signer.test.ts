@@ -75,6 +75,8 @@ describe('extension method aliases', () => {
 
 describe('ExtensionSigner', () => {
   const addr = 'SQ:' + 'cd'.repeat(32);
+  const HASH = '0x' + 'de'.repeat(32);
+  const MOD_HASH = '0x' + 'ef'.repeat(32);
 
   function mockProvider(
     handlers: Record<string, (params?: unknown) => unknown> = {},
@@ -84,6 +86,7 @@ describe('ExtensionSigner', () => {
       isSplendor: true as const,
       request: vi.fn(async ({ method, params }: { method: string; params?: unknown }) => {
         if (handlers[method]) return handlers[method]!(params);
+        if (method === 'sqc_chainId') return CHAIN_ID;
         if (method === 'sqc_requestAccounts' || method === 'splendor_connect') return [addr];
         if (method === 'sqc_accounts' || method === 'splendor_accounts') return [addr];
         if (method === 'wallet_disconnect' || method === 'sqc_disconnect') return null;
@@ -91,7 +94,7 @@ describe('ExtensionSigner', () => {
           return { address: addr, signature: 'c2ln', publicKeyB64: 'cGs=', message: 'hi' };
         }
         if (method === 'sqc_sendTransaction') {
-          return '0xdeadbeef';
+          return HASH;
         }
         throw new Error(`unexpected ${method}`);
       }),
@@ -181,7 +184,7 @@ describe('ExtensionSigner', () => {
       amountSPLD: '0.01',
       fee: '1000',
     });
-    expect(out.hash).toBe('0xdeadbeef');
+    expect(out.hash).toBe(HASH);
     expect(out.status).toBe('ok');
     const sendCall = provider.request.mock.calls.find((c) => c[0]?.method === 'sqc_sendTransaction');
     expect(sendCall?.[0]?.params).toEqual([{ to: addr, amount: '10000000000000000', fee: '1000' }]);
@@ -275,18 +278,32 @@ describe('ExtensionSigner', () => {
     wallet.disconnect();
   });
 
-  it('sends normally when the extension chain matches or sqc_chainId is unsupported', async () => {
+  it('sends when the extension chain matches; refuses an unknown chain unless opted out', async () => {
     const matching = mockProvider({ sqc_chainId: () => CHAIN_ID });
     const w1 = new ExtensionSigner({ connection: connection(), provider: matching, networkId: 'local' });
     await w1.connect();
-    expect((await w1.sendTransfer({ to: addr, amountSPLD: '1' })).hash).toBe('0xdeadbeef');
+    expect((await w1.sendTransfer({ to: addr, amountSPLD: '1' })).hash).toBe(HASH);
     w1.disconnect();
 
-    const legacy = mockProvider();
+    const legacy = mockProvider({ sqc_chainId: () => { throw new Error('unsupported method'); } });
     const w2 = new ExtensionSigner({ connection: connection(), provider: legacy, networkId: 'local' });
     await w2.connect();
-    expect((await w2.sendTransfer({ to: addr, amountSPLD: '1' })).hash).toBe('0xdeadbeef');
+    await expect(w2.sendTransfer({ to: addr, amountSPLD: '1' })).rejects.toMatchObject({
+      code: 'CHAIN_MISMATCH',
+    });
+    expect(legacy.request.mock.calls.some((c) => c[0]?.method === 'sqc_sendTransaction')).toBe(false);
     w2.disconnect();
+
+    const optedOut = mockProvider({ sqc_chainId: () => { throw new Error('unsupported method'); } });
+    const w3 = new ExtensionSigner({
+      connection: connection(),
+      provider: optedOut,
+      networkId: 'local',
+      allowUnknownWalletChain: true,
+    });
+    await w3.connect();
+    expect((await w3.sendTransfer({ to: addr, amountSPLD: '1' })).hash).toBe(HASH);
+    w3.disconnect();
   });
 
   it('sendModuleCall refuses params the extension cannot base64-encode', async () => {
@@ -304,7 +321,7 @@ describe('ExtensionSigner', () => {
   });
 
   it('sendModuleCall accepts Latin-1 params', async () => {
-    const provider = mockProvider({ sqc_moduleCall: () => '0xmod' });
+    const provider = mockProvider({ sqc_moduleCall: () => MOD_HASH });
     const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });
     await wallet.connect();
     const out = await wallet.sendModuleCall({
@@ -312,7 +329,7 @@ describe('ExtensionSigner', () => {
       action: 'transfer',
       params: { token: addr, to: addr, amount: '1', memo: 'café' },
     });
-    expect(out.hash).toBe('0xmod');
+    expect(out.hash).toBe(MOD_HASH);
     wallet.disconnect();
   });
 

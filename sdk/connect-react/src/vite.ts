@@ -4,7 +4,8 @@
  *   import { sqcWasmPlugin } from '@splendor/connect-react/vite';
  *   plugins: [react(), sqcWasmPlugin()]
  */
-import { chmodSync, copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +18,20 @@ export type SqcWasmPluginOptions = {
   outDir?: string;
   /** Fail Vite build/dev if WASM assets are missing (default true). */
   strict?: boolean;
+  /**
+   * Inject `import.meta.env.VITE_SQC_WASM_SHA256` / `VITE_SQC_EXEC_SHA256` with the hashes of
+   * the copied assets so the provider can pin them (default true; existing env values win).
+   */
+  defineHashes?: boolean;
 };
+
+export type SqcWasmHashes = { wasmSha256: string; execSha256: string };
+
+/** SHA-256 (hex) of the signer assets in `srcDir`. */
+export function sqcWasmHashes(srcDir: string): SqcWasmHashes {
+  const hash = (f: string) => createHash('sha256').update(readFileSync(join(srcDir, f))).digest('hex');
+  return { wasmSha256: hash('sqc_signer.wasm'), execSha256: hash('wasm_exec.js') };
+}
 
 const FILES = ['sqc_signer.wasm', 'wasm_exec.js'] as const;
 
@@ -94,8 +108,13 @@ export function sqcWasmPlugin(options: SqcWasmPluginOptions = {}): Plugin {
       : resolve(root, publicDir);
     try {
       const src = copySqcWasmAssets(dest);
+      const hashes = sqcWasmHashes(dest);
+      writeFileSync(join(dest, 'sqc-wasm.sha256.json'), `${JSON.stringify(hashes, null, 2)}\n`);
       console.log(
-        `[sqc-wasm] copied signer assets → ${dest} (from ${src}) [${command}]`,
+        `[sqc-wasm] copied signer assets → ${dest} (from ${src}) [${command}]\n` +
+          `[sqc-wasm]   sqc_signer.wasm sha256=${hashes.wasmSha256}\n` +
+          `[sqc-wasm]   wasm_exec.js    sha256=${hashes.execSha256}\n` +
+          '[sqc-wasm]   pin these via wasmSha256 / execSha256 (or VITE_SQC_WASM_SHA256 / VITE_SQC_EXEC_SHA256).',
       );
       copied = true;
     } catch (e) {
@@ -119,6 +138,24 @@ export function sqcWasmPlugin(options: SqcWasmPluginOptions = {}): Plugin {
         return 'export async function loadWasmInNode() { throw new Error("Node WASM loader is not available in the browser"); }';
       }
       return null;
+    },
+    async config(userConfig, { mode }) {
+      if (options.defineHashes === false) return;
+      const src = findSqcWasmDist();
+      if (!src || !existsSync(join(src, 'wasm_exec.js'))) return;
+      const hashes = sqcWasmHashes(src);
+      const define: Record<string, string> = {};
+      const existing = userConfig.define ?? {};
+      const { loadEnv } = await import('vite');
+      const envDir = typeof userConfig.envDir === 'string' ? userConfig.envDir : (userConfig.root ?? process.cwd());
+      const env = { ...loadEnv(mode, envDir, 'VITE_SQC_'), ...process.env };
+      if (!env.VITE_SQC_WASM_SHA256 && !('import.meta.env.VITE_SQC_WASM_SHA256' in existing)) {
+        define['import.meta.env.VITE_SQC_WASM_SHA256'] = JSON.stringify(hashes.wasmSha256);
+      }
+      if (!env.VITE_SQC_EXEC_SHA256 && !('import.meta.env.VITE_SQC_EXEC_SHA256' in existing)) {
+        define['import.meta.env.VITE_SQC_EXEC_SHA256'] = JSON.stringify(hashes.execSha256);
+      }
+      return { define };
     },
     configResolved(config) {
       root = config.root;

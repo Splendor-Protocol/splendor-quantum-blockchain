@@ -70,9 +70,12 @@ export class BridgeError extends Error {
   }
 
   static invalidAddress(addr: string): BridgeError {
+    // Users sometimes paste a seed or key into an address field; never echo it whole.
+    const s = String(addr ?? '');
+    const shown = s.length > 16 ? `${s.slice(0, 8)}…(${s.length} chars)` : s;
     return new BridgeError(
       'INVALID_ADDRESS',
-      `Invalid SQ address: ${addr}`,
+      `Invalid SQ address: ${shown.replace(/[\u0000-\u001f\u007f]/g, '?')}`,
       undefined,
       'Enter a valid SQ: address',
     );
@@ -80,6 +83,10 @@ export class BridgeError extends Error {
 
   static invalidAmount(msg: string): BridgeError {
     return new BridgeError('INVALID_AMOUNT', msg, undefined, 'Enter a valid amount');
+  }
+
+  static invalidParams(msg: string, details?: unknown): BridgeError {
+    return new BridgeError('INVALID_PARAMS', msg, details, 'Check the values you entered');
   }
 
   static invalidFee(msg: string): BridgeError {

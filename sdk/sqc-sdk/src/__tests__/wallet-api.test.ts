@@ -82,9 +82,14 @@ describe('Phase 1 — canonical Wallet API', () => {
     expect(raw.message).toBe('raw-bytes');
   }, 30_000);
 
-  it('prepareSignMessage leaves Connect v2 challenges untouched', () => {
-    const challenge = 'Splendor Connect v2\nSign in to https://example.com';
+  it('prepareSignMessage leaves only complete Connect v2 challenges untouched', () => {
+    const challenge = 'Splendor Connect v2\nSign in to https://example.com\nIssued At: 1700000000';
     expect(prepareSignMessage(challenge)).toBe(challenge);
+    const lookalike = 'Splendor Connect v2\nSign in to https://example.com';
+    expect(prepareSignMessage(lookalike)).toBe(`${SIGN_MESSAGE_DOMAIN}\n${lookalike}`);
+    expect(prepareSignMessage('Splendor Connect v1 anything')).toBe(
+      `${SIGN_MESSAGE_DOMAIN}\nSplendor Connect v1 anything`,
+    );
   });
 
   it('WalletError subclasses BridgeError with name WalletError', () => {

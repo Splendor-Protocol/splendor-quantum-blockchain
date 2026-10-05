@@ -1,5 +1,6 @@
 /** Shared helpers for dApp widgets. */
 import { canonicalizeAddress } from '@splendor/sqc-sdk';
+import { isSafeExplorerUrl } from '@splendor/sqc-sdk/networks';
 import { COMMON_LABELS, formatLabel, type CommonWidgetLabels } from './labels.js';
 
 export function truncateAddress(addr: string, left = 6, right = 4): string {
@@ -9,10 +10,17 @@ export function truncateAddress(addr: string, left = 6, right = 4): string {
 
 const AMOUNT_RE = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
-/** Decimal human amount strictly greater than zero. */
-export function isPositiveAmount(v: string): boolean {
+/** Decimal human amount strictly greater than zero (and, when given, at most `maxDecimals` places). */
+export function isPositiveAmount(v: string, maxDecimals?: number): boolean {
   const t = v.trim();
-  return !!t && AMOUNT_RE.test(t) && !/^0(?:\.0+)?$/.test(t);
+  if (!t || !AMOUNT_RE.test(t) || /^0(?:\.0+)?$/.test(t)) return false;
+  return maxDecimals == null || fractionDigits(t) <= maxDecimals;
+}
+
+/** Number of digits after the decimal point. */
+export function fractionDigits(v: string): number {
+  const i = v.indexOf('.');
+  return i < 0 ? 0 : v.length - i - 1;
 }
 
 /** Canonical `SQ:` address (lowercase hex), or null for `0x`, raw hex, short, or empty input. */
@@ -49,7 +57,7 @@ export function compareDecimal(a: string, b: string): -1 | 0 | 1 | null {
   return pa < pb ? -1 : 1;
 }
 
-export type TransferReviewReason = 'invalid-address' | 'self' | 'bad-amount' | 'insufficient';
+export type TransferReviewReason = 'invalid-address' | 'self' | 'bad-amount' | 'too-precise' | 'insufficient';
 
 export type TransferReview =
   | { ok: true; to: string; amount: string }
@@ -58,12 +66,14 @@ export type TransferReview =
 /**
  * Pre-send checks shared by transfer widgets. `balance` is the human balance in the
  * same unit as `amount`; when null or unparsable the balance check is skipped.
+ * `decimals` caps the fractional digits (18 for SPLD, the token's decimals for QRC-20).
  */
 export function reviewTransfer(input: {
   to: string;
   amount: string;
   balance?: string | null;
   self?: string | null;
+  decimals?: number;
 }): TransferReview {
   const to = normalizeSqAddress(input.to);
   if (!to) return { ok: false, reason: 'invalid-address' };
@@ -71,6 +81,9 @@ export function reviewTransfer(input: {
   if (self && self === to) return { ok: false, reason: 'self' };
   const amount = input.amount.trim();
   if (!isPositiveAmount(amount)) return { ok: false, reason: 'bad-amount' };
+  if (input.decimals != null && fractionDigits(amount) > input.decimals) {
+    return { ok: false, reason: 'too-precise' };
+  }
   if (input.balance != null && compareDecimal(amount, input.balance) === 1) {
     return { ok: false, reason: 'insufficient' };
   }
@@ -80,7 +93,9 @@ export function reviewTransfer(input: {
 export function transferReviewMessage(
   reason: TransferReviewReason,
   symbol = 'SPLD',
-  labels: Pick<CommonWidgetLabels, 'invalidAddress' | 'selfSend' | 'badAmount' | 'insufficient'> = COMMON_LABELS,
+  labels: Pick<CommonWidgetLabels, 'invalidAddress' | 'selfSend' | 'badAmount' | 'insufficient'> &
+    Partial<Pick<CommonWidgetLabels, 'tooPrecise'>> = COMMON_LABELS,
+  decimals?: number,
 ): string {
   switch (reason) {
     case 'invalid-address':
@@ -89,6 +104,8 @@ export function transferReviewMessage(
       return labels.selfSend;
     case 'bad-amount':
       return labels.badAmount;
+    case 'too-precise':
+      return formatLabel(labels.tooPrecise ?? COMMON_LABELS.tooPrecise, { decimals });
     case 'insufficient':
       return formatLabel(labels.insufficient, { symbol });
   }
@@ -149,7 +166,8 @@ export function addressExplorerUrl(
   const addr = normalizeSqAddress(address);
   if (!explorerUrl || !addr) return null;
   const base = explorerUrl.trim().replace(/\/+$/, '');
-  if (!base) return null;
+  if (!base || !isSafeExplorerUrl(base)) return null;
+  // `addr` is canonical `SQ:` + 64 hex, so it is already path-safe.
   return `${base}/address/${addr}`;
 }
 

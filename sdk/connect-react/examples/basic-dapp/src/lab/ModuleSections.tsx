@@ -135,7 +135,10 @@ export function ContractCard({ step }: { step: number }) {
         'Paste compiled bytecode (hex, e.g. from the QSol compiler in /compiler) and deploy: the contract address fills in below.',
         'read("get()"): returns return_data with reverted: false.',
         'readUint256("get()"): returns the value decoded as a bigint (shown with an "n" suffix).',
-        'call("set(uint256)", ["42"]): returns a tx hash; reading get() again returns the new value.',
+        'call("set(uint256)", ["42"]): returns a tx hash; readUint256("get()") then returns 42n (decimal, not 0x42 = 66).',
+        'call("set(uint256)", ["0x2a"]): hex needs the 0x prefix; readUint256("get()") returns 42n again.',
+        'Args ["ff"] or ["hello"]: fails before signing with "Unsupported ABI string arg" (bare hex is not guessed).',
+        'Disconnect the wallet: read and readUint256 still work (reads use the network RPC); call asks you to connect.',
         'A function the contract does not have: fails with the revert reason from the node.',
       ]}
     >

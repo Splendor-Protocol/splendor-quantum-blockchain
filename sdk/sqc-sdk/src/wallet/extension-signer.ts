@@ -37,6 +37,11 @@ export type ExtensionSignerOptions = {
   connection: Connection;
   provider?: SplendorProviderLike;
   networkId?: string;
+  /**
+   * Send even when the extension cannot report its chain (`sqc_chainId` unsupported).
+   * Off by default: an unknown wallet chain could land the tx on a chain the app is not watching.
+   */
+  allowUnknownWalletChain?: boolean;
 };
 
 function asAddresses(raw: unknown): string[] {
@@ -50,18 +55,27 @@ function asAddresses(raw: unknown): string[] {
   return [];
 }
 
+const TX_HASH_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+
 function normalizeTxResult(raw: unknown): SendTxResult {
-  if (typeof raw === 'string' && raw.length > 0) {
+  if (typeof raw === 'string') {
+    if (!TX_HASH_RE.test(raw)) throw BridgeError.rpc('Extension returned an invalid transaction hash');
     return { status: 'ok', hash: raw, signedTx: {} };
   }
   const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const hash = String(o.hash ?? o.txHash ?? o.tx_hash ?? '');
+  if (!TX_HASH_RE.test(hash)) {
+    throw BridgeError.rpc('Extension did not return a valid transaction hash');
+  }
   return {
     status: String(o.status ?? 'ok'),
-    hash: String(o.hash ?? o.txHash ?? o.tx_hash ?? ''),
+    hash,
     signedTx: (o.signedTx as object) ?? {},
     confirmation: o.confirmation as SendTxResult['confirmation'],
   };
 }
+
+type WaitOpts = { waitForConfirmation?: boolean; confirmTimeoutMs?: number };
 
 /**
  * The extension base64-encodes the module-call JSON with `btoa`, which throws on any character
@@ -109,6 +123,7 @@ export class ExtensionSigner implements Signer {
   private networkId: string;
   /** Chain id the extension is signing for (its own Settings), as reported by sqc_chainId / chainChanged. */
   private _walletChainId: string | null = null;
+  private readonly allowUnknownWalletChain: boolean;
   private unsubs: Array<() => void> = [];
   /** Serializes sign / submit RPCs so concurrent calls do not race. */
   private opChain: Promise<unknown> = Promise.resolve();
@@ -127,6 +142,7 @@ export class ExtensionSigner implements Signer {
     this.provider = provider;
     this._connection = opts.connection;
     this.networkId = opts.networkId ?? 'local';
+    this.allowUnknownWalletChain = opts.allowUnknownWalletChain === true;
     this.wireProviderEvents();
   }
 
@@ -258,6 +274,14 @@ export class ExtensionSigner implements Signer {
   private async assertWalletChain(): Promise<void> {
     const wallet = await this.refreshWalletChainId();
     const app = this.connection.chainId;
+    if (!wallet && !this.allowUnknownWalletChain) {
+      throw new BridgeError(
+        'CHAIN_MISMATCH',
+        `Extension did not report its chain; app is on ${app}`,
+        { walletChainId: null, appChainId: app },
+        'Update the Splendor wallet extension so this app can confirm it is on the same network',
+      );
+    }
     if (wallet && app && wallet !== app) {
       throw new BridgeError(
         'CHAIN_MISMATCH',
@@ -389,7 +413,7 @@ export class ExtensionSigner implements Signer {
         address: String(o.address ?? this.info.address),
         publicKeyB64: String(o.publicKeyB64 ?? o.public_key_b64 ?? ''),
         signatureB64: String(o.signatureB64 ?? o.signature ?? o.sig ?? ''),
-        message: String(o.message ?? prepared),
+        message: prepared,
       };
     }
     if (typeof raw === 'string') {
@@ -404,20 +428,36 @@ export class ExtensionSigner implements Signer {
   }
 
   async sendTransfer(opts: TransferOpts): Promise<SendTxResult> {
-    return this.sendTransaction({ type: 'transfer', ...opts });
+    return this.sendTransaction({ type: 'transfer', ...opts }, opts);
   }
 
-  async sendTransaction(
-    tx: UnsignedTx | object,
-    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
-  ): Promise<SendTxResult> {
-    return this.withOpLock(() => this.sendTransactionUnlocked(tx, opts));
+  async sendTransaction(tx: UnsignedTx | object, opts?: WaitOpts): Promise<SendTxResult> {
+    return this.submitThenWait(() => this.sendTransactionUnlocked(tx), opts);
   }
 
-  private async sendTransactionUnlocked(
-    tx: UnsignedTx | object,
-    _opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
-  ): Promise<SendTxResult> {
+  /**
+   * Submit under the op lock, then (when asked) wait for the receipt outside it so a slow
+   * confirmation never blocks the next signature.
+   */
+  private async submitThenWait(submit: () => Promise<SendTxResult>, opts?: WaitOpts): Promise<SendTxResult> {
+    let nonceBefore = 0;
+    const res = await this.withOpLock(async () => {
+      if (opts?.waitForConfirmation && this.info) {
+        nonceBefore = (await this.connection.getNonce(this.info.address)).nonce;
+      }
+      return submit();
+    });
+    if (!opts?.waitForConfirmation || res.confirmation) return res;
+    const confirmation = await this.connection.waitForConfirmation({
+      from: this.getAddress(),
+      nonceBefore,
+      hash: res.hash,
+      timeoutMs: opts.confirmTimeoutMs,
+    });
+    return { ...res, confirmation: { confirmed: true, nonce: confirmation.nonce } };
+  }
+
+  private async sendTransactionUnlocked(tx: UnsignedTx | object): Promise<SendTxResult> {
     if (!this.info) throw BridgeError.notConnected();
     await this.assertWalletChain();
     const body = toExtensionTransferBody(tx);
@@ -428,7 +468,7 @@ export class ExtensionSigner implements Signer {
 
   async sendModuleCall(opts: ModuleCallOpts): Promise<TxResult> {
     assertExtensionEncodable(opts);
-    return this.withOpLock(async () => {
+    return this.submitThenWait(async () => {
       await this.assertWalletChain();
       try {
         const raw = await this.req('sqc_moduleCall', [opts]);
@@ -443,15 +483,15 @@ export class ExtensionSigner implements Signer {
         if (!unsupported) throw err;
         return this.sendTransactionUnlocked({ type: 'module', ...opts });
       }
-    });
+    }, opts);
   }
 
   async callContract(opts: CallOpts): Promise<TxResult> {
-    return this.withOpLock(() => this.sendTransactionUnlocked({ type: 'call', ...opts }));
+    return this.submitThenWait(() => this.sendTransactionUnlocked({ type: 'call', ...opts }), opts);
   }
 
   async deployContract(opts: DeployOpts): Promise<TxResult> {
-    return this.withOpLock(() => this.sendTransactionUnlocked({ type: 'deploy', ...opts }));
+    return this.submitThenWait(() => this.sendTransactionUnlocked({ type: 'deploy', ...opts }), opts);
   }
 
   async waitForConfirmation(opts: {

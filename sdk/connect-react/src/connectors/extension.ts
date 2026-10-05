@@ -14,6 +14,11 @@ export type ExtensionConnectorOpts = {
   discoveryTimeoutMs?: number;
   /** Max ms for modal `ready()` when inject is missing. Default 400. */
   readyTimeoutMs?: number;
+  /**
+   * Accept wallets that cannot report their chain (no `sqc_chainId`). Off by default:
+   * an unknown wallet chain fails closed with CHAIN_MISMATCH.
+   */
+  allowUnknownWalletChain?: boolean;
 };
 
 /**
@@ -79,6 +84,7 @@ export function extensionConnector(opts: ExtensionConnectorOpts = {}): Connector
         networkId: ctx.network.id,
         discoveryTimeoutMs,
         provider,
+        allowUnknownWalletChain: opts.allowUnknownWalletChain,
       });
       ctx.setSessionWallet?.(wallet);
       sessionDisconnect = () => wallet.disconnect();

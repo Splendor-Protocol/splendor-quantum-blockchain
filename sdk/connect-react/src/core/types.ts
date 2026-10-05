@@ -1,5 +1,6 @@
 import type { DeriveInfo, NetworkConfig } from '@splendor/sqc-sdk';
 import type { Connector } from '../connectors/types.js';
+import type { SignRequest } from './signApproval.js';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'locked' | 'error';
 
@@ -30,6 +31,8 @@ export type ConnectControllerState = {
   walletChainId?: string | null;
   /** True while wallets are still being discovered (connectors="auto"). */
   connectorsLoading?: boolean;
+  /** A seed-session signature waiting for the user (default approval modal). */
+  signRequest?: SignRequest | null;
 };
 
 export type ConnectControllerEvents = {

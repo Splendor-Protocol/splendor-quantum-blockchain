@@ -765,6 +765,21 @@
   word-break: break-all;
 }
 
+.sqc-widget__fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.sqc-widget__fieldset:disabled {
+  opacity: 0.55;
+}
+
+.sqc-fee-row--revert .sqc-account-row__value {
+  color: var(--sqc-danger);
+}
+
 .sqc-widget .sqc-input {
   width: 100%;
   box-sizing: border-box;
@@ -858,4 +873,44 @@
     animation: none !important;
     transition: none !important;
   }
+}
+
+.sqc-sign-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.sqc-sign-approval__summary {
+  margin: 0;
+  font-weight: 600;
+}
+.sqc-sign-approval__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.sqc-sign-approval__rows code {
+  word-break: break-all;
+}
+.sqc-sign-approval__network {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  word-break: normal;
+}
+.sqc-sign-approval__network code {
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+.sqc-sign-approval__message {
+  margin: 0;
+  max-height: 12rem;
+  overflow: auto;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--sqc-radius-sm, 8px);
+  background: var(--sqc-surface-2, rgba(127, 127, 127, 0.08));
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

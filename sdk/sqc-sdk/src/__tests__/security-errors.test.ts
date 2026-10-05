@@ -68,7 +68,7 @@ describe('security-errors SQDP-1 codes', () => {
         headers: { 'Content-Type': 'application/json' },
       })) as typeof fetch;
     try {
-      const rpc = new SqRpc({ rpcUrl: 'http://x.test', chainId: CHAIN_ID, retries: 0 });
+      const rpc = new SqRpc({ rpcUrl: 'https://x.test', chainId: CHAIN_ID, retries: 0 });
       await expect(rpc.assertChainId()).rejects.toMatchObject({ code: 'CHAIN_MISMATCH' });
     } finally {
       globalThis.fetch = original;
@@ -83,7 +83,7 @@ describe('security-errors SQDP-1 codes', () => {
         headers: { 'Content-Type': 'application/json' },
       })) as typeof fetch;
     try {
-      const rpc = new SqRpc({ rpcUrl: 'http://x.test', chainId: CHAIN_ID, retries: 0 });
+      const rpc = new SqRpc({ rpcUrl: 'https://x.test', chainId: CHAIN_ID, retries: 0 });
       await expect(
         rpc.waitForConfirmation({
           from: 'SQ:' + 'ab'.repeat(32),
@@ -114,7 +114,7 @@ describe('security-errors SQDP-1 codes', () => {
       });
     }) as typeof fetch;
     try {
-      const rpc = new SqRpc({ rpcUrl: 'http://x.test', chainId: CHAIN_ID, retries: 0 });
+      const rpc = new SqRpc({ rpcUrl: 'https://x.test', chainId: CHAIN_ID, retries: 0 });
       await expect(
         rpc.waitForConfirmation({
           from,
@@ -145,7 +145,7 @@ describe('security-errors SQDP-1 codes', () => {
     }) as typeof fetch;
     try {
       const rpc = new SqRpc({
-        rpcUrl: 'http://slow.test',
+        rpcUrl: 'https://slow.test',
         chainId: CHAIN_ID,
         timeoutMs: 30,
         retries: 0,

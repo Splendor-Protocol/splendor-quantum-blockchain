@@ -362,6 +362,67 @@ to storage, logged, or broadcast. A CLI `.sqwallet` file holds an encrypted
 ML-DSA-65 private key rather than a seed, so it is not importable in the browser
 — keep signing those with `sqc-wallet`.
 
+## Security
+
+**Approve every seed signature.** The extension prompts for each signature itself;
+an in-page seed wallet has no such prompt, so the kit adds one. Before any send,
+deploy, module call or message signature from a seed session it shows
+`<SignApprovalModal />` (mounted by `ConnectButton` and `ModalHost`). If no approval
+UI is mounted, signing fails closed with `USER_REJECTED` rather than signing
+silently. Bring your own approval with `onBeforeSign`:
+
+```tsx
+<SplendorConnectProvider
+  network="testnet"
+  onBeforeSign={async (req) => confirm(`${req.summary}${req.to ? ` to ${req.to}` : ''}?`)}
+>
+```
+
+`req` is `{ kind, method, summary, to?, amount?, message? }`. Return `true` to sign.
+`onBeforeSign={() => true}` turns approval off — only for tests and kiosk apps.
+
+**Pin the signer from the build.** `sqcWasmPlugin()` prints both digests, writes
+`sqc-wasm.sha256.json` next to the copied files and defines
+`import.meta.env.VITE_SQC_WASM_SHA256` / `VITE_SQC_EXEC_SHA256`:
+
+```tsx
+<SplendorConnectProvider
+  network="testnet"
+  wasmSha256={import.meta.env.VITE_SQC_WASM_SHA256}
+  execSha256={import.meta.env.VITE_SQC_EXEC_SHA256}
+>
+```
+
+**Content Security Policy.** The Go WASM runtime needs `'wasm-unsafe-eval'`
+(older browsers: `'unsafe-eval'`). Keep everything else tight and forbid framing,
+so another site cannot overlay your Approve button:
+
+```
+Content-Security-Policy:
+  default-src 'self';
+  script-src 'self' 'wasm-unsafe-eval';
+  connect-src 'self' https://rpc.your-network.example;
+  img-src 'self' data: https:;
+  frame-ancestors 'none';
+  base-uri 'none';
+  object-src 'none'
+```
+
+**Verify sign-in on the server.** `useSignIn` / `<SignInButton>` produce a signed
+message; a signature checked only in the browser proves nothing to your backend.
+Issue the nonce on the server and check it with `verifySignIn` from
+`@splendor/sqc-sdk/auth` — see “Server sign-in” in [`docs/GUIDE.md`](docs/GUIDE.md).
+
+**Seed hygiene in the modal.** Seed inputs are uncontrolled (never in React state),
+carry `autocomplete="new-password"` plus `data-private` / `data-sentry-mask` /
+`data-hj-suppress` so replay and error tools mask them, and are wiped after a failed
+import. A copied seed is cleared from the clipboard after 45 s if it is still there,
+a revealed seed re-masks after 60 s, and a new seed must be confirmed by typing 4 of
+its characters back.
+
+**Links.** Explorer links only render for `https://` explorers (or `http://` on
+loopback) and open with `rel="noopener noreferrer"`.
+
 ## Subpath exports
 
 | Import | Contents |
@@ -372,6 +433,7 @@ ML-DSA-65 private key rather than a seed, so it is not importable in the browser
 | `@splendor/connect-react/core` | Headless controller |
 | `@splendor/connect-react/vite` | `sqcWasmPlugin` |
 | `@splendor/connect-react/next` | `copySqcWasmToPublic` |
+| `@splendor/connect-react/testing` | `createMockConnectController`, `MockSplendorProvider`, `mockWallet`, `mockConnector` |
 | `@splendor/connect-react/style.css` | Theme tokens |
 
 ## License

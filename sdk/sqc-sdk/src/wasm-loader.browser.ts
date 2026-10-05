@@ -2,6 +2,7 @@
 import {
   assertWasmSha256,
   bindWasmApi,
+  detachWasmExports,
   sha256Hex,
   waitForWasmReady,
   type LoadWasmOpts,
@@ -9,35 +10,37 @@ import {
 } from './wasm-types.js';
 import { BridgeError } from './errors.js';
 
+/**
+ * Loader state lives in this module, not on globalThis: a script that runs first cannot
+ * fake the recorded hashes or pre-register signer functions for us to bind.
+ */
+let boundApi: WasmSignerApi | null = null;
+let boundWasmHash = '';
+let boundExecHash = '';
+let ownGo: unknown = null;
+
 function normalizePin(hex: string): string {
   return hex.trim().toLowerCase().replace(/^0x/, '');
 }
 
-function recordedWasmHash(g: Record<string, unknown>): string {
-  const v = g.__sqcWasmSha256;
-  return typeof v === 'string' ? normalizePin(v) : '';
+function assertPinMatches(recorded: string, pin: string | undefined, label: string): void {
+  if (!pin) return;
+  if (!recorded || recorded !== normalizePin(pin)) {
+    throw BridgeError.wasm(
+      `${label} already loaded but its integrity pin does not match. Reload the page with a matching pin.`,
+    );
+  }
 }
 
-function recordedExecHash(g: Record<string, unknown>): string {
-  const v = g.__sqcExecSha256;
-  return typeof v === 'string' ? normalizePin(v) : '';
-}
-
-async function loadAndPinExecJs(
-  g: Record<string, unknown>,
-  opts?: LoadWasmOpts,
-): Promise<void> {
-  if ((g as { Go?: unknown }).Go) {
-    if (opts?.execSha256) {
-      const pin = normalizePin(opts.execSha256);
-      const recorded = recordedExecHash(g);
-      if (!recorded || recorded !== pin) {
-        throw BridgeError.wasm(
-          'wasm_exec.js already loaded but execSha256 pin does not match (or was never recorded)',
-        );
-      }
-    }
-    return;
+async function loadAndPinExecJs(g: Record<string, unknown>, opts?: LoadWasmOpts): Promise<unknown> {
+  const existing = (g as { Go?: unknown }).Go;
+  if (existing && existing === ownGo) {
+    assertPinMatches(boundExecHash, opts?.execSha256, 'wasm_exec.js');
+    return existing;
+  }
+  if (existing && !opts?.execSha256) {
+    // An app may load wasm_exec.js with a <script> tag; without a pin we cannot verify it.
+    return existing;
   }
   const src = opts?.execUrl || '/wasm_exec.js';
   const resp = await fetch(src);
@@ -48,46 +51,30 @@ async function loadAndPinExecJs(
   const bytes = new TextEncoder().encode(text).buffer;
   await assertWasmSha256(bytes, opts?.execSha256, 'wasm_exec.js');
   // eslint-disable-next-line no-new-func
-  const run = new Function(`${text}\n;globalThis.Go = Go;`);
-  run();
-  if (opts?.execSha256) {
-    g.__sqcExecSha256 = normalizePin(opts.execSha256);
-  } else {
-    g.__sqcExecSha256 = (await sha256Hex(bytes)).toLowerCase();
-  }
+  const GoCtor = new Function(`${text}\n;return Go;`)();
+  ownGo = GoCtor;
+  boundExecHash = opts?.execSha256 ? normalizePin(opts.execSha256) : (await sha256Hex(bytes)).toLowerCase();
+  return GoCtor;
 }
 
 export async function loadWasmInBrowser(opts?: LoadWasmOpts): Promise<WasmSignerApi> {
   const g = globalThis as unknown as Record<string, unknown>;
 
-  if (typeof (g as { sqCreateSession?: unknown }).sqCreateSession === 'function') {
-    if (opts?.wasmSha256) {
-      const pin = normalizePin(opts.wasmSha256);
-      const recorded = recordedWasmHash(g);
-      if (!recorded || recorded !== pin) {
-        throw BridgeError.wasm(
-          'WASM already loaded but integrity pin does not match (or was never recorded). ' +
-            'Reload the page with a matching wasmSha256, or clear the prior module.',
-        );
-      }
-    }
-    if (opts?.execSha256) {
-      const pin = normalizePin(opts.execSha256);
-      const recorded = recordedExecHash(g);
-      if (!recorded || recorded !== pin) {
-        throw BridgeError.wasm(
-          'wasm_exec.js pin does not match recorded hash for already-loaded module',
-        );
-      }
-    }
-    return bindWasmApi(g);
+  if (boundApi) {
+    assertPinMatches(boundWasmHash, opts?.wasmSha256, 'WASM');
+    assertPinMatches(boundExecHash, opts?.execSha256, 'wasm_exec.js');
+    return boundApi;
   }
 
-  await loadAndPinExecJs(g, opts);
+  if (typeof (g as { sqCreateSession?: unknown }).sqCreateSession === 'function') {
+    throw BridgeError.wasm(
+      'Signer functions are already registered on globalThis by another script; refusing to bind them.',
+    );
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const GoCtor = (g as any).Go;
-  if (!GoCtor) {
+  const GoCtor = (await loadAndPinExecJs(g, opts)) as any;
+  if (typeof GoCtor !== 'function') {
     throw BridgeError.wasm('Go constructor missing after loading wasm_exec.js');
   }
   const go = new GoCtor();
@@ -101,7 +88,16 @@ export async function loadWasmInBrowser(opts?: LoadWasmOpts): Promise<WasmSigner
   const result = await WebAssembly.instantiate(bytes, go.importObject);
   go.run(result.instance);
   await waitForWasmReady(g);
-  const pin = opts?.wasmSha256 ? normalizePin(opts.wasmSha256) : (await sha256Hex(bytes)).toLowerCase();
-  g.__sqcWasmSha256 = pin;
-  return bindWasmApi(g);
+  const api = bindWasmApi(detachWasmExports(g));
+  boundWasmHash = opts?.wasmSha256 ? normalizePin(opts.wasmSha256) : (await sha256Hex(bytes)).toLowerCase();
+  boundApi = api;
+  return api;
+}
+
+/** Test hook: forget the bound signer (the Go runtime stays resident). */
+export function resetBrowserWasmState(): void {
+  boundApi = null;
+  boundWasmHash = '';
+  boundExecHash = '';
+  ownGo = null;
 }

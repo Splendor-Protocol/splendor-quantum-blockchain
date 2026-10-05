@@ -59,14 +59,14 @@ describe('BridgeError.BUSY', () => {
 describe('Connection.probeNetwork', () => {
   it('ok when chain id matches', async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({ chain_id: CHAIN_ID })) as typeof fetch;
-    const conn = new Connection({ rpcUrl: 'http://rpc.test', chainId: CHAIN_ID, retries: 0 });
+    const conn = new Connection({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 });
     const probe = await conn.probeNetwork();
     expect(probe).toEqual({ ok: true, chainId: CHAIN_ID });
   });
 
   it('fails closed on chain mismatch', async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({ chain_id: 'other-chain' })) as typeof fetch;
-    const conn = new Connection({ rpcUrl: 'http://rpc.test', chainId: CHAIN_ID, retries: 0 });
+    const conn = new Connection({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 });
     const probe = await conn.probeNetwork();
     expect(probe.ok).toBe(false);
     if (!probe.ok) {
@@ -78,7 +78,7 @@ describe('Connection.probeNetwork', () => {
     globalThis.fetch = vi.fn(async () => {
       throw new TypeError('fetch failed');
     }) as typeof fetch;
-    const conn = new Connection({ rpcUrl: 'http://rpc.test', chainId: CHAIN_ID, retries: 0 });
+    const conn = new Connection({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 });
     const probe = await conn.probeNetwork();
     expect(probe.ok).toBe(false);
     if (!probe.ok) {
@@ -90,13 +90,13 @@ describe('Connection.probeNetwork', () => {
 describe('SqRpc.probeNetwork', () => {
   it('ok when chain matches', async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({ chain_id: CHAIN_ID })) as typeof fetch;
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 });
     await expect(rpc.probeNetwork()).resolves.toEqual({ ok: true, chainId: CHAIN_ID });
   });
 
   it('returns ok:false on empty status body', async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({})) as typeof fetch;
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 });
     const probe = await rpc.probeNetwork();
     expect(probe.ok).toBe(false);
   });
@@ -155,7 +155,7 @@ describe('ExtensionSigner core', () => {
   it('rebindConnection updates RPC without splendor_disconnect', async () => {
     const provider = mockProvider();
     const wallet = new ExtensionSigner({
-      connection: connection('http://old.test'),
+      connection: connection('https://old.test'),
       provider,
       networkId: 'local',
     });
@@ -163,7 +163,7 @@ describe('ExtensionSigner core', () => {
     const disconnectCallsBefore = provider.request.mock.calls.filter(
       (c) => String(c[0]?.method ?? '').includes('disconnect'),
     ).length;
-    const next = connection('http://new.test');
+    const next = connection('https://new.test');
     const chains: unknown[] = [];
     wallet.on('chainChanged', (p) => chains.push(p));
     wallet.rebindConnection(next, { networkId: 'testnet' });

@@ -73,7 +73,7 @@ describe('audit scenarios', () => {
 
     const w = track(
       new SplendorPQBridge({
-        rpcUrl: 'http://rpc-confirm.test',
+        rpcUrl: 'https://rpc-confirm.test',
         chainId: CHAIN_ID,
         retries: 0,
         allowUnpinnedWasm: true,
@@ -112,7 +112,7 @@ describe('audit scenarios', () => {
 
     const w = track(
       new SplendorPQBridge({
-        rpcUrl: 'http://rpc-nonce.test',
+        rpcUrl: 'https://rpc-nonce.test',
         chainId: CHAIN_ID,
         retries: 0,
         allowUnpinnedWasm: true,
@@ -160,7 +160,7 @@ describe('audit scenarios', () => {
       return jsonResponse({ address: from, nonce: 1 });
     }) as typeof fetch;
 
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc-fail.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-fail.test', chainId: CHAIN_ID, retries: 0 });
     await expect(
       rpc.waitForConfirmation({
         from,
@@ -261,7 +261,7 @@ describe('audit scenarios', () => {
       return jsonResponse({ error: `unexpected ${url}` }, 404);
     }) as typeof fetch;
 
-    const rpc = new SqRpc({ rpcUrl: 'http://rpc-coal.test', chainId: CHAIN_ID, retries: 0 });
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-coal.test', chainId: CHAIN_ID, retries: 0 });
     const [a, b] = await Promise.all([
       rpc.getBalance(GOLDEN_ADDRESS),
       rpc.getBalance(GOLDEN_ADDRESS),
@@ -272,7 +272,7 @@ describe('audit scenarios', () => {
 
     const w = track(
       new SplendorPQBridge({
-        rpcUrl: 'http://rpc-chain.test',
+        rpcUrl: 'https://rpc-chain.test',
         chainId: CHAIN_ID,
         networkId: 'local',
         retries: 0,

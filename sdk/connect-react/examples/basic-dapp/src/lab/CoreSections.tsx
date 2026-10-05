@@ -12,6 +12,7 @@ import {
   useTransferForm,
   DeployTokenWidget,
   NetworkBadge,
+  PendingTxList,
   SignInButton,
   TokenPanel,
   TransferWidget,
@@ -28,6 +29,8 @@ import {
   useConnect,
   useNetwork,
   usePreflight,
+  useTokenBalance,
+  useTokenInfo,
   useTxToast,
   useWaitForConfirmation,
   useWallet,
@@ -128,7 +131,8 @@ export function ConnectCard({ step }: { step: number }) {
       tag="Wallet"
       checks={[
         'Connect opens the modal. It lists the Splendor Quantum Wallet when the extension is installed, and always offers a native seed.',
-        'Seed: Create a new wallet, Reveal, save the seed, tick "I saved this seed in a safe place", then Unlock. status becomes "connected".',
+        'Seed: Create a new wallet, Reveal, save the seed, tick "I saved this seed in a safe place", type the 4 seed characters it asks for (Unlock stays disabled until they match), then Unlock. status becomes "connected".',
+        'Copy the new seed: the clipboard is cleared after 45 s if it still holds the seed. A revealed seed hides itself again after 60 s.',
         'accountDto shows your SQ: address with postQuantumSecure: true.',
         'Reload the page: an extension session reconnects on its own; a seed session does not, because the seed is never stored.',
         'Extension: lock the wallet in the extension. status becomes "locked" and the widgets show Unlock.',
@@ -270,8 +274,10 @@ export function TransferCard({ step }: { step: number }) {
         'Type 0x… or a short SQ: address: "Enter a valid SQ: address (0x and raw hex are not accepted)" and Review stays disabled.',
         'Paste your own address: "You cannot send to your own address".',
         'Enter more than the balance: "Amount exceeds your SPLD balance". Max fills in the full balance.',
-        'Valid recipient and a small amount, then Review: shows To, Amount and Network. Back returns to the form.',
-        'Confirm send: the wallet asks for approval, then the widget shows "Confirmed: <hash>" with an Explorer link.',
+        'Valid recipient and a small amount, then Review: shows From, To, Amount, Network and "Network fee" (≈ … SPLD, or "at least …" when the node returns the floor). Back returns to the form.',
+        'Confirm send with the extension: the extension asks for approval, then the widget shows "Confirmed: <hash>" with an Explorer link.',
+        'Confirm send with a seed wallet: an "Approve transfer" dialog shows the summary, From, To, Amount and Network. Reject (or Escape) shows a rejection error and nothing is sent; Approve sends.',
+        'Switch the account or network while the review is open: the review closes and you start again from the form.',
         'After a send, the recipient is listed under "Recent:"; clicking it fills in the To field.',
         'The panel below the widget follows onStatusChange (Working…, then Done or Failed) and shows the onSuccess result.',
         'With the wallet locked or disconnected, the widget shows an Unlock / Connect button instead of the form.',
@@ -281,6 +287,43 @@ export function TransferCard({ step }: { step: number }) {
         <TransferWidget defaultAmount="0.001" {...log.props} />
       </div>
       <Result status={log.status} data={log.data} error={log.error} />
+    </Card>
+  );
+}
+
+export function ReadsCard({ step }: { step: number }) {
+  const { address } = useAccount();
+  const [token, setToken] = useState('');
+  const [holder, setHolder] = useState('');
+  const tokenAddr = normalizeSqAddress(token.trim());
+  const owner = normalizeSqAddress(holder.trim()) ?? address ?? null;
+  const info = useTokenInfo(tokenAddr);
+  const bal = useTokenBalance(tokenAddr, owner);
+  return (
+    <Card
+      id="reads"
+      step={step}
+      title="Reads without a wallet and pending transactions (useTokenInfo, useTokenBalance, PendingTxList)"
+      tag="No wallet for reads"
+      checks={[
+        'Disconnect, paste a QRC-20 address (deploy one in the QRC-20 card) and a holder address: name, symbol, decimals and the formatted balance load without a wallet.',
+        'Change the token address: the old values clear first; a slow answer for the previous token never shows.',
+        'Connect and send SPLD from the SPLD transfer card, then reload the page before it confirms: the transaction is listed below after the reload.',
+        'When the receipt lands, the entry disappears and a toast says the transaction confirmed (or failed).',
+        '"Stop watching" removes an entry without waiting; entries older than 24 hours are dropped on load.',
+      ]}
+    >
+      <Row>
+        <Field label="Token (SQ:…)" value={token} onChange={setToken} />
+        <Field label="Holder (SQ:…, default: you)" value={holder} onChange={setHolder} />
+      </Row>
+      <Result
+        status={info.loading || bal.loading ? 'pending' : info.error || bal.error ? 'error' : tokenAddr ? 'success' : 'idle'}
+        data={tokenAddr ? { ...info.data, holder: owner, balance: bal.formatted } : null}
+        error={(info.error ?? bal.error)?.message}
+      />
+      <Hint>Pending transactions on this network:</Hint>
+      <PendingTxList emptyText="Nothing pending." />
     </Card>
   );
 }

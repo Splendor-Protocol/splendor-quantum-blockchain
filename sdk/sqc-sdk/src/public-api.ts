@@ -118,6 +118,17 @@ export { createPublicClient, createWalletClient, createWalletClientAsync } from 
 export type { PublicClientOptions } from './clients.js';
 export { SIGN_MESSAGE_DOMAIN, prepareSignMessage } from './message-domain.js';
 export {
+  createAuthMessage,
+  parseAuthMessage,
+  checkAuthMessage,
+  authCheckMessage,
+  type AuthMessageParams,
+  type ParsedAuthMessage,
+  type AuthCheckReason,
+  type AuthCheckResult,
+  type AuthCheckOptions,
+} from './auth-message.js';
+export {
   createSplendorProvider,
   installSplendorProvider,
   uninstallSplendorProvider,
@@ -165,7 +176,7 @@ export {
 } from './modules.js';
 export { withSigner } from './bound.js';
 export type { BoundClient, WalletLike } from './bound.js';
-export { fromUnits, toUnits } from './units.js';
+export { fromUnits, toUnits, parseRawAmount } from './units.js';
 export { X402Client, createX402Middleware } from './x402/client.js';
 export type { PaymentRequirements, PaymentPayload } from './x402/client.js';
 export { subscribe } from './core/subscribe.js';

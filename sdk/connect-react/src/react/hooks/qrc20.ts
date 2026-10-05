@@ -1,9 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnectState } from '../context.js';
-import { useTxAction, type TxHookStatus } from '../useTxAction.js';
-import { useWallet, useAccount } from './core.js';
+import { useRecordPendingTx, useSingleFlight, useTxAction, type TxHookStatus } from '../useTxAction.js';
+import { useWallet, useAccount, useReadConnection } from './core.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
+
+let tokensModule: Promise<typeof import('@splendor/sqc-sdk/tokens')> | null = null;
+/** One shared lazy import of the token module. */
+export function loadTokens(): Promise<typeof import('@splendor/sqc-sdk/tokens')> {
+  tokensModule ??= import('@splendor/sqc-sdk/tokens').catch((e) => {
+    tokensModule = null;
+    throw e;
+  });
+  return tokensModule;
+}
+
+/** Token decimals when they are an integer in 0..36, else null. */
+export function validDecimals(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 36 ? v : null;
+}
+
 export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   balance: string | null;
   tokenInfo: Record<string, unknown> | null;
@@ -25,6 +41,8 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     owner_pubkey: number[];
   }) => Promise<{ hash?: string }>;
   loading: boolean;
+  /** Token decimals once `tokenInfo` has loaded and they are valid (0–36); null until then. */
+  decimals: number | null;
   /** @deprecated use `status` */
   txStatus: TxHookStatus;
   status: TxHookStatus;
@@ -34,6 +52,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
+  const readConnection = useReadConnection();
   const network = useConnectState((s) => s.network);
   const tx = useTxAction(network);
   const [balance, setBalance] = useState<string | null>(null);
@@ -41,30 +60,47 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   const [loading, setLoading] = useState(false);
   const [readError, setReadError] = useState<Error | null>(null);
   const { address } = useAccount();
+  /** Bumped per read; results for an older token/account/network are dropped. */
+  const generation = useRef(0);
+
+  useEffect(() => {
+    generation.current += 1;
+    setBalance(null);
+    setTokenInfo(null);
+    setReadError(null);
+  }, [tokenAddress, network?.id]);
+
+  useEffect(() => {
+    setBalance(null);
+  }, [address]);
 
   const refresh = useCallback(async () => {
-    if (!tokenAddress || !ready || !wallet) {
+    const gen = ++generation.current;
+    if (!tokenAddress || !readConnection) {
       setBalance(null);
       setTokenInfo(null);
+      setLoading(false);
       return;
     }
     setLoading(true);
     setReadError(null);
     try {
-      const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
-      const token = new QRC20(wallet.connection, tokenAddress);
-      if (address) {
-        const bal = await token.balanceOf(address);
-        setBalance(bal);
-      }
-      const info = await token.tokenInfo();
+      const { QRC20 } = await loadTokens();
+      const token = new QRC20(readConnection, tokenAddress);
+      const [info, bal] = await Promise.all([
+        token.tokenInfo(),
+        address ? token.balanceOf(address) : Promise.resolve(null),
+      ]);
+      if (gen !== generation.current) return;
       setTokenInfo(info as Record<string, unknown>);
+      setBalance(bal);
     } catch (e) {
+      if (gen !== generation.current) return;
       setReadError(e instanceof Error ? e : new Error(String(e)));
     } finally {
-      setLoading(false);
+      if (gen === generation.current) setLoading(false);
     }
-  }, [tokenAddress, ready, wallet, address]);
+  }, [tokenAddress, readConnection, address]);
 
   useEffect(() => {
     void refresh();
@@ -73,11 +109,14 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     return () => clearInterval(id);
   }, [refresh, tokenAddress, pollMs]);
 
+  const decimals = validDecimals(tokenInfo?.decimals);
+  const symbol = typeof tokenInfo?.symbol === 'string' ? tokenInfo.symbol : null;
+
   const transfer = useCallback(
     async (to: string, amount: string) => {
       if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
       const res = await tx.run(async () => {
-        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).transfer(wallet, to, amount);
       });
       await refresh();
@@ -90,20 +129,23 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     async (to: string, amountHuman: string) => {
       if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
       const res = await tx.run(async () => {
-        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
-        return new QRC20(wallet.connection, tokenAddress).transferHuman(wallet, to, amountHuman);
-      });
+        const { QRC20 } = await loadTokens();
+        const token = new QRC20(wallet.connection, tokenAddress);
+        // Sign with the decimals the user saw; refuse if the chain now reports others.
+        if (decimals != null) token.pinDecimals(decimals);
+        return token.transferHuman(wallet, to, amountHuman);
+      }, { kind: 'token', summary: `Send ${amountHuman} ${symbol ?? 'tokens'} to ${to}` });
       await refresh();
       return { hash: res.hash };
     },
-    [ready, wallet, tokenAddress, tx, refresh],
+    [ready, wallet, tokenAddress, tx, refresh, decimals, symbol],
   );
 
   const approve = useCallback(
     async (spender: string, amount: string) => {
       if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
       const res = await tx.run(async () => {
-        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).approve(wallet, spender, amount);
       });
       return { hash: res.hash };
@@ -115,7 +157,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     async (to: string, amount: string) => {
       if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
       const res = await tx.run(async () => {
-        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).mint(wallet, to, amount);
       });
       await refresh();
@@ -127,7 +169,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   const pause = useCallback(async () => {
     if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
     const res = await tx.run(async () => {
-      const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+      const { QRC20 } = await loadTokens();
       return new QRC20(wallet.connection, tokenAddress).pause(wallet);
     });
     return { hash: res.hash };
@@ -136,7 +178,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   const unpause = useCallback(async () => {
     if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
     const res = await tx.run(async () => {
-      const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+      const { QRC20 } = await loadTokens();
       return new QRC20(wallet.connection, tokenAddress).unpause(wallet);
     });
     return { hash: res.hash };
@@ -154,7 +196,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     }) => {
       if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
       const res = await tx.run(async () => {
-        const { QRC20 } = await import('@splendor/sqc-sdk/tokens');
+        const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).submitPermit(wallet, signed as never);
       });
       return { hash: res.hash };
@@ -174,6 +216,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     unpause,
     submitPermit,
     loading,
+    decimals,
     txStatus: tx.status,
     status: tx.status,
     hash: tx.hash,
@@ -212,8 +255,10 @@ export function useDeployToken(): {
     setError(null);
   }, []);
 
+  const singleFlight = useSingleFlight();
+  const recordPending = useRecordPendingTx();
   const deploy = useCallback(
-    async (params: {
+    (params: {
       name: string;
       symbol: string;
       decimals: number;
@@ -221,28 +266,30 @@ export function useDeployToken(): {
       maxSupply?: string;
       fee?: string;
       waitForConfirmation?: boolean;
-    }) => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
-      setStatus('pending');
-      setError(null);
-      try {
-        const { deployQRC20 } = await import('@splendor/sqc-sdk/tokens');
-        const { address: tokenAddr, result } = await deployQRC20(wallet, params, {
-          fee: params.fee,
-          waitForConfirmation: params.waitForConfirmation,
-        });
-        setAddress(tokenAddr);
-        setHash(result.hash ?? null);
-        setStatus('success');
-        return { address: tokenAddr, hash: result.hash };
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e));
-        setError(err);
-        setStatus('error');
-        throw err;
-      }
-    },
-    [wallet, ready],
+    }) =>
+      singleFlight(async () => {
+        if (!ready || !wallet) throw new Error('Wallet not connected');
+        setStatus('pending');
+        setError(null);
+        try {
+          const { deployQRC20 } = await loadTokens();
+          const { address: tokenAddr, result } = await deployQRC20(wallet, params, {
+            fee: params.fee,
+            waitForConfirmation: params.waitForConfirmation,
+          });
+          setAddress(tokenAddr);
+          setHash(result.hash ?? null);
+          setStatus('success');
+          recordPending(result, { kind: 'deploy', summary: `Deploy token ${params.symbol} (${tokenAddr})` });
+          return { address: tokenAddr, hash: result.hash };
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          setError(err);
+          setStatus('error');
+          throw err;
+        }
+      }),
+    [wallet, ready, singleFlight, recordPending],
   );
 
   return { deploy, status, address, hash, error, reset };

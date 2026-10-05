@@ -12,6 +12,10 @@ export {
 export type { AddressInputProps, AmountInputProps } from './inputs.js';
 export { ReviewPanel, TransferReviewPanel } from './ReviewPanel.js';
 export type { ReviewPanelProps } from './ReviewPanel.js';
+export { FeeRow } from './FeeRow.js';
+export type { FeeRowProps } from './FeeRow.js';
+export { PendingTxList } from './PendingTxList.js';
+export type { PendingTxListProps } from './PendingTxList.js';
 export { TxResult } from './TxResult.js';
 export type { TxResultProps } from './TxResult.js';
 export { AddressDisplay, CopyButton } from './AddressDisplay.js';

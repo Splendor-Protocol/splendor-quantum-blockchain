@@ -7,6 +7,7 @@ import {
 } from './derive.js';
 import { parseWasmJson, unwrap } from './wasm-loader.js';
 import { SqRpc, fromSPLD } from './rpc.js';
+import { parseRawAmount } from './units.js';
 import { SqcProvider } from './provider.js';
 import { BridgeError, wrapUnknown } from './errors.js';
 import { assertAddress } from './address.js';
@@ -80,6 +81,16 @@ export type {
   SignMessageOpts,
 };
 
+/** SPLD decimal (when given) or a strict raw base-unit integer. */
+function nativeAmount(spld: string | number | undefined | null, raw: unknown, label: string, fallback?: string): string {
+  if (spld != null) return fromSPLD(spld);
+  if (raw == null || raw === '') {
+    if (fallback !== undefined) return fallback;
+    throw BridgeError.invalidAmount(`${label} is required`);
+  }
+  return parseRawAmount(raw, label);
+}
+
 export class SplendorPQBridge {
   private _provider: SqcProvider;
   private _connection: Connection;
@@ -106,7 +117,8 @@ export class SplendorPQBridge {
   }
 
   constructor(options: BridgeOptions = {}) {
-    this.opts = options;
+    const { seed: _seed, ...safe } = options as BridgeOptions & { seed?: unknown };
+    this.opts = safe;
     if (options.connection) {
       this._connection = options.connection;
       if (options.provider) {
@@ -191,6 +203,17 @@ export class SplendorPQBridge {
 
   private reserveNonce(nonce: number): void {
     this.wasmSession.reserveNonce(nonce);
+  }
+
+  /** Reserve `nonce`, submit, and release the reservation if the node never accepted the tx. */
+  private async submitReserved(nonce: number, signedTx: object) {
+    this.reserveNonce(nonce);
+    try {
+      return await this.connection.submitTransaction(signedTx);
+    } catch (e) {
+      this.wasmSession.releaseNonce(nonce);
+      throw e;
+    }
   }
 
   async init(): Promise<void> {
@@ -284,7 +307,7 @@ export class SplendorPQBridge {
    */
   async connect(opts: WalletConnectOpts): Promise<DeriveInfo> {
     if (opts.mode !== 'seed') {
-      throw BridgeError.rpc(`Unknown connect mode: ${JSON.stringify(opts)}`);
+      throw BridgeError.invalidParams(`Unknown connect mode: ${String((opts as { mode?: unknown }).mode)}`);
     }
     return this.connectFromSeed(opts.seed);
   }
@@ -404,7 +427,7 @@ export class SplendorPQBridge {
     await this.connection.assertChainId();
     const bal = await this.connection.getBalance(from);
     const { nonce } = await this.connection.getNonce(from);
-    const fee = assertFeeAtLeastMin(opts.fee);
+    const fee = assertFeeAtLeastMin(opts.fee, this.opts.maxFee);
     const amount =
       opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount || '0';
     const need = BigInt(amount) + BigInt(fee);
@@ -445,13 +468,10 @@ export class SplendorPQBridge {
     return this.signSubmitThenMaybeConfirm(async () => {
       await this.init();
       assertAddress(opts.to);
-      const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
-      if (!amount || BigInt(amount) < 0n) {
-        throw BridgeError.invalidAmount('amount must be a non-negative integer string');
-      }
+      const amount = nativeAmount(opts.amountSPLD, opts.amount, 'amount');
       let fee: string;
       try {
-        fee = assertFeeAtLeastMin(opts.fee);
+        fee = assertFeeAtLeastMin(opts.fee, this.opts.maxFee);
       } catch (e) {
         throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
       }
@@ -468,8 +488,7 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signTransfer' });
       const wireStr = unwrap(this.api().sqSignTransfer(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
-      this.reserveNonce(nonce);
-      const result = await this.connection.submitTransaction(signedTx);
+      const result = await this.submitReserved(nonce, signedTx);
       return { ...result, signedTx, nonce };
     }, opts);
   }
@@ -483,10 +502,10 @@ export class SplendorPQBridge {
     return this.signSubmitThenMaybeConfirm(async () => {
       await this.init();
       assertAddress(opts.contract);
-      const value = opts.valueSPLD != null ? fromSPLD(opts.valueSPLD) : opts.value || '0';
+      const value = nativeAmount(opts.valueSPLD, opts.value, 'value', '0');
       let fee: string;
       try {
-        fee = assertFeeAtLeastMin(opts.fee);
+        fee = assertFeeAtLeastMin(opts.fee, this.opts.maxFee);
       } catch (e) {
         throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
       }
@@ -514,8 +533,7 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signCall' });
       const wireStr = unwrap(this.api().sqSignCall(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
-      this.reserveNonce(nonce);
-      const result = await this.connection.submitTransaction(signedTx);
+      const result = await this.submitReserved(nonce, signedTx);
       return { ...result, signedTx, nonce };
     }, opts);
   }
@@ -530,7 +548,7 @@ export class SplendorPQBridge {
       await this.init();
       let fee: string;
       try {
-        fee = assertFeeAtLeastMin(opts.fee);
+        fee = assertFeeAtLeastMin(opts.fee, this.opts.maxFee);
       } catch (e) {
         throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
       }
@@ -545,8 +563,7 @@ export class SplendorPQBridge {
       this.opts.onRequest?.({ method: 'signDeploy' });
       const wireStr = unwrap(this.api().sqSignDeploy(this.sid(), JSON.stringify(params))) as string;
       const signedTx = JSON.parse(wireStr);
-      this.reserveNonce(nonce);
-      const result = await this.connection.submitTransaction(signedTx);
+      const result = await this.submitReserved(nonce, signedTx);
       return { ...result, signedTx, nonce };
     }, opts);
   }
@@ -560,7 +577,21 @@ export class SplendorPQBridge {
       await this.init();
       assertAddress(opts.to);
       await this.beforeSignAndSubmit();
-      const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
+      const amount = nativeAmount(opts.amountSPLD, opts.amount, 'amount');
+      if (opts.maxAmount != null && BigInt(amount) > BigInt(parseRawAmount(opts.maxAmount, 'maxAmount'))) {
+        throw BridgeError.invalidAmount(`x402 amount ${amount} exceeds maxAmount ${opts.maxAmount}`);
+      }
+      if (opts.requirements) {
+        const req = opts.requirements as { pay_to?: unknown; amount?: unknown };
+        if (typeof req.pay_to !== 'string' || req.pay_to.toLowerCase() !== opts.to.toLowerCase()) {
+          throw BridgeError.invalidParams('x402 requirements.pay_to does not match the payment recipient');
+        }
+        if (req.amount != null && BigInt(parseRawAmount(req.amount, 'requirements.amount')) > BigInt(amount)) {
+          throw BridgeError.invalidAmount('x402 payment amount is below requirements.amount');
+        }
+      }
+      const settlementFee = assertFeeAtLeastMin(opts.fee, this.opts.maxFee);
+      const validBefore = opts.validBefore ?? Math.floor(Date.now() / 1000) + 300;
 
       // Pin the payment nonce here so the authorisation payload and the on-chain
       // settlement transaction commit to the SAME value. The node binds the two
@@ -572,7 +603,7 @@ export class SplendorPQBridge {
         to: opts.to,
         amount,
         valid_after: opts.validAfter || 0,
-        valid_before: opts.validBefore || 0,
+        valid_before: validBefore,
         nonce_hex: nonceHex,
       };
       this.opts.onRequest?.({ method: 'signX402' });
@@ -600,17 +631,22 @@ export class SplendorPQBridge {
                 to: opts.to,
                 amount,
                 nonce_hex: nonceHex,
-                fee: opts.fee ?? MIN_FEE,
+                fee: settlementFee,
                 account_nonce: accountNonce,
               }),
             ),
           ) as string;
           this.reserveNonce(accountNonce);
-          out.settle = await this.connection.x402Settle(
-            opts.requirements,
-            payload,
-            JSON.parse(settlementStr),
-          );
+          try {
+            out.settle = await this.connection.x402Settle(
+              opts.requirements,
+              payload,
+              JSON.parse(settlementStr),
+            );
+          } catch (e) {
+            this.wasmSession.releaseNonce(accountNonce);
+            throw e;
+          }
         }
       }
       return out;
@@ -622,13 +658,10 @@ export class SplendorPQBridge {
   ): Promise<object> {
     await this.init();
     assertAddress(opts.to);
-    const amount = opts.amountSPLD != null ? fromSPLD(opts.amountSPLD) : opts.amount;
-    if (!amount || BigInt(amount) < 0n) {
-      throw BridgeError.invalidAmount('amount must be a non-negative integer string');
-    }
+    const amount = nativeAmount(opts.amountSPLD, opts.amount, 'amount');
     let fee: string;
     try {
-      fee = assertFeeAtLeastMin(opts.fee);
+      fee = assertFeeAtLeastMin(opts.fee, this.opts.maxFee);
     } catch (e) {
       throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
     }
@@ -679,10 +712,10 @@ export class SplendorPQBridge {
         return this.withSignLock(async () => {
           await this.init();
           assertAddress(tx.contract);
-          const value = tx.valueSPLD != null ? fromSPLD(tx.valueSPLD) : tx.value || '0';
+          const value = nativeAmount(tx.valueSPLD, tx.value, 'value', '0');
           let fee: string;
           try {
-            fee = assertFeeAtLeastMin(tx.fee);
+            fee = assertFeeAtLeastMin(tx.fee, this.opts.maxFee);
           } catch (e) {
             throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
           }
@@ -721,7 +754,7 @@ export class SplendorPQBridge {
           await this.init();
           let fee: string;
           try {
-            fee = assertFeeAtLeastMin(tx.fee);
+            fee = assertFeeAtLeastMin(tx.fee, this.opts.maxFee);
           } catch (e) {
             throw BridgeError.invalidFee(e instanceof Error ? e.message : String(e));
           }
@@ -1015,9 +1048,10 @@ export class SplendorPQBridge {
   static async fromSeed(
     options: BridgeOptions & { seed: string },
   ): Promise<SplendorPQBridge> {
-    const wallet = new SplendorPQBridge(options);
+    const { seed, ...rest } = options;
+    const wallet = new SplendorPQBridge(rest);
     await wallet.init();
-    await wallet.connectFromSeed(options.seed);
+    await wallet.connectFromSeed(seed);
     return wallet;
   }
 }

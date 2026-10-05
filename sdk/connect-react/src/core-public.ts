@@ -15,6 +15,8 @@ export type {
   ModalView,
   ConnectControllerState,
 } from './core/types.js';
+export { describeSignRequest, withSignApproval } from './core/signApproval.js';
+export type { SignRequest, SignApprover } from './core/signApproval.js';
 export {
   getLastConnectorId,
   setLastConnectorId,

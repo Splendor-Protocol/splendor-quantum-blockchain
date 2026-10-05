@@ -1,10 +1,13 @@
-import { useAccount, useBalance, useNetwork, useSendTransfer } from '../react/hooks.js';
+import { useMemo } from 'react';
+import { fromUnits } from '@splendor/sqc-sdk';
+import { useAccount, useBalance, useEstimateFee, useNetwork, useSendTransfer } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import { TRANSFER_LABELS, formatLabel, useWidgetLabels, type TransferWidgetLabels } from './labels.js';
 import type { BaseWidgetProps } from './types.js';
 import { WidgetShell } from './parts/WidgetShell.js';
 import { AddressInput, AmountInput } from './parts/inputs.js';
 import { ReviewPanel } from './parts/ReviewPanel.js';
+import { FeeRow } from './parts/FeeRow.js';
 import { TxResult } from './parts/TxResult.js';
 import { useTransferForm } from './parts/useTransferForm.js';
 import { toError, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
@@ -25,6 +28,8 @@ export type TransferWidgetProps = BaseWidgetProps<TransferSentResult, TransferWi
   defaultTo?: string;
   /** @deprecated Use `onSuccess`. */
   onSent?: (result: TransferSentResult) => void;
+  /** Show the node's fee estimate in the review step (default true). */
+  showFee?: boolean;
 };
 
 /**
@@ -44,11 +49,12 @@ export function TransferWidget({
   onError,
   onStatusChange,
   toast = true,
+  showFee = true,
 }: TransferWidgetProps) {
   const l = useWidgetLabels(TRANSFER_LABELS, labels, 'transfer');
   const { address } = useAccount();
   const { balanceSPLD } = useBalance();
-  const { network } = useNetwork();
+  const { network, walletMismatch } = useNetwork();
   const { sendTransfer, status, hash, explorerUrl, confirmed, error, reset } = useSendTransfer();
   const form = useTransferForm({
     balance: balanceSPLD,
@@ -56,14 +62,25 @@ export function TransferWidget({
     self: address,
     defaultTo,
     defaultAmount,
+    decimals: 18,
+    contextKey: network?.chainId ?? '',
     labels: l,
   });
+  const feeRequest = useMemo(() => {
+    if (!showFee || !form.reviewing || !form.review.ok || !address) return null;
+    try {
+      return { from: address, to: form.review.to, value: fromUnits(form.review.amount, 18) };
+    } catch {
+      return null;
+    }
+  }, [showFee, form.reviewing, form.review, address]);
+  const fee = useEstimateFee(feeRequest);
   const toasts = useWidgetToast(toast);
   useStatusChange(status, onStatusChange);
 
   const onConfirm = async () => {
     const review = form.review;
-    if (!review.ok) return;
+    if (!review.ok || walletMismatch) return;
     reset();
     toasts.pending(l.toastPending);
     let res: Awaited<ReturnType<typeof sendTransfer>>;
@@ -103,15 +120,19 @@ export function TransferWidget({
       ) : null}
       {form.reviewing && form.review.ok ? (
         <ReviewPanel
+          from={address}
           to={form.review.to}
           amount={form.review.amount}
           symbol="SPLD"
           networkName={network?.name}
           pending={status === 'pending'}
+          confirmDisabled={walletMismatch || fee.reverted}
           onBack={form.cancelReview}
           onConfirm={() => void onConfirm()}
           labels={l}
-        />
+        >
+          {showFee ? <FeeRow estimate={fee} labels={l} /> : null}
+        </ReviewPanel>
       ) : (
         <>
           <AddressInput
@@ -130,6 +151,7 @@ export function TransferWidget({
             error={form.errors.amount}
             balance={balanceSPLD}
             symbol="SPLD"
+            decimals={18}
             labels={l}
           />
           <button

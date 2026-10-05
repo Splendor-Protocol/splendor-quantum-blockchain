@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { createAuthMessage, type AuthMessageParams, type SignedAuth } from '../auth.js';
 import { useAccount, useNetwork, useWallet } from './core.js';
 import { connectErrorMessage } from '../../core/controller.js';
+import { useSingleFlight } from '../useTxAction.js';
 
 export type UseSignInResult = {
   signIn: (params: Omit<AuthMessageParams, 'address' | 'chainId'> & Partial<AuthMessageParams>) => Promise<SignedAuth>;
@@ -30,8 +31,9 @@ export function useSignIn(): UseSignInResult {
     setError(null);
   }, []);
 
+  const singleFlight = useSingleFlight();
   const signIn = useCallback(
-    async (params: Omit<AuthMessageParams, 'address' | 'chainId'> & Partial<AuthMessageParams>) => {
+    (params: Omit<AuthMessageParams, 'address' | 'chainId'> & Partial<AuthMessageParams>) => singleFlight(async () => {
       if (!ready || !wallet || !address) {
         throw new Error('Wallet not connected');
       }
@@ -60,8 +62,8 @@ export function useSignIn(): UseSignInResult {
         setStatus('error');
         throw err;
       }
-    },
-    [wallet, ready, address, chainId],
+    }),
+    [wallet, ready, address, chainId, singleFlight],
   );
 
   return {

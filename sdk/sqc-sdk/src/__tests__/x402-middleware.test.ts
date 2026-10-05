@@ -69,7 +69,7 @@ describe('createX402Middleware', () => {
             chain_id: 'splendor-quantum-1',
             from: PAY_TO,
             to: PAY_TO,
-            amount: '1',
+            amount: '10000000000000000',
             valid_after: 0,
             valid_before: 9e9,
             nonce: 'ab'.repeat(32),
@@ -151,7 +151,7 @@ describe('createX402Middleware', () => {
     expect(next).toHaveBeenCalled();
   });
 
-  it('treats a consumed nonce as idempotent confirmed payment', async () => {
+  it('rejects a spent nonce that this server never granted', async () => {
     const connection = mockConnection({ nonceUsed: true, settleStatus: 'confirmed' });
     const mw = createX402Middleware({
       payTo: PAY_TO,
@@ -162,7 +162,39 @@ describe('createX402Middleware', () => {
     const res = { status: vi.fn(() => ({ json })), json };
     const next = vi.fn();
     await mw({ path: '/api', headers: paidHeader }, res as never, next);
-    expect(next).toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(402);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ error: 'Payment Already Used' }));
+  });
+
+  it('lets a retry of a payment already granted for the same request through', async () => {
+    const data = new Map<string, string>();
+    const store = {
+      get: vi.fn(async (k: string) => data.get(k)),
+      put: vi.fn(async (k: string, v: string) => void data.set(k, v)),
+    };
+    const first = createX402Middleware({
+      payTo: PAY_TO,
+      price: '0.01',
+      connection: mockConnection({ settleStatus: 'confirmed' }),
+      consumptionStore: store,
+    });
+    const json = vi.fn();
+    const res = { status: vi.fn(() => ({ json })), json };
+    const next = vi.fn();
+    await first({ path: '/api', headers: paidHeader }, res as never, next);
+    expect(next).toHaveBeenCalledTimes(1);
+
+    const retry = createX402Middleware({
+      payTo: PAY_TO,
+      price: '0.01',
+      connection: mockConnection({ nonceUsed: true }),
+      consumptionStore: store,
+    });
+    await retry({ path: '/api', headers: paidHeader }, res as never, next);
+    expect(next).toHaveBeenCalledTimes(2);
+    await retry({ path: '/other', headers: paidHeader }, res as never, next);
+    expect(next).toHaveBeenCalledTimes(2);
   });
 
   it('binds a confirmed payment to the request when a consumptionStore is configured', async () => {
@@ -185,7 +217,7 @@ describe('createX402Middleware', () => {
     await mw({ path: '/api/once', headers: paidHeader }, res as never, next);
     expect(next).toHaveBeenCalled();
     expect(store.put).toHaveBeenCalledWith(
-      `x402:payment:${PAY_TO}:${'ab'.repeat(32)}`,
+      `x402:payment:${PAY_TO.toLowerCase()}:${'ab'.repeat(32)}`,
       '/api/once',
     );
 

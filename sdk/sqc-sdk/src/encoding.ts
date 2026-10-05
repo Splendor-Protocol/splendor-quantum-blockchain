@@ -1,7 +1,7 @@
 /** Encoding helpers — browser-safe (no Buffer). Fee floor from sqc.networks.json. */
 import { strip0x } from './derive.js';
 import { getProtocolConfig } from './networks.js';
-import { BridgeError, isBridgeError } from './errors.js';
+import { BridgeError } from './errors.js';
 
 export const MIN_FEE = getProtocolConfig().minFee;
 
@@ -73,15 +73,25 @@ export function encodePayload(
   return { calldata_b64: data, bytecode_b64: data };
 }
 
-export function assertFeeAtLeastMin(fee: string | undefined): string {
-  const f = fee || MIN_FEE;
-  try {
-    if (BigInt(f) < BigInt(MIN_FEE)) {
-      throw BridgeError.invalidFee(`fee ${f} below minimum ${MIN_FEE}`);
-    }
-  } catch (e) {
-    if (isBridgeError(e) && e.code === 'INVALID_FEE') throw e;
-    throw BridgeError.invalidFee(`invalid fee: ${f}`);
+/**
+ * Validate a fee (base units) and return its canonical decimal string.
+ * Only plain decimal integers are accepted; `maxFee` caps fat-fingered or injected fees.
+ */
+export function assertFeeAtLeastMin(fee: string | undefined, maxFee?: string): string {
+  const f = fee == null || fee === '' ? MIN_FEE : String(fee).trim();
+  if (!/^(0|[1-9]\d*)$/.test(f)) throw BridgeError.invalidFee('fee must be a decimal integer in base units');
+  const value = BigInt(f);
+  if (value < BigInt(MIN_FEE)) {
+    throw BridgeError.invalidFee(`fee ${f} below minimum ${MIN_FEE}`);
   }
-  return f;
+  if (maxFee != null && maxFee !== '') {
+    let cap: bigint;
+    try {
+      cap = BigInt(maxFee);
+    } catch {
+      throw BridgeError.invalidFee('maxFee must be a decimal integer in base units');
+    }
+    if (value > cap) throw BridgeError.invalidFee(`fee ${f} exceeds maxFee ${cap}`);
+  }
+  return value.toString();
 }

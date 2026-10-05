@@ -28,6 +28,7 @@ const CARD_GUIDE: Record<string, { slug: string; title: string }> = {
   contract: { slug: 'bridge-and-bytecode-contracts', title: 'Bridge and bytecode contracts' },
   modules: { slug: 'chain-modules', title: 'Chain modules' },
   bridge: { slug: 'bridge-and-bytecode-contracts', title: 'Bridge and bytecode contracts' },
+  reads: { slug: 'read-without-a-wallet', title: 'Read without a wallet' },
 };
 
 type LabView = 'tests' | 'guide';

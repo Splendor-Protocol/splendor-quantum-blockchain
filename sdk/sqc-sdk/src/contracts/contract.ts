@@ -57,7 +57,7 @@ export class Contract {
     if (res.reverted) {
       throw new WalletError('TX_FAILED', res.revert_reason || 'contract call reverted');
     }
-    if (!res.return_data) return 0n;
+    if (!res.return_data) throw new WalletError('TX_FAILED', 'empty return data');
     return decodeUint256(res.return_data);
   }
 

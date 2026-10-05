@@ -1,7 +1,7 @@
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { fromUnits } from '@splendor/sqc-sdk/units';
 import { txExplorerUrl } from '@splendor/sqc-sdk/networks';
-import { useDeployToken, useNetwork } from '../react/hooks.js';
+import { useAccount, useDeployToken, useEstimateFee, useNetwork } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import {
   DEPLOY_TOKEN_LABELS,
@@ -12,6 +12,8 @@ import {
 import type { BaseWidgetProps } from './types.js';
 import { compareDecimal } from './utils.js';
 import { WidgetShell } from './parts/WidgetShell.js';
+import { ReviewPanel } from './parts/ReviewPanel.js';
+import { FeeRow } from './parts/FeeRow.js';
 import { TxResult } from './parts/TxResult.js';
 import { toError, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
 
@@ -32,9 +34,25 @@ export type DeployTokenWidgetProps = BaseWidgetProps<TokenDeployedResult, Deploy
   showDecimals?: boolean;
   /** Optional human max supply (converted with decimals); must be at least the total supply. */
   maxSupply?: string;
+  /** Show a read-only summary before asking the wallet to sign. Default true. */
+  review?: boolean;
+  /** Show the node's fee estimate in the review step (default true). */
+  showFee?: boolean;
   /** @deprecated Use `onSuccess`. */
   onDeployed?: (result: { address: string; hash?: string }) => void;
 };
+
+export const TOKEN_NAME_MAX = 64;
+export const TOKEN_SYMBOL_MAX = 11;
+
+function nameError(v: string): boolean {
+  const t = v.trim();
+  return !t || t.length > TOKEN_NAME_MAX || /[\u0000-\u001f\u007f]/.test(t);
+}
+
+function symbolError(v: string): boolean {
+  return !new RegExp(`^[A-Za-z0-9]{1,${TOKEN_SYMBOL_MAX}}$`).test(v.trim());
+}
 
 const SUPPLY_RE = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 
@@ -70,15 +88,19 @@ export function DeployTokenWidget({
   decimals: decimalsProp = 18,
   showDecimals = false,
   maxSupply,
+  review: reviewStep = true,
   onSuccess,
   onDeployed,
   onError,
   onStatusChange,
   toast = true,
+  showFee = true,
 }: DeployTokenWidgetProps) {
   const l = useWidgetLabels(DEPLOY_TOKEN_LABELS, labels, 'deploy');
   const uid = useId();
-  const { network } = useNetwork();
+  const { network, walletMismatch } = useNetwork();
+  const { address: from } = useAccount();
+  const [reviewing, setReviewing] = useState(false);
   const { deploy, status, address, hash, error, reset } = useDeployToken();
   const [name, setName] = useState(defaultName);
   const [symbol, setSymbol] = useState(defaultSymbol);
@@ -91,7 +113,10 @@ export function DeployTokenWidget({
   const max = maxSupply?.trim() || null;
   const maxOk = !max || (decimals != null && isValidSupply(max, decimals) && compareDecimal(supply, max) !== 1);
   const supplyOk = decimals != null && isValidSupply(supply, decimals);
-  const canDeploy = !!name.trim() && !!symbol.trim() && supplyOk && maxOk && status !== 'pending';
+  const nameBad = nameError(name);
+  const symbolBad = symbolError(symbol);
+  const formOk = !nameBad && !symbolBad && supplyOk && maxOk && !walletMismatch;
+  const canDeploy = formOk && status !== 'pending';
   const supplyError = !supply.trim() || decimals == null
     ? null
     : !supplyOk
@@ -100,6 +125,8 @@ export function DeployTokenWidget({
         ? formatLabel(l.supplyOverMax, { max })
         : null;
   const explorer = network && hash ? txExplorerUrl(network, hash) : null;
+  const feeRequest = useMemo(() => (showFee && reviewing && from ? { from } : null), [showFee, reviewing, from]);
+  const fee = useEstimateFee(feeRequest);
 
   const onDeploy = async () => {
     if (!canDeploy || decimals == null) return;
@@ -117,10 +144,12 @@ export function DeployTokenWidget({
         waitForConfirmation: true,
       });
     } catch (e) {
+      setReviewing(false);
       toasts.error(formatLabel(l.toastError, { symbol: sym }), e);
       onError?.(toError(e));
       return;
     }
+    setReviewing(false);
     const explorerUrl = network && res.hash ? txExplorerUrl(network, res.hash) : null;
     toasts.success(formatLabel(l.toastSuccess, { symbol: sym }), {
       hash: res.hash,
@@ -163,8 +192,31 @@ export function DeployTokenWidget({
       hideTitle={hideTitle}
       gateLabels={l}
     >
-      {field('name', l.nameLabel, name, setName)}
-      {field('sym', l.symbolLabel, symbol, setSymbol)}
+      {reviewing && formOk && decimals != null ? (
+        <ReviewPanel
+          from={from}
+          networkName={network?.name}
+          rows={[
+            { label: l.nameLabel, value: name.trim(), testId: 'sqc-review-name' },
+            { label: l.symbolLabel, value: symbol.trim(), testId: 'sqc-review-symbol' },
+            { label: l.decimalsLabel, value: String(decimals) },
+            { label: l.supplyLabel, value: supply.trim(), testId: 'sqc-review-supply' },
+            ...(max ? [{ label: l.maxSupplyLabel, value: max }] : []),
+          ]}
+          pending={status === 'pending'}
+          confirmDisabled={walletMismatch}
+          confirmLabel={l.confirmDeploy}
+          ariaLabel={l.reviewDeployAria}
+          onBack={() => setReviewing(false)}
+          onConfirm={() => void onDeploy()}
+          labels={l}
+        >
+          {showFee ? <FeeRow estimate={{ ...fee, reverted: false }} labels={l} /> : null}
+        </ReviewPanel>
+      ) : (
+        <>
+      {field('name', l.nameLabel, name, (v) => { setName(v); setReviewing(false); }, name.trim() && nameBad ? formatLabel(l.invalidName, { max: TOKEN_NAME_MAX }) : null)}
+      {field('sym', l.symbolLabel, symbol, (v) => { setSymbol(v); setReviewing(false); }, symbol.trim() && symbolBad ? formatLabel(l.invalidSymbol, { max: TOKEN_SYMBOL_MAX }) : null)}
       {showDecimals
         ? field('dec', l.decimalsLabel, decimalsInput, setDecimalsInput, decimals == null ? l.invalidDecimals : null)
         : null}
@@ -173,10 +225,12 @@ export function DeployTokenWidget({
         type="button"
         className="sqc-btn sqc-btn--primary sqc-btn--block"
         disabled={!canDeploy}
-        onClick={() => void onDeploy()}
+        onClick={() => (reviewStep ? setReviewing(true) : void onDeploy())}
       >
-        {status === 'pending' ? l.deploying : l.deploy}
+        {status === 'pending' ? l.deploying : reviewStep ? l.reviewDeploy : l.deploy}
       </button>
+        </>
+      )}
       <TxResult
         hash={hash}
         confirmed={status === 'success'}

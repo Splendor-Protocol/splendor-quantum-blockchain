@@ -50,14 +50,27 @@ function pad32(bytes: Uint8Array): Uint8Array {
   return out;
 }
 
+function encodeUint(n: bigint): Uint8Array {
+  if (n < 0n) throw BridgeError.invalidAmount('ABI args must be non-negative');
+  let hex = n.toString(16);
+  if (hex.length % 2) hex = '0' + hex;
+  return pad32(hexToBytes(hex));
+}
+
+/**
+ * Strings: `SQ:` addresses, `0x`-prefixed hex, or base-10 integers ("1000" is one thousand).
+ * Bare hex without `0x` and free text are rejected rather than guessed.
+ */
 function encodeArg(arg: AbiArg): Uint8Array {
-  if (typeof arg === 'bigint' || typeof arg === 'number') {
-    const n = typeof arg === 'number' ? BigInt(arg) : arg;
-    if (n < 0n) throw BridgeError.invalidAmount('ABI args must be non-negative');
-    let hex = n.toString(16);
-    if (hex.length % 2) hex = '0' + hex;
-    return pad32(hexToBytes(hex === '0' ? '00' : hex));
+  if (typeof arg === 'number') {
+    if (!Number.isSafeInteger(arg)) {
+      throw BridgeError.invalidParams(
+        `ABI number args must be safe integers (got ${arg}); pass a bigint or a decimal string`,
+      );
+    }
+    return encodeUint(BigInt(arg));
   }
+  if (typeof arg === 'bigint') return encodeUint(arg);
   if (typeof arg === 'string') {
     if (isValidAddress(arg)) {
       return pad32(hexToBytes(arg.slice(3)));
@@ -72,13 +85,19 @@ function encodeArg(arg: AbiArg): Uint8Array {
         `PQ addresses must use SQ: prefix, not raw 64-hex (${arg.slice(0, 16)}…)`,
       );
     }
-    if (/^(0x)?[0-9a-fA-F]+$/.test(arg)) {
-      return pad32(hexToBytes(arg));
+    if (/^(0|[1-9]\d*)$/.test(arg)) {
+      return encodeUint(BigInt(arg));
     }
-    // Treat as UTF-8 bytes (rare) — pack right-aligned
-    return pad32(new TextEncoder().encode(arg).slice(0, 32));
+    if (/^0x[0-9a-fA-F]+$/.test(arg)) {
+      const body = arg.slice(2);
+      return pad32(hexToBytes(body.length % 2 ? '0' + body : body));
+    }
+    throw BridgeError.invalidParams(
+      `Unsupported ABI string arg "${arg.length > 24 ? arg.slice(0, 24) + '…' : arg}": use an SQ: address, 0x-prefixed hex, or a base-10 integer`,
+    );
   }
-  return pad32(arg);
+  if (arg instanceof Uint8Array) return pad32(arg);
+  throw BridgeError.invalidParams(`Unsupported ABI arg type: ${typeof arg}`);
 }
 
 /**
@@ -103,7 +122,9 @@ export function encodeFunctionDataHex(signature: string, args: AbiArg[] = []): s
 
 export function decodeUint256(data: Uint8Array | string, offset = 0): bigint {
   const bytes = typeof data === 'string' ? hexToBytes(strip0x(data)) : data;
-  if (offset + 32 > bytes.length) return 0n;
+  if (offset + 32 > bytes.length) {
+    throw BridgeError.invalidParams(`ABI data too short: need ${offset + 32} bytes, got ${bytes.length}`);
+  }
   const slice = bytes.slice(offset, offset + 32);
   let hex = bytesToHex(slice);
   return BigInt('0x' + (hex || '0'));
@@ -113,7 +134,7 @@ export function decodeUint256(data: Uint8Array | string, offset = 0): bigint {
 export function decodeAddress(data: Uint8Array | string, offset = 0): string {
   const bytes = typeof data === 'string' ? hexToBytes(strip0x(data)) : data;
   if (offset + 32 > bytes.length) {
-    return 'SQ:' + '00'.repeat(32);
+    throw BridgeError.invalidParams(`ABI data too short: need ${offset + 32} bytes, got ${bytes.length}`);
   }
   return 'SQ:' + bytesToHex(bytes.slice(offset, offset + 32));
 }

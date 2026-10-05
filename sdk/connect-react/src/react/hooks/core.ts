@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  Connection,
   CallOpts,
   DeployOpts,
   DeriveInfo,
@@ -23,7 +24,7 @@ import {
   useConnectState,
   useNetworkSwitch,
 } from '../context.js';
-import { useTxAction, type TxHookStatus } from '../useTxAction.js';
+import { useRecordPendingTx, useSingleFlight, useTxAction, type TxHookStatus } from '../useTxAction.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
 export function useConnect(): {
@@ -114,29 +115,44 @@ export function useBalance(pollMs = 12_000): {
 } {
   const ctrl = useConnectController();
   const { address, isConnected } = useAccount();
+  const networkId = useConnectState((s) => s.network?.id ?? null);
   const [balance, setBalance] = useState<string | null>(null);
   const [balanceSPLD, setBalanceSPLD] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  /** Bumped per request; a response from an older account/network is dropped. */
+  const generation = useRef(0);
+
+  useEffect(() => {
+    setBalance(null);
+    setBalanceSPLD(null);
+    setError(null);
+  }, [address, networkId]);
 
   const refresh = useCallback(async () => {
+    const gen = ++generation.current;
     if (!address || !isConnected || ctrl.isStub) {
       setBalance(null);
       setBalanceSPLD(null);
+      setLoading(false);
       return;
     }
     setLoading(true);
     setError(null);
     try {
       const res = await ctrl.getProvider().getBalance(address);
+      if (gen !== generation.current) return;
       setBalance(res.balance);
       setBalanceSPLD(res.balance_spld);
     } catch (e) {
+      if (gen !== generation.current) return;
       setError(e instanceof Error ? e : new Error(String(e)));
     } finally {
-      setLoading(false);
+      if (gen === generation.current) setLoading(false);
     }
-  }, [address, isConnected, ctrl]);
+    // networkId: the provider is swapped on network switch, so refetch then too.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address, isConnected, ctrl, networkId]);
 
   useEffect(() => {
     void refresh();
@@ -207,6 +223,31 @@ export function useNetwork(): {
   };
 }
 
+/**
+ * Connection for chain reads. Works without a connected wallet (it falls back to the
+ * page wallet's RPC connection) and follows network switches.
+ */
+export function useReadConnection(): Connection | null {
+  const ctrl = useConnectController();
+  const networkId = useConnectState((s) => s.network?.id ?? null);
+  const status = useConnectState((s) => s.status);
+  const epoch =
+    ctrl.isStub || typeof ctrl.getWalletEpoch !== 'function' ? 0 : ctrl.getWalletEpoch();
+  return useMemo(() => {
+    if (ctrl.isStub) return null;
+    try {
+      return ctrl.getWallet().connection;
+    } catch {
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctrl, networkId, status, epoch]);
+}
+
+/**
+ * Active session wallet. `ready` is true only while connected and unlocked; a locked
+ * session returns `wallet: null` so no hook can ask a locked signer to sign.
+ */
 export function useWallet(): {
   wallet: SplendorPQBridge | ExtensionSigner | null;
   provider: SqcProvider | null;
@@ -222,8 +263,7 @@ export function useWallet(): {
     if (ctrl.isStub) {
       return { wallet: null, provider: null, ready: false };
     }
-    const connected = status === 'connected' || status === 'locked';
-    if (!connected) {
+    if (status !== 'connected') {
       return { wallet: null, provider: ctrl.getProvider(), ready: false };
     }
     return {
@@ -309,8 +349,10 @@ export function useSendTransfer(): {
     setError(null);
   }, []);
 
+  const singleFlight = useSingleFlight();
+  const recordPending = useRecordPendingTx();
   const sendTransfer = useCallback(
-    async (opts: TransferOpts) => {
+    (opts: TransferOpts) => singleFlight(async () => {
       if (!ready || !wallet) throw new Error('Wallet not connected');
       setStatus('pending');
       setError(null);
@@ -326,6 +368,10 @@ export function useSendTransfer(): {
         const didConfirm = !!opts.waitForConfirmation && !!res.confirmation;
         setConfirmed(didConfirm);
         setStatus('success');
+        recordPending(res, {
+          kind: 'transfer',
+          summary: `Send ${opts.amountSPLD ? `${opts.amountSPLD} SPLD` : `${opts.amount ?? '?'} atto`} to ${opts.to}`,
+        });
         return {
           status: String(res.status),
           hash: res.hash,
@@ -338,8 +384,8 @@ export function useSendTransfer(): {
         setStatus('error');
         throw err;
       }
-    },
-    [wallet, ready, network],
+    }),
+    [wallet, ready, network, singleFlight, recordPending],
   );
 
   return { sendTransfer, status, hash, explorerUrl, confirmed, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
@@ -368,8 +414,10 @@ export function useCallContract(): {
     setError(null);
   }, []);
 
+  const singleFlight = useSingleFlight();
+  const recordPending = useRecordPendingTx();
   const callContract = useCallback(
-    async (opts: CallOpts) => {
+    (opts: CallOpts) => singleFlight(async () => {
       if (!ready || !wallet) throw new Error('Wallet not connected');
       setStatus('pending');
       setError(null);
@@ -382,6 +430,7 @@ export function useCallContract(): {
         const exp = network && h ? txExplorerUrl(network, h) : null;
         setExplorerUrl(exp);
         setStatus('success');
+        recordPending(res, { kind: 'call', summary: `Call ${opts.function ?? 'contract'} on ${opts.contract}` });
         return { status: String(res.status), hash: res.hash, explorerUrl: exp };
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
@@ -389,8 +438,8 @@ export function useCallContract(): {
         setStatus('error');
         throw err;
       }
-    },
-    [wallet, ready, network],
+    }),
+    [wallet, ready, network, singleFlight, recordPending],
   );
 
   return { callContract, status, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
@@ -425,8 +474,10 @@ export function useDeployContract(): {
     setError(null);
   }, []);
 
+  const singleFlight = useSingleFlight();
+  const recordPending = useRecordPendingTx();
   const deployContract = useCallback(
-    async (opts: DeployOpts) => {
+    (opts: DeployOpts) => singleFlight(async () => {
       if (!ready || !wallet) throw new Error('Wallet not connected');
       setStatus('pending');
       setError(null);
@@ -442,6 +493,7 @@ export function useDeployContract(): {
         const exp = network && h ? txExplorerUrl(network, h) : null;
         setExplorerUrl(exp);
         setStatus('success');
+        recordPending(result, { kind: 'deploy', summary: `Deploy contract ${predicted}` });
         return { status: String(result.status), hash: result.hash, address: predicted, explorerUrl: exp };
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
@@ -449,8 +501,8 @@ export function useDeployContract(): {
         setStatus('error');
         throw err;
       }
-    },
-    [wallet, ready, network],
+    }),
+    [wallet, ready, network, singleFlight, recordPending],
   );
 
   return { deployContract, status, hash, address, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };

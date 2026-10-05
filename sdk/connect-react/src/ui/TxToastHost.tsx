@@ -5,10 +5,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
+import { isSafeExplorerUrl } from '@splendor/sqc-sdk/networks';
 import type { TxResultDto } from '../core/dto.js';
 
 export type TxToast = TxResultDto & {
@@ -40,8 +43,22 @@ export function TxToastHost({
   className,
 }: TxToastHostProps) {
   const [toasts, setToasts] = useState<TxToast[]>([]);
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
+  useEffect(() => {
+    const map = timers.current;
+    return () => {
+      for (const t of map.values()) clearTimeout(t);
+      map.clear();
+    };
+  }, []);
 
   const dismiss = useCallback((id: string) => {
+    const t = timers.current.get(id);
+    if (t) {
+      clearTimeout(t);
+      timers.current.delete(id);
+    }
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
@@ -50,15 +67,27 @@ export function TxToastHost({
       const id = toast.id ?? `tx-${++toastSeq}`;
       const next: TxToast = { ...toast, id };
       setToasts((prev) => [...prev.filter((t) => t.id !== id), next]);
+      const prevTimer = timers.current.get(id);
+      if (prevTimer) {
+        clearTimeout(prevTimer);
+        timers.current.delete(id);
+      }
       if (autoDismissMs > 0 && (toast.status === 'success' || toast.status === 'error')) {
-        window.setTimeout(() => dismiss(id), autoDismissMs);
+        timers.current.set(
+          id,
+          setTimeout(() => dismiss(id), autoDismissMs),
+        );
       }
       return id;
     },
     [autoDismissMs, dismiss],
   );
 
-  const clear = useCallback(() => setToasts([]), []);
+  const clear = useCallback(() => {
+    for (const t of timers.current.values()) clearTimeout(t);
+    timers.current.clear();
+    setToasts([]);
+  }, []);
 
   const api = useMemo(
     () => ({ push, dismiss, clear, toasts }),
@@ -73,7 +102,7 @@ export function TxToastHost({
           <div
             key={t.id}
             className={`sqc-tx-toast sqc-tx-toast--${t.status}`}
-            role="status"
+            role={t.status === 'error' ? 'alert' : 'status'}
           >
             <div className="sqc-tx-toast__title">
               {t.title ??
@@ -86,8 +115,8 @@ export function TxToastHost({
                       : 'Transaction')}
             </div>
             {t.hash ? (
-              t.explorerUrl ? (
-                <a className="sqc-tx-toast__link" href={t.explorerUrl} target="_blank" rel="noreferrer">
+              t.explorerUrl && isSafeExplorerUrl(t.explorerUrl) ? (
+                <a className="sqc-tx-toast__link" href={t.explorerUrl} target="_blank" rel="noopener noreferrer">
                   {t.hash.slice(0, 10)}…
                 </a>
               ) : (

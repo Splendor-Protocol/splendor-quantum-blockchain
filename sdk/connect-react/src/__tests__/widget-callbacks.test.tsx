@@ -25,6 +25,9 @@ vi.mock('@splendor/sqc-sdk/tokens', () => ({
     balanceOf() {
       return Promise.resolve('5000000000000000000');
     }
+    pinDecimals() {
+      return this;
+    }
     tokenInfo() {
       return Promise.resolve({ symbol: 'LAB', decimals: 18 });
     }
@@ -211,7 +214,8 @@ describe('DeployTokenWidget callbacks', () => {
     const onDeployed = vi.fn();
     const { Wrap } = setup();
     const view = render(React.createElement(DeployTokenWidget, { onDeployed }), { wrapper: Wrap });
-    click(within(view.container), /^Deploy$/i);
+    click(within(view.container), /^Review deploy$/i);
+    click(within(view.container), /^Confirm deploy$/i);
     await waitFor(() => expect(onDeployed).toHaveBeenCalledTimes(1));
     expect(onDeployed).toHaveBeenCalledWith({ address: 'SQ:' + '77'.repeat(32), hash: 'dep-hash' });
   });
@@ -226,7 +230,8 @@ describe('DeployTokenWidget callbacks', () => {
     const view = render(React.createElement(DeployTokenWidget, { onDeployed, onError }), {
       wrapper: Wrap,
     });
-    click(within(view.container), /^Deploy$/i);
+    click(within(view.container), /^Review deploy$/i);
+    click(within(view.container), /^Confirm deploy$/i);
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onDeployed).not.toHaveBeenCalled();
   });

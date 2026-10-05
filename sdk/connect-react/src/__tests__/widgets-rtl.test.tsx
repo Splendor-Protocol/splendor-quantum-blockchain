@@ -15,6 +15,23 @@ import { ControllerContext, NetworkSwitchContext } from '../react/context.js';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState } from '../core/types.js';
 
+vi.mock('@splendor/sqc-sdk/tokens', () => ({
+  QRC20: class {
+    pinDecimals() {
+      return this;
+    }
+    balanceOf() {
+      return Promise.resolve('5000000000000000000');
+    }
+    tokenInfo() {
+      return Promise.resolve({ decimals: 18 });
+    }
+    transferHuman() {
+      return Promise.resolve({ status: 'ok', hash: 'tok-hash' });
+    }
+  },
+}));
+
 const ADDR = 'SQ:' + 'ab'.repeat(32);
 
 function makeState(overrides: Partial<ConnectControllerState> = {}): ConnectControllerState {
@@ -218,7 +235,7 @@ function makeFundedController(
   const sendTransfer =
     opts.sendTransfer ??
     vi.fn(async () => ({ status: 'ok', hash: 'h1', confirmation: { ok: true } }));
-  const wallet = { sendTransfer, call: opts.call ?? vi.fn() };
+  const wallet = { sendTransfer, call: opts.call ?? vi.fn(), connection: {} };
   const provider = {
     getBalance: vi.fn(async () => ({
       balance: '0',
@@ -373,12 +390,13 @@ describe('TokenPanel send safety', () => {
     expect(reviewBtn(root).disabled).toBe(true);
   });
 
-  it('requires review before transferring', () => {
+  it('requires review before transferring', async () => {
     const { ctrl } = makeFundedController(makeState());
     const view = render(React.createElement(TokenPanel, { tokenAddress: OTHER }), {
       wrapper: providerWrap(ctrl),
     });
     const root = within(view.container);
+    await waitFor(() => expect(root.getByText(/Balance: 5/)).toBeTruthy());
     fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: OTHER } });
     fireEvent.change(root.getByLabelText(/Amount \(human/i), { target: { value: '2' } });
     fireEvent.click(reviewBtn(root));

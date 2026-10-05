@@ -65,7 +65,7 @@ describe('SQDP-1 RPC options', () => {
   });
 
   it('accepts valid rpcUrls', () => {
-    const rpc = new SqRpc({ rpcUrls: ['http://a.example/', 'http://b.example'] });
-    expect(rpc.rpcUrls).toEqual(['http://a.example', 'http://b.example']);
+    const rpc = new SqRpc({ rpcUrls: ['https://a.example/', 'https://b.example'] });
+    expect(rpc.rpcUrls).toEqual(['https://a.example', 'https://b.example']);
   });
 });

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { isSafeExplorerUrl } from '@splendor/sqc-sdk/networks';
 import { useAccount, useBalance, useConnect, useNetwork } from '../react/hooks.js';
 import { ModalShell } from './ModalShell.js';
 import { NetworkBadge } from './NetworkBadge.js';
@@ -12,7 +13,9 @@ export function AccountModal() {
   const [copied, setCopied] = useState(false);
 
   const open = modal === 'account';
-  const explorerHref = addressExplorerUrl(network?.explorerUrl, address) ?? network?.explorerUrl;
+  const explorerHref =
+    addressExplorerUrl(network?.explorerUrl, address) ??
+    (isSafeExplorerUrl(network?.explorerUrl) ? network?.explorerUrl : null);
 
   const onCopy = async (value: string) => {
     const ok = await copyText(value);
@@ -77,7 +80,7 @@ export function AccountModal() {
             <a
               href={explorerHref}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="sqc-account-link"
             >
               Open explorer

@@ -28,6 +28,9 @@ vi.mock('@splendor/sqc-sdk/tokens', () => ({
     balanceOf() {
       return Promise.resolve('5000000000000000000');
     }
+    pinDecimals() {
+      return this;
+    }
     tokenInfo() {
       return Promise.resolve({ symbol: 'LAB', decimals: 18 });
     }
@@ -337,7 +340,8 @@ describe('DeployTokenWidget contract', () => {
     const view = render(React.createElement(DeployTokenWidget, { onSuccess, onDeployed, onStatusChange }), {
       wrapper: Wrap,
     });
-    click(within(view.container), /^Deploy$/i);
+    click(within(view.container), /^Review deploy$/i);
+    click(within(view.container), /^Confirm deploy$/i);
     await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
     expect(onSuccess.mock.calls[0]![0]).toMatchObject({ address: DEPLOYED, hash: 'dep-hash' });
     expect(onDeployed).toHaveBeenCalledWith({ address: DEPLOYED, hash: 'dep-hash' });
@@ -352,7 +356,7 @@ describe('DeployTokenWidget contract', () => {
     expect(input.value).toBe('18');
     fireEvent.change(input, { target: { value: '19' } });
     expect(root.getByText(/Decimals must be a whole number/)).toBeTruthy();
-    expect((root.getByRole('button', { name: /^Deploy$/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((root.getByRole('button', { name: /^Review deploy$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('maxSupply below the total supply blocks the deploy', () => {
@@ -362,7 +366,7 @@ describe('DeployTokenWidget contract', () => {
     });
     const root = within(view.container);
     expect(root.getByText('Total supply cannot exceed the max supply (10)')).toBeTruthy();
-    expect((root.getByRole('button', { name: /^Deploy$/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((root.getByRole('button', { name: /^Review deploy$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

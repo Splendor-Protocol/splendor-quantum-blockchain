@@ -121,7 +121,7 @@ describe('useQRC20', () => {
     await act(async () => {
       await result.current.refresh();
     });
-    await waitFor(() => expect(result.current.balance).toBe('100'));
+    await waitFor(() => expect([result.current.error?.message, result.current.balance]).toEqual([undefined, '100']));
     expect(result.current.tokenInfo).toMatchObject({ name: 'T' });
   });
 

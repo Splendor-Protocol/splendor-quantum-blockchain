@@ -1,25 +1,20 @@
 /**
  * Domain separation for arbitrary wallet.signMessage() payloads.
- * Connect v2 challenges and already-prefixed messages are left unchanged.
+ * Only already-prefixed messages and fully parsed Connect v2 challenges are left unchanged.
  */
+import { parseAuthMessage } from './auth-message.js';
 
 /** Prefix applied to unstructured signMessage payloads (phishing hardening). */
 export const SIGN_MESSAGE_DOMAIN = 'SPLENDOR-QC-MSG-v1';
 
-const KNOWN_PREFIXES = [
-  `${SIGN_MESSAGE_DOMAIN}\n`,
-  'Splendor Connect v1',
-  'Splendor Connect v2',
-] as const;
-
 /**
  * Prepare a message for ML-DSA signing / verification.
- * Structured protocol messages (Connect challenges, already-prefixed) pass through.
+ * A message that merely starts with `Splendor Connect v2` but does not parse as a complete
+ * challenge is prefixed like any other text, so it cannot pass as a sign-in.
  */
 export function prepareSignMessage(message: string, opts?: { raw?: boolean }): string {
   if (opts?.raw) return message;
-  for (const p of KNOWN_PREFIXES) {
-    if (message.startsWith(p)) return message;
-  }
+  if (message.startsWith(`${SIGN_MESSAGE_DOMAIN}\n`)) return message;
+  if (parseAuthMessage(message)) return message;
   return `${SIGN_MESSAGE_DOMAIN}\n${message}`;
 }

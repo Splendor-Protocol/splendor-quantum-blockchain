@@ -17,6 +17,7 @@ import {
   type ConnectController,
   type CreateConnectControllerOptions,
 } from '../core/controller.js';
+import type { SignApprover } from '../core/signApproval.js';
 import { getLastNetworkId, setLastNetworkId } from '../core/storage.js';
 import {
   resolveThemeAttr,
@@ -67,9 +68,24 @@ export type SplendorConnectProviderProps = Omit<CreateClientOptions, 'network'> 
    * (no silent page-script signing).
    */
   injectedOnApprove?: (args: { method: string; params?: unknown }) => boolean | Promise<boolean>;
+  /**
+   * Approve each signature made with an in-page (seed) key. Default: the built-in
+   * `SignApprovalModal` asks the user. Return false to reject (`USER_REJECTED`).
+   * `() => true` signs without asking — only for tests or trusted kiosk apps.
+   * Extension sessions are not affected; the extension prompts itself.
+   */
+  onBeforeSign?: SignApprover;
 };
 
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
+
+function isProductionBuild(): boolean {
+  try {
+    return typeof process !== 'undefined' && process.env?.NODE_ENV === 'production';
+  } catch {
+    return false;
+  }
+}
 
 /** Register custom nets synchronously (safe before createSplendorClient). */
 function syncRegisterCustomNetworks(nets?: NetworkConfig[]): void {
@@ -118,6 +134,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     hostModals = true,
     exposeInjectedProvider = false,
     injectedOnApprove,
+    onBeforeSign,
     ...clientOpts
   } = props;
 
@@ -148,8 +165,9 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
           try {
             await ctrl.rebindNetwork(id);
           } catch (e) {
+            // The controller still talks to the old network, so the UI must keep saying so.
             onErrorRef.current?.(e instanceof Error ? e : new Error(String(e)));
-            // Fall through to still update UI network id so the badge reflects intent.
+            return;
           }
         }
         if (persistNetwork) setLastNetworkId(String(id));
@@ -240,6 +258,9 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   injectedOnApproveRef.current = injectedOnApprove;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const onBeforeSignRef = useRef(onBeforeSign);
+  onBeforeSignRef.current = onBeforeSign;
+  const hasCustomApprover = onBeforeSign != null;
 
   const controller = useMemo(() => {
     syncRegisterCustomNetworks(customNetworksRef.current);
@@ -286,6 +307,9 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
         connectors: connectorsRef.current,
         autoReconnect: parsed.autoReconnect,
         onError: (err) => onErrorRef.current?.(err),
+        onBeforeSign: onBeforeSignRef.current
+          ? (req) => (onBeforeSignRef.current ? onBeforeSignRef.current(req) : false)
+          : 'modal',
       };
       return createConnectController(createOpts);
     } catch (e) {
@@ -297,6 +321,15 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   }, [optsKey]);
 
   controllerRef.current = controller;
+
+  useEffect(() => {
+    if (controller.isStub) return;
+    controller.setSignApprover?.(
+      hasCustomApprover
+        ? (req) => (onBeforeSignRef.current ? onBeforeSignRef.current(req) : false)
+        : 'modal',
+    );
+  }, [controller, hasCustomApprover]);
 
   useEffect(() => {
     if (controller.isStub) return;
@@ -372,6 +405,15 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
       if (exposeInjectedProvider) uninstallSplendorProvider();
     };
   }, [controller, exposeInjectedProvider, softSwitchTo, networkId]);
+
+  useEffect(() => {
+    if (clientOpts.allowUnpinnedWasm && networkId !== 'local' && isProductionBuild()) {
+      console.warn(
+        `@splendor/connect-react: allowUnpinnedWasm is set on network "${String(networkId)}" in a production build. ` +
+          'The signer WASM is not integrity-checked — pass wasmSha256 and execSha256 (sqcWasmPlugin prints them).',
+      );
+    }
+  }, [clientOpts.allowUnpinnedWasm, networkId]);
 
   const switchNetwork = softSwitchTo;
 

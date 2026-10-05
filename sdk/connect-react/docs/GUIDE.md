@@ -172,6 +172,9 @@ await ct.readUint256('get()');                   // bigint
 await ct.call('set(uint256)', ['42'], { waitForConfirmation: true });
 ```
 
+String arguments are base-10 (`'42'` is forty-two); write hex as `'0x2a'`. `SQ:` addresses, bigints
+and safe integers are also accepted. Bare hex and free text throw instead of being guessed.
+
 A claim needs signed attestations from the bridge relayer; pass its output straight to `claim`.
 Deploy compiled bytecode with `useDeployBytecode().deploy(bytecode, { waitForConfirmation: true })`.
 
@@ -273,9 +276,71 @@ const check = checkAuthMessage(signed.message, { domain: 'https://app.example.co
 if (!check.ok) throw new Error(authCheckMessage(check.reason));
 ```
 
-`checkAuthMessage` checks the domain, expiry and issue time only. The server must still verify
-the ML-DSA signature against the public key and consume the nonce once.
-`<SignInButton />` wraps the same flow in a button.
+`checkAuthMessage` checks the message layout only (domain, age or expiry, and the nonce, address
+and chain when you pass `expectedNonce`, `expectedAddress`, `expectedChainId`). Messages without an
+expiry are rejected after `maxAgeSec` (default 600 s). `<SignInButton />` wraps the same flow in a
+button.
+
+### Server sign-in
+
+A signature checked in the browser proves nothing to your backend. Issue the nonce on the server and
+verify there with `@splendor/sqc-sdk/auth`. Express:
+
+```ts
+import express from 'express';
+import { createMemoryNonceStore, verifySignIn } from '@splendor/sqc-sdk/auth';
+
+const app = express();
+app.use(express.json());
+const nonces = createMemoryNonceStore({ ttlSec: 300 }); // one process; use Redis SET NX / GETDEL in production
+
+app.get('/api/auth/nonce', (_req, res) => res.json({ nonce: nonces.issue() }));
+
+app.post('/api/auth/verify', async (req, res) => {
+  const { message, signatureB64, publicKeyB64, address } = req.body;
+  const r = await verifySignIn({
+    message, signatureB64, publicKeyB64, address,
+    domain: 'https://app.example.com',
+    chainId: 'splendor-quantum-1',
+    nonceStore: nonces,
+  });
+  if (!r.ok) return res.status(401).json({ error: r.reason });
+  req.session.address = r.address; // your session layer
+  res.json({ address: r.address });
+});
+```
+
+Next.js route handler (`app/api/auth/verify/route.ts`), with the store in a shared module:
+
+```ts
+import { verifySignIn } from '@splendor/sqc-sdk/auth';
+import { nonces } from '@/lib/nonces';
+
+export async function POST(req: Request) {
+  const body = await req.json();
+  const r = await verifySignIn({ ...body, domain: process.env.APP_ORIGIN!, nonceStore: nonces });
+  return r.ok ? Response.json({ address: r.address }) : Response.json({ error: r.reason }, { status: 401 });
+}
+```
+
+The client fetches the nonce, signs, and posts the result:
+
+```tsx
+const { nonce } = await (await fetch('/api/auth/nonce')).json();
+const signed = await signIn({ domain: window.location.origin, statement: 'Sign in to Example', nonce });
+await fetch('/api/auth/verify', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(signed),
+});
+```
+
+`verifySignIn` returns `{ ok: true, address }` only when the message is for this domain and time
+window, the address derives from the public key (`SQ:` + SHA3-256), the ML-DSA-65 signature is
+valid, and the nonce was issued by your store and not used before. The nonce is burned only after
+the signature passes. Failure reasons: `bad-address`, `domain`, `expired`, `too-old`,
+`not-yet-valid`, `address`, `chain`, `missing-nonce`, `key-mismatch`, `bad-signature`,
+`nonce-used`.
 
 ## 9. Drop-in widgets
 
@@ -304,7 +369,10 @@ import { AccountCard, DeployTokenWidget, TokenPanel, TransferWidget } from '@spl
 ```
 
 `TransferWidget` and `TokenPanel` validate the recipient, block self-sends and amounts above the
-balance, and show a review step before the wallet is asked to sign.
+balance, and show a review step before the wallet is asked to sign. The review lists From, To,
+the amount, the token contract and the network fee; `TransferWidget` also disables Confirm when the
+node predicts the transfer will revert. `DeployTokenWidget` has the same review step. Pass
+`showFee={false}` to hide the fee row.
 
 All five widgets share one contract: `className`, `style`, `title`, `hideTitle`, `labels`, `onSuccess`,
 `onError`, `onStatusChange` and `toast`. A widget only renders its form when an unlocked wallet is
@@ -384,7 +452,107 @@ function SendButton() {
 `WrongNetworkBanner` appears when the extension is on a different network than the app and offers
 a one-click switch.
 
-## 11. Errors
+## 11. Read without a wallet
+
+Landing pages, dashboards and token pages can show chain data before anyone connects. These hooks
+use the connected wallet's connection when there is one and the app's network otherwise:
+
+```tsx
+import { useReadContract, useTokenBalance, useTokenInfo } from '@splendor/connect-react';
+
+const info = useTokenInfo(tokenAddress);                     // { data: { name, symbol, decimals, totalSupply } }
+const bal = useTokenBalance(tokenAddress, 'SQ:<holder>');    // { data: raw, formatted: '12.5', decimals }
+const supply = useReadContract(counter, 'get()', [], { pollMs: 10_000 });
+
+<p>{info.data?.symbol}: {bal.formatted ?? '…'}</p>
+```
+
+Each returns `{ data, loading, error, refresh }`. Results for an old address are dropped when the
+inputs change. `useQRC20`, `useQRC1155` and `useContract().read` also work while disconnected.
+
+## 12. Show the fee before signing
+
+```tsx
+import { FeeRow, useEstimateFee } from '@splendor/connect-react';
+
+const fee = useEstimateFee(to && address ? { from: address, to, value: fromUnits(amount, 18) } : null);
+
+<FeeRow estimate={fee} />
+<button disabled={fee.reverted || fee.loading}>Confirm</button>
+```
+
+`useEstimateFee` debounces (300 ms by default) and returns `fee` (atto), `feeSpld`, `feeIsFloor`
+(the node returned the minimum fee), `gas`, `reverted` and `revertReason`. Pass `null` to skip.
+
+## 13. Pending transactions across reloads
+
+Sends from the hooks and widgets that are not confirmed yet are kept in `localStorage`
+(`sqc.connect.pendingTx`, at most 20, dropped after 24 h). After a reload,
+`usePendingTransactions` resumes polling for receipts and pushes a toast when each one lands:
+
+```tsx
+import { PendingTxList, usePendingTransactions } from '@splendor/connect-react';
+
+<PendingTxList emptyText="Nothing pending" />
+
+// Or build your own list:
+const { pending, all, remove, clear } = usePendingTransactions({ pollMs: 5000 });
+```
+
+`pending` holds the current network's entries; `all` holds every network's. Mount the hook (or
+`PendingTxList`) once so receipts are not polled twice.
+
+## 14. Approve seed signatures
+
+The extension shows its own prompt for every signature. An in-page seed wallet does not, so the kit
+shows `<SignApprovalModal />` before each send, deploy, module call and message signature from a
+seed session. `ConnectButton` and `ModalHost` mount it. If it is not mounted, signing fails with
+`USER_REJECTED` instead of happening silently.
+
+Use your own approval UI with `onBeforeSign`:
+
+```tsx
+<SplendorConnectProvider
+  network="testnet"
+  onBeforeSign={async (req) => myConfirmDialog(req.summary, req.to, req.amount, req.message)}
+>
+```
+
+`req.kind` is `'transfer'`, `'call'`, `'deploy'`, `'module'`, `'message'` or `'sign'`. Return
+`true` to sign; returning `false` throws `USER_REJECTED` to the caller. Use `() => true` only in
+tests and kiosk apps.
+
+## 15. Test your app with mocks
+
+`@splendor/connect-react/testing` runs hooks and widgets without WASM or a node:
+
+```tsx
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { TransferWidget } from '@splendor/connect-react';
+import { createMockConnectController, MockSplendorProvider, mockWallet } from '@splendor/connect-react/testing';
+
+it('sends 1 SPLD', async () => {
+  const ctrl = createMockConnectController({ balance: '3' });
+  render(
+    <MockSplendorProvider controller={ctrl}>
+      <TransferWidget defaultTo="SQ:<recipient>" defaultAmount="1" />
+    </MockSplendorProvider>,
+  );
+  fireEvent.click(await screen.findByRole('button', { name: 'Review' }));
+  fireEvent.click(screen.getByRole('button', { name: /Confirm send/ }));
+  await waitFor(() => expect(ctrl.wallet.calls.map((c) => c.method)).toContain('sendTransfer'));
+});
+
+// Error paths: make a method reject.
+const wallet = mockWallet({ fail: { sendTransfer: new Error('User rejected transaction') } });
+const ctrl = createMockConnectController({ wallet });
+```
+
+`ctrl.setState({...})` drives any state (locked, wrong network, error). `mockConnector` connects
+instantly or fails with `fail`. `mockWallet` takes `estimate`, `moduleCall` and balance options for
+fee rows and token reads.
+
+## 16. Errors
 
 SDK failures are `BridgeError`s with a `code` and, usually, a `userHint` written for end users.
 Hooks expose `errorMessage`, which already picks the best text; for raw errors use
@@ -416,7 +584,7 @@ try {
 Use `usePreflight` before a send to catch a balance that does not cover the amount plus the fee
 (`result.sufficient === false`).
 
-## 12. Without React: `@splendor/sqc-sdk`
+## 17. Without React: `@splendor/sqc-sdk`
 
 Scripts, servers and bots use the core SDK directly. `createSession` connects once and returns
 clients with the wallet already bound:

@@ -21,9 +21,22 @@ export {
   useDeployBytecode,
   useModules,
   useSignIn,
+  useReadConnection,
+  useTokenInfo,
+  useTokenBalance,
+  useReadContract,
+  useEstimateFee,
+  usePendingTransactions,
   createAuthMessage,
 } from './react/hooks.js';
-export type { TxHookStatus } from './react/hooks.js';
+export type { TxHookStatus, TokenInfo, ReadState, ReadContractResult, FeeEstimate, PendingTx } from './react/hooks.js';
+export {
+  PENDING_TX_KEY,
+  loadPendingTxs,
+  addPendingTx,
+  removePendingTx,
+  clearPendingTxs,
+} from './core/pendingTx.js';
 export { parseAuthMessage, checkAuthMessage, authCheckMessage } from './react/auth.js';
 export type {
   AuthMessageParams,

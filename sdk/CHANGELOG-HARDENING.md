@@ -1,5 +1,88 @@
 # Changelog
 
+## Security hardening + builder add-ons (unreleased)
+
+### Breaking changes
+
+- **ABI string arguments are base-10 unless `0x`-prefixed.** `call('set(uint256)', ['42'])` now
+  stores 42 (it used to be read as hex and stored 66). Bare hex such as `'ff'`, leading zeros and
+  free text throw `INVALID_PARAMS`; unsafe JS numbers (above 2^53, fractions) throw too. Pass
+  `'0xff'`, a bigint or a decimal string.
+- **Extension chain check fails closed.** When the extension does not report `sqc_chainId`, sends
+  are refused with `CHAIN_MISMATCH`. Opt out with `allowUnknownWalletChain: true` on
+  `connectExtension` / `extensionConnector`.
+- **x402 replay is rejected.** A spent nonce is only accepted as an idempotent retry of the same
+  request this server already granted; `createX402Middleware` now uses a bounded in-memory
+  consumption store by default, checks `to`, amount and `chain_id` before calling the node, and
+  answers 403 for paths with no configured price. Use a durable store with `putIfAbsent` when
+  running more than one instance.
+- **Extension sends wait when asked.** `waitForConfirmation: true` on an `ExtensionSigner` send now
+  polls the receipt instead of returning the submit result.
+- **WASM pins:** `execSha256` is required whenever `wasmSha256` is required.
+- **Raw amounts** (native amount, contract `value`, `payX402` amount) must be non-negative integers
+  in base units; `parseRawAmount` rejects decimals, exponents and unsafe numbers.
+- **`SqRpc` requires `https://`** for non-loopback hosts (opt out with `allowInsecureHttp`) and
+  refuses HTTP redirects. Metadata hosts, IPv4-mapped IPv6 and `fd00:ec2::254` are blocked.
+- **Sign-in messages** reject CR/LF, control characters and Unicode line separators in every field.
+  `checkAuthMessage` rejects messages without an expiry after `maxAgeSec` (default 600 s).
+- **`useWallet().ready` is `false` while the wallet is locked.**
+- **`DeployTokenWidget` has a review step** ("Review deploy", then "Confirm deploy"), and name and
+  symbol have length limits.
+- **Seed sessions ask before signing.** In-page seed wallets show `<SignApprovalModal />` before
+  every send, deploy, module call and message signature. It is mounted by `ConnectButton` /
+  `ModalHost`; with no approval UI mounted, signing fails closed with `USER_REJECTED`. Pass
+  `onBeforeSign` on the provider to use your own approval (or `() => true` in tests and kiosks).
+- **`addressExplorerUrl`** returns `null` for non-`https` explorers (loopback `http` is allowed)
+  and no longer percent-encodes the `SQ:` address.
+- Explorer links (`txExplorerUrl`, `AccountModal`, toasts) only render for safe schemes, and
+  `registerNetwork` rejects unsafe `explorerUrl` / `txUrlTemplate` values.
+
+### Security fixes
+
+- `TokenPanel`: the token field is hidden while reviewing, the review shows the contract address
+  and closes when the token changes; late balance results for an old token are dropped.
+- `useBalance` and `useQRC20` ignore responses for a previous account, network or token.
+- `useTxAction` / `useSendTransfer` block double submits; Confirm is disabled on a wallet/network
+  mismatch.
+- Amount fields enforce decimal places (18 for SPLD, token decimals for QRC-20).
+- `ConnectModal`: seed inputs are uncontrolled and masked from autofill and session replay
+  (`data-private`, `data-sentry-mask`, `data-hj-suppress`), wiped after a failed import; a copied
+  seed is cleared from the clipboard after 45 s if it is still there; a revealed seed re-masks after
+  60 s; a new seed must be confirmed by typing 4 of its characters back.
+- `Keypair` never serializes its seed; `SplendorPQBridge` drops a `seed` passed in its options.
+- WASM exports are detached from `globalThis` after load.
+- Error details redact RPC URLs (origin only) and truncate invalid address input.
+- QRC-20 decimals are bounded to 0–36 and can be pinned (`pinDecimals`).
+- Fees: optional `maxFee` cap on the wallet; `payX402` defaults `valid_before` to now + 300 s and
+  accepts `maxAmount`.
+- `sqcWasmPlugin` prints and emits `sqc-wasm.sha256.json` and defines `VITE_SQC_WASM_SHA256` /
+  `VITE_SQC_EXEC_SHA256`.
+
+### Added
+
+- `@splendor/sqc-sdk/auth`: `issueNonce`, `createMemoryNonceStore`, `verifySignIn`,
+  `addressFromPublicKey`, `wasmSignatureVerifier`.
+- Read hooks that work without a wallet: `useTokenInfo`, `useTokenBalance`, `useReadContract`,
+  `useReadConnection`.
+- `useEstimateFee` and the `FeeRow` part; `TransferWidget` blocks Confirm when the node predicts a
+  revert. `showFee` on `TransferWidget`, `TokenPanel` and `DeployTokenWidget`.
+- Pending transactions survive reloads (`sqc.connect.pendingTx`, max 20, 24 h):
+  `usePendingTransactions` and the `PendingTxList` part.
+- `@splendor/connect-react/testing`: `createMockConnectController`, `MockSplendorProvider`,
+  `mockWallet`, `mockConnector`.
+
+### Follow-ups outside TypeScript (not changed here)
+
+- **Go WASM signer:** generate session ids from a CSPRNG inside the signer instead of accepting
+  caller-chosen ids, and expose a single export handle instead of many globals (the SDK detaches
+  them after load as a mitigation).
+- **Local node:** use a distinct chain id such as `splendor-quantum-local-1`. The local network
+  still shares the mainnet chain id, so signatures made against it are valid on mainnet; the SDK
+  warns about this and refuses mainnet-id configs that point at private hosts unless
+  `allowLocalMainnetChainId: true`.
+- **Wallet extension:** report `sqc_chainId` on every connection so dApps do not need
+  `allowUnknownWalletChain`.
+
 ## @splendor/connect-react 2.0.0
 
 - **BREAKING:** `usePayX402` removed. The wallet extension cannot pay x402, so the hook only ever

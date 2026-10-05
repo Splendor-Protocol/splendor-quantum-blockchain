@@ -403,8 +403,42 @@ go test ./sdk/sqc-sdk/signer -count=1
 - Domain message is versioned (`v1`); changing it remaps all derived addresses — treat as a breaking change.
 - This is an **identity bridge**, not a cross-chain token bridge.
 - Pin `wasmSha256` / `execSha256` in production browser deploys (required for non-local browser unless `allowUnpinnedWasm`).
-- Non-local RPC/gateway URLs must be `https://` unless `allowInsecureHttp: true`.
+- Non-local RPC/gateway URLs must be `https://` unless `allowInsecureHttp: true`. `SqRpc` refuses HTTP redirects, blocks cloud-metadata and link-local hosts (including IPv4-mapped IPv6 and `fd00:ec2::254`) in Node unless `allowPrivateRpcHosts`, and error details carry only the RPC origin.
 - Hosting WASM assets: see [`docs/WASM_HOSTING.md`](docs/WASM_HOSTING.md).
+- **CSP:** the Go WASM runtime needs `script-src 'self' 'wasm-unsafe-eval'` (`'unsafe-eval'` on older browsers). Add `frame-ancestors 'none'` so other sites cannot frame your signing UI.
+- **ABI strings:** `"42"` is decimal; hex must be `0x`-prefixed. Bare hex and free text throw instead of being guessed.
+- **Amounts and fees:** raw amounts must be non-negative integers in base units. Set `maxFee` on the wallet to cap any fee a caller passes; `payX402` accepts `maxAmount` and defaults `valid_before` to now + 300 s.
+- **Seeds:** `Keypair` never serializes its seed (`JSON.stringify`, `console.log`), the wallet drops a `seed` passed in its options, and WASM exports are removed from `globalThis` after load.
+- **Explorer links:** `txExplorerUrl` only links 64-hex hashes, and `registerNetwork` rejects non-`https` explorer URLs (loopback `http` is allowed).
+- **Local chain id:** the bundled `local` network shares the mainnet chain id, so anything signed against it is valid on mainnet. Never use a mainnet seed on a local node.
+- **x402 servers:** `createX402Middleware` consumes each payment for exactly one request. The default store is in-memory; pass a durable `consumptionStore` with `putIfAbsent` when you run more than one instance.
+
+### Server sign-in
+
+Never trust a signature checked only in the browser. Issue a single-use nonce on the server, then verify the signed message there:
+
+```ts
+import { createMemoryNonceStore, verifySignIn } from '@splendor/sqc-sdk/auth';
+
+const nonces = createMemoryNonceStore(); // use Redis / a DB row with atomic consume in production
+
+app.get('/auth/nonce', (_req, res) => res.json({ nonce: nonces.issue() }));
+
+app.post('/auth/verify', async (req, res) => {
+  const { message, signatureB64, publicKeyB64, address } = req.body;
+  const r = await verifySignIn({
+    message, signatureB64, publicKeyB64, address,
+    domain: 'https://app.example.com',
+    chainId: 'splendor-quantum-1',
+    nonceStore: nonces,
+  });
+  if (!r.ok) return res.status(401).json({ error: r.reason });
+  // r.address derives from the public key and signed this exact message.
+  res.json({ address: r.address });
+});
+```
+
+`verifySignIn` checks the domain, age/expiry, address and chain lines, that the address derives from the public key (`SQ:` + SHA3-256), the ML-DSA-65 signature (pinned WASM verifier), and burns the nonce only after the signature passes.
 
 ## License
 

@@ -126,7 +126,37 @@ export type X402Request = { path: string; headers: Record<string, string | strin
 export type X402ConsumptionStore = {
   get: (key: string) => Promise<string | undefined>;
   put: (key: string, value: string) => Promise<void>;
+  /**
+   * Atomic put-if-absent. Returns true when the key was written, false when it already
+   * existed. Strongly recommended for multi-instance servers; without it get + put can race.
+   */
+  putIfAbsent?: (key: string, value: string) => Promise<boolean>;
 };
+
+/** Bounded in-memory consumption store used when none is configured (single process only). */
+export function createMemoryConsumptionStore(maxEntries = 10_000): X402ConsumptionStore {
+  const data = new Map<string, string>();
+  const evict = () => {
+    while (data.size > maxEntries) {
+      const oldest = data.keys().next().value;
+      if (oldest === undefined) break;
+      data.delete(oldest);
+    }
+  };
+  return {
+    get: async (k) => data.get(k),
+    put: async (k, v) => {
+      data.set(k, v);
+      evict();
+    },
+    putIfAbsent: async (k, v) => {
+      if (data.has(k)) return false;
+      data.set(k, v);
+      evict();
+      return true;
+    },
+  };
+}
 
 export type X402MiddlewareConfig = {
   payTo: string;
@@ -149,11 +179,11 @@ export type X402MiddlewareConfig = {
   confirmTimeoutMs?: number;
   confirmPollMs?: number;
   /**
-   * Optional application-level consumption record. When omitted, the middleware
-   * grants access once settlement succeeds without binding it to a request
-   * (legacy behaviour). When provided, a confirmed nonce is consumed for exactly
-   * one entitlement key; retries of the same request are idempotent, but the
-   * same payment used for a different key is rejected.
+   * Application-level consumption record. A confirmed payment is consumed for exactly
+   * one entitlement key; retries of the same request are idempotent, and the same
+   * payment used for a different key is rejected. Defaults to a bounded in-memory
+   * store (single process). Use a durable store with `putIfAbsent` when running more
+   * than one server instance.
    */
   consumptionStore?: X402ConsumptionStore;
   /**
@@ -169,16 +199,37 @@ type ResLike = {
 };
 type NextFn = () => void;
 
-function resolvePrice(price: string | Record<string, string>, path: string): string {
+/**
+ * Exact match first, then the longest pattern that is a path-segment prefix
+ * (`/api` matches `/api` and `/api/x`, not `/apix`). Unmatched paths return null.
+ */
+export function resolvePrice(price: string | Record<string, string>, path: string): string | null {
   if (typeof price === 'string') return price;
-  for (const [pattern, p] of Object.entries(price)) {
-    if (path.startsWith(pattern) || path.includes(pattern)) return p;
+  if (Object.prototype.hasOwnProperty.call(price, path)) return price[path]!;
+  let best: string | null = null;
+  for (const pattern of Object.keys(price)) {
+    const base = pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
+    const matches = path === base || path.startsWith(base + '/');
+    if (matches && (best === null || pattern.length > best.length)) best = pattern;
   }
-  const values = Object.values(price);
-  if (values.length === 0) {
-    throw WalletError.invalidAmount('createX402Middleware: price map is empty');
+  return best === null ? null : price[best]!;
+}
+
+function sameAddress(a: unknown, b: string): boolean {
+  try {
+    return assertAddress(String(a)).toLowerCase() === assertAddress(b).toLowerCase();
+  } catch {
+    return false;
   }
-  return values[0]!;
+}
+
+function amountCovers(paid: unknown, required: string): boolean {
+  if (typeof paid !== 'string' || !/^(0|[1-9]\d*)$/.test(paid)) return false;
+  return BigInt(paid) >= BigInt(required);
+}
+
+function consumptionKeyFor(payload: PaymentPayload): string {
+  return `x402:payment:${String(payload.from).toLowerCase()}:${String(payload.nonce).toLowerCase()}`;
 }
 
 /**
@@ -191,24 +242,48 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
   if (!config.payTo) {
     throw new WalletError('INVALID_ADDRESS', 'createX402Middleware: payTo is required');
   }
+  if (typeof config.price === 'object' && Object.keys(config.price).length === 0) {
+    throw WalletError.invalidAmount('createX402Middleware: price map is empty');
+  }
   const client = X402Client.fromConnection(config.connection);
   const requireSettlement = config.requireSettlement !== false;
   const settlementPolicy: X402SettlementPolicy = config.settlementPolicy ?? 'receipt';
+  const cfg: X402MiddlewareConfig = {
+    ...config,
+    consumptionStore: config.consumptionStore ?? createMemoryConsumptionStore(),
+  };
 
   return async function x402Middleware(req: ReqLike, res: ResLike, next: NextFn) {
     const header = req.headers['x-payment'];
     const paymentHeader = Array.isArray(header) ? header[0] : header;
+    const price = resolvePrice(config.price, req.path);
+    if (price === null) {
+      return res.status(403).json({ error: 'No Price', reason: 'no x402 price is configured for this path' });
+    }
 
     if (!paymentHeader) {
-      const price = resolvePrice(config.price, req.path);
       const requirements = client.buildRequirements(config.payTo, price);
       return res.status(402).json({ error: 'Payment Required', requirements });
     }
 
     try {
       const payload = JSON.parse(paymentHeader) as PaymentPayload;
-      const price = resolvePrice(config.price, req.path);
       const requirements = client.buildRequirements(config.payTo, price);
+
+      if (!payload || typeof payload !== 'object') throw new Error('bad payload');
+      if (!sameAddress(payload.from, String(payload.from)) || typeof payload.nonce !== 'string' || !payload.nonce) {
+        return res.status(402).json({ error: 'Invalid Payment', reason: 'payment from/nonce are missing or malformed' });
+      }
+      if (!sameAddress(payload.to, config.payTo)) {
+        return res.status(402).json({ error: 'Invalid Payment', reason: 'payment recipient does not match payTo' });
+      }
+      if (!amountCovers(payload.amount, requirements.amount)) {
+        return res.status(402).json({ error: 'Invalid Payment', reason: 'payment amount is below the price' });
+      }
+      if (payload.chain_id !== client.chainId) {
+        return res.status(402).json({ error: 'Invalid Payment', reason: 'payment chain_id does not match this network' });
+      }
+
       const verifyResult = (await client.verify(requirements, payload)) as {
         valid?: boolean;
         reason?: string;
@@ -216,7 +291,19 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
       };
       const nonceUsed = verifyResult.nonce_used === true || isNonceAlreadyUsed(verifyResult.reason);
 
-      if (!verifyResult.valid && !(nonceUsed && requireSettlement)) {
+      if (nonceUsed) {
+        // A spent nonce is only an idempotent retry of a payment this server already
+        // consumed for this exact request; it is never re-settled.
+        if (await isKnownRetry(cfg, payload, req)) {
+          next();
+          return;
+        }
+        return res.status(402).json({
+          error: 'Payment Already Used',
+          reason: 'this payment nonce was already spent and is not recorded for this request',
+        });
+      }
+      if (!verifyResult.valid) {
         return res.status(402).json({
           error: 'Invalid Payment',
           reason: verifyResult.reason,
@@ -236,7 +323,7 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
         const settleResult = await client.settle(requirements, payload, settlementTx);
         const granted = await grantAfterSettle(config, payload, settleResult, settlementPolicy);
         if (granted === true) {
-          const consumptionError = await consumePayment(config, payload, settleResult, req);
+          const consumptionError = await consumePayment(cfg, payload, settleResult, req);
           if (consumptionError) {
             return res.status(402).json(consumptionError);
           }
@@ -248,9 +335,20 @@ export function createX402Middleware(config: X402MiddlewareConfig) {
 
       next();
     } catch {
-      return res.status(400).json({ error: 'Malformed X-Payment header' });
+      return res.status(402).json({ error: 'Payment Check Failed', reason: 'could not verify or settle the payment' });
     }
   };
+}
+
+function entitlementOf(config: X402MiddlewareConfig, req: ReqLike): string {
+  return config.requestKey ? config.requestKey(req) : req.path;
+}
+
+async function isKnownRetry(config: X402MiddlewareConfig, payload: PaymentPayload, req: ReqLike): Promise<boolean> {
+  const store = config.consumptionStore;
+  if (!store) return false;
+  const stored = await store.get(consumptionKeyFor(payload));
+  return stored !== undefined && stored === entitlementOf(config, req);
 }
 
 function isNonceAlreadyUsed(reason?: string): boolean {
@@ -299,6 +397,7 @@ async function grantAfterSettle(
         from: String(payload.from),
         nonceBefore: 0,
         hash: settleResult.tx_hash,
+        requireReceipt: true,
         timeoutMs: config.confirmTimeoutMs,
         pollMs: config.confirmPollMs,
       });
@@ -334,19 +433,13 @@ async function consumePayment(
   req: ReqLike,
 ): Promise<{ error: string; reason: string } | undefined> {
   const store = config.consumptionStore;
-  if (!store) {
-    // Legacy: no application-level consumption record configured.
-    return undefined;
-  }
-  // A payment that never confirmed must not be consumed.
-  if (!(settleConfirmed(settleResult) || (settleSubmitted(settleResult) && config.settlementPolicy === 'optimistic-submitted'))) {
-    return undefined;
-  }
-  const expectedEntitlement = config.requestKey
-    ? config.requestKey(req)
-    : req.path;
-  const consumptionKey = `x402:payment:${payload.from}:${payload.nonce}`;
+  if (!store) return undefined;
+  const expectedEntitlement = entitlementOf(config, req);
+  const consumptionKey = consumptionKeyFor(payload);
 
+  if (store.putIfAbsent && (await store.putIfAbsent(consumptionKey, expectedEntitlement))) {
+    return undefined;
+  }
   const stored = await store.get(consumptionKey);
   if (stored !== undefined) {
     if (stored === expectedEntitlement) {

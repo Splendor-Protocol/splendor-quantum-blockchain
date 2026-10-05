@@ -2,6 +2,7 @@ import { useAccount, useBalance, useConnect } from '../react/hooks.js';
 import { useHostModals } from '../react/context.js';
 import { AccountModal } from './AccountModal.js';
 import { ConnectModal } from './ConnectModal.js';
+import { SignApprovalModal } from './SignApprovalModal.js';
 import { truncateAddress } from '../widgets/utils.js';
 
 export type ConnectButtonProps = {
@@ -101,6 +102,7 @@ export function ConnectButton({
       {button}
       <ConnectModal />
       <AccountModal />
+      <SignApprovalModal />
     </>
   );
 }

@@ -57,17 +57,17 @@ describe('BridgeEmitter', () => {
 describe('SqcProvider', () => {
   it('exposes read API and toBridgeOptions', () => {
     const p = new SqcProvider({
-      rpcUrls: ['http://a.example', 'http://b.example'],
+      rpcUrls: ['https://a.example', 'https://b.example'],
       chainId: 'splendor-quantum-1',
       retries: 3,
     });
-    expect(p.rpcUrls).toEqual(['http://a.example', 'http://b.example']);
+    expect(p.rpcUrls).toEqual(['https://a.example', 'https://b.example']);
     expect(p.toBridgeOptions().rpcUrls).toHaveLength(2);
     expect(p.toBridgeOptions().retries).toBe(3);
   });
 
   it('can share SqRpc instance', () => {
-    const rpc = new SqRpc({ rpcUrl: 'http://shared.example' });
+    const rpc = new SqRpc({ rpcUrl: 'https://shared.example' });
     const p = new SqcProvider({}, rpc);
     expect(p.rpc).toBe(rpc);
   });
@@ -75,8 +75,8 @@ describe('SqcProvider', () => {
 
 describe('SqRpc multi-url options', () => {
   it('normalizes rpcUrls', () => {
-    const rpc = new SqRpc({ rpcUrls: ['http://x/', 'http://y/'] });
-    expect(rpc.rpcUrls).toEqual(['http://x', 'http://y']);
-    expect(rpc.rpcUrl).toBe('http://x');
+    const rpc = new SqRpc({ rpcUrls: ['https://x/', 'https://y/'] });
+    expect(rpc.rpcUrls).toEqual(['https://x', 'https://y']);
+    expect(rpc.rpcUrl).toBe('https://x');
   });
 });

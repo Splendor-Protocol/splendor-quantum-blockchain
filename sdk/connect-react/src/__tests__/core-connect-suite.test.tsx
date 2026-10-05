@@ -6,7 +6,7 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import React, { type ReactNode } from 'react';
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react';
 import { renderHook, act } from '@testing-library/react';
 import { createConnectController, connectErrorMessage } from '../core/controller.js';
 import {
@@ -143,7 +143,10 @@ vi.mock('@splendor/sqc-sdk', async (importOriginal) => {
 
 vi.mock('@splendor/sqc-sdk/tokens', () => ({
   QRC20: class {
-    balanceOf = vi.fn(async () => '0');
+    balanceOf = vi.fn(async () => '100000000000000000000');
+    pinDecimals = vi.fn(function (this: unknown) {
+      return this;
+    });
     tokenInfo = vi.fn(async () => ({ name: 'T', symbol: 'T', decimals: 18 }));
     transfer = vi.fn(async () => ({ hash: '0xt' }));
   },
@@ -499,7 +502,8 @@ describe('useWallet readiness', () => {
     ['connecting', false],
     ['error', false],
     ['connected', true],
-    ['locked', true],
+    // A locked wallet cannot sign, so it is not ready.
+    ['locked', false],
   ] as const)('status %s → ready=%s', (status, ready) => {
     const state = makeState({ status });
     const ctrl = makeHookController(state);
@@ -578,8 +582,8 @@ describe('widgets core', () => {
 
   it.each(['1.5', '10', '0.01'] as const)(
     'TokenPanel accepts decimal amount shape %s when address filled',
-    (amount) => {
-      const ctrl = makeHookController(makeState());
+    async (amount) => {
+      const ctrl = makeHookController(makeState(), { connection: {} });
       const { container } = render(
         React.createElement(TokenPanel, { tokenAddress: mockInfo.address }),
         { wrapper: widgetWrap(ctrl) },
@@ -587,9 +591,11 @@ describe('widgets core', () => {
       const root = within(container);
       fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: RECIPIENT } });
       fireEvent.change(root.getByLabelText(/Amount \(human/i), { target: { value: amount } });
-      expect(
-        (root.getByRole('button', { name: /^Review$/i }) as HTMLButtonElement).disabled,
-      ).toBe(false);
+      await waitFor(() =>
+        expect(
+          (root.getByRole('button', { name: /^Review$/i }) as HTMLButtonElement).disabled,
+        ).toBe(false),
+      );
     },
   );
 

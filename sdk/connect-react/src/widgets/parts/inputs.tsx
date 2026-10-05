@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from 'react';
-import { compareDecimal, isPositiveAmount, normalizeSqAddress, truncateAddress } from '../utils.js';
+import { compareDecimal, fractionDigits, isPositiveAmount, normalizeSqAddress, truncateAddress } from '../utils.js';
 import { COMMON_LABELS, formatLabel, useWidgetLabels, type CommonWidgetLabels } from '../labels.js';
 
 function FieldError({ id, message }: { id: string; message: string | null }) {
@@ -27,7 +27,7 @@ export function RecentRecipients({
       <span className="sqc-widget__hint">{l.recent}</span>
       {recipients.map((addr) => (
         <button key={addr} type="button" className="sqc-copy" title={addr} onClick={() => onPick(addr)}>
-          {truncateAddress(addr, 8, 6)}
+          {truncateAddress(addr, 12, 10)}
         </button>
       ))}
     </div>
@@ -53,10 +53,14 @@ export function amountFieldError(
   value: string,
   balance?: string | null,
   symbol = 'SPLD',
-  labels: Pick<CommonWidgetLabels, 'badAmount' | 'insufficient'> = COMMON_LABELS,
+  labels: Pick<CommonWidgetLabels, 'badAmount' | 'insufficient'> & Partial<Pick<CommonWidgetLabels, 'tooPrecise'>> = COMMON_LABELS,
+  decimals?: number,
 ): string | null {
   if (!value.trim()) return null;
   if (!isPositiveAmount(value)) return labels.badAmount;
+  if (decimals != null && fractionDigits(value.trim()) > decimals) {
+    return formatLabel(labels.tooPrecise ?? COMMON_LABELS.tooPrecise, { decimals });
+  }
   if (balance != null && compareDecimal(value, balance) === 1) {
     return formatLabel(labels.insufficient, { symbol });
   }
@@ -128,6 +132,8 @@ export type AmountInputProps = {
   /** Spendable balance in the same unit; enables Max and the over-balance check. */
   balance?: string | null;
   symbol?: string;
+  /** Maximum fractional digits accepted (18 for SPLD, token decimals for QRC-20). */
+  decimals?: number;
   labels?: Partial<CommonWidgetLabels>;
 };
 
@@ -141,13 +147,14 @@ export function AmountInput({
   error,
   balance,
   symbol = 'SPLD',
+  decimals,
   labels,
 }: AmountInputProps) {
   const l = useWidgetLabels(COMMON_LABELS, labels);
   const autoId = useId();
   const inputId = id ?? `${autoId}-amt`;
   const errId = `${inputId}-error`;
-  const message = error === undefined ? amountFieldError(value, balance, symbol, l) : error;
+  const message = error === undefined ? amountFieldError(value, balance, symbol, l, decimals) : error;
   return (
     <div className="sqc-field">
       <label className="sqc-widget__label" htmlFor={inputId}>

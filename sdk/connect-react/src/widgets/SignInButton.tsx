@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAccount, useNetwork, useSignIn } from '../react/hooks.js';
+import { connectErrorMessage } from '../core/controller.js';
 import {
   authCheckMessage,
   checkAuthMessage,
@@ -88,7 +89,13 @@ export function SignInButton({
         address,
         chainId: chainId ?? undefined,
       };
-      const check = checkAuthMessage(createAuthMessage(params), { domain: mustMatch, now: issuedAt });
+      const check = checkAuthMessage(createAuthMessage(params), {
+        domain: mustMatch,
+        now: issuedAt,
+        expectedNonce: params.nonce,
+        expectedAddress: address,
+        expectedChainId: params.chainId,
+      });
       if (!check.ok) {
         const msg = authCheckMessage(check.reason);
         setCheckError(msg);
@@ -100,8 +107,9 @@ export function SignInButton({
       onSuccess?.(signed);
       onSignedIn?.(signed);
     } catch (e) {
-      // Wallet errors are already surfaced by useSignIn's errorMessage.
-      if (!signing) setCheckError(e instanceof Error ? e.message : String(e));
+      // Wallet errors are already surfaced by useSignIn's errorMessage. A failing nonce
+      // fetch may carry a server body, so only our own validation text is shown verbatim.
+      if (!signing) setCheckError(e instanceof TypeError ? e.message : connectErrorMessage(e));
       onError?.(toError(e));
     }
   };

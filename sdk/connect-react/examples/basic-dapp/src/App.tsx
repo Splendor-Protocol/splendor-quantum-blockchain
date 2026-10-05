@@ -16,6 +16,7 @@ import {
   ConnectCard,
   NetworkCard,
   OfflineHelpersCard,
+  ReadsCard,
   SignInCard,
   ToastCard,
   TokenCard,
@@ -47,6 +48,7 @@ const SECTIONS: Array<{ id: string; label: string }> = [
   { id: 'contract', label: 'Contract' },
   { id: 'modules', label: 'Chain modules' },
   { id: 'bridge', label: 'Bridge' },
+  { id: 'reads', label: 'Reads and pending' },
 ];
 
 function LabBody() {
@@ -79,6 +81,7 @@ function LabBody() {
             <ContractCard step={12} />
             <ModulesCard step={13} />
             <BridgeCard step={14} />
+            <ReadsCard step={15} />
           </main>
         </div>
       </div>
@@ -88,11 +91,13 @@ function LabBody() {
 }
 
 export function App() {
+  // sqcWasmPlugin defines both digests from the files it serves; .env values take precedence.
   const wasmSha256 = (import.meta.env.VITE_SQC_WASM_SHA256 as string | undefined)?.trim();
+  const execSha256 = (import.meta.env.VITE_SQC_EXEC_SHA256 as string | undefined)?.trim();
   const isDev = import.meta.env.DEV;
-  if (!isDev && !wasmSha256) {
+  if (!isDev && (!wasmSha256 || !execSha256)) {
     throw new Error(
-      'VITE_SQC_WASM_SHA256 is required for production builds (or run with import.meta.env.DEV).',
+      'VITE_SQC_WASM_SHA256 and VITE_SQC_EXEC_SHA256 are required for production builds (sqcWasmPlugin prints them).',
     );
   }
   return (
@@ -102,7 +107,7 @@ export function App() {
       theme="splendor"
       autoReconnect
       customNetworks={CUSTOM_NETWORKS}
-      {...(wasmSha256 ? { wasmSha256 } : { allowUnpinnedWasm: true })}
+      {...(wasmSha256 && execSha256 ? { wasmSha256, execSha256 } : { allowUnpinnedWasm: true })}
     >
       <TxToastHost>
         <LabProvider>

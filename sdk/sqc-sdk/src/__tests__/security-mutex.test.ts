@@ -47,7 +47,7 @@ describe('security-mutex concurrent sendTransfer', () => {
     }) as typeof fetch;
 
     const b = new SplendorPQBridge({
-      rpcUrl: 'http://rpc-mutex.test',
+      rpcUrl: 'https://rpc-mutex.test',
       chainId: CHAIN_ID,
       retries: 0,
     });

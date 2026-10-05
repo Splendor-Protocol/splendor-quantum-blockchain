@@ -4,10 +4,23 @@
 import { randomBytes } from '@noble/hashes/utils';
 
 export class Keypair {
-  readonly seedHex: string;
+  readonly #seedHex: string;
 
   private constructor(seedHex: string) {
-    this.seedHex = seedHex;
+    this.#seedHex = seedHex;
+  }
+
+  /** Secret seed. Not enumerable: `JSON.stringify` / `console.log` do not reveal it. */
+  get seedHex(): string {
+    return this.#seedHex;
+  }
+
+  toJSON(): { seedHex: '[redacted]' } {
+    return { seedHex: '[redacted]' };
+  }
+
+  toString(): string {
+    return 'Keypair([redacted])';
   }
 
   /** Generate a new 32-byte CSPRNG seed. */

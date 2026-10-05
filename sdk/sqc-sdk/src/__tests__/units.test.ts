@@ -109,6 +109,18 @@ describe('networks', () => {
     expect(resolveNetwork('testnet').rpcUrls).toEqual(['https://quantum-rpc-testnet.splendor.org']);
     expect(resolveNetwork('mainnet').rpcUrls).toEqual(['https://quantum-rpc.splendor.org']);
   });
+
+  it('refuses the mainnet chain id on a direct loopback or private node URL', () => {
+    expect(() => resolveNetwork('mainnet', { rpcUrls: ['http://127.0.0.1:8080'] })).toThrow(BridgeError);
+    expect(() => resolveNetwork('mainnet', { rpcUrls: ['http://10.0.0.5:8080/'] })).toThrow(BridgeError);
+    expect(
+      resolveNetwork('mainnet', { rpcUrls: ['http://127.0.0.1:8080'], allowLocalMainnetChainId: true }).chainId,
+    ).toBe('splendor-quantum-1');
+    // A dev proxy path to the public RPC is allowed.
+    expect(resolveNetwork('mainnet', { rpcUrls: ['http://localhost:5173/rpc/mainnet'] }).chainId).toBe(
+      'splendor-quantum-1',
+    );
+  });
 });
 
 describe('fee and encoding', () => {

@@ -104,7 +104,24 @@ type UnlistedExport = Exclude<keyof WasmSignerApi, (typeof WASM_EXPORTS)[number]
 const _everyExportIsListed: UnlistedExport extends never ? true : never = true;
 void _everyExportIsListed;
 
-/** Bind session-aware wrappers from global Go exports. */
+/**
+ * Copy the Go exports into a private object and remove them from `g`, so other scripts
+ * on the page cannot call the signer directly. Returns the private object.
+ */
+export function detachWasmExports(g: Record<string, unknown>): Record<string, unknown> {
+  const captured: Record<string, unknown> = {};
+  for (const name of WASM_EXPORTS) {
+    captured[name] = g[name];
+    try {
+      delete g[name];
+    } catch {
+      g[name] = undefined;
+    }
+  }
+  return captured;
+}
+
+/** Bind session-aware wrappers from Go exports (globals, or an object from detachWasmExports). */
 export function bindWasmApi(g: Record<string, unknown>): WasmSignerApi {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const x = g as any;

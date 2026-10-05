@@ -347,7 +347,9 @@ describe('SignInButton', () => {
     });
     const { root, sign } = renderButton(makeState(), { nonce });
     fireEvent.click(root.getByRole('button', { name: /^Sign in$/i }));
-    await waitFor(() => expect(root.getByRole('alert').textContent).toMatch(/nonce service down/));
+    // Server error text is not reflected into the page.
+    await waitFor(() => expect(root.getByRole('alert').textContent).toMatch(/failed/i));
+    expect(root.getByRole('alert').textContent).not.toMatch(/nonce service down/);
     expect(sign).not.toHaveBeenCalled();
   });
 

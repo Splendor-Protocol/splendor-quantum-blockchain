@@ -41,6 +41,8 @@ export type ConfirmationOpts = {
   timeoutMs?: number;
   pollMs?: number;
   hash?: string;
+  /** With `hash`: only a successful receipt confirms; the nonce-advance fallback is disabled. */
+  requireReceipt?: boolean;
 };
 
 export type ConfirmationResult = {

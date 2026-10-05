@@ -15,6 +15,8 @@ export type BridgeOptions = RpcOptions & {
    * Default false — fail closed unless pin is provided.
    */
   allowUnpinnedWasm?: boolean;
+  /** Refuse to sign any tx whose fee (base units) exceeds this cap. */
+  maxFee?: string;
   /**
    * Network id from sqc.networks.json (local | testnet | mainnet).
    * Used for browser pin policy and HTTPS checks.
@@ -116,9 +118,12 @@ export type X402PayOpts = {
   amount: string;
   amountSPLD?: string;
   validAfter?: number;
+  /** Unix seconds after which the authorisation expires. Defaults to now + 300. */
   validBefore?: number;
   requirements?: object;
   settle?: boolean;
+  /** Refuse to sign when the payment amount (base units) exceeds this cap. */
+  maxAmount?: string;
   /**
    * Fee for the on-chain settlement transaction. Settlement is a normal
    * transaction that a validator must include, so it pays a fee like any other.

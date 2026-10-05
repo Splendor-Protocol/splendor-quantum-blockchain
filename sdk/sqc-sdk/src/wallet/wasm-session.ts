@@ -78,6 +78,12 @@ export class WasmSession {
           '(pass wasmSha256 or allowUnpinnedWasm: true)',
       );
     }
+    // A pinned .wasm is only as safe as the wasm_exec.js glue that instantiates it.
+    if (isBrowser && opts.wasmSha256 && !opts.execSha256 && !opts.allowUnpinnedWasm) {
+      throw BridgeError.wasm(
+        'execSha256 is required whenever wasmSha256 is set (pin wasm_exec.js too; sqcWasmPlugin prints both hashes)',
+      );
+    }
     this.wasm = await loadWasmSigner({
       wasmUrl: opts.wasmUrl,
       execUrl: opts.execUrl,
@@ -109,6 +115,11 @@ export class WasmSession {
 
   reserveNonce(nonce: number): void {
     this.pendingNonce = nonce + 1;
+  }
+
+  /** Undo `reserveNonce(nonce)` when its tx was never accepted, so the next tx reuses the nonce. */
+  releaseNonce(nonce: number): void {
+    if (this.pendingNonce === nonce + 1) this.pendingNonce = null;
   }
 
   clearPendingNonce(): void {

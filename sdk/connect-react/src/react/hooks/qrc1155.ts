@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useConnectState } from '../context.js';
 import { useTxAction, type TxHookStatus } from '../useTxAction.js';
-import { useWallet } from './core.js';
+import { useReadConnection, useWallet } from './core.js';
+import { loadTokens } from './qrc20.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
 export function useQRC1155(collectionAddress: string | null): {
@@ -20,6 +21,7 @@ export function useQRC1155(collectionAddress: string | null): {
   refresh: () => void;
 } {
   const { wallet, ready } = useWallet();
+  const readConnection = useReadConnection();
   const network = useConnectState((s) => s.network);
   const tx = useTxAction(network);
   const [, setTick] = useState(0);
@@ -27,24 +29,24 @@ export function useQRC1155(collectionAddress: string | null): {
 
   const balanceOf = useCallback(
     async (owner: string, id: string) => {
-      if (!collectionAddress || !ready || !wallet) throw new Error('Collection not ready');
-      const { QRC1155 } = await import('@splendor/sqc-sdk/tokens');
-      return new QRC1155(wallet.connection, collectionAddress).balanceOf(owner, id);
+      if (!collectionAddress || !readConnection) throw new Error('Collection not ready');
+      const { QRC1155 } = await loadTokens();
+      return new QRC1155(readConnection, collectionAddress).balanceOf(owner, id);
     },
-    [collectionAddress, ready, wallet],
+    [collectionAddress, readConnection],
   );
 
   const collectionInfo = useCallback(async () => {
-    if (!collectionAddress || !ready || !wallet) throw new Error('Collection not ready');
-    const { QRC1155 } = await import('@splendor/sqc-sdk/tokens');
-    return new QRC1155(wallet.connection, collectionAddress).collectionInfo();
-  }, [collectionAddress, ready, wallet]);
+    if (!collectionAddress || !readConnection) throw new Error('Collection not ready');
+    const { QRC1155 } = await loadTokens();
+    return new QRC1155(readConnection, collectionAddress).collectionInfo();
+  }, [collectionAddress, readConnection]);
 
   const mint = useCallback(
     async (to: string, id: string, amount: string, uri?: string) => {
       if (!collectionAddress || !ready || !wallet) throw new Error('Wallet or collection not ready');
       const res = await tx.run(async () => {
-        const { QRC1155 } = await import('@splendor/sqc-sdk/tokens');
+        const { QRC1155 } = await loadTokens();
         return new QRC1155(wallet.connection, collectionAddress).mint(wallet, to, id, amount, uri);
       });
       refresh();
@@ -57,7 +59,7 @@ export function useQRC1155(collectionAddress: string | null): {
     async (to: string, id: string, amount: string) => {
       if (!collectionAddress || !ready || !wallet) throw new Error('Wallet or collection not ready');
       const res = await tx.run(async () => {
-        const { QRC1155 } = await import('@splendor/sqc-sdk/tokens');
+        const { QRC1155 } = await loadTokens();
         return new QRC1155(wallet.connection, collectionAddress).transfer(wallet, to, id, amount);
       });
       refresh();
@@ -70,7 +72,7 @@ export function useQRC1155(collectionAddress: string | null): {
     async (operator: string, approved: boolean) => {
       if (!collectionAddress || !ready || !wallet) throw new Error('Wallet or collection not ready');
       const res = await tx.run(async () => {
-        const { QRC1155 } = await import('@splendor/sqc-sdk/tokens');
+        const { QRC1155 } = await loadTokens();
         return new QRC1155(wallet.connection, collectionAddress).setApprovalForAll(
           wallet,
           operator,
@@ -135,7 +137,7 @@ export function useDeployCollection(): {
       setStatus('pending');
       setError(null);
       try {
-        const { deployQRC1155 } = await import('@splendor/sqc-sdk/tokens');
+        const { deployQRC1155 } = await loadTokens();
         const { address: addr, result } = await deployQRC1155(wallet, params, {
           fee: params.fee,
           waitForConfirmation: params.waitForConfirmation,

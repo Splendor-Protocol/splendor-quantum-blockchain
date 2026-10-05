@@ -7,6 +7,8 @@ import type { Connection } from '../core/connection.js';
 import type { Signer } from '../core/signer.js';
 import { requireCapability, signerAccountNonce } from '../core/signer.js';
 import { bridgeAddress, bridgeSplvAddress } from '../addresses/index.js';
+import { assertAddress } from '../address.js';
+import { BridgeError } from '../errors.js';
 
 export type BridgeDeployParams = {
   evmChainId: number;
@@ -34,6 +36,19 @@ function blockHeight(block: unknown): number {
   const header = b.header as Record<string, unknown> | undefined;
   if (header && typeof header.height === 'number') return header.height;
   return 0;
+}
+
+function safeInt(n: unknown, label: string, min = 0): number {
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < min) {
+    throw BridgeError.invalidParams(`${label} must be an integer >= ${min}`);
+  }
+  return n;
+}
+
+function uintString(v: unknown, label: string): string {
+  const s = String(v ?? '').trim();
+  if (!/^(0|[1-9]\d*)$/.test(s)) throw BridgeError.invalidAmount(`${label}: expected a non-negative integer string`);
+  return s;
 }
 
 const BRIDGE_WRITES = new Set([
@@ -71,26 +86,32 @@ export class BridgeModule extends Program {
   }
 
   async claimed(id: number): Promise<Record<string, unknown>> {
-    return this.read<Record<string, unknown>>('claim_status', { id });
+    return this.read<Record<string, unknown>>('claim_status', { id: safeInt(id, 'id') });
   }
 
   async claim(wallet: Signer, params: BridgeClaimParams) {
+    if (params.asset !== 'spld' && params.asset !== 'splv') {
+      throw BridgeError.invalidParams("asset must be 'spld' or 'splv'");
+    }
+    if (!Array.isArray(params.attestations) || params.attestations.length === 0) {
+      throw BridgeError.invalidParams('attestations are required');
+    }
     return this.write(wallet, 'claim', {
-      id: params.id,
+      id: safeInt(params.id, 'id'),
       asset: params.asset,
-      amount: params.amount,
-      recipient: params.recipient,
+      amount: uintString(params.amount, 'amount'),
+      recipient: assertAddress(params.recipient),
       evm_tx: params.evmTx,
       attestations: params.attestations,
     });
   }
 
   async setOperator(wallet: Signer, operator: string, active: boolean) {
-    return this.write(wallet, 'set_operator', { operator, active });
+    return this.write(wallet, 'set_operator', { operator: assertAddress(operator), active: active === true });
   }
 
   async setThreshold(wallet: Signer, threshold: number) {
-    return this.write(wallet, 'set_threshold', { threshold });
+    return this.write(wallet, 'set_threshold', { threshold: safeInt(threshold, 'threshold', 1) });
   }
 
   async pause(wallet: Signer) {
@@ -102,7 +123,7 @@ export class BridgeModule extends Program {
   }
 
   async transferOwnership(wallet: Signer, newOwner: string) {
-    return this.write(wallet, 'transfer_ownership', { new_owner: newOwner });
+    return this.write(wallet, 'transfer_ownership', { new_owner: assertAddress(newOwner) });
   }
 }
 
@@ -128,13 +149,13 @@ export async function deployBridge(
     module: 'bridge',
     action: 'deploy',
     params: {
-      evm_chain_id: params.evmChainId,
+      evm_chain_id: safeInt(params.evmChainId, 'evmChainId', 1),
       evm_contract: params.evmContract,
       splv_name: params.splvName,
       splv_symbol: params.splvSymbol,
-      splv_max_supply: params.splvMaxSupply,
-      max_claim_amount: params.maxClaimAmount,
-      threshold: params.threshold,
+      splv_max_supply: uintString(params.splvMaxSupply, 'splvMaxSupply'),
+      max_claim_amount: uintString(params.maxClaimAmount, 'maxClaimAmount'),
+      threshold: safeInt(params.threshold, 'threshold', 1),
     },
     fee: opts?.fee,
     waitForConfirmation: opts?.waitForConfirmation,

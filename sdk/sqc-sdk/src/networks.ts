@@ -68,7 +68,44 @@ export type ResolveNetworkOptions = {
    * Default false — SDK SqRpc only needs rpcUrls.
    */
   requireGateway?: boolean;
+  /**
+   * Allow a non-local network that carries the mainnet chain id to point at loopback or
+   * private-network RPCs. Off by default: signatures made against such a node are valid
+   * on mainnet.
+   */
+  allowLocalMainnetChainId?: boolean;
 };
+
+/** True for loopback, RFC 1918, link-local and unique-local hosts. */
+export function isPrivateOrLoopbackUrl(url: string): boolean {
+  if (isLoopbackOrLocalhostUrl(url)) return true;
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (/^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+    if (/^127\./.test(host) || host === '0.0.0.0') return true;
+    if (/^f[cd][0-9a-f]{2}:/.test(host) || /^fe80:/.test(host)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A loopback/private URL with no path is a node's own RPC base. URLs with a path
+ * (e.g. `http://localhost:5173/rpc/mainnet`) are treated as dev proxies to a public RPC.
+ */
+function isDirectPrivateNodeUrl(url: string): boolean {
+  if (!isPrivateOrLoopbackUrl(url)) return false;
+  try {
+    const path = new URL(url).pathname;
+    return path === '' || path === '/';
+  } catch {
+    return false;
+  }
+}
+
+let warnedLocalChainId = false;
 
 function deepFreeze<T>(obj: T): T {
   if (obj && typeof obj === 'object' && !Object.isFrozen(obj)) {
@@ -133,6 +170,14 @@ export function registerNetwork(net: NetworkConfig): void {
   if (!net.chainId) throw BridgeError.rpc('registerNetwork: chainId is required');
   if (!net.wasmUrl) throw BridgeError.rpc('registerNetwork: wasmUrl is required');
   if (!net.execUrl) throw BridgeError.rpc('registerNetwork: execUrl is required');
+  for (const [field, url] of [
+    ['explorerUrl', net.explorerUrl],
+    ['txUrlTemplate', net.txUrlTemplate],
+  ] as const) {
+    if (url && !isSafeExplorerUrl(url)) {
+      throw BridgeError.invalidParams(`registerNetwork: ${field} must use https:// (or http:// on loopback)`);
+    }
+  }
   RUNTIME[net.id] = cloneNetwork({
     ...net,
     gatewayUrl: net.gatewayUrl ?? '',
@@ -237,6 +282,24 @@ export function resolveNetwork(
     }
   }
 
+  const mainnetChainId = CONFIG.networks.mainnet?.chainId;
+  if (mainnetChainId && merged.chainId === mainnetChainId && merged.rpcUrls.some(isDirectPrivateNodeUrl)) {
+    if (key === 'local') {
+      if (!warnedLocalChainId && typeof console !== 'undefined') {
+        warnedLocalChainId = true;
+        console.warn(
+          `[sqc-sdk] network "local" uses the mainnet chain id (${mainnetChainId}); signatures made ` +
+            'against it are valid on mainnet. Never use a mainnet seed with a local node.',
+        );
+      }
+    } else if (!opts?.allowLocalMainnetChainId) {
+      throw BridgeError.chainMismatch(
+        `${mainnetChainId} on a loopback/private RPC (network "${key}")`,
+        'a non-mainnet chain id for local nodes (or pass allowLocalMainnetChainId: true)',
+      );
+    }
+  }
+
   if (opts?.requireGateway && key !== 'local' && !opts?.allowPlaceholder) {
     if (!merged.gatewayUrl || isPlaceholderUrl(merged.gatewayUrl)) {
       throw BridgeError.rpc(
@@ -260,13 +323,30 @@ export function getDefaultNetwork(): NetworkConfig {
   return resolveNetwork(CONFIG.defaultNetwork);
 }
 
+/** True for `https:` URLs, or `http:` on loopback. Anything else (javascript:, data:, …) is refused. */
+export function isSafeExplorerUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url.replace(/\{hash\}/g, '0'));
+    if (u.protocol === 'https:') return true;
+    return u.protocol === 'http:' && isLoopbackOrLocalhostUrl(url);
+  } catch {
+    return false;
+  }
+}
+
+const TX_HASH_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+
 /** Build a tx explorer URL when the network defines txUrlTemplate or explorerUrl. */
 export function txExplorerUrl(net: NetworkConfig, hash: string): string | null {
-  if (!hash) return null;
-  if (net.txUrlTemplate) return net.txUrlTemplate.replace(/\{hash\}/g, hash);
-  if (net.explorerUrl) {
+  if (!hash || !TX_HASH_RE.test(hash)) return null;
+  const safeHash = encodeURIComponent(hash);
+  if (net.txUrlTemplate && isSafeExplorerUrl(net.txUrlTemplate)) {
+    return net.txUrlTemplate.replace(/\{hash\}/g, safeHash);
+  }
+  if (net.explorerUrl && isSafeExplorerUrl(net.explorerUrl)) {
     const base = net.explorerUrl.replace(/\/$/, '');
-    return `${base}/tx/${hash}`;
+    return `${base}/tx/${safeHash}`;
   }
   return null;
 }
