@@ -143,6 +143,12 @@ func (r *Relayer) RunOnce(ctx context.Context, dir Direction) ([]OutboundEvent, 
 		to = head - confirm
 	}
 	from := r.cursors[src.Name()]
+	if from > to {
+		// The cursor is already at/past the safe tip: nothing is final enough to
+		// scan yet. Return empty rather than handing the adapter an inverted
+		// [from, to] range (eth_getLogs rejects fromBlock > toBlock).
+		return nil, nil
+	}
 	events, err := src.Outbound(ctx, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("%s outbound [%d,%d]: %w", src.Name(), from, to, err)
