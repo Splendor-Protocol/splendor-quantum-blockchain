@@ -17,15 +17,19 @@ export function App() {
       autoReconnect
       {...(wasmSha256 ? { wasmSha256 } : { allowUnpinnedWasm: true })}
     >
-      <WrongNetworkBanner expectedNetworkId={network} />
-      <div className="shell">
-        <header>
-          <h1>Splendor → Quantum Bridge</h1>
-          <p className="sub">
+      <div className="app-shell">
+        <header className="app-header">
+          <h1 className="brand">
+            Splendor <span>→</span> Quantum Bridge
+          </h1>
+        </header>
+        <WrongNetworkBanner expectedNetworkId={network} />
+        <section className="hero">
+          <p>
             One-way migration: burn SPLD/SPLV on the legacy chain (2691) and the relayer credits the
             same amount on the Splendor Quantum Chain.
           </p>
-        </header>
+        </section>
         <MigrationPanel />
       </div>
     </SplendorConnectProvider>

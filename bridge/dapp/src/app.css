@@ -1,14 +1,11 @@
+/*
+ * Splendor Quantum Bridge dapp — styled to match the Splendor design system
+ * (deep ink + cool teal, Outfit / IBM Plex Mono). Canonical tokens live in
+ * sdk/connect-react/src/theme/tokens.css.
+ */
+
 :root {
   color-scheme: dark;
-  --bg: #0e1117;
-  --panel: #161b24;
-  --border: #2a3242;
-  --text: #e6e9ef;
-  --muted: #8b94a7;
-  --accent: #7c5cff;
-  --ok: #3ecf8e;
-  --warn: #f0b429;
-  --error: #ff6b6b;
 }
 
 * {
@@ -17,41 +14,60 @@
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  min-height: 100vh;
+  font-family: Outfit, system-ui, sans-serif;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(46, 196, 182, 0.18), transparent),
+    linear-gradient(180deg, #071015 0%, #0b1218 40%, #0a141c 100%);
+  color: #e8f2f4;
 }
 
-.shell {
-  max-width: 680px;
+.app-shell {
+  max-width: 720px;
   margin: 0 auto;
-  padding: 32px 20px 80px;
+  padding: 1.5rem 1.25rem 3rem;
 }
 
-header h1 {
-  margin: 0 0 8px;
-  font-size: 28px;
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
 }
 
-.sub {
-  color: var(--muted);
-  margin: 0 0 24px;
-  line-height: 1.5;
+.brand {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+.brand span {
+  color: #2ec4b6;
+}
+
+.hero p {
+  margin: 0 0 1.25rem;
+  color: #8aa3ad;
+  max-width: 36rem;
+  line-height: 1.55;
 }
 
 .panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: rgba(19, 32, 41, 0.85);
+  border: 1px solid rgba(120, 180, 190, 0.18);
   border-radius: 14px;
-  padding: 20px;
+  padding: 1.25rem;
+  margin-top: 1.25rem;
 }
 
 .panel h2 {
-  margin: 0 0 12px;
-  font-size: 16px;
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  color: #2ec4b6;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--accent);
+  letter-spacing: 0.04em;
 }
 
 .panel p {
@@ -61,46 +77,87 @@ header h1 {
 
 label {
   display: block;
-  margin: 12px 0 4px;
-  font-size: 13px;
-  color: var(--muted);
+  font-size: 0.75rem;
+  color: #8aa3ad;
+  margin: 0.85rem 0 0.35rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 input,
 select {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #0b0e14;
-  color: var(--text);
-  font-size: 15px;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(120, 180, 190, 0.18);
+  border-radius: 10px;
+  background: #0b1218;
+  color: #e8f2f4;
+  font-size: 0.9375rem;
+}
+
+input {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.8125rem;
+}
+
+select {
+  font-family: inherit;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #0b1218, 0 0 0 4px #2ec4b6;
 }
 
 button {
-  margin-top: 16px;
-  padding: 11px 18px;
-  border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: white;
-  font-size: 15px;
+  margin-top: 1rem;
+  font-family: inherit;
   font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  padding: 0.65rem 1.1rem;
+  background: #2ec4b6;
+  color: #04201c;
+  font-size: 0.9375rem;
   cursor: pointer;
+  transition: background 160ms ease, transform 120ms ease;
+}
+
+button:hover:not(:disabled) {
+  background: #3dd9ca;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
 .btn-row {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
 }
 
 .btn-row button {
-  margin-top: 12px;
+  margin-top: 0.75rem;
+}
+
+.btn.ghost {
+  background: transparent;
+  color: #2ec4b6;
+  border: 1px solid rgba(46, 196, 182, 0.45);
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: rgba(46, 196, 182, 0.12);
 }
 
 .row {
@@ -111,27 +168,45 @@ button:disabled {
 
 .divider {
   height: 1px;
-  background: var(--border);
-  margin: 20px 0;
+  background: rgba(120, 180, 190, 0.15);
+  margin: 1rem 0;
 }
 
 .meta {
-  font-size: 13px;
-  color: var(--muted);
+  font-size: 0.8125rem;
+  color: #8aa3ad;
 }
 
 .msg {
-  font-size: 14px;
+  font-size: 0.8125rem;
+  color: #8aa3ad;
+  word-break: break-word;
+}
+
+.mono {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.8125rem;
 }
 
 .ok {
-  color: var(--ok);
+  color: #2ec4b6;
 }
 
 .warn {
-  color: var(--warn);
+  color: #f0b429;
 }
 
 .error {
-  color: var(--error);
+  color: #f07178;
 }
+
+.msg.error {
+  color: #f07178;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
+}
+
