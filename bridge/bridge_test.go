@@ -69,8 +69,8 @@ func TestRelayerSettlesOnlyFinalEvents(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "1" {
 		t.Fatalf("settled %v, want only event 1 (height 9 is above the safe tip 8)", got)
 	}
-	if r.Cursor(src) != 8 {
-		t.Fatalf("cursor = %d, want 8", r.Cursor(src))
+	if r.Cursor(src) != 9 {
+		t.Fatalf("cursor = %d, want 9 (next height after safe tip 8)", r.Cursor(src))
 	}
 }
 
@@ -97,7 +97,7 @@ func TestRelayerSkipsAlreadySettled(t *testing.T) {
 
 func TestDecodeBurnedLog(t *testing.T) {
 	log := evmLog{
-		Topics:      []string{burnedTopic0, "0x" + strings.Repeat("0", 63) + "1", "0x" + strings.Repeat("0", 64), "0x" + strings.Repeat("0", 63) + "0"},
+		Topics:      []string{burnedTopic0, "0x" + strings.Repeat("0", 63) + "1", "0x" + strings.Repeat("0", 24) + strings.Repeat("1", 40), "0x" + strings.Repeat("0", 63) + "0"},
 		Data:        "0x" + strings.Repeat("0", 63) + "a" + strings.Repeat("0", 63) + "b",
 		BlockNumber: "0x10",
 		TxHash:      "0x" + strings.Repeat("1", 64),
@@ -115,7 +115,27 @@ func TestDecodeBurnedLog(t *testing.T) {
 	if !strings.HasPrefix(e.Recipient, "SQ:") {
 		t.Fatalf("recipient=%q, want SQ: prefix", e.Recipient)
 	}
+	if want := "0x" + strings.Repeat("1", 40); e.Sender != want {
+		t.Fatalf("sender=%s, want %s", e.Sender, want)
+	}
 	if e.Height != 0x10 {
 		t.Fatalf("height=%d, want 16", e.Height)
+	}
+}
+
+// TestBurnedTopic0 pins the canonical Keccak-256 topic for the Burned event.
+// The topic0 must be keccak256(sig) — a Write-then-Sum — not hash(sig)+state.
+func TestBurnedTopic0(t *testing.T) {
+	const want = "0x18fb7d6af55f185ad81a39bf0537706c6c62595e260cf5aaeb3f491a4240cd58"
+	if burnedTopic0 != want {
+		t.Fatalf("burnedTopic0 = %s, want %s", burnedTopic0, want)
+	}
+}
+
+// TestBalanceOfSelector pins the canonical ERC-20 balanceOf(address) selector.
+func TestBalanceOfSelector(t *testing.T) {
+	const want = "70a08231"
+	if got := keccak256("balanceOf(address)")[:8]; got != want {
+		t.Fatalf("balanceOf selector = %s, want %s", got, want)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -38,6 +39,7 @@ func NewQuantumChain(cfg QuantumConfig) *QuantumChain {
 	if cfg.ConfirmDepthValue == 0 {
 		cfg.ConfirmDepthValue = 1
 	}
+	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	return &QuantumChain{cfg: cfg, client: &http.Client{Timeout: 30 * time.Second}}
 }
 
@@ -54,8 +56,12 @@ func (c *QuantumChain) Assets() map[Asset]AssetInfo {
 	}
 }
 
-func (c *QuantumChain) getJSON(path string, out any) error {
-	resp, err := c.client.Get(c.cfg.BaseURL + path)
+func (c *QuantumChain) getJSON(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.BaseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", path, err)
 	}
@@ -78,7 +84,7 @@ func (c *QuantumChain) Height(ctx context.Context) (uint64, error) {
 	var s struct {
 		Height uint64 `json:"height"`
 	}
-	if err := c.getJSON("/status", &s); err != nil {
+	if err := c.getJSON(ctx, "/status", &s); err != nil {
 		return 0, err
 	}
 	return s.Height, nil
@@ -96,7 +102,7 @@ func (c *QuantumChain) Balance(ctx context.Context, owner string, asset Asset) (
 	var s struct {
 		Balance string `json:"balance"`
 	}
-	if err := c.getJSON("/balance/"+owner, &s); err != nil {
+	if err := c.getJSON(ctx, "/balance/"+owner, &s); err != nil {
 		return nil, err
 	}
 	v, ok := new(big.Int).SetString(s.Balance, 10)
@@ -131,7 +137,7 @@ func (c *QuantumChain) Settled(ctx context.Context, id string) (bool, error) {
 	var out struct {
 		Claimed bool `json:"claimed"`
 	}
-	if err := c.getJSON("/bridge/"+c.cfg.BridgeAddress+"/claim/"+id, &out); err != nil {
+	if err := c.getJSON(ctx, "/bridge/"+c.cfg.BridgeAddress+"/claim/"+id, &out); err != nil {
 		return false, err
 	}
 	return out.Claimed, nil

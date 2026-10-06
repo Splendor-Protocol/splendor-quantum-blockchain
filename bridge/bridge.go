@@ -114,8 +114,9 @@ func NewRelayer(left, right Chain) *Relayer {
 	return &Relayer{Left: left, Right: right, cursors: make(map[string]uint64)}
 }
 
-// Cursor returns the last-processed source height for src, so a caller can
-// persist and restore it across restarts.
+// Cursor returns the next source height the relayer will scan for src, so a
+// caller can persist and restore it across restarts. It is the inclusive lower
+// bound of the next Outbound window.
 func (r *Relayer) Cursor(src Chain) uint64 { return r.cursors[src.Name()] }
 
 // SetCursor seeds the source cursor (e.g. from a persisted state file). A zero
@@ -163,8 +164,14 @@ func (r *Relayer) RunOnce(ctx context.Context, dir Direction) ([]OutboundEvent, 
 		}
 		settled = append(settled, e)
 	}
-	if to > r.cursors[src.Name()] {
-		r.cursors[src.Name()] = to
+	// Outbound is [from, to] inclusive, so the next pass must start at to+1 to
+	// avoid re-scanning (and re-checking) the boundary height every pass.
+	next := to
+	if to != ^uint64(0) {
+		next = to + 1
+	}
+	if next > r.cursors[src.Name()] {
+		r.cursors[src.Name()] = next
 	}
 	return settled, nil
 }
