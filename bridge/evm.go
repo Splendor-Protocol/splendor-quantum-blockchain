@@ -30,7 +30,16 @@ type EVMConfig struct {
 
 const burnedEventSig = "Burned(uint256,address,uint8,uint256,bytes32)"
 
-var burnedTopic0 = "0x" + fmt.Sprintf("%x", sha3.NewLegacyKeccak256().Sum([]byte(burnedEventSig)))
+// keccak256 returns the 32-byte Keccak-256 digest (Ethereum's legacy Keccak,
+// not FIPS SHA3-256) of s as lowercase hex. hash.Hash.Sum appends the current
+// state to its argument rather than hashing it, so this must Write-then-Sum.
+func keccak256(s string) string {
+	h := sha3.NewLegacyKeccak256()
+	h.Write([]byte(s))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+var burnedTopic0 = "0x" + keccak256(burnedEventSig)
 
 // EVMChain adapts an EVM chain to the bridge.Chain interface.
 type EVMChain struct {
@@ -59,9 +68,14 @@ func (c *EVMChain) Assets() map[Asset]AssetInfo {
 	return out
 }
 
-func (c *EVMChain) call(method string, params []any, out any) error {
+func (c *EVMChain) call(ctx context.Context, method string, params []any, out any) error {
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-	resp, err := c.client.Post(c.cfg.RPCURL, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.RPCURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("%s: %w", method, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("%s: %w", method, err)
 	}
@@ -92,7 +106,7 @@ func hexQuantity(s string) (uint64, error) {
 
 func (c *EVMChain) Height(ctx context.Context) (uint64, error) {
 	var s string
-	if err := c.call("eth_blockNumber", []any{}, &s); err != nil {
+	if err := c.call(ctx, "eth_blockNumber", []any{}, &s); err != nil {
 		return 0, err
 	}
 	return hexQuantity(s)
@@ -104,10 +118,10 @@ func (c *EVMChain) Balance(ctx context.Context, owner string, asset Asset) (*big
 		if !ok {
 			return nil, fmt.Errorf("legacy: no token contract for %s", asset)
 		}
-		return c.tokenBalance(owner, tok)
+		return c.tokenBalance(ctx, owner, tok)
 	}
 	var s string
-	if err := c.call("eth_getBalance", []any{owner, "latest"}, &s); err != nil {
+	if err := c.call(ctx, "eth_getBalance", []any{owner, "latest"}, &s); err != nil {
 		return nil, err
 	}
 	v, ok := new(big.Int).SetString(strings.TrimPrefix(s, "0x"), 16)
@@ -117,14 +131,14 @@ func (c *EVMChain) Balance(ctx context.Context, owner string, asset Asset) (*big
 	return v, nil
 }
 
-func (c *EVMChain) tokenBalance(owner, contract string) (*big.Int, error) {
-	sel := fmt.Sprintf("%x", sha3.NewLegacyKeccak256().Sum([]byte("balanceOf(address)")))[:8]
+func (c *EVMChain) tokenBalance(ctx context.Context, owner, contract string) (*big.Int, error) {
+	sel := keccak256("balanceOf(address)")[:8]
 	addr := strings.TrimPrefix(strings.ToLower(owner), "0x")
 	if len(addr) != 40 {
 		return nil, fmt.Errorf("invalid EVM address %q", owner)
 	}
 	var s string
-	err := c.call("eth_call", []any{map[string]string{"to": contract, "data": "0x" + sel + fmt.Sprintf("%064s", addr)}, "latest"}, &s)
+	err := c.call(ctx, "eth_call", []any{map[string]string{"to": contract, "data": "0x" + sel + fmt.Sprintf("%064s", addr)}, "latest"}, &s)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +163,7 @@ func (c *EVMChain) Outbound(ctx context.Context, from, to uint64) ([]OutboundEve
 		return nil, nil
 	}
 	var logs []evmLog
-	err := c.call("eth_getLogs", []any{map[string]any{
+	err := c.call(ctx, "eth_getLogs", []any{map[string]any{
 		"address":   c.cfg.BurnContract,
 		"fromBlock": fmt.Sprintf("0x%x", from),
 		"toBlock":   fmt.Sprintf("0x%x", to),
@@ -177,6 +191,16 @@ func topicUint64(s string) (uint64, error) {
 	return v.Uint64(), nil
 }
 
+// topicAddress decodes an indexed address topic (a 32-byte word with the
+// 20-byte address in its low bytes) into a lowercase 0x-hex address.
+func topicAddress(s string) (string, error) {
+	s = strings.TrimPrefix(strings.ToLower(s), "0x")
+	if len(s) != 64 {
+		return "", fmt.Errorf("address topic has %d hex chars, want 64", len(s))
+	}
+	return "0x" + s[24:], nil
+}
+
 // decodeBurned decodes one Burned log into an OutboundEvent.
 func decodeBurned(l evmLog) (OutboundEvent, error) {
 	if l.Removed {
@@ -202,6 +226,10 @@ func decodeBurned(l evmLog) (OutboundEvent, error) {
 	default:
 		return OutboundEvent{}, fmt.Errorf("unknown asset word %d", assetWord)
 	}
+	sender, err := topicAddress(l.Topics[2])
+	if err != nil {
+		return OutboundEvent{}, fmt.Errorf("sender: %w", err)
+	}
 	data := strings.TrimPrefix(l.Data, "0x")
 	if len(data) != 128 {
 		return OutboundEvent{}, fmt.Errorf("want 64 data bytes, got %d hex chars", len(data))
@@ -223,6 +251,7 @@ func decodeBurned(l evmLog) (OutboundEvent, error) {
 		Chain:     "legacy",
 		Asset:     asset,
 		Amount:    amount,
+		Sender:    sender,
 		Recipient: "SQ:" + recipient,
 		Height:    block,
 		TxID:      strings.ToLower(l.TxHash),

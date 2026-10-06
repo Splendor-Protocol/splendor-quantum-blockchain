@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -25,6 +26,7 @@ func main() {
 		evmOwner      = flag.String("evm-owner", "", "legacy address to show balances for")
 		sqOwner       = flag.String("sq-owner", "", "quantum SQ: address to show balances for")
 		confirmLegacy = flag.Uint64("confirm-legacy", 120, "legacy confirmation depth")
+		stateFile     = flag.String("state", "sqbridge-state.json", "cursor state file (JSON) for save/load")
 	)
 	flag.Parse()
 
@@ -45,6 +47,12 @@ func main() {
 	relayer := bridge.NewRelayer(legacy, quantum)
 	ctx := context.Background()
 
+	// Resume cursors from a previous session so a relaunch continues where it
+	// left off instead of re-scanning from genesis. A missing file is fine.
+	if err := loadState(*stateFile, relayer); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "load state: %v\n", err)
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("\nsqbridge> ")
@@ -63,8 +71,22 @@ func main() {
 			printBalance(ctx, quantum, *sqOwner)
 		case "relay", "r":
 			relay(ctx, relayer)
+		case "cursors", "c":
+			fmt.Printf("legacy cursor: %d\nquantum cursor: %d\n", relayer.Cursor(legacy), relayer.Cursor(quantum))
+		case "save":
+			if err := saveState(*stateFile, relayer); err != nil {
+				fmt.Printf("save: %v\n", err)
+			} else {
+				fmt.Printf("saved cursors to %s\n", *stateFile)
+			}
+		case "load":
+			if err := loadState(*stateFile, relayer); err != nil {
+				fmt.Printf("load: %v\n", err)
+			} else {
+				fmt.Printf("loaded cursors from %s\n", *stateFile)
+			}
 		case "help", "h", "?":
-			fmt.Println("commands: status(s) assets(a) balances(b) relay(r) help(h) quit(q)")
+			fmt.Println("commands: status(s) assets(a) balances(b) cursors(c) relay(r) save load help(h) quit(q)")
 		case "quit", "q", "exit":
 			return
 		default:
@@ -125,4 +147,45 @@ func relay(ctx context.Context, r *bridge.Relayer) {
 			fmt.Printf("%s: settled id %s (asset %s, %s -> %s)\n", label, e.ID, e.Asset, e.Amount, e.Recipient)
 		}
 	}
+}
+
+// bridgeState is the persisted relayer state: one cursor per source chain name.
+type bridgeState struct {
+	Cursors map[string]uint64 `json:"cursors"`
+}
+
+// saveState writes both source cursors to path as JSON.
+func saveState(path string, r *bridge.Relayer) error {
+	state := bridgeState{Cursors: map[string]uint64{
+		r.Left.Name():  r.Cursor(r.Left),
+		r.Right.Name(): r.Cursor(r.Right),
+	}}
+	b, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
+}
+
+// loadState restores the source cursors recorded in path. A cursor that is not
+// present in the file is left unchanged (i.e. it stays at genesis).
+func loadState(path string, r *bridge.Relayer) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var state bridgeState
+	if err := json.Unmarshal(b, &state); err != nil {
+		return err
+	}
+	if state.Cursors == nil {
+		return nil
+	}
+	if h, ok := state.Cursors[r.Left.Name()]; ok {
+		r.SetCursor(r.Left, h)
+	}
+	if h, ok := state.Cursors[r.Right.Name()]; ok {
+		r.SetCursor(r.Right, h)
+	}
+	return nil
 }
