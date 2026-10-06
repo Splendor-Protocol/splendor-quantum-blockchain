@@ -46,7 +46,7 @@ export function MigrationPanel() {
     };
   }, [burnId, bridgeAddr, bridge]);
 
-  const canBurn = isConnected && !!address && legacy.address && !!amount && !busy;
+  const canBurn = isConnected && !!address && legacy.address && legacy.chainId === LEGACY_CHAIN_ID && !!amount && !busy;
 
   const onBurn = async () => {
     setError(null);
@@ -70,13 +70,13 @@ export function MigrationPanel() {
     <section className="panel">
       <h2>1. Connect</h2>
       <p>
-        Quantum wallet: {isConnected ? <b className="ok">{address}</b> : <b className="warn">not connected</b>}
+        Quantum wallet: {isConnected ? <b className="ok mono">{address}</b> : <b className="warn">not connected</b>}
       </p>
       <p>
         Legacy wallet:{' '}
         {legacy.address ? (
-          <b className="ok">
-            {legacy.address} (chain {legacy.chainId})
+          <b className="ok mono">
+            {legacy.address} <span className="meta">(chain {legacy.chainId})</span>
           </b>
         ) : (
           <b className="warn">not connected</b>
@@ -118,7 +118,7 @@ export function MigrationPanel() {
       )}
       {burnId && (
         <p className="msg">
-          Burn id <b>{burnId}</b> submitted.{' '}
+          Burn id <b className="mono">{burnId}</b> submitted.{' '}
           {claimed === null && 'Waiting for the relayer to credit the quantum chain…'}
           {claimed === true && <b className="ok">Claimed — funds are on the quantum chain.</b>}
           {claimed === false && 'Not claimed yet.'}
