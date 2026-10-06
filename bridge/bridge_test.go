@@ -15,6 +15,10 @@ type mockChain struct {
 	events  []OutboundEvent
 	settled map[string]bool
 	settles []OutboundEvent
+
+	// outboundRanges records every Outbound [from, to] range, so tests can
+	// assert the relayer never hands the adapter an inverted range.
+	outboundRanges [][2]uint64
 }
 
 func (m *mockChain) Name() string                           { return m.name }
@@ -26,6 +30,7 @@ func (m *mockChain) Balance(context.Context, string, Asset) (*big.Int, error) {
 	return big.NewInt(0), nil
 }
 func (m *mockChain) Outbound(_ context.Context, from, to uint64) ([]OutboundEvent, error) {
+	m.outboundRanges = append(m.outboundRanges, [2]uint64{from, to})
 	var out []OutboundEvent
 	for _, e := range m.events {
 		if e.Height >= from && e.Height <= to {
@@ -129,6 +134,30 @@ func TestBurnedTopic0(t *testing.T) {
 	const want = "0x18fb7d6af55f185ad81a39bf0537706c6c62595e260cf5aaeb3f491a4240cd58"
 	if burnedTopic0 != want {
 		t.Fatalf("burnedTopic0 = %s, want %s", burnedTopic0, want)
+	}
+}
+
+// TestRelayerIdlesWhenCursorPastSafeTip pins the idle-pass behaviour: once the
+// cursor is already at/past the safe tip, RunOnce must not call Outbound with
+// an inverted [from, to] range (eth_getLogs rejects fromBlock > toBlock).
+func TestRelayerIdlesWhenCursorPastSafeTip(t *testing.T) {
+	src := newMockChain("src", 10, 2) // safe tip = 8
+	dst := newMockChain("dst", 0, 0)
+	r := NewRelayer(src, dst)
+	r.SetCursor(src, 9) // already past the safe tip 8
+
+	got, err := r.RunOnce(context.Background(), LeftToRight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("settled %v, want none", got)
+	}
+	if len(src.outboundRanges) != 0 {
+		t.Fatalf("Outbound called with %v, want no call (inverted range must be skipped)", src.outboundRanges)
+	}
+	if r.Cursor(src) != 9 {
+		t.Fatalf("cursor = %d, want unchanged 9", r.Cursor(src))
 	}
 }
 

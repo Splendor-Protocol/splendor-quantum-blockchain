@@ -97,7 +97,7 @@ func (c *EVMChain) call(ctx context.Context, method string, params []any, out an
 }
 
 func hexQuantity(s string) (uint64, error) {
-	v, ok := new(big.Int).SetString(strings.TrimPrefix(s, "0x"), 16)
+	v, ok := new(big.Int).SetString(strings.TrimPrefix(strings.ToLower(s), "0x"), 16)
 	if !ok || !v.IsUint64() {
 		return 0, fmt.Errorf("invalid hex quantity %q", s)
 	}
