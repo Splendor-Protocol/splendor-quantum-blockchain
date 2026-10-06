@@ -1,6 +1,6 @@
 // Legacy EVM side: MetaMask + the QuantumMigrationBurn contract on chain 2691.
 // Kept in one module so the React UI is only about the user flow.
-import { BrowserProvider, Contract, parseUnits, formatUnits } from 'ethers';
+import { BrowserProvider, Contract, parseUnits, formatUnits, id } from 'ethers';
 
 const BURN_CONTRACT = (import.meta.env.VITE_BURN_CONTRACT ?? '').trim();
 const SPLV_TOKEN = (import.meta.env.VITE_SPLV_TOKEN ?? '').trim() || '0xd196c83A64cdf8d2763721D8c3D135A15B1Cb689';
@@ -17,6 +17,11 @@ const ERC20_ABI = [
   'function approve(address spender, uint256 value) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
 ];
+
+// topic0 of the Burned event (keccak256 of the canonical signature). Matching on
+// this — instead of "any log with >=2 topics" — keeps the SPLV path's earlier
+// ERC-20 Transfer(address,address,uint256) log from being read as the burn.
+const BURNED_TOPIC0 = id('Burned(uint256,address,uint8,uint256,bytes32)');
 
 export interface LegacyState {
   address: string | null;
@@ -98,8 +103,10 @@ export async function burnToken(wholeAmount: string, recipientBytes32: string): 
 // burnIdFromReceipt pulls the Burned id out of the tx receipt logs.
 function burnIdFromReceipt(receipt: { logs: Array<{ topics: string[] }> }): string {
   for (const log of receipt.logs) {
-    // Burned(uint256,address,uint8,uint256,bytes32): id is topics[1].
-    if (log.topics.length >= 2) {
+    // Burned(uint256 indexed id, address indexed sender, uint8 indexed asset, uint256 amount, bytes32 quantumRecipient):
+    // topic0 is the signature hash, id is topics[1]. Match topic0 so the SPLV
+    // path's earlier Transfer log (from transferFrom) can't be mistaken for it.
+    if (log.topics.length >= 2 && log.topics[0]?.toLowerCase() === BURNED_TOPIC0) {
       return BigInt(log.topics[1]).toString();
     }
   }
