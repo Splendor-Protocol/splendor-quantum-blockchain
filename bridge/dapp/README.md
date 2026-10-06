@@ -17,9 +17,35 @@ Copy `.env.example` to `.env` (or set the vars in your shell / CI):
 | `VITE_SQC_NETWORK` | — | `mainnet` | Quantum network for the wallet (`mainnet` / `testnet` / `local`) |
 | `VITE_SQC_WASM_SHA256` | prod | — | Pinned WASM hash for production builds |
 
+## Prerequisites
+
+- **Node.js ≥ 22.20** — `@splendor/sqc-sdk` requires it, and Vite 6 does not
+  support the 21.x line. On 21.x you'll see `EBADENGINE` warnings and the SDK
+  build will fail.
+- **Go 1.21+** — needed once to compile the ML-DSA-65 signer to WASM
+  (`sqc_signer.wasm` is gitignored and never shipped).
+- **Built SDK packages** — the SDK `dist/` is gitignored (not committed), and
+  both `@splendor/sqc-sdk` and `@splendor/connect-react` resolve their entry
+  points from `./dist/`. Build them once from the repo root, in this order:
+
+```bash
+cd sdk/sqc-sdk && npm install && npm run build:wasm:sh && npm run build
+cd ../connect-react && npm install && npm run build
+```
+
+`build:wasm:sh` runs `bash wasm/build.sh`; on Windows use `npm run build:wasm`
+instead.
+
+> `npm install` in this dapp triggers the `file:`-linked packages' `prepare`
+> scripts, which run `npm run build` before their own devDependencies exist —
+> that is the "Cannot find module '@splendor/sqc-sdk' / 'react' / 'vite'"
+> failure. Building the two SDK packages first leaves their `node_modules` and
+> `dist/` in place so the re-run during this dapp's install succeeds.
+
 ## Run
 
 ```bash
+cd bridge/dapp
 npm install
 npm run dev     # http://localhost:5175
 npm run build   # dist/

@@ -2,3 +2,7 @@ node_modules
 dist
 .env
 .env.local
+
+# copied in on every dev/build by @splendor/connect-react/vite (sqcWasmPlugin)
+public/sqc_signer.wasm
+public/wasm_exec.js
