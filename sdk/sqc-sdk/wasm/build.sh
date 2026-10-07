@@ -67,6 +67,11 @@ echo "Building sqc_signer.wasm..."
 $GO build -trimpath -ldflags=-buildid= -o "$OUT/sqc_signer.wasm" "$ROOT/main.go"
 
 GOROOT="$($GO env GOROOT)"
+# wasm_exec.js ships read-only from the Go toolchain, and a previous build
+# leaves a read-only copy in $OUT; cp then cannot overwrite it in place and
+# fails with EACCES. Remove the destination first — the file is a pure copy of
+# the toolchain's, never edited.
+rm -f "$OUT/wasm_exec.js"
 cp "$GOROOT/misc/wasm/wasm_exec.js" "$OUT/wasm_exec.js" 2>/dev/null \
   || cp "$GOROOT/lib/wasm/wasm_exec.js" "$OUT/wasm_exec.js"
 
