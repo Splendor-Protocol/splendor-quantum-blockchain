@@ -394,13 +394,22 @@ Without --transfer, only the new wallet is created; move funds yourself with
 
 func cmdExportKey() *cobra.Command {
 	var walletPath, outPath string
+	var unencrypted bool
 	cmd := &cobra.Command{
 		Use:   "export-key",
-		Short: "Export raw ML-DSA-65 private key bytes (for NFC card provisioning)",
-		Long: `Exports the 4032-byte ML-DSA-65 private key to a binary file.
-This file is used to provision a physical NFC smart card secure element.
-KEEP THIS FILE SECURE. Delete it after card provisioning.`,
+		Short: "Export raw ML-DSA-65 private key bytes, unencrypted (requires --unencrypted)",
+		Long: `Exports the 4032-byte ML-DSA-65 private key to a binary file, UNENCRYPTED.
+
+Anyone who reads that file owns the wallet, and a Splendor Quantum account key
+can never be rotated. The Splendor Card storage applet (Blob4KApplet) gives
+its contents no protection at all — anyone who taps the card can read them —
+so this file must never be written to that card. The mobile wallet backs up a
+passphrase-encrypted seed instead. Only use this for a secure element that
+protects the key itself, and delete the file as soon as it has been loaded.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !unencrypted {
+				return fmt.Errorf("export-key writes the private key unencrypted; pass --unencrypted to confirm")
+			}
 			_, priv, err := loadWalletInteractive(walletPath)
 			if err != nil {
 				return err
@@ -415,22 +424,27 @@ KEEP THIS FILE SECURE. Delete it after card provisioning.`,
 				return fmt.Errorf("failed to write key file: %w", err)
 			}
 
+			// Hash the key before wiping it: the printed SHA3 is what the
+			// operator compares against a copy, so it must be the hash of the
+			// exported bytes, not of the zeroed buffer.
+			hash := qcrypto.Hash32(privBytes)
+
 			// Zero out in-memory copy
 			for i := range privBytes {
 				privBytes[i] = 0
 			}
 
-			hash := qcrypto.Hash32(privBytes)
 			fmt.Printf("✅ ML-DSA-65 private key exported\n")
 			fmt.Printf("   File:  %s\n", outPath)
 			fmt.Printf("   Size:  %d bytes\n", qcrypto.PrivateKeySize)
 			fmt.Printf("   SHA3:  %x\n", hash[:])
-			fmt.Printf("\n⚠️  DELETE this file after provisioning your NFC card.\n")
+			fmt.Printf("\n⚠️  This file is the wallet. Load it into the secure element, then DELETE it.\n")
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&walletPath, "wallet", "w", "wallet.sqwallet", "Wallet file path")
 	cmd.Flags().StringVarP(&outPath, "out", "o", "mldsa_key.bin", "Output binary file path")
+	cmd.Flags().BoolVar(&unencrypted, "unencrypted", false, "Confirm that the private key is to be written unencrypted")
 	return cmd
 }
 
