@@ -23,3 +23,18 @@
 
 # macOS finder metadata — never belongs in the tree
 .DS_Store
+
+# Environment overrides and other secrets. .env.example templates are the
+# exception and stay tracked.
+.env
+.env.*
+!.env.example
+
+# Private key / certificate material (any format).
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
