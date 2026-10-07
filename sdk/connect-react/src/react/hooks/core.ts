@@ -16,6 +16,7 @@ import { bindModules } from '@splendor/sqc-sdk';
 import { listSelectableNetworks, txExplorerUrl } from '@splendor/sqc-sdk/networks';
 import type { Connector } from '../../connectors/types.js';
 import { connectErrorMessage } from '../../core/controller.js';
+import { sharedRead } from '../../core/readCache.js';
 import type { ConnectAccount, ConnectingStep, ConnectionStatus } from '../../core/types.js';
 import { toAccountDto, type AccountDto } from '../../core/dto.js';
 import {
@@ -129,7 +130,7 @@ export function useBalance(pollMs = 12_000): {
     setError(null);
   }, [address, networkId]);
 
-  const refresh = useCallback(async () => {
+  const load = useCallback(async (force: boolean) => {
     const gen = ++generation.current;
     if (!address || !isConnected || ctrl.isStub) {
       setBalance(null);
@@ -140,7 +141,11 @@ export function useBalance(pollMs = 12_000): {
     setLoading(true);
     setError(null);
     try {
-      const res = await ctrl.getProvider().getBalance(address);
+      const provider = ctrl.getProvider();
+      const res = await sharedRead(provider, `balance|${address}`, () => provider.getBalance(address), {
+        maxAgeMs: Math.min(pollMs / 2, 5_000),
+        force,
+      });
       if (gen !== generation.current) return;
       setBalance(res.balance);
       setBalanceSPLD(res.balance_spld);
@@ -152,14 +157,16 @@ export function useBalance(pollMs = 12_000): {
     }
     // networkId: the provider is swapped on network switch, so refetch then too.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address, isConnected, ctrl, networkId]);
+  }, [address, isConnected, ctrl, networkId, pollMs]);
+
+  const refresh = useCallback(() => load(true), [load]);
 
   useEffect(() => {
-    void refresh();
+    void load(false);
     if (!isConnected || !pollMs) return;
-    const id = setInterval(() => void refresh(), pollMs);
+    const id = setInterval(() => void load(false), pollMs);
     return () => clearInterval(id);
-  }, [refresh, isConnected, pollMs]);
+  }, [load, isConnected, pollMs]);
 
   return {
     balance,

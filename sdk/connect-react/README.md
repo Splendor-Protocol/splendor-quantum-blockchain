@@ -106,7 +106,7 @@ Every widget takes the same base props (`BaseWidgetProps`):
 | `AccountCard` | `showBalance`, `showNetwork`, `showExplorer`, `showDisconnect` | Toggle rows (all default `true`) |
 | | `onCopy(address)`, `onDisconnect()` | Called after copy / disconnect |
 | `SignInButton` | `domain`, `expectedDomain`, `statement`, `nonce`, `expiresInSec` | Challenge options (see [Sign-In](docs/GUIDE.md#8-sign-in-with-the-wallet)) |
-| | `onSuccess(auth)` | The signed `{ message, signature, publicKey, address }` |
+| | `onSuccess(auth)` | The signed `{ message, signatureB64, publicKeyB64, address, messageDomain }` |
 | | `label` | Button text (same as `labels.button`) |
 
 `onSent` (transfer, token), `onDeployed` (deploy) and `onSignedIn` (sign-in) still work but are deprecated;

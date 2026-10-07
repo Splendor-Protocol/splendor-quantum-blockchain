@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from 'react';
-import { fromUnits } from '@splendor/sqc-sdk/units';
+import { MODULE_ROUTER_ADDRESS, encodeModuleCallHex, fromUnits } from '@splendor/sqc-sdk';
 import { txExplorerUrl } from '@splendor/sqc-sdk/networks';
 import { useAccount, useDeployToken, useEstimateFee, useNetwork } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
@@ -125,7 +125,25 @@ export function DeployTokenWidget({
         ? formatLabel(l.supplyOverMax, { max })
         : null;
   const explorer = network && hash ? txExplorerUrl(network, hash) : null;
-  const feeRequest = useMemo(() => (showFee && reviewing && from ? { from } : null), [showFee, reviewing, from]);
+  const feeRequest = useMemo(() => {
+    if (!showFee || !reviewing || !from || !formOk || decimals == null) return null;
+    try {
+      const data = encodeModuleCallHex({
+        module: 'qrc20',
+        action: 'deploy',
+        params: {
+          name: name.trim(),
+          symbol: symbol.trim(),
+          decimals,
+          total_supply: fromUnits(supply.trim(), decimals),
+          ...(max ? { max_supply: fromUnits(max, decimals) } : {}),
+        },
+      });
+      return { from, to: MODULE_ROUTER_ADDRESS, data };
+    } catch {
+      return null;
+    }
+  }, [showFee, reviewing, from, formOk, decimals, name, symbol, supply, max]);
   const fee = useEstimateFee(feeRequest);
 
   const onDeploy = async () => {
@@ -133,7 +151,7 @@ export function DeployTokenWidget({
     reset();
     const sym = symbol.trim();
     toasts.pending(formatLabel(l.toastPending, { symbol: sym }));
-    let res: { address: string; hash?: string };
+    let res: { address: string; hash?: string; confirmed?: boolean };
     try {
       res = await deploy({
         name: name.trim(),
@@ -141,6 +159,7 @@ export function DeployTokenWidget({
         decimals,
         totalSupply: fromUnits(supply.trim(), decimals),
         ...(max ? { maxSupply: fromUnits(max, decimals) } : {}),
+        ...(showFee && feeRequest && fee.fee ? { fee: fee.fee } : {}),
         waitForConfirmation: true,
       });
     } catch (e) {
@@ -154,7 +173,7 @@ export function DeployTokenWidget({
     toasts.success(formatLabel(l.toastSuccess, { symbol: sym }), {
       hash: res.hash,
       explorerUrl,
-      confirmed: true,
+      confirmed: res.confirmed === true,
     });
     onSuccess?.({ address: res.address, hash: res.hash, explorerUrl });
     onDeployed?.({ address: res.address, hash: res.hash });
@@ -204,14 +223,14 @@ export function DeployTokenWidget({
             ...(max ? [{ label: l.maxSupplyLabel, value: max }] : []),
           ]}
           pending={status === 'pending'}
-          confirmDisabled={walletMismatch}
+          confirmDisabled={walletMismatch || (showFee && feeRequest != null && (fee.loading || fee.reverted))}
           confirmLabel={l.confirmDeploy}
           ariaLabel={l.reviewDeployAria}
           onBack={() => setReviewing(false)}
           onConfirm={() => void onDeploy()}
           labels={l}
         >
-          {showFee ? <FeeRow estimate={{ ...fee, reverted: false }} labels={l} /> : null}
+          {showFee && feeRequest ? <FeeRow estimate={fee} labels={l} /> : null}
         </ReviewPanel>
       ) : (
         <>

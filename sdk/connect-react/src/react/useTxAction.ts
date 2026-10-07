@@ -21,7 +21,7 @@ export function useSingleFlight(): <T>(fn: () => Promise<T>) => Promise<T> {
   const busy = useRef(false);
   return useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
     if (busy.current) {
-      throw BridgeError.busy('A transaction is already being signed — wait for it to finish');
+      throw BridgeError.txBusy();
     }
     busy.current = true;
     try {

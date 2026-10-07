@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getRecentRecipients, rememberRecipient, reviewTransfer, type TransferReview } from '../utils.js';
 import { COMMON_LABELS, useWidgetLabels, type CommonWidgetLabels } from '../labels.js';
 import { addressFieldError, amountFieldError } from './inputs.js';
@@ -63,16 +63,32 @@ export function useTransferForm({
   const [amount, setAmountState] = useState(defaultAmount);
   const [reviewingState, setReviewing] = useState(false);
   const [recents, setRecents] = useState<string[]>(() => getRecentRecipients());
+  const toEdited = useRef(false);
+  const amountEdited = useRef(false);
 
   useEffect(() => {
     setReviewing(false);
   }, [self, contextKey]);
 
+  // Follow new defaults (e.g. a different invoice) until the user types in that field.
+  useEffect(() => {
+    if (toEdited.current) return;
+    setToState(defaultTo);
+    setReviewing(false);
+  }, [defaultTo]);
+  useEffect(() => {
+    if (amountEdited.current) return;
+    setAmountState(defaultAmount);
+    setReviewing(false);
+  }, [defaultAmount]);
+
   const setTo = useCallback((v: string) => {
+    toEdited.current = true;
     setToState(v);
     setReviewing(false);
   }, []);
   const setAmount = useCallback((v: string) => {
+    amountEdited.current = true;
     setAmountState(v);
     setReviewing(false);
   }, []);
@@ -102,6 +118,8 @@ export function useTransferForm({
     recents,
     remember: (address: string) => setRecents(rememberRecipient(address)),
     reset: () => {
+      toEdited.current = false;
+      amountEdited.current = false;
       setToState(defaultTo);
       setAmountState(defaultAmount);
       setReviewing(false);

@@ -78,7 +78,6 @@ const SDK_COVERAGE: Record<string, { writes: string[]; reads: string[]; allowlis
   qrc721: {
     writes: ['deploy', 'mint', 'transfer', 'burn'],
     reads: ['owner_of', 'balance_of', 'token_info'],
-    // Routed on-chain; no dedicated SDK Program client yet (sendModuleCall).
   },
 };
 

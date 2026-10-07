@@ -75,7 +75,7 @@ function normalizeTxResult(raw: unknown): SendTxResult {
   };
 }
 
-type WaitOpts = { waitForConfirmation?: boolean; confirmTimeoutMs?: number };
+type WaitOpts = { waitForConfirmation?: boolean; confirmTimeoutMs?: number; allowNonceConfirmation?: boolean };
 
 /**
  * The extension base64-encodes the module-call JSON with `btoa`, which throws on any character
@@ -453,6 +453,7 @@ export class ExtensionSigner implements Signer {
       nonceBefore,
       hash: res.hash,
       timeoutMs: opts.confirmTimeoutMs,
+      requireReceipt: !!res.hash && opts.allowNonceConfirmation !== true,
     });
     return { ...res, confirmation: { confirmed: true, nonce: confirmation.nonce } };
   }
@@ -500,6 +501,7 @@ export class ExtensionSigner implements Signer {
     hash?: string;
     timeoutMs?: number;
     pollMs?: number;
+    requireReceipt?: boolean;
   }) {
     return this.connection.waitForConfirmation({
       ...opts,

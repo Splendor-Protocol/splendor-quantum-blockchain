@@ -13,6 +13,7 @@ import { TxToastHost } from '../ui/TxToastHost.js';
 import { BrandContext, ControllerContext, NetworkSwitchContext, type ConnectBrandLabels } from '../react/context.js';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState, ConnectionStatus } from '../core/types.js';
+import { clickWhenEnabled } from './test-helpers.js';
 
 const ADDR = 'SQ:' + 'ab'.repeat(32);
 const OTHER = 'SQ:' + 'cd'.repeat(32);
@@ -238,7 +239,7 @@ describe('TransferWidget contract', () => {
     const root = within(view.container);
     await waitFor(() => expect(root.getByText(/Balance: 1\.5 SPLD/)).toBeTruthy());
     click(root, /^Review$/i);
-    click(root, /Confirm send/i);
+    await clickWhenEnabled(root, /Confirm send/i);
     return { ...ctx, view, root };
   }
 
@@ -316,7 +317,7 @@ describe('TokenPanel contract', () => {
     await waitFor(() => expect(root.getByText(/Balance: 5(\.0)? LAB/)).toBeTruthy());
     fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: OTHER } });
     click(root, /^Review$/i);
-    click(root, /Confirm send/i);
+    await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
     expect(onSuccess).toHaveBeenCalledWith({ token: TOKEN, to: OTHER, amount: '1', hash: 'tok-hash' });
     expect(onSent).toHaveBeenCalledWith(onSuccess.mock.calls[0]![0]);
@@ -341,7 +342,7 @@ describe('DeployTokenWidget contract', () => {
       wrapper: Wrap,
     });
     click(within(view.container), /^Review deploy$/i);
-    click(within(view.container), /^Confirm deploy$/i);
+    await clickWhenEnabled(within(view.container), /^Confirm deploy$/i);
     await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
     expect(onSuccess.mock.calls[0]![0]).toMatchObject({ address: DEPLOYED, hash: 'dep-hash' });
     expect(onDeployed).toHaveBeenCalledWith({ address: DEPLOYED, hash: 'dep-hash' });

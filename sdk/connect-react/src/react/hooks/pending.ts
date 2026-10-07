@@ -43,14 +43,14 @@ export function usePendingTransactions(opts: { pollMs?: number; toast?: boolean 
     if (!conn || !network || !hashesKey || !pollMs) return;
     let cancelled = false;
     const check = async () => {
-      for (const p of loadPendingTxs().filter((x) => x.network === network.id)) {
+      const list = loadPendingTxs().filter((x) => x.network === network.id);
+      const receipts = await Promise.allSettled(list.map((p) => conn.getTxReceipt(p.hash)));
+      for (let i = 0; i < list.length; i++) {
         if (cancelled) return;
-        let receipt: unknown;
-        try {
-          receipt = await conn.getTxReceipt(p.hash);
-        } catch {
-          continue;
-        }
+        const p = list[i]!;
+        const settled = receipts[i]!;
+        if (settled.status !== 'fulfilled') continue;
+        const receipt: unknown = settled.value;
         const outcome = receiptOutcome(receipt);
         if (!outcome || cancelled) continue;
         removePendingTx(p.hash);

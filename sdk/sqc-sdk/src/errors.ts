@@ -123,13 +123,16 @@ export class BridgeError extends Error {
     return new BridgeError('USER_REJECTED', msg, undefined, 'Request was rejected');
   }
 
-  static busy(msg = 'Another connect is already in progress'): BridgeError {
-    return new BridgeError(
-      'BUSY',
-      msg,
-      undefined,
-      'Connection already in progress — wait a moment',
-    );
+  static busy(
+    msg = 'Another connect is already in progress',
+    userHint = 'Connection already in progress — wait a moment',
+  ): BridgeError {
+    return new BridgeError('BUSY', msg, undefined, userHint);
+  }
+
+  /** A second send while one is still being signed or submitted. */
+  static txBusy(msg = 'A transaction is already being signed — wait for it to finish'): BridgeError {
+    return BridgeError.busy(msg, 'A transaction is already in progress — wait for it to finish');
   }
 
   static noProvider(

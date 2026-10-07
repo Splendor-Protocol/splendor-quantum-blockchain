@@ -102,6 +102,7 @@
     "wasm/dist",
     "config",
     "README.md",
+    "CHANGELOG.md",
     "docs"
   ],
   "scripts": {

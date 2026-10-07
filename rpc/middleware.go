@@ -70,7 +70,7 @@ func (p *CORSPolicy) Middleware(next http.Handler) http.Handler {
 		if allow := p.resolve(origin); allow != "" {
 			w.Header().Set("Access-Control-Allow-Origin", allow)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Payment, X-Node-Auth")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Payment, X-Node-Auth, X-SQC-Bridge, X-Request-Id")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

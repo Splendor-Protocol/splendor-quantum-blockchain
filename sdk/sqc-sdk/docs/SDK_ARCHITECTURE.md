@@ -34,7 +34,7 @@ Typed `modules.*` / `bindModules` / Session clients ship for: **qrc20**, **qrc11
 
 Leftover **DEX** / **Exchange** clients exist only under `@splendor/sqc-sdk/defi` (optional `registerUnsupportedApplicationAdapters()` + registry). The node does **not** route `module: "dex"|"exchange"`.
 
-On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall` / `registerModule` — do not stub fake Programs): **lending**, **oracle**, **multisig**, **governance**, **qrc721**, **qrc4626**. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient` (Connection/Transport-backed).
+On-chain modules **without** dedicated SDK Program clients (use `sendModuleCall` / `registerModule` — do not stub fake Programs): **lending**, **oracle**, **multisig**, **governance**, **qrc4626**. QRC-721 has a thin `QRC721` client (`@splendor/sqc-sdk/tokens`) covering the routed actions only: `deploy`, `mint`, `transfer`, `burn`, `owner_of`, `balance_of`, `token_info`. Verify/Validators helpers exist as `VerifyClient` / `ValidatorsClient` (Connection/Transport-backed).
 
 ## Package layout
 
@@ -102,7 +102,8 @@ registerModule(
 | DEX | Leftover `/defi` only | Not node-routed — do not use in production dapps |
 | Exchange | Leftover `/defi` only | Not node-routed — do not use in production dapps |
 | QSol compile-in-SDK | Not built | use monorepo `sqc-solc` offline |
-| QRC-721 / lending / oracle | Roadmap | no stubs until on-chain ABI stable |
+| QRC-721 | Thin client | routed actions only; no widget |
+| lending / oracle | Roadmap | no stubs until on-chain ABI stable |
 | WalletConnect / mobile | Deferred | ConnectKit is browser-injected first |
 | ABI/codegen for QSol | Roadmap | viem-like typed contracts later |
 

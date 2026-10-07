@@ -77,8 +77,16 @@ export function SignInButton({
     reset();
     setCheckError(null);
     let signing = false;
+    let resolvedNonce: string | undefined;
     try {
-      const resolvedNonce = typeof nonce === 'function' ? await nonce() : nonce;
+      resolvedNonce = typeof nonce === 'function' ? await nonce() : nonce;
+    } catch (e) {
+      // The app's nonce endpoint may fail with a browser TypeError or a server body; show neither.
+      setCheckError(l.nonceFailed);
+      onError?.(toError(e));
+      return;
+    }
+    try {
       const issuedAt = Math.floor(Date.now() / 1000);
       const params: AuthMessageParams = {
         domain: rpDomain,
@@ -107,8 +115,8 @@ export function SignInButton({
       onSuccess?.(signed);
       onSignedIn?.(signed);
     } catch (e) {
-      // Wallet errors are already surfaced by useSignIn's errorMessage. A failing nonce
-      // fetch may carry a server body, so only our own validation text is shown verbatim.
+      // Wallet errors are already surfaced by useSignIn's errorMessage; TypeErrors here are
+      // our own auth-message validation, so their text is safe to show.
       if (!signing) setCheckError(e instanceof TypeError ? e.message : connectErrorMessage(e));
       onError?.(toError(e));
     }

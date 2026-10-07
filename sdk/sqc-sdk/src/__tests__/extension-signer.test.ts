@@ -162,6 +162,20 @@ describe('ExtensionSigner', () => {
     wallet.disconnect();
   });
 
+  it('sendTransfer confirmation requires a receipt unless allowNonceConfirmation is set', async () => {
+    const provider = mockProvider();
+    const conn = connection();
+    vi.spyOn(conn, 'getNonce').mockResolvedValue({ address: addr, nonce: 1 } as never);
+    const wait = vi.spyOn(conn, 'waitForConfirmation').mockResolvedValue({ confirmed: true as const, nonce: 2 });
+    const wallet = new ExtensionSigner({ connection: conn, provider, networkId: 'local' });
+    await wallet.connect();
+    await wallet.sendTransfer({ to: addr, amountSPLD: '1', waitForConfirmation: true });
+    expect(wait.mock.calls.at(-1)![0]).toMatchObject({ nonceBefore: 1, requireReceipt: true });
+    await wallet.sendTransfer({ to: addr, amountSPLD: '1', waitForConfirmation: true, allowNonceConfirmation: true });
+    expect(wait.mock.calls.at(-1)![0]).toMatchObject({ requireReceipt: false });
+    wallet.disconnect();
+  });
+
   it('signMessage sends array params [message, encoding]', async () => {
     const provider = mockProvider();
     const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });

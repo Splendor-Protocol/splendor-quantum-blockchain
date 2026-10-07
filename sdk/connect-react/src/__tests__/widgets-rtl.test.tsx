@@ -14,6 +14,7 @@ import { TransferWidget } from '../widgets/TransferWidget.js';
 import { ControllerContext, NetworkSwitchContext } from '../react/context.js';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState } from '../core/types.js';
+import { clickWhenEnabled } from './test-helpers.js';
 
 vi.mock('@splendor/sqc-sdk/tokens', () => ({
   QRC20: class {
@@ -298,11 +299,11 @@ describe('TransferWidget send safety', () => {
     expect(reviewBtn(root).disabled).toBe(true);
   });
 
-  it('Max fills the displayed balance', async () => {
+  it('Max fills the balance minus the minimum network fee', async () => {
     const { root } = await renderTransfer();
     fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: OTHER } });
     fireEvent.click(root.getByRole('button', { name: /^Max$/i }));
-    expect((root.getByLabelText(/Amount \(SPLD\)/i) as HTMLInputElement).value).toBe('1.5');
+    expect((root.getByLabelText(/Amount \(SPLD\)/i) as HTMLInputElement).value).toBe('1.499999999999999');
     expect(reviewBtn(root).disabled).toBe(false);
   });
 
@@ -316,7 +317,7 @@ describe('TransferWidget send safety', () => {
     expect(root.getByText('Local')).toBeTruthy();
     expect(sendTransfer).not.toHaveBeenCalled();
 
-    fireEvent.click(root.getByRole('button', { name: /Confirm send/i }));
+    await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(root.getByText(/Confirmed: h1/)).toBeTruthy());
     expect(sendTransfer).toHaveBeenCalledWith({
       to: OTHER,
@@ -338,7 +339,7 @@ describe('TransferWidget send safety', () => {
     const { root } = await renderTransfer();
     fill(root, OTHER, '0.25');
     fireEvent.click(reviewBtn(root));
-    fireEvent.click(root.getByRole('button', { name: /Confirm send/i }));
+    await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(root.getByText(/Confirmed: h1/)).toBeTruthy());
     expect(JSON.parse(localStorage.getItem(RECENT_RECIPIENTS_KEY) ?? '[]')).toEqual([OTHER]);
 
@@ -355,7 +356,7 @@ describe('TransferWidget send safety', () => {
     const { root } = await renderTransfer({ sendTransfer });
     fill(root, OTHER, '0.25');
     fireEvent.click(reviewBtn(root));
-    fireEvent.click(root.getByRole('button', { name: /Confirm send/i }));
+    await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(sendTransfer).toHaveBeenCalled());
     await waitFor(() =>
       expect(document.querySelector('.sqc-widget__msg--error')).toBeTruthy(),

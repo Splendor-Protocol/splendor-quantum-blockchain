@@ -92,7 +92,7 @@ Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
 1. Preferred confirmation: poll `GET /tx/{hash}/receipt` until present (tx index on nodes with explorer routes — mounted by `cmd/node` via `RegisterExplorerRoutes`).
 2. Fallback: **nonce advancement** — wait until account nonce `>` the nonce used when signing (can race with other txs from the same account).
 3. `/ws` is mounted as an SSE/NDJSON stream (not a browser WebSocket). Clients MAY subscribe via `Connection.subscribe()` / `subscribe()` in `@splendor/sqc-sdk`.
-4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, `@splendor/sqc-sdk` **prefers the receipt path**, then falls back to nonce.
+4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, `@splendor/sqc-sdk` send paths (`sendTransfer`, `callContract`, `deployContract`, `sendModuleCall`, `sendTransaction`) **require a successful receipt** and do not accept a nonce advance. Pass `allowNonceConfirmation: true` to opt back into the nonce fallback on nodes without a receipt index.
 
 Config field `PROTOCOL.confirmation === 'nonce'` names the **fallback** mechanism for older/minimal RPC mounts. Runtime clients SHOULD treat confirmation as **receipt-first, nonce-fallback**. Caveat string: `PROTOCOL.confirmationCaveat`.
 
@@ -135,7 +135,9 @@ WalletConnect v2 and Ethereum EIP-1193/`eth_*` for wagmi remain **out of scope**
 
 Clients MUST handle these `WalletError` / `BridgeError` codes (string `code` field):
 
-`NOT_CONNECTED`, `USER_REJECTED`, `NO_PROVIDER`, `RPC`, `RPC_UNAVAILABLE`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `TX_FAILED`, `CHAIN_MISMATCH`, `UNKNOWN`.
+`NOT_CONNECTED`, `USER_REJECTED`, `NO_PROVIDER`, `BUSY`, `RPC`, `RPC_UNAVAILABLE`, `NETWORK`, `WASM`, `INVALID_ADDRESS`, `INVALID_AMOUNT`, `INVALID_FEE`, `INVALID_PARAMS`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `TX_FAILED`, `CHAIN_MISMATCH`, `UNKNOWN`.
+
+Meaning, user hint, and retry guidance for each code: [ERRORS.md](./ERRORS.md).
 
 `RPC_UNAVAILABLE` MUST be used when all configured RPC endpoints fail (failover exhausted) or when confirmation polling fails closed on repeated transport errors. Covered by `security-rpc.test.ts`.
 
@@ -149,7 +151,7 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 2. On timeout / HTTP 5xx, clients SHOULD retry (per-URL) then fail over to the next URL.
 3. After a successful submit, clients SHOULD sticky-route subsequent submits to the accepting URL.
 4. After **3 consecutive sticky-URL failures** (failover away from sticky), clients SHOULD clear sticky and resume from the first configured URL (`security-rpc.test.ts`).
-5. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `1.4.0`).
+5. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `2.0.0`, the `@splendor/sqc-sdk` package version).
 
 ---
 
@@ -223,3 +225,4 @@ Exports (deprecated): `DERIVATION_DOMAIN_MESSAGE`, `seedFromEvmSignature`, relat
 |---------|--------|
 | SQDP-1 | Initial normative protocol aligned with `@splendor/sqc-sdk` 2.x / legacy `@splendor/pq-bridge` |
 | SQDP-1 (hardening) | Normative unlock = extension + native seed; ECDSA derive → Appendix A; `RPC_UNAVAILABLE` |
+| SQDP-1 (production) | `BUSY` / `INVALID_PARAMS` listed; receipt-only confirmation by default on SDK send paths; error catalog |

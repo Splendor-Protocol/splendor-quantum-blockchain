@@ -81,6 +81,20 @@ describe('useTransferForm', () => {
     expect(result.current.amount).toBe('0.1');
   });
 
+  it('follows defaultTo and defaultAmount prop changes until the user edits the field', () => {
+    const THIRD = 'SQ:' + 'ef'.repeat(32);
+    const { result, rerender } = renderHook((p: UseTransferFormOptions) => useTransferForm({ balance: '2', self: SELF, ...p }), {
+      initialProps: { defaultTo: '', defaultAmount: '' },
+    });
+    rerender({ defaultTo: OTHER, defaultAmount: '0.5' });
+    expect(result.current.to).toBe(OTHER);
+    expect(result.current.amount).toBe('0.5');
+    act(() => result.current.setAmount('1'));
+    rerender({ defaultTo: THIRD, defaultAmount: '0.7' });
+    expect(result.current.to).toBe(THIRD);
+    expect(result.current.amount).toBe('1');
+  });
+
   it('error text follows provider labels and the labels option', () => {
     const wrapper = ({ children }: { children: ReactNode }) =>
       React.createElement(

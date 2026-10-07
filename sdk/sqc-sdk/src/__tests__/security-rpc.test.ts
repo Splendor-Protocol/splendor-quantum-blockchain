@@ -311,4 +311,55 @@ describe('waitForConfirmation resilience', () => {
     expect(out.nonce).toBe(2);
     expect(receiptHits).toBeGreaterThanOrEqual(5);
   });
+
+  it('requireReceipt does not treat a nonce advance as confirmation', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/receipt')) return jsonResponse({ error: 'not found' }, 404);
+      if (url.includes('/nonce/')) return jsonResponse({ address: from, nonce: 2 });
+      return jsonResponse({ error: 'unexpected' }, 500);
+    }) as typeof fetch;
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0, timeoutMs: 200 });
+    const out = await rpc
+      .waitForConfirmation({ from, nonceBefore: 0, hash: 'cafebabe', timeoutMs: 300, pollMs: 5, requireReceipt: true })
+      .catch((e: unknown) => e);
+    expect((out as { confirmed?: unknown }).confirmed).not.toBe(true);
+  });
+});
+
+describe('submitTransaction fee errors and request ids', () => {
+  it('maps a node "fee too low" rejection to INVALID_FEE with a user hint', async () => {
+    globalThis.fetch = vi.fn(async () => jsonResponse({ error: 'fee too low: min 1000' }, 400)) as typeof fetch;
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 });
+    const err = await rpc.submitTransaction({ type: 'transfer', chain_id: CHAIN_ID }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BridgeError);
+    expect((err as BridgeError).code).toBe('INVALID_FEE');
+    expect((err as BridgeError).userHint).toMatch(/fresh estimate/);
+  });
+
+  it('sends X-Request-Id only when enabled, and drops unsafe custom ids', async () => {
+    const headers: Record<string, string>[] = [];
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      headers.push((init?.headers ?? {}) as Record<string, string>);
+      return jsonResponse({ chain_id: CHAIN_ID });
+    }) as typeof fetch;
+    await new SqRpc({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0 }).assertChainId();
+    await new SqRpc({ rpcUrl: 'https://rpc.test', chainId: CHAIN_ID, retries: 0, requestId: true }).assertChainId();
+    await new SqRpc({
+      rpcUrl: 'https://rpc.test',
+      chainId: CHAIN_ID,
+      retries: 0,
+      requestId: () => 'trace-42',
+    }).assertChainId();
+    await new SqRpc({
+      rpcUrl: 'https://rpc.test',
+      chainId: CHAIN_ID,
+      retries: 0,
+      requestId: () => 'bad id\r\nX-Evil: 1',
+    }).assertChainId();
+    expect(headers[0]!['X-Request-Id']).toBeUndefined();
+    expect(headers[1]!['X-Request-Id']).toMatch(/^[\w.:-]{8,128}$/);
+    expect(headers[2]!['X-Request-Id']).toBe('trace-42');
+    expect(headers[3]!['X-Request-Id']).toBeUndefined();
+  });
 });

@@ -52,7 +52,9 @@
     "dist",
     "scripts",
     "create-template",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "docs"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node ./scripts/copy-css.mjs",

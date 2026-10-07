@@ -1,8 +1,9 @@
 /**
  * Real-time node event subscriptions via /ws (SSE).
  *
- * Browser EventSource reconnects and sends Last-Event-ID on its own.
- * The Node fetch-stream path implements the same loop: disconnect
+ * Browser EventSource reconnects and sends Last-Event-ID on its own; when it gives up
+ * (CLOSED), the stream is rebuilt with backoff. The Node fetch-stream path implements
+ * the same loop: disconnect
  * reporting, exponential backoff, and Last-Event-ID backfill.
  */
 import type { Subscription, WsEvent, WsEventType } from './explorer-types.js';
@@ -10,9 +11,12 @@ import { BridgeError } from '../errors.js';
 
 export type SubscribeOptions = {
   onError?: (err: unknown) => void;
-  /** Node fetch-stream only. Default true. */
+  /**
+   * Default true. Browser: rebuild the EventSource after it gives up (CLOSED);
+   * transient drops are retried by EventSource itself.
+   */
   reconnect?: boolean;
-  /** Node fetch-stream only. Default Infinity. */
+  /** Default Infinity. Browser: counts EventSource rebuilds, reset on open. */
   maxRetries?: number;
   /** Initial reconnect delay in ms. Default 250. */
   backoffMs?: number;
@@ -47,6 +51,12 @@ function parseSseLines(
     }
   }
   return rest;
+}
+
+/** Exponential backoff capped at 8s, with up to 25% jitter so clients do not reconnect in lockstep. */
+export function backoffDelay(baseMs: number, attempt: number): number {
+  const capped = Math.min(baseMs * 2 ** Math.min(Math.max(attempt - 1, 0), 5), 8_000);
+  return Math.round(capped * (1 + Math.random() * 0.25));
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -125,7 +135,7 @@ async function nodeStreamSubscribe(
     if (!reconnect) return;
     attempt += 1;
     if (attempt > maxRetries) return;
-    const delay = Math.min(baseBackoff * 2 ** Math.min(attempt - 1, 5), 8_000);
+    const delay = backoffDelay(baseBackoff, attempt);
     try {
       await sleep(delay, options.signal);
     } catch {
@@ -156,6 +166,8 @@ export function subscribe(
   let urlIndex = 0;
   let closed = false;
   let activeClose: (() => void) | null = null;
+  let browserAttempt = 0;
+  let restartTimer: ReturnType<typeof setTimeout> | null = null;
 
   const startAt = (index: number) => {
     if (closed) return;
@@ -165,6 +177,9 @@ export function subscribe(
 
     if (typeof EventSource !== 'undefined') {
       const source = new EventSource(url);
+      source.onopen = () => {
+        browserAttempt = 0;
+      };
       source.onmessage = (event) => {
         try {
           onEvent(JSON.parse(event.data) as WsEvent);
@@ -174,13 +189,23 @@ export function subscribe(
       };
       source.onerror = (err) => {
         opts.onError?.(err);
+        if (closed) return;
+        const multi = urls.length > 1;
+        // With one URL, EventSource retries transient drops itself (and resends Last-Event-ID).
+        if (!multi && source.readyState !== EventSource.CLOSED) return;
         source.close();
-        if (!closed && urls.length > 1) {
-          // Rotate to next RPC on stream error.
-          setTimeout(() => startAt(urlIndex + 1), opts.backoffMs ?? 250);
-        }
+        if (opts.reconnect === false) return;
+        browserAttempt += 1;
+        if (browserAttempt > (opts.maxRetries ?? Number.POSITIVE_INFINITY)) return;
+        restartTimer = setTimeout(
+          () => startAt(multi ? urlIndex + 1 : urlIndex),
+          backoffDelay(opts.backoffMs ?? 250, browserAttempt),
+        );
       };
-      activeClose = () => source.close();
+      activeClose = () => {
+        if (restartTimer) clearTimeout(restartTimer);
+        source.close();
+      };
       return;
     }
 

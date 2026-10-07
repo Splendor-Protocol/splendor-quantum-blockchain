@@ -10,6 +10,7 @@ import { DeployTokenWidget } from '../widgets/DeployTokenWidget.js';
 import { ControllerContext, NetworkSwitchContext } from '../react/context.js';
 import type { ConnectController } from '../core/controller.js';
 import type { ConnectControllerState } from '../core/types.js';
+import { clickWhenEnabled } from './test-helpers.js';
 
 const ADDR = 'SQ:' + 'ab'.repeat(32);
 const OTHER = 'SQ:' + 'cd'.repeat(32);
@@ -136,7 +137,7 @@ describe('TransferWidget callbacks', () => {
     const root = within(view.container);
     await waitFor(() => expect(root.getByText(/Balance: 1\.5 SPLD/)).toBeTruthy());
     click(root, /^Review$/i);
-    click(root, /Confirm send/i);
+    await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
     expect(onSent.mock.calls[0]![0]).toMatchObject({ to: OTHER, amount: '0.25', hash: 'h1' });
   });
@@ -156,7 +157,7 @@ describe('TransferWidget callbacks', () => {
     const root = within(view.container);
     await waitFor(() => expect(root.getByText(/Balance: 1\.5 SPLD/)).toBeTruthy());
     click(root, /^Review$/i);
-    click(root, /Confirm send/i);
+    await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect((onError.mock.calls[0]![0] as Error).message).toMatch(/rejected/);
     expect(onSent).not.toHaveBeenCalled();
@@ -182,7 +183,7 @@ describe('TokenPanel callbacks', () => {
     expect((root.getByLabelText(/Amount \(human/i) as HTMLInputElement).value).toBe('2');
     fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: OTHER } });
     click(root, /^Review$/i);
-    click(root, /Confirm send/i);
+    await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
     expect(onSent.mock.calls[0]![0]).toEqual({ token: TOKEN, to: OTHER, amount: '2', hash: 'tok-hash' });
   });
@@ -200,7 +201,7 @@ describe('TokenPanel callbacks', () => {
     await waitFor(() => expect(root.getByText(/Balance: 5(\.0)? LAB/)).toBeTruthy());
     fireEvent.change(root.getByLabelText(/^To \(SQ/i), { target: { value: OTHER } });
     click(root, /^Review$/i);
-    click(root, /Confirm send/i);
+    await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect((onError.mock.calls[0]![0] as Error).message).toMatch(/insufficient/);
   });
@@ -215,7 +216,7 @@ describe('DeployTokenWidget callbacks', () => {
     const { Wrap } = setup();
     const view = render(React.createElement(DeployTokenWidget, { onDeployed }), { wrapper: Wrap });
     click(within(view.container), /^Review deploy$/i);
-    click(within(view.container), /^Confirm deploy$/i);
+    await clickWhenEnabled(within(view.container), /^Confirm deploy$/i);
     await waitFor(() => expect(onDeployed).toHaveBeenCalledTimes(1));
     expect(onDeployed).toHaveBeenCalledWith({ address: 'SQ:' + '77'.repeat(32), hash: 'dep-hash' });
   });
@@ -231,7 +232,7 @@ describe('DeployTokenWidget callbacks', () => {
       wrapper: Wrap,
     });
     click(within(view.container), /^Review deploy$/i);
-    click(within(view.container), /^Confirm deploy$/i);
+    await clickWhenEnabled(within(view.container), /^Confirm deploy$/i);
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onDeployed).not.toHaveBeenCalled();
   });

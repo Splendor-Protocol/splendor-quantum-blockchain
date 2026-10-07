@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { fromUnits } from '@splendor/sqc-sdk';
+import { MIN_FEE, fromUnits } from '@splendor/sqc-sdk';
 import { useAccount, useBalance, useEstimateFee, useNetwork, useSendTransfer } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import { TRANSFER_LABELS, formatLabel, useWidgetLabels, type TransferWidgetLabels } from './labels.js';
@@ -11,6 +11,7 @@ import { FeeRow } from './parts/FeeRow.js';
 import { TxResult } from './parts/TxResult.js';
 import { useTransferForm } from './parts/useTransferForm.js';
 import { toError, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
+import { exceedsBalanceWithFee, spendableAfterFee } from './utils.js';
 
 export type TransferSentResult = {
   to: string;
@@ -56,8 +57,9 @@ export function TransferWidget({
   const { balanceSPLD } = useBalance();
   const { network, walletMismatch } = useNetwork();
   const { sendTransfer, status, hash, explorerUrl, confirmed, error, reset } = useSendTransfer();
+  const spendable = useMemo(() => spendableAfterFee(balanceSPLD, MIN_FEE), [balanceSPLD]);
   const form = useTransferForm({
-    balance: balanceSPLD,
+    balance: spendable,
     symbol: 'SPLD',
     self: address,
     defaultTo,
@@ -75,6 +77,8 @@ export function TransferWidget({
     }
   }, [showFee, form.reviewing, form.review, address]);
   const fee = useEstimateFee(feeRequest);
+  const overBalance =
+    showFee && form.review.ok && exceedsBalanceWithFee(form.review.amount, fee.fee, balanceSPLD);
   const toasts = useWidgetToast(toast);
   useStatusChange(status, onStatusChange);
 
@@ -85,7 +89,12 @@ export function TransferWidget({
     toasts.pending(l.toastPending);
     let res: Awaited<ReturnType<typeof sendTransfer>>;
     try {
-      res = await sendTransfer({ to: review.to, amountSPLD: review.amount, waitForConfirmation: true });
+      res = await sendTransfer({
+        to: review.to,
+        amountSPLD: review.amount,
+        ...(showFee && fee.fee ? { fee: fee.fee } : {}),
+        waitForConfirmation: true,
+      });
     } catch (e) {
       toasts.error(l.toastError, e);
       onError?.(toError(e));
@@ -126,12 +135,17 @@ export function TransferWidget({
           symbol="SPLD"
           networkName={network?.name}
           pending={status === 'pending'}
-          confirmDisabled={walletMismatch || fee.reverted}
+          confirmDisabled={walletMismatch || (showFee && (fee.loading || fee.reverted)) || overBalance}
           onBack={form.cancelReview}
           onConfirm={() => void onConfirm()}
           labels={l}
         >
           {showFee ? <FeeRow estimate={fee} labels={l} /> : null}
+          {overBalance ? (
+            <p className="sqc-widget__msg sqc-widget__msg--error" role="alert" data-testid="sqc-review-over-balance">
+              {l.insufficientWithFee}
+            </p>
+          ) : null}
         </ReviewPanel>
       ) : (
         <>
@@ -149,7 +163,7 @@ export function TransferWidget({
             value={form.amount}
             onChange={form.setAmount}
             error={form.errors.amount}
-            balance={balanceSPLD}
+            balance={spendable}
             symbol="SPLD"
             decimals={18}
             labels={l}

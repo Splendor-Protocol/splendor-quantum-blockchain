@@ -10,7 +10,7 @@
  * Network defaults from sqc.networks.json (override with SQC_NETWORK / SQC_RPC / PORT).
  * Errors follow SQDP-1: { code, message }.
  */
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
   connect,
@@ -702,6 +702,13 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     logger,
     bodyLimit: BODY_LIMIT,
     trustProxy: TRUST_PROXY,
+    // Log as `reqId`. A caller's X-Request-Id is reused only when short and plain, so it cannot flood or forge log lines.
+    requestIdHeader: false,
+    genReqId: (req) => {
+      const raw = req.headers['x-request-id'];
+      const id = Array.isArray(raw) ? raw[0] : raw;
+      return typeof id === 'string' && /^[\w.:-]{1,128}$/.test(id) ? id : randomUUID();
+    },
     ...(https ? { https } : {}),
     ajv: {
       customOptions: {
@@ -715,6 +722,10 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
   await app.register(helmet, {
     global: true,
     contentSecurityPolicy: false,
+  });
+
+  app.addHook('onSend', async (request, reply) => {
+    reply.header('x-request-id', request.id);
   });
 
   await app.register(cors, {

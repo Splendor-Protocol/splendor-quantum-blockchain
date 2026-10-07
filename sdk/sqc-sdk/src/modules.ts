@@ -5,8 +5,9 @@
  * Bound (beginner):   `modules.bind(connection, wallet).qrc20(addr).transfer(to, amt)`
  *
  * Automatic native clients: qrc20, qrc1155, bridge, contract.
+ * QRC-721 has a Program client (`QRC721` in `@splendor/sqc-sdk/tokens`) but no `modules` slot yet.
  * Routed on-chain modules without a dedicated Program client (use sendModuleCall):
- * verify, validators, qrc721. Authority: vm.KnownModuleActions / DispatchModuleCall.
+ * verify, validators. Authority: vm.KnownModuleActions / DispatchModuleCall.
  *
  * DEX and exchange leftover clients are unsupported application adapters.
  * They are not on the public `modules` / Session surface. Import from

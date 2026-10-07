@@ -1,5 +1,5 @@
 /** Shared helpers for dApp widgets. */
-import { canonicalizeAddress } from '@splendor/sqc-sdk';
+import { canonicalizeAddress, fromUnits, toUnits } from '@splendor/sqc-sdk';
 import { isSafeExplorerUrl } from '@splendor/sqc-sdk/networks';
 import { COMMON_LABELS, formatLabel, type CommonWidgetLabels } from './labels.js';
 
@@ -55,6 +55,34 @@ export function compareDecimal(a: string, b: string): -1 | 0 | 1 | null {
   const pb = bf.padEnd(len, '0');
   if (pa === pb) return 0;
   return pa < pb ? -1 : 1;
+}
+
+/**
+ * Native SPLD left after paying `feeRaw` (atto SPLD), as a human amount floored at 0.
+ * Null when `balance` is null or either value is unparsable.
+ */
+export function spendableAfterFee(balance: string | null | undefined, feeRaw: string | null | undefined): string | null {
+  if (balance == null) return null;
+  try {
+    const left = BigInt(fromUnits(balance, 18)) - BigInt(feeRaw ?? '0');
+    return toUnits(left > 0n ? left : 0n, 18);
+  } catch {
+    return null;
+  }
+}
+
+/** True when `amount` plus `feeRaw` (atto SPLD) is more than the human SPLD `balance`. */
+export function exceedsBalanceWithFee(
+  amount: string,
+  feeRaw: string | null | undefined,
+  balance: string | null | undefined,
+): boolean {
+  if (balance == null || !feeRaw) return false;
+  try {
+    return BigInt(fromUnits(amount, 18)) + BigInt(feeRaw) > BigInt(fromUnits(balance, 18));
+  } catch {
+    return false;
+  }
 }
 
 export type TransferReviewReason = 'invalid-address' | 'self' | 'bad-amount' | 'too-precise' | 'insufficient';

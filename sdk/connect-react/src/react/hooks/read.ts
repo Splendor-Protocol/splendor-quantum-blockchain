@@ -221,7 +221,7 @@ export function useEstimateFee(request: EstimateGasRequest | null, opts: { debou
     gas: typeof res?.gas === 'number' ? res.gas : null,
     reverted: res?.reverted === true,
     revertReason: res?.reverted ? (res.revert_reason ?? null) : null,
-    loading: key != null && (state.loading || debouncedKey !== key),
+    loading: key != null && (state.loading || debouncedKey !== key || (state.data == null && state.error == null)),
     error: debouncedKey === key ? state.error : null,
     refresh: state.refresh,
   };

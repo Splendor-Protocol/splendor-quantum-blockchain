@@ -127,7 +127,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     onError,
     labels,
     allowPlaceholderNetworks = false,
-    customNetworks,
+    customNetworks: customNetworksProp,
     persistNetwork = true,
     network: networkProp,
     sessionIdleMs,
@@ -137,6 +137,7 @@ export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
     onBeforeSign,
     ...clientOpts
   } = props;
+  const customNetworks = customNetworksProp ?? clientOpts.networks;
 
   syncRegisterCustomNetworks(customNetworks);
 

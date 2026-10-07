@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnectState } from '../context.js';
+import { sharedRead } from '../../core/readCache.js';
 import { useRecordPendingTx, useSingleFlight, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet, useAccount, useReadConnection } from './core.js';
 
@@ -74,7 +75,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     setBalance(null);
   }, [address]);
 
-  const refresh = useCallback(async () => {
+  const load = useCallback(async (force: boolean) => {
     const gen = ++generation.current;
     if (!tokenAddress || !readConnection) {
       setBalance(null);
@@ -87,9 +88,12 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     try {
       const { QRC20 } = await loadTokens();
       const token = new QRC20(readConnection, tokenAddress);
+      const cacheOpts = { maxAgeMs: Math.min(pollMs / 2, 5_000), force };
       const [info, bal] = await Promise.all([
-        token.tokenInfo(),
-        address ? token.balanceOf(address) : Promise.resolve(null),
+        sharedRead(readConnection, `qrc20-info|${tokenAddress}`, () => token.tokenInfo(), cacheOpts),
+        address
+          ? sharedRead(readConnection, `qrc20-bal|${tokenAddress}|${address}`, () => token.balanceOf(address), cacheOpts)
+          : Promise.resolve(null),
       ]);
       if (gen !== generation.current) return;
       setTokenInfo(info as Record<string, unknown>);
@@ -100,14 +104,16 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     } finally {
       if (gen === generation.current) setLoading(false);
     }
-  }, [tokenAddress, readConnection, address]);
+  }, [tokenAddress, readConnection, address, pollMs]);
+
+  const refresh = useCallback(() => load(true), [load]);
 
   useEffect(() => {
-    void refresh();
+    void load(false);
     if (!tokenAddress || !pollMs) return;
-    const id = setInterval(() => void refresh(), pollMs);
+    const id = setInterval(() => void load(false), pollMs);
     return () => clearInterval(id);
-  }, [refresh, tokenAddress, pollMs]);
+  }, [load, tokenAddress, pollMs]);
 
   const decimals = validDecimals(tokenInfo?.decimals);
   const symbol = typeof tokenInfo?.symbol === 'string' ? tokenInfo.symbol : null;
@@ -235,7 +241,7 @@ export function useDeployToken(): {
     maxSupply?: string;
     fee?: string;
     waitForConfirmation?: boolean;
-  }) => Promise<{ address: string; hash?: string }>;
+  }) => Promise<{ address: string; hash?: string; confirmed: boolean }>;
   status: TxHookStatus;
   address: string | null;
   hash: string | null;
@@ -281,7 +287,7 @@ export function useDeployToken(): {
           setHash(result.hash ?? null);
           setStatus('success');
           recordPending(result, { kind: 'deploy', summary: `Deploy token ${params.symbol} (${tokenAddr})` });
-          return { address: tokenAddr, hash: result.hash };
+          return { address: tokenAddr, hash: result.hash, confirmed: result.confirmation?.confirmed === true };
         } catch (e) {
           const err = e instanceof Error ? e : new Error(String(e));
           setError(err);

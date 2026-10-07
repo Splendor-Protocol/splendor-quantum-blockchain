@@ -262,7 +262,7 @@ export class SplendorPQBridge {
       signedTx: object;
       nonce: number;
     }>,
-    opts: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+    opts: { waitForConfirmation?: boolean; confirmTimeoutMs?: number; allowNonceConfirmation?: boolean },
   ): Promise<{
     status: string;
     hash: string;
@@ -276,6 +276,7 @@ export class SplendorPQBridge {
         nonceBefore: nonce,
         hash,
         timeoutMs: opts.confirmTimeoutMs,
+        requireReceipt: !!hash && opts.allowNonceConfirmation !== true,
       });
     }
     return { status, hash, signedTx, confirmation };
@@ -449,6 +450,8 @@ export class SplendorPQBridge {
     hash?: string;
     timeoutMs?: number;
     pollMs?: number;
+    /** With `hash`: only a successful receipt confirms (no nonce-advance fallback). */
+    requireReceipt?: boolean;
   }) {
     return this.connection.waitForConfirmation({
       from: opts.from || this.getAddress(),
@@ -456,6 +459,7 @@ export class SplendorPQBridge {
       hash: opts.hash,
       timeoutMs: opts.timeoutMs,
       pollMs: opts.pollMs,
+      requireReceipt: opts.requireReceipt,
     });
   }
 
@@ -843,6 +847,7 @@ export class SplendorPQBridge {
           nonceBefore: signed.nonce,
           hash: result.hash,
           timeoutMs: opts.confirmTimeoutMs,
+          requireReceipt: !!result.hash,
         });
       }
       return { ...result, signedTx: signed.signedTx, confirmation };
@@ -946,6 +951,7 @@ export class SplendorPQBridge {
       fee: opts.fee,
       waitForConfirmation: opts.waitForConfirmation,
       confirmTimeoutMs: opts.confirmTimeoutMs,
+      allowNonceConfirmation: opts.allowNonceConfirmation,
     });
   }
 

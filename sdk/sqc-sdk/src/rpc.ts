@@ -41,6 +41,12 @@ export type RpcOptions = {
   allowPrivateRpcHosts?: boolean;
   /** Allow plain `http://` to non-loopback hosts. Default false. */
   allowInsecureHttp?: boolean;
+  /**
+   * Send `X-Request-Id` on every RPC call for log correlation. `true` generates a random id
+   * per request; a function supplies your own. Default off. Browser apps need a node whose
+   * CORS allow-list includes the header.
+   */
+  requestId?: boolean | (() => string);
 };
 
 /** Origin only — drops credentials, path and query (which may carry API keys) from error details. */
@@ -117,6 +123,7 @@ export class SqRpc {
   private stickyFailStreak = 0;
   /** Coalesce identical in-flight GETs. */
   private inflight = new Map<string, Promise<any>>();
+  private readonly requestIdOpt: RpcOptions['requestId'];
 
   constructor(options: RpcOptions = {}) {
     const defaults = getDefaultNetwork();
@@ -155,6 +162,21 @@ export class SqRpc {
     this.timeoutMs = options.timeoutMs ?? defaults.timeoutMs;
     this.chainId = options.chainId || defaults.chainId || CHAIN_ID;
     this.retries = options.retries ?? defaults.retries;
+    this.requestIdOpt = options.requestId;
+  }
+
+  private nextRequestId(): string | null {
+    const opt = this.requestIdOpt;
+    if (!opt) return null;
+    if (typeof opt === 'function') {
+      const id = String(opt()).trim();
+      return /^[\w.:-]{1,128}$/.test(id) ? id : null;
+    }
+    const c = globalThis.crypto;
+    if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+    const bytes = new Uint8Array(16);
+    c?.getRandomValues?.(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   }
 
   get rpcUrl(): string {
@@ -224,7 +246,19 @@ export class SqRpc {
     if (remote !== this.chainId) {
       throw BridgeError.chainMismatch(remote, this.chainId);
     }
-    return this.post('/tx/submit', body, true);
+    try {
+      return await this.post('/tx/submit', body, true);
+    } catch (e) {
+      if (e instanceof BridgeError && e.code === 'RPC' && /fee too low/i.test(e.message)) {
+        throw new BridgeError(
+          'INVALID_FEE',
+          e.message,
+          e.details,
+          'Network is busy — the fee is below the current minimum. Review again for a fresh estimate.',
+        );
+      }
+      throw e;
+    }
   }
 
   async verifyCheck(instruction: object): Promise<{
@@ -648,6 +682,7 @@ export class SqRpc {
     let lastError: unknown;
     const timeoutMs = timeoutOverrideMs ?? this.timeoutMs;
     const stickyAtStart = this.stickyUrl;
+    const requestId = this.nextRequestId();
 
     for (const base of urls) {
       for (let attempt = 0; attempt <= this.retries; attempt++) {
@@ -659,6 +694,7 @@ export class SqRpc {
             headers: {
               Accept: 'application/json',
               'X-SQC-Bridge': BRIDGE_CLIENT_VERSION,
+              ...(requestId ? { 'X-Request-Id': requestId } : {}),
               ...(method === 'POST'
                 ? { 'Content-Type': 'application/json' }
                 : {}),
@@ -669,7 +705,7 @@ export class SqRpc {
           const res = await fetchWithTimeout(base + path, init, timeoutMs);
 
           if (res.status >= 500 && attempt < this.retries) {
-            await sleep(100 * (attempt + 1));
+            await sleep(retryDelay(attempt));
             continue;
           }
 
@@ -693,7 +729,7 @@ export class SqRpc {
             }
             if (status !== undefined && status >= 500) {
               if (attempt < this.retries) {
-                await sleep(100 * (attempt + 1));
+                await sleep(retryDelay(attempt));
                 continue;
               }
               break;
@@ -704,7 +740,7 @@ export class SqRpc {
             e instanceof BridgeError &&
             (e.code === 'TIMEOUT' || e.code === 'NETWORK');
           if (retryable && attempt < this.retries) {
-            await sleep(100 * (attempt + 1));
+            await sleep(retryDelay(attempt));
             continue;
           }
           if (retryable) {
@@ -745,6 +781,12 @@ export function fromSPLD(spld: string | number): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Linear retry delay with up to 50% jitter so many clients do not retry in lockstep. */
+function retryDelay(attempt: number): number {
+  const base = 100 * (attempt + 1);
+  return Math.round(base + Math.random() * base * 0.5);
 }
 
 async function fetchWithTimeout(

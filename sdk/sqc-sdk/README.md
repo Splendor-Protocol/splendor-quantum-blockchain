@@ -98,6 +98,7 @@ Native modules are also on subpaths `/tokens`, `/defi`, `/bridge`. See [SDK_ARCH
 | Native ML-DSA-65 seed wallet (WASM) | Built |
 | Transfers, deploy, call (Tx types 0x01–0x03) | Built |
 | QRC-20 / QRC-1155 module clients | Built |
+| QRC-721 module client | Thin — routed actions only (`deploy`, `mint`, `transfer`, `burn`, reads) |
 | DEX + Exchange Program clients | Leftover `/defi` only — not node-routed |
 | On-chain Bridge module client | Built (`/bridge`; ≠ `@splendor/pq-bridge` shim) |
 | Bytecode contracts (`/contracts`) | Built |
@@ -109,6 +110,22 @@ Native modules are also on subpaths `/tokens`, `/defi`, `/bridge`. See [SDK_ARCH
 | Desktop / mobile wallet apps | Not in this package |
 | Python / Go SDKs | Not published |
 | QSol compile-from-source client | Not in SDK — use repo `sqc-solc` CLI for bytecode |
+
+## Do not use in new code
+
+These stay exported so existing apps keep building. Removing them is a major-version change.
+
+| Export | Use instead |
+|--------|-------------|
+| `SplendorPQBridge` (default export), `Wallet` built by hand | `createSession` (headless) or `@splendor/connect-react` (UI) |
+| `connectSplendor`, `createSplendorClient`, `SplendorClient` | `createSession` |
+| `SqRpc`, `SqcProvider` | `Connection` |
+| `seedFromEvmSignature` and the other `derive.ts` EVM helpers | Nothing — EVM→PQ unlock was removed |
+| `@splendor/sqc-sdk/defi` (DEX, Exchange) | Nothing — not routed by the node |
+| `@splendor/sqc-sdk/react` (`useSplendorPQ`) | `@splendor/connect-react` |
+| `@splendor/pq-bridge` | `@splendor/sqc-sdk` |
+
+Errors: branch on `BridgeError.code` and show `userHint`. Every code is listed in [`docs/ERRORS.md`](docs/ERRORS.md).
 
 ## Protocol (SQDP-1)
 

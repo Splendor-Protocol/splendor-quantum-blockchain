@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { toUnits } from '@splendor/sqc-sdk/units';
+import { MODULE_ROUTER_ADDRESS, encodeModuleCallHex, fromUnits, toUnits } from '@splendor/sqc-sdk';
 import { useAccount, useEstimateFee, useNetwork, useQRC20 } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import { normalizeSqAddress } from './utils.js';
@@ -83,9 +83,18 @@ export function TokenPanel({
     labels: l,
   });
   const feeRequest = useMemo(() => {
-    if (!showFee || !form.reviewing || !form.review.ok || !address || !tokenAddress) return null;
-    return { from: address, to: tokenAddress };
-  }, [showFee, form.reviewing, form.review.ok, address, tokenAddress]);
+    if (!showFee || !form.reviewing || !form.review.ok || !address || !tokenAddress || decimals == null) return null;
+    try {
+      const data = encodeModuleCallHex({
+        module: 'qrc20',
+        action: 'transfer',
+        params: { token: tokenAddress, to: form.review.to, amount: fromUnits(form.review.amount, decimals) },
+      });
+      return { from: address, to: MODULE_ROUTER_ADDRESS, data };
+    } catch {
+      return null;
+    }
+  }, [showFee, form.reviewing, form.review, address, tokenAddress, decimals]);
   const fee = useEstimateFee(feeRequest);
   const toasts = useWidgetToast(toast);
   useStatusChange(status, onStatusChange);
@@ -152,13 +161,12 @@ export function TokenPanel({
           contract={tokenAddress}
           networkName={network?.name}
           pending={status === 'pending'}
-          confirmDisabled={walletMismatch}
+          confirmDisabled={walletMismatch || (showFee && feeRequest != null && (fee.loading || fee.reverted))}
           onBack={form.cancelReview}
           onConfirm={() => void onConfirm()}
           labels={l}
         >
-          {/* Without calldata the node cannot predict a token revert, so only the fee is shown. */}
-          {showFee ? <FeeRow estimate={{ ...fee, reverted: false }} labels={l} /> : null}
+          {showFee && feeRequest ? <FeeRow estimate={fee} labels={l} /> : null}
         </ReviewPanel>
       ) : (
         <>

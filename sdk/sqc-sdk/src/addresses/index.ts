@@ -81,6 +81,16 @@ export function qrc1155Address(deployer: string, nonce: number): string {
   return hashToAddress(sha3_256(concatBytes(depBytes, nonceStr, tag)));
 }
 
+/**
+ * QRC-721 collection address: SHA3(deployer ‖ decimal(nonce) ‖ "qrc721")
+ */
+export function qrc721Address(deployer: string, nonce: number): string {
+  const depBytes = addressBytes(deployer);
+  const nonceStr = new TextEncoder().encode(String(nonce));
+  const tag = new TextEncoder().encode('qrc721');
+  return hashToAddress(sha3_256(concatBytes(depBytes, nonceStr, tag)));
+}
+
 /** Bytecode contract address: SHA3(deployer ‖ u64be(nonce)). */
 export function bytecodeContractAddress(deployer: string, nonce: number): string {
   const depBytes = addressBytes(deployer);

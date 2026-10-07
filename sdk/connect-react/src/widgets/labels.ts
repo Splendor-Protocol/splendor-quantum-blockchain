@@ -36,6 +36,7 @@ export const COMMON_LABELS = {
   selfSend: 'You cannot send to your own address',
   badAmount: 'Enter a valid amount greater than zero',
   insufficient: 'Amount exceeds your {symbol} balance',
+  insufficientWithFee: 'Amount plus the network fee exceeds your SPLD balance',
 };
 
 export const TRANSFER_LABELS = {
@@ -118,6 +119,7 @@ export const SIGN_IN_LABELS = {
   button: 'Sign in',
   waiting: 'Waiting for signature…',
   signedInAs: 'Signed in as {address}',
+  nonceFailed: 'Could not get a sign-in challenge — try again',
   thisSite: 'this site',
 };
 

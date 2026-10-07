@@ -92,6 +92,11 @@ export type TransferOpts = {
   memo?: string;
   waitForConfirmation?: boolean;
   confirmTimeoutMs?: number;
+  /**
+   * Accept a nonce advance as confirmation when the node has no receipt yet. Default false:
+   * another tx from the same account can advance the nonce, so only a receipt confirms.
+   */
+  allowNonceConfirmation?: boolean;
 };
 
 export type CallOpts = {
@@ -104,6 +109,8 @@ export type CallOpts = {
   fee?: string;
   waitForConfirmation?: boolean;
   confirmTimeoutMs?: number;
+  /** See `TransferOpts.allowNonceConfirmation`. */
+  allowNonceConfirmation?: boolean;
 };
 
 export type DeployOpts = {
@@ -111,6 +118,8 @@ export type DeployOpts = {
   fee?: string;
   waitForConfirmation?: boolean;
   confirmTimeoutMs?: number;
+  /** See `TransferOpts.allowNonceConfirmation`. */
+  allowNonceConfirmation?: boolean;
 };
 
 export type X402PayOpts = {
@@ -151,6 +160,8 @@ export type ModuleCallOpts = {
   fee?: string;
   waitForConfirmation?: boolean;
   confirmTimeoutMs?: number;
+  /** See `TransferOpts.allowNonceConfirmation`. */
+  allowNonceConfirmation?: boolean;
 };
 
 /** QRC-20 permit signing params (off-chain ML-DSA authorisation). */
