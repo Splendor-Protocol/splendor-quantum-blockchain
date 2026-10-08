@@ -156,7 +156,11 @@ func (r *Relayer) RunOnce(ctx context.Context, dir Direction) ([]OutboundEvent, 
 	var settled []OutboundEvent
 	for _, e := range events {
 		if e.ID == "" {
-			continue
+			// A source event without its idempotency key cannot be settled
+			// safely: it could never be de-duplicated, and silently skipping it
+			// while the cursor advanced past it would drop it forever. Fail
+			// closed — the error holds the cursor so the next pass re-scans.
+			return nil, fmt.Errorf("%s emitted an event with an empty id (height %d, tx %s)", src.Name(), e.Height, e.TxID)
 		}
 		done, err := dst.Settled(ctx, e.ID)
 		if err != nil {
