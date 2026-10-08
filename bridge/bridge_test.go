@@ -161,6 +161,27 @@ func TestRelayerIdlesWhenCursorPastSafeTip(t *testing.T) {
 	}
 }
 
+// TestRelayerFailsClosedOnEmptyID pins that a source event without an
+// idempotency key aborts the pass and holds the cursor, rather than being
+// silently skipped and advanced past (which would drop it forever).
+func TestRelayerFailsClosedOnEmptyID(t *testing.T) {
+	src := newMockChain("src", 10, 2) // safe tip = 8
+	dst := newMockChain("dst", 0, 0)
+	src.events = []OutboundEvent{
+		{ID: "", Asset: AssetNative, Amount: big.NewInt(100), Height: 5, Recipient: "SQ:a"},
+	}
+	r := NewRelayer(src, dst)
+	if _, err := r.RunOnce(context.Background(), LeftToRight); err == nil {
+		t.Fatal("RunOnce accepted an empty-ID event, want an error")
+	}
+	if r.Cursor(src) != 0 {
+		t.Fatalf("cursor = %d, want 0 (held on the empty-ID event)", r.Cursor(src))
+	}
+	if len(dst.settles) != 0 {
+		t.Fatalf("dst settled %d events, want 0", len(dst.settles))
+	}
+}
+
 // TestBalanceOfSelector pins the canonical ERC-20 balanceOf(address) selector.
 func TestBalanceOfSelector(t *testing.T) {
 	const want = "70a08231"
