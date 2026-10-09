@@ -168,6 +168,8 @@ export type FeeEstimate = {
   refresh: () => Promise<void>;
 };
 
+const ESTIMATE_TIMEOUT_MS = 15_000;
+
 function requestKey(req: EstimateGasRequest | null): string | null {
   if (!req) return null;
   const data =
@@ -200,7 +202,22 @@ export function useEstimateFee(request: EstimateGasRequest | null, opts: { debou
 
   const state = usePolledRead<EstimateGasResponse>(
     debouncedKey,
-    async () => conn!.estimateGas(requestRef.current!),
+    async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const res = await Promise.race([
+          conn!.estimateGas(requestRef.current!),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Fee estimate timed out')), ESTIMATE_TIMEOUT_MS);
+          }),
+        ]);
+        // An empty body would otherwise leave the estimate "loading" (and Confirm disabled) forever.
+        if (!res || typeof res !== 'object') throw new Error('Fee estimate returned no data');
+        return res;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
     0,
   );
 

@@ -1,6 +1,6 @@
 {
   "name": "@splendor/sqc-sdk",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Splendor Quantum Chain SDK — wallet, tokens, contracts, and native module clients. ML-DSA-65 signing via Go WASM.",
   "type": "module",
   "main": "./dist/index.js",
@@ -34,6 +34,10 @@
     "./tokens/qrc1155": {
       "types": "./dist/tokens/qrc1155.d.ts",
       "import": "./dist/tokens/qrc1155.js"
+    },
+    "./tokens/qrc721": {
+      "types": "./dist/tokens/qrc721.d.ts",
+      "import": "./dist/tokens/qrc721.js"
     },
     "./contracts": {
       "types": "./dist/contracts/index.d.ts",
@@ -109,7 +113,8 @@
     "sync:config": "node ./scripts/sync-config.mjs",
     "build:wasm": "powershell -ExecutionPolicy Bypass -File ./wasm/build.ps1",
     "build:wasm:sh": "bash ./wasm/build.sh",
-    "prebuild:ts": "npm run sync:config",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prebuild:ts": "npm run clean && npm run sync:config",
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run build:ts",
     "prepare": "npm run build:ts",
@@ -153,5 +158,14 @@
     "qrc20",
     "wasm"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Splendor-Protocol/splendor-quantum-blockchain.git",
+    "directory": "sdk/sqc-sdk"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }

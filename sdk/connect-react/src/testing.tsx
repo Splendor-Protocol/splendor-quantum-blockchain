@@ -91,6 +91,9 @@ export function mockWallet(opts: MockWalletOptions = {}): MockWallet {
   return {
     calls,
     connection,
+    getAddress: () => address,
+    getNonce: method('getNonce', () => ({ address, nonce: 0 })),
+    getLatestBlock: method('getLatestBlock', () => ({ height: 1 })),
     sendTransfer: method('sendTransfer', sent),
     callContract: method('callContract', sent),
     deployContract: method('deployContract', () => ({ ...sent(), address: 'SQ:' + '77'.repeat(32) })),

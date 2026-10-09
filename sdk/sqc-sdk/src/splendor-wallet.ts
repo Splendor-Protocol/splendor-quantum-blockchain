@@ -814,7 +814,7 @@ export class SplendorPQBridge {
    */
   async sendTransaction(
     tx: UnsignedTx | SignedTx,
-    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number; allowNonceConfirmation?: boolean },
   ): Promise<SendTxResult> {
     const isSigned =
       tx &&
@@ -847,7 +847,7 @@ export class SplendorPQBridge {
           nonceBefore: signed.nonce,
           hash: result.hash,
           timeoutMs: opts.confirmTimeoutMs,
-          requireReceipt: !!result.hash,
+          requireReceipt: !!result.hash && opts.allowNonceConfirmation !== true,
         });
       }
       return { ...result, signedTx: signed.signedTx, confirmation };
@@ -858,20 +858,23 @@ export class SplendorPQBridge {
   /** Sign and submit in one step (wallet-standard shaped). */
   async signAndSendTransaction(
     tx: UnsignedTx,
-    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+    opts?: { waitForConfirmation?: boolean; confirmTimeoutMs?: number; allowNonceConfirmation?: boolean },
   ): Promise<SendTxResult> {
     const wait = opts?.waitForConfirmation ?? ('waitForConfirmation' in tx ? tx.waitForConfirmation : undefined);
     const confirmTimeoutMs =
       opts?.confirmTimeoutMs ?? ('confirmTimeoutMs' in tx ? tx.confirmTimeoutMs : undefined);
+    const allowNonceConfirmation =
+      opts?.allowNonceConfirmation ?? ('allowNonceConfirmation' in tx ? tx.allowNonceConfirmation : undefined);
+    const waitOpts = { waitForConfirmation: wait, confirmTimeoutMs, allowNonceConfirmation };
     switch (tx.type) {
       case 'transfer':
-        return this.sendTransfer({ ...tx, waitForConfirmation: wait, confirmTimeoutMs });
+        return this.sendTransfer({ ...tx, ...waitOpts });
       case 'call':
-        return this.callContract({ ...tx, waitForConfirmation: wait, confirmTimeoutMs });
+        return this.callContract({ ...tx, ...waitOpts });
       case 'deploy':
-        return this.deployContract({ ...tx, waitForConfirmation: wait, confirmTimeoutMs });
+        return this.deployContract({ ...tx, ...waitOpts });
       case 'module':
-        return this.sendModuleCall({ ...tx, waitForConfirmation: wait, confirmTimeoutMs });
+        return this.sendModuleCall({ ...tx, ...waitOpts });
       default: {
         const _exhaustive: never = tx;
         throw BridgeError.rpc(`Unknown tx type: ${JSON.stringify(_exhaustive)}`);

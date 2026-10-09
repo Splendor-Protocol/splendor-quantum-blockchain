@@ -2,7 +2,7 @@
 
 **Status:** Normative  
 **Version:** `1`  
-**Implements:** `@splendor/sqc-sdk` ≥ 2.0.0 (`@splendor/pq-bridge` ≥ 1.5.0 is a deprecated re-export shim)  
+**Implements:** `@splendor/sqc-sdk` ≥ 3.0.0 (`@splendor/pq-bridge` ≥ 1.5.0 is a deprecated re-export shim)  
 **Keywords:** MUST / SHOULD / MAY (RFC 2119)
 
 This document is the **single source of truth** for how dApps, wallets, and gateways talk to Splendor Quantum Chain via the PQ SDK. Short how-to: [DAPP_INTEGRATION.md](./DAPP_INTEGRATION.md). Conformance checklist: [SQDP-1-CONFORMANCE.md](./SQDP-1-CONFORMANCE.md).
@@ -90,11 +90,11 @@ Exported: `encodeFunctionData`, `functionSelectorHex`, decode helpers.
 ## 7. Confirmation
 
 1. Preferred confirmation: poll `GET /tx/{hash}/receipt` until present (tx index on nodes with explorer routes — mounted by `cmd/node` via `RegisterExplorerRoutes`).
-2. Fallback: **nonce advancement** — wait until account nonce `>` the nonce used when signing (can race with other txs from the same account).
+2. Opt-in fallback: **nonce advancement** — wait until account nonce `>` the nonce used when signing. It can race with other txs from the same account, so clients MUST NOT use it by default when a hash is available.
 3. `/ws` is mounted as an SSE/NDJSON stream (not a browser WebSocket). Clients MAY subscribe via `Connection.subscribe()` / `subscribe()` in `@splendor/sqc-sdk`.
 4. `waitForConfirmation` (or equivalent) SHOULD be used after transfers when UX requires inclusion certainty. When a submit `hash` is available, `@splendor/sqc-sdk` send paths (`sendTransfer`, `callContract`, `deployContract`, `sendModuleCall`, `sendTransaction`) **require a successful receipt** and do not accept a nonce advance. Pass `allowNonceConfirmation: true` to opt back into the nonce fallback on nodes without a receipt index.
 
-Config field `PROTOCOL.confirmation === 'nonce'` names the **fallback** mechanism for older/minimal RPC mounts. Runtime clients SHOULD treat confirmation as **receipt-first, nonce-fallback**. Caveat string: `PROTOCOL.confirmationCaveat`.
+Config field `PROTOCOL.confirmation === 'nonce'` names the **opt-in fallback** mechanism for older/minimal RPC mounts. Runtime clients SHOULD treat confirmation as **receipt-required**, with the nonce check only on explicit opt-in. Caveat string: `PROTOCOL.confirmationCaveat` (`receipt-required;nonce-opt-in-race`).
 
 ---
 
@@ -151,7 +151,7 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 2. On timeout / HTTP 5xx, clients SHOULD retry (per-URL) then fail over to the next URL.
 3. After a successful submit, clients SHOULD sticky-route subsequent submits to the accepting URL.
 4. After **3 consecutive sticky-URL failures** (failover away from sticky), clients SHOULD clear sticky and resume from the first configured URL (`security-rpc.test.ts`).
-5. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `2.0.0`, the `@splendor/sqc-sdk` package version).
+5. Requests SHOULD send header `X-SQC-Bridge: <bridge semver>` (e.g. `3.0.0`, the `@splendor/sqc-sdk` package version).
 
 ---
 
@@ -178,7 +178,7 @@ Gateway HTTP errors SHOULD return JSON `{ "code": "<CODE>", "message": "..." }` 
 | Wrong chain | MUST `assertChainId` before submit (all tx types) |
 | Seed theft via gateway | Public proxy MUST reject custodial credentials; submit `signedTx` only |
 | Session residue | MUST `lock` / `disconnect` on logout (`lock` zeroizes ML-DSA-65 key material in WASM sessions) |
-| Fake confirmation | MUST NOT treat missing receipt as success without nonce fallback; nonce poll can race with other txs |
+| Fake confirmation | MUST NOT treat a missing receipt as success; a nonce advance counts only on explicit opt-in, because it can race with other txs |
 | Extension account race | MUST fail-closed (lock + disconnect) if session refresh fails after `accountsChanged` |
 | Tampered WASM | Browser SHOULD set `wasmSha256` network pin and fail closed on mismatch |
 | All RPCs down | MUST surface `RPC_UNAVAILABLE` (not an infinite hang) |

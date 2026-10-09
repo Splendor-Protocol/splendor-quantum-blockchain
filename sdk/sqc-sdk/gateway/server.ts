@@ -33,6 +33,7 @@ import {
   isBridgeError,
   PROTOCOL,
   SQDP_VERSION,
+  redactRpcUrl,
   resolveNetwork,
   type BridgeErrorCode,
 } from '../dist/index.js';
@@ -691,7 +692,9 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
         '[gateway] ALLOW_CUSTODIAL_PROXY=1 — seed unlock accepted only with GATEWAY_API_KEY (private use); prefer signedTx',
       );
     }
-    console.log(`[gateway] SQDP-${SQDP_VERSION} network=${net.id} rpc=${bridgeRpcUrls.join(',')}`);
+    console.log(
+      `[gateway] SQDP-${SQDP_VERSION} network=${net.id} rpc=${bridgeRpcUrls.map(redactRpcUrl).join(',')}`,
+    );
   }
 
   const TLS_CERT = overrides.tlsCertFile ?? process.env.TLS_CERT_FILE ?? '';
@@ -730,6 +733,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
 
   await app.register(cors, {
     origin: CORS_ORIGINS.includes('*') ? true : CORS_ORIGINS,
+    exposedHeaders: ['x-request-id'],
   });
 
   await app.register(rateLimit, {
@@ -777,7 +781,8 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     };
     if (PUBLIC_HEALTH || MODE === 'service-wallet') {
       if (PUBLIC_HEALTH) {
-        body.sqc_rpc = bridgeRpcUrls[0] || SQC_RPC;
+        // Origin only: RPC URLs often carry API keys in the path or query.
+        body.sqc_rpc = redactRpcUrl(bridgeRpcUrls[0] || SQC_RPC);
       }
     }
     return body;

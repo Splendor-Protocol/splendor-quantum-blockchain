@@ -6,6 +6,8 @@ import { BridgeError } from '@splendor/sqc-sdk';
 import { txExplorerUrl, type NetworkConfig } from '@splendor/sqc-sdk/networks';
 import { connectErrorMessage } from '../core/controller.js';
 import { addPendingTx, isConfirmedResult } from '../core/pendingTx.js';
+import { invalidateSharedReads } from '../core/readCache.js';
+import type { ConnectController } from '../core/controller.js';
 import { ControllerContext } from './context.js';
 
 export type TxHookStatus = 'idle' | 'pending' | 'success' | 'error';
@@ -32,15 +34,32 @@ export function useSingleFlight(): <T>(fn: () => Promise<T>) => Promise<T> {
   }, []);
 }
 
+/** Force every mounted balance hook to refetch: a send changes SPLD (fee) and token balances. */
+function invalidateBalances(ctrl: ConnectController): void {
+  try {
+    invalidateSharedReads(ctrl.getProvider(), 'balance|');
+  } catch {
+    /* no provider */
+  }
+  try {
+    invalidateSharedReads(ctrl.getWallet().connection, 'qrc20-bal|');
+  } catch {
+    /* no wallet */
+  }
+}
+
 /**
  * Returns a recorder that stores an unconfirmed send in the pending list
  * (`sqc.connect.pendingTx`) so `usePendingTransactions` can finish watching it after a reload.
+ * Every recorded send also refreshes balances.
  */
 export function useRecordPendingTx(): (res: unknown, meta: TxMeta) => void {
   const ctrl = useContext(ControllerContext);
   return useCallback(
     (res: unknown, meta: TxMeta) => {
-      if (!ctrl || ctrl.isStub || isConfirmedResult(res)) return;
+      if (!ctrl || ctrl.isStub) return;
+      invalidateBalances(ctrl);
+      if (isConfirmedResult(res)) return;
       const hash = res && typeof res === 'object' ? (res as { hash?: unknown }).hash : undefined;
       if (typeof hash !== 'string' || !hash) return;
       const state = ctrl.getState();

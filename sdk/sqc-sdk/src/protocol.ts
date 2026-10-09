@@ -43,10 +43,10 @@ export const PROTOCOL = {
   goldenTransferSelector: proto.goldenTransferSelector,
   defaultNetwork: file.defaultNetwork,
   /**
-   * Runtime: receipt-first (GET /tx/{hash}/receipt), then nonce fallback.
-   * `confirmation` config value names the fallback mechanism for minimal RPC mounts.
+   * Runtime: a successful receipt (GET /tx/{hash}/receipt) is required. The nonce check named by
+   * `confirmation` is only used with `allowNonceConfirmation: true` (it can race other txs).
    */
-  confirmationCaveat: 'receipt-preferred;nonce-fallback-race',
+  confirmationCaveat: 'receipt-required;nonce-opt-in-race',
 } as const;
 
 export type ProtocolConstants = typeof PROTOCOL;

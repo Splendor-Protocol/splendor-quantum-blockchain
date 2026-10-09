@@ -176,6 +176,28 @@ describe('ExtensionSigner', () => {
     wallet.disconnect();
   });
 
+  it('ignores a confirmation reported by the extension and confirms against the node', async () => {
+    const provider = mockProvider({
+      sqc_sendTransaction: () => ({ status: 'ok', hash: HASH, confirmation: { confirmed: true, nonce: 99 } }),
+    });
+    const conn = connection();
+    vi.spyOn(conn, 'getNonce').mockResolvedValue({ address: addr, nonce: 1 } as never);
+    const wait = vi
+      .spyOn(conn, 'waitForConfirmation')
+      .mockRejectedValue(new BridgeError('TX_NOT_CONFIRMED', 'no receipt'));
+    const wallet = new ExtensionSigner({ connection: conn, provider, networkId: 'local' });
+    await wallet.connect();
+    await expect(wallet.sendTransfer({ to: addr, amountSPLD: '1', waitForConfirmation: true })).rejects.toMatchObject({
+      code: 'TX_NOT_CONFIRMED',
+    });
+    expect(wait).toHaveBeenCalledTimes(1);
+
+    const noWait = await wallet.sendTransfer({ to: addr, amountSPLD: '1' });
+    expect(noWait.confirmation).toBeUndefined();
+    expect(wait).toHaveBeenCalledTimes(1);
+    wallet.disconnect();
+  });
+
   it('signMessage sends array params [message, encoding]', async () => {
     const provider = mockProvider();
     const wallet = new ExtensionSigner({ connection: connection(), provider, networkId: 'local' });

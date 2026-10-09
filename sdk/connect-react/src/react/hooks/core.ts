@@ -16,7 +16,7 @@ import { bindModules } from '@splendor/sqc-sdk';
 import { listSelectableNetworks, txExplorerUrl } from '@splendor/sqc-sdk/networks';
 import type { Connector } from '../../connectors/types.js';
 import { connectErrorMessage } from '../../core/controller.js';
-import { sharedRead } from '../../core/readCache.js';
+import { onSharedReadsInvalidated, sharedRead } from '../../core/readCache.js';
 import type { ConnectAccount, ConnectingStep, ConnectionStatus } from '../../core/types.js';
 import { toAccountDto, type AccountDto } from '../../core/dto.js';
 import {
@@ -167,6 +167,21 @@ export function useBalance(pollMs = 12_000): {
     const id = setInterval(() => void load(false), pollMs);
     return () => clearInterval(id);
   }, [load, isConnected, pollMs]);
+
+  useEffect(() => {
+    if (!address || !isConnected || ctrl.isStub) return;
+    let provider: object;
+    try {
+      provider = ctrl.getProvider();
+    } catch {
+      return;
+    }
+    const key = `balance|${address}`;
+    return onSharedReadsInvalidated(provider, (prefix) => {
+      if (key.startsWith(prefix)) void load(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, address, isConnected, ctrl, networkId]);
 
   return {
     balance,

@@ -327,6 +327,19 @@ describe('SignInButton', () => {
     expect(sign.mock.calls[0][0]).toContain('Nonce: fetched-nonce');
   });
 
+  it('ignores a double click while the nonce is being fetched', async () => {
+    let resolveNonce!: (v: string) => void;
+    const nonce = vi.fn(() => new Promise<string>((r) => (resolveNonce = r)));
+    const { root, sign } = renderButton(makeState(), { nonce });
+    const button = root.getByRole('button', { name: /^Sign in$/i }) as HTMLButtonElement;
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(nonce).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(true);
+    resolveNonce('n-1');
+    await waitFor(() => expect(sign).toHaveBeenCalledTimes(1));
+  });
+
   it('refuses to sign a challenge for another domain', async () => {
     const { root, sign } = renderButton(makeState(), { domain: 'https://evil.example' });
     fireEvent.click(root.getByRole('button', { name: /^Sign in$/i }));

@@ -5,10 +5,11 @@
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
 import type { Signer } from '../core/signer.js';
-import { requireCapability, signerAccountNonce } from '../core/signer.js';
+import { requireCapability, signerAccountNonce, signedTxNonce, writeOpts } from '../core/signer.js';
 import { bridgeAddress, bridgeSplvAddress } from '../addresses/index.js';
 import { assertAddress } from '../address.js';
 import { BridgeError } from '../errors.js';
+import type { WriteOpts } from '../types.js';
 
 export type BridgeDeployParams = {
   evmChainId: number;
@@ -89,7 +90,7 @@ export class BridgeModule extends Program {
     return this.read<Record<string, unknown>>('claim_status', { id: safeInt(id, 'id') });
   }
 
-  async claim(wallet: Signer, params: BridgeClaimParams) {
+  async claim(wallet: Signer, params: BridgeClaimParams, opts?: WriteOpts) {
     if (params.asset !== 'spld' && params.asset !== 'splv') {
       throw BridgeError.invalidParams("asset must be 'spld' or 'splv'");
     }
@@ -103,34 +104,34 @@ export class BridgeModule extends Program {
       recipient: assertAddress(params.recipient),
       evm_tx: params.evmTx,
       attestations: params.attestations,
-    });
+    }, opts);
   }
 
-  async setOperator(wallet: Signer, operator: string, active: boolean) {
-    return this.write(wallet, 'set_operator', { operator: assertAddress(operator), active: active === true });
+  async setOperator(wallet: Signer, operator: string, active: boolean, opts?: WriteOpts) {
+    return this.write(wallet, 'set_operator', { operator: assertAddress(operator), active: active === true }, opts);
   }
 
-  async setThreshold(wallet: Signer, threshold: number) {
-    return this.write(wallet, 'set_threshold', { threshold: safeInt(threshold, 'threshold', 1) });
+  async setThreshold(wallet: Signer, threshold: number, opts?: WriteOpts) {
+    return this.write(wallet, 'set_threshold', { threshold: safeInt(threshold, 'threshold', 1) }, opts);
   }
 
-  async pause(wallet: Signer) {
-    return this.write(wallet, 'pause', {});
+  async pause(wallet: Signer, opts?: WriteOpts) {
+    return this.write(wallet, 'pause', {}, opts);
   }
 
-  async unpause(wallet: Signer) {
-    return this.write(wallet, 'unpause', {});
+  async unpause(wallet: Signer, opts?: WriteOpts) {
+    return this.write(wallet, 'unpause', {}, opts);
   }
 
-  async transferOwnership(wallet: Signer, newOwner: string) {
-    return this.write(wallet, 'transfer_ownership', { new_owner: assertAddress(newOwner) });
+  async transferOwnership(wallet: Signer, newOwner: string, opts?: WriteOpts) {
+    return this.write(wallet, 'transfer_ownership', { new_owner: assertAddress(newOwner) }, opts);
   }
 }
 
 export async function deployBridge(
   wallet: Signer,
   params: BridgeDeployParams,
-  opts?: { fee?: string; waitForConfirmation?: boolean; height?: number },
+  opts?: WriteOpts & { height?: number },
 ): Promise<{
   address: string;
   splvAddress: string;
@@ -144,7 +145,6 @@ export async function deployBridge(
     const latest = await getLatestBlock.call(wallet);
     height = blockHeight(latest) + 1;
   }
-  const predicted = BridgeModule.predictAddress(wallet.getAddress(), nonce, height);
   const result = await wallet.sendModuleCall({
     module: 'bridge',
     action: 'deploy',
@@ -157,9 +157,9 @@ export async function deployBridge(
       max_claim_amount: uintString(params.maxClaimAmount, 'maxClaimAmount'),
       threshold: safeInt(params.threshold, 'threshold', 1),
     },
-    fee: opts?.fee,
-    waitForConfirmation: opts?.waitForConfirmation,
+    ...writeOpts(opts),
   });
+  const predicted = BridgeModule.predictAddress(wallet.getAddress(), signedTxNonce(result) ?? nonce, height);
   return {
     address: predicted,
     splvAddress: BridgeModule.splvAddress(predicted),

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useAccount, useNetwork, useSignIn } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import {
@@ -11,7 +11,7 @@ import {
 import { SIGN_IN_LABELS, formatLabel, useWidgetLabels, type SignInButtonLabels } from './labels.js';
 import type { BaseWidgetProps } from './types.js';
 import { WidgetShell } from './parts/WidgetShell.js';
-import { toError, useStatusChange } from './parts/useWidgetEffects.js';
+import { toError, useResetOnContextChange, useStatusChange } from './parts/useWidgetEffects.js';
 
 export type SignInButtonProps = Omit<BaseWidgetProps<SignedAuth, SignInButtonLabels>, 'toast'> & {
   /** Relying-party origin put in the challenge. Defaults to `window.location.origin`. */
@@ -67,13 +67,36 @@ export function SignInButton({
   const { chainId } = useNetwork();
   const { signIn, status, result, errorMessage, reset } = useSignIn();
   const [checkError, setCheckError] = useState<string | null>(null);
+  // Set before the nonce fetch, so a second click cannot start a second sign-in.
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
   useStatusChange(checkError ? 'error' : status, onStatusChange);
+  useResetOnContextChange(
+    () => {
+      reset();
+      setCheckError(null);
+    },
+    busy,
+    address,
+    chainId,
+  );
 
   const rpDomain = domain ?? currentOrigin() ?? '';
   const mustMatch = expectedDomain ?? currentOrigin() ?? rpDomain;
 
   const onSignIn = async () => {
-    if (!address) return;
+    if (!address || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      await runSignIn(address);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const runSignIn = async (address: string) => {
     reset();
     setCheckError(null);
     let signing = false;
@@ -141,10 +164,10 @@ export function SignInButton({
       <button
         type="button"
         className="sqc-btn sqc-btn--primary sqc-btn--block"
-        disabled={status === 'pending'}
+        disabled={busy || status === 'pending'}
         onClick={() => void onSignIn()}
       >
-        {status === 'pending' ? l.waiting : (label ?? l.button)}
+        {busy || status === 'pending' ? l.waiting : (label ?? l.button)}
       </button>
       {status === 'success' && result ? (
         <p className="sqc-widget__msg" role="status">

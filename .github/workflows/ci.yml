@@ -316,11 +316,14 @@ jobs:
       # compile first. Locally that dist is whatever someone last built, which is
       # how a stale one made connect-react look broken when the fault was in
       # sqc-sdk itself. On a runner it is always freshly built.
+      # npm workspaces: one root install links sqc-sdk, connect-react, packages/* and
+      # apps/* together (the per-package lockfiles are no longer used).
+      - name: Install workspaces
+        run: npm ci
+
       - name: Build the SDK
         working-directory: sdk/sqc-sdk
-        run: |
-          npm ci
-          npm run build:ts
+        run: npm run build:ts
 
       - name: Test the SDK
         working-directory: sdk/sqc-sdk
@@ -329,6 +332,80 @@ jobs:
       - name: Typecheck and test connect-react
         working-directory: sdk/connect-react
         run: |
-          npm ci
+          npm run build
           npx tsc --noEmit -p tsconfig.json
           npm test
+
+      # The spec, codegen snapshots and the blocks every generated dApp embeds.
+      - name: Build and test dapp-spec and create-splendor-dapp
+        run: |
+          npm run build -w @splendor/dapp-spec
+          npm test -w @splendor/dapp-spec
+          npm test -w create-splendor-dapp
+
+      - name: Typecheck, test and build the playground and its API
+        run: |
+          npm run typecheck -w @splendor/playground
+          npm test -w @splendor/playground
+          npm run build -w @splendor/playground
+          npm run typecheck -w @splendor/playground-api
+          npm test -w @splendor/playground-api
+
+  # Browser scenarios: every template in the builder with the mock wallet (transfer,
+  # tip, sign-in, deploy), zip export, save/share/remix through the real API, and the
+  # admin flows (catalog flags, release dispatch, audit) against a fake GitHub and npm.
+  playground-e2e:
+    name: playground scenarios (Playwright)
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the signer and the packages
+        run: |
+          set -euo pipefail
+          bash sdk/sqc-sdk/wasm/build.sh
+          npm ci
+          npm run build:packages
+      - name: Install the Playwright browser
+        working-directory: apps/playground
+        run: npx playwright install --with-deps chromium
+      - name: Run the scenarios
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/playground/playwright-report
+          retention-days: 14
+
+  # What a user gets from the playground's export or `npm create splendor-dapp`:
+  # every template, Vite and Next.js, installed from `npm pack` tarballs of this
+  # commit and built for production with the signer pinned.
+  codegen-matrix:
+    name: generated dApps build (every template, Vite and Next.js)
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the signer and the packages
+        run: |
+          set -euo pipefail
+          bash sdk/sqc-sdk/wasm/build.sh
+          npm ci
+          npm run build:packages
+      - name: Generate, install and build every template
+        run: npm run test:codegen

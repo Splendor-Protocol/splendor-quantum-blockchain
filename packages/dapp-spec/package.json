@@ -1,0 +1,65 @@
+{
+  "name": "@splendor/dapp-spec",
+  "version": "0.1.0",
+  "description": "Declarative dApp spec for Splendor Quantum Chain: schema, validation, migrations, templates and a code generator for Vite and Next.js projects.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./blocks/*": "./blocks/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "blocks",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "gen:blocks": "node ./scripts/gen-blocks.mjs",
+    "build": "npm run gen:blocks && tsc -p tsconfig.json",
+    "typecheck:blocks": "tsc -p tsconfig.blocks.json",
+    "test": "npm run gen:blocks && vitest run && npm run typecheck:blocks",
+    "prepare": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "peerDependencies": {
+    "@splendor/connect-react": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@splendor/connect-react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@splendor/connect-react": "3.0.0",
+    "@splendor/sqc-sdk": "3.0.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "splendor",
+    "dapp",
+    "codegen",
+    "post-quantum"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Splendor-Protocol/splendor-quantum-blockchain.git",
+    "directory": "packages/dapp-spec"
+  }
+}

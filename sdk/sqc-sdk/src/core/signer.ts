@@ -4,6 +4,7 @@
  */
 import type {
   ModuleCallOpts,
+  WriteOpts,
   CallOpts,
   DeployOpts,
   PermitParams,
@@ -61,6 +62,26 @@ export async function signerAccountNonce(wallet: Signer): Promise<number> {
   const getNonce = requireCapability(wallet, 'getNonce');
   const { nonce } = await getNonce.call(wallet);
   return nonce;
+}
+
+/** Only the known write options, so caller extras can never override module/action/params. */
+export function writeOpts(opts?: WriteOpts): WriteOpts {
+  return {
+    fee: opts?.fee,
+    waitForConfirmation: opts?.waitForConfirmation,
+    confirmTimeoutMs: opts?.confirmTimeoutMs,
+    allowNonceConfirmation: opts?.allowNonceConfirmation,
+  };
+}
+
+/**
+ * Nonce actually signed into a submitted tx, read from its wire form. Null when the signer
+ * (e.g. an extension) does not return the signed body.
+ */
+export function signedTxNonce(result: { signedTx?: object } | null | undefined): number | null {
+  const raw = (result?.signedTx as { nonce?: unknown } | undefined)?.nonce;
+  const n = typeof raw === 'string' && /^(0|[1-9]\d*)$/.test(raw) ? Number(raw) : raw;
+  return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : null;
 }
 
 export type MockSignerHandlers = {

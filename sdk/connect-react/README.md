@@ -13,11 +13,37 @@ each with a working example.
 ## Scaffold a dApp
 
 ```bash
-npm exec create-splendor-dapp my-dapp
+npm create splendor-dapp@latest
+# non-interactive
+npm create splendor-dapp@latest my-dapp -- --template wallet-dashboard --framework vite --network testnet
 cd my-dapp && npm install && npm run dev
 ```
 
-Ships Vite + React + `ConnectKit` + `TransferWidget` + `AccountCard` + WASM plugin.
+[`create-splendor-dapp`](../../packages/create-splendor-dapp) uses the same templates as the
+dApp Playground (`wallet-dashboard`, `token-launchpad`, `tip-jar`, `members-area`, `nft-drop`), for
+Vite or Next.js. It pins the connect-react and sqc-sdk versions it was released with. Generated
+projects pin the signer digests in production builds and proxy the public RPCs on localhost.
+
+The older `npm exec create-splendor-dapp` bin bundled in this package still works, but it only
+creates the single Vite starter (`ConnectKit` + `TransferWidget` + `AccountCard` + WASM plugin).
+
+## Widget manifest
+
+`@splendor/connect-react/manifest` describes every drop-in widget and placeable part as data:
+its props (type, format, defaults), status, the version it first shipped in, and its docs link.
+It has no React import and no side effects, so build tools and servers can load it.
+
+```ts
+import { WIDGET_MANIFESTS, getWidgetManifest } from '@splendor/connect-react/manifest';
+
+const transfer = getWidgetManifest('transfer');
+transfer?.props.map((p) => `${p.name}: ${p.type}`); // ['title: string', 'hideTitle: boolean', 'defaultTo: string', …]
+```
+
+The dApp Playground builds its catalog, prop forms and generated code from this list, and
+`@splendor/dapp-spec` validates saved specs against it. A new widget therefore appears in the
+playground once it has an entry here. Ids are stable: never rename one; add a new id instead.
+Bump `MANIFEST_SCHEMA_VERSION` only when the manifest shape changes incompatibly.
 
 ## Feature Lab
 
@@ -66,7 +92,9 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Bridge, QRC-1
 | Routed modules without a typed client (verify, validators, qrc721) | `useModuleCall({ module, action, params })` |
 | ML-DSA Sign-In | `useSignIn`, `createAuthMessage`, `checkAuthMessage`, `<SignInButton />` |
 | Account / tx DTOs | `useAccountDto`, `toTxResultDto` |
-| Send safety helpers | `reviewTransfer`, `normalizeSqAddress`, `compareDecimal`, `getRecentRecipients` |
+| Send safety helpers | `reviewTransfer`, `normalizeSqAddress`, `compareDecimal`, `getRecentRecipients`, `spendableAfterFee`, `exceedsBalanceWithFee` |
+| Fee estimate / pending txs | `useEstimateFee`, `usePendingTransactions` |
+| Controller access | `useConnectController`, `useConnectState`, `useNetworkSwitch` |
 
 x402 payments are not part of connect-react (removed in 2.0.0; the wallet extension cannot pay
 them). Seed wallets and servers can still use `wallet.payX402` and the `x402` helpers from
@@ -76,9 +104,15 @@ them). Seed wallets and servers can still use `wallet.payX402` and the `x402` he
 displayed balance, and show a review step before signing. Recent recipients (public `SQ:` addresses
 only, max 5) are kept in `localStorage` under `sqc.connect.recentRecipients`.
 
+The review shows the network fee estimated for the real call, and the reviewed fee is the fee that
+is sent. `TransferWidget`, `TokenPanel` and `DeployTokenWidget` keep Confirm disabled while the fee
+is loading, when the node predicts a revert, and when the SPLD balance cannot cover the amount plus
+the fee. Forms reset when the wallet or network changes, unless a send is pending.
+
 ### Widget props
 
-Every widget takes the same base props (`BaseWidgetProps`):
+`TransferWidget`, `TokenPanel`, `DeployTokenWidget` and `SignInButton` take the same base props
+(`BaseWidgetProps`):
 
 | Prop | Description |
 |------|-------------|
@@ -95,13 +129,17 @@ Every widget takes the same base props (`BaseWidgetProps`):
 | Widget | Prop | Description |
 |--------|------|-------------|
 | `TransferWidget` | `defaultTo`, `defaultAmount` | Prefilled recipient (`SQ:` address) and amount in SPLD (default `"0.01"`) |
+| | `showFee` | Estimate and show the network fee on the review step (default `true`) |
 | | `onSuccess({ to, amount, hash, confirmed, explorerUrl })` | Result after the wallet submits the transfer |
 | `TokenPanel` | `tokenAddress` | QRC-20 address; the panel shows an address field when omitted |
 | | `defaultAmount` | Prefilled amount in whole tokens (default `"1"`) |
+| | `showFee` | Estimate and show the network fee on the review step (default `true`) |
 | | `onSuccess({ token, to, amount, hash })` | Result after the wallet submits the token transfer |
 | `DeployTokenWidget` | `defaultName`, `defaultSymbol`, `defaultSupply`, `decimals` | Form defaults; the supply is in whole tokens (default 1,000,000, 18 decimals) |
 | | `showDecimals` | Show an editable Decimals field (0–18) |
 | | `maxSupply` | Optional cap in whole tokens; must be at least the total supply |
+| | `review` | Show a summary before signing (default `true`); with `false` the fee checks block the Deploy button |
+| | `showFee` | Estimate and show the network fee (default `true`) |
 | | `onSuccess({ address, hash, explorerUrl })` | Result after the deploy confirms |
 | `AccountCard` | `showBalance`, `showNetwork`, `showExplorer`, `showDisconnect` | Toggle rows (all default `true`) |
 | | `onCopy(address)`, `onDisconnect()` | Called after copy / disconnect |
@@ -152,6 +190,9 @@ The widgets are built from exported parts. Use them to build a flow the stock wi
 | `WalletGate` | Renders children only when an unlocked wallet is connected; otherwise a Connect / Unlock prompt |
 | `AddressInput`, `AmountInput` | Labeled fields with `SQ:` / amount validation, recent recipients and a Max button |
 | `ReviewPanel` | To / amount / network summary with Back and Confirm |
+| `FeeRow` | Network fee line for a `useEstimateFee` result; warns when the node predicts a revert |
+| `PendingTxList` | Unconfirmed transactions on the current network, kept across reloads |
+| `spendableAfterFee`, `exceedsBalanceWithFee` | Balance minus a fee for Max / validation, and the amount-plus-fee check |
 | `TxResult` | Submitted / confirmed hash with copy and explorer link |
 | `AddressDisplay`, `CopyButton` | Truncated address with copy and explorer link |
 | `useTransferForm` | Headless state for recipient + amount + review (`errors`, `canReview`, `startReview`, `remember`, `reset`) |
@@ -159,26 +200,40 @@ The widgets are built from exported parts. Use them to build a flow the stock wi
 | `useOptionalTxToast` | Toast API, or `null` when no `<TxToastHost>` is mounted |
 
 ```tsx
+import { MIN_FEE, fromUnits } from '@splendor/sqc-sdk';
 import {
-  WidgetShell, AddressInput, AmountInput, TxResult,
-  useAccount, useBalance, useSendTransfer, useTransferForm,
+  WidgetShell, AddressInput, AmountInput, FeeRow, TxResult,
+  useAccount, useBalance, useEstimateFee, useSendTransfer, useTransferForm,
+  spendableAfterFee, exceedsBalanceWithFee,
 } from '@splendor/connect-react';
 
 function PayInvoice({ to, amount }: { to: string; amount: string }) {
   const { address } = useAccount();
   const { balanceSPLD } = useBalance();
   const { sendTransfer, status, hash, confirmed, explorerUrl } = useSendTransfer();
-  const form = useTransferForm({ balance: balanceSPLD, self: address, defaultTo: to, defaultAmount: amount });
+  const spendable = spendableAfterFee(balanceSPLD, MIN_FEE);
+  const form = useTransferForm({ balance: spendable, self: address, defaultTo: to, defaultAmount: amount });
+  const fee = useEstimateFee(
+    form.review.ok && address ? { from: address, to: form.review.to, value: fromUnits(form.review.amount, 18) } : null,
+  );
+  const tooMuch = form.review.ok && exceedsBalanceWithFee(form.review.amount, fee.fee, balanceSPLD);
 
   const pay = () => {
-    if (form.review.ok) void sendTransfer({ to: form.review.to, amountSPLD: form.review.amount });
+    if (form.review.ok) {
+      void sendTransfer({ to: form.review.to, amountSPLD: form.review.amount, fee: fee.fee ?? undefined });
+    }
   };
 
   return (
     <WidgetShell kind="invoice" title="Pay invoice" status={status}>
       <AddressInput label="To" value={form.to} onChange={form.setTo} self={address} />
-      <AmountInput label="Amount (SPLD)" value={form.amount} onChange={form.setAmount} balance={balanceSPLD} />
-      <button className="sqc-btn sqc-btn--primary sqc-btn--block" disabled={!form.canReview} onClick={pay}>
+      <AmountInput label="Amount (SPLD)" value={form.amount} onChange={form.setAmount} balance={spendable} />
+      {form.review.ok && <FeeRow estimate={fee} />}
+      <button
+        className="sqc-btn sqc-btn--primary sqc-btn--block"
+        disabled={!form.canReview || fee.loading || fee.reverted || tooMuch}
+        onClick={pay}
+      >
         Pay
       </button>
       {hash && <TxResult hash={hash} confirmed={confirmed} explorerUrl={explorerUrl} />}
@@ -226,7 +281,7 @@ await claim({ id, asset: 'spld', amount, recipient, evmTx, attestations });
 
 ```bash
 npm install @splendor/connect-react @splendor/sqc-sdk react react-dom
-# or scaffold: npm exec create-splendor-dapp my-dapp
+# or scaffold: npm create splendor-dapp@latest
 ```
 
 ```ts
@@ -434,6 +489,7 @@ loopback) and open with `rel="noopener noreferrer"`.
 | `@splendor/connect-react/vite` | `sqcWasmPlugin` |
 | `@splendor/connect-react/next` | `copySqcWasmToPublic` |
 | `@splendor/connect-react/testing` | `createMockConnectController`, `MockSplendorProvider`, `mockWallet`, `mockConnector` |
+| `@splendor/connect-react/manifest` | `WIDGET_MANIFESTS`, `getWidgetManifest`, `MANIFEST_SCHEMA_VERSION` (data only, no React) |
 | `@splendor/connect-react/style.css` | Theme tokens |
 
 ## License

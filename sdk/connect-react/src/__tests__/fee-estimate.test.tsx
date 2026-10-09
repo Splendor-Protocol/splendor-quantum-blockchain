@@ -42,6 +42,17 @@ describe('useEstimateFee', () => {
     expect(result.current.revertReason).toBe('insufficient balance');
   });
 
+  it('treats an empty node response as an error instead of loading forever', async () => {
+    const { Wrap, wallet } = wrap(undefined);
+    (wallet.connection as { estimateGas: unknown }).estimateGas = async () => null;
+    const { result } = renderHook(() => useEstimateFee({ from: MOCK_ADDRESS, to: TO, value: '1' }, { debounceMs: 0 }), {
+      wrapper: Wrap,
+    });
+    await waitFor(() => expect(result.current.error).toBeTruthy());
+    expect(result.current.loading).toBe(false);
+    expect(result.current.fee).toBeNull();
+  });
+
   it('does nothing for a null request', () => {
     const { Wrap, wallet } = wrap(undefined);
     const { result } = renderHook(() => useEstimateFee(null, { debounceMs: 0 }), { wrapper: Wrap });

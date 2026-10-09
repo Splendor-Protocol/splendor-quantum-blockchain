@@ -4,9 +4,9 @@
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
 import type { Signer } from '../core/signer.js';
-import { signerAccountNonce } from '../core/signer.js';
+import { signerAccountNonce, signedTxNonce, writeOpts } from '../core/signer.js';
 import { qrc20Address } from '../addresses/index.js';
-import type { SignedPermit } from '../types.js';
+import type { SignedPermit, WriteOpts } from '../types.js';
 import { fromUnits } from '../units.js';
 import { assertAddress } from '../address.js';
 import { BridgeError } from '../errors.js';
@@ -113,15 +113,15 @@ export class QRC20 extends Program {
   }
 
   /** Transfer using a human-readable amount (uses on-chain decimals). */
-  async transferHuman(wallet: Signer, to: string, amountHuman: string) {
+  async transferHuman(wallet: Signer, to: string, amountHuman: string, opts?: WriteOpts) {
     const decimals = await this.decimalsOrThrow();
-    return this.transfer(wallet, to, fromUnits(amountHuman, decimals));
+    return this.transfer(wallet, to, fromUnits(amountHuman, decimals), opts);
   }
 
   /** Approve using a human-readable amount (uses on-chain decimals). */
-  async approveHuman(wallet: Signer, spender: string, amountHuman: string) {
+  async approveHuman(wallet: Signer, spender: string, amountHuman: string, opts?: WriteOpts) {
     const decimals = await this.decimalsOrThrow();
-    return this.approve(wallet, spender, fromUnits(amountHuman, decimals));
+    return this.approve(wallet, spender, fromUnits(amountHuman, decimals), opts);
   }
 
   async balanceOf(owner: string): Promise<string> {
@@ -166,29 +166,29 @@ export class QRC20 extends Program {
     return res.owner;
   }
 
-  async transfer(wallet: Signer, to: string, amount: string) {
+  async transfer(wallet: Signer, to: string, amount: string, opts?: WriteOpts) {
     return this.write(wallet, 'transfer', {
       to: assertAddress(to),
       amount: assertAmount(amount),
-    });
+    }, opts);
   }
 
-  async approve(wallet: Signer, spender: string, amount: string) {
+  async approve(wallet: Signer, spender: string, amount: string, opts?: WriteOpts) {
     return this.write(wallet, 'approve', {
       spender: assertAddress(spender),
       amount: assertAmount(amount),
-    });
+    }, opts);
   }
 
-  async mint(wallet: Signer, to: string, amount: string) {
+  async mint(wallet: Signer, to: string, amount: string, opts?: WriteOpts) {
     return this.write(wallet, 'mint', {
       to: assertAddress(to),
       amount: assertAmount(amount),
-    });
+    }, opts);
   }
 
-  async burn(wallet: Signer, amount: string) {
-    return this.write(wallet, 'burn', { amount: assertAmount(amount) });
+  async burn(wallet: Signer, amount: string, opts?: WriteOpts) {
+    return this.write(wallet, 'burn', { amount: assertAmount(amount) }, opts);
   }
 
   async transferFrom(
@@ -196,49 +196,50 @@ export class QRC20 extends Program {
     from: string,
     to: string,
     amount: string,
+    opts?: WriteOpts,
   ) {
     return this.write(wallet, 'transfer_from', {
       from: assertAddress(from),
       to: assertAddress(to),
       amount: assertAmount(amount),
-    });
+    }, opts);
   }
 
-  async increaseAllowance(wallet: Signer, spender: string, amount: string) {
+  async increaseAllowance(wallet: Signer, spender: string, amount: string, opts?: WriteOpts) {
     return this.write(wallet, 'increase_allowance', {
       spender: assertAddress(spender),
       amount: assertAmount(amount),
-    });
+    }, opts);
   }
 
-  async decreaseAllowance(wallet: Signer, spender: string, amount: string) {
+  async decreaseAllowance(wallet: Signer, spender: string, amount: string, opts?: WriteOpts) {
     return this.write(wallet, 'decrease_allowance', {
       spender: assertAddress(spender),
       amount: assertAmount(amount),
-    });
+    }, opts);
   }
 
-  async burnFrom(wallet: Signer, from: string, amount: string) {
+  async burnFrom(wallet: Signer, from: string, amount: string, opts?: WriteOpts) {
     return this.write(wallet, 'burn_from', {
       from: assertAddress(from),
       amount: assertAmount(amount),
-    });
+    }, opts);
   }
 
-  async pause(wallet: Signer) {
-    return this.write(wallet, 'pause', {});
+  async pause(wallet: Signer, opts?: WriteOpts) {
+    return this.write(wallet, 'pause', {}, opts);
   }
 
-  async unpause(wallet: Signer) {
-    return this.write(wallet, 'unpause', {});
+  async unpause(wallet: Signer, opts?: WriteOpts) {
+    return this.write(wallet, 'unpause', {}, opts);
   }
 
-  async transferOwnership(wallet: Signer, newOwner: string) {
-    return this.write(wallet, 'transfer_ownership', { new_owner: assertAddress(newOwner) });
+  async transferOwnership(wallet: Signer, newOwner: string, opts?: WriteOpts) {
+    return this.write(wallet, 'transfer_ownership', { new_owner: assertAddress(newOwner) }, opts);
   }
 
   /** Submit on-chain permit (params from wallet.signPermit). */
-  async submitPermit(wallet: Signer, signed: SignedPermit) {
+  async submitPermit(wallet: Signer, signed: SignedPermit, opts?: WriteOpts) {
     return this.write(wallet, 'permit', {
       token: signed.token,
       owner: signed.owner,
@@ -247,7 +248,7 @@ export class QRC20 extends Program {
       deadline: signed.deadline,
       signature: signed.signature,
       owner_pubkey: signed.owner_pubkey,
-    });
+    }, opts);
   }
 }
 
@@ -255,7 +256,7 @@ export class QRC20 extends Program {
 export async function deployQRC20(
   wallet: Signer,
   params: QRC20DeployParams,
-  opts?: { fee?: string; waitForConfirmation?: boolean },
+  opts?: WriteOpts,
 ): Promise<{ address: string; result: Awaited<ReturnType<Signer['sendModuleCall']>> }> {
   const name = String(params.name ?? '').trim();
   const symbol = String(params.symbol ?? '').trim();
@@ -267,7 +268,6 @@ export async function deployQRC20(
     throw BridgeError.invalidAmount('maxSupply must be at least totalSupply');
   }
   const nonce = await signerAccountNonce(wallet);
-  const predicted = QRC20.predictAddress(wallet.getAddress(), nonce);
   const result = await wallet.sendModuleCall({
     module: 'qrc20',
     action: 'deploy',
@@ -278,10 +278,10 @@ export async function deployQRC20(
       total_supply: totalSupply,
       ...(maxSupply ? { max_supply: maxSupply } : {}),
     },
-    fee: opts?.fee,
-    waitForConfirmation: opts?.waitForConfirmation,
+    ...writeOpts(opts),
   });
-  return { address: predicted, result };
+  const address = QRC20.predictAddress(wallet.getAddress(), signedTxNonce(result) ?? nonce);
+  return { address, result };
 }
 
 export function getToken(connection: Connection, address: string): QRC20 {

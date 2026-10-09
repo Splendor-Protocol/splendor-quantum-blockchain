@@ -1,0 +1,48 @@
+{
+  "name": "create-splendor-dapp",
+  "version": "0.1.0",
+  "description": "Create a Splendor Quantum Chain dApp (Vite or Next.js) from the same templates as the Splendor dApp Playground.",
+  "type": "module",
+  "bin": {
+    "create-splendor-dapp": "./bin/index.mjs"
+  },
+  "files": [
+    "bin",
+    "catalog.json",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "node ./scripts/build-catalog.mjs",
+    "prepack": "node ./scripts/build-catalog.mjs",
+    "test": "node ./scripts/build-catalog.mjs && vitest run"
+  },
+  "dependencies": {
+    "@splendor/dapp-spec": "^0.1.0"
+  },
+  "devDependencies": {
+    "@splendor/connect-react": "3.0.0",
+    "@splendor/sqc-sdk": "3.0.0",
+    "vitest": "^3.0.5"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "splendor",
+    "dapp",
+    "create",
+    "scaffold",
+    "post-quantum"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Splendor-Protocol/splendor-quantum-blockchain.git",
+    "directory": "packages/create-splendor-dapp"
+  }
+}

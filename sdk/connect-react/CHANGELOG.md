@@ -2,9 +2,26 @@
 
 Consumer-facing changes. The internal hardening log is [`../CHANGELOG-HARDENING.md`](../CHANGELOG-HARDENING.md).
 
-## Unreleased
+## 3.0.0
+
+Requires `@splendor/sqc-sdk` ≥ 3.0.0.
 
 ### Fixed
+
+- **TokenPanel** sends the reviewed fee, blocks Confirm when the SPLD balance cannot cover the
+  network fee, and keeps Review disabled until the token balance is known.
+- **DeployTokenWidget** estimates the fee even with `review={false}` (and blocks Deploy when it
+  is unaffordable, loading or reverting), closes the review when the wallet or network changes,
+  and its result panel shows `confirmed` only for a confirmed deploy.
+- Widgets reset their form when the wallet or network changes (not while a send is pending), and
+  Confirm ignores a second click while a send is pending.
+- **SignInButton** ignores double clicks: the button is disabled from the nonce request on, so
+  `nonce` is called once.
+- Balances refresh right after any send recorded by a widget or hook, without waiting for the
+  next poll; `useQRC20` transfers no longer block on a balance refresh.
+- `useEstimateFee` times out after 15 s and treats an empty node response as an error instead of
+  loading forever.
+- A failed shared read no longer evicts a newer in-flight read for the same key.
 
 - **TokenPanel and DeployTokenWidget review shows the real fee.** The estimate is now made for
   the actual `qrc20.transfer` / `qrc20.deploy` module call, a predicted revert is shown, and
@@ -36,7 +53,11 @@ Consumer-facing changes. The internal hardening log is [`../CHANGELOG-HARDENING.
 
 ### Added
 
-- Labels: `insufficientWithFee` (all widgets), `nonceFailed` (`SignInButton`).
+- Labels: `insufficientWithFee` (all widgets), `nonceFailed` (`SignInButton`),
+  `feeUnaffordable` (all widgets).
+- `useQRC20().transfer` / `transferHuman` accept `WriteOpts` (for example `{ fee }`).
+- `useConnectController`, `useConnectState` and `useNetworkSwitch` are exported from the
+  package root.
 - npm package ships `docs/` (the guide the README links to), `CHANGELOG.md` and `LICENSE`.
 
 ## 2.0.0

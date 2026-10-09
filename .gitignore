@@ -1,3 +1,12 @@
+# npm workspaces (SDK, widgets, dApp Playground)
+node_modules/
+/apps/*/dist/
+/packages/*/dist/
+/apps/playground-api/data/
+/apps/playground/test-results/
+/apps/playground/playwright-report/
+.env.local
+
 # Compiled binaries from `go build` at the repo root.
 /auditprobe
 /loadtest

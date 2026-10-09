@@ -370,14 +370,21 @@ import { AccountCard, DeployTokenWidget, TokenPanel, TransferWidget } from '@spl
 
 `TransferWidget` and `TokenPanel` validate the recipient, block self-sends and amounts above the
 balance, and show a review step before the wallet is asked to sign. The review lists From, To,
-the amount, the token contract and the network fee; `TransferWidget` also disables Confirm when the
-node predicts the transfer will revert. `DeployTokenWidget` has the same review step. Pass
-`showFee={false}` to hide the fee row.
+the amount, the token contract and the network fee estimated for the real call. In
+`TransferWidget`, `TokenPanel` and `DeployTokenWidget`, Confirm stays disabled while the fee is
+loading, when the node predicts a revert, and when the SPLD balance cannot cover the amount plus
+the fee. The reviewed fee is the fee that is sent. `DeployTokenWidget` has the same review step;
+pass `review={false}` to deploy straight from the form (the fee checks then block the Deploy
+button instead). Pass `showFee={false}` to hide the fee row and skip the estimate.
 
-All five widgets share one contract: `className`, `style`, `title`, `hideTitle`, `labels`, `onSuccess`,
-`onError`, `onStatusChange` and `toast`. A widget only renders its form when an unlocked wallet is
-connected; otherwise it shows a Connect or Unlock button. The older `onSent`, `onDeployed` and
-`onSignedIn` callbacks still fire but are deprecated.
+Forms reset when the wallet or network changes, unless a send is pending.
+
+`TransferWidget`, `TokenPanel`, `DeployTokenWidget` and `SignInButton` share one contract:
+`className`, `style`, `title`, `hideTitle`, `labels`, `onSuccess`, `onError` and `onStatusChange`
+(`SignInButton` has no `toast`; the others accept `toast`). `AccountCard` takes `className`,
+`style`, `title`, `hideTitle` and `labels`, plus `onCopy` and `onDisconnect`. A widget only renders
+its form when an unlocked wallet is connected; otherwise it shows a Connect or Unlock button. The
+older `onSent`, `onDeployed` and `onSignedIn` callbacks still fire but are deprecated.
 The full prop list is in the [README](../README.md#widget-props).
 
 ### Customize text and styling
@@ -402,27 +409,40 @@ stable hooks: `.sqc-widget--transfer`, `[data-sqc-widget="token"]`, `[data-statu
 ### Build your own widget
 
 The parts the widgets are built from are exported: `WidgetShell`, `WalletGate`, `AddressInput`,
-`AmountInput`, `ReviewPanel`, `TxResult`, `AddressDisplay` and the headless `useTransferForm`.
+`AmountInput`, `ReviewPanel`, `FeeRow`, `PendingTxList`, `TxResult`, `AddressDisplay`, the
+headless `useTransferForm`, and the fee helpers `spendableAfterFee` / `exceedsBalanceWithFee`.
 
 ```tsx
 const { address } = useAccount();
 const { balanceSPLD } = useBalance();
 const { sendTransfer, status, hash, confirmed, explorerUrl } = useSendTransfer();
-const form = useTransferForm({ balance: balanceSPLD, self: address });
+// Leave room for the minimum fee (atto SPLD) when checking the amount.
+const spendable = spendableAfterFee(balanceSPLD, MIN_FEE);
+const form = useTransferForm({ balance: spendable, self: address });
+const fee = useEstimateFee(
+  form.review.ok && address ? { from: address, to: form.review.to, value: fromUnits(form.review.amount, 18) } : null,
+);
+const tooMuch = form.review.ok && exceedsBalanceWithFee(form.review.amount, fee.fee, balanceSPLD);
 
 <WidgetShell kind="tip" title="Tip the author" status={status}>
   <AddressInput label="To" value={form.to} onChange={form.setTo} self={address} />
-  <AmountInput label="Amount" value={form.amount} onChange={form.setAmount} balance={balanceSPLD} />
+  <AmountInput label="Amount" value={form.amount} onChange={form.setAmount} balance={spendable} />
+  {form.review.ok && <FeeRow estimate={fee} />}
   <button
     className="sqc-btn sqc-btn--primary sqc-btn--block"
-    disabled={!form.canReview}
-    onClick={() => form.review.ok && sendTransfer({ to: form.review.to, amountSPLD: form.review.amount })}
+    disabled={!form.canReview || fee.loading || fee.reverted || tooMuch}
+    onClick={() =>
+      form.review.ok &&
+      sendTransfer({ to: form.review.to, amountSPLD: form.review.amount, fee: fee.fee ?? undefined })
+    }
   >
     Send tip
   </button>
   {hash && <TxResult hash={hash} confirmed={confirmed} explorerUrl={explorerUrl} />}
 </WidgetShell>
 ```
+
+`MIN_FEE` and `fromUnits` come from `@splendor/sqc-sdk`.
 
 The lab's **Build your own** card runs this pattern.
 
@@ -483,6 +503,9 @@ const fee = useEstimateFee(to && address ? { from: address, to, value: fromUnits
 
 `useEstimateFee` debounces (300 ms by default) and returns `fee` (atto), `feeSpld`, `feeIsFloor`
 (the node returned the minimum fee), `gas`, `reverted` and `revertReason`. Pass `null` to skip.
+An estimate that takes longer than 15 s, or an empty node response, sets `error`. Pass `fee.fee` to
+the send so the user pays what they reviewed, and use `exceedsBalanceWithFee(amount, fee.fee,
+balanceSPLD)` to block sends the balance cannot cover.
 
 ## 13. Pending transactions across reloads
 

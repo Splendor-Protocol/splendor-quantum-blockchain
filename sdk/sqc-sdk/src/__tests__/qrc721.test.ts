@@ -41,6 +41,14 @@ describe('QRC721 reads', () => {
     expect(info).toEqual({ name: 'Art', symbol: 'ART', owner: OWNER, total_supply: '12' });
   });
 
+  it('collectionInfo decodes a byte-array owner', async () => {
+    const info = await new QRC721(
+      conn(() => ({ name: 'Art', symbol: 'ART', owner: Array(32).fill(0xab), total_supply: '1' })).connection,
+      COLLECTION,
+    ).collectionInfo();
+    expect(info.owner).toBe(OWNER);
+  });
+
   it('rejects non-integer token ids before calling the node', async () => {
     const { connection, moduleCall } = conn(() => OWNER);
     await expect(new QRC721(connection, COLLECTION).ownerOf('-1')).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
@@ -56,5 +64,49 @@ describe('deployQRC721', () => {
       code: 'INVALID_PARAMS',
     });
     expect(wallet.sendModuleCall).not.toHaveBeenCalled();
+  });
+
+  it('predicts the address from the nonce the tx was signed with', async () => {
+    const sendModuleCall = vi.fn(async () => ({ status: 'submitted', hash: 'h', signedTx: { nonce: 9 } }));
+    const wallet = {
+      sendModuleCall,
+      getAddress: () => OWNER,
+      getNonce: async () => ({ nonce: 4 }),
+    } as unknown as Signer;
+    const { address } = await deployQRC721(wallet, { name: 'Art', symbol: 'ART' }, { fee: '7', module: 'evil' } as never);
+    expect(address).toBe(QRC721.predictAddress(OWNER, 9));
+    expect(address).not.toBe(QRC721.predictAddress(OWNER, 4));
+    expect(sendModuleCall.mock.calls[0]![0]).toMatchObject({ module: 'qrc721', action: 'deploy', fee: '7' });
+  });
+
+  it('falls back to the pre-send nonce when the signer returns no signed body', async () => {
+    const wallet = {
+      sendModuleCall: vi.fn(async () => ({ status: 'submitted', hash: 'h' })),
+      getAddress: () => OWNER,
+      getNonce: async () => ({ nonce: 4 }),
+    } as unknown as Signer;
+    const { address } = await deployQRC721(wallet, { name: 'Art', symbol: 'ART' });
+    expect(address).toBe(QRC721.predictAddress(OWNER, 4));
+  });
+});
+
+describe('QRC721 writes', () => {
+  it('forward fee and confirmation options without overriding the call', async () => {
+    const sendModuleCall = vi.fn(async () => ({ status: 'submitted', hash: 'h' }));
+    const wallet = { sendModuleCall, getAddress: () => OWNER } as unknown as Signer;
+    const nft = getNftCollection(conn(() => null).connection, COLLECTION);
+    await nft.mint(wallet, OWNER, '1', undefined, {
+      fee: '5',
+      waitForConfirmation: true,
+      allowNonceConfirmation: true,
+      action: 'burn',
+    } as never);
+    expect(sendModuleCall.mock.calls[0]![0]).toMatchObject({
+      module: 'qrc721',
+      action: 'mint',
+      fee: '5',
+      waitForConfirmation: true,
+      allowNonceConfirmation: true,
+    });
   });
 });

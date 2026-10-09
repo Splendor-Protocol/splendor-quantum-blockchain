@@ -23,7 +23,7 @@ export {
 } from './derive.js';
 /** @deprecated Do not use in dApps — EVM→PQ derivation removed from ConnectKit. */
 export type { DerivationScheme, Eip712DeriveTypedData } from './derive.js';
-export { fromSPLD, toSPLD, assertSafeRpcUrl } from './rpc.js';
+export { fromSPLD, toSPLD, assertSafeRpcUrl, redactRpcUrl } from './rpc.js';
 /** @deprecated Prefer Connection / Transport. SqRpc remains the private adapter behind RpcTransport. */
 export { SqRpc } from './rpc.js';
 export type { RpcOptions } from './rpc.js';
@@ -98,6 +98,7 @@ export type {
   X402PayOpts,
   PreflightResult,
   ModuleCallOpts,
+  WriteOpts,
   PermitParams,
   SignedPermit,
   OrderParams,

@@ -30,7 +30,7 @@ Deprecated root exports (still present one minor): `connectSplendor`, `createSpl
 
 ### Built-in Program clients vs on-chain modules
 
-Typed `modules.*` / `bindModules` / Session clients ship for: **qrc20**, **qrc1155**, **bridge**, **contract**.
+Typed `modules.*` / `bindModules` clients ship for: **qrc20**, **qrc1155**, **bridge**, **contract**. Session also binds **qrc721** (`s.nft()` / `s.deployNftCollection()`).
 
 Leftover **DEX** / **Exchange** clients exist only under `@splendor/sqc-sdk/defi` (optional `registerUnsupportedApplicationAdapters()` + registry). The node does **not** route `module: "dex"|"exchange"`.
 

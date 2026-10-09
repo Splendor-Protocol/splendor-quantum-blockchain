@@ -3,7 +3,8 @@
  */
 import type { Connection } from './connection.js';
 import { buildModuleCall, type ModuleCall } from './module-call.js';
-import type { Signer } from './signer.js';
+import { writeOpts, type Signer } from './signer.js';
+import type { WriteOpts } from '../types.js';
 import { withSigner, type BoundClient, type WalletLike } from '../bound.js';
 
 export type TxSubmitResult = {
@@ -68,7 +69,7 @@ export abstract class Program {
     wallet: Signer,
     action: string,
     params: Record<string, unknown>,
-    opts?: { fee?: string; waitForConfirmation?: boolean; confirmTimeoutMs?: number },
+    opts?: WriteOpts,
   ): Promise<TxSubmitResult> {
     const module = this.moduleName();
     const fullParams = this.isDeployAction(action) ? params : this.instanceParams(params);
@@ -76,9 +77,7 @@ export abstract class Program {
       module,
       action,
       params: fullParams,
-      fee: opts?.fee,
-      waitForConfirmation: opts?.waitForConfirmation,
-      confirmTimeoutMs: opts?.confirmTimeoutMs,
+      ...writeOpts(opts),
     });
   }
 

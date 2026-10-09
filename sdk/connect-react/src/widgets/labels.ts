@@ -37,6 +37,7 @@ export const COMMON_LABELS = {
   badAmount: 'Enter a valid amount greater than zero',
   insufficient: 'Amount exceeds your {symbol} balance',
   insufficientWithFee: 'Amount plus the network fee exceeds your SPLD balance',
+  feeUnaffordable: 'Not enough SPLD to pay the network fee',
 };
 
 export const TRANSFER_LABELS = {

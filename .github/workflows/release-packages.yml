@@ -1,0 +1,133 @@
+name: Release packages
+
+# Publishes @splendor/sqc-sdk, @splendor/connect-react, @splendor/dapp-spec and
+# create-splendor-dapp to npm with provenance. Runbook: docs/RELEASING_PACKAGES.md.
+#
+# - push to main: changesets opens/updates the "Version packages" PR while changesets
+#   are pending; merging that PR publishes the new versions under `latest`.
+# - workflow_dispatch (the playground admin "Start a release" button, or the Actions tab):
+#     channel=next   snapshot pre-release, e.g. 3.1.0-next-20260108123000, tag `next`
+#     channel=latest publish whatever versions main already has that npm does not
+#     dry_run=true   build, test and `npm pack --dry-run` only; never publishes
+#
+# The npm token lives only in this repo's NPM_TOKEN secret. The playground API holds a
+# GitHub token that can dispatch this workflow and nothing else.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.changeset/**'
+      - 'sdk/sqc-sdk/**'
+      - 'sdk/connect-react/**'
+      - 'packages/**'
+      - 'package-lock.json'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: npm dist-tag to publish under
+        type: choice
+        options: [next, latest]
+        default: next
+      dry_run:
+        description: Build, test and pack only (no publish)
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-packages
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: ${{ github.event_name == 'workflow_dispatch' && format('release ({0}{1})', inputs.channel, inputs.dry_run == 'true' && ', dry run' || '') || 'version PR / publish' }}
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: write # version commits and tags
+      pull-requests: write # the "Version packages" PR
+      id-token: write # npm provenance
+    env:
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' }}
+      CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'latest' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # sqc-sdk's prepack rebuilds the signer and fails unless every network pin
+      # names those bytes, so a tarball can never ship a signer its config rejects.
+      - name: Build the signer
+        run: bash sdk/sqc-sdk/wasm/build.sh
+      - name: Install workspaces
+        run: npm ci
+      - name: Build packages
+        run: |
+          npm run build:packages
+          npm run build -w create-splendor-dapp
+      - name: Test packages
+        run: npm run test:packages
+      - name: Signer pins match the built bytes
+        run: node sdk/sqc-sdk/scripts/check-wasm-dist.mjs
+
+      - name: Snapshot versions (next)
+        if: env.CHANNEL == 'next'
+        run: |
+          npx changeset version --snapshot next
+          git diff --stat
+
+      - name: Pack (dry run)
+        if: env.DRY_RUN == 'true'
+        run: npm run release-packages:pack
+
+      # latest: version PR while changesets are pending, publish once it is merged.
+      - name: Version PR or publish (latest)
+        if: env.DRY_RUN != 'true' && env.CHANNEL == 'latest'
+        uses: changesets/action@v1
+        with:
+          version: npm run version-packages
+          publish: npm run release-packages
+          title: 'chore: version packages'
+          commit: 'chore: version packages'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+
+      # next: publish the snapshot versions without committing or tagging them.
+      - name: Publish snapshot (next)
+        if: env.DRY_RUN != 'true' && env.CHANNEL == 'next'
+        run: |
+          if git diff --quiet -- '*package.json'; then
+            echo "::warning::no pending changesets, so there is nothing new to snapshot"
+            exit 0
+          fi
+          npx changeset publish --tag next --no-git-tag
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Release packages"
+            echo "- channel: \`${CHANNEL}\`"
+            echo "- dry run: \`${DRY_RUN}\`"
+            for p in sdk/sqc-sdk sdk/connect-react packages/dapp-spec packages/create-splendor-dapp; do
+              echo "- $(node -p "const j=require('./$p/package.json'); j.name+'@'+j.version")"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

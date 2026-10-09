@@ -153,6 +153,9 @@ export type PreflightResult = {
 };
 
 /** Native module call write (qrc20, dex, etc.). */
+/** Fee and confirmation options accepted by every module-client write (token, NFT, bridge). */
+export type WriteOpts = Pick<ModuleCallOpts, 'fee' | 'waitForConfirmation' | 'confirmTimeoutMs' | 'allowNonceConfirmation'>;
+
 export type ModuleCallOpts = {
   module: string;
   action: string;

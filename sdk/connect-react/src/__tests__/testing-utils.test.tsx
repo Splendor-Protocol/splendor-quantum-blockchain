@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import React from 'react';
 import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { AccountCard } from '../widgets/AccountCard.js';
+import { DeployTokenWidget } from '../widgets/DeployTokenWidget.js';
 import { TransferWidget } from '../widgets/TransferWidget.js';
 import {
   createMockConnectController,
@@ -35,6 +36,23 @@ describe('@splendor/connect-react/testing', () => {
     await waitFor(() => expect(ctrl.wallet.calls.some((c) => c.method === 'sendTransfer')).toBe(true));
     const call = ctrl.wallet.calls.find((c) => c.method === 'sendTransfer')!;
     expect(call.args[0]).toMatchObject({ to: TO, amountSPLD: '1' });
+  });
+
+  it('deploys a QRC-20 token through the mock wallet (getNonce + sendModuleCall)', async () => {
+    const ctrl = createMockConnectController({ balance: '3' });
+    const view = render(
+      React.createElement(MockSplendorProvider, { controller: ctrl }, React.createElement(DeployTokenWidget, { showFee: false })),
+    );
+    const root = within(view.container);
+    fireEvent.change(root.getByLabelText('Name'), { target: { value: 'Demo' } });
+    fireEvent.change(root.getByLabelText('Symbol'), { target: { value: 'DMO' } });
+    fireEvent.change(root.getByLabelText('Total supply (human)'), { target: { value: '1000' } });
+    fireEvent.click(root.getByRole('button', { name: /^Review deploy$/i }));
+    fireEvent.click(await root.findByRole('button', { name: /^Confirm deploy$/i }));
+    await waitFor(() => expect(ctrl.wallet.calls.some((c) => c.method === 'sendModuleCall')).toBe(true));
+    const call = ctrl.wallet.calls.find((c) => c.method === 'sendModuleCall')!;
+    expect(call.args[0]).toMatchObject({ module: 'qrc20', action: 'deploy', params: { name: 'Demo', symbol: 'DMO' } });
+    expect(ctrl.wallet.calls.some((c) => c.method === 'getNonce')).toBe(true);
   });
 
   it('fail makes a method reject so error paths can be tested', async () => {

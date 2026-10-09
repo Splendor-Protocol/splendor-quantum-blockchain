@@ -85,7 +85,8 @@ describe('subscribe functional', () => {
     );
     await new Promise((r) => setTimeout(r, 80));
     sub.close();
-    expect(events).toEqual([
+    // Every round delivers data, which resets the retry budget, so it keeps reconnecting.
+    expect(events.slice(0, 2)).toEqual([
       { type: 'new_block', height: 1 },
       { type: 'new_block', height: 2 },
     ]);
@@ -174,6 +175,77 @@ describe('subscribe functional', () => {
   });
 });
 
+describe('subscribe Node retry policy', () => {
+  function failingFetch(hits: string[], okHost?: string) {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      hits.push(`${url}|${(init?.headers as Record<string, string>)['Last-Event-ID'] ?? ''}`);
+      if (okHost && url.startsWith(okHost)) {
+        let i = 0;
+        const chunks = ['id: 42\n', 'data: {"type":"new_block","height":5}\n'];
+        return {
+          ok: true,
+          body: {
+            getReader: () => ({
+              read: async () =>
+                i < chunks.length
+                  ? { done: false, value: new TextEncoder().encode(chunks[i++]) }
+                  : { done: true, value: undefined },
+              cancel: async () => undefined,
+            }),
+          },
+        };
+      }
+      throw new TypeError('down');
+    });
+  }
+
+  it('stops after maxRetries full passes when no connection ever delivers data', async () => {
+    vi.stubGlobal('EventSource', undefined);
+    const hits: string[] = [];
+    vi.stubGlobal('fetch', failingFetch(hits));
+    const sub = subscribe(['https://a.test', 'https://b.test'], 'new_block', () => undefined, () => undefined, {
+      backoffMs: 1,
+      maxRetries: 1,
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    sub.close();
+    expect(hits.map((h) => h.split('/ws')[0])).toEqual([
+      'https://a.test',
+      'https://b.test',
+      'https://a.test',
+      'https://b.test',
+    ]);
+  });
+
+  it('carries the latest event id to the next URL', async () => {
+    vi.stubGlobal('EventSource', undefined);
+    const hits: string[] = [];
+    vi.stubGlobal('fetch', failingFetch(hits, 'https://a.test'));
+    const sub = subscribe(['https://a.test', 'https://b.test'], 'new_block', () => undefined, () => undefined, {
+      backoffMs: 1,
+      maxRetries: 0,
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    sub.close();
+    expect(hits[0]).toMatch(/^https:\/\/a\.test.*\|$/);
+    expect(hits[1]).toMatch(/^https:\/\/b\.test.*\|42$/);
+  });
+
+  it('an aborted signal closes the subscription', async () => {
+    vi.stubGlobal('EventSource', undefined);
+    const hits: string[] = [];
+    vi.stubGlobal('fetch', failingFetch(hits));
+    const ac = new AbortController();
+    subscribe('https://a.test', 'new_block', () => undefined, () => undefined, { backoffMs: 1, signal: ac.signal });
+    await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+    const n = hits.length;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(hits.length).toBe(n);
+  });
+});
+
 class FakeEventSource {
   static CONNECTING = 0;
   static OPEN = 1;
@@ -248,5 +320,13 @@ describe('subscribe browser EventSource', () => {
     sub.close();
     vi.advanceTimersByTime(10_000);
     expect(FakeEventSource.instances).toHaveLength(1);
+  });
+
+  it('closes the EventSource when the signal aborts', () => {
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const ac = new AbortController();
+    subscribe('https://rpc.test', 'new_block', () => undefined, undefined, { signal: ac.signal });
+    ac.abort();
+    expect(FakeEventSource.instances[0]!.closed).toBe(true);
   });
 });

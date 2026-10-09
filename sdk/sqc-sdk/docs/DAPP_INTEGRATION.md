@@ -31,7 +31,7 @@ Connect → fund → transfer → wait. Use a read-only `Connection` / `SqcProvi
 | Token balance / transfer | `modules.qrc20(connection, addr)` / `useQRC20(addr)` / `TokenPanel` |
 | QRC-1155 / Bridge / Contract | `modules.qrc1155` / `modules.bridge` / `modules.contract` (hooks: `useQRC1155`, `useBridge`, `useContract`) |
 | DEX / Exchange | **Not public** — leftover under `@splendor/sqc-sdk/defi` until node routes them |
-| Confirmation that is not fake | `waitForConfirmation` / `waitForConfirmation: true` — receipt-first, nonce fallback ([SQDP §7](./SQDP-1.md)) |
+| Confirmation that is not fake | `waitForConfirmation` / `waitForConfirmation: true` — requires a successful receipt; `allowNonceConfirmation: true` opts into the nonce check ([SQDP §7](./SQDP-1.md)) |
 
 **Out of scope (documented):** WalletConnect v2, Ethereum `eth_*` / wagmi EIP-1193 adapters, CDN-hosted WASM.
 **Supported interop:** SQC injected provider `window.splendor` with `splendor_*` methods (not MetaMask-compatible).
@@ -217,7 +217,7 @@ const res = await wallet.sendTransfer({
   waitForConfirmation: true,
   confirmTimeoutMs: 60_000,
 });
-// Prefer GET /tx/{hash}/receipt when indexed; else nonce advancement (can race)
+// Require GET /tx/{hash}/receipt; nonce advancement only on explicit opt-in (can race)
 ```
 
 ## 5. Contract calls
@@ -273,6 +273,6 @@ Serve WASM with correct MIME/CORS: [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 - [ ] Display **SQ:** address after connect (not 0x)
 - [ ] Handle `BridgeError` codes: `USER_REJECTED`, `NO_PROVIDER`, `TIMEOUT`, `TX_NOT_CONFIRMED`, `CHAIN_MISMATCH`
 - [ ] Use `rpcUrls` failover in production (`https://` for non-local)
-- [ ] Confirm via `waitForConfirmation` (receipt-first; nonce fallback on minimal RPC)
+- [ ] Confirm via `waitForConfirmation` (receipt required; pass `allowNonceConfirmation` only for nodes without a receipt index)
 - [ ] Host WASM at network `wasmUrl` / `execUrl` from `sqc.networks.json` (one-touch already resolves these; you still must serve the files)
 - [ ] Remember: under congestion node fee floor may exceed `PROTOCOL.minFee` (`1000`)

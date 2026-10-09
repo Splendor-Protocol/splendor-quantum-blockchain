@@ -71,7 +71,6 @@ function normalizeTxResult(raw: unknown): SendTxResult {
     status: String(o.status ?? 'ok'),
     hash,
     signedTx: (o.signedTx as object) ?? {},
-    confirmation: o.confirmation as SendTxResult['confirmation'],
   };
 }
 
@@ -447,7 +446,8 @@ export class ExtensionSigner implements Signer {
       }
       return submit();
     });
-    if (!opts?.waitForConfirmation || res.confirmation) return res;
+    // The extension's own confirmation claim is never trusted; confirm against the node.
+    if (!opts?.waitForConfirmation) return res;
     const confirmation = await this.connection.waitForConfirmation({
       from: this.getAddress(),
       nonceBefore,

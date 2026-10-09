@@ -375,3 +375,27 @@ describe('gateway custodial + CORS and chain_id', () => {
     );
   }, 60_000);
 });
+
+describe('gateway request id and URL redaction', () => {
+  it('exposes x-request-id to browsers and redacts the RPC URL in /health', async () => {
+    gw = await buildServer({
+      mode: 'proxy',
+      allowCustodialProxy: false,
+      corsOrigins: ['https://app.example'],
+      publicHealth: true,
+      logger: false,
+      listen: false,
+      rateMax: 10_000,
+      rpcUrl: 'http://127.0.0.1:1/v1/secret-key?token=abc',
+    });
+    const res = await gw.app.inject({
+      method: 'GET',
+      url: '/health',
+      headers: { origin: 'https://app.example', 'x-request-id': 'trace-7' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-request-id']).toBe('trace-7');
+    expect(String(res.headers['access-control-expose-headers'])).toMatch(/x-request-id/i);
+    expect(res.json().sqc_rpc).toBe('http://127.0.0.1:1');
+  }, 60_000);
+});

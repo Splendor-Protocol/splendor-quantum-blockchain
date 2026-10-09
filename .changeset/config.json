@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "changelog": ["@changesets/changelog-github", { "repo": "Splendor-Protocol/splendor-quantum-blockchain" }],
+  "commit": false,
+  "fixed": [],
+  "linked": [["@splendor/sqc-sdk", "@splendor/connect-react"]],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": ["@splendor/playground", "@splendor/playground-api"],
+  "privatePackages": { "version": false, "tag": false },
+  "snapshot": { "useCalculatedVersion": true, "prereleaseTemplate": "{tag}-{datetime}" },
+  "___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH": { "onlyUpdatePeerDependentsWhenOutOfRange": true }
+}

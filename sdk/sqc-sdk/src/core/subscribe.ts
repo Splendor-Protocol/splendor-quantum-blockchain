@@ -16,11 +16,16 @@ export type SubscribeOptions = {
    * transient drops are retried by EventSource itself.
    */
   reconnect?: boolean;
-  /** Default Infinity. Browser: counts EventSource rebuilds, reset on open. */
+  /**
+   * Default Infinity. Browser: counts EventSource rebuilds, reset on open. Node: counts full
+   * passes over the URL list, reset once a connection delivers data.
+   */
   maxRetries?: number;
   /** Initial reconnect delay in ms. Default 250. */
   backoffMs?: number;
+  /** Node only: resume point sent as `Last-Event-ID` (the browser tracks its own). */
   lastEventId?: string;
+  /** Aborting closes the subscription, same as `close()`. */
   signal?: AbortSignal;
 };
 
@@ -65,11 +70,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(signal.reason ?? new Error('aborted'));
       return;
     }
-    const timer = setTimeout(resolve, ms);
     const onAbort = () => {
       clearTimeout(timer);
       reject(signal?.reason ?? new Error('aborted'));
     };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
@@ -102,26 +110,37 @@ async function nodeStreamOnce(
   }
 }
 
+/**
+ * Node reconnect loop. With several URLs each failure moves to the next one, and a retry is
+ * counted once per full pass. The latest event id carries across URLs, and the retry count
+ * resets once a connection delivers data.
+ */
 async function nodeStreamSubscribe(
-  url: string,
+  urls: string[],
   onEvent: (ev: WsEvent) => void,
   options: SubscribeOptions,
   closed: () => boolean,
 ): Promise<void> {
   let lastId = options.lastEventId;
   let attempt = 0;
+  let index = 0;
   const reconnect = options.reconnect !== false;
   const maxRetries = options.maxRetries ?? Number.POSITIVE_INFINITY;
   const baseBackoff = options.backoffMs ?? 250;
   const onError = options.onError;
 
   while (!closed()) {
+    let gotData = false;
     try {
       const result = await nodeStreamOnce(
-        url,
+        urls[index]!,
         lastId,
-        onEvent,
+        (ev) => {
+          gotData = true;
+          onEvent(ev);
+        },
         (id) => {
+          gotData = true;
           lastId = id;
         },
         options.signal,
@@ -133,9 +152,13 @@ async function nodeStreamSubscribe(
       onError?.(e);
     }
     if (!reconnect) return;
-    attempt += 1;
-    if (attempt > maxRetries) return;
-    const delay = backoffDelay(baseBackoff, attempt);
+    if (gotData) attempt = 0;
+    index = (index + 1) % urls.length;
+    if (index === 0) {
+      attempt += 1;
+      if (attempt > maxRetries) return;
+    }
+    const delay = backoffDelay(baseBackoff, Math.max(attempt, 1));
     try {
       await sleep(delay, options.signal);
     } catch {
@@ -169,11 +192,12 @@ export function subscribe(
   let browserAttempt = 0;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
 
+  const wsUrl = (base: string) => `${base}/ws?subscribe=${encodeURIComponent(eventsParam(events))}`;
+
   const startAt = (index: number) => {
     if (closed) return;
     urlIndex = index % urls.length;
-    const base = urls[urlIndex]!;
-    const url = `${base}/ws?subscribe=${encodeURIComponent(eventsParam(events))}`;
+    const url = wsUrl(urls[urlIndex]!);
 
     if (typeof EventSource !== 'undefined') {
       const source = new EventSource(url);
@@ -210,33 +234,25 @@ export function subscribe(
     }
 
     const controller = new AbortController();
-    if (opts.signal) {
-      if (opts.signal.aborted) controller.abort();
-      else opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
-    }
     const localOpts: SubscribeOptions = { ...opts, signal: controller.signal };
     activeClose = () => {
       controller.abort();
     };
-    void nodeStreamSubscribe(url, onEvent, localOpts, () => closed)
-      .then(() => {
-        if (!closed && urls.length > 1 && localOpts.reconnect !== false) {
-          startAt(urlIndex + 1);
-        }
-      })
-      .catch((e) => {
-        if (!closed && opts.onError) opts.onError(e);
-        if (!closed && urls.length > 1 && localOpts.reconnect !== false) {
-          startAt(urlIndex + 1);
-        }
-      });
+    void nodeStreamSubscribe(urls.map(wsUrl), onEvent, localOpts, () => closed).catch((e) => {
+      if (!closed && opts.onError) opts.onError(e);
+    });
   };
 
-  startAt(0);
-  return {
-    close: () => {
-      closed = true;
-      activeClose?.();
-    },
+  const close = () => {
+    closed = true;
+    activeClose?.();
   };
+  if (opts.signal?.aborted) {
+    closed = true;
+  } else {
+    opts.signal?.addEventListener('abort', close, { once: true });
+  }
+
+  startAt(0);
+  return { close };
 }

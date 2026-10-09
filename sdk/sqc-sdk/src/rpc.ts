@@ -247,7 +247,8 @@ export class SqRpc {
       throw BridgeError.chainMismatch(remote, this.chainId);
     }
     try {
-      return await this.post('/tx/submit', body, true);
+      // A timed-out submit may already be in the mempool: never resend it, to this or another node.
+      return await this.request('POST', '/tx/submit', body, true, undefined, false);
     } catch (e) {
       if (e instanceof BridgeError && e.code === 'RPC' && /fee too low/i.test(e.message)) {
         throw new BridgeError(
@@ -255,6 +256,22 @@ export class SqRpc {
           e.message,
           e.details,
           'Network is busy — the fee is below the current minimum. Review again for a fresh estimate.',
+        );
+      }
+      if (e instanceof BridgeError && e.code === 'RPC' && /duplicate (transaction|pending nonce)/i.test(e.message)) {
+        throw new BridgeError(
+          'RPC',
+          e.message,
+          e.details,
+          'This transaction was already submitted — check your activity before sending again.',
+        );
+      }
+      if (e instanceof BridgeError && e.code === 'TIMEOUT') {
+        throw new BridgeError(
+          'TIMEOUT',
+          e.message,
+          e.details,
+          'The node did not answer in time. The transaction may still go through — check your activity before retrying.',
         );
       }
       throw e;
@@ -677,6 +694,7 @@ export class SqRpc {
     body: unknown | undefined,
     stickyOnSuccess: boolean,
     timeoutOverrideMs?: number,
+    retryOnTimeout = true,
   ): Promise<any> {
     const urls = this.orderedUrls();
     let lastError: unknown;
@@ -702,14 +720,14 @@ export class SqRpc {
           };
           if (method === 'POST') init.body = JSON.stringify(body);
 
-          const res = await fetchWithTimeout(base + path, init, timeoutMs);
+          const { res, text } = await fetchTextWithTimeout(base + path, init, timeoutMs);
 
           if (res.status >= 500 && attempt < this.retries) {
             await sleep(retryDelay(attempt));
             continue;
           }
 
-          const json = await parseResponse(res, path);
+          const json = parseResponse(res, text, path);
           if (stickyOnSuccess) {
             this.stickyUrl = base;
             this.stickyFailStreak = 0;
@@ -736,6 +754,7 @@ export class SqRpc {
             }
             throw e;
           }
+          if (!retryOnTimeout && e instanceof BridgeError && e.code === 'TIMEOUT') throw e;
           const retryable =
             e instanceof BridgeError &&
             (e.code === 'TIMEOUT' || e.code === 'NETWORK');
@@ -789,15 +808,24 @@ function retryDelay(attempt: number): number {
   return Math.round(base + Math.random() * base * 0.5);
 }
 
-async function fetchWithTimeout(
+/** The deadline covers the body too, so a node that stalls mid-response cannot hang the caller. */
+async function fetchTextWithTimeout(
   url: string,
   options: RequestInit,
   timeoutMs: number,
-): Promise<Response> {
+): Promise<{ res: Response; text: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    const text = await Promise.race([
+      res.text(),
+      new Promise<never>((_, reject) => {
+        if (controller.signal.aborted) reject(abortError());
+        controller.signal.addEventListener('abort', () => reject(abortError()), { once: true });
+      }),
+    ]);
+    return { res, text };
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') {
       throw BridgeError.timeout(`RPC request timed out after ${timeoutMs}ms`);
@@ -817,8 +845,13 @@ function rpcHttpStatus(e: BridgeError): number | undefined {
   return undefined;
 }
 
-async function parseResponse(res: Response, path: string): Promise<any> {
-  const text = await res.text();
+function abortError(): Error {
+  const e = new Error('aborted');
+  e.name = 'AbortError';
+  return e;
+}
+
+function parseResponse(res: Response, text: string, path: string): any {
   let json: any;
   try {
     json = JSON.parse(text);

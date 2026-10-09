@@ -1,7 +1,7 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { MODULE_ROUTER_ADDRESS, encodeModuleCallHex, fromUnits } from '@splendor/sqc-sdk';
 import { txExplorerUrl } from '@splendor/sqc-sdk/networks';
-import { useAccount, useDeployToken, useEstimateFee, useNetwork } from '../react/hooks.js';
+import { useAccount, useBalance, useDeployToken, useEstimateFee, useNetwork } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import {
   DEPLOY_TOKEN_LABELS,
@@ -10,12 +10,12 @@ import {
   type DeployTokenWidgetLabels,
 } from './labels.js';
 import type { BaseWidgetProps } from './types.js';
-import { compareDecimal } from './utils.js';
+import { compareDecimal, exceedsBalanceWithFee } from './utils.js';
 import { WidgetShell } from './parts/WidgetShell.js';
 import { ReviewPanel } from './parts/ReviewPanel.js';
 import { FeeRow } from './parts/FeeRow.js';
 import { TxResult } from './parts/TxResult.js';
-import { toError, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
+import { toError, useResetOnContextChange, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
 
 export type TokenDeployedResult = {
   address: string;
@@ -106,8 +106,19 @@ export function DeployTokenWidget({
   const [symbol, setSymbol] = useState(defaultSymbol);
   const [supply, setSupply] = useState(defaultSupply);
   const [decimalsInput, setDecimalsInput] = useState(String(decimalsProp));
+  const [confirmed, setConfirmed] = useState(false);
   const toasts = useWidgetToast(toast);
   useStatusChange(status, onStatusChange);
+  useEffect(() => setReviewing(false), [from, network?.chainId]);
+  useResetOnContextChange(
+    () => {
+      reset();
+      setConfirmed(false);
+    },
+    status === 'pending',
+    from,
+    network?.chainId,
+  );
 
   const decimals = showDecimals ? parseDecimals(decimalsInput) : decimalsProp;
   const max = maxSupply?.trim() || null;
@@ -126,7 +137,8 @@ export function DeployTokenWidget({
         : null;
   const explorer = network && hash ? txExplorerUrl(network, hash) : null;
   const feeRequest = useMemo(() => {
-    if (!showFee || !reviewing || !from || !formOk || decimals == null) return null;
+    // Without a review step the estimate runs on the form itself, so the deploy still gets a fee.
+    if (!showFee || (reviewStep && !reviewing) || !from || !formOk || decimals == null) return null;
     try {
       const data = encodeModuleCallHex({
         module: 'qrc20',
@@ -143,12 +155,16 @@ export function DeployTokenWidget({
     } catch {
       return null;
     }
-  }, [showFee, reviewing, from, formOk, decimals, name, symbol, supply, max]);
+  }, [showFee, reviewStep, reviewing, from, formOk, decimals, name, symbol, supply, max]);
   const fee = useEstimateFee(feeRequest);
+  const { balanceSPLD } = useBalance();
+  const feeUnaffordable = showFee && feeRequest != null && exceedsBalanceWithFee('0', fee.fee, balanceSPLD);
+  const feeBlocked = feeUnaffordable || (showFee && feeRequest != null && (fee.loading || fee.reverted));
 
   const onDeploy = async () => {
-    if (!canDeploy || decimals == null) return;
+    if (!canDeploy || decimals == null || feeBlocked) return;
     reset();
+    setConfirmed(false);
     const sym = symbol.trim();
     toasts.pending(formatLabel(l.toastPending, { symbol: sym }));
     let res: { address: string; hash?: string; confirmed?: boolean };
@@ -169,6 +185,7 @@ export function DeployTokenWidget({
       return;
     }
     setReviewing(false);
+    setConfirmed(res.confirmed === true);
     const explorerUrl = network && res.hash ? txExplorerUrl(network, res.hash) : null;
     toasts.success(formatLabel(l.toastSuccess, { symbol: sym }), {
       hash: res.hash,
@@ -178,6 +195,12 @@ export function DeployTokenWidget({
     onSuccess?.({ address: res.address, hash: res.hash, explorerUrl });
     onDeployed?.({ address: res.address, hash: res.hash });
   };
+
+  const feeUnaffordableMsg = (
+    <p className="sqc-widget__msg sqc-widget__msg--error" role="alert" data-testid="sqc-review-fee-unaffordable">
+      {l.feeUnaffordable}
+    </p>
+  );
 
   const field = (key: string, label: string, value: string, set: (v: string) => void, err?: string | null) => (
     <div className="sqc-field">
@@ -223,7 +246,7 @@ export function DeployTokenWidget({
             ...(max ? [{ label: l.maxSupplyLabel, value: max }] : []),
           ]}
           pending={status === 'pending'}
-          confirmDisabled={walletMismatch || (showFee && feeRequest != null && (fee.loading || fee.reverted))}
+          confirmDisabled={walletMismatch || feeBlocked}
           confirmLabel={l.confirmDeploy}
           ariaLabel={l.reviewDeployAria}
           onBack={() => setReviewing(false)}
@@ -231,6 +254,7 @@ export function DeployTokenWidget({
           labels={l}
         >
           {showFee && feeRequest ? <FeeRow estimate={fee} labels={l} /> : null}
+          {feeUnaffordable ? feeUnaffordableMsg : null}
         </ReviewPanel>
       ) : (
         <>
@@ -240,10 +264,12 @@ export function DeployTokenWidget({
         ? field('dec', l.decimalsLabel, decimalsInput, setDecimalsInput, decimals == null ? l.invalidDecimals : null)
         : null}
       {field('supply', l.supplyLabel, supply, setSupply, supplyError)}
+      {!reviewStep && showFee && feeRequest ? <FeeRow estimate={fee} labels={l} /> : null}
+      {!reviewStep && feeUnaffordable ? feeUnaffordableMsg : null}
       <button
         type="button"
         className="sqc-btn sqc-btn--primary sqc-btn--block"
-        disabled={!canDeploy}
+        disabled={!canDeploy || (!reviewStep && feeBlocked)}
         onClick={() => (reviewStep ? setReviewing(true) : void onDeploy())}
       >
         {status === 'pending' ? l.deploying : reviewStep ? l.reviewDeploy : l.deploy}
@@ -252,7 +278,7 @@ export function DeployTokenWidget({
       )}
       <TxResult
         hash={hash}
-        confirmed={status === 'success'}
+        confirmed={status === 'success' && confirmed}
         explorerUrl={explorer}
         extra={address ? { label: l.tokenAddress, value: address } : null}
         labels={l}

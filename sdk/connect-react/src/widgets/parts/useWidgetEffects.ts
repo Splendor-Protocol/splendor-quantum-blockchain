@@ -77,6 +77,26 @@ export function useWidgetToast(enabled: boolean) {
   return { pending, success, error };
 }
 
+/**
+ * Clear the last result/error when the account or network changes, so a hash or error from
+ * the previous context is never shown under the new one. Skipped while a send is pending.
+ */
+export function useResetOnContextChange(reset: () => void, pending: boolean, ...context: unknown[]): void {
+  const resetRef = useRef(reset);
+  resetRef.current = reset;
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (!pendingRef.current) resetRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, context);
+}
+
 export function toError(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e));
 }

@@ -36,6 +36,9 @@ describe('createSession', () => {
     expect(session.qrc20(tokenAddr).getAddress()).toBe(tokenAddr);
     expect(session.bridge(tokenAddr).getAddress()).toBe(tokenAddr);
     expect(session.collection(tokenAddr).getAddress()).toBe(tokenAddr);
+    expect(session.nft(tokenAddr).getAddress()).toBe(tokenAddr);
+    expect(session.qrc721(tokenAddr).getAddress()).toBe(tokenAddr);
+    expect(typeof session.deployNftCollection).toBe('function');
     expect(session).not.toHaveProperty('dex');
     expect(session).not.toHaveProperty('exchange');
     expect(session).not.toHaveProperty('deployPool');

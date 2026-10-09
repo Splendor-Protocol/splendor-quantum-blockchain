@@ -96,6 +96,35 @@ describe('QRC20 functional (mocked transport)', () => {
     expect(send.mock.calls[0][0].params.token).toBeUndefined();
   });
 
+  it('transferHuman forwards the fee and confirmation options to sendModuleCall', async () => {
+    const wallet = mockWallet();
+    const moduleCall = vi.fn(async () => ({ name: 'T', symbol: 'T', decimals: 6 }));
+    const token = new QRC20(mockConnection(moduleCall), TOKEN);
+    await token.transferHuman(wallet, OWNER, '1.5', {
+      fee: '12345',
+      waitForConfirmation: true,
+      confirmTimeoutMs: 1000,
+      params: { amount: '999' },
+    } as never);
+    const send = wallet.sendModuleCall as ReturnType<typeof vi.fn>;
+    expect(send.mock.calls[0][0]).toMatchObject({
+      module: 'qrc20',
+      action: 'transfer',
+      params: { token: TOKEN, to: OWNER, amount: '1500000' },
+      fee: '12345',
+      waitForConfirmation: true,
+      confirmTimeoutMs: 1000,
+    });
+  });
+
+  it('deployQRC20 takes the address from the signed nonce, not the pre-send read', async () => {
+    const wallet = mockWallet({
+      sendModuleCall: vi.fn(async () => ({ status: 'ok', hash: '0xabc', signedTx: { nonce: '8' } })),
+    } as Partial<SplendorPQBridge>);
+    const { address } = await deployQRC20(wallet, { name: 'My', symbol: 'MY', decimals: 18, totalSupply: '1' });
+    expect(address).toBe(QRC20.predictAddress(OWNER, 8));
+  });
+
   it('submitPermit forwards signed fields', async () => {
     const wallet = mockWallet();
     const token = new QRC20(mockConnection(vi.fn()), TOKEN);

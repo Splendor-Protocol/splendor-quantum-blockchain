@@ -1,6 +1,6 @@
 {
   "name": "@splendor/connect-react",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "AppKit-style React connect UI kit for Splendor Quantum Chain. Modular connectors unlock @splendor/sqc-sdk WASM ML-DSA-65 wallets.",
   "type": "module",
   "main": "./dist/index.js",
@@ -42,6 +42,10 @@
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
     },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js"
+    },
     "./style.css": "./dist/theme/tokens.css"
   },
   "sideEffects": [
@@ -68,7 +72,7 @@
     "node": ">=18"
   },
   "peerDependencies": {
-    "@splendor/sqc-sdk": ">=2.0.0",
+    "@splendor/sqc-sdk": ">=3.0.0",
     "react": ">=18",
     "react-dom": ">=18",
     "vite": ">=5"
@@ -100,5 +104,14 @@
     "connect",
     "ui-kit"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Splendor-Protocol/splendor-quantum-blockchain.git",
+    "directory": "sdk/connect-react"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }

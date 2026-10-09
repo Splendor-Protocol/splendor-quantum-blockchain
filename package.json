@@ -2,8 +2,14 @@
   "name": "splendor-quantum-blockchain",
   "private": true,
   "version": "0.0.0",
-  "description": "Release tooling for the Splendor Quantum Chain node. The chain itself is Go; this exists so shipping it is one command.",
+  "description": "Release tooling for the Splendor Quantum Chain node and npm workspaces root for the SDK, widgets and dApp Playground. The chain itself is Go.",
   "type": "module",
+  "workspaces": [
+    "sdk/sqc-sdk",
+    "sdk/connect-react",
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "deploy": "node scripts/release.mjs",
     "deploy:devnet": "node scripts/release.mjs patch devnet",
@@ -20,9 +26,25 @@
     "lab:testnet": "node sdk/connect-react/scripts/feature-lab.mjs --network=testnet",
     "lab:devnet": "node sdk/connect-react/scripts/feature-lab.mjs --network=devnet",
     "lab:fast": "node sdk/connect-react/scripts/feature-lab.mjs --skip-tests",
-    "lab:check": "node sdk/connect-react/scripts/feature-lab.mjs --check"
+    "lab:check": "node sdk/connect-react/scripts/feature-lab.mjs --check",
+    "build:packages": "npm run build:ts -w @splendor/sqc-sdk && npm run build -w @splendor/connect-react && npm run build -w @splendor/dapp-spec",
+    "playground": "npm run build:packages && npm run dev -w @splendor/playground",
+    "playground:api": "npm run dev -w @splendor/playground-api",
+    "playground:build": "npm run build:packages && npm run build -w @splendor/playground",
+    "test:packages": "npm test -w @splendor/sqc-sdk && npm test -w @splendor/connect-react && npm test -w @splendor/dapp-spec && npm test -w create-splendor-dapp",
+    "test:playground": "npm test -w @splendor/playground && npm test -w @splendor/playground-api",
+    "test:e2e": "npm run e2e -w @splendor/playground",
+    "test:codegen": "node scripts/codegen-build-matrix.mjs",
+    "changeset": "changeset",
+    "version-packages": "changeset version && npm install --package-lock-only --no-audit --no-fund",
+    "release-packages": "changeset publish",
+    "release-packages:pack": "npm pack --dry-run -w @splendor/sqc-sdk -w @splendor/connect-react -w @splendor/dapp-spec -w create-splendor-dapp"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.29.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

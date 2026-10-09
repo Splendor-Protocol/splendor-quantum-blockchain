@@ -64,7 +64,13 @@ function main() {
   const pkgPath = path.join(target, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   pkg.name = name;
+  // Pin to the connect-react release running this script and the sqc-sdk it was built against.
+  const self = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const sdkMin = /(\d+\.\d+\.\d+)/.exec(self.peerDependencies?.['@splendor/sqc-sdk'] ?? '')?.[1] ?? self.version;
+  pkg.dependencies['@splendor/connect-react'] = `^${self.version}`;
+  pkg.dependencies['@splendor/sqc-sdk'] = `^${sdkMin}`;
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+  fs.rmSync(path.join(target, 'tsconfig.tsbuildinfo'), { force: true });
 
   console.log(`Created ${name}/
 
@@ -73,6 +79,9 @@ function main() {
   npm run dev
 
 Pin wasmSha256 before production — see README in the project.
+
+More templates (token launchpad, tip jar, members area, NFT drop; Vite or Next.js):
+  npm create splendor-dapp@latest
 `);
 }
 

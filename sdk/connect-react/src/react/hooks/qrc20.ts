@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { WriteOpts } from '@splendor/sqc-sdk';
 import { useConnectState } from '../context.js';
-import { sharedRead } from '../../core/readCache.js';
+import { onSharedReadsInvalidated, sharedRead } from '../../core/readCache.js';
 import { useRecordPendingTx, useSingleFlight, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet, useAccount, useReadConnection } from './core.js';
 
@@ -25,9 +26,9 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   balance: string | null;
   tokenInfo: Record<string, unknown> | null;
   refresh: () => Promise<void>;
-  transfer: (to: string, amount: string) => Promise<{ hash?: string }>;
-  /** Human-decimal transfer (uses on-chain decimals). */
-  transferHuman: (to: string, amountHuman: string) => Promise<{ hash?: string }>;
+  transfer: (to: string, amount: string, opts?: WriteOpts) => Promise<{ hash?: string }>;
+  /** Human-decimal transfer (uses on-chain decimals). `opts.fee` is in atto-SPLD. */
+  transferHuman: (to: string, amountHuman: string, opts?: WriteOpts) => Promise<{ hash?: string }>;
   approve: (spender: string, amount: string) => Promise<{ hash?: string }>;
   mint: (to: string, amount: string) => Promise<{ hash?: string }>;
   pause: () => Promise<{ hash?: string }>;
@@ -115,36 +116,42 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     return () => clearInterval(id);
   }, [load, tokenAddress, pollMs]);
 
+  useEffect(() => {
+    if (!tokenAddress || !readConnection || !address) return;
+    const key = `qrc20-bal|${tokenAddress}|${address}`;
+    return onSharedReadsInvalidated(readConnection, (prefix) => {
+      if (key.startsWith(prefix)) void load(false);
+    });
+  }, [load, tokenAddress, readConnection, address]);
+
   const decimals = validDecimals(tokenInfo?.decimals);
   const symbol = typeof tokenInfo?.symbol === 'string' ? tokenInfo.symbol : null;
 
   const transfer = useCallback(
-    async (to: string, amount: string) => {
+    async (to: string, amount: string, opts?: WriteOpts) => {
       if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
       const res = await tx.run(async () => {
         const { QRC20 } = await loadTokens();
-        return new QRC20(wallet.connection, tokenAddress).transfer(wallet, to, amount);
+        return new QRC20(wallet.connection, tokenAddress).transfer(wallet, to, amount, opts);
       });
-      await refresh();
       return { hash: res.hash };
     },
-    [ready, wallet, tokenAddress, tx, refresh],
+    [ready, wallet, tokenAddress, tx],
   );
 
   const transferHuman = useCallback(
-    async (to: string, amountHuman: string) => {
+    async (to: string, amountHuman: string, opts?: WriteOpts) => {
       if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
       const res = await tx.run(async () => {
         const { QRC20 } = await loadTokens();
         const token = new QRC20(wallet.connection, tokenAddress);
         // Sign with the decimals the user saw; refuse if the chain now reports others.
         if (decimals != null) token.pinDecimals(decimals);
-        return token.transferHuman(wallet, to, amountHuman);
+        return token.transferHuman(wallet, to, amountHuman, opts);
       }, { kind: 'token', summary: `Send ${amountHuman} ${symbol ?? 'tokens'} to ${to}` });
-      await refresh();
       return { hash: res.hash };
     },
-    [ready, wallet, tokenAddress, tx, refresh, decimals, symbol],
+    [ready, wallet, tokenAddress, tx, decimals, symbol],
   );
 
   const approve = useCallback(
@@ -166,10 +173,9 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
         const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).mint(wallet, to, amount);
       });
-      await refresh();
       return { hash: res.hash };
     },
-    [ready, wallet, tokenAddress, tx, refresh],
+    [ready, wallet, tokenAddress, tx],
   );
 
   const pause = useCallback(async () => {

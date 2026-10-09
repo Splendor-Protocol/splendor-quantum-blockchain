@@ -10,7 +10,7 @@
     "canonicalTransferSelector": "4b40e901",
     "goldenTransferSelector": "14cde9ab",
     "derivationDomainVersion": "v1",
-    "bridgeClientVersion": "2.0.0",
+    "bridgeClientVersion": "3.0.0",
     "wireChainId": "splendor-quantum-1"
   },
   "networks": {

@@ -4,10 +4,11 @@
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
 import type { Signer } from '../core/signer.js';
-import { signerAccountNonce } from '../core/signer.js';
+import { signerAccountNonce, signedTxNonce, writeOpts } from '../core/signer.js';
 import { qrc1155Address } from '../addresses/index.js';
 import { assertAddress } from '../address.js';
 import { BridgeError } from '../errors.js';
+import type { WriteOpts } from '../types.js';
 
 export type QRC1155DeployParams = {
   name: string;
@@ -103,16 +104,16 @@ export class QRC1155 extends Program {
     return res.total_supply;
   }
 
-  async mint(wallet: Signer, to: string, id: string, amt: string, uri?: string) {
+  async mint(wallet: Signer, to: string, id: string, amt: string, uri?: string, opts?: WriteOpts) {
     return this.write(wallet, 'mint', {
       to: assertAddress(to),
       id: uint(id, 'id'),
       amount: amount(amt),
       ...(uri ? { uri } : {}),
-    });
+    }, opts);
   }
 
-  async mintBatch(wallet: Signer, to: string, ids: string[], amounts: string[], uris?: string[]) {
+  async mintBatch(wallet: Signer, to: string, ids: string[], amounts: string[], uris?: string[], opts?: WriteOpts) {
     sameLength(ids, amounts);
     if (uris && uris.length !== ids.length) throw BridgeError.invalidParams('uris must match ids in length');
     return this.write(wallet, 'mint_batch', {
@@ -120,59 +121,58 @@ export class QRC1155 extends Program {
       ids: ids.map((i) => uint(i, 'id')),
       amounts: amounts.map((a) => amount(a)),
       ...(uris ? { uris } : {}),
-    });
+    }, opts);
   }
 
-  async transfer(wallet: Signer, to: string, id: string, amt: string, from?: string) {
+  async transfer(wallet: Signer, to: string, id: string, amt: string, from?: string, opts?: WriteOpts) {
     return this.write(wallet, 'transfer', {
       to: assertAddress(to),
       id: uint(id, 'id'),
       amount: amount(amt),
       ...(from ? { from: assertAddress(from) } : {}),
-    });
+    }, opts);
   }
 
-  async batchTransfer(wallet: Signer, to: string, ids: string[], amounts: string[], from?: string) {
+  async batchTransfer(wallet: Signer, to: string, ids: string[], amounts: string[], from?: string, opts?: WriteOpts) {
     sameLength(ids, amounts);
     return this.write(wallet, 'batch_transfer', {
       to: assertAddress(to),
       ids: ids.map((i) => uint(i, 'id')),
       amounts: amounts.map((a) => amount(a)),
       ...(from ? { from: assertAddress(from) } : {}),
-    });
+    }, opts);
   }
 
-  async setApprovalForAll(wallet: Signer, operator: string, approved: boolean) {
+  async setApprovalForAll(wallet: Signer, operator: string, approved: boolean, opts?: WriteOpts) {
     if (typeof approved !== 'boolean') throw BridgeError.invalidParams('approved must be a boolean');
-    return this.write(wallet, 'set_approval_for_all', { operator: assertAddress(operator), approved });
+    return this.write(wallet, 'set_approval_for_all', { operator: assertAddress(operator), approved }, opts);
   }
 
-  async burn(wallet: Signer, id: string, amt: string) {
-    return this.write(wallet, 'burn', { id: uint(id, 'id'), amount: amount(amt) });
+  async burn(wallet: Signer, id: string, amt: string, opts?: WriteOpts) {
+    return this.write(wallet, 'burn', { id: uint(id, 'id'), amount: amount(amt) }, opts);
   }
 
-  async burnBatch(wallet: Signer, ids: string[], amounts: string[]) {
+  async burnBatch(wallet: Signer, ids: string[], amounts: string[], opts?: WriteOpts) {
     sameLength(ids, amounts);
     return this.write(wallet, 'burn_batch', {
       ids: ids.map((i) => uint(i, 'id')),
       amounts: amounts.map((a) => amount(a)),
-    });
+    }, opts);
   }
 
-  async transferOwnership(wallet: Signer, newOwner: string) {
-    return this.write(wallet, 'transfer_ownership', { new_owner: assertAddress(newOwner) });
+  async transferOwnership(wallet: Signer, newOwner: string, opts?: WriteOpts) {
+    return this.write(wallet, 'transfer_ownership', { new_owner: assertAddress(newOwner) }, opts);
   }
 }
 
 export async function deployQRC1155(
   wallet: Signer,
   params: QRC1155DeployParams,
-  opts?: { fee?: string; waitForConfirmation?: boolean },
+  opts?: WriteOpts,
 ): Promise<{ address: string; result: Awaited<ReturnType<Signer['sendModuleCall']>> }> {
   const name = String(params.name ?? '').trim();
   if (!name) throw BridgeError.invalidParams('collection name is required');
   const nonce = await signerAccountNonce(wallet);
-  const predicted = QRC1155.predictAddress(wallet.getAddress(), nonce);
   const result = await wallet.sendModuleCall({
     module: 'qrc1155',
     action: 'deploy',
@@ -180,10 +180,10 @@ export async function deployQRC1155(
       name,
       ...(params.uriPrefix ? { uri_prefix: params.uriPrefix } : {}),
     },
-    fee: opts?.fee,
-    waitForConfirmation: opts?.waitForConfirmation,
+    ...writeOpts(opts),
   });
-  return { address: predicted, result };
+  const address = QRC1155.predictAddress(wallet.getAddress(), signedTxNonce(result) ?? nonce);
+  return { address, result };
 }
 
 export function getCollection(connection: Connection, address: string): QRC1155 {

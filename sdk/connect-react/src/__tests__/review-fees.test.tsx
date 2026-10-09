@@ -3,7 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React, { type ReactNode } from 'react';
-import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { MODULE_ROUTER_ADDRESS } from '@splendor/sqc-sdk';
 import { TransferWidget } from '../widgets/TransferWidget.js';
 import { TokenPanel } from '../widgets/TokenPanel.js';
@@ -43,7 +43,7 @@ vi.mock('@splendor/sqc-sdk/tokens', () => ({
 type Estimate = { fee: string; fee_is_floor?: boolean; reverted?: boolean; revert_reason?: string };
 
 function setup(estimate: Estimate, balanceSpld = '1.5') {
-  const state = {
+  let state = {
     status: 'connected',
     connectingStep: null,
     account: { address: ADDR, connectorId: 'seed', keyOrigin: 'native', postQuantumSecure: true },
@@ -72,9 +72,21 @@ function setup(estimate: Estimate, balanceSpld = '1.5') {
   const sendTransfer = vi.fn(async () => ({ status: 'ok', hash: 'h1', confirmation: { ok: true } }));
   const wallet = { sendTransfer, connection: { estimateGas } };
   const provider = { getBalance: vi.fn(async () => ({ balance: '0', balance_spld: balanceSpld })) };
+  const listeners = new Set<() => void>();
+  const setAccount = (address: string) => {
+    state = {
+      ...state,
+      account: { ...state.account!, address },
+      info: { ...state.info!, address },
+    } as ConnectControllerState;
+    listeners.forEach((fn) => fn());
+  };
   const ctrl = {
     getState: () => state,
-    subscribe: () => () => undefined,
+    subscribe: (fn: () => void) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
     connect: vi.fn(async () => state.info!),
     disconnect: vi.fn(async () => undefined),
     clearError: vi.fn(),
@@ -103,7 +115,7 @@ function setup(estimate: Estimate, balanceSpld = '1.5') {
       ),
     );
   }
-  return { Wrap, estimateGas, sendTransfer };
+  return { Wrap, estimateGas, sendTransfer, setAccount };
 }
 
 function decodeEnvelope(data: unknown): { module: string; action: string; params: Record<string, unknown> } {
@@ -149,8 +161,8 @@ describe('TransferWidget review fee', () => {
 });
 
 describe('TokenPanel review fee', () => {
-  async function toReview(estimate: Estimate) {
-    const ctx = setup(estimate);
+  async function toReview(estimate: Estimate, balanceSpld?: string) {
+    const ctx = setup(estimate, balanceSpld);
     const view = render(React.createElement(TokenPanel, { tokenAddress: TOKEN, defaultAmount: '2' }), {
       wrapper: ctx.Wrap,
     });
@@ -174,6 +186,24 @@ describe('TokenPanel review fee', () => {
     });
     await clickWhenEnabled(root, /Confirm send/i);
     await waitFor(() => expect(transferHuman).toHaveBeenCalledTimes(1));
+  });
+
+  it('sends the reviewed fee with the token transfer', async () => {
+    const { root } = await toReview({ fee: '4321' });
+    await clickWhenEnabled(root, /Confirm send/i);
+    await waitFor(() => expect(transferHuman).toHaveBeenCalledTimes(1));
+    const args = transferHuman.mock.calls[0] as unknown[];
+    expect(args.slice(1, 3)).toEqual([OTHER, '2']);
+    expect(args[3]).toMatchObject({ fee: '4321' });
+  });
+
+  it('blocks Confirm when the SPLD balance cannot pay the network fee', async () => {
+    const { root } = await toReview({ fee: '1000000000000000' }, '0.0000001');
+    await waitFor(() => expect(root.getByTestId('sqc-review-fee-unaffordable')).toBeTruthy());
+    const confirm = root.getByRole('button', { name: /Confirm send/i }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(transferHuman).not.toHaveBeenCalled();
   });
 
   it('blocks Confirm when the node predicts a revert', async () => {
@@ -216,6 +246,44 @@ describe('DeployTokenWidget review fee', () => {
     const confirm = root.getByRole('button', { name: /^Confirm deploy$/i }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
     fireEvent.click(confirm);
+    expect(deployQRC20).not.toHaveBeenCalled();
+  });
+
+  it('shows Submitted, not Confirmed, when the deploy result has no confirmation', async () => {
+    const { root } = await toReview({ fee: '5000' });
+    await clickWhenEnabled(root, /^Confirm deploy$/i);
+    await waitFor(() => expect(root.getByRole('status').textContent).toMatch(/Submitted/));
+    expect(root.getByRole('status').textContent).not.toMatch(/Confirmed/);
+  });
+
+  it('shows Confirmed when the deploy result is confirmed', async () => {
+    deployQRC20.mockResolvedValueOnce({
+      address: 'SQ:' + '77'.repeat(32),
+      result: { hash: 'dep-hash', confirmation: { confirmed: true } },
+    } as never);
+    const { root } = await toReview({ fee: '5000' });
+    await clickWhenEnabled(root, /^Confirm deploy$/i);
+    await waitFor(() => expect(root.getByRole('status').textContent).toMatch(/Confirmed/));
+  });
+
+  it('closes the review when the wallet changes', async () => {
+    const { root, setAccount } = await toReview({ fee: '5000' });
+    await waitFor(() => expect(root.getByRole('button', { name: /^Confirm deploy$/i })).toBeTruthy());
+    act(() => setAccount(OTHER));
+    await waitFor(() => expect(root.queryByRole('button', { name: /^Confirm deploy$/i })).toBeNull());
+    expect(root.getByRole('button', { name: /^Review deploy$/i })).toBeTruthy();
+    expect(deployQRC20).not.toHaveBeenCalled();
+  });
+
+  it('estimates and blocks an unaffordable deploy when review is off', async () => {
+    const ctx = setup({ fee: '1000000000000000' }, '0.0000001');
+    const view = render(React.createElement(DeployTokenWidget, { review: false }), { wrapper: ctx.Wrap });
+    const root = within(view.container);
+    await waitFor(() => expect(ctx.estimateGas).toHaveBeenCalled());
+    await waitFor(() => expect(root.getByTestId('sqc-review-fee-unaffordable')).toBeTruthy());
+    const deploy = root.getByRole('button', { name: /^Deploy/i }) as HTMLButtonElement;
+    expect(deploy.disabled).toBe(true);
+    fireEvent.click(deploy);
     expect(deployQRC20).not.toHaveBeenCalled();
   });
 });

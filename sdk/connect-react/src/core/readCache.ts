@@ -43,7 +43,7 @@ export function sharedRead<T>(
     },
     (e: unknown) => {
       entry.inflight = null;
-      if (entry.at === 0) map.delete(key);
+      if (entry.at === 0 && map.get(key) === entry) map.delete(key);
       throw e;
     },
   );
@@ -58,11 +58,32 @@ export function sharedRead<T>(
   return p;
 }
 
-/** Drop cached reads whose key starts with `prefix` (all keys when omitted). */
+type Listener = (prefix: string) => void;
+const listeners = new WeakMap<object, Set<Listener>>();
+
+/**
+ * Drop cached reads whose key starts with `prefix` (all keys when omitted), including
+ * in-flight ones, so the next read starts fresh; then tell subscribed hooks to refetch.
+ */
 export function invalidateSharedReads(source: object, prefix = ''): void {
   const map = caches.get(source);
-  if (!map) return;
-  for (const k of [...map.keys()]) {
-    if (k.startsWith(prefix)) map.delete(k);
+  if (map) {
+    for (const k of [...map.keys()]) {
+      if (k.startsWith(prefix)) map.delete(k);
+    }
   }
+  for (const fn of [...(listeners.get(source) ?? [])]) fn(prefix);
+}
+
+/** Called with the prefix whenever reads on `source` are invalidated. Returns an unsubscribe. */
+export function onSharedReadsInvalidated(source: object, fn: Listener): () => void {
+  let set = listeners.get(source);
+  if (!set) {
+    set = new Set();
+    listeners.set(source, set);
+  }
+  set.add(fn);
+  return () => {
+    set!.delete(fn);
+  };
 }

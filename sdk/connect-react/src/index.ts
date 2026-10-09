@@ -54,6 +54,7 @@ export {
 export type { ConnectBroadcastMessage } from './core/storage.js';
 
 export { SplendorConnectProvider } from './react/provider.js';
+export { useConnectController, useConnectState, useNetworkSwitch } from './react/context.js';
 export type {
   SplendorConnectProviderProps,
   ConnectBrandLabels,
@@ -135,6 +136,8 @@ export {
   sanitizeIconUrl,
   normalizeSqAddress,
   compareDecimal,
+  spendableAfterFee,
+  exceedsBalanceWithFee,
   reviewTransfer,
   getRecentRecipients,
   rememberRecipient,

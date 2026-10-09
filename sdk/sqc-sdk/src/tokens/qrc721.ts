@@ -5,10 +5,11 @@
 import { Program } from '../core/program.js';
 import type { Connection } from '../core/connection.js';
 import type { Signer } from '../core/signer.js';
-import { signerAccountNonce } from '../core/signer.js';
+import { signerAccountNonce, signedTxNonce, writeOpts } from '../core/signer.js';
 import { qrc721Address } from '../addresses/index.js';
 import { assertAddress, canonicalizeAddress } from '../address.js';
 import { BridgeError } from '../errors.js';
+import type { WriteOpts } from '../types.js';
 
 export type QRC721DeployParams = {
   name: string;
@@ -86,13 +87,13 @@ export class QRC721 extends Program {
     return {
       name: String(res.name ?? ''),
       symbol: String(res.symbol ?? ''),
-      owner: String(res.owner ?? ''),
+      owner: res.owner == null || res.owner === '' ? '' : decodeAddress(res.owner),
       total_supply: decodeUint(res.total_supply ?? '0', 'total_supply'),
     };
   }
 
   /** Collection owner only. `id` must be unminted. */
-  async mint(wallet: Signer, to: string, id: string, uri?: string) {
+  async mint(wallet: Signer, to: string, id: string, uri?: string, opts?: WriteOpts) {
     if (uri != null && byteLen(uri) > URI_MAX_BYTES) {
       throw BridgeError.invalidParams(`uri must be at most ${URI_MAX_BYTES} bytes`);
     }
@@ -100,16 +101,16 @@ export class QRC721 extends Program {
       to: assertAddress(to),
       id: tokenId(id),
       ...(uri ? { uri } : {}),
-    });
+    }, opts);
   }
 
   /** Token owner, its approved address, or an operator. */
-  async transfer(wallet: Signer, to: string, id: string) {
-    return this.write(wallet, 'transfer', { to: assertAddress(to), id: tokenId(id) });
+  async transfer(wallet: Signer, to: string, id: string, opts?: WriteOpts) {
+    return this.write(wallet, 'transfer', { to: assertAddress(to), id: tokenId(id) }, opts);
   }
 
-  async burn(wallet: Signer, id: string) {
-    return this.write(wallet, 'burn', { id: tokenId(id) });
+  async burn(wallet: Signer, id: string, opts?: WriteOpts) {
+    return this.write(wallet, 'burn', { id: tokenId(id) }, opts);
   }
 }
 
@@ -117,7 +118,7 @@ export class QRC721 extends Program {
 export async function deployQRC721(
   wallet: Signer,
   params: QRC721DeployParams,
-  opts?: { fee?: string; waitForConfirmation?: boolean },
+  opts?: WriteOpts,
 ): Promise<{ address: string; result: Awaited<ReturnType<Signer['sendModuleCall']>> }> {
   const name = String(params.name ?? '').trim();
   const symbol = String(params.symbol ?? '').trim();
@@ -126,15 +127,14 @@ export async function deployQRC721(
     throw BridgeError.invalidParams(`collection name and symbol must be at most ${NAME_MAX_BYTES} bytes`);
   }
   const nonce = await signerAccountNonce(wallet);
-  const predicted = QRC721.predictAddress(wallet.getAddress(), nonce);
   const result = await wallet.sendModuleCall({
     module: 'qrc721',
     action: 'deploy',
     params: { name, symbol },
-    fee: opts?.fee,
-    waitForConfirmation: opts?.waitForConfirmation,
+    ...writeOpts(opts),
   });
-  return { address: predicted, result };
+  const address = QRC721.predictAddress(wallet.getAddress(), signedTxNonce(result) ?? nonce);
+  return { address, result };
 }
 
 export function getNftCollection(connection: Connection, address: string): QRC721 {

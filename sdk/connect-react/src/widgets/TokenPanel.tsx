@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { MODULE_ROUTER_ADDRESS, encodeModuleCallHex, fromUnits, toUnits } from '@splendor/sqc-sdk';
-import { useAccount, useEstimateFee, useNetwork, useQRC20 } from '../react/hooks.js';
+import { useAccount, useBalance, useEstimateFee, useNetwork, useQRC20 } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
-import { normalizeSqAddress } from './utils.js';
+import { exceedsBalanceWithFee, normalizeSqAddress } from './utils.js';
 import { TOKEN_LABELS, formatLabel, useWidgetLabels, type TokenPanelLabels } from './labels.js';
 import type { BaseWidgetProps } from './types.js';
 import { WidgetShell } from './parts/WidgetShell.js';
@@ -11,7 +11,7 @@ import { ReviewPanel } from './parts/ReviewPanel.js';
 import { FeeRow } from './parts/FeeRow.js';
 import { TxResult } from './parts/TxResult.js';
 import { useTransferForm } from './parts/useTransferForm.js';
-import { toError, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
+import { toError, useResetOnContextChange, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
 
 export type TokenSentResult = {
   token: string;
@@ -96,13 +96,16 @@ export function TokenPanel({
     }
   }, [showFee, form.reviewing, form.review, address, tokenAddress, decimals]);
   const fee = useEstimateFee(feeRequest);
+  const { balanceSPLD } = useBalance();
+  const feeUnaffordable = showFee && feeRequest != null && exceedsBalanceWithFee('0', fee.fee, balanceSPLD);
   const toasts = useWidgetToast(toast);
   useStatusChange(status, onStatusChange);
+  useResetOnContextChange(reset, status === 'pending', address, network?.chainId);
 
   const loadError = status !== 'error' && error ? error : null;
   const hint = !tokenAddress
     ? l.enterToken
-    : loading
+    : loading && humanBalance == null
       ? l.loading
       : humanBalance != null
         ? formatLabel(l.balance, { balance: humanBalance, symbol })
@@ -112,12 +115,12 @@ export function TokenPanel({
 
   const onConfirm = async () => {
     const review = form.review;
-    if (!tokenAddress || !review.ok || walletMismatch) return;
+    if (!tokenAddress || !review.ok || walletMismatch || status === 'pending') return;
     reset();
     toasts.pending(formatLabel(l.toastPending, { symbol }));
     let res: { hash?: string };
     try {
-      res = await transferHuman(review.to, review.amount);
+      res = await transferHuman(review.to, review.amount, showFee && fee.fee ? { fee: fee.fee } : undefined);
     } catch (e) {
       toasts.error(formatLabel(l.toastError, { symbol }), e);
       onError?.(toError(e));
@@ -161,12 +164,19 @@ export function TokenPanel({
           contract={tokenAddress}
           networkName={network?.name}
           pending={status === 'pending'}
-          confirmDisabled={walletMismatch || (showFee && feeRequest != null && (fee.loading || fee.reverted))}
+          confirmDisabled={
+            walletMismatch || feeUnaffordable || (showFee && feeRequest != null && (fee.loading || fee.reverted))
+          }
           onBack={form.cancelReview}
           onConfirm={() => void onConfirm()}
           labels={l}
         >
           {showFee && feeRequest ? <FeeRow estimate={fee} labels={l} /> : null}
+          {feeUnaffordable ? (
+            <p className="sqc-widget__msg sqc-widget__msg--error" role="alert" data-testid="sqc-review-fee-unaffordable">
+              {l.feeUnaffordable}
+            </p>
+          ) : null}
         </ReviewPanel>
       ) : (
         <>
@@ -192,7 +202,13 @@ export function TokenPanel({
           <button
             type="button"
             className="sqc-btn sqc-btn--primary sqc-btn--block"
-            disabled={!tokenAddress || decimals == null || !form.canReview || status === 'pending'}
+            disabled={
+              !tokenAddress ||
+              decimals == null ||
+              (!!address && humanBalance == null) ||
+              !form.canReview ||
+              status === 'pending'
+            }
             onClick={form.startReview}
           >
             {status === 'pending' ? l.sending : l.review}

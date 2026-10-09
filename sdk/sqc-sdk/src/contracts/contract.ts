@@ -3,7 +3,7 @@
  */
 import type { Connection } from '../core/connection.js';
 import type { Signer, TxResult } from '../core/signer.js';
-import { requireCapability, signerAccountNonce } from '../core/signer.js';
+import { requireCapability, signerAccountNonce, signedTxNonce } from '../core/signer.js';
 import { bytecodeContractAddress } from '../addresses/index.js';
 import {
   encodeFunctionData,
@@ -103,10 +103,10 @@ export async function deployBytecode(
   result: TxResult;
 }> {
   const nonce = await signerAccountNonce(wallet);
-  const predicted = Contract.predictAddress(wallet.getAddress(), nonce);
   const deployContract = requireCapability(wallet, 'deployContract');
   const result = await deployContract.call(wallet, { bytecode, ...opts });
-  return { address: predicted, result };
+  const address = Contract.predictAddress(wallet.getAddress(), signedTxNonce(result) ?? nonce);
+  return { address, result };
 }
 
 export function getContract(connection: Connection, address: string): Contract {

@@ -38,6 +38,8 @@ export {
   copyText,
   normalizeSqAddress,
   compareDecimal,
+  spendableAfterFee,
+  exceedsBalanceWithFee,
   reviewTransfer,
   getRecentRecipients,
   rememberRecipient,

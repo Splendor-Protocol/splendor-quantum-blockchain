@@ -118,6 +118,8 @@ If you want to…
 | run your own node or validator | [`DEPLOY.md`](DEPLOY.md) |
 | ship a new node version to devnet, testnet or mainnet | [§21](#21-how-a-release-reaches-a-tier) |
 | build a website or app that talks to the chain | [`sdk/sqc-sdk/README.md`](sdk/sqc-sdk/README.md), then [§19](#19-the-splendor-quantum-stack--every-repository) |
+| try the widgets, or build a dApp without code | the dApp Playground ([`apps/playground/README.md`](apps/playground/README.md)), or `npm create splendor-dapp@latest` |
+| publish a new version of the npm packages | [`docs/RELEASING_PACKAGES.md`](docs/RELEASING_PACKAGES.md) |
 | write a smart contract | [§8](#8-smart-contracts--sqc-vm-and-qsol-prototype), [`docs/modules/standards.md`](docs/modules/standards.md), [`compiler/README.md`](compiler/README.md) |
 | verify / settle an instruction (SQVL) | [§9a](#9a-sqvl--settlement-layer) and [`docs/modules/verify.md`](docs/modules/verify.md) |
 | register as a validator | [`docs/modules/validators.md`](docs/modules/validators.md), [`docs/multi-validator-local.md`](docs/multi-validator-local.md) |
@@ -2316,6 +2318,8 @@ exchange module; see §8.
 | `ai` | The adaptive batch-size scheduler (§17) |
 | `sdk/sqc-sdk` | `@splendor/sqc-sdk` v2: Node/browser SDK, the Go signer package (`signer/`), the WASM build and its single committed artifact (`wasm/`), gateway, SQDP-1 protocol docs |
 | `sdk/connect-react` | `@splendor/connect-react`: React connect UI kit |
+| `packages/dapp-spec`, `packages/create-splendor-dapp` | The dApp spec, validator, code generator and templates; `npm create splendor-dapp` |
+| `apps/playground`, `apps/playground-api` | The dApp Playground (learn, widget gallery, no-code builder, admin) and its API. Private, not published |
 | `sdk/bridge` | `@splendor/pq-bridge`: deprecated re-export shim, nothing else |
 | `sdk/sqc-sdk.js` | Legacy single-file SDK, deprecated; its X402 middleware omits `settlement_tx` (§11) |
 | `contracts/legacy-burn` | `QuantumMigrationBurn`, the Solidity burn gate on the legacy Splendor mainnet (chain 2691) |

@@ -1,0 +1,7 @@
+dist/
+public/sqc_signer.wasm
+public/wasm_exec.js
+public/sqc-wasm.sha256.json
+test-results/
+playwright-report/
+.env.local

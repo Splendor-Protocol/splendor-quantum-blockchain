@@ -363,3 +363,53 @@ describe('submitTransaction fee errors and request ids', () => {
     expect(headers[3]!['X-Request-Id']).toBeUndefined();
   });
 });
+
+describe('security-rpc timeouts and submit retries', () => {
+  function stalledBody(): Response {
+    return new Response(new ReadableStream({ start() {} }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  it('times out when the node sends headers and then stalls the body', async () => {
+    globalThis.fetch = vi.fn(async () => stalledBody()) as typeof fetch;
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-a.test', chainId: CHAIN_ID, retries: 0, timeoutMs: 50 });
+    const err = await rpc.assertChainId().catch((e) => e);
+    expect(err).toMatchObject({ code: 'RPC_UNAVAILABLE', details: { cause: { code: 'TIMEOUT' } } });
+  });
+
+  it('does not resend a submit that timed out, to the same or another node', async () => {
+    const fetchMock = vi.fn(async () => stalledBody()) as typeof fetch;
+    globalThis.fetch = fetchMock;
+    const rpc = new SqRpc({
+      rpcUrls: ['https://rpc-a.test', 'https://rpc-b.test'],
+      chainId: CHAIN_ID,
+      retries: 2,
+      timeoutMs: 50,
+    });
+    const err = await rpc.submitTransaction({ chain_id: CHAIN_ID, type: 'transfer' }).catch((e) => e);
+    expect(err).toMatchObject({ code: 'TIMEOUT' });
+    expect((err as BridgeError).userHint).toMatch(/may still go through/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads still retry after a timeout', async () => {
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => (++calls === 1 ? stalledBody() : jsonResponse({ chain_id: CHAIN_ID }))) as typeof fetch;
+    const rpc = new SqRpc({ rpcUrl: 'https://rpc-a.test', chainId: CHAIN_ID, retries: 1, timeoutMs: 50 });
+    await expect(rpc.assertChainId()).resolves.toBeUndefined();
+    expect(calls).toBe(2);
+  });
+
+  it.each(['rejected: duplicate transaction', 'rejected: duplicate pending nonce'])(
+    'maps "%s" to an already-submitted hint',
+    async (message) => {
+      globalThis.fetch = vi.fn(async () => jsonResponse({ error: message }, 400)) as typeof fetch;
+      const rpc = new SqRpc({ rpcUrl: 'https://rpc-a.test', chainId: CHAIN_ID, retries: 0 });
+      const err = await rpc.submitTransaction({ chain_id: CHAIN_ID, type: 'transfer' }).catch((e) => e);
+      expect(err).toMatchObject({ code: 'RPC' });
+      expect((err as BridgeError).userHint).toMatch(/already submitted/);
+    },
+  );
+});

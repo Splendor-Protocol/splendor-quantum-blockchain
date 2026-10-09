@@ -1,0 +1,38 @@
+{
+  "name": "@splendor/playground",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Splendor dApp Playground: learn the SDK and widgets, build dApps from a widget catalog, preview and export them.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit && tsc -p e2e/tsconfig.json",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "@splendor/connect-react": "3.0.0",
+    "@splendor/dapp-spec": "0.1.0",
+    "@splendor/sqc-sdk": "3.0.0",
+    "@stackblitz/sdk": "^1.11.0",
+    "jszip": "^3.10.1",
+    "marked": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.7.2",
+    "vite": "^7.3.0",
+    "vitest": "^3.0.5"
+  }
+}

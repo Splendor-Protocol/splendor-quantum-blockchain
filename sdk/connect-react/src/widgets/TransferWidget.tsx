@@ -10,7 +10,7 @@ import { ReviewPanel } from './parts/ReviewPanel.js';
 import { FeeRow } from './parts/FeeRow.js';
 import { TxResult } from './parts/TxResult.js';
 import { useTransferForm } from './parts/useTransferForm.js';
-import { toError, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
+import { toError, useResetOnContextChange, useStatusChange, useWidgetToast } from './parts/useWidgetEffects.js';
 import { exceedsBalanceWithFee, spendableAfterFee } from './utils.js';
 
 export type TransferSentResult = {
@@ -81,10 +81,11 @@ export function TransferWidget({
     showFee && form.review.ok && exceedsBalanceWithFee(form.review.amount, fee.fee, balanceSPLD);
   const toasts = useWidgetToast(toast);
   useStatusChange(status, onStatusChange);
+  useResetOnContextChange(reset, status === 'pending', address, network?.chainId);
 
   const onConfirm = async () => {
     const review = form.review;
-    if (!review.ok || walletMismatch) return;
+    if (!review.ok || walletMismatch || status === 'pending') return;
     reset();
     toasts.pending(l.toastPending);
     let res: Awaited<ReturnType<typeof sendTransfer>>;

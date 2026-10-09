@@ -28,7 +28,7 @@ Automated coverage (run from `sdk/sqc-sdk`): `npm test` (Vitest including `secur
 - [x] Signs with `@splendor/sqc-sdk` WASM **or** extension-held keys producing identical wire txs — `wasm-session.test.ts` / `extension-signer.test.ts` / Go round-trip + `TestTamperedTransferFailsVerify`
 - [ ] Does not hand-author signed JSON from README examples *(integration practice)*
 - [x] Calls `assertChainId` (or equivalent) before submit — `security-rpc.test.ts` (fail-closed on missing/mismatch)
-- [x] Confirms inclusion via **receipt-first, nonce fallback** (`waitForConfirmation`) — `security-errors.test.ts` (`TX_NOT_CONFIRMED`) / `security-rpc.test.ts`
+- [x] Confirms inclusion via a **required receipt** (nonce check only with `allowNonceConfirmation`) (`waitForConfirmation`) — `security-errors.test.ts` (`TX_NOT_CONFIRMED`) / `security-rpc.test.ts`
 
 ## Errors and events
 

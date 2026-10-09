@@ -1,0 +1,99 @@
+name: Nightly devnet
+
+# Everything in ci.yml runs against mocks: the mock wallet, a fake GitHub, packed
+# tarballs. This is the one place the SDK and the playground meet the real chain:
+# a signed, confirmed SPLD transfer through @splendor/sqc-sdk, and the playground's
+# read-only Learn recipes through the same /rpc proxy and provider a visitor uses.
+#
+# Nightly rather than per-commit because it depends on devnet being up, and a red
+# main over somebody else's outage teaches people to ignore red.
+#
+# Secrets / variables (Settings → Secrets and variables → Actions):
+#   DEVNET_E2E_SEED  secret, 64 hex. A FUNDED devnet account; without it the
+#                    transfer step is skipped with a warning (reads still run).
+#   SQC_DEVNET_RPC   variable, optional. Defaults to the devnet RPC in
+#                    sdk/sqc-sdk/config/sqc.networks.json.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Network for the playground recipes
+        type: choice
+        options: [devnet, testnet]
+        default: devnet
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-devnet
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: SDK and playground against ${{ inputs.network || 'devnet' }}
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    env:
+      NETWORK: ${{ inputs.network || 'devnet' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build the signer and the packages
+        run: |
+          set -euo pipefail
+          bash sdk/sqc-sdk/wasm/build.sh
+          npm ci
+          npm run build:packages
+
+      - name: Resolve the RPC
+        id: rpc
+        run: |
+          set -euo pipefail
+          url="${{ vars.SQC_DEVNET_RPC }}"
+          if [ -z "$url" ]; then
+            url="$(node -e "const j=require('./sdk/sqc-sdk/config/sqc.networks.json'); process.stdout.write(j.networks[process.env.NETWORK].rpcUrls[0])")"
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "RPC for $NETWORK: $url"
+
+      - name: Signed transfer with confirmation (sqc-sdk)
+        working-directory: sdk/sqc-sdk
+        env:
+          SQC_RPC: ${{ steps.rpc.outputs.url }}
+          PQ_SEED: ${{ secrets.DEVNET_E2E_SEED }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PQ_SEED:-}" ]; then
+            echo "::warning::DEVNET_E2E_SEED is not set, so no transaction was signed or sent. Reads below still run."
+            exit 0
+          fi
+          LIVE_E2E=1 node examples/live-e2e.mjs
+
+      - name: Install the Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/playground
+
+      - name: Playground recipes against the network
+        working-directory: apps/playground
+        env:
+          E2E_LIVE: '1'
+          E2E_LIVE_NETWORK: ${{ env.NETWORK }}
+        run: npx playwright test e2e/live
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nightly-playwright-report
+          path: apps/playground/playwright-report
+          retention-days: 14

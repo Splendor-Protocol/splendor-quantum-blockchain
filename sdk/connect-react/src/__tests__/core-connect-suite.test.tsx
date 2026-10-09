@@ -286,9 +286,46 @@ describe('controller rebindNetwork + epoch', () => {
   });
 });
 
+/**
+ * Same delivery rules as the browser's BroadcastChannel: asynchronous, to every other open
+ * instance on the channel, never back to the sender. Node's own BroadcastChannel builds a
+ * MessageEvent that its EventTarget rejects once jsdom has replaced the global Event, so
+ * whether it works under jsdom depends on module load order.
+ */
+class InProcessBroadcastChannel {
+  private static open = new Map<string, Set<InProcessBroadcastChannel>>();
+  private listeners = new Set<(ev: { data: unknown }) => void>();
+  constructor(readonly name: string) {
+    const peers = InProcessBroadcastChannel.open.get(name) ?? new Set();
+    peers.add(this);
+    InProcessBroadcastChannel.open.set(name, peers);
+  }
+  postMessage(data: unknown) {
+    const copy = structuredClone(data);
+    for (const peer of InProcessBroadcastChannel.open.get(this.name) ?? []) {
+      if (peer !== this) setTimeout(() => peer.listeners.forEach((l) => l({ data: copy })), 0);
+    }
+  }
+  addEventListener(_type: 'message', l: (ev: { data: unknown }) => void) {
+    this.listeners.add(l);
+  }
+  removeEventListener(_type: 'message', l: (ev: { data: unknown }) => void) {
+    this.listeners.delete(l);
+  }
+  close() {
+    InProcessBroadcastChannel.open.get(this.name)?.delete(this);
+    this.listeners.clear();
+  }
+}
+
 describe('cross-tab broadcast', () => {
+  const nativeBroadcastChannel = globalThis.BroadcastChannel;
   beforeEach(() => {
     memoryStore.clear();
+    globalThis.BroadcastChannel = InProcessBroadcastChannel as unknown as typeof BroadcastChannel;
+  });
+  afterEach(() => {
+    globalThis.BroadcastChannel = nativeBroadcastChannel;
   });
 
   it('broadcastConnectEvent delivers to subscribers', async () => {
