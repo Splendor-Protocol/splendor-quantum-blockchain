@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -97,10 +98,12 @@ type stubChains struct {
 	receipts  map[string]int // hash -> status
 	bridge    qcrypto.Address
 	operator  qcrypto.Address
-	failNext  int    // transient submit rejections to serve before accepting
-	revert    bool   // when true, submitted claims mine as a SOFT revert (status 0)
-	paused    bool   // when true, /bridge/{addr} reports the bridge paused
-	threshold uint64 // attestation threshold /bridge/{addr} reports (0 → 1)
+	failNext  int      // transient submit rejections to serve before accepting
+	revert    bool     // when true, submitted claims mine as a SOFT revert (status 0)
+	paused    bool     // when true, /bridge/{addr} reports the bridge paused
+	threshold uint64   // attestation threshold /bridge/{addr} reports (0 → 1)
+	operators []string // active operators /bridge/{addr} reports (nil → [operator])
+	maxClaim  string   // max_claim_amount /bridge/{addr} reports ("" → omitted)
 }
 
 func (s *stubChains) evmHandler(w http.ResponseWriter, r *http.Request) {
@@ -151,12 +154,20 @@ func (s *stubChains) quantumHandler(w http.ResponseWriter, r *http.Request) {
 		if th == 0 {
 			th = 1
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"info": map[string]any{
-			"owner": s.operator.String(), "operators": []string{s.operator.String()},
+		ops := s.operators
+		if ops == nil {
+			ops = []string{s.operator.String()}
+		}
+		info := map[string]any{
+			"owner": s.operator.String(), "operators": ops,
 			"paused": s.paused, "threshold": th, "evm_chain_id": 2691,
 			"evm_contract": "0x00000000000000000000000000000000000dea11",
 			"pool_balance": "1000000",
-		}})
+		}
+		if s.maxClaim != "" {
+			info["max_claim_amount"] = s.maxClaim
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"info": info})
 	case path == "/tx/submit":
 		var tx types.Transaction
 		if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
@@ -498,7 +509,7 @@ func TestSettleNilAttemptsNoPanic(t *testing.T) {
 	r.attempts = nil // simulate the direct-Replay path
 	s.revert = true
 	rec := strings.Repeat("cd", 32)
-	ok, err := r.settle(Burn{ID: 1, Asset: "spld", Amount: mustBig(t, "1000"), Recipient: "SQ:" + rec, TxHash: "0x" + strings.Repeat("ab", 32), Block: 50}, 1)
+	ok, err := r.settle(Burn{ID: 1, Asset: "spld", Amount: mustBig(t, "1000"), Recipient: "SQ:" + rec, TxHash: "0x" + strings.Repeat("ab", 32), Block: 50}, &BridgeInfo{Threshold: 1})
 	if err != nil || ok {
 		t.Fatalf("settle = (%v, %v), want (false, nil)", ok, err)
 	}
@@ -548,6 +559,9 @@ func TestRelayerMOfNViaSharedDir(t *testing.T) {
 	r2.attempts = map[uint64]int{}
 	r2.State = &relayerState{}
 	r2.StatePath = filepath.Join(t.TempDir(), "state2.json")
+	// Both attestors must be active operators for their shared-dir
+	// attestations to count (readAttestations filters on the operator list).
+	s.operators = []string{s.operator.String(), r2.Operator.String()}
 
 	rec := strings.Repeat("cd", 32)
 	s.head = 300
@@ -584,5 +598,142 @@ func TestRelayerPreflightRefusals(t *testing.T) {
 	r.EvmContract = "0x" + strings.Repeat("99", 20)
 	if err := r.Preflight(2691, types.ChainID); err == nil || !strings.Contains(err.Error(), "burn contract") {
 		t.Fatalf("wrong contract: %v", err)
+	}
+}
+
+// A threshold > 1 without a shared --attestation-dir can never reach quorum:
+// the relayer would hold on every burn forever, silently. Preflight must fail
+// fast instead, and succeed once the dir is wired.
+func TestRelayerPreflightRequiresAttestationDir(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	s.threshold = 2
+	if err := r.Preflight(2691, types.ChainID); err == nil || !strings.Contains(err.Error(), "attestation-dir") {
+		t.Fatalf("preflight without attestation dir: %v", err)
+	}
+	r.AttestationDir = t.TempDir()
+	if err := r.Preflight(2691, types.ChainID); err != nil {
+		t.Fatalf("preflight with attestation dir: %v", err)
+	}
+}
+
+// A burn whose amount exceeds the bridge's max_claim_amount is a
+// deterministic on-chain refusal: submitting would mine-revert and burn fees
+// on every attempt. The relayer records it skipped (recoverable via
+// --replay-id once the cap changes) and settles the rest, without a single
+// fee-burning submit.
+func TestRelayerSkipsOverCapBurn(t *testing.T) {
+	r, s := newRelayerFixture(t)
+	s.maxClaim = "500"
+	rec := strings.Repeat("cd", 32)
+	s.head = 300
+	s.logs = []evmLog{
+		makeLog(1, 0, "1000", rec, 50), // over the 500 cap
+		makeLog(2, 0, "400", rec, 60),  // under the cap: settles normally
+	}
+	if err := r.Preflight(2691, types.ChainID); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	n, err := r.RunOnce()
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if n != 1 || len(s.submits) != 1 || s.submits[0].ID != 2 {
+		t.Fatalf("n=%d submits=%v, want only burn 2 submitted", n, s.submits)
+	}
+	if len(r.State.Skipped) != 1 || r.State.Skipped[0].ID != 1 || !strings.Contains(r.State.Skipped[0].Reason, "max_claim_amount") {
+		t.Fatalf("skipped = %+v", r.State.Skipped)
+	}
+	if r.State.LastProcessed != 200 {
+		t.Fatalf("cursor = %d, want 200 (head - confirmations)", r.State.LastProcessed)
+	}
+}
+
+// Junk in the shared attestation dir must never poison the quorum: foreign
+// keys (even with valid signatures), operator keys with garbage signatures,
+// and corrupt files are all ignored, while the two honest attestations still
+// reach threshold and submit.
+func TestRelayerAttestationDirIgnoresJunk(t *testing.T) {
+	r1, s := newRelayerFixture(t)
+	s.threshold = 2
+	dir := t.TempDir()
+	r1.AttestationDir = dir
+
+	pub2, priv2, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	op2 := qcrypto.DeriveAddress(pub2)
+	s.operators = []string{s.operator.String(), op2.String()}
+
+	r2 := *r1
+	r2.Priv = priv2
+	r2.Operator = op2
+	r2.attempts = map[uint64]int{}
+	r2.State = &relayerState{}
+	r2.StatePath = filepath.Join(t.TempDir(), "state2.json")
+
+	rec := strings.Repeat("cd", 32)
+	s.head = 300
+	s.logs = []evmLog{makeLog(1, 0, "1000", rec, 50)}
+
+	burn := Burn{ID: 1, Asset: "spld", Amount: mustBig(t, "1000"), Recipient: "SQ:" + rec, TxHash: "0x" + strings.Repeat("ab", 32), Block: 50}
+	digest, err := claimDigest(r1.Bridge, burn)
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+
+	// r1's pass publishes its valid attestation and holds at 1/2.
+	if _, err := r1.RunOnce(); err != nil {
+		t.Fatalf("r1: %v", err)
+	}
+	if len(s.submits) != 0 {
+		t.Fatalf("r1 submitted with only its own attestation")
+	}
+
+	// Plant junk: 16 well-formed attestations from a key that is NOT an
+	// operator (valid signatures, wrong attestor), one file with an operator
+	// pubkey but a garbage signature, and one corrupt file.
+	foreignPub, foreignPriv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	fsig, err := qcrypto.Sign(foreignPriv, digest[:], qcrypto.CtxBridge)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	burnDir := r1.burnDir(burn)
+	for i := 0; i < 16; i++ {
+		raw, _ := json.Marshal(attestation{PubKey: foreignPub.Bytes(), Signature: fsig})
+		if err := os.WriteFile(filepath.Join(burnDir, fmt.Sprintf("foreign-%d.json", i)), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, _ := json.Marshal(attestation{PubKey: pub2.Bytes(), Signature: make([]byte, qcrypto.SignatureSize)})
+	if err := os.WriteFile(filepath.Join(burnDir, "bad-sig.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(burnDir, "corrupt.json"), []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// r2 still reaches quorum with exactly the two honest attestations.
+	if _, err := r2.RunOnce(); err != nil {
+		t.Fatalf("r2: %v", err)
+	}
+	if len(s.submits) != 1 {
+		t.Fatalf("r2 submitted %d claims, want 1", len(s.submits))
+	}
+	atts := s.submits[0].Attestations
+	if len(atts) != 2 {
+		t.Fatalf("claim carried %d attestations, want 2 (junk must not count)", len(atts))
+	}
+	for _, a := range atts {
+		pub, err := qcrypto.PublicKeyFromBytes(a.PubKey)
+		if err != nil {
+			t.Fatalf("pubkey: %v", err)
+		}
+		if !qcrypto.Verify(pub, digest[:], qcrypto.CtxBridge, a.Signature) {
+			t.Fatalf("submitted attestation does not verify")
+		}
 	}
 }

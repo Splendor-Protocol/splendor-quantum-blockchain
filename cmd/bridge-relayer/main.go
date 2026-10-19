@@ -171,7 +171,7 @@ func (r *Relayer) Replay(id uint64) error {
 		if err != nil || burn.ID != id {
 			continue
 		}
-		ok, err := r.settle(burn, info.Threshold)
+		ok, err := r.settle(burn, info)
 		if err != nil {
 			return err
 		}

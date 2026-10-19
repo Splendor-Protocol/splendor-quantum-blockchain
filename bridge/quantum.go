@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -70,13 +71,22 @@ func (c *QuantumChain) getJSON(ctx context.Context, path string, out any) error 
 		var e struct {
 			Error string `json:"error"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&e)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, int64(maxRPCResponseBytes))).Decode(&e)
 		if e.Error != "" {
 			return fmt.Errorf("GET %s: %s", path, e.Error)
 		}
 		return fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	// Bound the response body (see maxRPCResponseBytes in evm.go): a
+	// misbehaving node must fail the call, not balloon memory.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxRPCResponseBytes)+1))
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	if len(raw) > maxRPCResponseBytes {
+		return fmt.Errorf("GET %s: response exceeds %d bytes", path, maxRPCResponseBytes)
+	}
+	return json.Unmarshal(raw, out)
 }
 
 // Height returns the node's head height.

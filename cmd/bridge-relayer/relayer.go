@@ -13,6 +13,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"time"
 
@@ -170,6 +171,25 @@ func (r *Relayer) Preflight(wantEvmChainID uint64, wantQuantumChainID string) er
 	if info.Paused {
 		r.logf("warning: bridge is paused — claims will fail until unpause")
 	}
+	// A threshold above 1 without a shared attestation dir can never reach
+	// quorum: the relayer would hold on every burn forever, silently. Fail
+	// fast at startup instead — the operator must wire the dir (or lower the
+	// threshold).
+	if info.Threshold > 1 && r.AttestationDir == "" {
+		return fmt.Errorf("bridge threshold is %d but no --attestation-dir is set; this relayer could never reach quorum", info.Threshold)
+	}
+	// Fewer active operators than the threshold means no claim can pass at
+	// all. Config can change (add operators, lower threshold), so alarm and
+	// keep running rather than exit.
+	if len(info.Operators) < int(info.Threshold) {
+		r.logf("ALARM: bridge has %d active operators but threshold %d — no claim can pass until operators are added or the threshold is lowered",
+			len(info.Operators), info.Threshold)
+	}
+	if info.MaxClaimAmount != "" {
+		if _, ok := new(big.Int).SetString(info.MaxClaimAmount, 10); !ok {
+			return fmt.Errorf("bridge reports an unparsable max_claim_amount %q", info.MaxClaimAmount)
+		}
+	}
 	return nil
 }
 
@@ -237,7 +257,25 @@ func (r *Relayer) RunOnce() (int, error) {
 		if skipped[burn.ID] {
 			continue
 		}
-		ok, serr := r.settle(burn, info.Threshold)
+		if info.MaxClaimAmount != "" {
+			cap, ok := new(big.Int).SetString(info.MaxClaimAmount, 10)
+			if !ok {
+				return claimed, fmt.Errorf("bridge reports an unparsable max_claim_amount %q", info.MaxClaimAmount)
+			}
+			if burn.Amount.Cmp(cap) > 0 {
+				// A deterministic on-chain refusal (amount > max_claim_amount):
+				// submitting would mine-revert and burn fees on every attempt.
+				// Record it skipped and alarm — the burn is real, and it
+				// becomes claimable again via --replay-id if the owner
+				// redeploys with a higher cap.
+				r.logf("ALARM: burn %d amount %s exceeds bridge max_claim_amount %s; recording as skipped (recover with --replay-id %d)",
+					burn.ID, burn.Amount, cap, burn.ID)
+				r.State.Skipped = append(r.State.Skipped, skippedBurn{ID: burn.ID, Block: burn.Block, Reason: "exceeds max_claim_amount"})
+				skipped[burn.ID] = true
+				continue
+			}
+		}
+		ok, serr := r.settle(burn, info)
 		if serr != nil {
 			return claimed, serr // transport-level trouble: retry the batch next pass
 		}
@@ -275,7 +313,7 @@ func (r *Relayer) RunOnce() (int, error) {
 // unmined, a connection blip) and a receipt that does not arrive in the window
 // are both retried without counting — otherwise a few minutes of congestion or
 // a producer stall would permanently shunt live burns into the skip list.
-func (r *Relayer) settle(b Burn, threshold uint64) (bool, error) {
+func (r *Relayer) settle(b Burn, info *BridgeInfo) (bool, error) {
 	if r.attempts == nil {
 		r.attempts = map[uint64]int{}
 	}
@@ -289,13 +327,13 @@ func (r *Relayer) settle(b Burn, threshold uint64) (bool, error) {
 	// Gather >= threshold distinct attestations (this relayer's own, plus
 	// peers' from the shared dir when threshold > 1). Below threshold we hold
 	// and retry — NOT counted, since waiting for co-attestors is not a failure.
-	atts, enough, err := r.gatherAttestations(b, threshold)
+	atts, enough, err := r.gatherAttestations(b, info)
 	if err != nil {
 		r.logf("burn %d: attestation error (not counted): %v", b.ID, err)
 		return false, nil
 	}
 	if !enough {
-		r.logf("burn %d: %d/%d attestations gathered, waiting for co-attestors", b.ID, len(atts), threshold)
+		r.logf("burn %d: %d/%d attestations gathered, waiting for co-attestors", b.ID, len(atts), info.Threshold)
 		return false, nil
 	}
 	nonce, err := r.Quantum.Nonce(r.Operator)
