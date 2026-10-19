@@ -1,0 +1,6 @@
+{"level":30,"time":1791457122255,"pid":31164,"hostname":"LAPTOP-KVOTCP2A","msg":"Server listening at http://127.0.0.1:8799"}
+{"level":30,"time":1791457122255,"pid":31164,"hostname":"LAPTOP-KVOTCP2A","msg":"GITHUB_TOKEN not set: release dashboard is read-only (npm versions only)"}
+{"level":30,"time":1791457124499,"pid":31164,"hostname":"LAPTOP-KVOTCP2A","reqId":"req-1","req":{"method":"GET","url":"/health","host":"127.0.0.1:8799","remoteAddress":"127.0.0.1","remotePort":51700},"msg":"incoming request"}
+{"level":30,"time":1791457124505,"pid":31164,"hostname":"LAPTOP-KVOTCP2A","reqId":"req-1","res":{"statusCode":200},"responseTime":5.434799999999541,"msg":"request completed"}
+{"level":30,"time":1791457124535,"pid":31164,"hostname":"LAPTOP-KVOTCP2A","reqId":"req-2","req":{"method":"GET","url":"/catalog","host":"127.0.0.1:8799","remoteAddress":"127.0.0.1","remotePort":51700},"msg":"incoming request"}
+{"level":30,"time":1791457124537,"pid":31164,"hostname":"LAPTOP-KVOTCP2A","reqId":"req-2","res":{"statusCode":200},"responseTime":1.1724999999996726,"msg":"request completed"}

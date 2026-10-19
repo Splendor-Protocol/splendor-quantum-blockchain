@@ -86,6 +86,33 @@ describe('validateSpec', () => {
     if (!r.ok) expect(r.issues.map((i) => i.message)).toEqual(expect.arrayContaining(['max 18', 'must be a decimal amount', 'must be an SQ: address']));
   });
 
+  it('returns a normalized copy without unknown fields', () => {
+    const spec = ready('wallet-dashboard') as unknown as Record<string, any>;
+    spec.owner = 'SQ:' + '00'.repeat(32);
+    spec.theme.extra = 'x';
+    spec.pages[0].hidden = true;
+    spec.pages[0].blocks[0].script = 'alert(1)';
+    const r = validateSpec(spec, { catalog });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.spec).not.toBe(spec);
+    expect(Object.keys(r.spec).sort()).toEqual(['description', 'name', 'network', 'pages', 'theme', 'version']);
+    expect(Object.keys(r.spec.theme).sort()).toEqual(['base', 'overrides']);
+    expect(Object.keys(r.spec.pages[0]!).sort()).toEqual(['blocks', 'path', 'title']);
+    expect(Object.keys(r.spec.pages[0]!.blocks[0]!).sort()).toEqual(['id', 'props', 'widget']);
+    expect(r.spec.pages[0]!.blocks[0]!.props).toEqual(spec.pages[0].blocks[0].props);
+  });
+
+  it('rejects prototype keys in props, with or without a catalog', () => {
+    const spec = ready('wallet-dashboard');
+    const parsed = JSON.parse(JSON.stringify(spec).replace('"heading":', '"__proto__":{"polluted":true},"heading":')) as unknown;
+    for (const r of [validateSpec(parsed), validateSpec(parsed, { catalog })]) {
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.issues).toContainEqual({ path: 'pages[0].blocks[0].props.__proto__', message: 'reserved prop name' });
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
   it('requires a home page and never throws on junk', () => {
     expect(validateSpec(null).ok).toBe(false);
     expect(validateSpec('x').ok).toBe(false);
@@ -136,6 +163,17 @@ describe('generateProject', () => {
     const next = generateProject(ready('wallet-dashboard'), { framework: 'next', catalog, versions }).files;
     expect(next['scripts/copy-sqc-wasm.mjs']).toContain('NEXT_PUBLIC_SQC_WASM_SHA256');
     expect(JSON.parse(next['package.json']!).scripts.prebuild).toBe('node scripts/copy-sqc-wasm.mjs');
+  });
+
+  it('ignores every local env file and ships security headers', () => {
+    const vite = generateProject(ready('wallet-dashboard'), { framework: 'vite', catalog, versions });
+    expect(vite.files['.gitignore']).toContain('.env*.local');
+    expect(vite.files['README.md']).toContain("script-src 'self' 'wasm-unsafe-eval'");
+    const next = generateProject(ready('wallet-dashboard'), { framework: 'next', catalog, versions });
+    expect(next.files['.gitignore']).toContain('.env*.local');
+    expect(next.files['next.config.mjs']).toContain('async headers()');
+    expect(next.files['next.config.mjs']).toContain("frame-ancestors 'none'");
+    expect(next.files['next.config.mjs']).toContain('poweredByHeader: false');
   });
 
   it('escapes prop strings so they cannot break out of JSX', () => {

@@ -18,6 +18,7 @@
     "@splendor/dapp-spec": "0.1.0",
     "@splendor/sqc-sdk": "3.0.0",
     "@stackblitz/sdk": "^1.11.0",
+    "dompurify": "^3.4.17",
     "jszip": "^3.10.1",
     "marked": "^15.0.0",
     "react": "^19.0.0",

@@ -22,19 +22,27 @@ document is only about the npm packages.
 
 ## One-time setup
 
-1. **npm**: create an automation token for an account with publish rights on the `@splendor`
-   scope and on `create-splendor-dapp`. Store it as the repository secret **`NPM_TOKEN`**. This
-   is the only place the npm token exists.
-2. **GitHub Actions**: in Settings → Actions → General, allow "Read and write permissions" and
+1. **Publishing environment**: in Settings → Environments, create **`npm-publish`**.
+   - Under "Deployment branches and tags", allow only `main`.
+   - Add at least one **required reviewer** other than the people who usually dispatch releases.
+     Every run that can publish (the push after the version PR merges, and any non-dry-run
+     dispatch, including from the playground admin panel) then waits for a second person to
+     approve it. Dry runs skip the gate.
+2. **npm**: create a granular access token for an account with publish rights on the `@splendor`
+   scope and on `create-splendor-dapp`, limited to those packages and with an expiry. Store it as
+   **`NPM_TOKEN`** under the `npm-publish` environment's secrets, not as a repository secret, so
+   only approved publishing runs can read it. This is the only place the npm token exists. Rotate
+   it before it expires, and immediately if anyone with access leaves.
+3. **GitHub Actions**: in Settings → Actions → General, allow "Read and write permissions" and
    "Allow GitHub Actions to create and approve pull requests", so the workflow can open the
    version PR.
-3. **Playground admin panel (optional)**: create a fine-grained personal access token limited to
+4. **Playground admin panel (optional)**: create a fine-grained personal access token limited to
    this repository with **Actions: Read and write** and **Contents: Read** and nothing else.
    Set it on the playground API as `GITHUB_TOKEN` (with `GITHUB_REPO`, and optionally
    `GITHUB_RELEASE_WORKFLOW` and `GITHUB_RELEASE_REF`). This token can only read files and start
    or read workflow runs. It cannot push, merge or publish. Without it the release page shows npm
    versions only.
-4. **Admins**: list the wallet addresses allowed into the admin panel in the API's
+5. **Admins**: list the wallet addresses allowed into the admin panel in the API's
    `ADMIN_ADDRESSES`. Admins can add further admins in the panel; every change is in the audit log.
 
 ## Day to day: changesets
@@ -107,14 +115,19 @@ installs the packed tarballs into freshly generated projects and builds them.
 
 Its **Start a release** form dispatches the workflow with a channel and the dry-run switch.
 Every dispatch, successful or not, is written to **Admin → Audit log** with the admin's address.
-The API never sees the npm token: it can start the workflow, and the workflow publishes.
+The API never sees the npm token: it can start the workflow, and the workflow publishes. A
+non-dry-run dispatch still waits for the `npm-publish` reviewers, so a stolen admin session
+cannot publish on its own.
 
 ## When something goes wrong
 
 | Symptom | Cause and fix |
 |---------|---------------|
 | `check-wasm-dist` or sqc-sdk `prepack` fails | The committed signer pins do not match the bytes this commit builds. CI's `wasm-drift` job re-pins `main` itself; wait for it, or run `bash sdk/sqc-sdk/wasm/build.sh && node sdk/sqc-sdk/scripts/sync-config.mjs` and commit the two `sqc.networks.json` files. |
-| `E403` / `ENEEDAUTH` on publish | `NPM_TOKEN` is missing, expired, or lacks publish rights on that package. |
+| `E403` / `ENEEDAUTH` on publish | `NPM_TOKEN` is missing from the `npm-publish` environment, expired, or lacks publish rights on that package. |
+| Run waits on "Review deployments" | Working as intended: a required reviewer of `npm-publish` must approve it. |
+| `npm audit signatures` fails | A dependency's tarball does not match its registry signature. Do not publish; find the package in the output and investigate before re-running. |
+| Dependabot PR bumps an action SHA | Check the linked release notes, then merge. Pins are commit SHAs on purpose, so a moved tag cannot change what runs next to the npm token. |
 | Provenance error | The job needs `id-token: write` (already set), and `repository.url` in the package must match this repository. |
 | No version PR appears | No changesets are pending, or Actions may not create pull requests (one-time setup, step 2). |
 | Admin panel: "GitHub is not configured" | `GITHUB_TOKEN` is not set on the API. |

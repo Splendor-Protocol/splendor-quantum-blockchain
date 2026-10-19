@@ -20,15 +20,28 @@ export type ReleaseStatus = {
 };
 
 const CACHE_MS = 30_000;
+const UPSTREAM_TIMEOUT_MS = 10_000;
+
+/** fetch with a deadline, so a stalled GitHub or npm never holds an admin request open. */
+async function timedFetch(fetchImpl: FetchLike, label: string, url: string, init: RequestInit = {}, timeoutMs = UPSTREAM_TIMEOUT_MS): Promise<Response> {
+  try {
+    return await fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    const name = (e as { name?: string })?.name;
+    if (name === 'TimeoutError' || name === 'AbortError') throw new Error(`${label}: timed out after ${Math.round(timeoutMs / 1000)}s`);
+    throw new Error(`${label}: ${(e as Error)?.message ?? String(e)}`);
+  }
+}
 
 /**
  * Read-only release status plus `workflow_dispatch`. The GitHub token needs only
  * `actions:write` + `contents:read` on this repo; npm credentials live in GitHub secrets.
  */
-export function createReleaseService(config: ApiConfig['github'], fetchImpl: FetchLike = fetch) {
+export function createReleaseService(config: ApiConfig['github'], fetchImpl: FetchLike = fetch, opts: { timeoutMs?: number } = {}) {
   let cache: { at: number; value: ReleaseStatus } | null = null;
+  const timeoutMs = opts.timeoutMs ?? UPSTREAM_TIMEOUT_MS;
   const gh = async (path: string, init: RequestInit = {}) => {
-    const res = await fetchImpl(`${config.apiUrl}/repos/${config.repo}${path}`, {
+    const res = await timedFetch(fetchImpl, `GitHub ${path.split('?')[0]}`, `${config.apiUrl}/repos/${config.repo}${path}`, {
       ...init,
       headers: {
         accept: 'application/vnd.github+json',
@@ -37,7 +50,7 @@ export function createReleaseService(config: ApiConfig['github'], fetchImpl: Fet
         ...(config.token ? { authorization: `Bearer ${config.token}` } : {}),
         ...init.headers,
       },
-    });
+    }, timeoutMs);
     if (!res.ok) throw new Error(`GitHub ${path.split('?')[0]}: ${res.status} ${res.statusText}`);
     return res;
   };
@@ -48,9 +61,9 @@ export function createReleaseService(config: ApiConfig['github'], fetchImpl: Fet
   };
 
   async function distTags(name: string): Promise<Record<string, string>> {
-    const res = await fetchImpl(`${config.npmRegistry}/-/package/${name.replace('/', '%2F')}/dist-tags`, {
+    const res = await timedFetch(fetchImpl, `npm ${name}`, `${config.npmRegistry}/-/package/${name.replace('/', '%2F')}/dist-tags`, {
       headers: { accept: 'application/json' },
-    });
+    }, timeoutMs);
     if (res.status === 404) return {};
     if (!res.ok) throw new Error(`npm ${name}: ${res.status}`);
     return (await res.json()) as Record<string, string>;

@@ -5,6 +5,7 @@ import { defineConfig, loadEnv, searchForWorkspaceRoot, type PluginOption, type 
 import react from '@vitejs/plugin-react';
 import { sqcWasmPlugin } from '@splendor/connect-react/vite';
 import { resolveNetworks } from './src/networks';
+import { SECURITY_HEADERS } from './src/securityHeaders';
 
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ['VITE_', 'PLAYGROUND_']), ...process.env };
@@ -50,7 +51,10 @@ export default defineConfig(({ mode }) => {
         ],
       },
     },
-    preview: { port: 5180, proxy },
+    // `vite preview` serves the production build the way the deploy configs do (public/_headers,
+    // vercel.json), so the e2e suite runs under the real CSP and with the isolated preview iframe.
+    // CORS is open only here: the dev server keeps Vite's localhost-only default.
+    preview: { port: 5180, proxy, headers: SECURITY_HEADERS, cors: { origin: '*' } },
     // The entry chunk carries the SDK + widgets that every page needs.
     build: { chunkSizeWarningLimit: 800 },
     resolve: {

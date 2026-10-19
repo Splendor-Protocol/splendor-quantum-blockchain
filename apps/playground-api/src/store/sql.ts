@@ -6,6 +6,8 @@ type Row = Record<string, unknown>;
 export interface SqlDriver {
   dialect: 'sqlite' | 'postgres';
   exec(sql: string): Promise<void>;
+  /** Runs a multi-statement script all-or-nothing. */
+  execAtomic(sql: string): Promise<void>;
   run(sql: string, params?: unknown[]): Promise<{ changes: number }>;
   all<T = Row>(sql: string, params?: unknown[]): Promise<T[]>;
   close(): Promise<void>;
@@ -13,7 +15,7 @@ export interface SqlDriver {
 
 const now = () => new Date().toISOString();
 
-const SCHEMA = (d: SqlDriver['dialect']) => `
+const INITIAL_SCHEMA = (d: SqlDriver['dialect']) => `
 CREATE TABLE IF NOT EXISTS nonces (
   nonce TEXT PRIMARY KEY,
   expires_at BIGINT NOT NULL
@@ -63,6 +65,33 @@ CREATE TABLE IF NOT EXISTS deployments (
 );
 `;
 
+const canonical = (col: string) => `'SQ:' || lower(substr(${col}, 4))`;
+
+/**
+ * Append-only: never edit a migration that has shipped, add a new one. Each runs in one
+ * transaction together with its schema_migrations row.
+ */
+const MIGRATIONS: { id: number; name: string; sql: (d: SqlDriver['dialect']) => string }[] = [
+  { id: 1, name: 'initial', sql: INITIAL_SCHEMA },
+  {
+    id: 2,
+    name: 'indexes-and-canonical-addresses',
+    sql: () => `
+CREATE INDEX IF NOT EXISTS sessions_expires ON sessions (expires_at);
+CREATE INDEX IF NOT EXISTS sessions_address ON sessions (address);
+CREATE INDEX IF NOT EXISTS nonces_expires ON nonces (expires_at);
+CREATE INDEX IF NOT EXISTS audit_log_at ON audit_log (at);
+CREATE INDEX IF NOT EXISTS audit_log_action_at ON audit_log (action, at);
+UPDATE admins SET address = ${canonical('address')} WHERE address <> ${canonical('address')};
+UPDATE sessions SET address = ${canonical('address')} WHERE address <> ${canonical('address')};
+UPDATE projects SET owner = ${canonical('owner')} WHERE owner <> ${canonical('owner')};
+UPDATE deployments SET owner = ${canonical('owner')} WHERE owner <> ${canonical('owner')};
+`,
+  },
+];
+
+export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.id;
+
 function project(r: Row): ProjectRow {
   return {
     id: String(r.id),
@@ -91,10 +120,25 @@ export class SqlStore implements Store {
   constructor(private readonly db: SqlDriver) {}
 
   async migrate() {
-    await this.db.exec(SCHEMA(this.db.dialect));
+    await this.db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)');
+    const done = new Set((await this.db.all('SELECT id FROM schema_migrations')).map((r) => Number(r.id)));
+    for (const m of MIGRATIONS) {
+      if (done.has(m.id)) continue;
+      // Literals only (no user input), so the row can ride in the same script as the migration.
+      await this.db.execAtomic(`${m.sql(this.db.dialect)}\nINSERT INTO schema_migrations (id, name, applied_at) VALUES (${m.id}, '${m.name}', '${now()}');`);
+    }
   }
   close() {
     return this.db.close();
+  }
+  async ping() {
+    await this.db.all('SELECT 1 AS ok');
+  }
+  async purgeExpired(nowSec: number, auditBeforeIso: string) {
+    const nonces = (await this.db.run('DELETE FROM nonces WHERE expires_at <= ?', [nowSec])).changes;
+    const sessions = (await this.db.run('DELETE FROM sessions WHERE expires_at <= ?', [nowSec])).changes;
+    const audit = (await this.db.run('DELETE FROM audit_log WHERE at < ?', [auditBeforeIso])).changes;
+    return { nonces, sessions, audit };
   }
 
   async putNonce(nonce: string, expiresAtSec: number) {
@@ -122,14 +166,15 @@ export class SqlStore implements Store {
     const rows = await this.db.all('SELECT address, added_by, added_at FROM admins ORDER BY added_at');
     return rows.map((r) => ({ address: String(r.address), addedBy: String(r.added_by), addedAt: String(r.added_at) }));
   }
+  // Addresses arrive canonical (`SQ:` + lowercase hex) from the API layer.
   async isAdmin(address: string) {
-    return (await this.db.all('SELECT 1 FROM admins WHERE address = ?', [address.toLowerCase()])).length > 0;
+    return (await this.db.all('SELECT 1 FROM admins WHERE address = ?', [address])).length > 0;
   }
   async addAdmin(address: string, addedBy: string) {
-    await this.db.run('INSERT INTO admins (address, added_by, added_at) VALUES (?, ?, ?) ON CONFLICT (address) DO NOTHING', [address.toLowerCase(), addedBy, now()]);
+    await this.db.run('INSERT INTO admins (address, added_by, added_at) VALUES (?, ?, ?) ON CONFLICT (address) DO NOTHING', [address, addedBy, now()]);
   }
   async removeAdmin(address: string) {
-    return (await this.db.run('DELETE FROM admins WHERE address = ?', [address.toLowerCase()])).changes > 0;
+    return (await this.db.run('DELETE FROM admins WHERE address = ?', [address])).changes > 0;
   }
 
   async listProjects(owner: string) {
@@ -212,6 +257,11 @@ export class SqlStore implements Store {
         detail: r.detail == null ? null : String(r.detail),
       }),
     );
+  }
+
+  async countAuditSince(action: string, sinceIso: string) {
+    const [r] = await this.db.all('SELECT COUNT(*) AS n FROM audit_log WHERE action = ? AND at >= ?', [action, sinceIso]);
+    return Number(r?.n ?? 0);
   }
 
   async createDeployment(row: Omit<DeploymentRow, 'createdAt' | 'url'>) {

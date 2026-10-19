@@ -106,6 +106,7 @@ function Editor({
   const [tab, setTab] = useState<'block' | 'theme' | 'export' | 'project'>('block');
   const [calls, setCalls] = useState<{ method: string; args: string }[]>([]);
   const [cloud, setCloud] = useState<CloudState>({ status: 'local' });
+  const mainnetLiveConfirmed = useRef(false);
   const { spec, pagePath, selectedBlockId } = state;
 
   const validation = useMemo(() => validateSpec(spec, { catalog: all }), [spec, all]);
@@ -314,7 +315,18 @@ function Editor({
             <button type="button" aria-pressed={mode === 'mock'} onClick={() => setMode('mock')}>
               Mock wallet
             </button>
-            <button type="button" aria-pressed={mode === 'live'} onClick={() => setMode('live')}>
+            <button
+              type="button"
+              aria-pressed={mode === 'live'}
+              onClick={() => {
+                if (spec.network === 'mainnet' && !mainnetLiveConfirmed.current) {
+                  const ok = window.confirm('Live mode on mainnet signs real transactions that spend real SPLD. Check every address in this dApp first. Continue?');
+                  if (!ok) return;
+                  mainnetLiveConfirmed.current = true;
+                }
+                setMode('live');
+              }}
+            >
               Live
             </button>
           </div>

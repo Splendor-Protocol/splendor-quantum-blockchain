@@ -71,7 +71,7 @@ address in `ADMIN_ADDRESSES`.
 | Command (repo root) | What it covers |
 |---------|----------------|
 | `npm run test:playground` | Builder state (undo/redo) and API unit tests (auth, CSRF, projects, flags, releases, audit). |
-| `npm run test:e2e` | Playwright: every template in the builder with the mock wallet (transfer, tip, sign-in, token deploy), zip export for both frameworks, save, share and remix, plus the admin flows (catalog flags, release dry run, audit) against a fake GitHub and npm. Starts its own API (in-memory SQLite) and dev server on ports 5181, 8797 and 8798. Run `npx playwright install chromium` in this folder first. |
+| `npm run test:e2e` | Playwright: every template in the builder with the mock wallet (transfer, tip, sign-in, token deploy), zip export for both frameworks, save, share and remix, plus the admin flows (catalog flags, release dry run, audit) against a fake GitHub and npm. It also checks the CSP and that the preview iframe is isolated. It builds the playground and serves it with `vite preview` under the deploy headers, alongside its own API (in-memory SQLite) and a fake GitHub, on ports 5181, 8797 and 8798. `E2E_DEV=1` uses the dev server instead (faster, but no CSP and a same-origin preview). Run `npx playwright install chromium` in this folder first. |
 | `npm run test:codegen` | Generates every template for Vite and Next.js, installs the SDKs from `npm pack` tarballs, and runs each production build. |
 | `E2E_LIVE=1 E2E_LIVE_NETWORK=devnet npx playwright test e2e/live` | Read-only recipes against a real network (the nightly workflow runs this). |
 
@@ -117,22 +117,29 @@ npm run build -w @splendor/playground-api
 cd apps/playground-api && NODE_ENV=production node dist/server.js
 ```
 
-It needs Node 22.13 or newer. It creates its tables on startup (`CREATE TABLE IF NOT EXISTS`), so a
-fresh database needs no migration step.
+It needs Node 22.13 or newer. On startup it applies any pending schema migrations, in order, each
+in one transaction, and records them in `schema_migrations`. A fresh database needs no separate
+step. Every 10 minutes it deletes expired sessions and nonces, and audit rows older than
+`AUDIT_RETENTION_DAYS`. `SIGTERM` drains in-flight requests for up to 10 seconds.
+
+Point your process manager or load balancer at `GET /health` (liveness: the process answers) and
+`GET /health/ready` (readiness: the database answers; 503 otherwise).
 
 | Variable | Required | Notes |
 |----------|----------|-------|
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/playground`. SQLite (`sqlite:./data/playground.db`) is for development and single-instance trials. |
-| `PLAYGROUND_ORIGINS` | yes in production | Comma-separated playground origins, e.g. `https://playground.example.com`. Used for CORS, the CSRF origin check, and as the allowed sign-in domains. |
-| `ADMIN_ADDRESSES` | for admin | SQ: addresses that are always admins. Further admins can be added in the UI and are stored in the database. |
+| `PLAYGROUND_ORIGINS` | yes in production | Comma-separated bare origins (no path or trailing slash), e.g. `https://playground.example.com`. Used for CORS, the CSRF origin check, and as the allowed sign-in domains. The API refuses to start on anything else. |
+| `ADMIN_ADDRESSES` | for admin | SQ: addresses that are always admins (any hex case). Further admins can be added in the UI and are stored in the database. |
+| `TRUST_PROXY` | behind a proxy | Peers allowed to set `X-Forwarded-For`: addresses, CIDRs or `loopback` (e.g. `loopback` for nginx on the same host). Unset means the TCP peer is the client, which is correct when nothing sits in front. Never set it when the API is reachable directly, or clients can choose their own IP and bypass rate limits. |
 | `PORT`, `HOST` | no | Default `8787` and `127.0.0.1`. Use `HOST=0.0.0.0` in a container. |
-| `COOKIE_SECURE` | no | Defaults to on in production. |
-| `COOKIE_SAMESITE` | no | `lax` (default). `none` only for the cross-site setup below. |
-| `SESSION_TTL_SEC` | no | Default 7 days. |
+| `COOKIE_SECURE` | no | Defaults to on in production. A Secure cookie is named `__Host-sqc_pg_session`. |
+| `COOKIE_SAMESITE` | no | `lax` (default). `none` only for the cross-site setup below, and only with `COOKIE_SECURE=1`. |
+| `SESSION_TTL_SEC` | no | Default 7 days (5 minutes to 90 days). |
+| `AUDIT_RETENTION_DAYS` | no | Default 365. |
 | `SIGNIN_CHAIN_ID` | no | Reject sign-in messages for other chains. |
 | `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_RELEASE_WORKFLOW`, `GITHUB_RELEASE_REF` | for releases | See [Releasing packages](../../docs/RELEASING_PACKAGES.md). Without a token the release page is read-only (npm versions only). |
 | `HOSTING_ENABLED` | no | Phase-2 hosted publishing routes (`/deployments`). Leave off. |
-| `ALLOW_TEST_LOGIN` | never | Test-only password-less login. The API refuses to start with it when `NODE_ENV=production`. |
+| `ALLOW_TEST_LOGIN` | never | Test-only password-less login. The API refuses to start with it in production, or on any host other than loopback unless `NODE_ENV=test`. |
 
 ### 3. Connect them
 
@@ -144,19 +151,40 @@ server {
   server_name playground.example.com;
   root /srv/playground/dist;
 
+  # Same values as src/securityHeaders.ts, public/_headers and vercel.json.
+  add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://*.splendor.org wss://*.splendor.org; frame-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'none'; form-action 'self' https://stackblitz.com" always;
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+  add_header Cross-Origin-Opener-Policy "same-origin-allow-popups" always;
+
   location /api/ {
     proxy_pass http://127.0.0.1:8787/;      # trailing slash strips /api
     proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-For $remote_addr;   # overwrite, never append a client's value
     proxy_set_header X-Forwarded-Proto $scheme;
+  }
+  # The preview iframe has an opaque origin, so its module scripts and CSS are CORS requests.
+  # (add_header in a location replaces the server-level ones, so assets get only these.)
+  location /assets/ {
+    add_header Access-Control-Allow-Origin "*" always;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header X-Content-Type-Options "nosniff" always;
   }
   location ~* \.wasm$ { types { application/wasm wasm; } }
   location / { try_files $uri /index.html; }
 }
 ```
 
-On Vercel or Netlify, use a rewrite from `/api/:path*` to the API's URL and an SPA fallback to
-`/index.html`.
+Run the API with `TRUST_PROXY=loopback` behind this proxy, so rate limits and the audit log see
+the real client IP.
+
+**Netlify** picks up [`public/_headers`](public/_headers) and [`public/_redirects`](public/_redirects)
+from the build output. **Vercel** uses [`vercel.json`](vercel.json). In both cases, add a rewrite
+from `/api/:path*` to the API's URL. If you change the CSP, change it in
+[`src/securityHeaders.ts`](src/securityHeaders.ts) and in both files; `npm test` fails when they
+disagree.
 
 **Different sites.** If the API must live on another site (e.g. `api.example.net`), build with
 `VITE_PLAYGROUND_API_URL=https://api.example.net` and run the API with `COOKIE_SAMESITE=none` and
@@ -165,9 +193,46 @@ the same-origin setup.
 
 ### Checklist
 
-- [ ] `GET /api/health` returns `{"ok":true}` through the proxy.
+- [ ] `GET /api/health/ready` returns `{"ok":true}` through the proxy.
+- [ ] The page response carries `Content-Security-Policy`, and `/assets/*` carries
+      `Access-Control-Allow-Origin: *`. Without the latter, the builder preview stays blank in
+      production, because the isolated iframe cannot load its scripts.
 - [ ] Sign in on `/admin` with an address from `ADMIN_ADDRESSES`. "This wallet is not an admin"
       means the address is wrong; a sign-in error mentioning the domain means `PLAYGROUND_ORIGINS`
       does not list the origin in the browser's address bar.
 - [ ] `/admin/releases` shows the repo versions (GitHub token works) and npm versions.
 - [ ] A shared link (`/s/<id>`) opens in a private window.
+- [ ] A database backup has been taken and restored once (see below).
+
+## Security model and limits
+
+**What is trusted.** The playground's code and the bundled docs. Everything else is input: specs
+(from the editor, local drafts, the API and share links), sign-in messages, and API request bodies.
+
+| Threat | Control |
+|--------|---------|
+| A shared spec carrying script or markup | Specs are data only. `validateSpec` checks every field against the widget manifests and returns a fresh copy with only known fields. Prototype keys are rejected, URLs must be http(s), theme values are plain CSS tokens. Generated code escapes every string. |
+| A spec escaping its preview | In production the preview iframe has an opaque origin (no `allow-same-origin`). It cannot read the playground's DOM, storage or cookies, and messages are checked by window and origin on both sides. |
+| Script injection on the playground origin | A CSP without inline scripts or `eval` (only `'wasm-unsafe-eval'` for the signer), `frame-ancestors 'self'`, `object-src 'none'` and `base-uri 'none'`. Rendered markdown is sanitized with DOMPurify. |
+| Session theft or fixation | 256-bit session ids. Only their sha256 is stored. The cookie is `httpOnly`, `Secure` and `__Host-`, and is replaced at every sign-in. Sign-in is an ML-DSA-65 signature over a single-use, 5-minute nonce for an allowlisted domain. |
+| Cross-site request forgery | State changes need JSON and an allowlisted `Origin`. A cookie-bearing request without `Origin` is accepted only with `Sec-Fetch-Site: same-origin`. CORS allows only `PLAYGROUND_ORIGINS`. |
+| Brute force and floods | Per-IP rate limits (300/min overall, 30/min on sign-in, 5/min on release dispatch), per-user project caps, body size limits, strict request schemas. Failed sign-ins are audited at most 60 times a minute. |
+| Leaking internals | 5xx responses carry only a generic message and a request id. Details go to the log under that id. Private responses are `Cache-Control: no-store`. |
+| A compromised admin session publishing packages | The API can only dispatch the release workflow. Real publishes wait for the `npm-publish` environment's reviewers on GitHub, and the npm token lives only there. Every admin action is in the audit log. |
+
+**Limits of this deployment.** The API is built for **one instance**. Rate-limit counters and the
+housekeeping timer are in process memory. A second instance would double every limit, and each
+instance would run the (idempotent) cleanup. Scaling out needs a shared rate-limit store (e.g. Redis
+via `@fastify/rate-limit`'s `redis` option) and a single scheduler for housekeeping. SQLite is
+single-node and blocks the event loop on each query; use Postgres for anything you need to keep.
+
+**Backups.** With Postgres, schedule `pg_dump --format=custom` (daily, with retention), copy the dumps
+off the host, and test a `pg_restore` into a scratch database. Projects and the admin list live
+only there. With SQLite, back up the database file together with its `-wal` file, or run
+`sqlite3 playground.db ".backup out.db"`.
+
+**Secrets.** `GITHUB_TOKEN` (fine-grained, this repo only, Actions read/write and Contents read) and
+`DATABASE_URL` are the only secrets the API holds. Rotate the GitHub token on a schedule and when
+an admin leaves. Signing out every session is `DELETE FROM sessions`.
+
+**Reporting.** See [SECURITY.md](../../SECURITY.md).

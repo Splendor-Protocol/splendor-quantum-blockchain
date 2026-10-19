@@ -204,6 +204,212 @@ describe('admin', () => {
   });
 });
 
+/** A separate app with its own env, for the behaviour that depends on configuration. */
+async function makeApp(env: Record<string, string>, wrap: (s: Store) => Store = (s) => s) {
+  const s = await createStore('sqlite::memory:');
+  const config = loadConfig({ NODE_ENV: 'test', ADMIN_ADDRESSES: ADMIN, PLAYGROUND_ORIGINS: ORIGIN, ...env });
+  const a = await buildApp({ config, store: wrap(s), verifier: async (_pk, _msg, sig) => sig === 'valid-signature' });
+  return { app: a, store: s, config, close: async () => (await a.close(), await s.close()) };
+}
+
+const cookieOf = (res: { headers: Record<string, unknown> }) => {
+  const c = res.headers['set-cookie'];
+  return (Array.isArray(c) ? c[0] : String(c ?? '')).split(';')[0]!;
+};
+
+describe('proxy trust', () => {
+  const failedSignInIp = async (a: App, forwardedFor: string) => {
+    const { nonce } = (await a.inject({ method: 'POST', url: '/auth/nonce', ...json({}) })).json() as { nonce: string };
+    const message = createAuthMessage({ domain: ORIGIN, nonce, address: USER, statement: 'x', expirationTime: Math.floor(Date.now() / 1000) + 300 });
+    await a.inject({
+      method: 'POST',
+      url: '/auth/verify',
+      headers: { 'content-type': 'application/json', origin: ORIGIN, 'x-forwarded-for': forwardedFor },
+      payload: JSON.stringify({ message, signatureB64: 'forged', publicKeyB64: PUB_USER, address: USER }),
+    });
+  };
+
+  it('ignores X-Forwarded-For unless TRUST_PROXY is set', async () => {
+    const plain = await makeApp({});
+    await failedSignInIp(plain.app, '6.6.6.6');
+    expect((await plain.store.listAudit(5))[0]!.detail).toContain('127.0.0.1');
+    await plain.close();
+
+    const proxied = await makeApp({ TRUST_PROXY: 'loopback' });
+    await failedSignInIp(proxied.app, '6.6.6.6');
+    expect((await proxied.store.listAudit(5))[0]!.detail).toContain('6.6.6.6');
+    await proxied.close();
+  });
+
+  it('parses TRUST_PROXY', () => {
+    const tp = (v?: string) => loadConfig({ NODE_ENV: 'test', ...(v === undefined ? {} : { TRUST_PROXY: v }) }).trustProxy;
+    expect(tp()).toBe(false);
+    expect(tp('true')).toBe(true);
+    expect(() => tp('2')).toThrow(/not a hop count/);
+    expect(tp('loopback, 10.0.0.0/8')).toEqual(['loopback', '10.0.0.0/8']);
+  });
+});
+
+describe('csrf with a session cookie', () => {
+  it('needs an allowed Origin or Sec-Fetch-Site: same-origin when the cookie is sent', async () => {
+    const { cookie } = await signIn(PUB_USER, USER);
+    const body = { 'content-type': 'application/json', cookie: cookie! };
+    const noOrigin = await app.inject({ method: 'POST', url: '/projects', headers: body, payload: JSON.stringify({ spec: {} }) });
+    expect(noOrigin.statusCode).toBe(403);
+    expect(noOrigin.json().error).toMatch(/Origin header required/);
+    const sameOrigin = await app.inject({ method: 'POST', url: '/auth/logout', headers: { ...body, 'sec-fetch-site': 'same-origin' }, payload: '{}' });
+    expect(sameOrigin.statusCode).toBe(200);
+    const crossSite = await app.inject({ method: 'DELETE', url: '/projects/xxxxxxxxxxxx', headers: { cookie: cookie!, 'sec-fetch-site': 'cross-site' } });
+    expect(crossSite.statusCode).toBe(403);
+  });
+
+  it('leaves cookie-less clients alone', async () => {
+    const res = await app.inject({ method: 'POST', url: '/auth/nonce', headers: { 'content-type': 'application/json' }, payload: '{}' });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe('session cookie', () => {
+  it('uses a __Host- cookie when Secure and clears it with the same attributes', async () => {
+    const t = await makeApp({ COOKIE_SECURE: '1', ALLOW_TEST_LOGIN: '1' });
+    const login = await t.app.inject({ method: 'POST', url: '/auth/test-login', ...json({ address: USER }) });
+    const set = String(login.headers['set-cookie']);
+    expect(set).toMatch(/^__Host-sqc_pg_session=/);
+    expect(set).toMatch(/Secure/);
+    expect(set).toMatch(/Path=\//);
+    const logout = await t.app.inject({ method: 'POST', url: '/auth/logout', ...json({}, cookieOf(login)) });
+    const cleared = String(logout.headers['set-cookie']);
+    expect(cleared).toMatch(/^__Host-sqc_pg_session=;/);
+    expect(cleared).toMatch(/Secure/);
+    expect(cleared).toMatch(/HttpOnly/);
+    expect(cleared).toMatch(/SameSite=Lax/);
+    await t.close();
+  });
+
+  it('replaces the previous session on a new sign-in', async () => {
+    const first = await signIn(PUB_USER, USER);
+    const { nonce } = (await app.inject({ method: 'POST', url: '/auth/nonce', ...json({}) })).json() as { nonce: string };
+    const message = createAuthMessage({ domain: ORIGIN, nonce, address: USER, statement: 'Sign in', expirationTime: Math.floor(Date.now() / 1000) + 300 });
+    await app.inject({ method: 'POST', url: '/auth/verify', ...json({ message, signatureB64: 'valid-signature', publicKeyB64: PUB_USER, address: USER }, first.cookie) });
+    expect((await app.inject({ method: 'GET', url: '/auth/me', headers: { cookie: first.cookie! } })).statusCode).toBe(401);
+  });
+
+  it('refuses SameSite=None without Secure', () => {
+    expect(() => loadConfig({ NODE_ENV: 'test', COOKIE_SAMESITE: 'none' })).toThrow(/COOKIE_SECURE/);
+  });
+});
+
+describe('canonical addresses', () => {
+  it('treats upper- and lowercase hex as the same account', async () => {
+    const t = await makeApp({ ALLOW_TEST_LOGIN: '1' });
+    const upper = `SQ:${USER.slice(3).toUpperCase()}`;
+    const a = await t.app.inject({ method: 'POST', url: '/auth/test-login', ...json({ address: upper }) });
+    expect(a.json().address).toBe(USER.toLowerCase().replace(/^sq:/, 'SQ:'));
+    const spec = instantiateTemplate(TEMPLATES.find((x) => x.id === 'wallet-dashboard')!);
+    expect((await t.app.inject({ method: 'POST', url: '/projects', ...json({ spec }, cookieOf(a)) })).statusCode).toBe(201);
+    const b = await t.app.inject({ method: 'POST', url: '/auth/test-login', ...json({ address: USER.toLowerCase().replace(/^sq:/, 'SQ:') }) });
+    const list = await t.app.inject({ method: 'GET', url: '/projects', headers: { cookie: cookieOf(b) } });
+    expect(list.json().projects).toHaveLength(1);
+    await t.close();
+  });
+
+  it('canonicalises ADMIN_ADDRESSES and rejects junk', () => {
+    expect(loadConfig({ NODE_ENV: 'test', ADMIN_ADDRESSES: `SQ:${'AB'.repeat(32)}` }).adminAddresses).toEqual([`SQ:${'ab'.repeat(32)}`]);
+    expect(() => loadConfig({ NODE_ENV: 'test', ADMIN_ADDRESSES: 'alice' })).toThrow(/ADMIN_ADDRESSES/);
+  });
+});
+
+describe('config validation', () => {
+  it('rejects origins with paths, bad ports and TTLs, and test-login on public hosts', () => {
+    expect(() => loadConfig({ NODE_ENV: 'test', PLAYGROUND_ORIGINS: 'https://a.example/' })).toThrow(/bare origin/);
+    expect(() => loadConfig({ NODE_ENV: 'test', PLAYGROUND_ORIGINS: 'a.example' })).toThrow(/PLAYGROUND_ORIGINS/);
+    expect(() => loadConfig({ NODE_ENV: 'test', PORT: 'http' })).toThrow(/PORT/);
+    expect(() => loadConfig({ NODE_ENV: 'test', SESSION_TTL_SEC: '5' })).toThrow(/SESSION_TTL_SEC/);
+    expect(() => loadConfig({ NODE_ENV: 'development', ALLOW_TEST_LOGIN: '1', HOST: '0.0.0.0' })).toThrow(/ALLOW_TEST_LOGIN/);
+    expect(loadConfig({ NODE_ENV: 'development', ALLOW_TEST_LOGIN: '1', HOST: '127.0.0.1' }).allowTestLogin).toBe(true);
+  });
+
+  it('warns about SQLite in production', () => {
+    expect(loadConfig({ NODE_ENV: 'production', PLAYGROUND_ORIGINS: 'https://p.example' }).warnings.join()).toMatch(/SQLite/);
+  });
+});
+
+describe('errors, headers and schemas', () => {
+  it('never leaks internal error details', async () => {
+    const t = await makeApp({}, (s) => Object.assign(Object.create(s) as Store, { getFlags: async () => { throw new Error('relation "secret_table" does not exist'); } }));
+    const res = await t.app.inject({ method: 'GET', url: '/catalog' });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: 'Internal error', requestId: expect.any(String) });
+    expect(res.body).not.toContain('secret_table');
+    await t.close();
+  });
+
+  it('sets security and cache headers', async () => {
+    const me = await app.inject({ method: 'GET', url: '/auth/me', headers: { 'x-request-id': 'trace-123' } });
+    expect(me.headers['cache-control']).toBe('no-store');
+    expect(me.headers['x-content-type-options']).toBe('nosniff');
+    expect(me.headers['x-frame-options']).toBe('DENY');
+    expect(me.headers['x-request-id']).toBe('trace-123');
+    expect((await app.inject({ method: 'GET', url: '/catalog' })).headers['cache-control']).toBe('no-cache');
+    const bogus = await app.inject({ method: 'GET', url: '/health', headers: { 'x-request-id': 'bad id with spaces' } });
+    expect(bogus.headers['x-request-id']).not.toBe('bad id with spaces');
+  });
+
+  it('rejects unknown fields and wrong types instead of coercing them', async () => {
+    const { cookie } = await signIn(PUB_ADMIN, ADMIN);
+    const spec = instantiateTemplate(TEMPLATES[0]!);
+    const extra = await app.inject({ method: 'POST', url: '/projects', ...json({ spec, owner: USER }, cookie) });
+    expect(extra.statusCode).toBe(400);
+    const coerced = await app.inject({ method: 'POST', url: '/admin/releases', ...json({ channel: 'next', dryRun: 'false' }, cookie) });
+    expect(coerced.statusCode).toBe(400);
+    const flag = await app.inject({ method: 'PUT', url: '/admin/catalog/transfer', ...json({ hidden: true, updatedAt: 'x' }, cookie) });
+    expect(flag.statusCode).toBe(400);
+  });
+});
+
+describe('store maintenance', () => {
+  it('migrates idempotently', async () => {
+    await store.migrate();
+    await store.migrate();
+    await expect(store.ping()).resolves.toBeUndefined();
+  });
+
+  it('purges expired sessions and nonces and old audit rows', async () => {
+    const past = Math.floor(Date.now() / 1000) - 10;
+    await store.createSession('expired-hash', USER, past);
+    await store.putNonce('old-nonce', past);
+    await store.audit(USER, 'test.old');
+    const { runHousekeeping } = await import('./housekeeping.js');
+    const removed = await runHousekeeping(store, { auditRetentionDays: 1 }, Date.now() + 2 * 24 * 3600 * 1000);
+    expect(removed.sessions).toBeGreaterThanOrEqual(1);
+    expect(removed.nonces).toBeGreaterThanOrEqual(1);
+    expect(removed.audit).toBeGreaterThanOrEqual(1);
+    expect(await store.listAudit(10)).toEqual([]);
+  });
+
+  it('reports readiness from the database', async () => {
+    expect((await app.inject({ method: 'GET', url: '/health/ready' })).json()).toEqual({ ok: true });
+    const t = await makeApp({}, (s) => Object.assign(Object.create(s) as Store, { ping: async () => { throw new Error('down'); } }));
+    expect((await t.app.inject({ method: 'GET', url: '/health/ready' })).statusCode).toBe(503);
+    await t.close();
+  });
+});
+
+describe('release service', () => {
+  it('times out a stalled upstream and reports it instead of hanging', async () => {
+    const stalled: FetchLike = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' })));
+      });
+    const config = loadConfig({ NODE_ENV: 'test', GITHUB_TOKEN: 't' });
+    const svc = createReleaseService(config.github, stalled, { timeoutMs: 50 });
+    const status = await svc.status(true);
+    expect(status.errors.length).toBeGreaterThan(0);
+    expect(status.errors.join('\n')).toMatch(/timed out/);
+    await expect(svc.dispatch({ channel: 'next', dryRun: true })).rejects.toThrow(/timed out/);
+  });
+});
+
 describe('deployments', () => {
   it('is disabled unless HOSTING_ENABLED', async () => {
     const { cookie } = await signIn(PUB_USER, USER);

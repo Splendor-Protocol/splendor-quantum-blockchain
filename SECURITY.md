@@ -50,6 +50,15 @@ In scope:
 - `cmd/node`, `core/**`, `consensus/**`, `network/**`, `rpc/**`, `vm/**`
 - The JavaScript/TypeScript SDK (`sdk/sqc-sdk`, `sdk/connect-react`) and the
   PQ-bridge signer WASM
+- `@splendor/dapp-spec` (spec validation and the code it generates) and the
+  `create-splendor-dapp` CLI
+- The dApp Playground (`apps/playground`) and its API (`apps/playground-api`):
+  for example, a shared spec that runs script or escapes the preview iframe, a
+  sign-in or session bypass, CSRF, reading or changing another user's project,
+  or reaching the admin panel or the release dispatch without being an admin.
+  Its threat model is in `apps/playground/README.md` ("Security model and
+  limits")
+- The package release workflow (`.github/workflows/release-packages.yml`)
 - The P2P protocol and SQCO wire formats as specified in `readme.md` and
   `docs/reports/**`
 

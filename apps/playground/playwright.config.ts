@@ -3,6 +3,10 @@ import { API_PORT, E2E, FAKE_PORT, WEB_PORT } from './e2e/env';
 
 // e2e/live/* talks to a real network (E2E_LIVE=1, network from E2E_LIVE_NETWORK); the nightly workflow runs it.
 const live = process.env.E2E_LIVE === '1';
+// By default the suite runs the production build under the deploy CSP, with the isolated preview
+// iframe. E2E_DEV=1 uses the dev server instead (faster to iterate, same-origin preview).
+const dev = process.env.E2E_DEV === '1';
+const web = `--host 127.0.0.1 --port ${WEB_PORT} --strictPort`;
 
 export default defineConfig({
   testDir: './e2e',
@@ -47,10 +51,10 @@ export default defineConfig({
       },
     },
     {
-      command: `npx vite --host 127.0.0.1 --port ${WEB_PORT} --strictPort`,
+      command: dev ? `npx vite ${web}` : `npx vite build && npx vite preview ${web}`,
       url: E2E.web,
       reuseExistingServer: false,
-      timeout: 120_000,
+      timeout: 240_000,
       env: {
         PLAYGROUND_API_PROXY: `http://127.0.0.1:${API_PORT}`,
         VITE_PLAYGROUND_DEFAULT_NETWORK: live ? (process.env.E2E_LIVE_NETWORK ?? 'devnet') : 'testnet',

@@ -10,8 +10,13 @@ name: Release packages
 #     channel=latest publish whatever versions main already has that npm does not
 #     dry_run=true   build, test and `npm pack --dry-run` only; never publishes
 #
-# The npm token lives only in this repo's NPM_TOKEN secret. The playground API holds a
-# GitHub token that can dispatch this workflow and nothing else.
+# The npm token lives only in the NPM_TOKEN secret of the `npm-publish` environment. Every
+# run that can publish waits on that environment, so its protection rules (required reviewers,
+# main only) apply to the merge of the version PR and to admin-panel dispatches alike. The
+# playground API holds a GitHub token that can dispatch this workflow and nothing else.
+#
+# Actions are pinned to commit SHAs (Dependabot keeps them current): a moved tag cannot
+# change what runs next to NPM_TOKEN and id-token.
 
 on:
   push:
@@ -47,6 +52,8 @@ jobs:
     name: ${{ github.event_name == 'workflow_dispatch' && format('release ({0}{1})', inputs.channel, inputs.dry_run == 'true' && ', dry run' || '') || 'version PR / publish' }}
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 30
+    # Dry runs never touch npm, so they skip the approval gate.
+    environment: ${{ (github.event_name == 'push' || inputs.dry_run == 'false') && 'npm-publish' || '' }}
     permissions:
       contents: write # version commits and tags
       pull-requests: write # the "Version packages" PR
@@ -55,14 +62,17 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true' }}
       CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'latest' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+          # Only the latest channel pushes (the version PR and release tags). Otherwise the
+          # token is not left in .git/config for dependency install scripts to find.
+          persist-credentials: ${{ env.CHANNEL == 'latest' && env.DRY_RUN != 'true' }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           registry-url: https://registry.npmjs.org
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
           cache: true
@@ -73,6 +83,10 @@ jobs:
         run: bash sdk/sqc-sdk/wasm/build.sh
       - name: Install workspaces
         run: npm ci
+      # Every installed package must carry a valid npm registry signature (and provenance
+      # attestation where published), so a tampered tarball fails here, before it is built in.
+      - name: Verify registry signatures
+        run: npm audit signatures
       - name: Build packages
         run: |
           npm run build:packages
@@ -95,7 +109,7 @@ jobs:
       # latest: version PR while changesets are pending, publish once it is merged.
       - name: Version PR or publish (latest)
         if: env.DRY_RUN != 'true' && env.CHANNEL == 'latest'
-        uses: changesets/action@v1
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
           version: npm run version-packages
           publish: npm run release-packages

@@ -224,6 +224,26 @@ npm run build
 
 ${framework === 'vite' ? 'Upload `dist/` to any static host (Netlify, Vercel, Cloudflare Pages, S3).' : 'Deploy to Vercel (`npx vercel`) or any Node host that runs `next start`.'}
 
+## Security headers
+
+${
+  framework === 'vite'
+    ? `A static host does not add these for you. Set them in its config (Netlify \`public/_headers\`,
+Vercel \`vercel.json\`, nginx \`add_header\`). The build has no inline scripts, so a strict CSP works:
+
+\`\`\`
+Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://*.splendor.org; frame-ancestors 'none'; object-src 'none'; base-uri 'none'
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+\`\`\`
+
+\`'wasm-unsafe-eval'\` is required for the signer. Add your RPC host to \`connect-src\` if it is not under \`splendor.org\`.`
+    : `\`next.config.mjs\` sends framing, MIME-sniffing, referrer and permissions headers on every route.
+A script CSP with Next.js needs per-request nonces (see the Next.js "Content Security Policy" guide);
+when you add one, include \`'wasm-unsafe-eval'\` in \`script-src\` for the signer. Serve over HTTPS with HSTS.`
+}
+
 ## Learn more
 
 - Widgets and hooks: \`node_modules/@splendor/connect-react/docs/GUIDE.md\`
@@ -484,11 +504,27 @@ const rpcRewrites = listNetworks().flatMap((net) => {
   return target ? [{ source: \`/rpc/\${net.id}/:path*\`, destination: \`\${target}/:path*\` }] : [];
 });
 
+/**
+ * Baseline security headers. A script CSP needs per-request nonces with Next.js, so only framing
+ * is restricted here; see the README before adding one.
+ */
+const securityHeaders = [
+  { key: 'Content-Security-Policy', value: "frame-ancestors 'none'; object-src 'none'; base-uri 'self'" },
+  { key: 'X-Frame-Options', value: 'DENY' },
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
+];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  poweredByHeader: false,
   async rewrites() {
     return rpcRewrites;
+  },
+  async headers() {
+    return [{ source: '/:path*', headers: securityHeaders }];
   },
 };
 
@@ -658,7 +694,7 @@ export function generateProject(spec: DappSpec, opts: GenerateOptions): Generate
     : nextFiles(spec, pages, opts.catalog, opts.versions);
   files['README.md'] = readme(spec, opts.framework);
   files['.gitignore'] = opts.framework === 'vite'
-    ? 'node_modules\ndist\n.env.local\n'
+    ? 'node_modules\ndist\n.env*.local\n'
     : 'node_modules\n.next\nout\n.env*.local\npublic/sqc_signer.wasm\npublic/wasm_exec.js\n';
   const sorted: Record<string, string> = {};
   for (const k of Object.keys(files).sort()) sorted[k] = files[k]!;

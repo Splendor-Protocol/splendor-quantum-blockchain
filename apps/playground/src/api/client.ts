@@ -43,10 +43,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError('Playground API is not reachable', 0);
   }
   const text = await res.text();
-  const body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-  if (!res.ok) {
-    throw new ApiError(String(body.error ?? res.statusText), res.status, body.issues as ApiError['issues']);
+  let body: Record<string, unknown> | null = {};
+  try {
+    body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    // A proxy or CDN error page (HTML), not the API.
+    body = null;
   }
+  if (!res.ok) {
+    const message = body?.error ?? (res.status >= 500 ? `Playground API error (${res.status})` : res.statusText || `HTTP ${res.status}`);
+    throw new ApiError(String(message), res.status, body?.issues as ApiError['issues']);
+  }
+  if (body === null) throw new ApiError('Playground API sent an unexpected response', res.status);
   return body as T;
 }
 

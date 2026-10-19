@@ -37,8 +37,12 @@ function FlagRow({ id, title, kind, status, flag }: { id: string; title: string;
     setSaving(true);
     setError(null);
     try {
-      const next = { ...flag, ...patch };
-      for (const k of Object.keys(next) as (keyof CatalogFlag)[]) if (next[k] === undefined || next[k] === '') delete next[k];
+      const merged = { ...flag, ...patch };
+      const next: CatalogFlag = {};
+      if (merged.hidden) next.hidden = true;
+      if (merged.featured) next.featured = true;
+      if (merged.status) next.status = merged.status;
+      if (merged.minVersion) next.minVersion = merged.minVersion;
       setFlags((await api.setCatalogFlag(id, next)).flags);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));

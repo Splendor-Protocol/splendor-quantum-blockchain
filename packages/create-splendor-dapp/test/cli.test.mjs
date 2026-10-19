@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { TEMPLATES, buildProject, parseArgs, pinnedVersions, writeProject } from '../bin/lib.mjs';
+import { TEMPLATES, buildProject, isInside, parseArgs, pinnedVersions, writeProject } from '../bin/lib.mjs';
 
 const RECIPIENT = 'SQ:' + 'ab'.repeat(32);
 let dirs = [];
@@ -56,5 +56,16 @@ describe('create-splendor-dapp', () => {
     const dir = writeProject(join(root, 'w'), p.files);
     expect(readFileSync(join(dir, 'src/App.tsx'), 'utf8')).toContain('SplendorConnectProvider');
     expect(() => writeProject(dir, p.files)).toThrow(/not empty/);
+  });
+
+  it('never writes outside the project directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'csd-'));
+    dirs.push(root);
+    const target = join(root, 'app');
+    for (const rel of ['../app-evil/x.txt', '../../x.txt', join(root, 'abs.txt'), '']) {
+      expect(() => writeProject(target, { [rel]: 'x' }), rel).toThrow(/outside the project/);
+    }
+    expect(isInside(target, join(root, 'app-evil'))).toBe(false);
+    expect(isInside(target, join(target, 'src', 'a.ts'))).toBe(true);
   });
 });

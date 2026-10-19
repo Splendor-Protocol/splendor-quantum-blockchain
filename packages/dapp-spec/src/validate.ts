@@ -3,7 +3,12 @@ import {
   NETWORK_IDS,
   THEME_KEYS,
   type CatalogEntry,
+  type DappPage,
   type DappSpec,
+  type NetworkId,
+  type PropValue,
+  type ThemeName,
+  type ThemeOverrides,
   type ValidationIssue,
   type ValidationResult,
 } from './types.js';
@@ -17,9 +22,43 @@ const ADDRESS_RE = /^SQ:[0-9a-fA-F]{64}$/;
 const AMOUNT_RE = /^(0|[1-9]\d*)(\.\d{1,18})?$/;
 /** Theme values end up in CSS; keep them to plain tokens (no url(), no expressions, no ; or braces). */
 const CSS_VALUE_RE = /^[#(),.%\w\s"'-]{1,120}$/;
+/** Keys that change an object's prototype or shadow its constructor when copied or spread. */
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * A fresh spec holding only the fields DappSpec defines. Callers store and render this copy,
+ * so extra keys in the input never reach a database, an export or a component.
+ */
+function normalize(input: Record<string, unknown>): DappSpec {
+  const theme = input.theme as { base: ThemeName; overrides: Record<string, unknown> };
+  const overrides: ThemeOverrides = {};
+  for (const k of THEME_KEYS) {
+    const v = theme.overrides[k];
+    if (typeof v === 'string') overrides[k] = v;
+  }
+  const pages = (input.pages as Record<string, unknown>[]).map(
+    (p): DappPage => ({
+      path: p.path as string,
+      title: p.title as string,
+      blocks: (p.blocks as Record<string, unknown>[]).map((b) => {
+        const props: Record<string, PropValue> = {};
+        for (const [k, v] of Object.entries(b.props as Record<string, PropValue>)) if (!RESERVED_KEYS.has(k)) props[k] = v;
+        return { id: b.id as string, widget: b.widget as string, props };
+      }),
+    }),
+  );
+  return {
+    version: DAPP_SPEC_VERSION,
+    name: input.name as string,
+    ...(typeof input.description === 'string' ? { description: input.description } : {}),
+    network: input.network as NetworkId,
+    theme: { base: theme.base, overrides },
+    pages,
+  };
 }
 
 export type ValidateOptions = {
@@ -85,6 +124,10 @@ export function validateSpec(input: unknown, opts: ValidateOptions = {}): Valida
         if (entry && !entry.placeable) return add(`${bat}.widget`, `"${block.widget}" cannot be placed on a page`);
         for (const [name, value] of Object.entries(block.props)) {
           const p = `${bat}.props.${name}`;
+          if (RESERVED_KEYS.has(name)) {
+            add(p, 'reserved prop name');
+            continue;
+          }
           if (!['string', 'number', 'boolean'].includes(typeof value)) {
             add(p, 'prop values must be strings, numbers or booleans');
             continue;
@@ -120,5 +163,5 @@ export function validateSpec(input: unknown, opts: ValidateOptions = {}): Valida
     if (!paths.has('/')) add('pages', 'a home page with path "/" is required');
   }
 
-  return issues.length ? { ok: false, issues } : { ok: true, spec: input as unknown as DappSpec };
+  return issues.length ? { ok: false, issues } : { ok: true, spec: normalize(input) };
 }

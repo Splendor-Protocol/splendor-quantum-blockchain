@@ -25,8 +25,9 @@ function short(v: unknown): string {
 }
 
 /**
- * Runs inside the preview iframe (`/preview`). Takes specs from the parent window only (same
- * origin), validates them like any untrusted input, and renders them against the mock wallet.
+ * Runs inside the preview iframe (`/preview`). Takes specs only from a parent window on the
+ * playground's origin (`location.origin` is the URL's origin even when this document's own origin
+ * is opaque), validates them like any untrusted input, and renders them against the mock wallet.
  */
 export function PreviewRuntime() {
   const [req, setReq] = useState<RenderRequest | null>(null);

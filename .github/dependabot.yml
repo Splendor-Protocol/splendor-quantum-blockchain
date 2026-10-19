@@ -10,12 +10,21 @@ updates:
       go-deps:
         patterns:
           - "*"
+  # npm workspaces share the root package-lock.json (sqc-sdk, connect-react,
+  # packages/*, apps/*), so one entry covers all of them. Minor and patch
+  # bumps arrive as one grouped PR; majors stay separate so each gets a look.
   - package-ecosystem: npm
-    directory: /sdk/sqc-sdk
+    directory: /
     schedule:
       interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+  # Separate npm projects with their own lockfiles.
   - package-ecosystem: npm
-    directory: /sdk/connect-react
+    directory: /sdk/sqc-sdk/gateway
     schedule:
       interval: weekly
   # The runtime image is what actually ships; keep its base current.
@@ -23,7 +32,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # Workflows pin actions to commit SHAs; this keeps those pins current.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -17,6 +17,7 @@ test.describe('accounts and sharing', () => {
     const visitor = await browser.newPage();
     await visitor.goto(shareUrl);
     await expect(visitor.getByRole('heading', { name: 'Wallet Dashboard', level: 1 })).toBeVisible();
+    await expect(visitor.getByTestId('shared-caution')).toContainText('Check every address');
     await visitor.getByRole('button', { name: /Remix/ }).or(visitor.getByRole('link', { name: /Remix/ })).click();
     await expect(visitor).toHaveURL(/\/build/);
     await expect(visitor.getByTestId('block-list')).toContainText('SPLD transfer');

@@ -45,6 +45,10 @@ export function SharedPage() {
         </button>
       </div>
       {spec.description ? <p className="pg-muted">{spec.description}</p> : null}
+      <p className="pg-issues" role="note" data-testid="shared-caution">
+        Shared project: anyone can publish one. Check every address in it (recipients, tokens, collections) before you use it
+        {spec.network === 'mainnet' ? ' on mainnet with real SPLD' : ' with real funds'}. The preview below uses a mock wallet.
+      </p>
       <PreviewFrame spec={spec} pagePath={pagePath} network={spec.network} walletState="connected" onNavigate={setPagePath} height="70vh" />
     </div>
   );

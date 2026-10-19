@@ -31,8 +31,13 @@ export type DeploymentRow = {
 
 /** Persistence used by the API. One SQL implementation runs on SQLite (dev) and Postgres (prod). */
 export interface Store {
+  /** Applies pending schema migrations in order; safe to run on every start. */
   migrate(): Promise<void>;
   close(): Promise<void>;
+  /** Cheap round trip for readiness checks. */
+  ping(): Promise<void>;
+  /** Deletes expired nonces and sessions, and audit rows older than `auditBeforeIso`. Returns rows removed. */
+  purgeExpired(nowSec: number, auditBeforeIso: string): Promise<{ nonces: number; sessions: number; audit: number }>;
 
   putNonce(nonce: string, expiresAtSec: number): Promise<void>;
   /** Atomic: true only for the first caller with an unexpired nonce. */
@@ -62,6 +67,8 @@ export interface Store {
 
   audit(actor: string, action: string, target?: string | null, detail?: unknown): Promise<void>;
   listAudit(limit: number): Promise<AuditEntry[]>;
+  /** Rows with this action written at or after `sinceIso` (used to cap noisy entries). */
+  countAuditSince(action: string, sinceIso: string): Promise<number>;
 
   createDeployment(row: Omit<DeploymentRow, 'createdAt' | 'url'>): Promise<DeploymentRow>;
   getDeployment(id: string): Promise<DeploymentRow | null>;

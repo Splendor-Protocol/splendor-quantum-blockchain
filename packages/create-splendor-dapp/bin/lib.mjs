@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TEMPLATES, createCatalog, generateProject, instantiateTemplate, validateSpec } from '@splendor/dapp-spec';
 
@@ -73,12 +73,18 @@ export function buildProject({ name, template, framework, network, set = [] }) {
   return generateProject(v.spec, { framework, catalog, versions: { connectReact, sqcSdk } });
 }
 
+/** True when `file` is `root` itself or inside it (a plain prefix check would accept /app-evil for /app). */
+export function isInside(root, file) {
+  const rel = relative(root, file);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 export function writeProject(targetDir, files) {
   const target = resolve(targetDir);
   if (existsSync(target) && readdirSync(target).length) throw new Error(`Directory is not empty: ${target}`);
   for (const [rel, contents] of Object.entries(files)) {
-    const file = join(target, rel);
-    if (!file.startsWith(target)) throw new Error(`Refusing to write outside the project: ${rel}`);
+    const file = resolve(target, rel);
+    if (isAbsolute(rel) || !isInside(target, file) || file === target) throw new Error(`Refusing to write outside the project: ${rel}`);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, contents);
   }
