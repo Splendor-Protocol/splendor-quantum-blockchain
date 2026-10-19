@@ -620,10 +620,11 @@ func (b *Bridge) SetThreshold(caller qcrypto.Address, threshold uint64, receipt 
 // requireAttestations verifies that at least the instance threshold of DISTINCT
 // active operators have signed digest under CtxBridge. The slice is bounded
 // (an over-long one is refused before any signature check, since module calls
-// are unmetered); every supplied attestation must be well-formed, from an
-// active operator, and carry a valid signature; a repeated operator counts
-// once. Iteration is over the slice (deterministic order) and the map is used
-// only for de-duplication lookups, never iterated.
+// are unmetered); every supplied attestation must be exactly the canonical
+// key/signature sizes, well-formed, from an active operator, and carry a valid
+// signature; a repeated operator counts once. Iteration is over the slice
+// (deterministic order) and the map is used only for de-duplication lookups,
+// never iterated.
 func (b *Bridge) requireAttestations(what string, digest [32]byte, atts []bridgeAttestation) error {
 	threshold, err := b.Threshold()
 	if err != nil {
@@ -634,6 +635,15 @@ func (b *Bridge) requireAttestations(what string, digest [32]byte, atts []bridge
 	}
 	seen := make(map[qcrypto.Address]bool, len(atts))
 	for i, a := range atts {
+		// Refuse wrong-size blobs before any parse: a malformed attestation
+		// must fail cheaply and precisely, not through allocation or a
+		// confusing deserialisation error.
+		if len(a.PubKey) != qcrypto.PublicKeySize {
+			return fmt.Errorf("%sattestation %d: pubkey is %d bytes, want %d", what, i, len(a.PubKey), qcrypto.PublicKeySize)
+		}
+		if len(a.Signature) != qcrypto.SignatureSize {
+			return fmt.Errorf("%sattestation %d: signature is %d bytes, want %d", what, i, len(a.Signature), qcrypto.SignatureSize)
+		}
 		pub, err := qcrypto.PublicKeyFromBytes(a.PubKey)
 		if err != nil {
 			return fmt.Errorf("%sattestation %d: invalid pubkey: %w", what, i, err)
@@ -715,6 +725,13 @@ func (b *Bridge) Claim(ctx ModuleContext, p bridgeClaimParams, receipt *types.Re
 	if err != nil {
 		return fmt.Errorf(what+"evm_tx: %w", err)
 	}
+	if [32]byte(evmTx) == [32]byte{} {
+		// The burn's provenance is its legacy transaction. An all-zero hash
+		// can never be one, and crediting it would rest the payout on
+		// attestations alone, with nothing to audit against the legacy chain.
+		// Refuse it — defense in depth beneath the attestation layer.
+		return errors.New(what + "evm_tx is zero; a claim must reference a real legacy burn transaction")
+	}
 	// Threshold attestations authorise the credit — not the submitter alone.
 	// A compromised operator key, or a single hostile legacy-chain RPC feeding
 	// one honest operator, cannot move funds without ≥ threshold DISTINCT
@@ -733,6 +750,8 @@ func (b *Bridge) Claim(ctx ModuleContext, p bridgeClaimParams, receipt *types.Re
 		return err
 	}
 	if claimed {
+		// Fast-path refusal; re-checked inside the snapshot below so the
+		// claimed slot and the payout are one atomic unit.
 		return fmt.Errorf(what+"burn %d is already claimed", p.ID)
 	}
 	totalSlot, err := claimedTotalSlot(p.Asset)
@@ -740,6 +759,17 @@ func (b *Bridge) Claim(ctx ModuleContext, p bridgeClaimParams, receipt *types.Re
 		return errors.New(what + err.Error())
 	}
 	return b.atomic(receipt, func() error {
+		// The idempotency core, enforced where it matters: inside the
+		// snapshot, immediately before the payout. No reordering (or a
+		// module path that could ever reenter) can credit twice between a
+		// check and the claimed-slot write.
+		claimed, _, err := b.ClaimedAt(p.ID)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			return fmt.Errorf(what+"burn %d is already claimed", p.ID)
+		}
 		switch p.Asset {
 		case BridgeAssetSPLD:
 			pool, err := b.PoolBalance()

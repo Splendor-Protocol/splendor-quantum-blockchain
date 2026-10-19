@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -68,6 +69,12 @@ func (c *EVMChain) Assets() map[Asset]AssetInfo {
 	return out
 }
 
+// maxRPCResponseBytes caps one JSON-RPC/REST response body (64 MiB): the
+// endpoints are inside the operator trust boundary, but a misbehaving
+// endpoint must fail the call, not balloon memory. A var (not a const) so
+// tests can shrink it.
+var maxRPCResponseBytes = 64 << 20
+
 func (c *EVMChain) call(ctx context.Context, method string, params []any, out any) error {
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.RPCURL, bytes.NewReader(body))
@@ -83,11 +90,18 @@ func (c *EVMChain) call(ctx context.Context, method string, params []any, out an
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s: HTTP %d", method, resp.StatusCode)
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxRPCResponseBytes)+1))
+	if err != nil {
+		return fmt.Errorf("%s: %w", method, err)
+	}
+	if len(raw) > maxRPCResponseBytes {
+		return fmt.Errorf("%s: response exceeds %d bytes", method, maxRPCResponseBytes)
+	}
 	var r struct {
 		Result json.RawMessage           `json:"result"`
 		Error  *struct{ Message string } `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := json.Unmarshal(raw, &r); err != nil {
 		return fmt.Errorf("%s: %w", method, err)
 	}
 	if r.Error != nil {

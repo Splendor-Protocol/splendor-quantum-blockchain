@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -73,8 +74,18 @@ func (c *EVMClient) call(method string, params []any, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s: HTTP %d", method, resp.StatusCode)
 	}
+	// Bound the response body: the RPC endpoint is inside the operator trust
+	// boundary, but a misbehaving node must fail the pass loudly, not balloon
+	// memory.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxRPCResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("%s: %w", method, err)
+	}
+	if len(raw) > maxRPCResponseBytes {
+		return fmt.Errorf("%s: response exceeds %d bytes", method, maxRPCResponseBytes)
+	}
 	var r rpcResponse
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := json.Unmarshal(raw, &r); err != nil {
 		return fmt.Errorf("%s: %w", method, err)
 	}
 	if r.Error != nil {

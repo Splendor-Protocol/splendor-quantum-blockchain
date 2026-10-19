@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"time"
@@ -13,6 +14,11 @@ import (
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 )
+
+// maxRPCResponseBytes caps one REST/JSON-RPC response body (64 MiB): the
+// endpoints are inside the operator trust boundary, but a misbehaving
+// endpoint must fail the pass, not balloon memory.
+const maxRPCResponseBytes = 64 << 20
 
 // QuantumClient speaks the sqc-node REST API.
 type QuantumClient struct {
@@ -34,13 +40,23 @@ func (c *QuantumClient) getJSON(path string, out any) error {
 		var e struct {
 			Error string `json:"error"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&e)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxRPCResponseBytes)).Decode(&e)
 		if e.Error != "" {
 			return fmt.Errorf("GET %s: %s", path, e.Error)
 		}
 		return fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	// Bound the response body: the node is inside the operator trust
+	// boundary, but a misbehaving endpoint must fail the pass loudly, not
+	// balloon memory.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRPCResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	if len(body) > maxRPCResponseBytes {
+		return fmt.Errorf("GET %s: response exceeds %d bytes", path, maxRPCResponseBytes)
+	}
+	return json.Unmarshal(body, out)
 }
 
 // Status returns the node's chain id and height.
@@ -68,13 +84,14 @@ func (c *QuantumClient) Nonce(addr qcrypto.Address) (uint64, error) {
 
 // BridgeInfo is the /bridge/{addr} read this relayer consumes.
 type BridgeInfo struct {
-	Owner       string   `json:"owner"`
-	Operators   []string `json:"operators"`
-	Paused      bool     `json:"paused"`
-	Threshold   uint64   `json:"threshold"`
-	EvmChainID  uint64   `json:"evm_chain_id"`
-	EvmContract string   `json:"evm_contract"`
-	PoolBalance string   `json:"pool_balance"`
+	Owner          string   `json:"owner"`
+	Operators      []string `json:"operators"`
+	Paused         bool     `json:"paused"`
+	Threshold      uint64   `json:"threshold"`
+	EvmChainID     uint64   `json:"evm_chain_id"`
+	EvmContract    string   `json:"evm_contract"`
+	PoolBalance    string   `json:"pool_balance"`
+	MaxClaimAmount string   `json:"max_claim_amount"`
 }
 
 // Bridge returns the bridge instance parameters.

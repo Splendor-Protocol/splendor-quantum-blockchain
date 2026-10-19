@@ -1,8 +1,11 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -187,5 +190,39 @@ func TestBalanceOfSelector(t *testing.T) {
 	const want = "70a08231"
 	if got := keccak256("balanceOf(address)")[:8]; got != want {
 		t.Fatalf("balanceOf selector = %s, want %s", got, want)
+	}
+}
+
+// An oversized RPC response must fail the call, not balloon memory: the
+// endpoint is inside the operator trust boundary, but a misbehaving node must
+// fail the pass loudly rather than allocate unbounded.
+func TestEVMChainBoundsOversizedResponse(t *testing.T) {
+	old := maxRPCResponseBytes
+	maxRPCResponseBytes = 256
+	t.Cleanup(func() { maxRPCResponseBytes = old })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte{'a'}, 1024))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewEVMChain(EVMConfig{RPCURL: srv.URL, ChainIDValue: 2691})
+	if _, err := c.Height(context.Background()); err == nil {
+		t.Fatal("oversized EVM response accepted")
+	}
+}
+
+// The same bound on the quantum side.
+func TestQuantumChainBoundsOversizedResponse(t *testing.T) {
+	old := maxRPCResponseBytes
+	maxRPCResponseBytes = 256
+	t.Cleanup(func() { maxRPCResponseBytes = old })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte{'a'}, 1024))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewQuantumChain(QuantumConfig{BaseURL: srv.URL})
+	if _, err := c.Height(context.Background()); err == nil {
+		t.Fatal("oversized quantum response accepted")
 	}
 }

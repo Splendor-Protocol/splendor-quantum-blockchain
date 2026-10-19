@@ -59,9 +59,14 @@ instead.
 
 `claim` refuses: paused; `id` 0; unknown asset; non-positive or non-decimal
 amount; amount above `max_claim_amount`; a zero, module-address or contract
-recipient (no key could spend the credit); malformed `evm_tx`; fewer than
-`threshold` distinct valid attestations; and — the idempotency core — an `id`
-whose claimed slot is already set, whatever the asset.
+recipient (no key could spend the credit); malformed or **all-zero** `evm_tx`
+(a claim must reference a real legacy burn transaction — the hash is the
+burn's only provenance, and an all-zero one would make the payout
+unauditable against the legacy chain); fewer than `threshold` distinct valid
+attestations; and — the idempotency core — an `id` whose claimed slot is
+already set, whatever the asset. The idempotency slot is re-checked inside
+the same state snapshot as the payout, so the credit and the claimed-slot
+write are one atomic unit.
 
 ### Attestations (M-of-N)
 
@@ -70,11 +75,12 @@ submitter alone**. Each `attestations[]` entry is `{pubkey, signature}` (both
 standard base64): an operator's ML-DSA public key and its signature over
 `types.BridgeClaimDigest(chain_id, bridge, id, asset, amount, recipient,
 evm_tx)` under `CtxBridge = "SPLENDOR-QC-BRIDGE-v1"`. The module requires every
-supplied attestation to be well-formed, from an **active operator**, and carry
-a valid signature; distinct attestors are counted, so ≥ `threshold` distinct
-operators must have signed the exact burn. The submitter is only a spam gate
-(owner-or-operator, pays the fee); it has no authority of its own, and the owner
-has no bypass.
+supplied attestation to be exactly the canonical key/signature sizes (1952-byte
+pubkey, 3309-byte signature — wrong-size blobs are refused before any parse),
+well-formed, from an **active operator**, and carry a valid signature; distinct
+attestors are counted, so ≥ `threshold` distinct operators must have signed the
+exact burn. The submitter is only a spam gate (owner-or-operator, pays the
+fee); it has no authority of its own, and the owner has no bypass.
 
 This is what makes the bridge safe against a single point of trust: with
 `threshold ≥ 2` and operators who each watch the legacy chain with their **own**
@@ -120,7 +126,11 @@ the QRC-20 `Mint` at the token address.
 
 1. `bridge-relayer` preflights both chain ids **and** that the bridge's
    stored `evm_chain_id`/`evm_contract` match its own flags, and that its
-   wallet is the owner or an active operator.
+   wallet is the owner or an active operator. It **refuses to start** when
+   the bridge threshold is > 1 and no `--attestation-dir` is given (it could
+   never reach quorum — it would hold on every burn forever, silently), and
+   it alarms when the bridge has fewer active operators than the threshold
+   (no claim can pass until operators are added or the threshold lowered).
 2. Each pass: `safe = eth_blockNumber − confirmations` (default 120 — the
    legacy chain's PoA finality is probabilistic and a real rewind incident is
    on record); fetch `Burned` logs from the cursor in bounded batches; for
@@ -133,19 +143,28 @@ the QRC-20 `Mint` at the token address.
      `--attestation-dir <shared path>`: each attestor writes its attestation for
      a burn there and reads its peers'; any node holding ≥ `threshold` distinct
      attestations submits (the on-chain claimed slot makes concurrent submitters
-     safe). Below threshold it holds and retries — waiting for co-attestors is
-     not counted as a failure. Run N attestor daemons, each with its own
-     operator key **and its own legacy RPC**, sharing the dir on storage they
-     all trust.
+     safe). Only files whose pubkey derives to an **active operator** and whose
+     signature **verifies locally** over the burn's digest count — foreign
+     keys, garbage signatures, corrupt files and a flooding writer are ignored
+     (or halt the pass with an alarm), so junk in the dir can delay a claim
+     but never poison it. Below threshold it holds and retries — waiting for
+     co-attestors is not counted as a failure. Run N attestor daemons, each
+     with its own operator key **and its own legacy RPC**, sharing the dir on
+     storage they all trust.
 3. The cursor advances only past blocks whose burns are settled; it persists
    to a state file. Restarts are safe — idempotency lives on-chain. Only a
    claim that MINES AND REVERTS counts toward `--max-attempts`; a transient
    submit rejection (rate limit, fee floor, a still-pending nonce) or a slow
    receipt is retried without counting, so congestion never turns live burns
    into skips. A genuinely-reverting claim is recorded skipped and replayed
-   with `--replay-id`. While the bridge is paused the relayer holds the cursor
+   with `--replay-id`. A burn whose amount exceeds the bridge's
+   `max_claim_amount` is a deterministic on-chain refusal: it is recorded
+   skipped (with an ALARM) **without ever submitting**, so no fees are burned
+   on a guarantee. While the bridge is paused the relayer holds the cursor
    and submits nothing; an undecodable log from the pinned contract also holds
-   the cursor (never silently dropped) and alarms.
+   the cursor (never silently dropped) and alarms. RPC/REST response bodies
+   are size-bounded (64 MiB): a misbehaving endpoint fails the pass, it
+   cannot balloon memory.
 
 Operational requirements:
 

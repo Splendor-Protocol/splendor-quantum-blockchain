@@ -669,6 +669,36 @@ func TestBridgeThresholdTwoOfN(t *testing.T) {
 	}
 }
 
+// A claim whose evm_tx is all zeros has no legacy provenance at all — an
+// all-zero hash can never be a real burn transaction, so the payout would be
+// unauditable against the legacy chain. The module refuses it regardless of
+// attestations.
+func TestBridgeClaimRefusesZeroEvmTx(t *testing.T) {
+	f := newBrFixture(t)
+	_, err := f.call(t, f.operator, "claim", f.claimParams(map[string]any{
+		"evm_tx": "0x" + strings.Repeat("0", 64),
+	}))
+	mustSoftBridge(t, err, "evm_tx is zero")
+}
+
+// Attestation blobs of the wrong size are refused before any key parse: an
+// unmetered module call must fail cheaply and precisely on malformed input.
+func TestBridgeClaimRefusesMalformedAttestations(t *testing.T) {
+	f := newBrFixture(t)
+	_, err := f.call(t, f.operator, "claim", f.claimParams(map[string]any{
+		"attestations": []bridgeAttestation{
+			{PubKey: make([]byte, 10), Signature: make([]byte, qcrypto.SignatureSize)},
+		},
+	}))
+	mustSoftBridge(t, err, "pubkey is 10 bytes")
+	_, err = f.call(t, f.operator, "claim", f.claimParams(map[string]any{
+		"attestations": []bridgeAttestation{
+			{PubKey: make([]byte, qcrypto.PublicKeySize), Signature: make([]byte, 3)},
+		},
+	}))
+	mustSoftBridge(t, err, "signature is 3 bytes")
+}
+
 // ── Reads ───────────────────────────────────────────────────────────────────
 
 func TestBridgeReads(t *testing.T) {
