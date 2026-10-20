@@ -501,6 +501,7 @@ func TestX402SettleIdempotentWhenNonceUsed(t *testing.T) {
 		t.Fatalf("already-consumed payment was re-queued: pool %d", s.pool.Size())
 	}
 }
+
 // A used payer/nonce paired with DIFFERENT claimed payment details must not
 // take the confirmed fallback: the on-chain settlement record binds the nonce
 // to the payment that actually happened. This is the I4 closure — a valid old
@@ -579,4 +580,3 @@ func TestX402SettleUsedNonceRejectsChangedPayment(t *testing.T) {
 		t.Fatalf("changed payment queued: pool %d", s.pool.Size())
 	}
 }
-

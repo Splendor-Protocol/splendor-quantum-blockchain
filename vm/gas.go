@@ -1,11 +1,13 @@
 // Package vm — Configurable Gas Table for SQC-VM v3.
 //
 // IMPORTANT: The engine charges gas in two passes for some opcodes:
-//   1. baseCost = gasTable.GasOf(op) — charged for every opcode
-//   2. Extra gas — charged additionally inside the opcode handler for dynamic costs
+//  1. baseCost = gasTable.GasOf(op) — charged for every opcode
+//  2. Extra gas — charged additionally inside the opcode handler for dynamic costs
 //
 // For SLOAD/SSTORE, TRANSFER, BALANCE, etc. the engine does:
-//   useGas(e.gasTable.SLOAD - baseCost)   (extra on top of base)
+//
+//	useGas(e.gasTable.SLOAD - baseCost)   (extra on top of base)
+//
 // So GasOf(SLOAD) should return 1 (the base cost) and the SLOAD field in GasTable
 // represents the TOTAL cost. The engine adds (TOTAL - 1) as extra.
 //
@@ -17,18 +19,18 @@ package vm
 // the field represents the TOTAL base cost; the engine adds dynamic extras.
 type GasTable struct {
 	// Arithmetic
-	ADD       uint64
-	SUB       uint64
-	MUL       uint64
-	DIV       uint64
-	MOD       uint64
-	EXP       uint64
-	ADDMOD    uint64
-	MULMOD    uint64
-	ISZERO    uint64
-	BYTE      uint64
+	ADD        uint64
+	SUB        uint64
+	MUL        uint64
+	DIV        uint64
+	MOD        uint64
+	EXP        uint64
+	ADDMOD     uint64
+	MULMOD     uint64
+	ISZERO     uint64
+	BYTE       uint64
 	SIGNEXTEND uint64
-	ExpPerBit uint64 // additional gas per bit of exponent
+	ExpPerBit  uint64 // additional gas per bit of exponent
 
 	// Comparison
 	EQ  uint64
@@ -47,10 +49,10 @@ type GasTable struct {
 	SHR uint64
 
 	// Stack
-	PUSH   uint64 // covers PUSH1..PUSH32
-	POP    uint64
-	DUP    uint64 // covers DUP1..DUP16
-	SWAP   uint64 // covers SWAP1..SWAP16
+	PUSH uint64 // covers PUSH1..PUSH32
+	POP  uint64
+	DUP  uint64 // covers DUP1..DUP16
+	SWAP uint64 // covers SWAP1..SWAP16
 
 	// Memory
 	MLOAD      uint64
@@ -71,10 +73,10 @@ type GasTable struct {
 	STOP     uint64
 
 	// Calldata / code
-	CALLDATALOAD  uint64
-	CALLDATASIZE  uint64
-	CALLDATACOPY  uint64
-	CODECOPY      uint64
+	CALLDATALOAD   uint64
+	CALLDATASIZE   uint64
+	CALLDATACOPY   uint64
+	CODECOPY       uint64
 	RETURNDATASIZE uint64
 	RETURNDATACOPY uint64
 
@@ -89,8 +91,8 @@ type GasTable struct {
 	GASLIMIT    uint64
 
 	// Crypto (quantum-safe)
-	SHA3             uint64
-	SHA3PerByte      uint64
+	SHA3         uint64
+	SHA3PerByte  uint64
 	VERIFY_MLDSA uint64
 
 	// Events
@@ -197,8 +199,8 @@ func DefaultGasTable() GasTable {
 		GASLIMIT:    2,
 
 		// Crypto
-		SHA3:             30,
-		SHA3PerByte:      6,
+		SHA3:         30,
+		SHA3PerByte:  6,
 		VERIFY_MLDSA: 5000,
 
 		// Events
@@ -268,76 +270,146 @@ func (g *GasTable) GasOf(op byte) uint64 {
 	}
 
 	switch op {
-	case OpSTOP: return g.STOP
-	case OpADD: return g.ADD
-	case OpSUB: return g.SUB
-	case OpMUL: return g.MUL
-	case OpDIV: return g.DIV
-	case OpMOD: return g.MOD
-	case OpEXP: return g.EXP
-	case OpADDMOD: return g.ADDMOD
-	case OpMULMOD: return g.MULMOD
-	case OpISZERO: return g.ISZERO
-	case OpBYTE: return g.BYTE
-	case OpSIGNEXTEND: return g.SIGNEXTEND
-	case OpEQ: return g.EQ
-	case OpNEQ: return g.NEQ
-	case OpLT: return g.LT
-	case OpGT: return g.GT
-	case OpLTE: return g.LTE
-	case OpGTE: return g.GTE
-	case OpAND: return g.AND
-	case OpOR: return g.OR
-	case OpXOR: return g.XOR
-	case OpNOT: return g.NOT
-	case OpSHL: return g.SHL
-	case OpSHR: return g.SHR
-	case OpSHA3: return g.SHA3
-	case OpSHA3_MEM: return g.SHA3
-	case OpVERIFY_MLDSA: return 1 // base=1; engine adds (VERIFY_MLDSA-1) extra
-	case OpADDRESS: return g.ADDRESS
-	case OpBALANCE: return 1 // base=1; engine adds (BALANCE-1) extra
-	case OpORIGIN: return g.ORIGIN
-	case OpCALLER: return g.CALLER
-	case OpCALLVALUE: return g.CALLVALUE
-	case OpCALLDATALOAD: return g.CALLDATALOAD
-	case OpCALLDATASIZE: return g.CALLDATASIZE
-	case OpCALLDATACOPY: return g.CALLDATACOPY
-	case OpCODESIZE: return g.CODESIZE
-	case OpCODECOPY: return g.CODECOPY
-	case OpRETURNDATASIZE: return g.RETURNDATASIZE
-	case OpRETURNDATACOPY: return g.RETURNDATACOPY
-	case OpTRANSFER: return 1 // base=1; engine adds (TRANSFER-1) extra
-	case OpBLOCKHEIGHT: return g.BLOCKHEIGHT
-	case OpTIMESTAMP: return g.TIMESTAMP
-	case OpGASLIMIT: return g.GASLIMIT
-	case OpPOP: return g.POP
-	case OpMLOAD: return g.MLOAD
-	case OpMSTORE: return g.MSTORE
-	case OpMSTORE8: return g.MSTORE8
-	case OpSLOAD: return 1 // base=1; engine adds (SLOAD-1) extra
-	case OpSSTORE: return 1 // base=1; engine adds (SSTORE-1) extra
-	case OpJUMP: return g.JUMP
-	case OpJUMPI: return g.JUMPI
-	case OpPC: return g.PC
-	case OpMSIZE: return g.MSIZE
-	case OpTOTALGAS: return g.TOTALGAS
-	case OpJUMPDEST: return g.JUMPDEST
-	case OpLOG0: return g.LOG0
-	case OpLOG1: return g.LOG0 + g.LOGPerTopic
-	case OpLOG2: return g.LOG0 + g.LOGPerTopic*2
-	case OpLOG3: return g.LOG0 + g.LOGPerTopic*3
-	case OpLOG4: return g.LOG0 + g.LOGPerTopic*4
-	case OpCREATE: return g.CREATE
-	case OpCALL: return g.CALL
-	case OpRETURN: return g.RETURN
-	case OpDELEGATECALL: return g.DELEGATECALL
-	case OpCREATE2: return g.CREATE2
-	case OpSTATICCALL: return g.STATICCALL
-	case OpREVERT: return g.REVERT
-	case OpREQUIRE: return g.REQUIRE
-	case OpSELFDESTRUCT: return g.SELFDESTRUCT
-	default: return 1
+	case OpSTOP:
+		return g.STOP
+	case OpADD:
+		return g.ADD
+	case OpSUB:
+		return g.SUB
+	case OpMUL:
+		return g.MUL
+	case OpDIV:
+		return g.DIV
+	case OpMOD:
+		return g.MOD
+	case OpEXP:
+		return g.EXP
+	case OpADDMOD:
+		return g.ADDMOD
+	case OpMULMOD:
+		return g.MULMOD
+	case OpISZERO:
+		return g.ISZERO
+	case OpBYTE:
+		return g.BYTE
+	case OpSIGNEXTEND:
+		return g.SIGNEXTEND
+	case OpEQ:
+		return g.EQ
+	case OpNEQ:
+		return g.NEQ
+	case OpLT:
+		return g.LT
+	case OpGT:
+		return g.GT
+	case OpLTE:
+		return g.LTE
+	case OpGTE:
+		return g.GTE
+	case OpAND:
+		return g.AND
+	case OpOR:
+		return g.OR
+	case OpXOR:
+		return g.XOR
+	case OpNOT:
+		return g.NOT
+	case OpSHL:
+		return g.SHL
+	case OpSHR:
+		return g.SHR
+	case OpSHA3:
+		return g.SHA3
+	case OpSHA3_MEM:
+		return g.SHA3
+	case OpVERIFY_MLDSA:
+		return 1 // base=1; engine adds (VERIFY_MLDSA-1) extra
+	case OpADDRESS:
+		return g.ADDRESS
+	case OpBALANCE:
+		return 1 // base=1; engine adds (BALANCE-1) extra
+	case OpORIGIN:
+		return g.ORIGIN
+	case OpCALLER:
+		return g.CALLER
+	case OpCALLVALUE:
+		return g.CALLVALUE
+	case OpCALLDATALOAD:
+		return g.CALLDATALOAD
+	case OpCALLDATASIZE:
+		return g.CALLDATASIZE
+	case OpCALLDATACOPY:
+		return g.CALLDATACOPY
+	case OpCODESIZE:
+		return g.CODESIZE
+	case OpCODECOPY:
+		return g.CODECOPY
+	case OpRETURNDATASIZE:
+		return g.RETURNDATASIZE
+	case OpRETURNDATACOPY:
+		return g.RETURNDATACOPY
+	case OpTRANSFER:
+		return 1 // base=1; engine adds (TRANSFER-1) extra
+	case OpBLOCKHEIGHT:
+		return g.BLOCKHEIGHT
+	case OpTIMESTAMP:
+		return g.TIMESTAMP
+	case OpGASLIMIT:
+		return g.GASLIMIT
+	case OpPOP:
+		return g.POP
+	case OpMLOAD:
+		return g.MLOAD
+	case OpMSTORE:
+		return g.MSTORE
+	case OpMSTORE8:
+		return g.MSTORE8
+	case OpSLOAD:
+		return 1 // base=1; engine adds (SLOAD-1) extra
+	case OpSSTORE:
+		return 1 // base=1; engine adds (SSTORE-1) extra
+	case OpJUMP:
+		return g.JUMP
+	case OpJUMPI:
+		return g.JUMPI
+	case OpPC:
+		return g.PC
+	case OpMSIZE:
+		return g.MSIZE
+	case OpTOTALGAS:
+		return g.TOTALGAS
+	case OpJUMPDEST:
+		return g.JUMPDEST
+	case OpLOG0:
+		return g.LOG0
+	case OpLOG1:
+		return g.LOG0 + g.LOGPerTopic
+	case OpLOG2:
+		return g.LOG0 + g.LOGPerTopic*2
+	case OpLOG3:
+		return g.LOG0 + g.LOGPerTopic*3
+	case OpLOG4:
+		return g.LOG0 + g.LOGPerTopic*4
+	case OpCREATE:
+		return g.CREATE
+	case OpCALL:
+		return g.CALL
+	case OpRETURN:
+		return g.RETURN
+	case OpDELEGATECALL:
+		return g.DELEGATECALL
+	case OpCREATE2:
+		return g.CREATE2
+	case OpSTATICCALL:
+		return g.STATICCALL
+	case OpREVERT:
+		return g.REVERT
+	case OpREQUIRE:
+		return g.REQUIRE
+	case OpSELFDESTRUCT:
+		return g.SELFDESTRUCT
+	default:
+		return 1
 	}
 }
 

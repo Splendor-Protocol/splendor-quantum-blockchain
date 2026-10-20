@@ -390,7 +390,6 @@ func TestLoadWalletAcceptsKDFParamsExactlyAtTheFloor(t *testing.T) {
 	}
 }
 
-
 func TestLoadWalletRefusesMalformedNonce(t *testing.T) {
 	path, pass, _ := writeTestWallet(t)
 	rewriteWallet(t, path, func(wf *WalletFile) { wf.Encrypted.Nonce = wf.Encrypted.Nonce[:8] })

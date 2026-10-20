@@ -7,18 +7,19 @@
 // No ECDSA. No keccak. No Ethereum address format.
 //
 // Interface:
-//   balanceOf(owner sqaddress) → uint256
-//   ownerOf(tokenId uint256) → sqaddress
-//   transfer(to sqaddress, tokenId uint256) → bool
-//   approve(to sqaddress, tokenId uint256) → bool
-//   getApproved(tokenId uint256) → sqaddress
-//   setApprovalForAll(operator sqaddress, approved bool) → bool
-//   isApprovedForAll(owner sqaddress, operator sqaddress) → bool
-//   transferFrom(from sqaddress, to sqaddress, tokenId uint256) → bool
-//   mint(to sqaddress, tokenId uint256, uri string) → bool
-//   burn(tokenId uint256) → bool
-//   tokenURI(tokenId uint256) → string
-//   totalSupply() → uint256
+//
+//	balanceOf(owner sqaddress) → uint256
+//	ownerOf(tokenId uint256) → sqaddress
+//	transfer(to sqaddress, tokenId uint256) → bool
+//	approve(to sqaddress, tokenId uint256) → bool
+//	getApproved(tokenId uint256) → sqaddress
+//	setApprovalForAll(operator sqaddress, approved bool) → bool
+//	isApprovedForAll(owner sqaddress, operator sqaddress) → bool
+//	transferFrom(from sqaddress, to sqaddress, tokenId uint256) → bool
+//	mint(to sqaddress, tokenId uint256, uri string) → bool
+//	burn(tokenId uint256) → bool
+//	tokenURI(tokenId uint256) → string
+//	totalSupply() → uint256
 package vm
 
 import (

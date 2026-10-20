@@ -90,8 +90,8 @@ func (j *Journal) EntryCount() int { return len(j.entries) }
 
 // BalanceChange records a balance modification for rollback.
 type BalanceChange struct {
-	Addr    qcrypto.Address
-	OldBal  *big.Int
+	Addr   qcrypto.Address
+	OldBal *big.Int
 }
 
 func (e *BalanceChange) Revert(state journalStateAccessor) {
