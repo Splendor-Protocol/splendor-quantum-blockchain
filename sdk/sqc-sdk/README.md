@@ -225,7 +225,7 @@ Artifacts:
 before instantiating, so the bytes must be reproducible by anyone, not just by
 whoever last built them. The digest is Go-release-sensitive — the same source
 under go1.25.0 and go1.26.2 differs by ~166 KB — so `wasm/build.sh` and
-`wasm/build.ps1` set `GOTOOLCHAIN=go1.25.0` (the floor `go.mod` declares, and the
+`wasm/build.ps1` set `GOTOOLCHAIN=go1.26.10` (the floor `go.mod` declares, and the
 family the node `Dockerfile` builds with) and pass `-trimpath`. Any Go 1.21+
 will fetch and use that release automatically. Override only to deliberately
 move the pin:

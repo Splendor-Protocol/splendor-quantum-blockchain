@@ -7,7 +7,7 @@
 # manager, nothing to pivot to. The operator .sqwallet and SQC_WALLET_PASS are
 # injected at RUNTIME from AWS Secrets Manager (see AWS.md), never baked in.
 
-FROM golang:1.25 AS build
+FROM golang:1.26.10 AS build
 WORKDIR /src
 COPY . .
 # Static, stripped, reproducible. CGO off so it runs on distroless/static.
