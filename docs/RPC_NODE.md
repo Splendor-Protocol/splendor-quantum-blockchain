@@ -42,8 +42,8 @@ ask; do not follow.
 | --- | --- | --- |
 | Chain id | `splendor-quantum-1` | `splendor-quantum-testnet-1` |
 | Bootnode (`--peer`) | `https://quantum-rpc.splendor.org` | `https://quantum-rpc-testnet.splendor.org` |
-| Block-0 hash | `ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949` | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` |
-| Genesis document hash | `4ff371940b52a3b0ef2d2f5973716956b72ab894363ac780b3b4cb1308688640` | `c7930eb20b110fd3dc261911b14cb7042c9b3352a151e7ed0f12b0d7ecfb6281` |
+| Block-0 hash | `d865193d3bd88fb4446626940e63b5658275342a0153638079cf9e962332a257` | `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f` |
+| Genesis document hash | re-minted 2026-09-21 — obtain from ops | `c7930eb20b110fd3dc261911b14cb7042c9b3352a151e7ed0f12b0d7ecfb6281` |
 | Bootnode identity, SHA3-256 of `node_pubkey` | `442e905612311035b942f3362ea9d4efa632c1d2581d36356afd2f281afacf7e` | `09f44c419a48c70579b1a532c60e5786ecacf4de76e606d1901dfaf21e9745a9` |
 
 The identity fingerprint is the tier's genesis validator address in readme

@@ -61,9 +61,11 @@ repository above is the source reviewed and updated.
 > as the record of that date. Every tier has been reset since, so the genesis
 > block hashes here name chains that no longer exist; do not use them as
 > `--genesis-hash` pins. The current identities (mainnet genesis
-> `ba748263713642d619abb7c4b4d596cddc0d9429f296c438beacf3e656510949`, testnet
+> `d865193d3bd88fb4446626940e63b5658275342a0153638079cf9e962332a257` — the
+> chain was re-minted on 2026-09-21; testnet
 > `324d7f561493ae6d08062288cb99adfbb3f83297d352b783f611171251a1289f`) and the
-> current schedules are in the README's tier table, dated 2026-09-09.
+> current schedules are in the README's tier table, regenerated after every
+> verified rollout.
 
 The following read-only checks were performed at
 `2026-09-02T08:47:25Z`. Heights are point-in-time values and should increase.
