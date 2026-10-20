@@ -2,12 +2,13 @@
 // All keys use ML-DSA-65 (FIPS-204). No ECDSA anywhere.
 //
 // Commands:
-//   sqc-wallet generate  --out wallet.sqwallet
-//   sqc-wallet generate  --out wallet.sqwallet --seed "24 words or 64 hex"
-//   sqc-wallet address   --wallet wallet.sqwallet
-//   sqc-wallet balance   --wallet wallet.sqwallet --node http://localhost:8080
-//   sqc-wallet send      --wallet wallet.sqwallet --to SQ:... --amount 10 --node http://localhost:8080
-//   sqc-wallet export-key --wallet wallet.sqwallet --out mldsa_key.bin
+//
+//	sqc-wallet generate  --out wallet.sqwallet
+//	sqc-wallet generate  --out wallet.sqwallet --seed "24 words or 64 hex"
+//	sqc-wallet address   --wallet wallet.sqwallet
+//	sqc-wallet balance   --wallet wallet.sqwallet --node http://localhost:8080
+//	sqc-wallet send      --wallet wallet.sqwallet --to SQ:... --amount 10 --node http://localhost:8080
+//	sqc-wallet export-key --wallet wallet.sqwallet --out mldsa_key.bin
 package main
 
 import (
