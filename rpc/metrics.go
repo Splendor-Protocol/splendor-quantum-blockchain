@@ -40,10 +40,10 @@ type NodeMetrics struct {
 	startTime time.Time
 
 	// Chain metrics
-	ChainHeight    atomic.Uint64
-	MempoolSize    atomic.Int64
-	PeerCount      atomic.Int64
-	WSClientCount  atomic.Int64
+	ChainHeight   atomic.Uint64
+	MempoolSize   atomic.Int64
+	PeerCount     atomic.Int64
+	WSClientCount atomic.Int64
 
 	// Validator metrics
 	BlocksProduced atomic.Uint64
@@ -51,8 +51,8 @@ type NodeMetrics struct {
 	TxsFailed      atomic.Uint64
 
 	// AI scheduler metrics
-	AIBatchSize    atomic.Int64
-	AIAnomaly      atomic.Int32 // 1 = anomaly active, 0 = normal
+	AIBatchSize atomic.Int64
+	AIAnomaly   atomic.Int32 // 1 = anomaly active, 0 = normal
 
 	// RPC metrics
 	RPCRequests atomic.Uint64
