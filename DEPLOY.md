@@ -171,7 +171,7 @@ sudo apt install -y curl wget git build-essential jq ufw
 
 ```bash
 # Download Go
-wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz -O /tmp/go.tar.gz
+wget -q https://go.dev/dl/go1.26.10.linux-amd64.tar.gz -O /tmp/go.tar.gz
 
 # Install
 sudo rm -rf /usr/local/go
@@ -185,7 +185,7 @@ source ~/.bashrc
 
 # Verify
 go version
-# Expected: go version go1.25.0 linux/amd64
+# Expected: go version go1.26.10 linux/amd64
 ```
 
 ### Install Docker (optional — for containerised deployment)

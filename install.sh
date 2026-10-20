@@ -15,7 +15,7 @@ NC='\033[0m'
 # declares go 1.25.0, so anything older cannot build the node at all — this
 # script used to install 1.23.0 and every fresh server failed at `make build`.
 GO_MIN_VERSION="1.25.0"
-GO_VERSION="1.25.14"
+GO_VERSION="1.26.10"
 GO_ARCH="linux-amd64"
 SQC_DIR="$HOME/splendor-quantum-blockchain"
 

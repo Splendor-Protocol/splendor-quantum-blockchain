@@ -88,10 +88,10 @@ jobs:
       # Scans the reachable dependency graph against the Go vulnerability
       # database. Unlike the GitHub advisory feed this checks what the code
       # actually calls, so a CVE in a required-but-unused module path does not
-      # gate a merge. Pinned: v1.8+ requires Go 1.26 and would force a
-      # toolchain switch on the Go 1.25 toolchain in go.mod.
+      # gate a merge. Pinned so a scanner release cannot change what gates a
+      # merge on its own; v1.8+ needs the Go 1.26 toolchain go.mod declares.
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       # Bounded fuzzing of the peer-supplied SQCO wire decoders (object
       # manifests, symbol proofs, frame probes, adversarial absorb streams)
       # and the sealed-read request bodies. `go test ./...` above replays

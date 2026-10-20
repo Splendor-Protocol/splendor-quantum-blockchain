@@ -8,7 +8,7 @@ New-Item -ItemType Directory -Force -Path $Out | Out-Null
 # under whatever Go happens to be installed invalidates the wasmSha256 pin in
 # sqc.networks.json for everyone else. GOTOOLCHAIN makes any Go >= 1.21 fetch
 # and use exactly this release. Keep in step with wasm/build.sh.
-if (-not $env:SQC_GO_TOOLCHAIN) { $env:SQC_GO_TOOLCHAIN = "go1.25.0" }
+if (-not $env:SQC_GO_TOOLCHAIN) { $env:SQC_GO_TOOLCHAIN = "go1.26.10" }
 $env:GOTOOLCHAIN = $env:SQC_GO_TOOLCHAIN
 
 $env:GOOS = "js"
