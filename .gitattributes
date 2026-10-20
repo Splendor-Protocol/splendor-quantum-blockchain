@@ -1,0 +1,5 @@
+# Keep Go sources LF so the gofmt CI check does not go red on CRLF commits (see #65, #69, #76).
+*.go   text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+*.sh   text eol=lf
