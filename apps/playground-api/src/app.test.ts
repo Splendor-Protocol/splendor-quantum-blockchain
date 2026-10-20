@@ -150,6 +150,26 @@ describe('projects', () => {
     const del = await app.inject({ method: 'DELETE', url: `/projects/${id}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
     expect(del.statusCode).toBe(200);
   });
+
+  it('revokes a share link, and sharing again issues a new one', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const other = await signIn(PUB_ADMIN, ADMIN);
+    const id = (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec() }, user.cookie) })).json().id as string;
+    const first = (await app.inject({ method: 'POST', url: `/projects/${id}/share`, ...json({}, user.cookie) })).json().shareId as string;
+
+    const unshare = (cookie: string | undefined) =>
+      app.inject({ method: 'DELETE', url: `/projects/${id}/share`, headers: { origin: ORIGIN, cookie: cookie! } });
+    expect((await unshare(other.cookie)).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/share/${first}` })).statusCode).toBe(200);
+
+    expect((await unshare(user.cookie)).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/share/${first}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/projects/${id}`, headers: { cookie: user.cookie! } })).json().shareId).toBeNull();
+
+    const second = (await app.inject({ method: 'POST', url: `/projects/${id}/share`, ...json({}, user.cookie) })).json().shareId as string;
+    expect(second).not.toBe(first);
+    expect((await app.inject({ method: 'GET', url: `/share/${first}` })).statusCode).toBe(404);
+  });
 });
 
 describe('admin', () => {

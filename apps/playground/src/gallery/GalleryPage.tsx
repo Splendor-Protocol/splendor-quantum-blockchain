@@ -11,11 +11,13 @@ import {
 } from '@splendor/dapp-spec';
 import { CodeBlock } from '../components/CodeBlock';
 import { PropsForm } from '../components/PropsForm';
+import { Tabs, type TabItem } from '../components/Tabs';
 import { ThemeEditor, type ThemeValue } from '../components/ThemeEditor';
 import { DEFAULT_NETWORK } from '../config';
-import type { MockWalletState } from '../preview/mock';
+import { DEMO_RECIPIENT, type MockWalletState } from '../preview/mock';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import { useRegistry } from '../registry';
+import { PartPreview, hasPartPreview } from './PartPreview';
 
 export function StatusBadge({ status }: { status: CatalogEntry['status'] }) {
   if (status === 'stable') return null;
@@ -24,7 +26,7 @@ export function StatusBadge({ status }: { status: CatalogEntry['status'] }) {
 
 function providerSnippet(theme: ThemeValue): string {
   const themeProp = Object.keys(theme.overrides).length
-    ? `theme={${JSON.stringify(theme.overrides)}}`
+    ? `theme={${JSON.stringify({ ...(theme.base !== 'splendor' ? { base: theme.base } : {}), ...theme.overrides })}}`
     : `theme="${theme.base}"`;
   return `import '@splendor/connect-react/style.css';
 import { SplendorConnectProvider, ConnectKit } from '@splendor/connect-react';
@@ -35,13 +37,42 @@ import { SplendorConnectProvider, ConnectKit } from '@splendor/connect-react';
 </SplendorConnectProvider>`;
 }
 
+/**
+ * Defaults plus demo values for required fields, so a widget previews right away instead of
+ * waiting for an address. "Add to my dApp" still starts from the plain defaults.
+ */
+export function galleryProps(entry: CatalogEntry): Record<string, PropValue> {
+  const props: Record<string, PropValue> = defaultProps(entry);
+  for (const p of entry.props) {
+    if (!p.required || (props[p.name] != null && props[p.name] !== '')) continue;
+    if (p.format === 'address') props[p.name] = DEMO_RECIPIENT;
+    else if (p.type === 'string') props[p.name] = p.placeholder?.split(/\s/)[0] || 'demo';
+  }
+  return props;
+}
+
+/** Placeholder shown in copied code instead of the preview's demo address. */
+export const YOUR_ADDRESS = 'SQ:YOUR_ADDRESS';
+
+/** Props for the Code tab: demo values only make the preview work and must never be copied into an app. */
+export function snippetProps(props: Record<string, PropValue>): Record<string, PropValue> {
+  return Object.fromEntries(Object.entries(props).map(([k, v]) => [k, v === DEMO_RECIPIENT ? YOUR_ADDRESS : v]));
+}
+
+type GalleryTab = 'props' | 'theme' | 'code';
+const GALLERY_TABS: readonly TabItem<GalleryTab>[] = [
+  { id: 'props', label: 'Settings' },
+  { id: 'theme', label: 'Theme' },
+  { id: 'code', label: 'Code' },
+];
+
 function GalleryDetail({ entry }: { entry: CatalogEntry }) {
   const { compatibilityNote } = useRegistry();
   const navigate = useNavigate();
-  const [props, setProps] = useState<Record<string, PropValue>>(() => defaultProps(entry));
+  const [props, setProps] = useState<Record<string, PropValue>>(() => galleryProps(entry));
   const [theme, setTheme] = useState<ThemeValue>({ base: 'splendor', overrides: {} });
   const [walletState, setWalletState] = useState<MockWalletState>('connected');
-  const [tab, setTab] = useState<'props' | 'theme' | 'code'>('props');
+  const [tab, setTab] = useState<GalleryTab>('props');
 
   const spec: DappSpec = useMemo(
     () => ({
@@ -81,11 +112,12 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
         {entry.placeable ? (
           <PreviewFrame spec={spec} pagePath="/" network={DEFAULT_NETWORK} walletState={walletState} height={520} title={`${entry.title} preview`} />
         ) : (
-          <div className="pg-panel">
-            <p>
+          <div className="pg-panel pg-stack">
+            <p style={{ margin: 0 }}>
               <code>{entry.importName}</code> needs data from a hook (for example <code>useEstimateFee</code>), so it is used inside your own
               components rather than placed on a page. See the docs below and the Tip jar block for an example.
             </p>
+            {hasPartPreview(entry.id) ? <PartPreview id={entry.id} theme={theme} /> : null}
           </div>
         )}
         <p className="pg-muted" style={{ margin: 0 }}>
@@ -93,13 +125,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
         </p>
       </section>
       <aside className="pg-sidebar pg-panel">
-        <div className="pg-tabs-inline" role="tablist">
-          {(['props', 'theme', 'code'] as const).map((t) => (
-            <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
-              {t === 'props' ? 'Settings' : t === 'theme' ? 'Theme' : 'Code'}
-            </button>
-          ))}
-        </div>
+        <Tabs idPrefix="gallery" label="Widget details" tabs={GALLERY_TABS} value={tab} onChange={setTab}>
         {tab === 'props' ? (
           <PropsForm
             entry={entry}
@@ -118,7 +144,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
         {tab === 'theme' ? <ThemeEditor value={theme} onChange={setTheme} /> : null}
         {tab === 'code' ? (
           <div className="pg-stack">
-            <CodeBlock code={blockSnippet({ id: 'item', widget: entry.id, props }, entry)} />
+            <CodeBlock code={blockSnippet({ id: 'item', widget: entry.id, props: snippetProps(props) }, entry)} />
             {entry.kind === 'block' ? (
               <p className="pg-muted">Blocks are small source files. Export a project from the builder to get this file, or copy it from <code>@splendor/dapp-spec/blocks</code>.</p>
             ) : null}
@@ -126,6 +152,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
             <CodeBlock code={`npm install @splendor/connect-react @splendor/sqc-sdk`} />
           </div>
         ) : null}
+        </Tabs>
         {entry.placeable ? (
           <button type="button" className="pg-btn" onClick={() => navigate(`/build?add=${encodeURIComponent(entry.id)}`)}>
             Add to my dApp
@@ -133,7 +160,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
         ) : null}
         {entry.docs ? (
           <Link to="/learn/guide/widgets" className="pg-muted">
-            Read the guide ({entry.docs.split('#')[1] ?? 'widgets'})
+            Read the widgets and hooks guide
           </Link>
         ) : null}
       </aside>

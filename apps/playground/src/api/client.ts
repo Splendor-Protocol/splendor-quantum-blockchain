@@ -75,6 +75,7 @@ export const api = {
   updateProject: (id: string, spec: DappSpec) => request<Project>(`/projects/${encodeURIComponent(id)}`, json('PUT', { spec })),
   deleteProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}`, json('DELETE')),
   shareProject: (id: string) => request<{ shareId: string }>(`/projects/${encodeURIComponent(id)}/share`, json('POST', {})),
+  unshareProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}/share`, json('DELETE')),
   getShared: (shareId: string) => request<{ name: string; spec: DappSpec }>(`/share/${encodeURIComponent(shareId)}`),
 
   catalogFlags: () => request<{ flags: Record<string, CatalogFlag> }>('/catalog'),

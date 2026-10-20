@@ -4,6 +4,7 @@ import {
   FeeRow,
   TxResult,
   WidgetShell,
+  connectErrorMessage,
   exceedsBalanceWithFee,
   spendableAfterFee,
   useAccount,
@@ -25,7 +26,7 @@ export type TipJarProps = {
 export function TipJar({ title = 'Tip jar', recipient = '', amount = '0.1' }: TipJarProps) {
   const { address } = useAccount();
   const { balanceSPLD } = useBalance();
-  const { sendTransfer, status, hash, confirmed, explorerUrl } = useSendTransfer();
+  const { sendTransfer, status, hash, confirmed, explorerUrl, error } = useSendTransfer();
   const spendable = spendableAfterFee(balanceSPLD, MIN_FEE);
   const form = useTransferForm({ balance: spendable, self: address, defaultTo: recipient, defaultAmount: amount });
   const fee = useEstimateFee(
@@ -43,7 +44,10 @@ export function TipJar({ title = 'Tip jar', recipient = '', amount = '0.1' }: Ti
 
   const send = () => {
     if (form.review.ok) {
-      void sendTransfer({ to: form.review.to, amountSPLD: form.review.amount, fee: fee.fee ?? undefined, waitForConfirmation: true });
+      // The hook keeps the error for display below; the rejection itself needs no handling here.
+      sendTransfer({ to: form.review.to, amountSPLD: form.review.amount, fee: fee.fee ?? undefined, waitForConfirmation: true }).catch(
+        () => undefined,
+      );
     }
   };
 
@@ -66,6 +70,11 @@ export function TipJar({ title = 'Tip jar', recipient = '', amount = '0.1' }: Ti
         {status === 'pending' ? 'Sending…' : 'Send tip'}
       </button>
       {hash ? <TxResult hash={hash} confirmed={confirmed} explorerUrl={explorerUrl} /> : null}
+      {status === 'error' && error ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error" role="alert" data-testid="dapp-tip-error">
+          {connectErrorMessage(error)}
+        </p>
+      ) : null}
     </WidgetShell>
   );
 }

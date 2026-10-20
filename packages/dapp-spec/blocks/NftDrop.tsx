@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react';
-import { TxResult, WidgetShell, useAccount, useDeployCollection, useQRC1155 } from '@splendor/connect-react';
+import { txExplorerUrl } from '@splendor/sqc-sdk/networks';
+import {
+  AddressDisplay,
+  TxResult,
+  WidgetShell,
+  addressExplorerUrl,
+  connectErrorMessage,
+  useAccount,
+  useDeployCollection,
+  useNetwork,
+  useQRC1155,
+} from '@splendor/connect-react';
 
 export type NftDropProps = {
   title?: string;
@@ -21,13 +32,19 @@ export function NftDrop({
   collectionName = 'My Collection',
 }: NftDropProps) {
   const { address } = useAccount();
+  const { network } = useNetwork();
   const deployer = useDeployCollection();
   const active = collection || deployer.address || null;
   const nft = useQRC1155(active);
   const [owned, setOwned] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
+  // A collection deployed here exists on one network only; forget it when the network changes.
+  const { reset: resetDeployer } = deployer;
+  useEffect(() => resetDeployer(), [network?.id, resetDeployer]);
+
   useEffect(() => {
+    setOwned(null);
     if (!active || !address) return;
     let live = true;
     nft
@@ -37,7 +54,10 @@ export function NftDrop({
     return () => {
       live = false;
     };
-  }, [active, address, tokenId, tick, nft.status, nft.balanceOf]);
+  }, [active, address, tokenId, tick, nft.balanceOf]);
+
+  const deployHref = network && deployer.hash ? txExplorerUrl(network, deployer.hash) : null;
+  const error = nft.error ?? deployer.error;
 
   return (
     <WidgetShell kind="nft-drop" title={title} status={nft.status === 'pending' || deployer.status === 'pending' ? 'pending' : 'idle'}>
@@ -52,15 +72,13 @@ export function NftDrop({
           >
             {deployer.status === 'pending' ? 'Deploying…' : `Deploy "${collectionName}"`}
           </button>
-          {deployer.error ? (
-            <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
-              {deployer.error.message}
-            </p>
-          ) : null}
         </>
       ) : (
         <>
-          <p className="sqc-widget__msg dapp-mono">Collection {active.slice(0, 12)}…</p>
+          <p className="sqc-widget__msg" data-testid="dapp-nft-collection">
+            Collection <AddressDisplay value={active} href={addressExplorerUrl(network?.explorerUrl, active)} />
+          </p>
+          {deployer.hash ? <TxResult hash={deployer.hash} explorerUrl={deployHref} /> : null}
           <p className="sqc-widget__msg" data-testid="dapp-nft-owned">
             You own {owned ?? '…'} of token #{tokenId}
           </p>
@@ -79,13 +97,13 @@ export function NftDrop({
             {nft.status === 'pending' ? 'Minting…' : `Mint ${amount}`}
           </button>
           {nft.hash ? <TxResult hash={nft.hash} explorerUrl={nft.explorerUrl} /> : null}
-          {nft.error ? (
-            <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
-              {nft.error.message}
-            </p>
-          ) : null}
         </>
       )}
+      {error ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
+          {connectErrorMessage(error)}
+        </p>
+      ) : null}
     </WidgetShell>
   );
 }

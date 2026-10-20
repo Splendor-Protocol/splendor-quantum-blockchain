@@ -109,11 +109,18 @@ function pageSource(r: Resolved, opts: { blocksDir: string; client: boolean }, c
   return lines.join('\n');
 }
 
-const APP_CSS = `:root {
+/** Layout CSS of generated apps. The playground preview mirrors its `.dapp-*` rules. */
+export const APP_CSS = `:root {
   color-scheme: dark;
+}
+:root:has([data-sqc-theme='light']) {
+  color-scheme: light;
 }
 body {
   margin: 0;
+}
+/* Theme variables live on the provider's .sqc-root, so the page background is painted here, not on body. */
+.dapp-root {
   min-height: 100vh;
   background: var(--sqc-bg, #0b0d12);
   color: var(--sqc-text, #e8ecf3);
@@ -403,24 +410,26 @@ export function App() {
       {...(wasmSha256 && execSha256 ? { wasmSha256, execSha256 } : { allowUnpinnedWasm: true })}
     >
       <TxToastHost>
-        <div className="dapp-shell" style={themeOverridesToStyle(THEME_OVERRIDES)}>
-          <header className="dapp-header">
-            <p className="dapp-brand">${spec.name.replace(/[<>{}&]/g, '')}</p>
-            <ConnectKit />
-          </header>
-          <WrongNetworkBanner expectedNetworkId={NETWORK} />
-          {ROUTES.length > 1 ? (
-            <nav className="dapp-nav">
-              {ROUTES.map((r) => (
-                <a key={r.path} href={\`#\${r.path}\`} aria-current={r === route ? 'page' : undefined}>
-                  {r.title}
-                </a>
-              ))}
-            </nav>
-          ) : null}
-          <main>
-            <route.Page />
-          </main>
+        <div className="dapp-root" style={themeOverridesToStyle(THEME_OVERRIDES)}>
+          <div className="dapp-shell">
+            <header className="dapp-header">
+              <p className="dapp-brand">${spec.name.replace(/[<>{}&]/g, '')}</p>
+              <ConnectKit />
+            </header>
+            <WrongNetworkBanner expectedNetworkId={NETWORK} />
+            {ROUTES.length > 1 ? (
+              <nav className="dapp-nav">
+                {ROUTES.map((r) => (
+                  <a key={r.path} href={\`#\${r.path}\`} aria-current={r === route ? 'page' : undefined}>
+                    {r.title}
+                  </a>
+                ))}
+              </nav>
+            ) : null}
+            <main>
+              <route.Page />
+            </main>
+          </div>
         </div>
       </TxToastHost>
     </SplendorConnectProvider>
@@ -641,22 +650,24 @@ export function Providers({ children }: { children: ReactNode }) {
       {...(wasmSha256 && execSha256 ? { wasmSha256, execSha256 } : { allowUnpinnedWasm: true })}
     >
       <TxToastHost>
-        <div className="dapp-shell" style={themeOverridesToStyle(THEME_OVERRIDES)}>
-          <header className="dapp-header">
-            <p className="dapp-brand">${spec.name.replace(/[<>{}&]/g, '')}</p>
-            <ConnectKit />
-          </header>
-          <WrongNetworkBanner expectedNetworkId={NETWORK} />
-          {ROUTES.length > 1 ? (
-            <nav className="dapp-nav">
-              {ROUTES.map((r) => (
-                <Link key={r.path} href={r.path} aria-current={r.path === pathname ? 'page' : undefined}>
-                  {r.title}
-                </Link>
-              ))}
-            </nav>
-          ) : null}
-          <main>{children}</main>
+        <div className="dapp-root" style={themeOverridesToStyle(THEME_OVERRIDES)}>
+          <div className="dapp-shell">
+            <header className="dapp-header">
+              <p className="dapp-brand">${spec.name.replace(/[<>{}&]/g, '')}</p>
+              <ConnectKit />
+            </header>
+            <WrongNetworkBanner expectedNetworkId={NETWORK} />
+            {ROUTES.length > 1 ? (
+              <nav className="dapp-nav">
+                {ROUTES.map((r) => (
+                  <Link key={r.path} href={r.path} aria-current={r.path === pathname ? 'page' : undefined}>
+                    {r.title}
+                  </Link>
+                ))}
+              </nav>
+            ) : null}
+            <main>{children}</main>
+          </div>
         </div>
       </TxToastHost>
     </SplendorConnectProvider>

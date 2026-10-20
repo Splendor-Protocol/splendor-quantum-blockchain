@@ -59,7 +59,8 @@ export interface Store {
   getProjectByShareId(shareId: string): Promise<ProjectRow | null>;
   createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'>): Promise<ProjectRow>;
   updateProject(id: string, patch: Pick<ProjectRow, 'name' | 'spec'>): Promise<ProjectRow | null>;
-  setShareId(id: string, shareId: string): Promise<void>;
+  /** `null` revokes the share link. */
+  setShareId(id: string, shareId: string | null): Promise<void>;
   deleteProject(id: string): Promise<boolean>;
 
   getFlags(): Promise<Record<string, CatalogFlag>>;

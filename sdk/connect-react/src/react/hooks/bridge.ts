@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback } from 'react';
 import { useConnectState } from '../context.js';
-import { useTxAction, type TxHookStatus } from '../useTxAction.js';
+import { useDeployAction, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet } from './core.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
@@ -86,57 +86,42 @@ export function useDeployBridge(): {
   status: TxHookStatus;
   address: string | null;
   hash: string | null;
+  explorerUrl: string | null;
   error: Error | null;
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
-  const [status, setStatus] = useState<TxHookStatus>('idle');
-  const [address, setAddress] = useState<string | null>(null);
-  const [hash, setHash] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
-
-  const reset = useCallback(() => {
-    setStatus('idle');
-    setAddress(null);
-    setHash(null);
-    setError(null);
-  }, []);
-
-  const deploy = useCallback(
-    async (params: {
-      evmChainId: number;
-      evmContract: string;
-      splvName: string;
-      splvSymbol: string;
-      splvMaxSupply: string;
-      maxClaimAmount: string;
-      threshold: number;
-      fee?: string;
-      waitForConfirmation?: boolean;
-    }) => {
+  const network = useConnectState((s) => s.network);
+  const action = useDeployAction(
+    network,
+    async (params: DeployBridgeParams) => {
       if (!ready || !wallet) throw new Error('Wallet not connected');
-      setStatus('pending');
-      setError(null);
-      try {
-        const { deployBridge } = await import('@splendor/sqc-sdk/bridge');
-        const { address: addr, splvAddress, result } = await deployBridge(wallet, params, {
-          fee: params.fee,
-          waitForConfirmation: params.waitForConfirmation,
-        });
-        setAddress(addr);
-        setHash(result.hash ?? null);
-        setStatus('success');
-        return { address: addr, splvAddress, hash: result.hash };
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e));
-        setError(err);
-        setStatus('error');
-        throw err;
-      }
+      const { deployBridge } = await import('@splendor/sqc-sdk/bridge');
+      return deployBridge(wallet, params, { fee: params.fee, waitForConfirmation: params.waitForConfirmation });
     },
-    [wallet, ready],
+    (params, res) => ({ kind: 'deploy', summary: `Deploy bridge ${params.splvSymbol} (${res.address})` }),
   );
-
-  return { deploy, status, address, hash, error, reset };
+  const { deploy: run } = action;
+  const deploy = useCallback(
+    async (params: DeployBridgeParams) => {
+      const { address, splvAddress, result } = await run(params);
+      return { address, splvAddress, hash: result.hash };
+    },
+    [run],
+  );
+  return { ...action, deploy };
 }
+
+type DeployBridgeParams = {
+  evmChainId: number;
+  evmContract: string;
+  splvName: string;
+  splvSymbol: string;
+  splvMaxSupply: string;
+  maxClaimAmount: string;
+  threshold: number;
+  fee?: string;
+  waitForConfirmation?: boolean;
+};
 

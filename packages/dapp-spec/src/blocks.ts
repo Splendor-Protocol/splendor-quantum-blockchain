@@ -97,6 +97,52 @@ export const BLOCK_MANIFESTS: readonly BlockManifest[] = [
     defaults: { title: 'NFT drop', tokenId: '1', amount: '1', collectionName: 'My Collection' },
     requires: { wallet: true, modules: ['qrc1155'] },
   },
+  {
+    id: 'contract-call',
+    title: 'Contract call',
+    description: 'Read or call one function of a deployed contract, with editable arguments.',
+    category: 'modules',
+    kind: 'block',
+    importName: 'ContractCall',
+    file: 'ContractCall.tsx',
+    status: 'beta',
+    placeable: true,
+    props: [
+      { name: 'title', label: 'Title', type: 'string', format: 'text' },
+      { name: 'contract', label: 'Contract address', type: 'string', format: 'address', placeholder: 'SQ:…', required: true },
+      {
+        name: 'functionSig',
+        label: 'Function signature',
+        type: 'string',
+        format: 'text',
+        placeholder: 'get() or set(uint256)',
+        required: true,
+        description: 'As compiled, e.g. balanceOf(address). Arguments: SQ: addresses, integers or 0x hex.',
+      },
+      { name: 'args', label: 'Default arguments', type: 'string', format: 'text', placeholder: 'comma separated' },
+      {
+        name: 'mode',
+        label: 'Mode',
+        type: 'select',
+        options: [
+          { value: 'read', label: 'Read (free, no wallet)' },
+          { value: 'write', label: 'Write (signs a transaction)' },
+        ],
+      },
+      {
+        name: 'decode',
+        label: 'Show read result as',
+        type: 'select',
+        options: [
+          { value: 'raw', label: 'Raw return data' },
+          { value: 'uint256', label: 'Number (uint256)' },
+        ],
+      },
+      { name: 'buttonLabel', label: 'Button text', type: 'string', format: 'text' },
+    ],
+    defaults: { title: 'Contract', mode: 'read', decode: 'raw' },
+    requires: { wallet: false },
+  },
 ];
 
 /** Source text of a block file, for code generation. */

@@ -4,8 +4,7 @@
  * Unbound (advanced): `modules.qrc20(connection, addr).transfer(wallet, to, amt)`
  * Bound (beginner):   `modules.bind(connection, wallet).qrc20(addr).transfer(to, amt)`
  *
- * Automatic native clients: qrc20, qrc1155, bridge, contract.
- * QRC-721 has a Program client (`QRC721` in `@splendor/sqc-sdk/tokens`) but no `modules` slot yet.
+ * Automatic native clients: qrc20, qrc721, qrc1155, bridge, contract.
  * Routed on-chain modules without a dedicated Program client (use sendModuleCall):
  * verify, validators. Authority: vm.KnownModuleActions / DispatchModuleCall.
  *
@@ -28,6 +27,8 @@ import { getToken } from './tokens/qrc20.js';
 import type { QRC20 } from './tokens/qrc20.js';
 import { getCollection } from './tokens/qrc1155.js';
 import type { QRC1155 } from './tokens/qrc1155.js';
+import { getNftCollection } from './tokens/qrc721.js';
+import type { QRC721 } from './tokens/qrc721.js';
 import { getExchange } from './defi/exchange.js';
 import { getPool } from './defi/dex.js';
 import { getBridge } from './bridge/module.js';
@@ -62,6 +63,7 @@ export function ensureBuiltInModulesRegistered(): void {
   if (builtInsRegistered) return;
   registerModule(defineModule({ id: 'qrc20', create: getToken, label: 'QRC-20' }));
   registerModule(defineModule({ id: 'qrc1155', create: getCollection, label: 'QRC-1155' }));
+  registerModule(defineModule({ id: 'qrc721', create: getNftCollection, label: 'QRC-721' }));
   registerModule(defineModule({ id: 'bridge', create: getBridge, label: 'Bridge' }));
   registerModule(defineModule({ id: 'contract', create: getContract, label: 'Contract' }));
   builtInsRegistered = true;
@@ -114,6 +116,7 @@ export const modules = {
   qrc20: (connection: Connection, address: string): QRC20 => getToken(connection, address),
   qrc1155: (connection: Connection, address: string): QRC1155 =>
     getCollection(connection, address),
+  qrc721: (connection: Connection, address: string): QRC721 => getNftCollection(connection, address),
   bridge: (connection: Connection, address: string): BridgeModule =>
     getBridge(connection, address),
   contract: (connection: Connection, address: string): Contract =>
@@ -131,6 +134,7 @@ export const modules = {
     return {
       qrc20: (address: string) => maybeSign(getToken(connection, address)),
       qrc1155: (address: string) => maybeSign(getCollection(connection, address)),
+      qrc721: (address: string) => maybeSign(getNftCollection(connection, address)),
       bridge: (address: string) => maybeSign(getBridge(connection, address)),
       contract: (address: string) => maybeSign(getContract(connection, address)),
       /** All registered modules (built-ins + addons after registerUnsupportedApplicationAdapters). */
@@ -145,6 +149,7 @@ export type Modules = typeof modules;
 export type BoundModules = {
   qrc20: (address: string) => QRC20 | BoundClient<QRC20>;
   qrc1155: (address: string) => QRC1155 | BoundClient<QRC1155>;
+  qrc721: (address: string) => QRC721 | BoundClient<QRC721>;
   bridge: (address: string) => BridgeModule | BoundClient<BridgeModule>;
   contract: (address: string) => Contract | BoundClient<Contract>;
   registered: Record<string, (address: string) => unknown>;
@@ -155,6 +160,7 @@ export type BoundModules = {
 export type SignedBoundModules = {
   qrc20: (address: string) => BoundClient<QRC20>;
   qrc1155: (address: string) => BoundClient<QRC1155>;
+  qrc721: (address: string) => BoundClient<QRC721>;
   bridge: (address: string) => BoundClient<BridgeModule>;
   contract: (address: string) => BoundClient<Contract>;
   registered: Record<string, (address: string) => unknown>;
@@ -168,6 +174,7 @@ export function bindModules(
   return {
     qrc20: (address) => getToken(connection, address).withSigner(wallet),
     qrc1155: (address) => getCollection(connection, address).withSigner(wallet),
+    qrc721: (address) => getNftCollection(connection, address).withSigner(wallet),
     bridge: (address) => getBridge(connection, address).withSigner(wallet),
     contract: (address) => getContract(connection, address).withSigner(wallet),
     registered: bindRegisteredModules(connection, wallet),

@@ -135,8 +135,13 @@ export function SignInButton({
       }
       signing = true;
       const signed = await signIn(params);
-      onSuccess?.(signed);
-      onSignedIn?.(signed);
+      try {
+        // Apps often post the signature to their server here; a rejection must not go unhandled.
+        await onSuccess?.(signed);
+        onSignedIn?.(signed);
+      } catch (e) {
+        onError?.(toError(e));
+      }
     } catch (e) {
       // Wallet errors are already surfaced by useSignIn's errorMessage; TypeErrors here are
       // our own auth-message validation, so their text is safe to show.

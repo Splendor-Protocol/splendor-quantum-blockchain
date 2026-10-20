@@ -24,7 +24,7 @@ describe('routed native catalog vs unsupported adapters', () => {
   });
 
   it('auto-registers only routed Program clients', () => {
-    expect(listModules().map((m) => m.id).sort()).toEqual(['bridge', 'contract', 'qrc1155', 'qrc20']);
+    expect(listModules().map((m) => m.id).sort()).toEqual(['bridge', 'contract', 'qrc1155', 'qrc20', 'qrc721']);
     expect(ROUTED_NATIVE_MODULE_IDS).toEqual([
       'qrc20',
       'qrc1155',

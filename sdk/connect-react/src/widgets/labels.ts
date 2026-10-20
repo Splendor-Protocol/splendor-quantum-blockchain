@@ -63,6 +63,7 @@ export const TOKEN_LABELS = {
   tokenPlaceholder: 'SQ:…',
   invalidToken: 'Enter a valid SQ: token address',
   enterToken: 'Enter a QRC-20 token address.',
+  recentTokens: 'Your tokens:',
   loading: 'Loading…',
   loadFailed: 'Could not load this token: {error}',
   toLabel: 'To (SQ:…)',

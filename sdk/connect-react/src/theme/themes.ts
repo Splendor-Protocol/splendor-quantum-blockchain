@@ -3,6 +3,8 @@ import type { CSSProperties } from 'react';
 export type ThemeName = 'splendor' | 'light' | 'dark';
 
 export type ThemeOverrides = {
+  /** Built-in theme the overrides apply on top of. Default `splendor`. */
+  base?: ThemeName;
   accent?: string;
   accentHover?: string;
   bg?: string;
@@ -22,8 +24,11 @@ export type ThemeOverrides = {
 
 export type ThemeProp = ThemeName | ThemeOverrides;
 
+const THEME_NAMES: readonly ThemeName[] = ['splendor', 'light', 'dark'];
+
 export function resolveThemeAttr(theme: ThemeProp | undefined): ThemeName {
-  if (!theme || typeof theme === 'object') return 'splendor';
+  if (!theme) return 'splendor';
+  if (typeof theme === 'object') return theme.base && THEME_NAMES.includes(theme.base) ? theme.base : 'splendor';
   return theme;
 }
 

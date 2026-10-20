@@ -75,7 +75,22 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
       />
       <div className="pg-field">
         <label htmlFor="repo-url">Or push it to a Git repo and deploy with one click</label>
-        <input id="repo-url" placeholder="https://github.com/you/my-dapp" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} />
+        <input
+          id="repo-url"
+          type="url"
+          inputMode="url"
+          autoComplete="off"
+          placeholder="https://github.com/you/my-dapp"
+          value={repoUrl}
+          aria-invalid={!!repoUrl.trim() && !links}
+          aria-describedby="repo-url-hint"
+          onChange={(e) => setRepoUrl(e.target.value)}
+        />
+        <small id="repo-url-hint" className={repoUrl.trim() && !links ? 'pg-error' : 'pg-muted'}>
+          {repoUrl.trim() && !links
+            ? 'Use a repository URL on github.com, gitlab.com or bitbucket.org, like https://github.com/you/my-dapp.'
+            : 'The deploy buttons turn on once the URL is a repository.'}
+        </small>
       </div>
       <div className="pg-row">
         <a className={`pg-btn pg-btn-ghost${links ? '' : ' is-disabled'}`} aria-disabled={!links} href={links?.vercel} target="_blank" rel="noreferrer noopener">

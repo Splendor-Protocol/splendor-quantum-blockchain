@@ -1,7 +1,7 @@
 /**
  * Shared mutation state for connect-react tx hooks.
  */
-import { useCallback, useContext, useRef, useState } from 'react';
+import { useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { BridgeError } from '@splendor/sqc-sdk';
 import { txExplorerUrl, type NetworkConfig } from '@splendor/sqc-sdk/networks';
 import { connectErrorMessage } from '../core/controller.js';
@@ -126,13 +126,81 @@ export function useTxAction(network?: NetworkConfig | null): {
     [network, singleFlight, recordPending],
   );
 
-  return {
-    status,
-    hash,
-    explorerUrl,
-    error,
-    errorMessage: error ? connectErrorMessage(error) : null,
-    reset,
-    run,
-  };
+  // Memoized: hooks list `tx` in their useCallback deps, so a fresh object would rebuild them every render.
+  return useMemo(
+    () => ({
+      status,
+      hash,
+      explorerUrl,
+      error,
+      errorMessage: error ? connectErrorMessage(error) : null,
+      reset,
+      run,
+    }),
+    [status, hash, explorerUrl, error, reset, run],
+  );
+}
+
+/**
+ * State for a deploy-style mutation (status, hash, address, explorer link) with the same
+ * single-flight lock and pending-list recording as `useTxAction`.
+ */
+export function useDeployAction<P, R extends { address: string; result: { hash?: string } }>(
+  network: NetworkConfig | null | undefined,
+  send: (params: P) => Promise<R>,
+  describe: (params: P, res: R) => TxMeta,
+): {
+  deploy: (params: P) => Promise<R>;
+  status: TxHookStatus;
+  address: string | null;
+  hash: string | null;
+  explorerUrl: string | null;
+  error: Error | null;
+  errorMessage: string | null;
+  reset: () => void;
+} {
+  const [status, setStatus] = useState<TxHookStatus>('idle');
+  const [address, setAddress] = useState<string | null>(null);
+  const [hash, setHash] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const singleFlight = useSingleFlight();
+  const recordPending = useRecordPendingTx();
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const describeRef = useRef(describe);
+  describeRef.current = describe;
+
+  const reset = useCallback(() => {
+    setStatus('idle');
+    setAddress(null);
+    setHash(null);
+    setError(null);
+  }, []);
+
+  const deploy = useCallback(
+    (params: P) =>
+      singleFlight(async () => {
+        setStatus('pending');
+        setError(null);
+        setHash(null);
+        setAddress(null);
+        try {
+          const res = await sendRef.current(params);
+          setAddress(res.address);
+          setHash(res.result.hash ?? null);
+          setStatus('success');
+          recordPending(res.result, describeRef.current(params, res));
+          return res;
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          setError(err);
+          setStatus('error');
+          throw err;
+        }
+      }),
+    [singleFlight, recordPending],
+  );
+
+  const explorerUrl = network && hash ? txExplorerUrl(network, hash) : null;
+  return { deploy, status, address, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
 }

@@ -15,6 +15,8 @@ export {
   useModuleCall,
   useQRC1155,
   useDeployCollection,
+  useQRC721,
+  useDeployQRC721,
   useBridge,
   useDeployBridge,
   useContract,

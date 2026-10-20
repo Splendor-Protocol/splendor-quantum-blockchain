@@ -18,7 +18,8 @@ npm create splendor-dapp@latest my-dapp -- --template token-launchpad --framewor
 | `nft-drop` | Deploy or use a QRC-1155 collection, mint and show balances |
 
 Options: `--framework vite|next`, `--network testnet|devnet|mainnet|local`,
-`--set block.prop=value`, `--yes` (no prompts).
+`--set block.prop=value`, `--yes` (no prompts). `--set` values follow the prop's type, so
+`--set deploy.decimals=6` and `--set deploy.review=false` give a number and a boolean.
 
 Each release pins the `@splendor/connect-react` and `@splendor/sqc-sdk` versions listed in this
 package's own `package.json`, so a project created today keeps working with the SDK it was made

@@ -46,6 +46,21 @@ export function parseArgs(rawArgv) {
   return out;
 }
 
+/** Command-line values are text; turn them into the prop's declared type. Unknown props stay strings for the validator to report. */
+export function coerceProp(schema, raw, arg = raw) {
+  if (schema?.type === 'boolean') {
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    throw new Error(`--set ${arg}: expected true or false`);
+  }
+  if (schema?.type === 'number') {
+    const n = Number(raw);
+    if (raw.trim() === '' || !Number.isFinite(n)) throw new Error(`--set ${arg}: expected a number`);
+    return n;
+  }
+  return raw;
+}
+
 /** Build the project files for a template; throws with a readable message on bad input. */
 export function buildProject({ name, template, framework, network, set = [] }) {
   const t = TEMPLATES.find((x) => x.id === template);
@@ -55,14 +70,15 @@ export function buildProject({ name, template, framework, network, set = [] }) {
   const spec = instantiateTemplate(t);
   spec.name = name;
   spec.network = network;
+  const catalog = loadCatalog();
   for (const s of set) {
     const m = /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_]+)=(.*)$/.exec(s);
     if (!m) throw new Error(`--set expects block.prop=value, got "${s}"`);
     const block = spec.pages.flatMap((p) => p.blocks).find((b) => b.id === m[1]);
     if (!block) throw new Error(`--set: no block "${m[1]}" in template ${t.id}`);
-    block.props[m[2]] = m[3];
+    const schema = catalog.find((e) => e.id === block.widget)?.props.find((p) => p.name === m[2]);
+    block.props[m[2]] = coerceProp(schema, m[3], s);
   }
-  const catalog = loadCatalog();
   const v = validateSpec(spec, { catalog });
   if (!v.ok) {
     const lines = v.issues.map((i) => `  ${i.path}: ${i.message}`).join('\n');

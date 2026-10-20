@@ -1,6 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { bindModules, listModules } from '@splendor/sqc-sdk';
-import type { TxHookStatus } from '../useTxAction.js';
+import { txExplorerUrl } from '@splendor/sqc-sdk/networks';
+import { connectErrorMessage } from '../../core/controller.js';
+import { useConnectState } from '../context.js';
+import { useRecordPendingTx, useSingleFlight, type TxHookStatus } from '../useTxAction.js';
 import { useWallet } from './core.js';
 
 /**
@@ -43,13 +46,18 @@ export function useModuleCall(): {
   }) => Promise<{ hash?: string; status: string }>;
   status: TxHookStatus;
   hash: string | null;
+  explorerUrl: string | null;
   error: Error | null;
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
+  const network = useConnectState((s) => s.network);
   const [status, setStatus] = useState<TxHookStatus>('idle');
   const [hash, setHash] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  const singleFlight = useSingleFlight();
+  const recordPending = useRecordPendingTx();
 
   const reset = useCallback(() => {
     setStatus('idle');
@@ -58,42 +66,44 @@ export function useModuleCall(): {
   }, []);
 
   const call = useCallback(
-    async (opts: {
+    (opts: {
       module: string;
       action: string;
       params: Record<string, unknown>;
       fee?: string;
       waitForConfirmation?: boolean;
-    }) => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
-      const invalid = moduleCallProblem(opts);
-      if (invalid) {
-        const err = new Error(invalid);
+    }) =>
+      singleFlight(async () => {
+        if (!ready || !wallet) throw new Error('Wallet not connected');
+        const invalid = moduleCallProblem(opts);
+        if (invalid) {
+          const err = new Error(invalid);
+          setHash(null);
+          setError(err);
+          setStatus('error');
+          throw err;
+        }
+        setStatus('pending');
+        setError(null);
         setHash(null);
-        setError(err);
-        setStatus('error');
-        throw err;
-      }
-      setStatus('pending');
-      setError(null);
-      try {
-        const res = await wallet.sendModuleCall({
-          ...opts,
-          module: opts.module.trim(),
-          action: opts.action.trim(),
-        });
-        setHash(res.hash ?? null);
-        setStatus('success');
-        return { hash: res.hash, status: String(res.status) };
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e));
-        setError(err);
-        setStatus('error');
-        throw err;
-      }
-    },
-    [wallet, ready],
+        const module = opts.module.trim();
+        const action = opts.action.trim();
+        try {
+          const res = await wallet.sendModuleCall({ ...opts, module, action });
+          setHash(res.hash ?? null);
+          setStatus('success');
+          recordPending(res, { kind: 'module', summary: `${module}.${action}` });
+          return { hash: res.hash, status: String(res.status) };
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          setError(err);
+          setStatus('error');
+          throw err;
+        }
+      }),
+    [wallet, ready, singleFlight, recordPending],
   );
 
-  return { call, status, hash, error, reset };
+  const explorerUrl = network && hash ? txExplorerUrl(network, hash) : null;
+  return { call, status, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
 }

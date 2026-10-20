@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { WrongNetworkBanner } from '@splendor/connect-react';
+import { WrongNetworkBanner, useNetwork } from '@splendor/connect-react';
 import {
   defaultProps,
   emptySpec,
@@ -13,17 +13,28 @@ import {
 import { api, ApiError } from '../api/client';
 import { useSession } from '../auth/session';
 import { PropsForm } from '../components/PropsForm';
+import { Tabs, type TabItem } from '../components/Tabs';
 import { ThemeEditor } from '../components/ThemeEditor';
 import { PLAYGROUND_NETWORKS } from '../config';
 import { StatusBadge } from '../gallery/GalleryPage';
 import type { MockWalletState } from '../preview/mock';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import { SpecRenderer } from '../preview/SpecRenderer';
+import { validateForPreview } from '../preview/validatePreview';
 import { useRegistry } from '../registry';
 import { ExportPanel } from './ExportPanel';
+import { describeIssue } from './issues';
 import { ProjectPanel, type CloudState } from './ProjectPanel';
-import { builderReducer, initBuilder } from './state';
+import { MAX_BLOCKS_PER_PAGE, MAX_PAGES, builderReducer, initBuilder } from './state';
 import { clearDraft, loadDraft, saveDraft } from './storage';
+
+type EditorTab = 'block' | 'theme' | 'export' | 'project';
+const EDITOR_TABS: readonly TabItem<EditorTab>[] = [
+  { id: 'block', label: 'Block', testId: 'tab-block' },
+  { id: 'theme', label: 'Theme', testId: 'tab-theme' },
+  { id: 'export', label: 'Export', testId: 'tab-export' },
+  { id: 'project', label: 'Save & share', testId: 'tab-project' },
+];
 
 function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
   const { templates } = useRegistry();
@@ -52,7 +63,8 @@ function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
 
 export function BuilderPage() {
   const [params, setParams] = useSearchParams();
-  const [start, setStart] = useState<{ spec: DappSpec; projectId: string | null; key: number } | null>(() => {
+  /** `synced`: the spec was just loaded from the account, so it matches the saved copy. */
+  const [start, setStart] = useState<{ spec: DappSpec; projectId: string | null; key: number; synced?: boolean } | null>(() => {
     const t = params.get('template');
     const tpl = t ? getTemplate(t) : undefined;
     if (tpl) return { spec: instantiateTemplate(tpl), projectId: null, key: Date.now() };
@@ -76,7 +88,8 @@ export function BuilderPage() {
       key={start.key}
       initial={start.spec}
       initialProjectId={start.projectId}
-      onOpen={(spec, projectId) => setStart({ spec, projectId, key: Date.now() })}
+      initialSynced={start.synced === true}
+      onOpen={(spec, projectId) => setStart({ spec, projectId, key: Date.now(), synced: projectId != null })}
       onNew={() => {
         clearDraft();
         setStart(null);
@@ -88,12 +101,14 @@ export function BuilderPage() {
 function Editor({
   initial,
   initialProjectId,
+  initialSynced,
   onOpen,
   onNew,
 }: {
   initial: DappSpec;
   initialProjectId: string | null;
-  onOpen: (spec: DappSpec, projectId: string) => void;
+  initialSynced: boolean;
+  onOpen: (spec: DappSpec, projectId: string | null) => void;
   onNew: () => void;
 }) {
   const { all, catalog, compatibilityNote } = useRegistry();
@@ -103,14 +118,42 @@ function Editor({
   const [projectId, setProjectId] = useState<string | null>(initialProjectId);
   const [mode, setMode] = useState<'mock' | 'live'>('mock');
   const [walletState, setWalletState] = useState<MockWalletState>('connected');
-  const [tab, setTab] = useState<'block' | 'theme' | 'export' | 'project'>('block');
+  const [tab, setTab] = useState<EditorTab>('block');
   const [calls, setCalls] = useState<{ method: string; args: string }[]>([]);
-  const [cloud, setCloud] = useState<CloudState>({ status: 'local' });
+  const [cloud, setCloud] = useState<CloudState>({ status: initialSynced ? 'saved' : 'local' });
   const mainnetLiveConfirmed = useRef(false);
+  const [newPageTitle, setNewPageTitle] = useState<string | null>(null);
+  const { networkId } = useNetwork();
   const { spec, pagePath, selectedBlockId } = state;
 
   const validation = useMemo(() => validateSpec(spec, { catalog: all }), [spec, all]);
   const issues = validation.ok ? [] : validation.issues;
+  // Live mode renders like the mock preview: empty setup fields show the block's own prompt.
+  const renderable = useMemo(() => validateForPreview(spec, all).spec, [spec, all]);
+
+  /** Live mode signs real transactions; mainnet needs an explicit yes however you get there. */
+  const confirmMainnetLive = () => {
+    if (mainnetLiveConfirmed.current) return true;
+    const ok = window.confirm('Live mode on mainnet signs real transactions that spend real SPLD. Check every address in this dApp first. Continue?');
+    if (ok) mainnetLiveConfirmed.current = true;
+    return ok;
+  };
+
+  // Undo, redo, an import or an opened project can also move a live preview onto mainnet.
+  useEffect(() => {
+    if (mode === 'live' && spec.network === 'mainnet' && !confirmMainnetLive()) setMode('mock');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, spec.network]);
+
+  const goToIssue = (target: { pagePath: string; blockId: string; prop: string | null; entryId: string | null }) => {
+    dispatch({ type: 'selectPage', path: target.pagePath });
+    dispatch({ type: 'selectBlock', id: target.blockId });
+    setTab('block');
+    if (target.prop && target.entryId) {
+      const id = `prop-${target.entryId}-${target.prop}`;
+      window.setTimeout(() => document.getElementById(id)?.focus(), 0);
+    }
+  };
   const page = spec.pages.find((p) => p.path === pagePath) ?? spec.pages[0]!;
   const selected = page.blocks.find((b) => b.id === selectedBlockId) ?? null;
   const selectedEntry = selected ? all.find((e) => e.id === selected.widget) : undefined;
@@ -131,9 +174,13 @@ function Editor({
   useEffect(() => saveDraft({ spec, projectId }), [spec, projectId]);
 
   // Cloud autosave (debounced) once the project lives in the user's account.
-  const lastSaved = useRef<DappSpec | null>(null);
+  const lastSaved = useRef<DappSpec | null>(initialSynced ? initial : null);
   useEffect(() => {
-    if (!session || !projectId || !validation.ok || lastSaved.current === spec) return;
+    if (!session || !projectId || lastSaved.current === spec) return;
+    if (!validation.ok) {
+      setCloud({ status: 'unsaved' });
+      return;
+    }
     const t = window.setTimeout(() => {
       setCloud({ status: 'saving' });
       api
@@ -204,7 +251,15 @@ function Editor({
           </div>
           <div className="pg-field">
             <label htmlFor="dapp-network">Network</label>
-            <select id="dapp-network" value={spec.network} onChange={(e) => dispatch({ type: 'setNetwork', network: e.target.value as NetworkId })}>
+            <select
+              id="dapp-network"
+              value={spec.network}
+              onChange={(e) => {
+                const network = e.target.value as NetworkId;
+                if (network === 'mainnet' && mode === 'live' && !confirmMainnetLive()) return;
+                dispatch({ type: 'setNetwork', network });
+              }}
+            >
               {PLAYGROUND_NETWORKS.map((n) => (
                 <option key={n.id} value={n.id}>
                   {n.label}
@@ -217,31 +272,87 @@ function Editor({
         <div>
           <p className="pg-list-title">Pages</p>
           <ul className="pg-blocks">
-            {spec.pages.map((p) => (
+            {spec.pages.map((p, i) => (
               <li key={p.path} className={p.path === page.path ? 'is-active' : ''}>
-                <button type="button" onClick={() => dispatch({ type: 'selectPage', path: p.path })}>
+                <button type="button" aria-current={p.path === page.path ? 'true' : undefined} onClick={() => dispatch({ type: 'selectPage', path: p.path })}>
                   {p.title} <small className="pg-muted">{p.path}</small>
                 </button>
+                {spec.pages.length > 1 ? (
+                  <>
+                    <button
+                      type="button"
+                      className="pg-icon-btn"
+                      aria-label={`Move page ${p.title} up`}
+                      title="Move up"
+                      disabled={i === 0}
+                      onClick={() => dispatch({ type: 'movePage', path: p.path, delta: -1 })}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="pg-icon-btn"
+                      aria-label={`Move page ${p.title} down`}
+                      title="Move down"
+                      disabled={i === spec.pages.length - 1}
+                      onClick={() => dispatch({ type: 'movePage', path: p.path, delta: 1 })}
+                    >
+                      ↓
+                    </button>
+                  </>
+                ) : null}
                 {p.path !== '/' ? (
-                  <button type="button" className="pg-icon-btn" aria-label={`Delete page ${p.title}`} onClick={() => dispatch({ type: 'removePage', path: p.path })}>
+                  <button
+                    type="button"
+                    className="pg-icon-btn"
+                    aria-label={`Delete page ${p.title}`}
+                    title="Delete page (Ctrl+Z to undo)"
+                    onClick={() => dispatch({ type: 'removePage', path: p.path })}
+                  >
                     ✕
                   </button>
                 ) : null}
               </li>
             ))}
           </ul>
-          <button
-            type="button"
-            className="pg-btn pg-btn-ghost pg-btn-sm"
-            style={{ marginTop: '0.4rem' }}
-            disabled={spec.pages.length >= 20}
-            onClick={() => {
-              const title = window.prompt('Page title', 'New page');
-              if (title?.trim()) dispatch({ type: 'addPage', title: title.trim() });
-            }}
-          >
-            + Add page
-          </button>
+          {newPageTitle == null ? (
+            <button
+              type="button"
+              className="pg-btn pg-btn-ghost pg-btn-sm"
+              style={{ marginTop: '0.4rem' }}
+              disabled={spec.pages.length >= MAX_PAGES}
+              onClick={() => setNewPageTitle('')}
+            >
+              + Add page
+            </button>
+          ) : (
+            <form
+              className="pg-row"
+              style={{ marginTop: '0.4rem' }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (newPageTitle.trim()) dispatch({ type: 'addPage', title: newPageTitle.trim() });
+                setNewPageTitle(null);
+              }}
+            >
+              <input
+                aria-label="New page title"
+                autoFocus
+                maxLength={60}
+                placeholder="Page title"
+                value={newPageTitle}
+                style={{ flex: 1 }}
+                onChange={(e) => setNewPageTitle(e.target.value)}
+                onKeyDown={(e) => e.key === 'Escape' && setNewPageTitle(null)}
+              />
+              <button type="submit" className="pg-btn pg-btn-sm" disabled={!newPageTitle.trim()}>
+                Add
+              </button>
+              <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => setNewPageTitle(null)}>
+                Cancel
+              </button>
+            </form>
+          )}
           <div className="pg-field" style={{ marginTop: '0.5rem' }}>
             <label htmlFor="page-title">Page title</label>
             <input id="page-title" value={page.title} maxLength={60} onChange={(e) => dispatch({ type: 'renamePage', path: page.path, title: e.target.value })} />
@@ -257,6 +368,7 @@ function Editor({
                 <li key={b.id} className={b.id === selectedBlockId ? 'is-active' : ''}>
                   <button
                     type="button"
+                    aria-current={b.id === selectedBlockId ? 'true' : undefined}
                     onClick={() => {
                       dispatch({ type: 'selectBlock', id: b.id });
                       setTab('block');
@@ -264,13 +376,46 @@ function Editor({
                   >
                     {entry?.title ?? b.widget}
                   </button>
-                  <button type="button" className="pg-icon-btn" aria-label="Move up" disabled={i === 0} onClick={() => dispatch({ type: 'moveBlock', id: b.id, delta: -1 })}>
+                  <button
+                    type="button"
+                    className="pg-icon-btn"
+                    aria-label={`Move ${entry?.title ?? b.widget} up`}
+                    title="Move up"
+                    disabled={i === 0}
+                    onClick={() => dispatch({ type: 'moveBlock', id: b.id, delta: -1 })}
+                  >
                     ↑
                   </button>
-                  <button type="button" className="pg-icon-btn" aria-label="Move down" disabled={i === page.blocks.length - 1} onClick={() => dispatch({ type: 'moveBlock', id: b.id, delta: 1 })}>
+                  <button
+                    type="button"
+                    className="pg-icon-btn"
+                    aria-label={`Move ${entry?.title ?? b.widget} down`}
+                    title="Move down"
+                    disabled={i === page.blocks.length - 1}
+                    onClick={() => dispatch({ type: 'moveBlock', id: b.id, delta: 1 })}
+                  >
                     ↓
                   </button>
-                  <button type="button" className="pg-icon-btn" aria-label={`Remove ${entry?.title ?? b.widget}`} onClick={() => dispatch({ type: 'removeBlock', id: b.id })}>
+                  <button
+                    type="button"
+                    className="pg-icon-btn"
+                    aria-label={`Duplicate ${entry?.title ?? b.widget}`}
+                    title="Duplicate"
+                    disabled={page.blocks.length >= MAX_BLOCKS_PER_PAGE}
+                    onClick={() => {
+                      dispatch({ type: 'duplicateBlock', id: b.id });
+                      setTab('block');
+                    }}
+                  >
+                    ⧉
+                  </button>
+                  <button
+                    type="button"
+                    className="pg-icon-btn"
+                    aria-label={`Remove ${entry?.title ?? b.widget}`}
+                    title="Remove (Ctrl+Z to undo)"
+                    onClick={() => dispatch({ type: 'removeBlock', id: b.id })}
+                  >
                     ✕
                   </button>
                 </li>
@@ -294,7 +439,7 @@ function Editor({
                       type="button"
                       title={e.description}
                       data-testid={`add-${e.id}`}
-                      disabled={page.blocks.length >= 40}
+                      disabled={page.blocks.length >= MAX_BLOCKS_PER_PAGE}
                       onClick={() => {
                         dispatch({ type: 'addBlock', widget: e.id, props: defaultProps(e) });
                         setTab('block');
@@ -319,11 +464,7 @@ function Editor({
               type="button"
               aria-pressed={mode === 'live'}
               onClick={() => {
-                if (spec.network === 'mainnet' && !mainnetLiveConfirmed.current) {
-                  const ok = window.confirm('Live mode on mainnet signs real transactions that spend real SPLD. Check every address in this dApp first. Continue?');
-                  if (!ok) return;
-                  mainnetLiveConfirmed.current = true;
-                }
+                if (spec.network === 'mainnet' && !confirmMainnetLive()) return;
                 setMode('live');
               }}
             >
@@ -340,10 +481,10 @@ function Editor({
             </div>
           ) : null}
           <span className="pg-spacer" />
-          <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={!state.past.length} onClick={() => dispatch({ type: 'undo' })} aria-label="Undo">
+          <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={!state.past.length} onClick={() => dispatch({ type: 'undo' })} aria-label="Undo" title="Undo (Ctrl+Z)">
             ↶ Undo
           </button>
-          <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={!state.future.length} onClick={() => dispatch({ type: 'redo' })} aria-label="Redo">
+          <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={!state.future.length} onClick={() => dispatch({ type: 'redo' })} aria-label="Redo" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">
             ↷ Redo
           </button>
         </div>
@@ -352,12 +493,23 @@ function Editor({
           <div className="pg-issues" data-testid="spec-issues">
             <strong>{issues.length === 1 ? '1 thing to fix' : `${issues.length} things to fix`}</strong>
             <ul>
-              {issues.slice(0, 10).map((i) => (
-                <li key={`${i.path}:${i.message}`}>
-                  <code>{i.path}</code> {i.message}
-                </li>
-              ))}
+              {issues.slice(0, 10).map((i) => {
+                const d = describeIssue(spec, all, i);
+                return (
+                  <li key={`${i.path}:${i.message}`}>
+                    {d.target ? (
+                      <button type="button" className="pg-link-btn" onClick={() => goToIssue(d.target!)} title={i.path}>
+                        {d.where}
+                      </button>
+                    ) : (
+                      <strong title={i.path}>{d.where}</strong>
+                    )}{' '}
+                    {d.message}
+                  </li>
+                );
+              })}
             </ul>
+            {issues.length > 10 ? <p className="pg-muted" style={{ margin: '0.4rem 0 0' }}>…and {issues.length - 10} more. Fix these first.</p> : null}
           </div>
         ) : null}
 
@@ -394,8 +546,13 @@ function Editor({
               {spec.network === 'mainnet' ? ' and spend real SPLD' : ''}.
             </p>
             <WrongNetworkBanner expectedNetworkId={spec.network} />
-            {validation.ok ? (
-              <SpecRenderer spec={spec} catalog={all} pagePath={page.path} onNavigate={(path) => dispatch({ type: 'selectPage', path })} />
+            {networkId !== spec.network ? (
+              // Widgets sign on the playground's network, so they stay off until it matches the dApp's.
+              <p className="pg-error" data-testid="live-network-mismatch">
+                This dApp is set to {spec.network}. Switch the playground to it (above) to run the live preview.
+              </p>
+            ) : renderable ? (
+              <SpecRenderer spec={renderable} catalog={all} pagePath={page.path} onNavigate={(path) => dispatch({ type: 'selectPage', path })} />
             ) : (
               <p className="pg-error">Fix the issues above to run the live preview.</p>
             )}
@@ -404,20 +561,7 @@ function Editor({
       </section>
 
       <aside className="pg-sidebar pg-panel">
-        <div className="pg-tabs-inline" role="tablist">
-          {(
-            [
-              ['block', 'Block'],
-              ['theme', 'Theme'],
-              ['export', 'Export'],
-              ['project', 'Save & share'],
-            ] as const
-          ).map(([id, label]) => (
-            <button key={id} type="button" role="tab" aria-selected={tab === id} data-testid={`tab-${id}`} onClick={() => setTab(id)}>
-              {label}
-            </button>
-          ))}
-        </div>
+        <Tabs idPrefix="builder" label="Editor" tabs={EDITOR_TABS} value={tab} onChange={setTab}>
         {tab === 'block' ? (
           selected && selectedEntry ? (
             <div className="pg-stack">
@@ -445,14 +589,18 @@ function Editor({
         {tab === 'project' ? (
           <ProjectPanel
             spec={spec}
+            catalog={all}
             projectId={projectId}
             cloud={session && projectId ? cloud : { status: 'local' }}
             valid={validation.ok}
             onSaveNew={saveNew}
             onOpen={openProject}
+            onImport={(imported) => onOpen(imported, null)}
+            onDeleted={() => setProjectId(null)}
             onNew={onNew}
           />
         ) : null}
+        </Tabs>
       </aside>
     </div>
   );

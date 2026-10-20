@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { migrateSpec, validateSpec, type DappSpec } from '@splendor/dapp-spec';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import { useRegistry } from '../registry';
 import { saveDraft } from './storage';
@@ -16,18 +16,45 @@ export function SharedPage() {
   const [pagePath, setPagePath] = useState('/');
 
   useEffect(() => {
+    let live = true;
+    setError(null);
+    setSpec(null);
     api
       .getShared(shareId)
       .then((r) => {
         const v = validateSpec(migrateSpec(r.spec), { catalog: all });
-        if (!v.ok) throw new Error('This shared project uses widgets this playground does not have.');
-        setSpec(v.spec);
+        if (!v.ok) throw new Error('This shared project cannot be opened here: it uses widgets or settings this playground does not support.');
+        if (live) setSpec(v.spec);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => {
+        if (!live) return;
+        if (e instanceof ApiError && e.status === 404) setError('This share link was removed by its owner, or it never existed.');
+        else setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      live = false;
+    };
   }, [shareId, all]);
 
-  if (error) return <p className="pg-pad pg-error">{error}</p>;
-  if (!spec) return <p className="pg-pad pg-muted">Loading shared project…</p>;
+  if (error) {
+    return (
+      <div className="pg-page">
+        <h1>Shared project unavailable</h1>
+        <p className="pg-error" role="alert">
+          {error}
+        </p>
+        <div className="pg-row">
+          <Link className="pg-btn" to="/build">
+            Start your own dApp
+          </Link>
+          <Link className="pg-btn pg-btn-ghost" to="/">
+            Home
+          </Link>
+        </div>
+      </div>
+    );
+  }
+  if (!spec) return <p className="pg-pad pg-muted" role="status">Loading shared project…</p>;
   return (
     <div className="pg-page">
       <div className="pg-row">

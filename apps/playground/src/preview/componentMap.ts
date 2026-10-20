@@ -2,6 +2,7 @@ import type { ComponentType } from 'react';
 import * as ConnectReact from '@splendor/connect-react';
 import type { CatalogEntry } from '@splendor/dapp-spec';
 import { BalanceSummary } from '@splendor/dapp-spec/blocks/BalanceSummary.tsx';
+import { ContractCall } from '@splendor/dapp-spec/blocks/ContractCall.tsx';
 import { Hero } from '@splendor/dapp-spec/blocks/Hero.tsx';
 import { MembersArea } from '@splendor/dapp-spec/blocks/MembersArea.tsx';
 import { NftDrop } from '@splendor/dapp-spec/blocks/NftDrop.tsx';
@@ -11,7 +12,7 @@ import { TipJar } from '@splendor/dapp-spec/blocks/TipJar.tsx';
 type AnyComponent = ComponentType<any>;
 
 /** Same files the code generator copies into exported projects, so preview = export. */
-const BLOCKS: Record<string, AnyComponent> = { BalanceSummary, Hero, MembersArea, NftDrop, TipJar };
+const BLOCKS: Record<string, AnyComponent> = { BalanceSummary, ContractCall, Hero, MembersArea, NftDrop, TipJar };
 
 /** Packages the playground can render. Third-party widget packages register here (phase 2). */
 const PACKAGES: Record<string, Record<string, unknown>> = {

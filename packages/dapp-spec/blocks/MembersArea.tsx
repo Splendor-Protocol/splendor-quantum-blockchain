@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { SignInButton, WidgetShell } from '@splendor/connect-react';
+import { useEffect, useState } from 'react';
+import { SignInButton, WidgetShell, useAccount, type SignedAuth } from '@splendor/connect-react';
 
 export type MembersAreaProps = {
   title?: string;
@@ -9,7 +9,8 @@ export type MembersAreaProps = {
   /**
    * Your server's base URL. When set, the block fetches `GET {apiUrl}/auth/nonce` and posts the
    * signed challenge to `POST {apiUrl}/auth/verify`, which must call `verifySignIn` from
-   * `@splendor/sqc-sdk/auth`. When empty it runs a client-only demo (not secure).
+   * `@splendor/sqc-sdk/auth`. Sign out posts to `POST {apiUrl}/auth/logout`.
+   * When empty it runs a client-only demo (not secure).
    */
   apiUrl?: string;
 };
@@ -21,9 +22,16 @@ export function MembersArea({
   content = 'Welcome! Only signed-in members can see this.',
   apiUrl = '',
 }: MembersAreaProps) {
+  const { address } = useAccount();
   const [member, setMember] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const base = apiUrl.replace(/\/+$/, '');
+
+  // A sign-in belongs to one address: switching or disconnecting the wallet locks the area again.
+  useEffect(() => {
+    setMember((m) => (m && m === address ? m : null));
+    setError(null);
+  }, [address]);
 
   const nonce = base
     ? async () => {
@@ -33,35 +41,51 @@ export function MembersArea({
       }
     : undefined;
 
+  const verify = async (signed: SignedAuth) => {
+    setError(null);
+    if (!base) {
+      setMember(signed.address);
+      return;
+    }
+    try {
+      const res = await fetch(`${base}/auth/verify`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(signed),
+      });
+      if (res.ok) setMember(signed.address);
+      else setError('The server rejected the sign-in.');
+    } catch {
+      setError('Could not reach the sign-in server.');
+    }
+  };
+
+  const signOut = () => {
+    setMember(null);
+    if (base) {
+      void fetch(`${base}/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }).catch(() => undefined);
+    }
+  };
+
   return (
     <WidgetShell kind="members-area" title={title}>
       {member ? (
         <div data-testid="dapp-members-content">
           <p className="sqc-widget__msg">Signed in as {member.slice(0, 12)}…</p>
           <p className="sqc-widget__msg">{content}</p>
+          <button type="button" className="sqc-btn sqc-btn--block" onClick={signOut}>
+            Sign out
+          </button>
         </div>
       ) : (
         <>
-          <SignInButton
-            hideTitle
-            statement={statement}
-            nonce={nonce}
-            onSuccess={async (signed) => {
-              setError(null);
-              if (!base) {
-                setMember(signed.address);
-                return;
-              }
-              const res = await fetch(`${base}/auth/verify`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(signed),
-              });
-              if (res.ok) setMember(signed.address);
-              else setError('The server rejected the sign-in.');
-            }}
-          />
+          <SignInButton hideTitle statement={statement} nonce={nonce} onSuccess={verify} />
           {!base ? (
             <p className="sqc-widget__msg dapp-note">
               Demo mode: set <code>apiUrl</code> to verify sign-ins on your server.

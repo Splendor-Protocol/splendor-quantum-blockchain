@@ -17,29 +17,37 @@ export function PropsForm({ entry, values, onChange, errors = {} }: PropsFormPro
         const id = `prop-${entry.id}-${p.name}`;
         const value = values[p.name];
         const err = errors[p.name];
+        const describedBy = [p.description ? `${id}-help` : null, err ? `${id}-error` : null].filter(Boolean).join(' ') || undefined;
+        const a11y = { 'aria-describedby': describedBy, 'aria-invalid': err ? true : undefined, 'aria-required': p.required || undefined };
         const label = (
           <label htmlFor={id}>
             {p.label}
-            {p.required ? <span className="pg-required"> *</span> : null}
+            {p.required ? (
+              <span className="pg-required" aria-hidden="true">
+                {' '}
+                *
+              </span>
+            ) : null}
           </label>
         );
-        let control;
+        const help = p.description ? (
+          <small id={`${id}-help`} className="pg-muted">
+            {p.description}
+          </small>
+        ) : null;
         if (p.type === 'boolean') {
           return (
             <div key={p.name} className="pg-field pg-field-inline">
-              <input
-                id={id}
-                type="checkbox"
-                checked={value === true}
-                onChange={(e) => onChange(p.name, e.target.checked)}
-              />
+              <input id={id} type="checkbox" checked={value === true} onChange={(e) => onChange(p.name, e.target.checked)} {...a11y} />
               {label}
-              {p.description ? <small className="pg-muted">{p.description}</small> : null}
+              {help}
             </div>
           );
-        } else if (p.type === 'select') {
+        }
+        let control;
+        if (p.type === 'select') {
           control = (
-            <select id={id} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(p.name, e.target.value || undefined)}>
+            <select id={id} value={typeof value === 'string' ? value : ''} onChange={(e) => onChange(p.name, e.target.value || undefined)} {...a11y}>
               <option value="">Default</option>
               {p.options?.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -58,6 +66,7 @@ export function PropsForm({ entry, values, onChange, errors = {} }: PropsFormPro
               value={typeof value === 'number' ? value : ''}
               placeholder={p.placeholder}
               onChange={(e) => onChange(p.name, e.target.value === '' ? undefined : Number(e.target.value))}
+              {...a11y}
             />
           );
         } else {
@@ -66,11 +75,13 @@ export function PropsForm({ entry, values, onChange, errors = {} }: PropsFormPro
               id={id}
               type="text"
               spellCheck={p.format === 'text'}
+              autoComplete="off"
               className={p.format === 'address' ? 'pg-mono' : undefined}
-              inputMode={p.format === 'amount' ? 'decimal' : undefined}
+              inputMode={p.format === 'amount' ? 'decimal' : p.format === 'url' ? 'url' : undefined}
               value={typeof value === 'string' ? value : ''}
               placeholder={p.placeholder}
               onChange={(e) => onChange(p.name, e.target.value === '' ? undefined : e.target.value)}
+              {...a11y}
             />
           );
         }
@@ -78,8 +89,12 @@ export function PropsForm({ entry, values, onChange, errors = {} }: PropsFormPro
           <div key={p.name} className="pg-field">
             {label}
             {control}
-            {p.description ? <small className="pg-muted">{p.description}</small> : null}
-            {err ? <small className="pg-error">{err}</small> : null}
+            {help}
+            {err ? (
+              <small id={`${id}-error`} className="pg-error">
+                {err}
+              </small>
+            ) : null}
           </div>
         );
       })}

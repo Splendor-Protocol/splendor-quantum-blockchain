@@ -184,6 +184,47 @@ describe('generateProject', () => {
     expect(page).toContain('\\u007balert(1)\\u007d');
   });
 
+  it('paints the page with the chosen theme, not a hardcoded dark body', () => {
+    const spec = ready('wallet-dashboard');
+    spec.theme = { base: 'light', overrides: { accent: '#ff0000', bg: '#ffffff' } };
+    for (const framework of ['vite', 'next'] as const) {
+      const files = generateProject(spec, { framework, catalog, versions }).files;
+      const css = files[framework === 'vite' ? 'src/app.css' : 'app/app.css']!;
+      expect(css).toContain(":root:has([data-sqc-theme='light'])");
+      expect(css).toMatch(/\.dapp-root \{[^}]*background: var\(--sqc-bg/);
+      expect(css).not.toMatch(/body \{[^}]*background/);
+      const shell = files[framework === 'vite' ? 'src/App.tsx' : 'app/providers.tsx']!;
+      expect(shell).toContain('const THEME = "light" as const;');
+      expect(shell).toContain('<div className="dapp-root" style={themeOverridesToStyle(THEME_OVERRIDES)}>');
+      expect(shell).toContain('accent: "#ff0000"');
+    }
+  });
+
+  it('exports the contract-call block with its props', () => {
+    const spec = emptySpec('Counter');
+    spec.pages[0]!.blocks.push({
+      id: 'counter',
+      widget: 'contract-call',
+      props: { contract: RECIPIENT, functionSig: 'get()', mode: 'read', decode: 'uint256' },
+    });
+    expect(validateSpec(spec, { catalog }).ok).toBe(true);
+    const files = generateProject(spec, { framework: 'vite', catalog, versions }).files;
+    expect(files['src/blocks/ContractCall.tsx']).toContain('export function ContractCall');
+    expect(files['src/pages/HomePage.tsx']).toContain('<ContractCall');
+    expect(files['src/pages/HomePage.tsx']).toContain('functionSig={"get()"}');
+  });
+
+  it('contract-call needs an address and a function', () => {
+    const spec = emptySpec('Counter');
+    spec.pages[0]!.blocks.push({ id: 'c', widget: 'contract-call', props: { mode: 'write' } });
+    const r = validateSpec(spec, { catalog });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.issues).toContainEqual({ path: 'pages[0].blocks[1].props.contract', message: 'required' });
+      expect(r.issues).toContainEqual({ path: 'pages[0].blocks[1].props.functionSig', message: 'required' });
+    }
+  });
+
   it('copies only the blocks that are used', () => {
     const files = generateProject(ready('wallet-dashboard'), { framework: 'vite', catalog, versions }).files;
     expect(files['src/blocks/Hero.tsx']).toBeDefined();

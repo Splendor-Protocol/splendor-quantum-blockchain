@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WriteOpts } from '@splendor/sqc-sdk';
 import { useConnectState } from '../context.js';
 import { onSharedReadsInvalidated, sharedRead } from '../../core/readCache.js';
+import { rememberDeployedToken } from '../../core/recentTokens.js';
 import { useRecordPendingTx, useSingleFlight, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet, useAccount, useReadConnection } from './core.js';
 
@@ -269,6 +270,7 @@ export function useDeployToken(): {
 
   const singleFlight = useSingleFlight();
   const recordPending = useRecordPendingTx();
+  const networkId = useConnectState((s) => s.network?.id ?? null);
   const deploy = useCallback(
     (params: {
       name: string;
@@ -293,6 +295,7 @@ export function useDeployToken(): {
           setHash(result.hash ?? null);
           setStatus('success');
           recordPending(result, { kind: 'deploy', summary: `Deploy token ${params.symbol} (${tokenAddr})` });
+          if (networkId) rememberDeployedToken({ address: tokenAddr, symbol: params.symbol, network: networkId });
           return { address: tokenAddr, hash: result.hash, confirmed: result.confirmation?.confirmed === true };
         } catch (e) {
           const err = e instanceof Error ? e : new Error(String(e));
@@ -301,7 +304,7 @@ export function useDeployToken(): {
           throw err;
         }
       }),
-    [wallet, ready, singleFlight, recordPending],
+    [wallet, ready, singleFlight, recordPending, networkId],
   );
 
   return { deploy, status, address, hash, error, reset };

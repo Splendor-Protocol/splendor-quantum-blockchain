@@ -49,6 +49,32 @@ describe('create-splendor-dapp', () => {
     expect(() => buildProject({ name: 'tips', template: 'tip-jar', framework: 'vite', network: 'testnet' })).toThrow(/--set tips.recipient=/);
   });
 
+  it('--set turns numbers and booleans into their declared types', () => {
+    const p = buildProject({
+      name: 'launch',
+      template: 'token-launchpad',
+      framework: 'vite',
+      network: 'testnet',
+      set: ['deploy.decimals=6', 'deploy.review=false', 'deploy.defaultSymbol=ABC'],
+    });
+    const page = p.files['src/pages/HomePage.tsx'];
+    expect(page).toContain('decimals={6}');
+    expect(page).not.toMatch(/\breview\b(?!=)/);
+    expect(page).toContain('defaultSymbol={"ABC"}');
+    expect(() => buildProject({ name: 'x', template: 'token-launchpad', framework: 'vite', network: 'testnet', set: ['deploy.review=maybe'] })).toThrow(
+      /expected true or false/,
+    );
+    expect(() => buildProject({ name: 'x', template: 'token-launchpad', framework: 'vite', network: 'testnet', set: ['deploy.decimals=six'] })).toThrow(
+      /expected a number/,
+    );
+  });
+
+  it('catalog.json matches the connect-react widget manifests', async () => {
+    const { WIDGET_MANIFESTS } = await import('@splendor/connect-react/manifest');
+    const catalog = JSON.parse(readFileSync(new URL('../catalog.json', import.meta.url), 'utf8'));
+    expect(catalog.widgets).toEqual(JSON.parse(JSON.stringify(WIDGET_MANIFESTS)));
+  });
+
   it('writes files and refuses non-empty directories', () => {
     const root = mkdtempSync(join(tmpdir(), 'csd-'));
     dirs.push(root);

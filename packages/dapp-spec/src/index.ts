@@ -4,6 +4,7 @@ export { migrateSpec } from './migrate.js';
 export { BLOCK_MANIFESTS, blockSource, type BlockManifest } from './blocks.js';
 export { createCatalog, defaultProps, type CatalogFlags } from './catalog.js';
 export {
+  APP_CSS,
   generateProject,
   blockSnippet,
   slugify,

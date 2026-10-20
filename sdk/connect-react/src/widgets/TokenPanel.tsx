@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 import { MODULE_ROUTER_ADDRESS, encodeModuleCallHex, fromUnits, toUnits } from '@splendor/sqc-sdk';
+import { getRecentTokens, subscribeRecentTokens } from '../core/recentTokens.js';
 import { useAccount, useBalance, useEstimateFee, useNetwork, useQRC20 } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import { exceedsBalanceWithFee, normalizeSqAddress } from './utils.js';
@@ -59,6 +60,11 @@ export function TokenPanel({
   const tokenAddress = tokenAddressProp?.trim() || (typedValid ? typed : '') || null;
   const { balance, tokenInfo, decimals, transferHuman, status, hash, explorerUrl, error, reset, loading } =
     useQRC20(tokenAddress);
+  const recentTokens = useSyncExternalStore(subscribeRecentTokens, getRecentTokens, getRecentTokens);
+  const myTokens = useMemo(
+    () => recentTokens.filter((t) => t.network === network?.id),
+    [recentTokens, network?.id],
+  );
 
   const knownSymbol = tokenInfo && typeof tokenInfo.symbol === 'string' ? tokenInfo.symbol : null;
   const symbol = knownSymbol ?? 'TOKEN';
@@ -145,14 +151,26 @@ export function TokenPanel({
       gateLabels={l}
     >
       {!tokenAddressProp && !form.reviewing ? (
-        <AddressInput
-          label={l.tokenLabel}
-          placeholder={l.tokenPlaceholder}
-          value={addrInput}
-          onChange={setAddrInput}
-          error={typed && !typedValid ? l.invalidToken : null}
-          labels={l}
-        />
+        <>
+          <AddressInput
+            label={l.tokenLabel}
+            placeholder={l.tokenPlaceholder}
+            value={addrInput}
+            onChange={setAddrInput}
+            error={typed && !typedValid ? l.invalidToken : null}
+            labels={l}
+          />
+          {myTokens.length ? (
+            <div className="sqc-recent" aria-label={l.recentTokens} data-testid="sqc-recent-tokens">
+              <span className="sqc-widget__hint">{l.recentTokens}</span>
+              {myTokens.map((t) => (
+                <button key={t.address} type="button" className="sqc-copy" title={t.address} onClick={() => setAddrInput(t.address)}>
+                  {t.symbol}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </>
       ) : null}
       <p className="sqc-widget__hint">{hint}</p>
       {form.reviewing && form.review.ok ? (

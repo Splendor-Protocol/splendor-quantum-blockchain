@@ -33,7 +33,8 @@ npm install @splendor/dapp-spec @splendor/connect-react
 
 A spec is data only (no code). `widget` is a catalog id: a drop-in widget from
 `@splendor/connect-react/manifest` (`transfer`, `token-panel`, …) or a block from this package
-(`hero`, `tip-jar`, `members-area`, `nft-drop`, `balance-summary`).
+(`hero`, `tip-jar`, `members-area`, `nft-drop`, `balance-summary`, `contract-call`).
+`contract-call` reads or calls one function of a deployed contract (`get()`, `set(uint256)`, …).
 
 ## Validate, migrate, generate
 

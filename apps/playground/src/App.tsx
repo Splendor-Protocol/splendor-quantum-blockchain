@@ -1,7 +1,8 @@
-import { lazy, Suspense } from 'react';
-import { BrowserRouter, NavLink, Outlet, Route, Routes } from 'react-router-dom';
+import { lazy, Suspense, useEffect } from 'react';
+import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { ConnectKit, SplendorConnectProvider, TxToastHost } from '@splendor/connect-react';
 import { SessionProvider, useSession } from './auth/session';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { NetworkSelect } from './components/NetworkSelect';
 import { DEFAULT_NETWORK } from './config';
 import { playgroundNetworks } from './networks';
@@ -49,10 +50,48 @@ function Shell() {
   );
 }
 
+const TITLES: [RegExp, string][] = [
+  [/^\/learn/, 'Learn'],
+  [/^\/widgets/, 'Widgets'],
+  [/^\/build/, 'Build'],
+  [/^\/s\//, 'Shared project'],
+  [/^\/admin/, 'Admin'],
+];
+
+/** Tab title per area, so history, bookmarks and screen readers can tell pages apart. */
+function useDocumentTitle(pathname: string) {
+  useEffect(() => {
+    const area = TITLES.find(([re]) => re.test(pathname))?.[1];
+    document.title = area ? `${area} · Splendor dApp Playground` : 'Splendor dApp Playground';
+  }, [pathname]);
+}
+
+function NotFound() {
+  return (
+    <div className="pg-page">
+      <h1>Page not found</h1>
+      <p className="pg-muted">This address does not match any playground page.</p>
+      <div className="pg-row">
+        <Link className="pg-btn" to="/">
+          Home
+        </Link>
+        <Link className="pg-btn pg-btn-ghost" to="/build">
+          Open the builder
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 function Layout() {
   const { session } = useSession();
+  const { pathname } = useLocation();
+  useDocumentTitle(pathname);
   return (
     <div className="pg-app">
+      <a className="pg-skip-link" href="#main">
+        Skip to content
+      </a>
       <header className="pg-header">
         <NavLink to="/" className="pg-logo">
           Splendor <span>dApp Playground</span>
@@ -68,9 +107,13 @@ function Layout() {
           <ConnectKit showNetwork={false} />
         </div>
       </header>
-      <Suspense fallback={<p className="pg-muted pg-pad">Loading…</p>}>
-        <Outlet />
-      </Suspense>
+      <main id="main" tabIndex={-1} className="pg-main">
+        <AppErrorBoundary resetKey={pathname}>
+          <Suspense fallback={<p className="pg-muted pg-pad" role="status">Loading…</p>}>
+            <Outlet />
+          </Suspense>
+        </AppErrorBoundary>
+      </main>
     </div>
   );
 }
@@ -87,7 +130,7 @@ export function App() {
           <Route path="build" element={<BuilderPage />} />
           <Route path="s/:shareId" element={<SharedPage />} />
           <Route path="admin/*" element={<AdminPage />} />
-          <Route path="*" element={<p className="pg-pad">Page not found.</p>} />
+          <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
     </BrowserRouter>

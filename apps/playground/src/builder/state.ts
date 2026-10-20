@@ -23,13 +23,18 @@ export type BuilderAction =
   | { type: 'selectPage'; path: string }
   | { type: 'addBlock'; widget: string; props: Record<string, PropValue> }
   | { type: 'removeBlock'; id: string }
+  | { type: 'duplicateBlock'; id: string }
   | { type: 'moveBlock'; id: string; delta: -1 | 1 }
+  | { type: 'movePage'; path: string; delta: -1 | 1 }
   | { type: 'setProp'; id: string; name: string; value: PropValue | undefined }
   | { type: 'selectBlock'; id: string | null }
   | { type: 'undo' }
   | { type: 'redo' };
 
 const HISTORY_LIMIT = 100;
+/** Same cap as the spec validator. */
+export const MAX_BLOCKS_PER_PAGE = 40;
+export const MAX_PAGES = 20;
 const COALESCE_MS = 1000;
 
 export function initBuilder(spec: DappSpec): BuilderState {
@@ -121,6 +126,30 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
     }
     case 'removeBlock':
       return reconcile(commit(state, { ...s, pages: s.pages.map((p) => ({ ...p, blocks: p.blocks.filter((b) => b.id !== action.id) })) }, null));
+    case 'duplicateBlock': {
+      const page = s.pages.find((p) => p.blocks.some((b) => b.id === action.id));
+      const source = page?.blocks.find((b) => b.id === action.id);
+      if (!page || !source || page.blocks.length >= MAX_BLOCKS_PER_PAGE) return state;
+      const id = uniqueBlockId(s, source.widget);
+      const copy = { id, widget: source.widget, props: { ...source.props } };
+      return commit(
+        state,
+        mapPage(s, page.path, (blocks) => {
+          const i = blocks.indexOf(source);
+          return [...blocks.slice(0, i + 1), copy, ...blocks.slice(i + 1)];
+        }),
+        null,
+        { pagePath: page.path, selectedBlockId: id },
+      );
+    }
+    case 'movePage': {
+      const i = s.pages.findIndex((p) => p.path === action.path);
+      const j = i + action.delta;
+      if (i < 0 || j < 0 || j >= s.pages.length) return state;
+      const pages = [...s.pages];
+      [pages[i], pages[j]] = [pages[j]!, pages[i]!];
+      return commit(state, { ...s, pages }, null);
+    }
     case 'moveBlock':
       return commit(
         state,

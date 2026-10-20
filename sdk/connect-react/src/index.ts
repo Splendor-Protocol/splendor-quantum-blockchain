@@ -76,6 +76,8 @@ export {
   useModuleCall,
   useQRC1155,
   useDeployCollection,
+  useQRC721,
+  useDeployQRC721,
   useBridge,
   useDeployBridge,
   useContract,
@@ -98,6 +100,8 @@ export {
   removePendingTx,
   clearPendingTxs,
 } from './core/pendingTx.js';
+export { getRecentTokens, rememberDeployedToken, subscribeRecentTokens } from './core/recentTokens.js';
+export type { RecentToken } from './core/recentTokens.js';
 export type { AccountDto, TxResultDto } from './core/dto.js';
 export { toAccountDto, toTxResultDto } from './core/dto.js';
 export { parseAuthMessage, checkAuthMessage, authCheckMessage } from './react/auth.js';

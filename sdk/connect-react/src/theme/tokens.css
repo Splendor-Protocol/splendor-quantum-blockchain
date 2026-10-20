@@ -21,6 +21,8 @@
   --sqc-danger: #f07178;
   --sqc-danger-soft: rgba(240, 113, 120, 0.12);
   --sqc-success: #4ade80;
+  --sqc-success-soft: rgba(74, 222, 128, 0.12);
+  --sqc-surface-2: #1a2c38;
   --sqc-radius: 14px;
   --sqc-radius-sm: 10px;
   --sqc-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
@@ -49,6 +51,8 @@
   --sqc-danger: #c4454a;
   --sqc-danger-soft: rgba(196, 69, 74, 0.1);
   --sqc-success: #15803d;
+  --sqc-success-soft: rgba(21, 128, 61, 0.12);
+  --sqc-surface-2: #eef5f6;
   --sqc-shadow: 0 20px 48px rgba(15, 40, 50, 0.12);
   --sqc-backdrop: rgba(10, 25, 32, 0.4);
 }
@@ -420,7 +424,7 @@
   margin: 0.5rem 0 0;
   font-size: 0.8125rem;
   line-height: 1.4;
-  color: var(--sqc-fg);
+  color: var(--sqc-text);
   cursor: pointer;
 }
 
@@ -503,7 +507,7 @@
 .sqc-account-row__value {
   font-family: var(--sqc-font-mono);
   font-size: 0.8125rem;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   background: var(--sqc-surface);
   border: 1px solid var(--sqc-border);
   border-radius: var(--sqc-radius-sm);
@@ -514,7 +518,9 @@
   gap: 0.5rem;
 }
 
+/* min-height: the WCAG 2.2 minimum target size (24px). */
 .sqc-copy {
+  min-height: 1.5rem;
   background: transparent;
   border: none;
   color: var(--sqc-accent);
@@ -737,10 +743,11 @@
   margin: 0.65rem 0 0.35rem;
 }
 
+/* Break long addresses and hashes, but never split ordinary words. */
 .sqc-widget__msg {
   font-size: 0.8125rem;
   margin: 0.75rem 0 0;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   color: var(--sqc-text-muted);
 }
 
@@ -845,6 +852,8 @@
   cursor: pointer;
   font-size: 1.1rem;
   line-height: 1;
+  min-width: 1.5rem;
+  min-height: 1.5rem;
 }
 
 .sqc-wrong-network {

@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { TxToastHost } from '@splendor/connect-react';
 import { MockSplendorProvider } from '@splendor/connect-react/testing';
 import { WIDGET_MANIFESTS } from '@splendor/connect-react/manifest';
-import { createCatalog, migrateSpec, validateSpec, type DappSpec } from '@splendor/dapp-spec';
+import { createCatalog, migrateSpec, type DappSpec } from '@splendor/dapp-spec';
 import { createPlaygroundMock } from './mock';
+import { validateForPreview } from './validatePreview';
 import { PREVIEW_SOURCE, isPreviewMessage, type ParentToPreview, type PreviewToParent, type RenderRequest } from './protocol';
 import { SpecRenderer } from './SpecRenderer';
 
@@ -39,10 +40,10 @@ export function PreviewRuntime() {
       if (!isPreviewMessage<ParentToPreview>(e.data) || e.data.type !== 'render') return;
       let spec: DappSpec;
       try {
-        const r = validateSpec(migrateSpec(e.data.spec), { catalog });
-        if (!r.ok) {
+        const r = validateForPreview(migrateSpec(e.data.spec), catalog);
+        if (r.issues.length) post({ type: 'invalid', issues: r.issues });
+        if (!r.spec) {
           setIssues(r.issues);
-          post({ type: 'invalid', issues: r.issues });
           return;
         }
         spec = r.spec;
@@ -80,7 +81,7 @@ export function PreviewRuntime() {
     return issues.length ? <PreviewIssues issues={issues} /> : <p className="pg-muted pg-pad">Waiting for the playground…</p>;
   }
   return (
-    <MockSplendorProvider controller={controller}>
+    <MockSplendorProvider controller={controller} theme={req.spec.theme.base}>
       <TxToastHost>
         {issues.length ? <PreviewIssues issues={issues} /> : null}
         <SpecRenderer

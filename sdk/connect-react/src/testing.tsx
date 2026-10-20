@@ -21,6 +21,7 @@ import {
   NetworkSwitchContext,
   type ConnectBrandLabels,
 } from './react/context.js';
+import { resolveThemeAttr, themeOverridesToStyle, type ThemeProp } from './theme/themes.js';
 
 export const MOCK_ADDRESS = 'SQ:' + 'ab'.repeat(32);
 const MOCK_HASH = 'cd'.repeat(32);
@@ -31,17 +32,28 @@ export type MockWalletOptions = {
   address?: string;
   /** Make a method reject with this error. */
   fail?: Partial<Record<string, Error>>;
-  /** Hash returned by sends (64 hex). */
-  hash?: string;
+  /** Hash returned by sends (64 hex), or a function returning a fresh one per send. */
+  hash?: string | (() => string);
+  /** When false, sends return no confirmation, so they land in the pending list. Default true. */
+  confirm?: boolean;
+  /** Answers `connection.getTxReceipt`. Default: `{ status: 'success' }`. */
+  receipt?: (hash: string) => unknown;
+  /** Called after each successful send (`sendTransfer`, `sendModuleCall`, …) with its result. */
+  onSend?: (call: MockCall, result: { status: string; hash: string; signedTx: { nonce: number } }) => void;
   /** Answers `connection.moduleCall` (token reads etc.). */
   moduleCall?: (envelope: { module: string; action: string; params: Record<string, unknown> }) => unknown;
+  /** Answers `connection.call` (read-only contract calls). Default: empty return data. */
+  call?: (req: { to: string; data: string; from?: string }) => unknown;
   /** Answers `connection.estimateGas`. Default: fee 1000 atto, floor. */
   estimate?: { fee: string; fee_is_floor?: boolean; gas?: number; reverted?: boolean; revert_reason?: string };
   /** Raw (atto) balance for `connection.getBalance`. */
-  balanceRaw?: string;
+  balanceRaw?: string | (() => string);
   /** Human SPLD balance for `connection.getBalance`. */
-  balanceSPLD?: string;
+  balanceSPLD?: string | (() => string);
 };
+
+const value = (v: string | (() => string) | undefined, fallback: string): string =>
+  typeof v === 'function' ? v() : (v ?? fallback);
 
 export type MockWallet = {
   calls: MockCall[];
@@ -62,7 +74,6 @@ function infoFor(address: string): DeriveInfo {
 /** A wallet whose signing methods resolve immediately and are recorded in `calls`. */
 export function mockWallet(opts: MockWalletOptions = {}): MockWallet {
   const calls: MockCall[] = [];
-  const hash = opts.hash ?? MOCK_HASH;
   const address = opts.address ?? MOCK_ADDRESS;
   const method =
     <T,>(name: string, result: (...args: unknown[]) => T) =>
@@ -72,12 +83,31 @@ export function mockWallet(opts: MockWalletOptions = {}): MockWallet {
       if (err) throw err;
       return result(...args);
     };
-  const sent = () => ({ status: 'ok', hash, confirmation: { ok: true } });
-  const balance = () => ({ balance: opts.balanceRaw ?? '0', balance_spld: opts.balanceSPLD ?? '0' });
+  // Each send uses the next account nonce, like the chain, so predicted deploy addresses differ.
+  let nonce = 0;
+  const sender =
+    <T extends object>(name: string, extra: () => T = () => ({}) as T) =>
+    async (...args: unknown[]) => {
+      const call = { method: name, args };
+      calls.push(call);
+      const err = opts.fail?.[name];
+      if (err) throw err;
+      const hash = typeof opts.hash === 'function' ? opts.hash() : (opts.hash ?? MOCK_HASH);
+      const res = {
+        status: 'ok',
+        hash,
+        signedTx: { nonce: nonce++ },
+        ...(opts.confirm === false ? {} : { confirmation: { ok: true } }),
+        ...extra(),
+      };
+      opts.onSend?.(call, res);
+      return res;
+    };
+  const balance = () => ({ balance: value(opts.balanceRaw, '0'), balance_spld: value(opts.balanceSPLD, '0') });
   const connection = {
     getBalance: method('connection.getBalance', balance),
-    getNonce: method('connection.getNonce', () => ({ nonce: 0 })),
-    getTxReceipt: method('connection.getTxReceipt', () => ({ status: 'success' })),
+    getNonce: method('connection.getNonce', () => ({ nonce })),
+    getTxReceipt: method('connection.getTxReceipt', (h) => (opts.receipt ? opts.receipt(String(h)) : { status: 'success' })),
     estimateGas: method('connection.estimateGas', () => ({
       gas: 0,
       fee_is_floor: true,
@@ -86,18 +116,18 @@ export function mockWallet(opts: MockWalletOptions = {}): MockWallet {
     moduleCall: method('connection.moduleCall', (env) =>
       opts.moduleCall ? opts.moduleCall(env as never) : {},
     ),
-    call: method('connection.call', () => ({ return_data: '0x' })),
+    call: method('connection.call', (req) => (opts.call ? opts.call(req as never) : { return_data: '0x' })),
   };
   return {
     calls,
     connection,
     getAddress: () => address,
-    getNonce: method('getNonce', () => ({ address, nonce: 0 })),
+    getNonce: method('getNonce', () => ({ address, nonce })),
     getLatestBlock: method('getLatestBlock', () => ({ height: 1 })),
-    sendTransfer: method('sendTransfer', sent),
-    callContract: method('callContract', sent),
-    deployContract: method('deployContract', () => ({ ...sent(), address: 'SQ:' + '77'.repeat(32) })),
-    sendModuleCall: method('sendModuleCall', sent),
+    sendTransfer: sender('sendTransfer'),
+    callContract: sender('callContract'),
+    deployContract: sender('deployContract', () => ({ address: 'SQ:' + '77'.repeat(32) })),
+    sendModuleCall: sender('sendModuleCall'),
     signMessage: method('signMessage', (message) => ({
       message,
       signatureB64: 'c2ln',
@@ -135,8 +165,8 @@ export function mockConnector(opts: { id?: string; name?: string; address?: stri
 export type MockConnectControllerOptions = {
   status?: ConnectionStatus;
   account?: Partial<ConnectAccount> & { address?: string };
-  /** Human SPLD balance reported by the provider. */
-  balance?: string;
+  /** Human SPLD balance reported by the provider, or a function read on every fetch. */
+  balance?: string | (() => string);
   network?: NetworkId | NetworkConfig;
   connectors?: Connector[];
   wallet?: MockWallet;
@@ -181,7 +211,7 @@ export function createMockConnectController(opts: MockConnectControllerOptions =
     for (const l of listeners) l();
   };
   const provider = {
-    getBalance: async () => ({ balance: '0', balance_spld: opts.balance ?? '0' }),
+    getBalance: async () => ({ balance: '0', balance_spld: value(opts.balance, '0') }),
   };
   let epoch = 0;
   const ctrl: MockConnectController = {
@@ -249,6 +279,8 @@ export type MockSplendorProviderProps = {
   options?: MockConnectControllerOptions;
   labels?: ConnectBrandLabels;
   allowPlaceholderNetworks?: boolean;
+  /** Same as `SplendorConnectProvider`'s `theme`. Default `splendor`. */
+  theme?: ThemeProp;
 };
 
 /** Drop-in replacement for `SplendorConnectProvider` in unit tests and Storybook. */
@@ -258,6 +290,7 @@ export function MockSplendorProvider({
   options,
   labels,
   allowPlaceholderNetworks = true,
+  theme = 'splendor',
 }: MockSplendorProviderProps) {
   const ctrl = useMemo(() => controller ?? createMockConnectController(options), [controller, options]);
   const network = useSyncExternalStore(
@@ -279,7 +312,7 @@ export function MockSplendorProvider({
       <BrandContext.Provider value={labels ?? {}}>
         <HostModalsContext.Provider value={false}>
           <NetworkSwitchContext.Provider value={networkCtx}>
-            <div data-sqc-theme="splendor" className="sqc-root">
+            <div data-sqc-theme={resolveThemeAttr(theme)} style={themeOverridesToStyle(theme)} className="sqc-root">
               {children}
             </div>
           </NetworkSwitchContext.Provider>

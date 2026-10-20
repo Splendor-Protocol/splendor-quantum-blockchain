@@ -52,6 +52,24 @@ describe('builderReducer', () => {
     expect(s.spec.pages[0]!.blocks.map((b) => b.id)).toEqual(['hero', 'account', 'pending']);
   });
 
+  it('duplicates a block right after the original with its own id and props', () => {
+    const spec = instantiateTemplate(getTemplate('wallet-dashboard')!);
+    let s = run(initBuilder(spec), { type: 'duplicateBlock', id: 'send' });
+    expect(s.spec.pages[0]!.blocks.map((b) => b.id)).toEqual(['hero', 'account', 'send', 'transfer-1', 'pending']);
+    expect(s.selectedBlockId).toBe('transfer-1');
+    s = run(s, { type: 'setProp', id: 'transfer-1', name: 'defaultAmount', value: '5' });
+    expect(s.spec.pages[0]!.blocks.find((b) => b.id === 'send')!.props.defaultAmount).toBe('0.01');
+    s = run(s, { type: 'undo' }, { type: 'undo' });
+    expect(s.spec.pages[0]!.blocks).toHaveLength(4);
+  });
+
+  it('reorders pages', () => {
+    const spec = instantiateTemplate(getTemplate('token-launchpad')!);
+    const s = run(initBuilder(spec), { type: 'movePage', path: '/manage', delta: -1 });
+    expect(s.spec.pages.map((p) => p.path)).toEqual(['/manage', '/']);
+    expect(run(s, { type: 'movePage', path: '/manage', delta: -1 })).toBe(s);
+  });
+
   it('clears a prop when set to undefined', () => {
     const s = run(initBuilder(emptySpec()), { type: 'setProp', id: 'hero', name: 'text', value: undefined });
     expect('text' in s.spec.pages[0]!.blocks[0]!.props).toBe(false);

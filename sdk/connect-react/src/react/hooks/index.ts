@@ -1,6 +1,7 @@
 export * from './core.js';
 export * from './qrc20.js';
 export * from './qrc1155.js';
+export * from './qrc721.js';
 export * from './bridge.js';
 export * from './contract.js';
 export * from './modules.js';

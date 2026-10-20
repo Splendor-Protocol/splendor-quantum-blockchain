@@ -24,6 +24,7 @@ describe('modules.bind / bindModules', () => {
     const connection = fakeConnection();
     const bound = modules.bind(connection);
     expect(bound.qrc20(ADDR).getAddress()).toBe(ADDR);
+    expect(bound.qrc721(ADDR).getAddress()).toBe(ADDR);
     expect(bound.bridge(ADDR).getAddress()).toBe(ADDR);
     expect(bound.contract(ADDR).getAddress()).toBe(ADDR);
     expect(bound).not.toHaveProperty('dex');

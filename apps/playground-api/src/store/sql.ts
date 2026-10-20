@@ -205,7 +205,7 @@ export class SqlStore implements Store {
     const res = await this.db.run('UPDATE projects SET name = ?, spec = ?, updated_at = ? WHERE id = ?', [patch.name, patch.spec, now(), id]);
     return res.changes ? this.getProject(id) : null;
   }
-  async setShareId(id: string, shareId: string) {
+  async setShareId(id: string, shareId: string | null) {
     await this.db.run('UPDATE projects SET share_id = ? WHERE id = ?', [shareId, id]);
   }
   async deleteProject(id: string) {

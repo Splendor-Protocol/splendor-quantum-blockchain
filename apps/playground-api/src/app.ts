@@ -307,6 +307,14 @@ export async function buildApp(deps: AppDeps) {
     return { shareId };
   });
 
+  // Sharing again later issues a new id, so a revoked link never comes back to life.
+  app.delete<{ Params: { id: string } }>('/projects/:id/share', { preHandler: requireUser, schema: { params: idParams } }, async (req, reply) => {
+    const p = await ownedProject(req, reply);
+    if (!p) return reply;
+    if (p.shareId) await store.setShareId(p.id, null);
+    return { ok: true };
+  });
+
   app.get<{ Params: { shareId: string } }>('/share/:shareId', { schema: { params: obj({ shareId: str(40, ID) }, ['shareId']) } }, async (req, reply) => {
     const p = await store.getProjectByShareId(req.params.shareId);
     if (!p) return reply.code(404).send({ error: 'Not found' });

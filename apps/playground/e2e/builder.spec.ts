@@ -33,7 +33,7 @@ test.describe('templates in the builder (mock wallet)', () => {
 
   test('tip jar: setup field blocks export until filled, then tips and exports both frameworks', async ({ page }) => {
     await openTemplate(page, 'tip-jar');
-    await expect(page.getByTestId('spec-issues')).toContainText('recipient');
+    await expect(page.getByTestId('spec-issues')).toContainText('Tip jar → Recipient');
     await page.getByTestId('tab-export').click();
     await expect(page.getByTestId('export-zip')).toBeDisabled();
 
