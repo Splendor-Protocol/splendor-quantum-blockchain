@@ -1,9 +1,9 @@
 // Package network — Peer discovery for Splendor Quantum Chain.
 //
 // Discovery works in two layers:
-//   1. Bootstrap: on startup, connect to a hardcoded or config-provided set of bootstrap peers.
-//   2. Peer Exchange (PEX): periodically request the peer list from known peers
-//      and add newly discovered peers to the pool.
+//  1. Bootstrap: on startup, connect to a hardcoded or config-provided set of bootstrap peers.
+//  2. Peer Exchange (PEX): periodically request the peer list from known peers
+//     and add newly discovered peers to the pool.
 //
 // Discovery itself is plain HTTP. Block and announce traffic is carried over the
 // ML-KEM-768 sealed channel in pqchannel.go; see network/p2p.go.

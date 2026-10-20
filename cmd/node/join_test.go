@@ -283,4 +283,3 @@ func TestApplyVoteOnlyDisablesPropose(t *testing.T) {
 		t.Fatal("vote-only on must replace nil Ready with a refusing gate")
 	}
 }
-

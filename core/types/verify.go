@@ -42,10 +42,10 @@ type VerifyInstruction struct {
 	Amount           string `json:"amount,omitempty"`
 	Token            string `json:"token,omitempty"`
 
-	MLDSAPubKey  []byte `json:"mldsa_pubkey"`
-	MLDSASig     []byte `json:"sig_mldsa"`
-	SLHPubKey    []byte `json:"slh_pubkey"`
-	SLHSig       []byte `json:"sig_slh"`
+	MLDSAPubKey []byte `json:"mldsa_pubkey"`
+	MLDSASig    []byte `json:"sig_mldsa"`
+	SLHPubKey   []byte `json:"slh_pubkey"`
+	SLHSig      []byte `json:"sig_slh"`
 }
 
 var verifyDigestPrefix = []byte("sqvl:instruction:v2:")

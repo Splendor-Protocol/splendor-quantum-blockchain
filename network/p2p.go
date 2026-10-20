@@ -3,18 +3,19 @@
 // Architecture: Push-based (like geth), not poll-based.
 //
 // When a validator produces a block:
-//   1. It calls Broadcaster.Broadcast(block) immediately
-//   2. The broadcaster sends POST /block to every known peer
-//   3. Each receiving peer calls ExecuteBlock() immediately
-//   4. The RPC node is always within milliseconds of the validator
+//  1. It calls Broadcaster.Broadcast(block) immediately
+//  2. The broadcaster sends POST /block to every known peer
+//  3. Each receiving peer calls ExecuteBlock() immediately
+//  4. The RPC node is always within milliseconds of the validator
 //
 // This is true realtime sync — no polling, no intervals.
 // The RPC node's 1s polling loop is a fallback for missed blocks only.
 //
 // Peer announcement:
-//   When a node starts and connects to a peer, it sends POST /peers/announce
-//   with its own address. This makes bidirectional peer tracking work.
-//   Validator can then also push blocks to the RPC node.
+//
+//	When a node starts and connects to a peer, it sends POST /peers/announce
+//	with its own address. This makes bidirectional peer tracking work.
+//	Validator can then also push blocks to the RPC node.
 package network
 
 import (

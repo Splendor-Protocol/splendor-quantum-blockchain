@@ -8,17 +8,18 @@
 //   - Cross-contract utilities (ABI encode/decode, address derivation)
 //
 // Precompile addresses use the SQ: prefix with a low numeric value:
-//   SQ:0000...0001  → SHA3-256 hash (input → 32-byte hash)
-//   SQ:0000...0002  → SHA3-512 hash (input → 64-byte hash)
-//   SQ:0000...0003  → BLAKE3 hash placeholder (input → 32-byte hash)
-//   SQ:0000...0004  → ML-DSA-65 public key → SQ: address derivation
-//   SQ:0000...0005  → ML-DSA-65 batch verify (verify N signatures)
-//   SQ:0000...0006  → BigInt modular exponentiation
-//   SQ:0000...0007  → ABI encode (pack args to 32-byte words)
-//   SQ:0000...0008  → ABI decode (unpack 32-byte words)
-//   SQ:0000...0009  → Identity (copy input to output — useful for calldata forwarding)
-//   SQ:0000...000A  → QRC-20 totalSupply query
-//   SQ:0000...000B  → QRC-20 balanceOf query
+//
+//	SQ:0000...0001  → SHA3-256 hash (input → 32-byte hash)
+//	SQ:0000...0002  → SHA3-512 hash (input → 64-byte hash)
+//	SQ:0000...0003  → BLAKE3 hash placeholder (input → 32-byte hash)
+//	SQ:0000...0004  → ML-DSA-65 public key → SQ: address derivation
+//	SQ:0000...0005  → ML-DSA-65 batch verify (verify N signatures)
+//	SQ:0000...0006  → BigInt modular exponentiation
+//	SQ:0000...0007  → ABI encode (pack args to 32-byte words)
+//	SQ:0000...0008  → ABI decode (unpack 32-byte words)
+//	SQ:0000...0009  → Identity (copy input to output — useful for calldata forwarding)
+//	SQ:0000...000A  → QRC-20 totalSupply query
+//	SQ:0000...000B  → QRC-20 balanceOf query
 package vm
 
 import (
@@ -36,10 +37,10 @@ type PrecompileFunc func(input []byte) (output []byte, gasUsed uint64, err error
 
 // PrecompileEntry describes a registered precompile.
 type PrecompileEntry struct {
-	Name    string
-	Address qcrypto.Address
-	Func    PrecompileFunc
-	BaseGas uint64 // minimum gas charged regardless of input size
+	Name       string
+	Address    qcrypto.Address
+	Func       PrecompileFunc
+	BaseGas    uint64 // minimum gas charged regardless of input size
 	GasPerByte uint64 // additional gas per input byte
 }
 
@@ -148,9 +149,9 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	// Input: 1952-byte ML-DSA-65 public key
 	// Output: 32-byte SQ address
 	r.Register(&PrecompileEntry{
-		Name:    "mldsa_derive_address",
-		Address: precompileAddr(0x04),
-		BaseGas: 500,
+		Name:       "mldsa_derive_address",
+		Address:    precompileAddr(0x04),
+		BaseGas:    500,
 		GasPerByte: 0,
 		Func: func(input []byte) ([]byte, uint64, error) {
 			if len(input) != qcrypto.PublicKeySize {
@@ -170,9 +171,9 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	// Input: [32-byte msg][1952-byte pubkey][3309-byte sig]
 	// Output: [1] if valid, [0] if invalid
 	r.Register(&PrecompileEntry{
-		Name:    "mldsa_verify",
-		Address: precompileAddr(0x05),
-		BaseGas: 3000,
+		Name:       "mldsa_verify",
+		Address:    precompileAddr(0x05),
+		BaseGas:    3000,
 		GasPerByte: 0,
 		Func: func(input []byte) ([]byte, uint64, error) {
 			expectedLen := 32 + qcrypto.PublicKeySize + qcrypto.SignatureSize
@@ -195,9 +196,9 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	// Input: [32-byte base][32-byte exp][32-byte mod]
 	// Output: [32-byte result]
 	r.Register(&PrecompileEntry{
-		Name:    "modexp",
-		Address: precompileAddr(0x06),
-		BaseGas: 200,
+		Name:       "modexp",
+		Address:    precompileAddr(0x06),
+		BaseGas:    200,
 		GasPerByte: 0,
 		Func: func(input []byte) ([]byte, uint64, error) {
 			if len(input) < 96 {
@@ -223,9 +224,9 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	// Input: concatenation of 32-byte values
 	// Output: same (this is a no-op for pre-packed inputs, but validates alignment)
 	r.Register(&PrecompileEntry{
-		Name:    "abi_encode",
-		Address: precompileAddr(0x07),
-		BaseGas: 20,
+		Name:       "abi_encode",
+		Address:    precompileAddr(0x07),
+		BaseGas:    20,
 		GasPerByte: 2,
 		Func: func(input []byte) ([]byte, uint64, error) {
 			// Pad to next 32-byte boundary
@@ -243,9 +244,9 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	// Input: [32-byte key][32-byte slot]
 	// Output: [32-byte SHA3-256(key||slot)] — the storage slot for mapping[key]
 	r.Register(&PrecompileEntry{
-		Name:    "mapping_slot",
-		Address: precompileAddr(0x08),
-		BaseGas: 40,
+		Name:       "mapping_slot",
+		Address:    precompileAddr(0x08),
+		BaseGas:    40,
 		GasPerByte: 0,
 		Func: func(input []byte) ([]byte, uint64, error) {
 			if len(input) < 64 {
@@ -260,9 +261,9 @@ func (r *PrecompileRegistry) registerBuiltins() {
 	// Input: 32-byte address
 	// Output: [1] if non-zero, [0] if zero address
 	r.Register(&PrecompileEntry{
-		Name:    "is_valid_address",
-		Address: precompileAddr(0x09),
-		BaseGas: 10,
+		Name:       "is_valid_address",
+		Address:    precompileAddr(0x09),
+		BaseGas:    10,
 		GasPerByte: 0,
 		Func: func(input []byte) ([]byte, uint64, error) {
 			if len(input) < 32 {

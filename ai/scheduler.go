@@ -33,11 +33,11 @@ const (
 
 // Metrics is a snapshot of current node performance metrics.
 type Metrics struct {
-	MempoolDepth    int
-	AvgFeeGwei      float64
-	CPULoadPercent  float64 // 0–100
-	TxsLastBlock    int
-	BlockTimeMs     float64
+	MempoolDepth   int
+	AvgFeeGwei     float64
+	CPULoadPercent float64 // 0–100
+	TxsLastBlock   int
+	BlockTimeMs    float64
 }
 
 // Scheduler is the on-node AI inference engine.
@@ -155,11 +155,11 @@ func (s *Scheduler) IsAnomalyActive() bool {
 
 // Stats returns a snapshot of scheduler state for monitoring/logging.
 type Stats struct {
-	BatchSize        int
-	EMAmempoolDepth  float64
-	EMATxPerBlock    float64
-	AnomalyActive    bool
-	Observations     uint64
+	BatchSize       int
+	EMAmempoolDepth float64
+	EMATxPerBlock   float64
+	AnomalyActive   bool
+	Observations    uint64
 }
 
 // GetStats returns current scheduler statistics.
