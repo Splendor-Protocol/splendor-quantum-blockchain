@@ -39,7 +39,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build -mod=readonly \
       -ldflags="-s -w" -o /out/sqc-modcall ./cmd/sqc-modcall
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────
-FROM alpine:3.22
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates
 
