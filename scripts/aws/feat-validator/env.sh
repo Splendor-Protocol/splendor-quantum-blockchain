@@ -5,10 +5,13 @@
 # security group, its own tag. It never touches the splendor-infra tofu state
 # (testnet / production / devnet) and never reads genesis-production.json.
 
-# Account 640168431521 (LatamDX). Prefer a profile that `aws login` created;
-# `default` is the fallback. Override: AWS_PROFILE=... before sourcing.
-export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-640168431521}"
-export AWS_PROFILE="${AWS_PROFILE:-splendor-640}"
+# The AWS account for this throwaway test. Deliberately NOT defaulted: account
+# ids, VPC/subnet ids and instance ids are infra surface and stay out of the
+# public repo — export them per run (see the infra repo / AWS console).
+# Prefer a profile that `aws login` created; override: AWS_PROFILE=... before
+# sourcing.
+export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
+export AWS_PROFILE="${AWS_PROFILE:-}"
 # Same region as the live infra (splendor-infra environments/*.tfvars).
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_DEFAULT_REGION="$AWS_REGION"
@@ -37,11 +40,12 @@ export SQC_KEY_NAME="${SQC_KEY_NAME:-sqc-feat-validator}"
 export SQC_KEY_FILE="$SQC_TEST_DIR/$SQC_KEY_NAME.pem"
 export SQC_SG_NAME="${SQC_SG_NAME:-sqc-feat-validator}"
 
-# No default VPC in LatamDX 640. Prefer the shared latamdx-vpc public subnet
-# (IGW route). Override before sourcing if needed. Do NOT use the tofu-managed
-# testnet/production/devnet VPCs for this throwaway test.
-export SQC_VPC_ID="${SQC_VPC_ID:-vpc-08714636a62c98085}"
-export SQC_SUBNET_ID="${SQC_SUBNET_ID:-subnet-01f54642490ebd1f9}"
+# No default VPC in the test account. Prefer the shared VPC public subnet
+# (IGW route) — see the infra repo for the ids. Override before sourcing if
+# needed. Do NOT use the tofu-managed testnet/production/devnet VPCs for this
+# throwaway test.
+export SQC_VPC_ID="${SQC_VPC_ID:-}"
+export SQC_SUBNET_ID="${SQC_SUBNET_ID:-}"
 
 # Repo root (this file lives in scripts/aws/feat-validator/).
 export SQC_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -49,3 +53,8 @@ export SQC_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 sqc_log() { printf '\033[0;32m[feat-validator]\033[0m %s\n' "$*"; }
 sqc_warn() { printf '\033[0;33m[feat-validator]\033[0m %s\n' "$*" >&2; }
 sqc_die() { printf '\033[0;31m[feat-validator]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Guards: the per-run infra ids must come from the operator — none are baked
+# into this public repo.
+[ -n "$AWS_ACCOUNT_ID" ] || sqc_die "AWS_ACCOUNT_ID is not set (export the test account id)"
+[ -n "$AWS_PROFILE" ] || sqc_die "AWS_PROFILE is not set (export a profile for that account)"

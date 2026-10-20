@@ -1,10 +1,12 @@
 # Devnet stress test — 10k / 20k / 30k / 40k accounts, one transfer each, then 15 min sustained
 
 Runbook and scripts for driving the **devnet** tier (`splendor-quantum-devnet-1`,
-`https://quantum-rpc-devnet.splendor.org`, single validator on
-`i-068aabcf6348d454c`, SSM only) with real ML-DSA-65 transfers from tens of
-thousands of accounts and recording whether the node survives. DEVNET ONLY:
-`env.sh` refuses any other RPC, chain id or instance.
+`https://quantum-rpc-devnet.splendor.org`, single validator, SSM only) with real
+ML-DSA-65 transfers from tens of thousands of accounts and recording whether
+the node survives. DEVNET ONLY: `env.sh` refuses any other RPC, chain id, and
+it requires the per-run infra ids (`DS_ACCOUNT`, `DS_INSTANCE`,
+`DS_OBS_INSTANCE`, `DS_BUCKET`, `AWS_PROFILE`) to be exported — none are baked
+into this public repo.
 
 ## Shape of the test
 
@@ -16,7 +18,7 @@ laptop ── SSM ──> validator host (t4g.xlarge, 4 vCPU, 16 GiB)
                     │    └─ sqc-load-rpcproxy    socat: host 127.0.0.1:18080 -> sqc-node:8080
                     ├─ /srv/sqc-load/{bin/txload, keys/funder-NN.seed, runs/<run-id>/, watch.sh}
                     └─ systemd unit sqc-load-watch-<run-id>  (lib/watch-host.sh, every 10 s)
-laptop ── SSM ──> quantum-obs (i-04bac137b45777113): Prometheus :9090, Loki :3100  (lib/prom-range.py)
+laptop ── SSM ──> quantum-obs ($DS_OBS_INSTANCE): Prometheus :9090, Loki :3100  (lib/prom-range.py)
 ```
 
 * **Drivers** are `cmd/txload` (this branch adds `--lazy-keys`, `--one-shot`,

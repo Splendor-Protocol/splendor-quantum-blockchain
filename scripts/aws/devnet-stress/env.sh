@@ -5,17 +5,20 @@
 # any RPC or chain id that is not devnet, so a copy-paste can never point this
 # at testnet or mainnet.
 
-export AWS_PROFILE="${AWS_PROFILE:-splendor-640}"
+export AWS_PROFILE="${AWS_PROFILE:-}"
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_DEFAULT_REGION="$AWS_REGION"
-export DS_ACCOUNT=640168431521
+# The AWS account id for the devnet tier. Deliberately NOT defaulted: account
+# ids, instance ids and bucket names are infra surface and stay out of the
+# public repo — export them per run (see the infra repo / AWS console).
+export DS_ACCOUNT="${DS_ACCOUNT:-}"
 
 # The chain under test.
 export DS_TIER=devnet
 export DS_RPC="${DS_RPC:-https://quantum-rpc-devnet.splendor.org}"
 export DS_CHAIN_ID="${DS_CHAIN_ID:-splendor-quantum-devnet-1}"
-export DS_INSTANCE=i-068aabcf6348d454c       # splendor-quantum-devnet-rpc (the single validator)
-export DS_OBS_INSTANCE=i-04bac137b45777113   # splendor-quantum-obs (Prometheus :9090, Loki :3100)
+export DS_INSTANCE="${DS_INSTANCE:-}"       # splendor-quantum-devnet-rpc (the single validator)
+export DS_OBS_INSTANCE="${DS_OBS_INSTANCE:-}" # splendor-quantum-obs (Prometheus :9090, Loki :3100)
 export DS_REQUIRED_TAG="${DS_REQUIRED_TAG:-v1.1.1}"   # /status.image_tag the node must report before traffic
 
 # Funding. The faucet key is managed by infra/bin/qkey; the 20 funders are
@@ -47,7 +50,7 @@ export DS_FUND_DEADLINE="${DS_FUND_DEADLINE:-20m}"
 export DS_FUND_WAIT_S="${DS_FUND_WAIT_S:-1500}"
 
 # Staging bucket for the arm64 binary (deleted by 90-cleanup.sh).
-export DS_BUCKET="${DS_BUCKET:-splendor-devnet-stress-640}"
+export DS_BUCKET="${DS_BUCKET:-}"
 
 # Local working directory: keys/, runs/, figures/, bin/. Never committed.
 export DS_WORK="${DS_WORK:-$HOME/.sqc-devnet-stress}"
@@ -76,9 +79,14 @@ ds_log()  { printf '\033[0;32m[devnet-stress]\033[0m %s\n' "$*"; }
 ds_warn() { printf '\033[0;33m[devnet-stress]\033[0m %s\n' "$*" >&2; }
 ds_die()  { printf '\033[0;31m[devnet-stress]\033[0m %s\n' "$*" >&2; exit 1; }
 
-# Guards: devnet only, always.
+# Guards: devnet only, always. The per-run infra ids must be supplied by the
+# operator — none are baked into this public repo.
 case "$DS_RPC" in *quantum-rpc-devnet.splendor.org*) ;; *) ds_die "DS_RPC=$DS_RPC is not the devnet RPC" ;; esac
 [ "$DS_CHAIN_ID" = "splendor-quantum-devnet-1" ] || ds_die "DS_CHAIN_ID=$DS_CHAIN_ID is not devnet"
-[ "$DS_INSTANCE" = "i-068aabcf6348d454c" ] || ds_die "DS_INSTANCE is not the devnet validator"
+[ -n "$AWS_PROFILE" ] || ds_die "AWS_PROFILE is not set (export the devnet account's profile)"
+[ -n "$DS_ACCOUNT" ] || ds_die "DS_ACCOUNT is not set (export the devnet account id)"
+[ -n "$DS_INSTANCE" ] || ds_die "DS_INSTANCE is not set (export the devnet validator instance id)"
+[ -n "$DS_OBS_INSTANCE" ] || ds_die "DS_OBS_INSTANCE is not set (export the observability instance id)"
+[ -n "$DS_BUCKET" ] || ds_die "DS_BUCKET is not set (export the staging bucket name)"
 mkdir -p "$DS_WORK"/{keys,runs,figures,bin,report}
 chmod 700 "$DS_WORK" "$DS_WORK/keys"

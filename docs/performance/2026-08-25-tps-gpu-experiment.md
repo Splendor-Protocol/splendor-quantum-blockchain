@@ -44,7 +44,7 @@ batches.
 - CPU: 4 vCPU AMD EPYC 7R32, 2.8 GHz
 - GPU: NVIDIA A10G, 23,028 MiB
 - AMI: AWS Deep Learning Base OSS NVIDIA Driver GPU AMI, Ubuntu 24.04,
-  `ami-0a30b02f6c5660457`
+  `<AMI id in the internal runbook>`
 - CUDA: 13.2
 - NVIDIA driver: 595.91.07
 - NVIDIA cuPQC: 0.4.1
