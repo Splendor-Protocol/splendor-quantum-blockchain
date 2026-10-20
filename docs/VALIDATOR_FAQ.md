@@ -9,8 +9,8 @@
 Plain-language prep for the **feat/validator** demo lab.  
 **Chain id:** `sqc-featval-1` · **Not mainnet.**  
 Live numbers below were pulled **2026-09-07 ~16:44 CEST** from  
-`https://quantum-validator.splendor.org/api/v1/validators` and master RPC  
-`http://3.84.91.28:8080` (`/status`, `/staking/tiers`).
+`https://quantum-validator.splendor.org/api/v1/validators` and the master RPC  
+(`/status`, `/staking/tiers` — endpoint in the internal runbook).
 
 Explorer: **https://quantum-validator.splendor.org** (validators dashboard: `/validators`)
 
@@ -75,7 +75,8 @@ So today: **fees → producer**; **block rewards → not issued yet**.
 
 **Minimum to be eligible (Bronze floor / `min_stake`): 3,947 SPLD**
 
-Live tier table from `GET http://3.84.91.28:8080/staking/tiers`:
+Live tier table from the master RPC `/staking/tiers` (endpoint in the internal
+runbook):
 
 | Tier | Min SPLD |
 |---|---|
@@ -94,10 +95,10 @@ Tiers **rank** validators; the Bronze number **admits** them (gate floor).
 
 | | |
 |---|---|
-| **Cloud** | AWS account **LatamDX**, region **us-east-1** |
+| **Cloud** | AWS, region **us-east-1** (account in the internal runbook) |
 | **Size** | **1× t4g.large** (master) + **3× t4g.small** (validators) — Ubuntu arm64 / Graviton |
 | **Topology** | 1 master + 3 validators (PoA producers when admitted) |
-| **Master RPC** | `http://3.84.91.28:8080` |
+| **Master RPC** | internal runbook (the lab's master node) |
 | **Explorer** | https://quantum-validator.splendor.org |
 
 This lab is tagged separately from production tofu state; it does not replace mainnet/testnet/devnet tiers.
@@ -132,6 +133,5 @@ This lab is tagged separately from production tofu state; it does not replace ma
 
 - Validators UI: https://quantum-validator.splendor.org/validators  
 - Live validators JSON: https://quantum-validator.splendor.org/api/v1/validators  
-- Master status: `http://3.84.91.28:8080/status`  
-- Live tiers: `http://3.84.91.28:8080/staking/tiers`  
+- Master status / live tiers: internal runbook (`/status`, `/staking/tiers` on the lab's master node)  
 - Deeper branch notes: `docs/FEAT_VALIDATOR.md` · staking module: `docs/modules/staking.md`

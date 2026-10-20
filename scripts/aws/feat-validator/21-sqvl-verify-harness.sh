@@ -3,9 +3,10 @@
 # Does not stop load/indexer. Prefer go test offline; this hits a live RPC.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-RPC="${SQC_RPC:-http://3.84.91.28:8080}"
+RPC="${SQC_RPC:-}"
 CHAIN_ID="${SQC_CHAIN_ID:-sqc-featval-1}"
 SEED="${SQC_FAUCET_SEED:-$HOME/.sqc-feat-validator/chain/faucet.seed}"
+[ -n "$RPC" ] || { echo "SQC_RPC is not set (export the lab's master RPC — see the internal runbook)" >&2; exit 1; }
 BIN="${SQC_FEATSMOKE_BIN:-}"
 if [[ -z "$BIN" ]]; then
   if [[ -x "$HOME/.sqc-feat-validator/bin/featsmoke-local" ]]; then

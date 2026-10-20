@@ -16,12 +16,12 @@ if ! ident="$(aws sts get-caller-identity --output json 2>&1)"; then
 Sign in first (AWS CLI v2.27+ browser login, creates/refreshes the profile):
 
     aws login --profile $AWS_PROFILE
-    # or, for the root/console identity Niccolò uses for this account:
+    # or, for the console identity that administers this account:
     aws configure sso --profile $AWS_PROFILE      # if the account is behind IAM Identity Center
 
-then re-run this script. If you keep a different profile for 640168431521,
-export AWS_PROFILE=<that profile> before sourcing env.sh. Do NOT use the
-'splendor' / stardust profile for EC2 work.
+then re-run this script. If you keep a different profile for the same
+account, export AWS_PROFILE=<that profile> before sourcing env.sh. Do NOT
+use the 'splendor' / stardust profile for EC2 work.
 MSG
   exit 2
 fi
