@@ -6,7 +6,8 @@ export type CatalogFlag = CatalogFlags & { featured?: boolean; minVersion?: stri
 
 export type Session = { address: string; isAdmin: boolean };
 
-export type ProjectSummary = { id: string; name: string; updatedAt: string; shareId: string | null };
+export type Workspace = { id: string; name: string; createdAt: string; owner?: string };
+export type ProjectSummary = { id: string; name: string; updatedAt: string; shareId: string | null; workspaceId?: string | null };
 export type Project = ProjectSummary & { spec: DappSpec; createdAt: string };
 
 export type ReleasePackage = { name: string; repoVersion: string | null; distTags: Record<string, string> };
@@ -69,9 +70,17 @@ export const api = {
     request<Session>('/auth/verify', json('POST', signed)),
   logout: () => request<{ ok: true }>('/auth/logout', json('POST', {})),
 
-  listProjects: () => request<{ projects: ProjectSummary[] }>('/projects'),
+  listWorkspaces: () => request<{ workspaces: Workspace[] }>('/workspaces'),
+  createWorkspace: (name: string) => request<Workspace>('/workspaces', json('POST', { name })),
+  renameWorkspace: (id: string, name: string) => request<Workspace>(`/workspaces/${encodeURIComponent(id)}`, json('PATCH', { name })),
+  deleteWorkspace: (id: string) => request<{ ok: true }>(`/workspaces/${encodeURIComponent(id)}`, json('DELETE')),
+  listWorkspaceProjects: (id: string) => request<{ projects: ProjectSummary[] }>(`/workspaces/${encodeURIComponent(id)}/projects`),
+
+  listProjects: (workspaceId?: string) =>
+    request<{ projects: ProjectSummary[] }>(workspaceId ? `/projects?workspaceId=${encodeURIComponent(workspaceId)}` : '/projects'),
   getProject: (id: string) => request<Project>(`/projects/${encodeURIComponent(id)}`),
-  createProject: (spec: DappSpec) => request<Project>('/projects', json('POST', { spec })),
+  createProject: (spec: DappSpec, workspaceId?: string | null) =>
+    request<Project>('/projects', json('POST', workspaceId ? { spec, workspaceId } : { spec })),
   updateProject: (id: string, spec: DappSpec) => request<Project>(`/projects/${encodeURIComponent(id)}`, json('PUT', { spec })),
   deleteProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}`, json('DELETE')),
   shareProject: (id: string) => request<{ shareId: string }>(`/projects/${encodeURIComponent(id)}/share`, json('POST', {})),

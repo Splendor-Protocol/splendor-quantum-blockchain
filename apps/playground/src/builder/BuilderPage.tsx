@@ -1,48 +1,34 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { WrongNetworkBanner, useNetwork } from '@splendor/connect-react';
 import {
   defaultProps,
   emptySpec,
-  getTemplate,
   instantiateTemplate,
+  migrateSpec,
   validateSpec,
   type DappSpec,
-  type NetworkId,
 } from '@splendor/dapp-spec';
 import { api, ApiError } from '../api/client';
 import { useSession } from '../auth/session';
-import { PropsForm } from '../components/PropsForm';
-import { Tabs, type TabItem } from '../components/Tabs';
-import { ThemeEditor } from '../components/ThemeEditor';
-import { PLAYGROUND_NETWORKS } from '../config';
-import { StatusBadge } from '../gallery/GalleryPage';
 import type { MockWalletState } from '../preview/mock';
-import { PreviewFrame } from '../preview/PreviewFrame';
-import { SpecRenderer } from '../preview/SpecRenderer';
 import { validateForPreview } from '../preview/validatePreview';
 import { useRegistry } from '../registry';
-import { ExportPanel } from './ExportPanel';
-import { describeIssue } from './issues';
-import { ProjectPanel, type CloudState } from './ProjectPanel';
-import { MAX_BLOCKS_PER_PAGE, MAX_PAGES, builderReducer, initBuilder } from './state';
+import { type CloudState } from './ProjectPanel';
+import { Studio } from './Studio';
+import { getLocalProject, isLocalWorkspaceId, saveLocalProject } from '../workspaces/local';
+import { specFromWizard } from './newProject';
+import { builderReducer, initBuilder } from './state';
 import { clearDraft, loadDraft, saveDraft } from './storage';
 
 type EditorTab = 'block' | 'theme' | 'export' | 'project';
-const EDITOR_TABS: readonly TabItem<EditorTab>[] = [
-  { id: 'block', label: 'Block', testId: 'tab-block' },
-  { id: 'theme', label: 'Theme', testId: 'tab-theme' },
-  { id: 'export', label: 'Export', testId: 'tab-export' },
-  { id: 'project', label: 'Save & share', testId: 'tab-project' },
-];
 
 function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
   const { templates } = useRegistry();
   return (
     <div className="pg-page">
       <section>
-        <h1>Start a new dApp</h1>
-        <p className="pg-muted">Pick a template — every one is a working scenario you can change — or start blank.</p>
+        <h1>What do you want to make?</h1>
+        <p className="pg-muted">Choose a ready-made dApp and change it, or start blank and drop pieces onto the page.</p>
       </section>
       <div className="pg-cards">
         {templates.map((t) => (
@@ -53,41 +39,85 @@ function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
           </button>
         ))}
         <button type="button" className="pg-card" style={{ textAlign: 'left', font: 'inherit', cursor: 'pointer' }} data-testid="pick-blank" onClick={() => onPick(emptySpec())}>
-          <h3>Blank</h3>
-          <p>One page with a heading. Add blocks from the catalog.</p>
+          <h3>Blank page</h3>
+          <p>A heading, then an empty page. Drag pieces on and watch them appear.</p>
         </button>
       </div>
     </div>
   );
 }
 
+/** Query params that only seed a new project; they are removed once consumed. `workspace` stays. */
+const SEED_PARAMS = ['template', 'preset', 'name', 'project'] as const;
+
+type Start = { spec: DappSpec; projectId: string | null; key: number; synced?: boolean; localProjectId?: string | null };
+
 export function BuilderPage() {
   const [params, setParams] = useSearchParams();
+  const workspaceId = params.get('workspace');
+  const projectParam = params.get('project');
+  const [loadingProject, setLoadingProject] = useState(projectParam != null);
   /** `synced`: the spec was just loaded from the account, so it matches the saved copy. */
-  const [start, setStart] = useState<{ spec: DappSpec; projectId: string | null; key: number; synced?: boolean } | null>(() => {
+  const [start, setStart] = useState<Start | null>(() => {
+    if (projectParam) return null;
     const t = params.get('template');
-    const tpl = t ? getTemplate(t) : undefined;
-    if (tpl) return { spec: instantiateTemplate(tpl), projectId: null, key: Date.now() };
+    if (t) {
+      // The home wizard passes template + preset + name; a bare ?template= keeps the template as is.
+      const spec = specFromWizard({ template: t, preset: params.get('preset'), name: params.get('name') });
+      if (spec) return { spec, projectId: null, key: Date.now() };
+    }
     const draft = loadDraft();
     if (draft) return { spec: draft.spec, projectId: draft.projectId, key: Date.now() };
     return null;
   });
 
+  // ?project=<id> from the home page: a cloud project, or `lp-…` from this browser's workspace store.
   useEffect(() => {
-    if (params.has('template')) {
-      params.delete('template');
-      setParams(params, { replace: true });
-    }
-  }, [params, setParams]);
+    if (!projectParam) return;
+    let live = true;
+    void (async () => {
+      try {
+        if (projectParam.startsWith('lp-')) {
+          const local = workspaceId ? getLocalProject(workspaceId, projectParam) : null;
+          if (local && live) setStart({ spec: migrateSpec(local.spec), projectId: null, localProjectId: local.id, key: Date.now() });
+        } else {
+          const p = await api.getProject(projectParam);
+          if (live) setStart({ spec: migrateSpec(p.spec), projectId: p.id, key: Date.now(), synced: true });
+        }
+      } catch {
+        // Missing or unreadable project: fall through to the draft / picker.
+        const draft = loadDraft();
+        if (draft && live) setStart({ spec: draft.spec, projectId: draft.projectId, key: Date.now() });
+      } finally {
+        if (live) setLoadingProject(false);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+    // Once per project id; `workspaceId` only selects the local store.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectParam]);
+
+  useEffect(() => {
+    if (loadingProject || !SEED_PARAMS.some((k) => params.has(k))) return;
+    const next = new URLSearchParams(params);
+    for (const k of SEED_PARAMS) next.delete(k);
+    setParams(next, { replace: true });
+  }, [params, setParams, loadingProject]);
+
+  if (loadingProject) return <p className="pg-muted pg-page">Opening project…</p>;
 
   if (!start) {
     return <TemplatePicker onPick={(spec) => setStart({ spec, projectId: null, key: Date.now() })} />;
   }
+
   return (
     <Editor
       key={start.key}
       initial={start.spec}
       initialProjectId={start.projectId}
+      initialLocalProjectId={start.localProjectId ?? null}
       initialSynced={start.synced === true}
       onOpen={(spec, projectId) => setStart({ spec, projectId, key: Date.now(), synced: projectId != null })}
       onNew={() => {
@@ -101,12 +131,14 @@ export function BuilderPage() {
 function Editor({
   initial,
   initialProjectId,
+  initialLocalProjectId,
   initialSynced,
   onOpen,
   onNew,
 }: {
   initial: DappSpec;
   initialProjectId: string | null;
+  initialLocalProjectId: string | null;
   initialSynced: boolean;
   onOpen: (spec: DappSpec, projectId: string | null) => void;
   onNew: () => void;
@@ -120,10 +152,13 @@ function Editor({
   const [walletState, setWalletState] = useState<MockWalletState>('connected');
   const [tab, setTab] = useState<EditorTab>('block');
   const [calls, setCalls] = useState<{ method: string; args: string }[]>([]);
+  const [blockQuery, setBlockQuery] = useState('');
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const dragRef = useRef<{ kind: 'widget' | 'block'; id: string } | null>(null);
+  const skipClick = useRef(false);
   const [cloud, setCloud] = useState<CloudState>({ status: initialSynced ? 'saved' : 'local' });
   const mainnetLiveConfirmed = useRef(false);
   const [newPageTitle, setNewPageTitle] = useState<string | null>(null);
-  const { networkId } = useNetwork();
   const { spec, pagePath, selectedBlockId } = state;
 
   const validation = useMemo(() => validateSpec(spec, { catalog: all }), [spec, all]);
@@ -155,7 +190,7 @@ function Editor({
     }
   };
   const page = spec.pages.find((p) => p.path === pagePath) ?? spec.pages[0]!;
-  const selected = page.blocks.find((b) => b.id === selectedBlockId) ?? null;
+  const selected = (page.blocks ?? []).find((b) => b.id === selectedBlockId) ?? null;
   const selectedEntry = selected ? all.find((e) => e.id === selected.widget) : undefined;
 
   // ?add=<widget> from the gallery
@@ -214,22 +249,36 @@ function Editor({
   const pageIndex = spec.pages.indexOf(page);
   const blockErrors = useMemo(() => {
     if (!selected) return {};
-    const bi = page.blocks.indexOf(selected);
+    const bi = (page.blocks ?? []).indexOf(selected);
     const prefix = `pages[${pageIndex}].blocks[${bi}].props.`;
     return Object.fromEntries(issues.filter((i) => i.path.startsWith(prefix)).map((i) => [i.path.slice(prefix.length), i.message]));
   }, [issues, selected, page, pageIndex]);
 
+  // ?workspace=<id>: new projects are filed under it. Local workspaces (and signed-out use) keep them in this browser.
+  const workspaceId = params.get('workspace');
+  const remoteWorkspaceId = workspaceId && !isLocalWorkspaceId(workspaceId) ? workspaceId : null;
+  const localWorkspaceId = workspaceId && (isLocalWorkspaceId(workspaceId) || !session) ? workspaceId : null;
+  const localProjectId = useRef<string | null>(initialLocalProjectId);
+  useEffect(() => {
+    // Nothing to save until the user changes something.
+    if (!localWorkspaceId || spec === initial) return;
+    const t = window.setTimeout(() => {
+      localProjectId.current = saveLocalProject(localWorkspaceId, spec, localProjectId.current).id;
+    }, 800);
+    return () => window.clearTimeout(t);
+  }, [spec, initial, localWorkspaceId]);
+
   const saveNew = useCallback(async () => {
     setCloud({ status: 'saving' });
     try {
-      const p = await api.createProject(spec);
+      const p = await api.createProject(spec, remoteWorkspaceId);
       lastSaved.current = spec;
       setProjectId(p.id);
       setCloud({ status: 'saved' });
     } catch (e) {
       setCloud({ status: 'error', message: e instanceof ApiError ? e.message : String(e) });
     }
-  }, [spec]);
+  }, [spec, remoteWorkspaceId]);
 
   const openProject = useCallback(
     async (id: string) => {
@@ -239,369 +288,47 @@ function Editor({
     [onOpen],
   );
 
-  const categories = [...new Set(catalog.filter((e) => e.placeable).map((e) => e.category))];
-
   return (
-    <div className="pg-workspace">
-      <aside className="pg-sidebar pg-panel">
-        <div className="pg-form">
-          <div className="pg-field">
-            <label htmlFor="dapp-name">dApp name</label>
-            <input id="dapp-name" value={spec.name} maxLength={80} onChange={(e) => dispatch({ type: 'setName', name: e.target.value })} />
-          </div>
-          <div className="pg-field">
-            <label htmlFor="dapp-network">Network</label>
-            <select
-              id="dapp-network"
-              value={spec.network}
-              onChange={(e) => {
-                const network = e.target.value as NetworkId;
-                if (network === 'mainnet' && mode === 'live' && !confirmMainnetLive()) return;
-                dispatch({ type: 'setNetwork', network });
-              }}
-            >
-              {PLAYGROUND_NETWORKS.map((n) => (
-                <option key={n.id} value={n.id}>
-                  {n.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div>
-          <p className="pg-list-title">Pages</p>
-          <ul className="pg-blocks">
-            {spec.pages.map((p, i) => (
-              <li key={p.path} className={p.path === page.path ? 'is-active' : ''}>
-                <button type="button" aria-current={p.path === page.path ? 'true' : undefined} onClick={() => dispatch({ type: 'selectPage', path: p.path })}>
-                  {p.title} <small className="pg-muted">{p.path}</small>
-                </button>
-                {spec.pages.length > 1 ? (
-                  <>
-                    <button
-                      type="button"
-                      className="pg-icon-btn"
-                      aria-label={`Move page ${p.title} up`}
-                      title="Move up"
-                      disabled={i === 0}
-                      onClick={() => dispatch({ type: 'movePage', path: p.path, delta: -1 })}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      className="pg-icon-btn"
-                      aria-label={`Move page ${p.title} down`}
-                      title="Move down"
-                      disabled={i === spec.pages.length - 1}
-                      onClick={() => dispatch({ type: 'movePage', path: p.path, delta: 1 })}
-                    >
-                      ↓
-                    </button>
-                  </>
-                ) : null}
-                {p.path !== '/' ? (
-                  <button
-                    type="button"
-                    className="pg-icon-btn"
-                    aria-label={`Delete page ${p.title}`}
-                    title="Delete page (Ctrl+Z to undo)"
-                    onClick={() => dispatch({ type: 'removePage', path: p.path })}
-                  >
-                    ✕
-                  </button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-          {newPageTitle == null ? (
-            <button
-              type="button"
-              className="pg-btn pg-btn-ghost pg-btn-sm"
-              style={{ marginTop: '0.4rem' }}
-              disabled={spec.pages.length >= MAX_PAGES}
-              onClick={() => setNewPageTitle('')}
-            >
-              + Add page
-            </button>
-          ) : (
-            <form
-              className="pg-row"
-              style={{ marginTop: '0.4rem' }}
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (newPageTitle.trim()) dispatch({ type: 'addPage', title: newPageTitle.trim() });
-                setNewPageTitle(null);
-              }}
-            >
-              <input
-                aria-label="New page title"
-                autoFocus
-                maxLength={60}
-                placeholder="Page title"
-                value={newPageTitle}
-                style={{ flex: 1 }}
-                onChange={(e) => setNewPageTitle(e.target.value)}
-                onKeyDown={(e) => e.key === 'Escape' && setNewPageTitle(null)}
-              />
-              <button type="submit" className="pg-btn pg-btn-sm" disabled={!newPageTitle.trim()}>
-                Add
-              </button>
-              <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => setNewPageTitle(null)}>
-                Cancel
-              </button>
-            </form>
-          )}
-          <div className="pg-field" style={{ marginTop: '0.5rem' }}>
-            <label htmlFor="page-title">Page title</label>
-            <input id="page-title" value={page.title} maxLength={60} onChange={(e) => dispatch({ type: 'renamePage', path: page.path, title: e.target.value })} />
-          </div>
-        </div>
-
-        <div>
-          <p className="pg-list-title">Blocks on “{page.title}”</p>
-          <ul className="pg-blocks" data-testid="block-list">
-            {page.blocks.map((b, i) => {
-              const entry = all.find((e) => e.id === b.widget);
-              return (
-                <li key={b.id} className={b.id === selectedBlockId ? 'is-active' : ''}>
-                  <button
-                    type="button"
-                    aria-current={b.id === selectedBlockId ? 'true' : undefined}
-                    onClick={() => {
-                      dispatch({ type: 'selectBlock', id: b.id });
-                      setTab('block');
-                    }}
-                  >
-                    {entry?.title ?? b.widget}
-                  </button>
-                  <button
-                    type="button"
-                    className="pg-icon-btn"
-                    aria-label={`Move ${entry?.title ?? b.widget} up`}
-                    title="Move up"
-                    disabled={i === 0}
-                    onClick={() => dispatch({ type: 'moveBlock', id: b.id, delta: -1 })}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    className="pg-icon-btn"
-                    aria-label={`Move ${entry?.title ?? b.widget} down`}
-                    title="Move down"
-                    disabled={i === page.blocks.length - 1}
-                    onClick={() => dispatch({ type: 'moveBlock', id: b.id, delta: 1 })}
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    className="pg-icon-btn"
-                    aria-label={`Duplicate ${entry?.title ?? b.widget}`}
-                    title="Duplicate"
-                    disabled={page.blocks.length >= MAX_BLOCKS_PER_PAGE}
-                    onClick={() => {
-                      dispatch({ type: 'duplicateBlock', id: b.id });
-                      setTab('block');
-                    }}
-                  >
-                    ⧉
-                  </button>
-                  <button
-                    type="button"
-                    className="pg-icon-btn"
-                    aria-label={`Remove ${entry?.title ?? b.widget}`}
-                    title="Remove (Ctrl+Z to undo)"
-                    onClick={() => dispatch({ type: 'removeBlock', id: b.id })}
-                  >
-                    ✕
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-
-        <div>
-          <p className="pg-list-title">Add a block</p>
-          {categories.map((c) => (
-            <ul key={c} className="pg-list">
-              <li className="pg-muted" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem 0' }}>
-                {c}
-              </li>
-              {catalog
-                .filter((e) => e.placeable && e.category === c)
-                .map((e) => (
-                  <li key={e.id}>
-                    <button
-                      type="button"
-                      title={e.description}
-                      data-testid={`add-${e.id}`}
-                      disabled={page.blocks.length >= MAX_BLOCKS_PER_PAGE}
-                      onClick={() => {
-                        dispatch({ type: 'addBlock', widget: e.id, props: defaultProps(e) });
-                        setTab('block');
-                      }}
-                    >
-                      + {e.title} <StatusBadge status={e.status} />
-                    </button>
-                  </li>
-                ))}
-            </ul>
-          ))}
-        </div>
-      </aside>
-
-      <section className="pg-stack">
-        <div className="pg-preview-toolbar">
-          <div className="pg-segmented" role="group" aria-label="Preview mode">
-            <button type="button" aria-pressed={mode === 'mock'} onClick={() => setMode('mock')}>
-              Mock wallet
-            </button>
-            <button
-              type="button"
-              aria-pressed={mode === 'live'}
-              onClick={() => {
-                if (spec.network === 'mainnet' && !confirmMainnetLive()) return;
-                setMode('live');
-              }}
-            >
-              Live
-            </button>
-          </div>
-          {mode === 'mock' ? (
-            <div className="pg-segmented" role="group" aria-label="Mock wallet state">
-              {(['connected', 'disconnected'] as const).map((s) => (
-                <button key={s} type="button" aria-pressed={walletState === s} onClick={() => setWalletState(s)}>
-                  {s === 'connected' ? 'Connected' : 'No wallet'}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          <span className="pg-spacer" />
-          <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={!state.past.length} onClick={() => dispatch({ type: 'undo' })} aria-label="Undo" title="Undo (Ctrl+Z)">
-            ↶ Undo
-          </button>
-          <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={!state.future.length} onClick={() => dispatch({ type: 'redo' })} aria-label="Redo" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">
-            ↷ Redo
-          </button>
-        </div>
-
-        {issues.length ? (
-          <div className="pg-issues" data-testid="spec-issues">
-            <strong>{issues.length === 1 ? '1 thing to fix' : `${issues.length} things to fix`}</strong>
-            <ul>
-              {issues.slice(0, 10).map((i) => {
-                const d = describeIssue(spec, all, i);
-                return (
-                  <li key={`${i.path}:${i.message}`}>
-                    {d.target ? (
-                      <button type="button" className="pg-link-btn" onClick={() => goToIssue(d.target!)} title={i.path}>
-                        {d.where}
-                      </button>
-                    ) : (
-                      <strong title={i.path}>{d.where}</strong>
-                    )}{' '}
-                    {d.message}
-                  </li>
-                );
-              })}
-            </ul>
-            {issues.length > 10 ? <p className="pg-muted" style={{ margin: '0.4rem 0 0' }}>…and {issues.length - 10} more. Fix these first.</p> : null}
-          </div>
-        ) : null}
-
-        {mode === 'mock' ? (
-          <>
-            <PreviewFrame
-              spec={spec}
-              pagePath={page.path}
-              network={spec.network}
-              walletState={walletState}
-              selectedBlockId={selectedBlockId}
-              onNavigate={(path) => dispatch({ type: 'selectPage', path })}
-              onSelectBlock={(id) => {
-                dispatch({ type: 'selectBlock', id });
-                setTab('block');
-              }}
-              onCalls={setCalls}
-              height="calc(100vh - 14rem)"
-            />
-            <details>
-              <summary className="pg-muted">Mock wallet activity ({calls.length})</summary>
-              <div className="pg-output" data-testid="mock-calls">
-                {calls.length ? calls.map((c) => `${c.method} ${c.args}`).join('\n') : 'No wallet calls yet. Try sending a transfer in the preview.'}
-              </div>
-            </details>
-            <p className="pg-muted" style={{ margin: 0 }}>
-              Alt+click a block in the preview to select it. Nothing is signed or sent in mock mode.
-            </p>
-          </>
-        ) : (
-          <div className="pg-stack">
-            <p className="pg-muted" style={{ margin: 0 }}>
-              Live mode uses the wallet connected at the top right on the selected network. Transactions are real
-              {spec.network === 'mainnet' ? ' and spend real SPLD' : ''}.
-            </p>
-            <WrongNetworkBanner expectedNetworkId={spec.network} />
-            {networkId !== spec.network ? (
-              // Widgets sign on the playground's network, so they stay off until it matches the dApp's.
-              <p className="pg-error" data-testid="live-network-mismatch">
-                This dApp is set to {spec.network}. Switch the playground to it (above) to run the live preview.
-              </p>
-            ) : renderable ? (
-              <SpecRenderer spec={renderable} catalog={all} pagePath={page.path} onNavigate={(path) => dispatch({ type: 'selectPage', path })} />
-            ) : (
-              <p className="pg-error">Fix the issues above to run the live preview.</p>
-            )}
-          </div>
-        )}
-      </section>
-
-      <aside className="pg-sidebar pg-panel">
-        <Tabs idPrefix="builder" label="Editor" tabs={EDITOR_TABS} value={tab} onChange={setTab}>
-        {tab === 'block' ? (
-          selected && selectedEntry ? (
-            <div className="pg-stack">
-              <div className="pg-row">
-                <h3 style={{ margin: 0 }}>{selectedEntry.title}</h3>
-                <StatusBadge status={selectedEntry.status} />
-              </div>
-              <p className="pg-muted" style={{ margin: 0 }}>
-                {selectedEntry.description}
-              </p>
-              {compatibilityNote(selectedEntry) ? <p className="pg-error">{compatibilityNote(selectedEntry)}</p> : null}
-              <PropsForm
-                entry={selectedEntry}
-                values={selected.props}
-                errors={blockErrors}
-                onChange={(name, value) => dispatch({ type: 'setProp', id: selected.id, name, value })}
-              />
-            </div>
-          ) : (
-            <p className="pg-muted">Select a block on the left (or Alt+click it in the preview) to edit its settings.</p>
-          )
-        ) : null}
-        {tab === 'theme' ? <ThemeEditor value={spec.theme} onChange={(theme) => dispatch({ type: 'setTheme', theme })} /> : null}
-        {tab === 'export' ? <ExportPanel spec={spec} catalog={all} valid={validation.ok} /> : null}
-        {tab === 'project' ? (
-          <ProjectPanel
-            spec={spec}
-            catalog={all}
-            projectId={projectId}
-            cloud={session && projectId ? cloud : { status: 'local' }}
-            valid={validation.ok}
-            onSaveNew={saveNew}
-            onOpen={openProject}
-            onImport={(imported) => onOpen(imported, null)}
-            onDeleted={() => setProjectId(null)}
-            onNew={onNew}
-          />
-        ) : null}
-        </Tabs>
-      </aside>
-    </div>
+    <Studio
+      spec={spec}
+      pagePath={pagePath}
+      selectedBlockId={selectedBlockId}
+      dispatch={dispatch}
+      catalog={catalog}
+      all={all}
+      compatibilityNote={compatibilityNote}
+      mode={mode}
+      setMode={setMode}
+      walletState={walletState}
+      setWalletState={setWalletState}
+      confirmMainnetLive={confirmMainnetLive}
+      tab={tab}
+      setTab={setTab}
+      calls={calls}
+      setCalls={setCalls}
+      issues={issues}
+      blockErrors={blockErrors}
+      goToIssue={goToIssue}
+      newPageTitle={newPageTitle}
+      setNewPageTitle={setNewPageTitle}
+      blockQuery={blockQuery}
+      setBlockQuery={setBlockQuery}
+      dropIndex={dropIndex}
+      setDropIndex={setDropIndex}
+      dragRef={dragRef}
+      skipClick={skipClick}
+      validationOk={validation.ok}
+      renderable={renderable}
+      projectId={projectId}
+      cloud={cloud}
+      signedIn={session != null}
+      canUndo={state.past.length > 0}
+      canRedo={state.future.length > 0}
+      onSaveNew={saveNew}
+      onOpenProject={openProject}
+      onImport={(imported) => onOpen(imported, null)}
+      onDeleted={() => setProjectId(null)}
+      onNew={onNew}
+    />
   );
 }

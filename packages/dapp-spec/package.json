@@ -11,11 +11,13 @@
       "import": "./dist/index.js"
     },
     "./blocks/*": "./blocks/*",
+    "./thumbs/*": "./thumbs/*",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "blocks",
+    "thumbs",
     "README.md",
     "CHANGELOG.md"
   ],

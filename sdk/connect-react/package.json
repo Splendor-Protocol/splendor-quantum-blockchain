@@ -42,6 +42,10 @@
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
     },
+    "./embed": {
+      "types": "./dist/embed.d.ts",
+      "default": "./dist/embed.js"
+    },
     "./manifest": {
       "types": "./dist/manifest.d.ts",
       "import": "./dist/manifest.js"
@@ -61,7 +65,8 @@
     "docs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node ./scripts/copy-css.mjs",
+    "build": "tsc -p tsconfig.json && node ./scripts/copy-css.mjs && npm run build:embed",
+    "build:embed": "vite build -c vite.embed.config.ts",
     "test": "vitest run",
     "prepare": "npm run build",
     "copy-wasm": "node ./scripts/copy-wasm-assets.mjs",

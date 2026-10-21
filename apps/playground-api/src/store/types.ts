@@ -6,6 +6,13 @@ export type CatalogFlag = {
   updatedAt?: string;
 };
 
+export type WorkspaceRow = {
+  id: string;
+  owner: string;
+  name: string;
+  createdAt: string;
+};
+
 export type ProjectRow = {
   id: string;
   owner: string;
@@ -13,6 +20,7 @@ export type ProjectRow = {
   /** JSON text of a validated DappSpec. */
   spec: string;
   shareId: string | null;
+  workspaceId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -53,11 +61,15 @@ export interface Store {
   addAdmin(address: string, addedBy: string): Promise<void>;
   removeAdmin(address: string): Promise<boolean>;
 
-  listProjects(owner: string): Promise<Omit<ProjectRow, 'spec'>[]>;
+  listWorkspaces(owner: string): Promise<WorkspaceRow[]>;
+  createWorkspace(row: Pick<WorkspaceRow, 'id' | 'owner' | 'name'>): Promise<WorkspaceRow>;
+  renameWorkspace(id: string, name: string): Promise<WorkspaceRow | null>;
+  deleteWorkspace(id: string): Promise<boolean>;
+  listProjects(owner: string, workspaceId?: string | null): Promise<Omit<ProjectRow, 'spec'>[]>;
   countProjects(owner: string): Promise<number>;
   getProject(id: string): Promise<ProjectRow | null>;
   getProjectByShareId(shareId: string): Promise<ProjectRow | null>;
-  createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'>): Promise<ProjectRow>;
+  createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'> & { workspaceId?: string | null }): Promise<ProjectRow>;
   updateProject(id: string, patch: Pick<ProjectRow, 'name' | 'spec'>): Promise<ProjectRow | null>;
   /** `null` revokes the share link. */
   setShareId(id: string, shareId: string | null): Promise<void>;

@@ -5,8 +5,32 @@ import { WIDGET_MANIFESTS } from '@splendor/connect-react/manifest';
 import { createCatalog, migrateSpec, type DappSpec } from '@splendor/dapp-spec';
 import { createPlaygroundMock } from './mock';
 import { validateForPreview } from './validatePreview';
-import { PREVIEW_SOURCE, isPreviewMessage, type ParentToPreview, type PreviewToParent, type RenderRequest } from './protocol';
+import { PREVIEW_SOURCE, isPreviewMessage, type ParentToPreview, type PreviewRects, type PreviewToParent, type RenderRequest } from './protocol';
+import { pickDropTarget } from './dropTarget';
+import { measureRects, nodeIdAt } from './measure';
 import { SpecRenderer } from './SpecRenderer';
+
+const CONTRACT_FN_MIME = 'application/x-splendor-contract-fn';
+
+let lastRectsKey = '';
+let lastRects: PreviewRects = { nodes: [], dropTargets: [] };
+let lastHover: string | null = null;
+
+/** Measure the rendered nodes and report them to the builder (only when something moved). */
+function postRects(force = false) {
+  const rects = measureRects();
+  const key = JSON.stringify(rects);
+  lastRects = rects;
+  if (!force && key === lastRectsKey) return;
+  lastRectsKey = key;
+  post({ type: 'rects', ...rects });
+}
+
+function postHover(id: string | null) {
+  if (id === lastHover) return;
+  lastHover = id;
+  post({ type: 'hover', id });
+}
 
 const catalog = createCatalog(WIDGET_MANIFESTS);
 
@@ -37,7 +61,12 @@ export function PreviewRuntime() {
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== window.location.origin || e.source !== window.parent) return;
-      if (!isPreviewMessage<ParentToPreview>(e.data) || e.data.type !== 'render') return;
+      if (!isPreviewMessage<ParentToPreview>(e.data)) return;
+      if (e.data.type === 'requestRects') {
+        postRects(true);
+        return;
+      }
+      if (e.data.type !== 'render') return;
       let spec: DappSpec;
       try {
         const r = validateForPreview(migrateSpec(e.data.spec), catalog);
@@ -60,6 +89,64 @@ export function PreviewRuntime() {
     window.addEventListener('message', onMessage);
     post({ type: 'ready' });
     return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  // Report node rects + drop targets after every render, and whenever layout can change.
+  useEffect(() => {
+    if (!req) return;
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        postRects();
+      });
+    };
+    schedule();
+    // Widgets resolve async content (balances, images) shortly after mounting.
+    const late = window.setTimeout(schedule, 200);
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+    ro?.observe(document.documentElement);
+    ro?.observe(document.body);
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    return () => {
+      window.clearTimeout(late);
+      if (raf) window.cancelAnimationFrame(raf);
+      ro?.disconnect();
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+    };
+  }, [req]);
+
+  // Hover reporting + native drops that land inside the frame (the builder normally overlays the
+  // frame while dragging, so this is the fallback path).
+  useEffect(() => {
+    const onOver = (e: PointerEvent) => postHover(nodeIdAt(e.target));
+    const onLeave = () => postHover(null);
+    const onDragOver = (e: DragEvent) => {
+      if (pickDropTarget(lastRects, e.clientX, e.clientY)) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      }
+    };
+    const onDrop = (e: DragEvent) => {
+      const target = pickDropTarget(lastRects, e.clientX, e.clientY);
+      if (!target) return;
+      e.preventDefault();
+      const raw = e.dataTransfer?.getData(CONTRACT_FN_MIME);
+      post({ type: 'drop', parentId: target.parentId, index: target.index, ...(raw ? { contractFn: raw.slice(0, 8000) } : {}) });
+    };
+    document.addEventListener('pointerover', onOver);
+    document.documentElement.addEventListener('pointerleave', onLeave);
+    document.addEventListener('dragover', onDragOver);
+    document.addEventListener('drop', onDrop);
+    return () => {
+      document.removeEventListener('pointerover', onOver);
+      document.documentElement.removeEventListener('pointerleave', onLeave);
+      document.removeEventListener('dragover', onDragOver);
+      document.removeEventListener('drop', onDrop);
+    };
   }, []);
 
   const network = req?.network ?? 'testnet';

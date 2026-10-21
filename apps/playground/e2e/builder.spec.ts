@@ -36,6 +36,8 @@ test.describe('templates in the builder (mock wallet)', () => {
     await expect(page.getByTestId('spec-issues')).toContainText('Tip jar → Recipient');
     await page.getByTestId('tab-export').click();
     await expect(page.getByTestId('export-zip')).toBeDisabled();
+    // Export opens as a modal overlay in the studio; close it before editing blocks.
+    await page.getByRole('dialog', { name: 'Export' }).getByRole('button', { name: 'Close' }).click();
 
     await page.getByTestId('block-list').getByRole('button', { name: /tip jar/i }).first().click();
     await page.locator('#prop-tip-jar-recipient').fill(E2E.recipient);

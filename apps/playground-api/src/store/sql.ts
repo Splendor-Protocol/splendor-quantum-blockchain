@@ -1,4 +1,4 @@
-import type { AuditEntry, CatalogFlag, DeploymentRow, ProjectRow, Store } from './types.js';
+import type { AuditEntry, CatalogFlag, DeploymentRow, ProjectRow, Store, WorkspaceRow } from './types.js';
 
 type Row = Record<string, unknown>;
 
@@ -88,6 +88,21 @@ UPDATE projects SET owner = ${canonical('owner')} WHERE owner <> ${canonical('ow
 UPDATE deployments SET owner = ${canonical('owner')} WHERE owner <> ${canonical('owner')};
 `,
   },
+  {
+    id: 3,
+    name: 'workspaces',
+    sql: () => `
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workspaces_owner ON workspaces (owner);
+ALTER TABLE projects ADD COLUMN workspace_id TEXT;
+CREATE INDEX IF NOT EXISTS projects_workspace ON projects (workspace_id);
+`,
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.id;
@@ -99,8 +114,18 @@ function project(r: Row): ProjectRow {
     name: String(r.name),
     spec: String(r.spec ?? ''),
     shareId: r.share_id == null ? null : String(r.share_id),
+    workspaceId: r.workspace_id == null ? null : String(r.workspace_id),
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
+  };
+}
+
+function workspace(r: Row): WorkspaceRow {
+  return {
+    id: String(r.id),
+    owner: String(r.owner),
+    name: String(r.name),
+    createdAt: String(r.created_at),
   };
 }
 
@@ -177,8 +202,38 @@ export class SqlStore implements Store {
     return (await this.db.run('DELETE FROM admins WHERE address = ?', [address])).changes > 0;
   }
 
-  async listProjects(owner: string) {
-    const rows = await this.db.all('SELECT id, owner, name, share_id, created_at, updated_at FROM projects WHERE owner = ? ORDER BY updated_at DESC', [owner]);
+  async listWorkspaces(owner: string) {
+    const rows = await this.db.all('SELECT id, owner, name, created_at FROM workspaces WHERE owner = ? ORDER BY created_at DESC', [owner]);
+    return rows.map(workspace);
+  }
+  async createWorkspace(row: Pick<WorkspaceRow, 'id' | 'owner' | 'name'>) {
+    const t = now();
+    await this.db.run('INSERT INTO workspaces (id, owner, name, created_at) VALUES (?, ?, ?, ?)', [row.id, row.owner, row.name, t]);
+    return { ...row, createdAt: t };
+  }
+  async renameWorkspace(id: string, name: string) {
+    const res = await this.db.run('UPDATE workspaces SET name = ? WHERE id = ?', [name, id]);
+    if (!res.changes) return null;
+    const [r] = await this.db.all('SELECT id, owner, name, created_at FROM workspaces WHERE id = ?', [id]);
+    return r ? workspace(r) : null;
+  }
+  async deleteWorkspace(id: string) {
+    await this.db.run('UPDATE projects SET workspace_id = NULL WHERE workspace_id = ?', [id]);
+    return (await this.db.run('DELETE FROM workspaces WHERE id = ?', [id])).changes > 0;
+  }
+  async listProjects(owner: string, workspaceId?: string | null) {
+    const rows =
+      workspaceId === undefined
+        ? await this.db.all('SELECT id, owner, name, share_id, workspace_id, created_at, updated_at FROM projects WHERE owner = ? ORDER BY updated_at DESC', [owner])
+        : workspaceId === null
+          ? await this.db.all(
+              'SELECT id, owner, name, share_id, workspace_id, created_at, updated_at FROM projects WHERE owner = ? AND workspace_id IS NULL ORDER BY updated_at DESC',
+              [owner],
+            )
+          : await this.db.all(
+              'SELECT id, owner, name, share_id, workspace_id, created_at, updated_at FROM projects WHERE owner = ? AND workspace_id = ? ORDER BY updated_at DESC',
+              [owner, workspaceId],
+            );
     return rows.map((r) => {
       const { spec: _s, ...rest } = project(r);
       return rest;
@@ -196,10 +251,19 @@ export class SqlStore implements Store {
     const [r] = await this.db.all('SELECT * FROM projects WHERE share_id = ?', [shareId]);
     return r ? project(r) : null;
   }
-  async createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'>) {
+  async createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'> & { workspaceId?: string | null }) {
     const t = now();
-    await this.db.run('INSERT INTO projects (id, owner, name, spec, share_id, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?)', [row.id, row.owner, row.name, row.spec, t, t]);
-    return { ...row, shareId: null, createdAt: t, updatedAt: t };
+    const workspaceId = row.workspaceId ?? null;
+    await this.db.run('INSERT INTO projects (id, owner, name, spec, share_id, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)', [
+      row.id,
+      row.owner,
+      row.name,
+      row.spec,
+      workspaceId,
+      t,
+      t,
+    ]);
+    return { id: row.id, owner: row.owner, name: row.name, spec: row.spec, shareId: null, workspaceId, createdAt: t, updatedAt: t };
   }
   async updateProject(id: string, patch: Pick<ProjectRow, 'name' | 'spec'>) {
     const res = await this.db.run('UPDATE projects SET name = ?, spec = ?, updated_at = ? WHERE id = ?', [patch.name, patch.spec, now(), id]);

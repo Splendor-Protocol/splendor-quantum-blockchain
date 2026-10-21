@@ -1,13 +1,113 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`generateProject > next: landing > files 1`] = `
+[
+  ".env.example",
+  ".gitignore",
+  "README.md",
+  "app/HomePage.tsx",
+  "app/actions.ts",
+  "app/app.css",
+  "app/app/AppPage.tsx",
+  "app/app/page.tsx",
+  "app/client-root.tsx",
+  "app/contracts.ts",
+  "app/layout.tsx",
+  "app/networks.ts",
+  "app/page.tsx",
+  "app/providers.tsx",
+  "blocks/CtaBanner.tsx",
+  "blocks/Faq.tsx",
+  "blocks/FeatureGrid.tsx",
+  "blocks/FooterBar.tsx",
+  "blocks/Hero.tsx",
+  "blocks/HeroCentered.tsx",
+  "next-env.d.ts",
+  "next.config.mjs",
+  "package.json",
+  "scripts/copy-sqc-wasm.mjs",
+  "tsconfig.json",
+]
+`;
+
+exports[`generateProject > next: landing > pages 1`] = `
+{
+  "app/HomePage.tsx": "'use client';
+
+import { HeroCentered } from '../blocks/HeroCentered';
+import { FeatureGrid } from '../blocks/FeatureGrid';
+import { CtaBanner } from '../blocks/CtaBanner';
+import { Faq } from '../blocks/Faq';
+import { FooterBar } from '../blocks/FooterBar';
+
+export function HomePage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <HeroCentered
+            heading={"Build on Splendor"}
+            text={"Post-quantum dApps without the boilerplate."}
+            ctaLabel={"Open app"}
+            ctaPath={"/app"}
+          />
+          <FeatureGrid
+            title={"Why Splendor"}
+            items={"Wallet ready|Drop-in connect kit,Tokens|QRC-20 and NFT modules,Contracts|Bind any deployed ABI"}
+          />
+          <CtaBanner
+            heading={"Ready to ship?"}
+            text={"Export a Vite or Next.js project in one click."}
+            buttonLabel={"Start building"}
+            buttonPath={"/app"}
+          />
+          <Faq
+            title={"FAQ"}
+            items={"Is it post-quantum?|Yes — ML-DSA-65 signatures.,Do I need a wallet?|Use the extension or an in-page seed."}
+          />
+          <FooterBar text={"Built with the Splendor dApp Studio"} />
+        </div>
+      </div>
+    </div>
+  );
+}
+",
+  "app/app/AppPage.tsx": "'use client';
+
+import { AccountCard, TransferWidget } from '@splendor/connect-react';
+import { Hero } from '../../blocks/Hero';
+
+export function AppPage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="app-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="app-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero heading={"Your app"} text={"Connect and try it live."} />
+          <AccountCard showBalance showNetwork />
+          <TransferWidget defaultAmount={"0.01"} showFee toast />
+        </div>
+      </div>
+    </div>
+  );
+}
+",
+}
+`;
+
 exports[`generateProject > next: members-area > files 1`] = `
 [
   ".env.example",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
+  "app/actions.ts",
   "app/app.css",
   "app/client-root.tsx",
+  "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
   "app/page.tsx",
@@ -32,14 +132,23 @@ import { MembersArea } from '../blocks/MembersArea';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Members club"} text={"Sign in with your wallet — no passwords, no email."} />
-      <MembersArea
-        title={"Members area"}
-        statement={"Sign in to the members club"}
-        content={"Welcome back! Here is this week's members-only update."}
-      />
-      <AccountCard showBalance={false} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero
+            heading={"Members club"}
+            text={"Sign in with your wallet — no passwords, no email."}
+          />
+          <MembersArea
+            title={"Members area"}
+            statement={"Sign in to the members club"}
+            content={"Welcome back! Here is this week's members-only update."}
+          />
+          <AccountCard showBalance={false} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -53,8 +162,10 @@ exports[`generateProject > next: nft-drop > files 1`] = `
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
+  "app/actions.ts",
   "app/app.css",
   "app/client-root.tsx",
+  "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
   "app/page.tsx",
@@ -79,10 +190,19 @@ import { NftDrop } from '../blocks/NftDrop';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Genesis drop"} text={"Mint your collectible on Splendor Quantum Chain."} />
-      <NftDrop title={"Mint"} collectionName={"Genesis"} tokenId={"1"} amount={"1"} />
-      <PendingTxList pollMs={5000} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero
+            heading={"Genesis drop"}
+            text={"Mint your collectible on Splendor Quantum Chain."}
+          />
+          <NftDrop title={"Mint"} collectionName={"Genesis"} tokenId={"1"} amount={"1"} />
+          <PendingTxList pollMs={5000} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -96,8 +216,10 @@ exports[`generateProject > next: tip-jar > files 1`] = `
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
+  "app/actions.ts",
   "app/app.css",
   "app/client-root.tsx",
+  "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
   "app/page.tsx",
@@ -123,14 +245,20 @@ import { BalanceSummary } from '../blocks/BalanceSummary';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Buy me a coffee"} text={"Tips go straight to my Splendor address."} />
-      <TipJar
-        title={"Send a tip"}
-        recipient={"SQ:abababababababababababababababababababababababababababababababab"}
-        amount={"0.1"}
-      />
-      <BalanceSummary title={"Your wallet"} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero heading={"Buy me a coffee"} text={"Tips go straight to my Splendor address."} />
+          <TipJar
+            title={"Send a tip"}
+            recipient={"SQ:abababababababababababababababababababababababababababababababab"}
+            amount={"0.1"}
+          />
+          <BalanceSummary title={"Your wallet"} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -144,8 +272,10 @@ exports[`generateProject > next: token-launchpad > files 1`] = `
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
+  "app/actions.ts",
   "app/app.css",
   "app/client-root.tsx",
+  "app/contracts.ts",
   "app/layout.tsx",
   "app/manage/ManagePage.tsx",
   "app/manage/page.tsx",
@@ -170,18 +300,24 @@ import { Hero } from '../blocks/Hero';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Launch your token"} text={"Deploy a QRC-20 token in one transaction."} />
-      <DeployTokenWidget
-        defaultName={"My Token"}
-        defaultSymbol={"MYT"}
-        defaultSupply={"1000000"}
-        decimals={18}
-        review
-        showFee
-        toast
-      />
-      <AccountCard showBalance />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero heading={"Launch your token"} text={"Deploy a QRC-20 token in one transaction."} />
+          <DeployTokenWidget
+            defaultName={"My Token"}
+            defaultSymbol={"MYT"}
+            defaultSupply={"1000000"}
+            decimals={18}
+            review
+            showFee
+            toast
+          />
+          <AccountCard showBalance />
+        </div>
+      </div>
     </div>
   );
 }
@@ -192,9 +328,15 @@ import { PendingTxList, TokenPanel } from '@splendor/connect-react';
 
 export function ManagePage() {
   return (
-    <div className="dapp-grid">
-      <TokenPanel defaultAmount={"1"} showFee toast />
-      <PendingTxList pollMs={5000} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="manage-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="manage-root-stack"
+          style={{ gap: "1rem" }}>
+          <TokenPanel defaultAmount={"1"} showFee toast />
+          <PendingTxList pollMs={5000} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -208,8 +350,10 @@ exports[`generateProject > next: wallet-dashboard > files 1`] = `
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
+  "app/actions.ts",
   "app/app.css",
   "app/client-root.tsx",
+  "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
   "app/page.tsx",
@@ -232,11 +376,107 @@ import { Hero } from '../blocks/Hero';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Wallet dashboard"} text={"Your Splendor account at a glance."} />
-      <AccountCard showBalance showNetwork showExplorer showDisconnect />
-      <TransferWidget defaultAmount={"0.01"} showFee toast />
-      <PendingTxList emptyText={"Nothing pending"} pollMs={5000} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero heading={"Wallet dashboard"} text={"Your Splendor account at a glance."} />
+          <AccountCard showBalance showNetwork showExplorer showDisconnect />
+          <TransferWidget defaultAmount={"0.01"} showFee toast />
+          <PendingTxList emptyText={"Nothing pending"} pollMs={5000} />
+        </div>
+      </div>
+    </div>
+  );
+}
+",
+}
+`;
+
+exports[`generateProject > vite: landing > files 1`] = `
+[
+  ".env.example",
+  ".gitignore",
+  "README.md",
+  "index.html",
+  "package.json",
+  "src/App.tsx",
+  "src/actions.ts",
+  "src/app.css",
+  "src/blocks/CtaBanner.tsx",
+  "src/blocks/Faq.tsx",
+  "src/blocks/FeatureGrid.tsx",
+  "src/blocks/FooterBar.tsx",
+  "src/blocks/Hero.tsx",
+  "src/blocks/HeroCentered.tsx",
+  "src/contracts.ts",
+  "src/main.tsx",
+  "src/networks.ts",
+  "src/pages/AppPage.tsx",
+  "src/pages/HomePage.tsx",
+  "tsconfig.json",
+  "vite.config.ts",
+]
+`;
+
+exports[`generateProject > vite: landing > pages 1`] = `
+{
+  "src/pages/AppPage.tsx": "import { AccountCard, TransferWidget } from '@splendor/connect-react';
+import { Hero } from '../blocks/Hero';
+
+export function AppPage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="app-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="app-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero heading={"Your app"} text={"Connect and try it live."} />
+          <AccountCard showBalance showNetwork />
+          <TransferWidget defaultAmount={"0.01"} showFee toast />
+        </div>
+      </div>
+    </div>
+  );
+}
+",
+  "src/pages/HomePage.tsx": "import { HeroCentered } from '../blocks/HeroCentered';
+import { FeatureGrid } from '../blocks/FeatureGrid';
+import { CtaBanner } from '../blocks/CtaBanner';
+import { Faq } from '../blocks/Faq';
+import { FooterBar } from '../blocks/FooterBar';
+
+export function HomePage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <HeroCentered
+            heading={"Build on Splendor"}
+            text={"Post-quantum dApps without the boilerplate."}
+            ctaLabel={"Open app"}
+            ctaPath={"/app"}
+          />
+          <FeatureGrid
+            title={"Why Splendor"}
+            items={"Wallet ready|Drop-in connect kit,Tokens|QRC-20 and NFT modules,Contracts|Bind any deployed ABI"}
+          />
+          <CtaBanner
+            heading={"Ready to ship?"}
+            text={"Export a Vite or Next.js project in one click."}
+            buttonLabel={"Start building"}
+            buttonPath={"/app"}
+          />
+          <Faq
+            title={"FAQ"}
+            items={"Is it post-quantum?|Yes — ML-DSA-65 signatures.,Do I need a wallet?|Use the extension or an in-page seed."}
+          />
+          <FooterBar text={"Built with the Splendor dApp Studio"} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -252,9 +492,11 @@ exports[`generateProject > vite: members-area > files 1`] = `
   "index.html",
   "package.json",
   "src/App.tsx",
+  "src/actions.ts",
   "src/app.css",
   "src/blocks/Hero.tsx",
   "src/blocks/MembersArea.tsx",
+  "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
   "src/pages/HomePage.tsx",
@@ -271,14 +513,23 @@ import { MembersArea } from '../blocks/MembersArea';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Members club"} text={"Sign in with your wallet — no passwords, no email."} />
-      <MembersArea
-        title={"Members area"}
-        statement={"Sign in to the members club"}
-        content={"Welcome back! Here is this week's members-only update."}
-      />
-      <AccountCard showBalance={false} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero
+            heading={"Members club"}
+            text={"Sign in with your wallet — no passwords, no email."}
+          />
+          <MembersArea
+            title={"Members area"}
+            statement={"Sign in to the members club"}
+            content={"Welcome back! Here is this week's members-only update."}
+          />
+          <AccountCard showBalance={false} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -294,9 +545,11 @@ exports[`generateProject > vite: nft-drop > files 1`] = `
   "index.html",
   "package.json",
   "src/App.tsx",
+  "src/actions.ts",
   "src/app.css",
   "src/blocks/Hero.tsx",
   "src/blocks/NftDrop.tsx",
+  "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
   "src/pages/HomePage.tsx",
@@ -313,10 +566,19 @@ import { NftDrop } from '../blocks/NftDrop';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Genesis drop"} text={"Mint your collectible on Splendor Quantum Chain."} />
-      <NftDrop title={"Mint"} collectionName={"Genesis"} tokenId={"1"} amount={"1"} />
-      <PendingTxList pollMs={5000} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero
+            heading={"Genesis drop"}
+            text={"Mint your collectible on Splendor Quantum Chain."}
+          />
+          <NftDrop title={"Mint"} collectionName={"Genesis"} tokenId={"1"} amount={"1"} />
+          <PendingTxList pollMs={5000} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -332,10 +594,12 @@ exports[`generateProject > vite: tip-jar > files 1`] = `
   "index.html",
   "package.json",
   "src/App.tsx",
+  "src/actions.ts",
   "src/app.css",
   "src/blocks/BalanceSummary.tsx",
   "src/blocks/Hero.tsx",
   "src/blocks/TipJar.tsx",
+  "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
   "src/pages/HomePage.tsx",
@@ -352,14 +616,20 @@ import { BalanceSummary } from '../blocks/BalanceSummary';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Buy me a coffee"} text={"Tips go straight to my Splendor address."} />
-      <TipJar
-        title={"Send a tip"}
-        recipient={"SQ:abababababababababababababababababababababababababababababababab"}
-        amount={"0.1"}
-      />
-      <BalanceSummary title={"Your wallet"} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero heading={"Buy me a coffee"} text={"Tips go straight to my Splendor address."} />
+          <TipJar
+            title={"Send a tip"}
+            recipient={"SQ:abababababababababababababababababababababababababababababababab"}
+            amount={"0.1"}
+          />
+          <BalanceSummary title={"Your wallet"} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -375,8 +645,10 @@ exports[`generateProject > vite: token-launchpad > files 1`] = `
   "index.html",
   "package.json",
   "src/App.tsx",
+  "src/actions.ts",
   "src/app.css",
   "src/blocks/Hero.tsx",
+  "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
   "src/pages/HomePage.tsx",
@@ -393,18 +665,24 @@ import { Hero } from '../blocks/Hero';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Launch your token"} text={"Deploy a QRC-20 token in one transaction."} />
-      <DeployTokenWidget
-        defaultName={"My Token"}
-        defaultSymbol={"MYT"}
-        defaultSupply={"1000000"}
-        decimals={18}
-        review
-        showFee
-        toast
-      />
-      <AccountCard showBalance />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero heading={"Launch your token"} text={"Deploy a QRC-20 token in one transaction."} />
+          <DeployTokenWidget
+            defaultName={"My Token"}
+            defaultSymbol={"MYT"}
+            defaultSupply={"1000000"}
+            decimals={18}
+            review
+            showFee
+            toast
+          />
+          <AccountCard showBalance />
+        </div>
+      </div>
     </div>
   );
 }
@@ -413,9 +691,15 @@ export function HomePage() {
 
 export function ManagePage() {
   return (
-    <div className="dapp-grid">
-      <TokenPanel defaultAmount={"1"} showFee toast />
-      <PendingTxList pollMs={5000} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="manage-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="manage-root-stack"
+          style={{ gap: "1rem" }}>
+          <TokenPanel defaultAmount={"1"} showFee toast />
+          <PendingTxList pollMs={5000} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -431,8 +715,10 @@ exports[`generateProject > vite: wallet-dashboard > files 1`] = `
   "index.html",
   "package.json",
   "src/App.tsx",
+  "src/actions.ts",
   "src/app.css",
   "src/blocks/Hero.tsx",
+  "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
   "src/pages/HomePage.tsx",
@@ -448,11 +734,17 @@ import { Hero } from '../blocks/Hero';
 
 export function HomePage() {
   return (
-    <div className="dapp-grid">
-      <Hero heading={"Wallet dashboard"} text={"Your Splendor account at a glance."} />
-      <AccountCard showBalance showNetwork showExplorer showDisconnect />
-      <TransferWidget defaultAmount={"0.01"} showFee toast />
-      <PendingTxList emptyText={"Nothing pending"} pollMs={5000} />
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
+        <div className="dapp-stack" data-node-id="home-root-stack"
+          style={{ gap: "1rem" }}>
+          <Hero heading={"Wallet dashboard"} text={"Your Splendor account at a glance."} />
+          <AccountCard showBalance showNetwork showExplorer showDisconnect />
+          <TransferWidget defaultAmount={"0.01"} showFee toast />
+          <PendingTxList emptyText={"Nothing pending"} pollMs={5000} />
+        </div>
+      </div>
     </div>
   );
 }

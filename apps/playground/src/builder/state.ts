@@ -1,4 +1,29 @@
-import { slugify, type DappBlock, type DappSpec, type NetworkId, type PropValue, type ThemeName, type ThemeOverrides } from '@splendor/dapp-spec';
+import {
+  blocksFromTree,
+  countNodes,
+  findNode,
+  getPageTemplate,
+  insertChild,
+  isContainer,
+  mapTree,
+  moveChild,
+  nodeId,
+  removeNode,
+  slugify,
+  treeDepth,
+  updateNodeStyle,
+  walk,
+  type DappBlock,
+  type ContainerNode,
+  type DappPage,
+  type DappSpec,
+  type LayoutNode,
+  type NetworkId,
+  type NodeStyle,
+  type PropValue,
+  type ThemeName,
+  type ThemeOverrides,
+} from '@splendor/dapp-spec';
 
 export type BuilderState = {
   spec: DappSpec;
@@ -16,17 +41,31 @@ export type BuilderAction =
   | { type: 'setName'; name: string }
   | { type: 'setDescription'; description: string }
   | { type: 'setNetwork'; network: NetworkId }
-  | { type: 'setTheme'; theme: { base: ThemeName; overrides: ThemeOverrides } }
+  | { type: 'setTheme'; theme: { base: ThemeName; overrides: ThemeOverrides; preset?: string } }
   | { type: 'addPage'; title: string }
+  | { type: 'addPageFromTemplate'; title: string; templateId: string }
   | { type: 'removePage'; path: string }
+  /** Copy a page (layout tree with fresh ids) to a new path, titled "<title> copy", and select it. */
+  | { type: 'duplicatePage'; path: string }
+  /** Make `path` the home page (`/`). The old home moves to a path derived from its title; links follow. */
+  | { type: 'setHomePage'; path: string }
   | { type: 'renamePage'; path: string; title: string }
   | { type: 'selectPage'; path: string }
   | { type: 'addBlock'; widget: string; props: Record<string, PropValue> }
+  | { type: 'insertBlock'; widget: string; props: Record<string, PropValue>; index: number }
+  | { type: 'reorderBlock'; id: string; index: number }
   | { type: 'removeBlock'; id: string }
   | { type: 'duplicateBlock'; id: string }
   | { type: 'moveBlock'; id: string; delta: -1 | 1 }
+  /** Tree edits (in-canvas drag/drop). `index` is the insertion slot among the parent's children. */
+  | { type: 'insertIntoTree'; parentId: string; index: number; widget: string; props: Record<string, PropValue> }
+  | { type: 'moveNode'; id: string; parentId: string; index: number }
+  | { type: 'duplicateNode'; id: string }
+  | { type: 'removeNodeFromTree'; id: string }
   | { type: 'movePage'; path: string; delta: -1 | 1 }
   | { type: 'setProp'; id: string; name: string; value: PropValue | undefined }
+  | { type: 'setBlockStyle'; id: string; style: NodeStyle }
+  | { type: 'setContracts'; contracts: NonNullable<DappSpec['contracts']> }
   | { type: 'selectBlock'; id: string | null }
   | { type: 'undo' }
   | { type: 'redo' };
@@ -35,14 +74,25 @@ const HISTORY_LIMIT = 100;
 /** Same cap as the spec validator. */
 export const MAX_BLOCKS_PER_PAGE = 40;
 export const MAX_PAGES = 20;
+/** Same caps as the spec validator. */
+const MAX_NODES_PER_PAGE = 200;
+const MAX_TREE_DEPTH = 6;
 const COALESCE_MS = 1000;
 
 export function initBuilder(spec: DappSpec): BuilderState {
-  return { spec, pagePath: spec.pages[0]?.path ?? '/', selectedBlockId: null, past: [], future: [], lastKey: null, lastAt: 0 };
+  const synced: DappSpec = {
+    ...spec,
+    version: 2,
+    // The layout tree is the source of truth when present (nested containers survive); the flat list follows it.
+    pages: spec.pages.map((p) => (p.root && isContainer(p.root) ? withTree(p, p.root) : withBlocks(p, pageBlocks(p)))),
+    contracts: spec.contracts ?? [],
+    nav: spec.nav ?? { showConnect: true, brand: spec.name },
+  };
+  return { spec: synced, pagePath: synced.pages[0]?.path ?? '/', selectedBlockId: null, past: [], future: [], lastKey: null, lastAt: 0 };
 }
 
 function uniqueBlockId(spec: DappSpec, widget: string): string {
-  const taken = new Set(spec.pages.flatMap((p) => p.blocks.map((b) => b.id)));
+  const taken = new Set([...allIds(spec), ...spec.pages.flatMap((p) => pageBlocks(p).map((b) => b.id))]);
   const base = widget.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 50) || 'block';
   for (let n = 1; ; n++) {
     const id = `${base}-${n}`;
@@ -60,12 +110,255 @@ function uniquePath(spec: DappSpec, title: string): string {
   }
 }
 
+function pageBlocks(page: DappPage): DappBlock[] {
+  if (Array.isArray(page.blocks)) return page.blocks;
+  if (page.root) return blocksFromTree(page.root);
+  return [];
+}
+
+function pageRootId(page: DappPage): string {
+  if (page.root && page.root.kind !== 'block') return page.root.id;
+  const seg = page.path === '/' ? 'home' : page.path.replace(/^\//, '').replace(/[^a-z0-9-]+/gi, '-');
+  return `${seg || 'page'}-root`;
+}
+
+/** Keep flat block edits and layout tree in sync (mirrors dapp-spec wrapBlocks). */
+function wrapBlocksLocal(blocks: DappBlock[], sectionId: string): ContainerNode {
+  return {
+    kind: 'section',
+    id: sectionId,
+    style: { maxWidth: '1120px', padding: '1.25rem', gap: '1rem' },
+    children: [
+      {
+        kind: 'stack',
+        id: `${sectionId}-stack`,
+        style: { gap: '1rem' },
+        children: blocks.map((block) => ({ kind: 'block' as const, block })),
+      },
+    ],
+  };
+}
+
+/** Replace the layout tree; the flat block list is always derived from it. */
+function withTree(page: DappPage, root: LayoutNode): DappPage {
+  return { ...page, root, blocks: blocksFromTree(root) };
+}
+
+/** Position of `id` among its parent's children. */
+function locate(root: LayoutNode, id: string): { parent: ContainerNode; index: number } | null {
+  let hit: { parent: ContainerNode; index: number } | null = null;
+  walk(root, (n) => {
+    if (!isContainer(n) || hit) return;
+    const index = n.children.findIndex((c) => nodeId(c) === id);
+    if (index >= 0) hit = { parent: n, index };
+  });
+  return hit;
+}
+
+/** If every block sits directly under one container, that container (flat pages). */
+function sharedBlockParent(root: LayoutNode): ContainerNode | null {
+  let parent: ContainerNode | null = null;
+  let mixed = false;
+  walk(root, (n) => {
+    if (!isContainer(n)) return;
+    if (n.children.some((c) => c.kind === 'block')) {
+      if (parent) mixed = true;
+      parent = n;
+    }
+  });
+  return mixed ? null : parent;
+}
+
+/**
+ * Apply a flat block-list edit (add / remove / reorder / props) to an existing layout tree without
+ * flattening it: removed blocks leave, changed blocks update in place, new blocks land next to the
+ * block that precedes (or follows) them in the list.
+ */
+function reconcileTree(root: ContainerNode, blocks: DappBlock[]): ContainerNode {
+  const next = new Map(blocks.map((b) => [b.id, b]));
+  const prune = (n: LayoutNode): LayoutNode | null => {
+    if (n.kind === 'block') {
+      const b = next.get(n.block.id);
+      return b ? { kind: 'block', block: b } : null;
+    }
+    return { ...n, children: n.children.map(prune).filter((c): c is LayoutNode => c !== null) };
+  };
+  let tree = prune(root) as ContainerNode;
+  const present = new Set(blocksFromTree(tree).map((b) => b.id));
+
+  blocks.forEach((block, i) => {
+    if (present.has(block.id)) return;
+    const node: LayoutNode = { kind: 'block', block };
+    let placed: LayoutNode | null = null;
+    for (let j = i - 1; j >= 0 && !placed; j--) {
+      const at = present.has(blocks[j]!.id) ? locate(tree, blocks[j]!.id) : null;
+      if (at) placed = insertChild(tree, at.parent.id, at.index + 1, node);
+    }
+    for (let j = i + 1; j < blocks.length && !placed; j++) {
+      const at = present.has(blocks[j]!.id) ? locate(tree, blocks[j]!.id) : null;
+      if (at) placed = insertChild(tree, at.parent.id, at.index, node);
+    }
+    if (!placed) placed = insertChild(tree, tree.id, tree.children.length, node);
+    tree = (placed ?? tree) as ContainerNode;
+    present.add(block.id);
+  });
+
+  // Flat pages: the list order is the order of the blocks under their shared parent.
+  const parent = sharedBlockParent(tree);
+  if (parent) {
+    const rank = new Map(blocks.map((b, i) => [b.id, i]));
+    const sorted = parent.children
+      .filter((c): c is Extract<LayoutNode, { kind: 'block' }> => c.kind === 'block')
+      .sort((a, b) => (rank.get(a.block.id) ?? 0) - (rank.get(b.block.id) ?? 0));
+    let k = 0;
+    const children = parent.children.map((c) => (c.kind === 'block' ? sorted[k++]! : c));
+    tree = mapTree(tree, (n) => (isContainer(n) && n.id === parent.id ? { ...n, children } : n)) as ContainerNode;
+  }
+  return tree;
+}
+
+function withBlocks(page: DappPage, blocks: DappBlock[]): DappPage {
+  if (page.root && isContainer(page.root)) return withTree(page, reconcileTree(page.root, blocks));
+  return { ...page, blocks, root: wrapBlocksLocal(blocks, pageRootId(page)) };
+}
+
+function allIds(spec: DappSpec): Set<string> {
+  const ids = new Set<string>();
+  for (const p of spec.pages) if (p.root) walk(p.root, (n) => ids.add(nodeId(n)));
+  return ids;
+}
+
+function freshId(base: string, taken: Set<string>): string {
+  for (let n = 1; ; n++) {
+    const id = `${base}-${n}`;
+    if (!taken.has(id)) {
+      taken.add(id);
+      return id;
+    }
+  }
+}
+
+/** Palette ids that insert a real layout container (not a leaf shell block). */
+const CONTAINER_WIDGETS: Record<string, ContainerNode['kind']> = {
+  section: 'section',
+  row: 'row',
+  card: 'card',
+  stack: 'stack',
+};
+
+/** Build a layout node for a palette drop: containers become empty ContainerNodes. */
+function layoutNodeForWidget(id: string, widget: string, props: Record<string, PropValue>): LayoutNode {
+  if (widget === 'columns') {
+    const n = Math.max(2, Math.min(4, Number(props.cols) || 3));
+    return {
+      kind: 'row',
+      id,
+      style: { gap: '1rem', align: 'stretch' },
+      children: Array.from({ length: n }, (_, i) => ({
+        kind: 'column' as const,
+        id: `${id}-col-${i + 1}`,
+        style: { gap: '0.75rem', padding: '0.25rem', width: `${Math.floor(100 / n)}%` },
+        children: [],
+      })),
+    };
+  }
+  const kind = CONTAINER_WIDGETS[widget];
+  if (kind) {
+    return {
+      kind,
+      id,
+      style:
+        kind === 'section'
+          ? { maxWidth: '1120px', padding: '1.25rem', gap: '1rem' }
+          : kind === 'row'
+            ? { gap: '1rem', align: 'stretch' }
+            : kind === 'card'
+              ? { padding: '1rem', gap: '0.75rem', background: 'var(--sqc-surface)' }
+              : { gap: '0.75rem' },
+      children: [],
+    };
+  }
+  return { kind: 'block', block: { id, widget, props } };
+}
+
+/** Deep copy with new ids for every container and block (so ids stay unique across the spec). */
+function cloneNode(node: LayoutNode, taken: Set<string>): LayoutNode {
+  if (node.kind === 'block') {
+    const base = node.block.widget.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 50) || 'block';
+    return { kind: 'block', block: { ...node.block, id: freshId(base, taken), props: { ...node.block.props } } };
+  }
+  return { ...node, id: freshId(node.kind, taken), children: node.children.map((c) => cloneNode(c, taken)) };
+}
+
+/**
+ * Move `id` so it becomes child number `index` of `parentId` (the index is a slot in the parent's
+ * children as they are *before* the move). Null when it would be a no-op or invalid.
+ */
+function relocate(root: LayoutNode, id: string, parentId: string, index: number): LayoutNode | null {
+  if (!isContainer(root) || nodeId(root) === id) return null;
+  const node = findNode(root, id);
+  const at = locate(root, id);
+  const parent = findNode(root, parentId);
+  if (!node || !at || !parent || !isContainer(parent)) return null;
+  if (isContainer(node) && findNode(node, parentId)) return null; // not into itself
+  const slot = Math.max(0, Math.min(index, parent.children.length));
+  let next: LayoutNode | null;
+  if (at.parent.id === parentId) {
+    const to = slot > at.index ? slot - 1 : slot;
+    if (to === at.index) return null;
+    next = moveChild(root, parentId, at.index, to);
+  } else {
+    next = insertChild(removeNode(root, id), parentId, slot, node);
+  }
+  if (!next || treeDepth(next) > MAX_TREE_DEPTH) return null;
+  return next;
+}
+
+/** Props that hold a page path or URL (buttons, CTAs). Mirrors the keys the code generator reads. */
+const LINK_PROPS = ['href', 'ctaPath', 'buttonPath', 'link'] as const;
+
+/** Rewrite page-path links in button-like blocks (`/about` -> `/` etc.). External URLs are left alone. */
+function remapLinks(root: LayoutNode, map: Map<string, string>): LayoutNode {
+  return mapTree(root, (n) => {
+    if (n.kind !== 'block') return n;
+    let props = n.block.props;
+    for (const key of LINK_PROPS) {
+      const v = props[key];
+      if (typeof v !== 'string') continue;
+      const hash = v.startsWith('#');
+      const path = hash ? v.slice(1) : v;
+      const next = map.get(path);
+      if (next !== undefined) props = { ...props, [key]: hash ? `#${next}` : next };
+    }
+    return props === n.block.props ? n : { kind: 'block', block: { ...n.block, props } };
+  });
+}
+
+function pageHolding(spec: DappSpec, id: string): DappPage | undefined {
+  return spec.pages.find((p) => p.root && findNode(p.root, id));
+}
+
+function replacePage(spec: DappSpec, path: string, page: DappPage): DappSpec {
+  return { ...spec, pages: spec.pages.map((p) => (p.path === path ? page : p)) };
+}
+
 function mapPage(spec: DappSpec, path: string, fn: (blocks: DappBlock[]) => DappBlock[]): DappSpec {
-  return { ...spec, pages: spec.pages.map((p) => (p.path === path ? { ...p, blocks: fn(p.blocks) } : p)) };
+  return { ...spec, pages: spec.pages.map((p) => (p.path === path ? withBlocks(p, fn(pageBlocks(p))) : p)) };
 }
 
 function mapBlock(spec: DappSpec, id: string, fn: (b: DappBlock) => DappBlock): DappSpec {
-  return { ...spec, pages: spec.pages.map((p) => ({ ...p, blocks: p.blocks.map((b) => (b.id === id ? fn(b) : b)) })) };
+  return {
+    ...spec,
+    pages: spec.pages.map((p) => {
+      let hit = false;
+      const next = pageBlocks(p).map((b) => {
+        if (b.id !== id) return b;
+        hit = true;
+        return fn(b);
+      });
+      return hit ? withBlocks(p, next) : p;
+    }),
+  };
 }
 
 /** Apply an edit, recording undo history. `key` groups rapid edits of the same field. */
@@ -87,7 +380,11 @@ function commit(state: BuilderState, spec: DappSpec, key: string | null, extra: 
 function reconcile(state: BuilderState): BuilderState {
   const page = state.spec.pages.find((p) => p.path === state.pagePath) ?? state.spec.pages[0];
   const pagePath = page?.path ?? '/';
-  const selectedBlockId = page?.blocks.some((b) => b.id === state.selectedBlockId) ? state.selectedBlockId : null;
+  // The selection may be a block or a container of the current page.
+  const selectedBlockId =
+    page && state.selectedBlockId && (pageBlocks(page).some((b) => b.id === state.selectedBlockId) || (page.root && findNode(page.root, state.selectedBlockId)))
+      ? state.selectedBlockId
+      : null;
   return pagePath === state.pagePath && selectedBlockId === state.selectedBlockId ? state : { ...state, pagePath, selectedBlockId };
 }
 
@@ -105,31 +402,132 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
     case 'setTheme':
       return commit(state, { ...s, theme: action.theme }, 'theme');
     case 'addPage': {
-      const path = uniquePath(s, action.title);
-      return commit(state, { ...s, pages: [...s.pages, { path, title: action.title.slice(0, 60) || 'Page', blocks: [] }] }, null, {
+      const title = action.title.slice(0, 60) || 'Page';
+      const path = uniquePath(s, title);
+      const page = withBlocks({ path, title, root: wrapBlocksLocal([], 'unused') }, []);
+      return commit(state, { ...s, pages: [...s.pages, page] }, null, {
         pagePath: path,
         selectedBlockId: null,
       });
     }
+    case 'addPageFromTemplate': {
+      const tpl = getPageTemplate(action.templateId);
+      if (!tpl) return state;
+      const title = action.title.slice(0, 60) || tpl.title;
+      const path = uniquePath(s, title);
+      const page = tpl.build(path, title);
+      return commit(state, { ...s, pages: [...s.pages, page] }, null, { pagePath: path, selectedBlockId: null });
+    }
     case 'removePage':
       if (action.path === '/') return state;
       return reconcile(commit(state, { ...s, pages: s.pages.filter((p) => p.path !== action.path) }, null));
+    case 'duplicatePage': {
+      const src = s.pages.find((p) => p.path === action.path);
+      if (!src || s.pages.length >= MAX_PAGES) return state;
+      const title = `${src.title} copy`.slice(0, 60);
+      const path = uniquePath(s, title);
+      const root = cloneNode(src.root, allIds(s)) as ContainerNode;
+      const copy = withTree({ path, title, root }, root);
+      const at = s.pages.indexOf(src);
+      const pages = [...s.pages.slice(0, at + 1), copy, ...s.pages.slice(at + 1)];
+      return commit(state, { ...s, pages }, null, { pagePath: path, selectedBlockId: null });
+    }
+    case 'setHomePage': {
+      if (action.path === '/') return state;
+      const target = s.pages.find((p) => p.path === action.path);
+      const oldHome = s.pages.find((p) => p.path === '/');
+      if (!target || !oldHome) return state;
+      const movedTo = uniquePath(s, oldHome.title);
+      const remap = new Map([
+        [target.path, '/'],
+        ['/', movedTo],
+      ]);
+      const pages = [
+        withTree({ ...target, path: '/' }, remapLinks(target.root, remap)),
+        ...s.pages.filter((p) => p !== target).map((p) => {
+          const root = remapLinks(p.root, remap);
+          return withTree(p.path === '/' ? { ...p, path: movedTo } : p, root);
+        }),
+      ];
+      const links = s.nav?.links?.map((l) => remap.get(l) ?? l);
+      const nav = s.nav ? { ...s.nav, ...(links ? { links } : {}) } : s.nav;
+      return commit(state, { ...s, pages, ...(nav ? { nav } : {}) }, null, { pagePath: '/', selectedBlockId: null });
+    }
     case 'renamePage':
       return commit(state, { ...s, pages: s.pages.map((p) => (p.path === action.path ? { ...p, title: action.title } : p)) }, `page:${action.path}`);
     case 'selectPage':
       return reconcile({ ...state, pagePath: action.path, selectedBlockId: null });
     case 'addBlock': {
+      const page = s.pages.find((p) => p.path === state.pagePath);
+      if (!page || !isContainer(page.root) || pageBlocks(page).length >= MAX_BLOCKS_PER_PAGE) return state;
       const id = uniqueBlockId(s, action.widget);
-      return commit(state, mapPage(s, state.pagePath, (blocks) => [...blocks, { id, widget: action.widget, props: action.props }]), null, {
-        selectedBlockId: id,
-      });
+      const node = layoutNodeForWidget(id, action.widget, action.props);
+      // Append into the deepest shared stack / page root so containers nest correctly.
+      const parent = sharedBlockParent(page.root) ?? (isContainer(page.root) ? page.root : null);
+      if (!parent) return state;
+      const root = insertChild(page.root, parent.id, parent.children.length, node);
+      if (!root || treeDepth(root) > MAX_TREE_DEPTH || countNodes(root) > MAX_NODES_PER_PAGE) return state;
+      return commit(state, replacePage(s, page.path, withTree(page, root)), null, { selectedBlockId: id });
+    }
+    case 'insertBlock': {
+      const page = s.pages.find((p) => p.path === state.pagePath);
+      if (!page || !isContainer(page.root) || pageBlocks(page).length >= MAX_BLOCKS_PER_PAGE) return state;
+      const id = uniqueBlockId(s, action.widget);
+      const node = layoutNodeForWidget(id, action.widget, action.props);
+      const blocks = pageBlocks(page);
+      const index = Math.max(0, Math.min(action.index, blocks.length));
+      const parent = sharedBlockParent(page.root);
+      if (parent) {
+        const root = insertChild(page.root, parent.id, Math.min(index, parent.children.length), node);
+        if (!root || treeDepth(root) > MAX_TREE_DEPTH || countNodes(root) > MAX_NODES_PER_PAGE) return state;
+        return commit(state, replacePage(s, page.path, withTree(page, root)), null, { selectedBlockId: id });
+      }
+      // Nested tree without a shared parent: place next to the block at `index` (or at end).
+      const neighbour = blocks[Math.min(index, Math.max(0, blocks.length - 1))];
+      const at = neighbour ? locate(page.root, neighbour.id) : null;
+      const parentId = at?.parent.id ?? page.root.id;
+      const slot = at ? (index >= blocks.length ? at.index + 1 : at.index) : page.root.children.length;
+      const root = insertChild(page.root, parentId, slot, node);
+      if (!root || treeDepth(root) > MAX_TREE_DEPTH || countNodes(root) > MAX_NODES_PER_PAGE) return state;
+      return commit(state, replacePage(s, page.path, withTree(page, root)), null, { selectedBlockId: id });
+    }
+    case 'reorderBlock': {
+      const page = s.pages.find((p) => p.path === state.pagePath);
+      if (!page) return state;
+      const blocks = pageBlocks(page);
+      const from = blocks.findIndex((b) => b.id === action.id);
+      if (from < 0) return state;
+      if (!sharedBlockParent(page.root)) {
+        // Blocks live in different containers: move next to the block currently at that slot.
+        const last = action.index >= blocks.length;
+        const target = last ? blocks[blocks.length - 1]! : blocks[action.index]!;
+        const at = target.id === action.id ? null : locate(page.root, target.id);
+        const next = at ? relocate(page.root, action.id, at.parent.id, last ? at.index + 1 : at.index) : null;
+        return next ? commit(state, replacePage(s, page.path, withTree(page, next)), null) : state;
+      }
+      const to = Math.max(0, Math.min(action.index, blocks.length));
+      const dest = to > from ? to - 1 : to;
+      if (dest === from) return state;
+      return commit(
+        state,
+        mapPage(s, state.pagePath, (blocks) => {
+          const next = [...blocks];
+          const [item] = next.splice(from, 1);
+          next.splice(dest, 0, item!);
+          return next;
+        }),
+        null,
+      );
     }
     case 'removeBlock':
-      return reconcile(commit(state, { ...s, pages: s.pages.map((p) => ({ ...p, blocks: p.blocks.filter((b) => b.id !== action.id) })) }, null));
+      return reconcile(
+        commit(state, { ...s, pages: s.pages.map((p) => withBlocks(p, pageBlocks(p).filter((b) => b.id !== action.id))) }, null),
+      );
     case 'duplicateBlock': {
-      const page = s.pages.find((p) => p.blocks.some((b) => b.id === action.id));
-      const source = page?.blocks.find((b) => b.id === action.id);
-      if (!page || !source || page.blocks.length >= MAX_BLOCKS_PER_PAGE) return state;
+      const page = s.pages.find((p) => pageBlocks(p).some((b) => b.id === action.id));
+      const blocks = page ? pageBlocks(page) : [];
+      const source = blocks.find((b) => b.id === action.id);
+      if (!page || !source || blocks.length >= MAX_BLOCKS_PER_PAGE) return state;
       const id = uniqueBlockId(s, source.widget);
       const copy = { id, widget: source.widget, props: { ...source.props } };
       return commit(
@@ -150,7 +548,16 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
       [pages[i], pages[j]] = [pages[j]!, pages[i]!];
       return commit(state, { ...s, pages }, null);
     }
-    case 'moveBlock':
+    case 'moveBlock': {
+      const page = s.pages.find((p) => p.path === state.pagePath);
+      if (page && !sharedBlockParent(page.root)) {
+        const blocks = pageBlocks(page);
+        const i = blocks.findIndex((b) => b.id === action.id);
+        const neighbour = blocks[i + action.delta];
+        const at = i >= 0 && neighbour ? locate(page.root, neighbour.id) : null;
+        const next = at ? relocate(page.root, action.id, at.parent.id, action.delta < 0 ? at.index : at.index + 1) : null;
+        return next ? commit(state, replacePage(s, page.path, withTree(page, next)), null) : state;
+      }
       return commit(
         state,
         mapPage(s, state.pagePath, (blocks) => {
@@ -163,6 +570,39 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
         }),
         null,
       );
+    }
+    case 'insertIntoTree': {
+      const page = s.pages.find((p) => p.path === state.pagePath);
+      if (!page || !isContainer(page.root)) return state;
+      if (pageBlocks(page).length >= MAX_BLOCKS_PER_PAGE || countNodes(page.root) >= MAX_NODES_PER_PAGE) return state;
+      const id = uniqueBlockId(s, action.widget);
+      const node = layoutNodeForWidget(id, action.widget, action.props);
+      const root = insertChild(page.root, action.parentId, action.index, node);
+      if (!root || treeDepth(root) > MAX_TREE_DEPTH || countNodes(root) > MAX_NODES_PER_PAGE) return state;
+      return commit(state, replacePage(s, page.path, withTree(page, root)), null, { selectedBlockId: id });
+    }
+    case 'moveNode': {
+      const page = pageHolding(s, action.id);
+      const root = page ? relocate(page.root, action.id, action.parentId, action.index) : null;
+      if (!page || !root) return state;
+      return commit(state, replacePage(s, page.path, withTree(page, root)), null, { pagePath: page.path, selectedBlockId: action.id });
+    }
+    case 'duplicateNode': {
+      const page = pageHolding(s, action.id);
+      const node = page ? findNode(page.root, action.id) : null;
+      const at = page ? locate(page.root, action.id) : null; // null for the page root: it can't be duplicated
+      if (!page || !node || !at) return state;
+      const copy = cloneNode(node, allIds(s));
+      const root = insertChild(page.root, at.parent.id, at.index + 1, copy);
+      if (!root) return state;
+      if (blocksFromTree(root).length > MAX_BLOCKS_PER_PAGE || countNodes(root) > MAX_NODES_PER_PAGE || treeDepth(root) > MAX_TREE_DEPTH) return state;
+      return commit(state, replacePage(s, page.path, withTree(page, root)), null, { pagePath: page.path, selectedBlockId: nodeId(copy) });
+    }
+    case 'removeNodeFromTree': {
+      const page = pageHolding(s, action.id);
+      if (!page || !locate(page.root, action.id)) return state; // unknown id, or the page root
+      return reconcile(commit(state, replacePage(s, page.path, withTree(page, removeNode(page.root, action.id))), null));
+    }
     case 'setProp':
       return commit(
         state,
@@ -174,6 +614,20 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
         }),
         `prop:${action.id}:${action.name}`,
       );
+    case 'setBlockStyle':
+      return commit(
+        state,
+        {
+          ...s,
+          pages: s.pages.map((p) => {
+            const root = updateNodeStyle(p.root, action.id, action.style);
+            return { ...p, root, blocks: blocksFromTree(root) };
+          }),
+        },
+        `style:${action.id}`,
+      );
+    case 'setContracts':
+      return commit(state, { ...s, contracts: action.contracts }, null);
     case 'selectBlock':
       return { ...state, selectedBlockId: action.id };
     case 'undo': {

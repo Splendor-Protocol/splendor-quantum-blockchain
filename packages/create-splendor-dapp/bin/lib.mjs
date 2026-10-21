@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TEMPLATES, createCatalog, generateProject, instantiateTemplate, validateSpec } from '@splendor/dapp-spec';
+import { TEMPLATES, createCatalog, generateProject, instantiateTemplate, updateBlockProps, validateSpec } from '@splendor/dapp-spec';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const FRAMEWORKS = ['vite', 'next'];
@@ -62,7 +62,7 @@ export function coerceProp(schema, raw, arg = raw) {
 }
 
 /** Build the project files for a template; throws with a readable message on bad input. */
-export function buildProject({ name, template, framework, network, set = [] }) {
+export function buildProject({ name, template, framework, network, set = [], sdk = 'npm', vendorFiles, vendorWasmBase64 }) {
   const t = TEMPLATES.find((x) => x.id === template);
   if (!t) throw new Error(`Unknown template "${template}". Choose one of: ${TEMPLATES.map((x) => x.id).join(', ')}`);
   if (!FRAMEWORKS.includes(framework)) throw new Error(`--framework must be ${FRAMEWORKS.join(' or ')}`);
@@ -74,10 +74,13 @@ export function buildProject({ name, template, framework, network, set = [] }) {
   for (const s of set) {
     const m = /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_]+)=(.*)$/.exec(s);
     if (!m) throw new Error(`--set expects block.prop=value, got "${s}"`);
-    const block = spec.pages.flatMap((p) => p.blocks).find((b) => b.id === m[1]);
+    const page = spec.pages.find((p) => (p.blocks ?? []).some((b) => b.id === m[1]));
+    const block = page?.blocks?.find((b) => b.id === m[1]);
     if (!block) throw new Error(`--set: no block "${m[1]}" in template ${t.id}`);
     const schema = catalog.find((e) => e.id === block.widget)?.props.find((p) => p.name === m[2]);
     block.props[m[2]] = coerceProp(schema, m[3], s);
+    // The layout tree is what gets validated and generated; keep it in step with the flat list.
+    page.root = updateBlockProps(page.root, block.id, block.props);
   }
   const v = validateSpec(spec, { catalog });
   if (!v.ok) {
@@ -86,7 +89,7 @@ export function buildProject({ name, template, framework, network, set = [] }) {
     throw new Error(`The template needs more input:\n${lines}${hints ? `\nProvide:\n${hints}` : ''}`);
   }
   const { connectReact, sqcSdk } = pinnedVersions();
-  return generateProject(v.spec, { framework, catalog, versions: { connectReact, sqcSdk } });
+  return generateProject(v.spec, { framework, catalog, versions: { connectReact, sqcSdk }, sdk, vendorFiles, vendorWasmBase64 });
 }
 
 /** True when `file` is `root` itself or inside it (a plain prefix check would accept /app-evil for /app). */

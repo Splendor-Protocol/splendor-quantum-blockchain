@@ -109,6 +109,40 @@ describe('csrf', () => {
   });
 });
 
+describe('workspaces', () => {
+  const spec = () => instantiateTemplate(TEMPLATES.find((t) => t.id === 'wallet-dashboard')!);
+
+  it('creates, lists, renames and deletes workspaces; projects can bind to one', async () => {
+    const user = await signIn(PUB_USER, USER);
+    expect((await app.inject({ method: 'GET', url: '/workspaces' })).statusCode).toBe(401);
+
+    const created = await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'Studio' }, user.cookie) });
+    expect(created.statusCode).toBe(201);
+    const wsId = created.json().id as string;
+
+    const listed = await app.inject({ method: 'GET', url: '/workspaces', headers: { cookie: user.cookie! } });
+    expect(listed.json().workspaces.some((w: { id: string }) => w.id === wsId)).toBe(true);
+
+    const renamed = await app.inject({ method: 'PATCH', url: `/workspaces/${wsId}`, ...json({ name: 'Renamed WS' }, user.cookie) });
+    expect(renamed.json().name).toBe('Renamed WS');
+
+    const project = await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec(), workspaceId: wsId }, user.cookie) });
+    expect(project.statusCode).toBe(201);
+    expect(project.json().workspaceId).toBe(wsId);
+
+    const inWs = await app.inject({ method: 'GET', url: `/workspaces/${wsId}/projects`, headers: { cookie: user.cookie! } });
+    expect(inWs.json().projects).toHaveLength(1);
+
+    const filtered = await app.inject({ method: 'GET', url: `/projects?workspaceId=${encodeURIComponent(wsId)}`, headers: { cookie: user.cookie! } });
+    expect(filtered.json().projects).toHaveLength(1);
+
+    const del = await app.inject({ method: 'DELETE', url: `/workspaces/${wsId}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    expect(del.statusCode).toBe(200);
+    const after = await app.inject({ method: 'GET', url: '/projects', headers: { cookie: user.cookie! } });
+    expect(after.json().projects[0].workspaceId).toBeNull();
+  });
+});
+
 describe('projects', () => {
   const spec = () => {
     const s = instantiateTemplate(TEMPLATES.find((t) => t.id === 'wallet-dashboard')!);

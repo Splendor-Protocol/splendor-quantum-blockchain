@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
-import { generateProject, type CatalogEntry, type DappSpec, type Framework } from '@splendor/dapp-spec';
+import { useEffect, useMemo, useState } from 'react';
+import { generateProject, type CatalogEntry, type DappSpec, type Framework, type GeneratedProject } from '@splendor/dapp-spec';
 import { CodeBlock } from '../components/CodeBlock';
 import { PACKAGE_VERSIONS } from '../config';
 import { deployLinks, downloadZip, openInStackBlitz } from './export';
+import { loadVendorOptions, sdkSourceLabel } from './vendor';
 
 export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog: readonly CatalogEntry[]; valid: boolean }) {
   const [framework, setFramework] = useState<Framework>('vite');
@@ -10,15 +11,25 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
   const [error, setError] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState('');
   const [peek, setPeek] = useState<string | null>(null);
+  const [vendor, setVendor] = useState<Awaited<ReturnType<typeof loadVendorOptions>> | null>(null);
+
+  useEffect(() => {
+    void loadVendorOptions().then(setVendor);
+  }, []);
 
   const project = useMemo(() => {
-    if (!valid) return null;
+    if (!valid || !vendor) return null;
     try {
-      return generateProject(spec, { framework, catalog, versions: PACKAGE_VERSIONS });
+      return generateProject(spec, {
+        framework,
+        catalog,
+        versions: PACKAGE_VERSIONS,
+        ...vendor,
+      });
     } catch (e) {
       return e instanceof Error ? e : new Error(String(e));
     }
-  }, [spec, framework, catalog, valid]);
+  }, [spec, framework, catalog, valid, vendor]);
 
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label);
@@ -33,7 +44,7 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
   };
 
   const links = deployLinks(repoUrl);
-  const ready = project && !(project instanceof Error) ? project : null;
+  const ready: GeneratedProject | null = project && !(project instanceof Error) ? project : null;
 
   return (
     <div className="pg-stack" data-testid="export-panel">
@@ -47,7 +58,7 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
       {!valid ? <p className="pg-error">Fix the issues listed under the preview before exporting.</p> : null}
       {project instanceof Error ? <p className="pg-error">{project.message}</p> : null}
       <p className="pg-muted" style={{ margin: 0 }}>
-        Pins <code>@splendor/connect-react@^{PACKAGE_VERSIONS.connectReact}</code> and <code>@splendor/sqc-sdk@^{PACKAGE_VERSIONS.sqcSdk}</code> from npm.
+        Uses the {sdkSourceLabel(vendor)}. Set <code>VITE_PLAYGROUND_SDK_SOURCE=npm</code> after publishing the packages.
       </p>
       <button type="button" className="pg-btn" disabled={!ready || !!busy} data-testid="export-zip" onClick={() => ready && void run('zip', () => downloadZip(ready))}>
         {busy === 'zip' ? 'Preparing…' : 'Download .zip'}
@@ -105,13 +116,16 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
         <details>
           <summary>Files ({Object.keys(ready.files).length})</summary>
           <ul className="pg-list">
-            {Object.keys(ready.files).map((f) => (
-              <li key={f}>
-                <button type="button" className={peek === f ? 'is-active' : ''} onClick={() => setPeek(peek === f ? null : f)}>
-                  <code>{f}</code>
-                </button>
-              </li>
-            ))}
+            {Object.keys(ready.files)
+              .filter((f) => !f.startsWith('vendor/') || f.endsWith('package.json'))
+              .slice(0, 80)
+              .map((f) => (
+                <li key={f}>
+                  <button type="button" className={peek === f ? 'is-active' : ''} onClick={() => setPeek(peek === f ? null : f)}>
+                    <code>{f}</code>
+                  </button>
+                </li>
+              ))}
           </ul>
           {peek && ready.files[peek] != null ? <CodeBlock code={ready.files[peek]!} /> : null}
         </details>

@@ -4,7 +4,12 @@
 // workspace links, so a missing `files` entry or export fails here rather than
 // for the first user), and runs each project's production build.
 //
-//   node scripts/codegen-build-matrix.mjs [--templates=a,b] [--frameworks=vite,next] [--out=dir] [--keep]
+//   node scripts/codegen-build-matrix.mjs [--templates=a,b] [--frameworks=vite,next] [--out=dir] [--keep] [--sdk=npm|vendor]
+//
+// --sdk=npm (default) installs the SDKs from `npm pack` tarballs of this checkout.
+// --sdk=vendor generates the projects the way the playground exports them with
+// VITE_PLAYGROUND_SDK_SOURCE=vendor: `file:vendor/@splendor/*` dependencies plus the vendored
+// package trees from apps/playground/public/vendor/vendor-bundle.json. Run `npm run pack:sdk-vendor` first.
 //
 // Needs the packages built first: the signer (sdk/sqc-sdk/wasm/build.sh) and
 // `npm run build:packages`.
@@ -24,6 +29,23 @@ const args = Object.fromEntries(
 );
 
 const SAMPLE_ADDRESS = `SQ:${'5a'.repeat(32)}`;
+
+const SDK_MODE = typeof args.sdk === 'string' ? args.sdk : 'npm';
+if (SDK_MODE !== 'npm' && SDK_MODE !== 'vendor') {
+  console.error(`--sdk must be "npm" or "vendor", got "${SDK_MODE}"`);
+  process.exit(1);
+}
+
+/** Vendored package files as the playground loads them (`vendor-bundle.json`), or exits with a hint. */
+function loadVendorBundle() {
+  const file = join(root, 'apps/playground/public/vendor/vendor-bundle.json');
+  if (!existsSync(file)) {
+    console.error(`Missing ${file}\nRun \`npm run pack:sdk-vendor\` first.`);
+    process.exit(1);
+  }
+  const vendorFiles = JSON.parse(readFileSync(file, 'utf8'));
+  return { vendorFiles, vendorWasmBase64: vendorFiles['vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm.b64'] };
+}
 
 function run(cmd, cmdArgs, cwd, { quiet = false } = {}) {
   const r = spawnSync(cmd, cmdArgs, {
@@ -104,7 +126,9 @@ async function main() {
   const work = resolve(typeof args.out === 'string' ? args.out : join(tmpdir(), `splendor-codegen-${Date.now()}`));
   mkdirSync(work, { recursive: true });
   console.log(`Working in ${work}`);
-  const tarballs = pack(join(work, 'tarballs'));
+  const vendor = SDK_MODE === 'vendor' ? loadVendorBundle() : null;
+  const tarballs = vendor ? null : pack(join(work, 'tarballs'));
+  console.log(`SDK source: ${SDK_MODE}`);
 
   const results = [];
   for (const templateId of templates) {
@@ -118,12 +142,25 @@ async function main() {
       let error = null;
       try {
         const set = template.setup.map((s) => `${s.blockId}.${s.prop}=${SAMPLE_ADDRESS}`);
-        const project = lib.buildProject({ name: `${templateId}-${framework}`, template: templateId, framework, network: 'testnet', set });
+        const project = lib.buildProject({
+          name: `${templateId}-${framework}`,
+          template: templateId,
+          framework,
+          network: 'testnet',
+          set,
+          ...(vendor ? { sdk: 'vendor', ...vendor } : {}),
+        });
         lib.writeProject(dir, project.files);
 
         const pkgPath = join(dir, 'package.json');
         const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-        for (const [name, file] of Object.entries(tarballs)) pkg.dependencies[name] = `file:${file.replace(/\\/g, '/')}`;
+        if (vendor) {
+          // The generator already emitted file:vendor/@splendor/* deps; fail early if it did not.
+          const bad = Object.entries(pkg.dependencies).filter(([n, v]) => n.startsWith('@splendor/') && !String(v).startsWith('file:vendor/'));
+          if (bad.length) throw new Error(`vendor mode: expected file:vendor deps, got ${JSON.stringify(Object.fromEntries(bad))}`);
+        } else {
+          for (const [name, file] of Object.entries(tarballs)) pkg.dependencies[name] = `file:${file.replace(/\\/g, '/')}`;
+        }
         pkg.overrides = { '@splendor/sqc-sdk': '$@splendor/sqc-sdk' };
         writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
 

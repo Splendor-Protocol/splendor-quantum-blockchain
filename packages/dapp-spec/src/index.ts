@@ -5,6 +5,7 @@ export { BLOCK_MANIFESTS, blockSource, type BlockManifest } from './blocks.js';
 export { createCatalog, defaultProps, type CatalogFlags } from './catalog.js';
 export {
   APP_CSS,
+  actionsSource,
   generateProject,
   blockSnippet,
   slugify,
@@ -12,5 +13,35 @@ export {
   type GenerateOptions,
   type GeneratedProject,
   type PackageVersions,
+  type SdkSource,
 } from './codegen.js';
-export { TEMPLATES, getTemplate, emptySpec, instantiateTemplate, type DappTemplate } from './templates.js';
+export {
+  TEMPLATES,
+  PAGE_TEMPLATES,
+  getTemplate,
+  getPageTemplate,
+  emptySpec,
+  instantiateTemplate,
+  type DappTemplate,
+  type PageTemplate,
+} from './templates.js';
+export { THEME_PRESETS, getThemePreset, applyThemePreset, type ThemePreset } from './themes.js';
+export {
+  CONTAINER_KINDS,
+  isContainer,
+  blocksFromTree,
+  walk,
+  findNode,
+  nodeId,
+  countNodes,
+  treeDepth,
+  wrapBlocks,
+  emptySection,
+  mapTree,
+  insertChild,
+  removeNode,
+  moveChild,
+  updateNodeStyle,
+  updateBlockProps,
+  styleToCss,
+} from './tree.js';

@@ -1,4 +1,4 @@
-import type { CatalogEntry, DappSpec, ValidationIssue } from '@splendor/dapp-spec';
+import { blocksFromTree, type CatalogEntry, type DappSpec, type ValidationIssue } from '@splendor/dapp-spec';
 
 export type DescribedIssue = {
   /** Where, in the words the builder UI uses: "Tip → Tip jar → Recipient". */
@@ -26,7 +26,7 @@ export function describeIssue(spec: DappSpec, catalog: readonly CatalogEntry[], 
   const page = spec.pages[Number(m[1])];
   const pageName = page?.title?.trim() || `Page ${Number(m[1]) + 1}`;
   if (m[2] == null) return { where: m[5] ? `${pageName} → ${m[5]}` : pageName, message, target: null };
-  const block = page?.blocks[Number(m[2])];
+  const block = page ? (page.blocks ?? blocksFromTree(page.root))[Number(m[2])] : undefined;
   const entry = block ? catalog.find((e) => e.id === block.widget) : undefined;
   const blockName = entry?.title ?? block?.widget ?? `Block ${Number(m[2]) + 1}`;
   const prop = m[3] ?? null;

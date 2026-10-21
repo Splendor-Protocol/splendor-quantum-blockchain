@@ -1,7 +1,10 @@
 import { BLOCK_MANIFESTS, blockSource } from './blocks.js';
-import type { CatalogEntry, DappBlock, DappPage, DappSpec, PropValue, ThemeOverrides } from './types.js';
+import { blocksFromTree, styleToCss } from './tree.js';
+import type { BlockAction, CatalogEntry, DappBlock, DappPage, DappSpec, LayoutNode, PropValue, ThemeOverrides } from './types.js';
 
 export type Framework = 'vite' | 'next';
+/** `npm` pins registry versions; `vendor` uses file:vendor/@splendor/* (for StackBlitz / unpublished SDKs). */
+export type SdkSource = 'npm' | 'vendor';
 
 /** Published package versions to pin (`3.0.0` becomes `^3.0.0`; ranges are kept as given). */
 export type PackageVersions = { sqcSdk: string; connectReact: string };
@@ -11,6 +14,16 @@ export type GenerateOptions = {
   /** Placeable items (widgets from the connect-react manifest + `BLOCK_MANIFESTS`). */
   catalog: readonly CatalogEntry[];
   versions: PackageVersions;
+  /** How to depend on the Splendor packages. Default `npm`. */
+  sdk?: SdkSource;
+  /**
+   * Extra files to merge into the project (e.g. vendored package trees under `vendor/`).
+   * Keys are relative paths; values are file contents (text). Binary wasm should be provided
+   * as base64 via `vendorWasmBase64` instead.
+   */
+  vendorFiles?: Record<string, string>;
+  /** Base64 of `sqc_signer.wasm` written as `vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm.b64`. */
+  vendorWasmBase64?: string;
 };
 
 /** Relative path → file contents. Pure data: the generator never writes to disk or runs code. */
@@ -63,10 +76,15 @@ function themeConst(overrides: ThemeOverrides): string {
 
 type Resolved = { page: DappPage; component: string; usedWidgets: CatalogEntry[]; usedBlocks: CatalogEntry[] };
 
+function pageBlocks(page: DappPage): DappBlock[] {
+  if (page.root) return blocksFromTree(page.root);
+  return page.blocks ?? [];
+}
+
 function resolvePages(spec: DappSpec, catalog: readonly CatalogEntry[]): Resolved[] {
   const byId = new Map(catalog.map((c) => [c.id, c]));
   return spec.pages.map((page) => {
-    const entries = page.blocks.map((b) => {
+    const entries = pageBlocks(page).map((b) => {
       const e = byId.get(b.widget);
       if (!e) throw new Error(`dapp-spec codegen: unknown widget "${b.widget}" (validate the spec first)`);
       return e;
@@ -81,6 +99,29 @@ function resolvePages(spec: DappSpec, catalog: readonly CatalogEntry[]): Resolve
   });
 }
 
+function styleAttr(style: Record<string, string> | undefined, indent: string): string {
+  if (!style || !Object.keys(style).length) return '';
+  const inner = Object.entries(style)
+    .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+    .join(', ');
+  return `\n${indent}  style={{ ${inner} }}`;
+}
+
+function renderTree(node: LayoutNode, byId: Map<string, CatalogEntry>, indent: string): string {
+  if (node.kind === 'block') {
+    const entry = byId.get(node.block.widget);
+    if (!entry) throw new Error(`dapp-spec codegen: unknown widget "${node.block.widget}"`);
+    return renderBlock(node.block, entry, indent);
+  }
+  const cls = `dapp-${node.kind}`;
+  const hide = node.style?.hideOn ? ` dapp-hide-${node.style.hideOn}` : '';
+  const style = styleToCss(node.style);
+  const open = `${indent}<div className="${cls}${hide}" data-node-id=${JSON.stringify(node.id)}${styleAttr(style, indent)}>`;
+  if (!node.children.length) return `${open}\n${indent}</div>`;
+  const kids = node.children.map((c) => renderTree(c, byId, indent + '  ')).join('\n');
+  return `${open}\n${kids}\n${indent}</div>`;
+}
+
 function pageSource(r: Resolved, opts: { blocksDir: string; client: boolean }, catalog: readonly CatalogEntry[]): string {
   const byId = new Map(catalog.map((c) => [c.id, c]));
   const lines: string[] = [];
@@ -93,13 +134,16 @@ function pageSource(r: Resolved, opts: { blocksDir: string; client: boolean }, c
   for (const [pkg, names] of pkgs) lines.push(`import { ${[...new Set(names)].sort().join(', ')} } from '${pkg}';`);
   for (const b of r.usedBlocks) lines.push(`import { ${b.importName} } from '${opts.blocksDir}/${b.importName}';`);
   if (lines.length) lines.push('');
-  const body = r.page.blocks.length
-    ? r.page.blocks.map((b) => renderBlock(b, byId.get(b.widget)!, '      ')).join('\n')
-    : '      <p className="dapp-empty">This page has no blocks yet.</p>';
+  const root = r.page.root;
+  const body = root
+    ? renderTree(root, byId, '      ')
+    : pageBlocks(r.page).length
+      ? pageBlocks(r.page).map((b) => renderBlock(b, byId.get(b.widget)!, '      ')).join('\n')
+      : '      <p className="dapp-empty">This page has no blocks yet.</p>';
   lines.push(
     `export function ${r.component}() {`,
     '  return (',
-    '    <div className="dapp-grid">',
+    '    <div className="dapp-page">',
     body,
     '    </div>',
     '  );',
@@ -107,6 +151,16 @@ function pageSource(r: Resolved, opts: { blocksDir: string; client: boolean }, c
     '',
   );
   return lines.join('\n');
+}
+
+function depVersions(v: PackageVersions, sdk: SdkSource): { connectReact: string; sqcSdk: string } {
+  if (sdk === 'vendor') {
+    return {
+      connectReact: 'file:vendor/@splendor/connect-react',
+      sqcSdk: 'file:vendor/@splendor/sqc-sdk',
+    };
+  }
+  return { connectReact: range(v.connectReact), sqcSdk: range(v.sqcSdk) };
 }
 
 /** Layout CSS of generated apps. The playground preview mirrors its `.dapp-*` rules. */
@@ -156,11 +210,59 @@ body {
 .dapp-nav a[aria-current='page'] {
   color: var(--sqc-accent, #7c5cff);
 }
+.dapp-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.dapp-section {
+  width: 100%;
+  max-width: var(--dapp-section-max, 1120px);
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  box-sizing: border-box;
+}
+.dapp-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.dapp-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: stretch;
+}
+.dapp-column {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.dapp-card {
+  border: 1px solid var(--sqc-border, #262b38);
+  background: var(--sqc-surface, #12151d);
+  border-radius: var(--sqc-radius, 12px);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
 .dapp-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 1rem;
   align-items: start;
+}
+@media (max-width: 720px) {
+  .dapp-hide-mobile { display: none !important; }
+}
+@media (min-width: 721px) {
+  .dapp-hide-desktop { display: none !important; }
 }
 .dapp-stats {
   display: grid;
@@ -258,8 +360,15 @@ when you add one, include \`'wasm-unsafe-eval'\` in \`script-src\` for the signe
 `;
 }
 
-function viteFiles(spec: DappSpec, pages: Resolved[], catalog: readonly CatalogEntry[], v: PackageVersions): Record<string, string> {
+function viteFiles(
+  spec: DappSpec,
+  pages: Resolved[],
+  catalog: readonly CatalogEntry[],
+  v: PackageVersions,
+  sdk: SdkSource,
+): Record<string, string> {
   const name = slugify(spec.name);
+  const deps = depVersions(v, sdk);
   const files: Record<string, string> = {};
   files['package.json'] =
     JSON.stringify(
@@ -268,10 +377,15 @@ function viteFiles(spec: DappSpec, pages: Resolved[], catalog: readonly CatalogE
         private: true,
         version: '0.1.0',
         type: 'module',
-        scripts: { dev: 'vite', build: 'tsc --noEmit && vite build', preview: 'vite preview' },
+        scripts: {
+          ...(sdk === 'vendor' ? { postinstall: 'node scripts/decode-wasm.mjs' } : {}),
+          dev: 'vite',
+          build: 'tsc --noEmit && vite build',
+          preview: 'vite preview',
+        },
         dependencies: {
-          '@splendor/connect-react': range(v.connectReact),
-          '@splendor/sqc-sdk': range(v.sqcSdk),
+          '@splendor/connect-react': deps.connectReact,
+          '@splendor/sqc-sdk': deps.sqcSdk,
           react: TOOLING.react,
           'react-dom': TOOLING.react,
         },
@@ -472,8 +586,15 @@ function addBlocks(files: Record<string, string>, pages: Resolved[], dir: string
   }
 }
 
-function nextFiles(spec: DappSpec, pages: Resolved[], catalog: readonly CatalogEntry[], v: PackageVersions): Record<string, string> {
+function nextFiles(
+  spec: DappSpec,
+  pages: Resolved[],
+  catalog: readonly CatalogEntry[],
+  v: PackageVersions,
+  sdk: SdkSource,
+): Record<string, string> {
   const name = slugify(spec.name);
+  const deps = depVersions(v, sdk);
   const files: Record<string, string> = {};
   files['package.json'] =
     JSON.stringify(
@@ -482,6 +603,7 @@ function nextFiles(spec: DappSpec, pages: Resolved[], catalog: readonly CatalogE
         private: true,
         version: '0.1.0',
         scripts: {
+          ...(sdk === 'vendor' ? { postinstall: 'node scripts/decode-wasm.mjs' } : {}),
           predev: 'node scripts/copy-sqc-wasm.mjs',
           dev: 'next dev',
           prebuild: 'node scripts/copy-sqc-wasm.mjs',
@@ -489,8 +611,8 @@ function nextFiles(spec: DappSpec, pages: Resolved[], catalog: readonly CatalogE
           start: 'next start',
         },
         dependencies: {
-          '@splendor/connect-react': range(v.connectReact),
-          '@splendor/sqc-sdk': range(v.sqcSdk),
+          '@splendor/connect-react': deps.connectReact,
+          '@splendor/sqc-sdk': deps.sqcSdk,
           next: TOOLING.next,
           react: TOOLING.react,
           'react-dom': TOOLING.react,
@@ -697,16 +819,332 @@ export default function Page() {
   return files;
 }
 
+function contractsSource(spec: DappSpec): string {
+  const list = spec.contracts ?? [];
+  const entries = list
+    .map((c) => {
+      const fns = c.functions
+        .map(
+          (f) =>
+            `    { name: ${JSON.stringify(f.name)}, signature: ${JSON.stringify(f.signature)}, kind: ${JSON.stringify(f.kind)}, params: ${JSON.stringify(f.params)}${f.returns ? `, returns: ${JSON.stringify(f.returns)}` : ''} }`,
+        )
+        .join(',\n');
+      return `  ${JSON.stringify(c.id)}: {\n    id: ${JSON.stringify(c.id)},\n    name: ${JSON.stringify(c.name)},\n    address: ${JSON.stringify(c.address)},\n    functions: [\n${fns}\n    ],\n  }`;
+    })
+    .join(',\n');
+  const firstRead = list.flatMap((c) => c.functions.filter((f) => f.kind === 'read').map((f) => ({ c, f })))[0];
+  const firstWrite = list.flatMap((c) => c.functions.filter((f) => f.kind === 'write').map((f) => ({ c, f })))[0];
+  const readId = JSON.stringify(firstRead?.c.id ?? 'token');
+  const readSig = JSON.stringify(firstRead?.f.signature ?? 'balanceOf(address)');
+  const writeId = JSON.stringify(firstWrite?.c.id ?? 'token');
+  const writeSig = JSON.stringify(firstWrite?.f.signature ?? 'transfer(address,uint256)');
+  return `/**
+ * Contracts bound in the Splendor dApp Studio.
+ *
+ * \`CONTRACTS\` is plain metadata (no wallet, no network). The helpers below turn it into the
+ * arguments that \`useReadContract\` / \`useContract\` from \`@splendor/connect-react\` expect.
+ */
+export type ContractParam = { readonly name: string; readonly type: string };
+export type ContractFunctionMeta = {
+  readonly name: string;
+  readonly signature: string;
+  readonly kind: 'read' | 'write';
+  readonly params: readonly ContractParam[];
+  readonly returns?: string;
+};
+export type ContractMeta = {
+  readonly id: string;
+  readonly name: string;
+  readonly address: string;
+  readonly functions: readonly ContractFunctionMeta[];
+};
+
+export const CONTRACTS = ${entries ? `{\n${entries}\n}` : '{}'} as const satisfies Record<string, ContractMeta>;
+
+export type ContractId = keyof typeof CONTRACTS;
+
+/** Look up a bound contract. Throws on an unknown id so typos fail loudly. */
+export function getContract(id: ContractId): ContractMeta {
+  const c = (CONTRACTS as Record<string, ContractMeta>)[id];
+  if (!c) throw new Error(\`Unknown contract "\${String(id)}"\`);
+  return c;
+}
+
+/** Find a function by name or full signature, e.g. \`balanceOf\` or \`balanceOf(address)\`. */
+export function getContractFunction(id: ContractId, nameOrSignature: string): ContractFunctionMeta {
+  const fn = getContract(id).functions.find((f) => f.name === nameOrSignature || f.signature === nameOrSignature);
+  if (!fn) throw new Error(\`Contract "\${String(id)}" has no function "\${nameOrSignature}"\`);
+  return fn;
+}
+
+export type ContractCallTarget = {
+  address: string;
+  signature: string;
+  kind: 'read' | 'write';
+  args: unknown[];
+};
+
+/** Everything a hook needs for one call: \`address\`, \`signature\` and \`args\`. */
+export function contractCall(id: ContractId, nameOrSignature: string, args: unknown[] = []): ContractCallTarget {
+  const fn = getContractFunction(id, nameOrSignature);
+  return { address: getContract(id).address, signature: fn.signature, kind: fn.kind, args };
+}
+
+/** Shorthand for read-only functions. Throws if the function writes state. */
+export function readCall(id: ContractId, nameOrSignature: string, args: unknown[] = []): ContractCallTarget {
+  const t = contractCall(id, nameOrSignature, args);
+  if (t.kind !== 'read') throw new Error(\`\${t.signature} is a write function: use writeCall\`);
+  return t;
+}
+
+/** Shorthand for state-changing functions. Throws if the function is read-only. */
+export function writeCall(id: ContractId, nameOrSignature: string, args: unknown[] = []): ContractCallTarget {
+  const t = contractCall(id, nameOrSignature, args);
+  if (t.kind !== 'write') throw new Error(\`\${t.signature} is a read function: use readCall\`);
+  return t;
+}
+
+/*
+ * Patterns (copy into a component; hooks only work inside <SplendorConnectProvider>):
+ *
+ * // 1. Read without a wallet, re-run every 10s
+ * import { useReadContract } from '@splendor/connect-react';
+ * import { readCall } from './contracts';
+ *
+ * function Value() {
+ *   const t = readCall(${readId}, ${readSig});
+ *   const { data, loading, error } = useReadContract(t.address, t.signature, t.args, { pollMs: 10_000 });
+ *   if (loading) return <p>Loading…</p>;
+ *   if (error) return <p role="alert">{String(error)}</p>;
+ *   return <p>{data?.return_data}</p>;
+ * }
+ *
+ * // 2. Write (signs a transaction with the connected wallet)
+ * import { useContract } from '@splendor/connect-react';
+ * import { writeCall } from './contracts';
+ *
+ * function Send() {
+ *   const t = writeCall(${writeId}, ${writeSig}, []);
+ *   const contract = useContract(t.address);
+ *   return (
+ *     <button disabled={contract.status === 'pending'} onClick={() => void contract.call(t.signature, t.args)}>
+ *       Send
+ *     </button>
+ *   );
+ * }
+ */
+`;
+}
+
+type ActionEntry = {
+  id: string;
+  page: string;
+  widget: string;
+  label?: string;
+  action: BlockAction;
+};
+
+/** Props that may carry a navigation / contract action. `format: 'action'` props are added from the catalog. */
+const ACTION_PROP_KEYS = ['action', 'href', 'ctaPath', 'buttonPath', 'link'] as const;
+const LABEL_PROP_KEYS = ['label', 'ctaLabel', 'buttonLabel', 'heading', 'title'] as const;
+
+/** Parse one prop value into a `BlockAction`: JSON, `contract:<id>.<fn>`, `https://…` or a page path. */
+function parseActionValue(value: PropValue | undefined): BlockAction | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  if (!v) return null;
+  if (v.startsWith('{')) {
+    try {
+      const a = JSON.parse(v) as Record<string, unknown>;
+      if (a.type === 'page' && typeof a.path === 'string') return { type: 'page', path: normalizePagePath(a.path) };
+      if (a.type === 'url' && typeof a.href === 'string') return { type: 'url', href: a.href };
+      if (a.type === 'contract' && typeof a.contractId === 'string' && typeof a.fn === 'string') {
+        return { type: 'contract', contractId: a.contractId, fn: a.fn, ...(typeof a.argsFrom === 'string' ? { argsFrom: a.argsFrom } : {}) };
+      }
+    } catch {
+      /* fall through: not JSON */
+    }
+    return null;
+  }
+  const c = /^contract:([^.\s]+)\.(.+)$/.exec(v);
+  if (c) return { type: 'contract', contractId: c[1]!, fn: c[2]! };
+  if (/^https?:\/\//i.test(v)) return { type: 'url', href: v };
+  if (v.startsWith('/') || v.startsWith('#/')) return { type: 'page', path: normalizePagePath(v) };
+  return null;
+}
+
+function normalizePagePath(p: string): string {
+  const s = p.replace(/^#/, '');
+  return s.startsWith('/') ? s : `/${s}`;
+}
+
+/** Collect every button-like action from the spec (action-button, hero/CTA paths, `action` props). */
+function collectActions(spec: DappSpec, catalog?: readonly CatalogEntry[]): ActionEntry[] {
+  const byId = new Map((catalog ?? []).map((c) => [c.id, c]));
+  const out: ActionEntry[] = [];
+  const seen = new Set<string>();
+  for (const page of spec.pages) {
+    for (const block of pageBlocks(page)) {
+      const keys = new Set<string>(ACTION_PROP_KEYS);
+      for (const p of byId.get(block.widget)?.props ?? []) if (p.format === 'action') keys.add(p.name);
+      let action: BlockAction | null = null;
+      for (const key of keys) {
+        action = parseActionValue(block.props[key]);
+        if (action) break;
+      }
+      if (!action && typeof block.props.contractId === 'string' && typeof block.props.fn === 'string' && block.props.contractId && block.props.fn) {
+        action = {
+          type: 'contract',
+          contractId: block.props.contractId,
+          fn: block.props.fn,
+          ...(typeof block.props.argsFrom === 'string' && block.props.argsFrom ? { argsFrom: block.props.argsFrom } : {}),
+        };
+      }
+      if (!action) continue;
+      const key = `${page.path}:${block.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const label = LABEL_PROP_KEYS.map((k) => block.props[k]).find((v): v is string => typeof v === 'string' && v.trim() !== '');
+      out.push({ id: block.id, page: page.path, widget: block.widget, ...(label ? { label } : {}), action });
+    }
+  }
+  return out;
+}
+
+/**
+ * Source of `src/actions.ts` (Vite) / `app/actions.ts` (Next): the actions found on buttons
+ * and CTAs, plus helpers to resolve and run them. Pure data and functions; no hooks.
+ */
+export function actionsSource(spec: DappSpec, opts: { framework?: Framework; catalog?: readonly CatalogEntry[] } = {}): string {
+  const framework = opts.framework ?? 'vite';
+  const entries = collectActions(spec, opts.catalog);
+  const pagePaths = spec.pages.map((p) => p.path);
+  const list = entries.length
+    ? `[\n${entries
+        .map((e) => `  { id: ${JSON.stringify(e.id)}, page: ${JSON.stringify(e.page)}, widget: ${JSON.stringify(e.widget)}${e.label ? `, label: ${JSON.stringify(e.label)}` : ''}, action: ${JSON.stringify(e.action)} }`)
+        .join(',\n')}\n]`
+    : '[]';
+  const hash = framework === 'vite';
+  return `import { CONTRACTS, contractCall, type ContractCallTarget, type ContractId } from './contracts';
+
+/** Declarative button / CTA action, as saved in the Splendor dApp Studio. */
+export type BlockAction =
+  | { type: 'page'; path: string }
+  | { type: 'url'; href: string }
+  | { type: 'contract'; contractId: string; fn: string; argsFrom?: string };
+
+export type ActionEntry = {
+  /** Block id on its page. */
+  id: string;
+  page: string;
+  widget: string;
+  label?: string;
+  action: BlockAction;
+};
+
+/** Routes of this app. */
+export const PAGE_PATHS = ${JSON.stringify(pagePaths)} as const;
+export type PagePath = (typeof PAGE_PATHS)[number];
+
+/** Actions found on buttons and CTAs when the project was exported. */
+export const ACTIONS: readonly ActionEntry[] = ${list};
+
+export function actionsForPage(path: string): ActionEntry[] {
+  return ACTIONS.filter((a) => a.page === path);
+}
+
+export function getAction(pagePath: string, blockId: string): BlockAction | undefined {
+  return ACTIONS.find((a) => a.page === pagePath && a.id === blockId)?.action;
+}
+
+/** Link target of a page: ${hash ? 'hash routing (`#/path`)' : 'the route path'}. */
+export function pageHref(path: string): string {
+  const p = path.replace(/^#/, '');
+  return ${hash ? "`#${p.startsWith('/') ? p : `/${p}`}`" : "p.startsWith('/') ? p : `/${p}`"};
+}
+
+/** Only http(s) links are allowed; anything else (javascript:, data:) returns null. */
+export function safeUrl(href: string): string | null {
+  try {
+    const u = new URL(href);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** \`href\` for page and url actions; null for contract actions (they need a handler). */
+export function actionHref(action: BlockAction): string | null {
+  if (action.type === 'page') return pageHref(action.path);
+  if (action.type === 'url') return safeUrl(action.href);
+  return null;
+}
+
+/** Contract metadata + call target for a contract action (feed it to \`useReadContract\` / \`useContract\`). */
+export function resolveContractAction(action: Extract<BlockAction, { type: 'contract' }>, args: unknown[] = []): ContractCallTarget {
+  if (!(action.contractId in CONTRACTS)) throw new Error(\`Unknown contract "\${action.contractId}"\`);
+  return contractCall(action.contractId as ContractId, action.fn, args);
+}
+
+export type RunActionOptions = {
+  /** Called for contract actions. Run the call with \`useReadContract\` / \`useContract\` there. */
+  onContract?: (target: ContractCallTarget, action: Extract<BlockAction, { type: 'contract' }>) => void | Promise<void>;
+${hash ? '' : "  /** Client-side navigation, e.g. `router.push` from `next/navigation`. Defaults to a full page load. */\n  navigate?: (path: string) => void;\n"}  /** Arguments for contract actions. */
+  args?: unknown[];
+};
+
+/** Run an action in the browser. Pages navigate, urls open in a new tab, contracts go to \`onContract\`. */
+export async function runAction(action: BlockAction, opts: RunActionOptions = {}): Promise<void> {
+  if (action.type === 'page') {
+${hash ? "    window.location.hash = pageHref(action.path).slice(1);" : "    if (opts.navigate) opts.navigate(pageHref(action.path));\n    else window.location.assign(pageHref(action.path));"}
+    return;
+  }
+  if (action.type === 'url') {
+    const href = safeUrl(action.href);
+    if (href) window.open(href, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  await opts.onContract?.(resolveContractAction(action, opts.args ?? []), action);
+}
+`;
+}
+
+function decodeWasmScript(): string {
+  return `import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const b64 = join(root, 'vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm.b64');
+const out = join(root, 'vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm');
+if (existsSync(b64) && !existsSync(out)) {
+  writeFileSync(out, Buffer.from(readFileSync(b64, 'utf8'), 'base64'));
+  console.log('[decode-wasm] wrote sqc_signer.wasm');
+}
+`;
+}
+
 /** Generate a ready-to-run project. Validate the spec first; this throws on unknown widgets. */
 export function generateProject(spec: DappSpec, opts: GenerateOptions): GeneratedProject {
+  const sdk = opts.sdk ?? 'npm';
   const pages = resolvePages(spec, opts.catalog);
   const files = opts.framework === 'vite'
-    ? viteFiles(spec, pages, opts.catalog, opts.versions)
-    : nextFiles(spec, pages, opts.catalog, opts.versions);
+    ? viteFiles(spec, pages, opts.catalog, opts.versions, sdk)
+    : nextFiles(spec, pages, opts.catalog, opts.versions, sdk);
   files['README.md'] = readme(spec, opts.framework);
   files['.gitignore'] = opts.framework === 'vite'
     ? 'node_modules\ndist\n.env*.local\n'
     : 'node_modules\n.next\nout\n.env*.local\npublic/sqc_signer.wasm\npublic/wasm_exec.js\n';
+  const appDir = opts.framework === 'vite' ? 'src' : 'app';
+  files[`${appDir}/contracts.ts`] = contractsSource(spec);
+  files[`${appDir}/actions.ts`] = actionsSource(spec, { framework: opts.framework, catalog: opts.catalog });
+  if (sdk === 'vendor') {
+    files['scripts/decode-wasm.mjs'] = decodeWasmScript();
+    if (opts.vendorFiles) Object.assign(files, opts.vendorFiles);
+    if (opts.vendorWasmBase64) {
+      files['vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm.b64'] = opts.vendorWasmBase64;
+    }
+  }
   const sorted: Record<string, string> = {};
   for (const k of Object.keys(files).sort()) sorted[k] = files[k]!;
   return { name: slugify(spec.name), framework: opts.framework, files: sorted };

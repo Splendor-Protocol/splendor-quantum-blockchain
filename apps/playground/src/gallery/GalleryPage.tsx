@@ -2,9 +2,9 @@ import { useMemo, useState } from 'react';
 import { Link, NavLink, useNavigate, useParams } from 'react-router-dom';
 import {
   DAPP_SPEC_VERSION,
-  blockSnippet,
   defaultProps,
   validateSpec,
+  wrapBlocks,
   type CatalogEntry,
   type DappSpec,
   type PropValue,
@@ -17,25 +17,21 @@ import { DEFAULT_NETWORK } from '../config';
 import { DEMO_RECIPIENT, type MockWalletState } from '../preview/mock';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import { useRegistry } from '../registry';
+import { groupMeta, groupOrder } from '../registry/groups';
 import { PartPreview, hasPartPreview } from './PartPreview';
+import { componentExport, downloadText, embedSnippet, fullPageSource, reactUsage } from './codeExport';
 
 export function StatusBadge({ status }: { status: CatalogEntry['status'] }) {
   if (status === 'stable') return null;
   return <span className={`pg-badge pg-badge-${status}`}>{status}</span>;
 }
 
-function providerSnippet(theme: ThemeValue): string {
-  const themeProp = Object.keys(theme.overrides).length
-    ? `theme={${JSON.stringify({ ...(theme.base !== 'splendor' ? { base: theme.base } : {}), ...theme.overrides })}}`
-    : `theme="${theme.base}"`;
-  return `import '@splendor/connect-react/style.css';
-import { SplendorConnectProvider, ConnectKit } from '@splendor/connect-react';
-
-<SplendorConnectProvider network="testnet" connectors="auto" ${themeProp}>
-  <ConnectKit />
-  {/* widgets go here */}
-</SplendorConnectProvider>`;
-}
+type CodeView = 'react' | 'embed' | 'page';
+const CODE_VIEWS: readonly { id: CodeView; label: string }[] = [
+  { id: 'react', label: 'React' },
+  { id: 'embed', label: 'Embed' },
+  { id: 'page', label: 'Full page' },
+];
 
 /**
  * Defaults plus demo values for required fields, so a widget previews right away instead of
@@ -73,15 +69,29 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
   const [theme, setTheme] = useState<ThemeValue>({ base: 'splendor', overrides: {} });
   const [walletState, setWalletState] = useState<MockWalletState>('connected');
   const [tab, setTab] = useState<GalleryTab>('props');
+  const [codeView, setCodeView] = useState<CodeView>('react');
+  /** Props for copied code: demo values never leave the preview. */
+  const shown = snippetProps(props);
+  const embed = embedSnippet(entry, shown, DEFAULT_NETWORK);
+
+  /** One .tsx file plus a README; browsers ask once before saving a second file. */
+  const downloadComponent = () => {
+    const out = componentExport(entry, shown, DEFAULT_NETWORK);
+    downloadText(out.fileName, out.source, 'text/typescript');
+    window.setTimeout(() => downloadText(out.readmeName, out.readme, 'text/markdown'), 250);
+  };
 
   const spec: DappSpec = useMemo(
-    () => ({
-      version: DAPP_SPEC_VERSION,
-      name: entry.title,
-      network: DEFAULT_NETWORK,
-      theme,
-      pages: [{ path: '/', title: entry.title, blocks: [{ id: 'item', widget: entry.id, props }] }],
-    }),
+    () => {
+      const block = { id: 'item', widget: entry.id, props };
+      return {
+        version: DAPP_SPEC_VERSION,
+        name: entry.title,
+        network: DEFAULT_NETWORK,
+        theme,
+        pages: [{ path: '/', title: entry.title, root: wrapBlocks([block]), blocks: [block] }],
+      };
+    },
     [entry, props, theme],
   );
   const validation = validateSpec(spec, { catalog: [entry] });
@@ -91,8 +101,8 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
   const note = compatibilityNote(entry);
 
   return (
-    <>
-      <section className="pg-stack">
+    <div className="pg-gallery-main">
+      <section className="pg-stack pg-gallery-stage">
         <div className="pg-row">
           <h1 style={{ margin: 0 }}>{entry.title}</h1>
           <StatusBadge status={entry.status} />
@@ -110,7 +120,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
           {entry.description}
         </p>
         {entry.placeable ? (
-          <PreviewFrame spec={spec} pagePath="/" network={DEFAULT_NETWORK} walletState={walletState} height={520} title={`${entry.title} preview`} />
+          <PreviewFrame spec={spec} pagePath="/" network={DEFAULT_NETWORK} walletState={walletState} height="calc(100vh - 280px)" title={`${entry.title} preview`} />
         ) : (
           <div className="pg-panel pg-stack">
             <p style={{ margin: 0 }}>
@@ -144,12 +154,41 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
         {tab === 'theme' ? <ThemeEditor value={theme} onChange={setTheme} /> : null}
         {tab === 'code' ? (
           <div className="pg-stack">
-            <CodeBlock code={blockSnippet({ id: 'item', widget: entry.id, props: snippetProps(props) }, entry)} />
-            {entry.kind === 'block' ? (
-              <p className="pg-muted">Blocks are small source files. Export a project from the builder to get this file, or copy it from <code>@splendor/dapp-spec/blocks</code>.</p>
+            <div className="pg-segmented" role="group" aria-label="Code format">
+              {CODE_VIEWS.map((v) => (
+                <button key={v.id} type="button" aria-pressed={codeView === v.id} onClick={() => setCodeView(v.id)}>
+                  {v.label}
+                </button>
+              ))}
+            </div>
+            {codeView === 'react' ? (
+              <>
+                <CodeBlock code={reactUsage(entry, shown, theme, DEFAULT_NETWORK)} />
+                {entry.kind === 'block' ? (
+                  <p className="pg-muted">
+                    Blocks are small source files: use <strong>Download as component</strong> below, or export a project from the builder.
+                  </p>
+                ) : null}
+                <CodeBlock code="npm install @splendor/connect-react @splendor/sqc-sdk" />
+              </>
             ) : null}
-            <CodeBlock code={providerSnippet(theme)} />
-            <CodeBlock code={`npm install @splendor/connect-react @splendor/sqc-sdk`} />
+            {codeView === 'embed' ? (
+              embed ? (
+                <>
+                  <CodeBlock code={embed} />
+                  <p className="pg-muted">Plain HTML, no React app needed. The script bundles React and mounts every <code>data-sqc-widget</code> element.</p>
+                </>
+              ) : (
+                <p className="pg-muted">
+                  The embed script mounts connect-react widgets only (transfer, account card, token panel, deploy token, sign-in, pending
+                  transactions). Use the React or Full page code for <code>{entry.importName}</code>.
+                </p>
+              )
+            ) : null}
+            {codeView === 'page' ? <CodeBlock code={fullPageSource(entry, shown, theme, DEFAULT_NETWORK)} /> : null}
+            <button type="button" className="pg-btn pg-btn-ghost" onClick={downloadComponent}>
+              Download as component
+            </button>
           </div>
         ) : null}
         </Tabs>
@@ -164,7 +203,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
           </Link>
         ) : null}
       </aside>
-    </>
+    </div>
   );
 }
 
@@ -175,29 +214,27 @@ export function GalleryPage() {
   const entry = visible.find((e) => e.id === id) ?? visible[0];
   const categories = [...new Set(visible.map((e) => e.category))];
   return (
-    <div className="pg-workspace">
-      <aside className="pg-sidebar pg-panel">
-        {categories.map((c) => (
-          <div key={c}>
-            <p className="pg-list-title">{c}</p>
-            <ul className="pg-list">
-              {visible
-                .filter((e) => e.category === c)
-                .sort((a, b) => Number(isFeatured(b.id)) - Number(isFeatured(a.id)))
-                .map((e) => (
-                  <li key={e.id}>
-                    <NavLink to={`/widgets/${e.id}`} className={() => (e === entry ? 'is-active' : '')} data-testid={`gallery-${e.id}`}>
-                      {e.title}
-                      <StatusBadge status={e.status} />
-                      {isFeatured(e.id) ? <span className="pg-badge pg-badge-featured">featured</span> : null}
-                    </NavLink>
-                  </li>
-                ))}
-            </ul>
+    <div className="pg-gallery">
+      <div className="pg-toy-rail" aria-label="Widgets">
+        {groupOrder(categories).map((c) => (
+          <div key={c} className="pg-toy-group">
+            <span className="pg-toy-group-label">{groupMeta(c).label}</span>
+            {visible
+              .filter((e) => e.category === c)
+              .sort((a, b) => Number(isFeatured(b.id)) - Number(isFeatured(a.id)))
+              .map((e) => (
+                <NavLink key={e.id} to={`/widgets/${e.id}`} className={() => `pg-toy-chip${e === entry ? ' is-active' : ''}`} data-testid={`gallery-${e.id}`}>
+                  <span className="pg-toy-mark" data-tone={groupMeta(c).tone} aria-hidden="true">
+                    {e.title.slice(0, 1)}
+                  </span>
+                  {e.title}
+                  <StatusBadge status={e.status} />
+                </NavLink>
+              ))}
           </div>
         ))}
-      </aside>
-      {entry ? <GalleryDetail key={entry.id} entry={entry} /> : <p className="pg-muted">No widgets available.</p>}
+      </div>
+      {entry ? <GalleryDetail key={entry.id} entry={entry} /> : <p className="pg-muted pg-pad">No widgets available.</p>}
     </div>
   );
 }

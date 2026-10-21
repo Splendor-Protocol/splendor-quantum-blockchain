@@ -35,3 +35,6 @@ node_modules/
 
 # Local R&D / reference clones (e.g. Splendor Quantum Wallet extension) — never push
 /research/
+
+# Output of npm run pack:sdk-vendor
+/apps/playground/public/vendor/

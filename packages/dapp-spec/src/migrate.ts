@@ -1,6 +1,18 @@
-import { DAPP_SPEC_VERSION, type DappSpec } from './types.js';
+import { DAPP_SPEC_VERSION, type DappBlock, type DappSpec, type LayoutNode, type PropValue } from './types.js';
+import { blocksFromTree, wrapBlocks } from './tree.js';
 
 type Migration = (spec: Record<string, unknown>) => Record<string, unknown>;
+
+function asBlocks(raw: unknown): DappBlock[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((b): b is Record<string, unknown> => typeof b === 'object' && b !== null)
+    .map((b, i) => ({
+      id: typeof b.id === 'string' ? b.id : `block-${i + 1}`,
+      widget: typeof b.widget === 'string' ? b.widget : 'hero',
+      props: (typeof b.props === 'object' && b.props && !Array.isArray(b.props) ? b.props : {}) as Record<string, PropValue>,
+    }));
+}
 
 /**
  * `MIGRATIONS[n]` upgrades a version-n spec to n+1. Add one entry per format change and never
@@ -18,6 +30,34 @@ const MIGRATIONS: Record<number, Migration> = {
     pages: Array.isArray(s.pages) ? s.pages : [{ path: '/', title: 'Home', blocks: Array.isArray(s.blocks) ? s.blocks : [] }],
     blocks: undefined,
   }),
+  // v1 → v2: each page gains a layout tree; contracts/nav optional.
+  1: (s) => {
+    const pages = Array.isArray(s.pages)
+      ? s.pages.map((p, i) => {
+          if (typeof p !== 'object' || p === null) return p;
+          const page = p as Record<string, unknown>;
+          if (page.root && typeof page.root === 'object') {
+            const root = page.root as LayoutNode;
+            return { ...page, blocks: blocksFromTree(root) };
+          }
+          const blocks = asBlocks(page.blocks);
+          const root = wrapBlocks(blocks, `page-${i}-root`);
+          return { ...page, root, blocks };
+        })
+      : [];
+    const theme =
+      typeof s.theme === 'object' && s.theme !== null
+        ? { ...(s.theme as Record<string, unknown>), overrides: (s.theme as { overrides?: unknown }).overrides ?? {} }
+        : { base: 'splendor', overrides: {} };
+    return {
+      ...s,
+      version: 2,
+      theme,
+      pages,
+      contracts: Array.isArray(s.contracts) ? s.contracts : [],
+      nav: typeof s.nav === 'object' && s.nav !== null ? s.nav : { showConnect: true },
+    };
+  },
 };
 
 /** Bring any known older spec up to the current version. Run `validateSpec` on the result. */

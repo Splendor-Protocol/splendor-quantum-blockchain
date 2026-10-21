@@ -31,6 +31,8 @@
     "playground": "npm run build:packages && npm run dev -w @splendor/playground",
     "playground:api": "npm run dev -w @splendor/playground-api",
     "playground:build": "npm run build:packages && npm run build -w @splendor/playground",
+    "pack:sdk-vendor": "node scripts/pack-sdk-vendor.mjs",
+    "test:webcontainer": "node scripts/webcontainer-smoke.mjs",
     "test:packages": "npm test -w @splendor/sqc-sdk && npm test -w @splendor/connect-react && npm test -w @splendor/dapp-spec && npm test -w create-splendor-dapp",
     "test:playground": "npm test -w @splendor/playground && npm test -w @splendor/playground-api",
     "test:e2e": "npm run e2e -w @splendor/playground",

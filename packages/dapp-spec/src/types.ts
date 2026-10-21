@@ -1,5 +1,5 @@
 /** Current `DappSpec.version`. Older specs go through `migrate()`. */
-export const DAPP_SPEC_VERSION = 1 as const;
+export const DAPP_SPEC_VERSION = 2 as const;
 
 export type NetworkId = 'local' | 'devnet' | 'testnet' | 'mainnet';
 export const NETWORK_IDS: readonly NetworkId[] = ['local', 'devnet', 'testnet', 'mainnet'];
@@ -20,27 +20,92 @@ export type ThemeOverrides = {
   fontDisplay?: string;
   fontBody?: string;
   fontMono?: string;
+  /** Soft background wash behind heroes / CTAs (validated CSS). */
+  heroGradient?: string;
 };
 export type ThemeName = 'splendor' | 'light' | 'dark';
 export const THEME_KEYS: readonly (keyof ThemeOverrides)[] = [
   'accent', 'accentHover', 'bg', 'surface', 'text', 'textMuted', 'border', 'danger', 'success',
-  'radius', 'widgetPadding', 'fontDisplay', 'fontBody', 'fontMono',
+  'radius', 'widgetPadding', 'fontDisplay', 'fontBody', 'fontMono', 'heroGradient',
 ];
 
 export type PropValue = string | number | boolean;
 
-/** One widget or block on a page. `widget` is a catalog id (`transfer`, `tip-jar`, …). */
+/** One placeable widget or block leaf in the layout tree. */
 export type DappBlock = {
   id: string;
   widget: string;
   props: Record<string, PropValue>;
+  /** Optional visual style overrides for this leaf. */
+  style?: NodeStyle;
+};
+
+export type ContainerKind = 'section' | 'row' | 'column' | 'card' | 'stack';
+
+/** Layout / spacing tokens. Values are validated as plain CSS tokens. */
+export type NodeStyle = {
+  width?: string;
+  maxWidth?: string;
+  gap?: string;
+  padding?: string;
+  align?: 'start' | 'center' | 'end' | 'stretch' | 'between';
+  background?: string;
+  hideOn?: 'mobile' | 'desktop';
+};
+
+export type ContainerNode = {
+  kind: ContainerKind;
+  id: string;
+  style?: NodeStyle;
+  children: LayoutNode[];
+};
+
+export type BlockNode = {
+  kind: 'block';
+  block: DappBlock;
+};
+
+export type LayoutNode = ContainerNode | BlockNode;
+
+export type BlockAction =
+  | { type: 'page'; path: string }
+  | { type: 'url'; href: string }
+  | { type: 'contract'; contractId: string; fn: string; argsFrom?: string };
+
+export type ContractParam = { name: string; type: string };
+export type ContractFunction = {
+  name: string;
+  signature: string;
+  params: ContractParam[];
+  returns?: string;
+  kind: 'read' | 'write';
+};
+export type ContractRef = {
+  id: string;
+  name: string;
+  address: string;
+  functions: ContractFunction[];
+};
+
+export type DappNav = {
+  brand?: string;
+  showConnect?: boolean;
+  /** Page paths in display order. Missing paths are appended. */
+  links?: string[];
+  footer?: string;
 };
 
 export type DappPage = {
   /** `/` for the home page, otherwise `/segment` (lowercase letters, digits, dashes). */
   path: string;
   title: string;
-  blocks: DappBlock[];
+  /** Layout tree for the page body. */
+  root: LayoutNode;
+  /**
+   * Flat list kept for tooling that still walks blocks (export summaries, issue paths).
+   * Always derived from `root` on normalize; may be absent on raw input before migrate.
+   */
+  blocks?: DappBlock[];
 };
 
 /** Saved, shareable, declarative description of a dApp. Contains no executable code. */
@@ -49,8 +114,10 @@ export type DappSpec = {
   name: string;
   description?: string;
   network: NetworkId;
-  theme: { base: ThemeName; overrides: ThemeOverrides };
+  theme: { base: ThemeName; overrides: ThemeOverrides; preset?: string };
   pages: DappPage[];
+  contracts?: ContractRef[];
+  nav?: DappNav;
 };
 
 export type PropType = 'string' | 'number' | 'boolean' | 'select';
@@ -61,7 +128,7 @@ export type PropSchema = {
   label: string;
   type: PropType;
   description?: string;
-  format?: 'address' | 'amount' | 'text' | 'url';
+  format?: 'address' | 'amount' | 'text' | 'url' | 'action' | 'image';
   placeholder?: string;
   required?: boolean;
   min?: number;
@@ -90,6 +157,10 @@ export type CatalogEntry = {
   since?: string;
   requires?: { wallet?: boolean; modules?: string[]; networks?: string[] };
   docs?: string;
+  /** SVG thumbnail id under `thumbs/` (catalog UI). */
+  thumb?: string;
+  /** True when this entry is a layout container shell (section/row/…). */
+  container?: boolean;
 };
 
 export type ValidationIssue = { path: string; message: string };

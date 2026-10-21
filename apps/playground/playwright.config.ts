@@ -58,6 +58,9 @@ export default defineConfig({
       env: {
         PLAYGROUND_API_PROXY: `http://127.0.0.1:${API_PORT}`,
         VITE_PLAYGROUND_DEFAULT_NETWORK: live ? (process.env.E2E_LIVE_NETWORK ?? 'devnet') : 'testnet',
+        // Registry-pinned deps by default so the export assertions do not depend on a packed vendor bundle.
+        // E2E_SDK_SOURCE=vendor (after npm run pack:sdk-vendor) exercises the file:vendor path instead.
+        VITE_PLAYGROUND_SDK_SOURCE: process.env.E2E_SDK_SOURCE === 'vendor' ? 'vendor' : 'npm',
       },
     },
   ],
