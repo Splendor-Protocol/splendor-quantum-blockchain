@@ -120,11 +120,23 @@ jobs:
             go test "./${pkg}/" -run "^${target}$" -fuzz "${target}" -fuzztime 15s 2>&1 | tee "$log" || status=$?
             echo "::endgroup::"
             [ "$status" -eq 0 ] && return 0
+            # A crasher still being minimized at the deadline is written to
+            # testdata/fuzz but reported as only "context deadline exceeded",
+            # so look for the file first and put it in the log: the next
+            # checkout cleans the workspace and it would be lost.
+            written="$(git status --porcelain --untracked-files=all -- "${pkg}/testdata/fuzz")" \
+              || { echo "::error::${target}: git status failed, cannot rule out a new failing input"; return "$status"; }
+            if [ -n "$written" ]; then
+              echo "::error::${target}: new failing input under ${pkg}/testdata/fuzz"
+              echo "$written" | awk '{ print $2 }' | while read -r f; do echo "--- $f"; cat "$f"; done
+              return "$status"
+            fi
+            # The deadline error must be the only indented line: a failed corpus
+            # write is appended to it on a second line, and a crasher or a
+            # failing seed adds its own indented lines.
             if [ "$(grep -c -e '--- FAIL:' "$log")" -eq 1 ] \
-              && grep -qxF '    context deadline exceeded' "$log" \
-              && ! grep -qF 'Failing input written to' "$log" \
-              && written="$(git status --porcelain --untracked-files=all -- "${pkg}/testdata/fuzz")" \
-              && [ -z "$written" ]; then
+              && [ "$(grep -c '^    ' "$log")" -eq 1 ] \
+              && grep -qxF '    context deadline exceeded' "$log"; then
               echo "::warning::${target}: ignored Go's spurious end-of-budget \"context deadline exceeded\" (golang/go#75804); no failing input was found"
               return 0
             fi
