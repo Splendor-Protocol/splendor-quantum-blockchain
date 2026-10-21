@@ -98,18 +98,42 @@ jobs:
       # each target's committed seed corpus as a normal test; this spends a
       # small fixed budget on fresh inputs so a regression surfaces here
       # instead of in a release. `make fuzz` runs the same loops locally.
+      #
+      # Go 1.26's fuzz coordinator can fail a clean run at the instant
+      # -fuzztime runs out: it wakes on the expired deadline, then compares
+      # the error against a child context the cancellation has not reached
+      # yet, so a bare "context deadline exceeded" escapes as a test failure
+      # (golang/go#75804). That is how FuzzObjectManifestRequestJSON and
+      # FuzzObjectSymbolRequestJSON went red on main with no failing input.
+      # The fix shipped in go1.27; the 1.26 backport is golang/go#82362.
+      # Until go.mod's toolchain carries it, exactly that outcome passes with
+      # a warning: a single failing target, the bare deadline error, and no
+      # input written under testdata/fuzz. Anything else fails the job,
+      # including a crasher found just before the deadline, which the same
+      # race would otherwise report as only "context deadline exceeded".
       - name: go fuzz (bounded)
         run: |
           set -euo pipefail
-          for target in FuzzDecodeObjectManifest FuzzDecodeSymbolProof FuzzDecodeManifest FuzzFrameType FuzzObjectReceiverAbsorb; do
+          fuzz() {
+            local pkg="$1" target="$2" log="${RUNNER_TEMP:-/tmp}/fuzz-$2.log" status=0
             echo "::group::fuzz ${target}"
-            go test ./network/objects/ -run "^${target}$" -fuzz "${target}" -fuzztime 15s
+            go test "./${pkg}/" -run "^${target}$" -fuzz "${target}" -fuzztime 15s 2>&1 | tee "$log" || status=$?
             echo "::endgroup::"
+            [ "$status" -eq 0 ] && return 0
+            if [ "$(grep -c -e '--- FAIL:' "$log")" -eq 1 ] \
+              && grep -qxF '    context deadline exceeded' "$log" \
+              && ! grep -qF 'Failing input written to' "$log" \
+              && [ -z "$(git status --porcelain --untracked-files=all -- "${pkg}/testdata/fuzz")" ]; then
+              echo "::warning::${target}: ignored Go's spurious end-of-budget \"context deadline exceeded\" (golang/go#75804); no failing input was found"
+              return 0
+            fi
+            return "$status"
+          }
+          for target in FuzzDecodeObjectManifest FuzzDecodeSymbolProof FuzzDecodeManifest FuzzFrameType FuzzObjectReceiverAbsorb; do
+            fuzz network/objects "$target"
           done
           for target in FuzzValidateBlockBatchRange FuzzBlockBatchRequestJSON FuzzObjectSymbolRequestJSON FuzzObjectManifestRequestJSON; do
-            echo "::group::fuzz ${target}"
-            go test ./network/ -run "^${target}$" -fuzz "${target}" -fuzztime 15s
-            echo "::endgroup::"
+            fuzz network "$target"
           done
 
   wasm-drift:
