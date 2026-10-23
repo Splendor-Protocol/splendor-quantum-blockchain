@@ -374,7 +374,7 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) admitTx(w http.ResponseWriter, tx *types.Transaction) {
-	if err := mempool.ValidateEnvelope(tx); err != nil {
+	if err, _ := mempool.ValidateEnvelope(tx); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("rejected: %v", err))
 		return
 	}

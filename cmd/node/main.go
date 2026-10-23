@@ -1311,7 +1311,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			if err := json.Unmarshal(body, &tx); err != nil {
 				return fmt.Errorf("invalid transaction: %w", err)
 			}
-			if err := mempool.ValidateEnvelope(&tx); err != nil {
+			if err, _ := mempool.ValidateEnvelope(&tx); err != nil {
 				return fmt.Errorf("relayed transaction rejected: %w", err)
 			}
 			if err := pool.Add(&tx); err != nil {

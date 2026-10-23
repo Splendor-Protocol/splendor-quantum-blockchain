@@ -47,6 +47,12 @@ const (
 	// carries a large embedded public key or signature; this bound keeps the pool
 	// memory footprint predictable even under adversarial envelopes.
 	MaxTxBytes = 256 * 1024
+
+	// MaxAddrPendingBytes caps the total serialized bytes a single sender may
+	// have pending in the pool at once. Without it, one address holding MaxPerAddr
+	// slots of MaxTxBytes each can pin ~16 MiB of pool memory — enough to crowd
+	// out other senders during congestion.
+	MaxAddrPendingBytes = 4 * 1024 * 1024
 )
 
 // ErrNonceTooLow: the nonce is below the sender's committed nonce, so the
@@ -71,12 +77,14 @@ var congestionTiers = []struct {
 
 // Mempool holds pending transactions ordered by fee (highest first).
 type Mempool struct {
-	mu      sync.RWMutex
-	txs     map[[32]byte]*txEntry          // txHash → entry
-	byAddr  map[qcrypto.Address][]*txEntry // addr → sorted by nonce
-	maxSize int
-	state   *state.StateDB
-	baseFee int64
+	mu        sync.RWMutex
+	txs       map[[32]byte]*txEntry          // txHash → entry
+	byAddr    map[qcrypto.Address][]*txEntry // addr → sorted by nonce
+	addrBytes map[qcrypto.Address]int        // addr → total serialized bytes pending
+	maxSize   int
+	curSize   int
+	state     *state.StateDB
+	baseFee   int64
 }
 
 type txEntry struct {
@@ -90,11 +98,12 @@ func New(maxSize int, stateDB *state.StateDB) *Mempool {
 		maxSize = DefaultMaxSize
 	}
 	return &Mempool{
-		txs:     make(map[[32]byte]*txEntry),
-		byAddr:  make(map[qcrypto.Address][]*txEntry),
-		maxSize: maxSize,
-		state:   stateDB,
-		baseFee: MinFee,
+		txs:       make(map[[32]byte]*txEntry),
+		byAddr:    make(map[qcrypto.Address][]*txEntry),
+		addrBytes: make(map[qcrypto.Address]int),
+		maxSize:   maxSize,
+		state:     stateDB,
+		baseFee:   MinFee,
 	}
 }
 
@@ -120,24 +129,24 @@ func (m *Mempool) baseFeeLocked() int64 {
 // work on tx.Data before Add (the RPC module-call preflight parses it) must
 // run it first too, so an oversized or malformed envelope is refused before
 // its payload is ever looked at.
-func ValidateEnvelope(tx *types.Transaction) error {
+func ValidateEnvelope(tx *types.Transaction) (error, int) {
 	if err := tx.Validate(); err != nil {
-		return fmt.Errorf("invalid tx: %w", err)
+		return fmt.Errorf("invalid tx: %w", err), 0
 	}
 	// Bound the tx payload so the pool can't be filled with multi-hundred-KiB txs.
 	if len(tx.Data) > MaxTxDataBytes {
-		return fmt.Errorf("tx data too large: %d bytes (max %d)", len(tx.Data), MaxTxDataBytes)
+		return fmt.Errorf("tx data too large: %d bytes (max %d)", len(tx.Data), MaxTxDataBytes), 0
 	}
 	// Bound the total serialized size: signature (3309 bytes) + public key
 	// (1952 bytes on first use) + body can push a tx well past Data alone.
 	b, err := json.Marshal(tx)
 	if err != nil {
-		return fmt.Errorf("tx marshal: %w", err)
+		return fmt.Errorf("tx marshal: %w", err), 0
 	}
 	if len(b) > MaxTxBytes {
-		return fmt.Errorf("tx too large: %d bytes (max %d)", len(b), MaxTxBytes)
+		return fmt.Errorf("tx too large: %d bytes (max %d)", len(b), MaxTxBytes), 0
 	}
-	return nil
+	return nil, len(b)
 }
 
 // Add validates and adds a transaction to the mempool.
@@ -147,8 +156,10 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	defer m.mu.Unlock()
 
 	// Structural validation and the payload cap.
-	if err := ValidateEnvelope(tx); err != nil {
+	if err, size := ValidateEnvelope(tx); err != nil {
 		return err
+	} else {
+		m.curSize = size
 	}
 
 	// Minimum fee check, scaled by how full the pool currently is.
@@ -191,6 +202,12 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	// a flooding sender is rejected cheaply).
 	if len(m.byAddr[tx.From]) >= MaxPerAddr {
 		return fmt.Errorf("per-address mempool limit reached (%d) for %s", MaxPerAddr, tx.From.String())
+	}
+	// Per-address byte budget: total serialized bytes held by one sender.
+	// Without it, MaxPerAddr slots of MaxTxBytes would pin ~16 MiB under a
+	// single address and crowd out every other sender during congestion.
+	if size := m.addrBytes[tx.From]; size+m.curSize > MaxAddrPendingBytes {
+		return fmt.Errorf("per-address pending bytes limit reached for %s (used %d, max %d)", tx.From.String(), size, MaxAddrPendingBytes)
 	}
 
 	// A full pool used to reject everything, which let a spammer who had already
