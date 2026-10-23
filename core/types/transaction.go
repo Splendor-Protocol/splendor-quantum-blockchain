@@ -258,6 +258,9 @@ func (tx *Transaction) VerifySignature(pubKeyBytes []byte) error {
 // Sign signs the transaction using the given ML-DSA-65 private key.
 // It sets the Signature field and optionally the PublicKey field.
 func (tx *Transaction) Sign(priv *qcrypto.PrivateKey, includePublicKey bool) error {
+	if tx.ChainID == "" {
+		return fmt.Errorf("sign: empty chain ID; a transaction must be bound to a chain before signing")
+	}
 	if tx.AlgID == "" {
 		tx.AlgID = qcrypto.AlgMLDSA65
 	}
