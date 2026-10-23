@@ -317,6 +317,14 @@ func (r *Relayer) settle(b Burn, info *BridgeInfo) (bool, error) {
 	if r.attempts == nil {
 		r.attempts = map[uint64]int{}
 	}
+	if b.Amount == nil || b.Amount.Sign() <= 0 {
+		return false, fmt.Errorf("burn %d: non-positive amount", b.ID)
+	}
+	switch b.Asset {
+	case "spld", "splv":
+	default:
+		return false, fmt.Errorf("burn %d: unknown asset %q", b.ID, b.Asset)
+	}
 	already, err := r.Quantum.Claimed(r.Bridge.String(), b.ID)
 	if err != nil {
 		return false, err
