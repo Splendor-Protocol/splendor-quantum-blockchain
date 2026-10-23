@@ -223,6 +223,11 @@ func (tx *Transaction) Validate() error {
 		return fmt.Errorf("unsupported signature algorithm %q: this node only verifies %q",
 			tx.AlgID, qcrypto.AlgMLDSA65)
 	}
+	switch tx.Type {
+	case TxTransfer, TxDeploy, TxCall, TxRegister, TxX402:
+	default:
+		return fmt.Errorf("unknown tx type 0x%02x", tx.Type)
+	}
 	if tx.From.IsZero() {
 		return fmt.Errorf("zero from address")
 	}
