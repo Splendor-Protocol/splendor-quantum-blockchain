@@ -5,6 +5,7 @@ package mempool
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -40,6 +41,12 @@ const (
 	// an OOM vector and multi-GiB candidate blocks. 128 KiB is generous for real
 	// calldata and contract code.
 	MaxTxDataBytes = 128 * 1024
+
+	// MaxTxBytes caps the total serialized size of one transaction (body +
+	// signature + public key). A tx whose Data is small can still be heavy if it
+	// carries a large embedded public key or signature; this bound keeps the pool
+	// memory footprint predictable even under adversarial envelopes.
+	MaxTxBytes = 256 * 1024
 )
 
 // ErrNonceTooLow: the nonce is below the sender's committed nonce, so the
@@ -120,6 +127,15 @@ func ValidateEnvelope(tx *types.Transaction) error {
 	// Bound the tx payload so the pool can't be filled with multi-hundred-KiB txs.
 	if len(tx.Data) > MaxTxDataBytes {
 		return fmt.Errorf("tx data too large: %d bytes (max %d)", len(tx.Data), MaxTxDataBytes)
+	}
+	// Bound the total serialized size: signature (3309 bytes) + public key
+	// (1952 bytes on first use) + body can push a tx well past Data alone.
+	b, err := json.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("tx marshal: %w", err)
+	}
+	if len(b) > MaxTxBytes {
+		return fmt.Errorf("tx too large: %d bytes (max %d)", len(b), MaxTxBytes)
 	}
 	return nil
 }
