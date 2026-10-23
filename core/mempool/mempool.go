@@ -90,6 +90,7 @@ type Mempool struct {
 type txEntry struct {
 	tx   *types.Transaction
 	hash [32]byte
+	size int
 }
 
 // New creates a new mempool with the given maximum size.
@@ -280,10 +281,20 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 		m.removeLocked(victim.hash)
 	}
 
-	// Add to pool
-	entry := &txEntry{tx: tx, hash: hash}
+	// Add to pool: compute serialized size and enforce per-address budget
+	serialized, err := json.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("failed to marshal transaction: %w", err)
+	}
+	entry := &txEntry{tx: tx, hash: hash, size: len(serialized)}
+	addr := tx.From
+	if m.addrBytes[addr]+entry.size > MaxAddrPendingBytes {
+		return fmt.Errorf("per-address pending byte budget exceeded: %d + %d > %d",
+			m.addrBytes[addr], entry.size, MaxAddrPendingBytes)
+	}
+	m.addrBytes[addr] += entry.size
 	m.txs[hash] = entry
-	m.byAddr[tx.From] = append(m.byAddr[tx.From], entry)
+	m.byAddr[addr] = append(m.byAddr[addr], entry)
 	// Keep per-address list sorted by nonce
 	sort.Slice(m.byAddr[tx.From], func(i, j int) bool {
 		return m.byAddr[tx.From][i].tx.Nonce < m.byAddr[tx.From][j].tx.Nonce
@@ -425,6 +436,9 @@ func (m *Mempool) removeLocked(hash [32]byte) {
 	if len(m.byAddr[addr]) == 0 {
 		delete(m.byAddr, addr)
 	}
+
+	// Debit the sender's pending-byte budget for the evicted tx.
+	m.addrBytes[addr] -= entry.size
 }
 
 // RemoveBlock removes all transactions that were included in a committed block.
