@@ -20,6 +20,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 )
@@ -162,6 +163,9 @@ func (r *Relayer) RunOnce(ctx context.Context, dir Direction) ([]OutboundEvent, 
 			// closed — the error holds the cursor so the next pass re-scans.
 			return nil, fmt.Errorf("%s emitted an event with an empty id (height %d, tx %s)", src.Name(), e.Height, e.TxID)
 		}
+		if err := validateOutboundEvent(e); err != nil {
+			return nil, fmt.Errorf("%s event %q (height %d, tx %s): %w", src.Name(), e.ID, e.Height, e.TxID, err)
+		}
 		done, err := dst.Settled(ctx, e.ID)
 		if err != nil {
 			return settled, fmt.Errorf("%s settled %s: %w", dst.Name(), e.ID, err)
@@ -184,4 +188,25 @@ func (r *Relayer) RunOnce(ctx context.Context, dir Direction) ([]OutboundEvent, 
 		r.cursors[src.Name()] = next
 	}
 	return settled, nil
+}
+
+// validateOutboundEvent rejects a source-side event that can never be settled
+// safely: an unknown asset, a non-positive amount, or a blank sender/recipient.
+// Fail-closed here keeps the cursor from advancing past a bad event.
+func validateOutboundEvent(e OutboundEvent) error {
+	switch e.Asset {
+	case AssetNative, AssetSPLV:
+	default:
+		return fmt.Errorf("unknown asset %q", e.Asset)
+	}
+	if e.Amount == nil || e.Amount.Sign() <= 0 {
+		return errors.New("amount must be positive")
+	}
+	if e.Sender == "" {
+		return errors.New("sender is empty")
+	}
+	if e.Recipient == "" {
+		return errors.New("recipient is empty")
+	}
+	return nil
 }
