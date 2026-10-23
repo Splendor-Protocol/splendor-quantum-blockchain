@@ -134,18 +134,35 @@ export function updateBlockProps(root: LayoutNode, id: string, props: DappBlock[
   });
 }
 
-export function styleToCss(style?: NodeStyle): Record<string, string> {
+const FLEX_ALIGN = { start: 'flex-start', center: 'center', end: 'flex-end' } as const;
+
+/**
+ * Inline CSS for a node style. Pass the container `kind` so the preview and generated code agree:
+ *
+ * - `width` on a `column` becomes `flex: 0 1 <width>` (a plain `width` loses to the
+ *   `.dapp-column { flex: 1 1 240px }` rule); on any other node it stays `width`.
+ * - `align` on a `row` (main axis horizontal): `start`/`center`/`end` set `justifyContent` and
+ *   `alignItems` to that edge, `between` sets `justifyContent: space-between`, `stretch` stretches.
+ *   On column-like nodes (section, stack, card, column, or no kind): `start`/`center`/`end`/`stretch`
+ *   set `alignItems` (horizontal placement) and `between` sets `justifyContent: space-between`.
+ */
+export function styleToCss(style?: NodeStyle, kind?: ContainerKind | 'block'): Record<string, string> {
   if (!style) return {};
   const out: Record<string, string> = {};
-  if (style.width) out.width = style.width;
+  if (style.width) {
+    if (kind === 'column') out.flex = `0 1 ${style.width}`;
+    else out.width = style.width;
+  }
   if (style.maxWidth) out.maxWidth = style.maxWidth;
   if (style.gap) out.gap = style.gap;
   if (style.padding) out.padding = style.padding;
   if (style.background) out.background = style.background;
-  if (style.align === 'center') out.alignItems = 'center';
-  else if (style.align === 'end') out.alignItems = 'flex-end';
-  else if (style.align === 'stretch') out.alignItems = 'stretch';
-  else if (style.align === 'between') out.justifyContent = 'space-between';
-  else if (style.align === 'start') out.alignItems = 'flex-start';
+  const a = style.align;
+  if (a === 'between') out.justifyContent = 'space-between';
+  else if (a === 'stretch') out.alignItems = 'stretch';
+  else if (a) {
+    out.alignItems = FLEX_ALIGN[a];
+    if (kind === 'row') out.justifyContent = FLEX_ALIGN[a];
+  }
   return out;
 }

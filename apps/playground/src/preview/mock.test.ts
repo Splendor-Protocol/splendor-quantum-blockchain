@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Connection, Signer } from '@splendor/sqc-sdk';
+import { DEMO_CONTRACT_ADDRESS, DEMO_TOKEN_ADDRESS } from '@splendor/dapp-spec';
 import { Contract } from '@splendor/sqc-sdk/contracts';
 import { QRC1155, QRC20, QRC721, deployQRC1155, deployQRC20, deployQRC721 } from '@splendor/sqc-sdk/tokens';
 import { DEMO_RECIPIENT, MOCK_ADDRESS, MOCK_CONFIRM_MS, createPlaygroundMock } from './mock';
@@ -70,6 +71,32 @@ describe('createPlaygroundMock', () => {
     const contract = 'SQ:' + '42'.repeat(32);
     await wallet.callContract({ contract, function: 'set(uint256)', args: ['42'] });
     expect(await new Contract(conn, contract).readUint256('get()')).toBe(42n);
+  });
+
+  it('seeds the demo token as a QRC-20 the mock user holds', async () => {
+    const { conn } = setup();
+    const token = new QRC20(conn, DEMO_TOKEN_ADDRESS);
+    const unit = 10n ** 18n;
+    expect(await token.tokenInfo()).toMatchObject({ name: 'Demo Token', symbol: 'DEMO', decimals: 18, total_supply: String(1_000_000n * unit) });
+    expect(await token.balanceOf(MOCK_ADDRESS)).toBe(String(25_000n * unit));
+    expect(await token.balanceOf(DEMO_RECIPIENT)).toBe('0');
+  });
+
+  it('answers token reads on the contract-call path too', async () => {
+    const { conn } = setup();
+    const c = new Contract(conn, DEMO_TOKEN_ADDRESS);
+    const unit = 10n ** 18n;
+    expect(await c.readUint256('totalSupply()')).toBe(1_000_000n * unit);
+    expect(await c.readUint256('decimals()')).toBe(18n);
+    expect(await c.readUint256('balanceOf(address)', [MOCK_ADDRESS])).toBe(25_000n * unit);
+  });
+
+  it('seeds the demo contract with 42 and a contract-form style write changes it', async () => {
+    const { wallet, conn } = setup();
+    const c = new Contract(conn, DEMO_CONTRACT_ADDRESS);
+    expect(await c.readUint256('get()')).toBe(42n);
+    await wallet.callContract({ contract: DEMO_CONTRACT_ADDRESS, function: 'set(uint256)', args: ['7'] });
+    expect(await c.readUint256('get()')).toBe(7n);
   });
 
   it('sends stay pending until the mock confirms them', async () => {

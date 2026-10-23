@@ -139,7 +139,16 @@ export function CanvasOverlay({ rects, selectedId, hoverId, labelFor = defaultLa
       {/* Stays mounted while dragging: removing the drag handle mid-drag would cancel the drag. */}
       {selected ? (
         <div className={`pg-selection-frame${dragging ? ' is-dimmed' : ''}`} style={toStyle(selected.rect)} data-testid="canvas-selection" data-node-id={selected.id}>
-          <div className={`pg-selection-bar${barBelow ? ' is-below' : ''}`} role="toolbar" aria-label={`${labelFor(selected.id, selected.kind)} actions`}>
+          <div className={`pg-selection-bar${barBelow ? ' is-below' : ''}`} role="toolbar"
+            aria-label={`${labelFor(selected.id, selected.kind)} actions`}
+            onKeyDown={(e) => {
+              // Delete removes the selection from the keyboard; no confirmation needed, Undo restores it.
+              if ((e.key === 'Delete' || e.key === 'Backspace') && canEdit && !e.defaultPrevented) {
+                e.preventDefault();
+                onRemove(selected.id);
+              }
+            }}
+          >
             <span className="pg-selection-label">{labelFor(selected.id, selected.kind)}</span>
             {selected.parentId ? (
               <button type="button" className="pg-selection-btn" aria-label="Select parent" title="Select parent" onClick={() => onSelect(selected.parentId!)}>
@@ -150,10 +159,8 @@ export function CanvasOverlay({ rects, selectedId, hoverId, labelFor = defaultLa
               <>
                 <span
                   className="pg-selection-btn pg-selection-handle"
-                  role="button"
-                  tabIndex={0}
                   draggable
-                  aria-label="Drag to move"
+                  aria-hidden="true"
                   title="Drag to move"
                   data-testid="canvas-move-handle"
                   onDragStart={(e) => startMove(e, selected.id)}
@@ -163,7 +170,7 @@ export function CanvasOverlay({ rects, selectedId, hoverId, labelFor = defaultLa
                 <button type="button" className="pg-selection-btn" aria-label="Duplicate" title="Duplicate" disabled={full} onClick={() => onDuplicate(selected.id)} data-testid="canvas-duplicate">
                   ⧉
                 </button>
-                <button type="button" className="pg-selection-btn is-danger" aria-label="Delete" title="Delete" onClick={() => onRemove(selected.id)} data-testid="canvas-delete">
+                <button type="button" className="pg-selection-btn is-danger" aria-label="Delete" aria-keyshortcuts="Delete" title="Delete (Del)" onClick={() => onRemove(selected.id)} data-testid="canvas-delete">
                   ×
                 </button>
               </>

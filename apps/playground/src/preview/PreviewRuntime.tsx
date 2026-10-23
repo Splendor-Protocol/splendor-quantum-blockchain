@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { TxToastHost } from '@splendor/connect-react';
 import { MockSplendorProvider } from '@splendor/connect-react/testing';
 import { WIDGET_MANIFESTS } from '@splendor/connect-react/manifest';
@@ -11,6 +11,8 @@ import { measureRects, nodeIdAt } from './measure';
 import { SpecRenderer } from './SpecRenderer';
 
 const CONTRACT_FN_MIME = 'application/x-splendor-contract-fn';
+/** Where the page gate (AccessGate) remembers a test-wallet sign-in. */
+const SIGNED_IN_KEY = 'sqc-dapp-signed-in';
 
 let lastRectsKey = '';
 let lastRects: PreviewRects = { nodes: [], dropTargets: [] };
@@ -57,20 +59,27 @@ function short(v: unknown): string {
 export function PreviewRuntime() {
   const [req, setReq] = useState<RenderRequest | null>(null);
   const [issues, setIssues] = useState<{ path: string; message: string }[]>([]);
+  /** Bumped by a new `resetKey` from the parent: remounts the page and the mock wallet. */
+  const [instance, setInstance] = useState(0);
+  const lastResetKey = useRef<number | undefined>(undefined);
+  const play = req?.mode === 'play';
+  const playRef = useRef(false);
+  playRef.current = play;
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== window.location.origin || e.source !== window.parent) return;
       if (!isPreviewMessage<ParentToPreview>(e.data)) return;
       if (e.data.type === 'requestRects') {
-        postRects(true);
+        if (!playRef.current) postRects(true);
         return;
       }
       if (e.data.type !== 'render') return;
       let spec: DappSpec;
       try {
         const r = validateForPreview(migrateSpec(e.data.spec), catalog);
-        if (r.issues.length) post({ type: 'invalid', issues: r.issues });
+        // Issues that still allow rendering (a half-typed address) are listed by the builder, which
+        // validates the same spec itself; the frame only reports (in-frame) what blocks rendering.
         if (!r.spec) {
           setIssues(r.issues);
           return;
@@ -79,12 +88,23 @@ export function PreviewRuntime() {
       } catch (err) {
         const list = [{ path: '', message: err instanceof Error ? err.message : String(err) }];
         setIssues(list);
-        post({ type: 'invalid', issues: list });
         return;
       }
       setIssues([]);
       const { network, walletState, pagePath, selectedBlockId } = e.data;
-      setReq({ spec, network, walletState, pagePath, selectedBlockId });
+      const mode = e.data.mode === 'play' ? 'play' : 'edit';
+      const resetKey = typeof e.data.resetKey === 'number' ? e.data.resetKey : undefined;
+      if (resetKey !== undefined && lastResetKey.current !== undefined && resetKey !== lastResetKey.current) {
+        // "Restart flow": forget the test wallet's sign-in and start the page from scratch.
+        try {
+          sessionStorage.removeItem(SIGNED_IN_KEY);
+        } catch {
+          /* isolated frame without storage: remounting is enough */
+        }
+        setInstance((n) => n + 1);
+      }
+      if (resetKey !== undefined) lastResetKey.current = resetKey;
+      setReq({ spec, network, walletState, pagePath, selectedBlockId, mode, resetKey });
     };
     window.addEventListener('message', onMessage);
     post({ type: 'ready' });
@@ -93,7 +113,8 @@ export function PreviewRuntime() {
 
   // Report node rects + drop targets after every render, and whenever layout can change.
   useEffect(() => {
-    if (!req) return;
+    // Play mode measures nothing: there is no selection or drop overlay to feed.
+    if (!req || req.mode === 'play') return;
     let raf = 0;
     const schedule = () => {
       if (raf) return;
@@ -122,6 +143,7 @@ export function PreviewRuntime() {
   // Hover reporting + native drops that land inside the frame (the builder normally overlays the
   // frame while dragging, so this is the fallback path).
   useEffect(() => {
+    if (play) return;
     const onOver = (e: PointerEvent) => postHover(nodeIdAt(e.target));
     const onLeave = () => postHover(null);
     const onDragOver = (e: DragEvent) => {
@@ -147,14 +169,18 @@ export function PreviewRuntime() {
       document.removeEventListener('dragover', onDragOver);
       document.removeEventListener('drop', onDrop);
     };
-  }, []);
+  }, [play]);
 
   const network = req?.network ?? 'testnet';
   const walletState = req?.walletState ?? 'connected';
-  const controller = useMemo(() => createPlaygroundMock({ network, state: walletState }), [network, walletState]);
+  // `instance` is a restart token: a new one means a fresh mock wallet.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const controller = useMemo(() => createPlaygroundMock({ network, state: walletState }), [network, walletState, instance]);
 
   useEffect(() => {
     let seen = 0;
+    // A new controller (network or wallet state changed) starts with no calls: drop the old list.
+    post({ type: 'calls', calls: [] });
     const t = window.setInterval(() => {
       const calls = controller.wallet.calls;
       if (calls.length === seen) return;
@@ -168,17 +194,22 @@ export function PreviewRuntime() {
     return issues.length ? <PreviewIssues issues={issues} /> : <p className="pg-muted pg-pad">Waiting for the playground…</p>;
   }
   return (
-    <MockSplendorProvider controller={controller} theme={req.spec.theme.base}>
+    <MockSplendorProvider key={instance} controller={controller} theme={req.spec.theme.base}>
       <TxToastHost>
         {issues.length ? <PreviewIssues issues={issues} /> : null}
-        <SpecRenderer
-          spec={req.spec}
-          catalog={catalog}
-          pagePath={req.pagePath}
-          selectedBlockId={req.selectedBlockId}
-          onNavigate={(pagePath) => post({ type: 'navigate', pagePath })}
-          onSelectBlock={(blockId) => post({ type: 'select', blockId })}
-        />
+        {play ? (
+          // Without onSelectBlock the renderer is in visitor mode: page gates are enforced.
+          <SpecRenderer spec={req.spec} catalog={catalog} pagePath={req.pagePath} onNavigate={(pagePath) => post({ type: 'navigate', pagePath })} />
+        ) : (
+          <SpecRenderer
+            spec={req.spec}
+            catalog={catalog}
+            pagePath={req.pagePath}
+            selectedBlockId={req.selectedBlockId}
+            onNavigate={(pagePath) => post({ type: 'navigate', pagePath })}
+            onSelectBlock={(blockId) => post({ type: 'select', blockId })}
+          />
+        )}
       </TxToastHost>
     </MockSplendorProvider>
   );

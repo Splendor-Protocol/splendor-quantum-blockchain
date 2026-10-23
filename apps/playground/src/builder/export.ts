@@ -1,5 +1,5 @@
 import type { GeneratedProject } from '@splendor/dapp-spec';
-import { sdkSource } from './vendor';
+import { isSafeRelativePath, sdkSource } from './vendor';
 
 function b64ToUint8(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -14,6 +14,7 @@ export async function downloadZip(project: GeneratedProject): Promise<void> {
   const zip = new JSZip();
   const root = zip.folder(project.name)!;
   for (const [path, contents] of Object.entries(project.files)) {
+    if (!isSafeRelativePath(path)) throw new Error(`Refusing to export unsafe file path: ${path.slice(0, 80)}`);
     if (path.endsWith('.wasm.b64')) {
       const wasmPath = path.replace(/\.b64$/, '');
       root.file(wasmPath, b64ToUint8(contents));
@@ -34,6 +35,8 @@ export async function downloadZip(project: GeneratedProject): Promise<void> {
 
 /** Open the project in StackBlitz (WebContainers run `npm install && npm run dev` in the browser). */
 export async function openInStackBlitz(project: GeneratedProject, title: string): Promise<void> {
+  const unsafe = Object.keys(project.files).find((p) => !isSafeRelativePath(p));
+  if (unsafe) throw new Error(`Refusing to export unsafe file path: ${unsafe.slice(0, 80)}`);
   const { default: sdk } = await import('@stackblitz/sdk');
   sdk.openProject(
     {

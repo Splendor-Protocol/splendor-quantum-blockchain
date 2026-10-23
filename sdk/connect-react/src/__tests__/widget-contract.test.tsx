@@ -252,7 +252,8 @@ describe('TransferWidget contract', () => {
     expect(onSent).toHaveBeenCalledTimes(1);
     expect(onSuccess.mock.calls[0]![0]).toMatchObject({ to: OTHER, amount: '0.25', hash: 'h1' });
     expect(onSent.mock.calls[0]![0]).toEqual(onSuccess.mock.calls[0]![0]);
-    expect(onStatusChange.mock.calls.map((c) => c[0])).toEqual(['pending', 'success']);
+    // The status is reported from the render after the callback, so wait for it rather than racing it.
+    await waitFor(() => expect(onStatusChange.mock.calls.map((c) => c[0])).toEqual(['pending', 'success']));
     expect(view.container.querySelector('[data-sqc-widget]')?.getAttribute('data-status')).toBe('success');
   });
 

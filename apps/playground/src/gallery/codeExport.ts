@@ -66,7 +66,7 @@ export function embedSnippet(entry: CatalogEntry, props: Record<string, PropValu
 
 <script src="${EMBED_SCRIPT_URL}"></script>
 <!-- Serve sqc_signer.wasm and wasm_exec.js from your site root (npx sqc-copy-wasm).
-     Add data-wasm-sha256 and data-exec-sha256 to pin the signer in production. -->`;
+     Add data-wasm-sha256 and data-exec-sha256 to pin the signer; mainnet widgets refuse to load without them. -->`;
 }
 
 /** A complete `App.tsx` that renders the entry inside the provider. */

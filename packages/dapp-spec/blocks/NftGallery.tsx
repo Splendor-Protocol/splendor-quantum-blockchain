@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { WidgetShell, useAccount, useQRC1155 } from '@splendor/connect-react';
+import { WidgetShell, connectErrorMessage, useAccount, useQRC1155 } from '@splendor/connect-react';
+import { parseList } from './parseList';
 
 export type NftGalleryProps = {
   title?: string;
   /** QRC-1155 collection address. */
   collection?: string;
-  /** Token ids to show, comma-separated. */
+  /** Token ids to show (whole numbers), comma-separated (or one per line). Duplicates are shown once. */
   tokenIds?: string;
 };
 
@@ -15,23 +16,21 @@ const MAX_IDS = 24;
 export function NftGallery({ title = 'My collection', collection = '', tokenIds = '1,2,3' }: NftGalleryProps) {
   const { address } = useAccount();
   const nft = useQRC1155(collection || null);
-  const ids = tokenIds
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => /^\d+$/.test(s))
-    .slice(0, MAX_IDS);
+  const ids = [...new Set(parseList(tokenIds).filter((s) => /^(0|[1-9]\d*)$/.test(s)))].slice(0, MAX_IDS);
   const key = ids.join(',');
   const [owned, setOwned] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
   const { balanceOf } = nft;
 
   useEffect(() => {
     setOwned({});
+    setError(null);
     if (!collection || !address) return;
     let live = true;
     ids.forEach((id) => {
       balanceOf(address, id)
         .then((b) => live && setOwned((o) => ({ ...o, [id]: b })))
-        .catch(() => undefined);
+        .catch((e) => live && setError(connectErrorMessage(e)));
     });
     return () => {
       live = false;
@@ -42,7 +41,7 @@ export function NftGallery({ title = 'My collection', collection = '', tokenIds 
   if (!collection) {
     return (
       <WidgetShell kind="nft-gallery" title={title} gate={false}>
-        <p className="sqc-widget__msg">Set a QRC-1155 collection address.</p>
+        <p className="sqc-widget__msg">Pick a collection in Content, or paste a QRC-1155 collection address.</p>
       </WidgetShell>
     );
   }
@@ -68,11 +67,16 @@ export function NftGallery({ title = 'My collection', collection = '', tokenIds 
             >
               #{id}
             </div>
-            <span className="sqc-widget__msg">You own {owned[id] ?? '…'}</span>
+            <span className="sqc-widget__msg">You own {owned[id] ?? (error ? '?' : '…')}</span>
           </div>
         ))}
       </div>
-      {ids.length === 0 ? <p className="sqc-widget__msg">Add token ids, e.g. 1,2,3.</p> : null}
+      {ids.length === 0 ? <p className="sqc-widget__msg">No tokens to show yet. Add token ids in Content, e.g. 1,2,3.</p> : null}
+      {error ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
+          Could not load balances: {error}
+        </p>
+      ) : null}
     </WidgetShell>
   );
 }

@@ -20,6 +20,7 @@ import {
   type LayoutNode,
   type NetworkId,
   type NodeStyle,
+  type PageAccess,
   type PropValue,
   type ThemeName,
   type ThemeOverrides,
@@ -63,9 +64,18 @@ export type BuilderAction =
   | { type: 'duplicateNode'; id: string }
   | { type: 'removeNodeFromTree'; id: string }
   | { type: 'movePage'; path: string; delta: -1 | 1 }
+  /** Who may see a page. `public` clears the field. The home page (`/`) is always public (ignored). */
+  | { type: 'setPageAccess'; path: string; access: PageAccess }
+  /** Show or hide a page in the dApp's navigation (keeps `spec.nav.links` as the ordered list of shown pages). */
+  | { type: 'setNavVisible'; path: string; visible: boolean }
   | { type: 'setProp'; id: string; name: string; value: PropValue | undefined }
   | { type: 'setBlockStyle'; id: string; style: NodeStyle }
   | { type: 'setContracts'; contracts: NonNullable<DappSpec['contracts']> }
+  /**
+   * Change one contract's address. Components bound to it follow automatically; raw props that still
+   * hold the old address (widgets such as the token panel take an address directly) are updated too.
+   */
+  | { type: 'setContractAddress'; id: string; address: string }
   | { type: 'selectBlock'; id: string | null }
   | { type: 'undo' }
   | { type: 'redo' };
@@ -79,12 +89,40 @@ const MAX_NODES_PER_PAGE = 200;
 const MAX_TREE_DEPTH = 6;
 const COALESCE_MS = 1000;
 
+const VALID_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Rewrite ids the validator would reject (e.g. `/dashboard-hero` from older page templates) and
+ * de-duplicate them, so drafts saved before a fix still open with a working preview.
+ */
+function repairIds(pages: DappPage[]): DappPage[] {
+  const taken = new Set<string>();
+  const fix = (id: string, fallback: string): string => {
+    let base = VALID_ID.test(id) ? id : id.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 56) || fallback;
+    if (!taken.has(base)) {
+      taken.add(base);
+      return base;
+    }
+    base = base.slice(0, 56);
+    return freshId(base, taken);
+  };
+  return pages.map((p) => {
+    if (!p.root || !isContainer(p.root)) {
+      return { ...p, blocks: pageBlocks(p).map((b) => ({ ...b, id: fix(b.id, b.widget) })) };
+    }
+    const root = mapTree(p.root, (n) =>
+      n.kind === 'block' ? { ...n, block: { ...n.block, id: fix(n.block.id, n.block.widget) } } : { ...n, id: fix(n.id, n.kind) },
+    );
+    return { ...p, root };
+  });
+}
+
 export function initBuilder(spec: DappSpec): BuilderState {
   const synced: DappSpec = {
     ...spec,
     version: 2,
     // The layout tree is the source of truth when present (nested containers survive); the flat list follows it.
-    pages: spec.pages.map((p) => (p.root && isContainer(p.root) ? withTree(p, p.root) : withBlocks(p, pageBlocks(p)))),
+    pages: repairIds(spec.pages).map((p) => (p.root && isContainer(p.root) ? withTree(p, p.root) : withBlocks(p, pageBlocks(p)))),
     contracts: spec.contracts ?? [],
     nav: spec.nav ?? { showConnect: true, brand: spec.name },
   };
@@ -116,10 +154,26 @@ function pageBlocks(page: DappPage): DappBlock[] {
   return [];
 }
 
+/** Id-safe segment for a page path (`/` → `home`). */
+function pathSegment(path: string): string {
+  return path === '/' ? 'home' : path.replace(/^\//, '').replace(/[^a-z0-9-]+/gi, '-') || 'page';
+}
+
 function pageRootId(page: DappPage): string {
   if (page.root && page.root.kind !== 'block') return page.root.id;
-  const seg = page.path === '/' ? 'home' : page.path.replace(/^\//, '').replace(/[^a-z0-9-]+/gi, '-');
-  return `${seg || 'page'}-root`;
+  return `${pathSegment(page.path)}-root`;
+}
+
+/** Rename only the ids in `root` that are already taken elsewhere in the spec. */
+function uniqueIds(root: ContainerNode, taken: Set<string>): ContainerNode {
+  const fix = (id: string) => {
+    if (!taken.has(id)) {
+      taken.add(id);
+      return id;
+    }
+    return freshId(id.replace(/-\d+$/, '').slice(0, 56), taken);
+  };
+  return mapTree(root, (n) => (n.kind === 'block' ? { ...n, block: { ...n.block, id: fix(n.block.id) } } : { ...n, id: fix(n.id) })) as ContainerNode;
 }
 
 /** Keep flat block edits and layout tree in sync (mirrors dapp-spec wrapBlocks). */
@@ -317,21 +371,67 @@ function relocate(root: LayoutNode, id: string, parentId: string, index: number)
 /** Props that hold a page path or URL (buttons, CTAs). Mirrors the keys the code generator reads. */
 const LINK_PROPS = ['href', 'ctaPath', 'buttonPath', 'link'] as const;
 
-/** Rewrite page-path links in button-like blocks (`/about` -> `/` etc.). External URLs are left alone. */
+/** New value for one link (`undefined` = untouched). A target mapped to '' was deleted: the link is cleared. */
+function remapLink(value: string, map: Map<string, string>): string | undefined {
+  const hash = value.startsWith('#');
+  const raw = (hash ? value.slice(1) : value).trim();
+  if (!raw) return undefined;
+  const next = map.get(raw.startsWith('/') ? raw : `/${raw}`);
+  if (next === undefined) return undefined;
+  return next === '' ? '' : hash ? `#${next}` : next;
+}
+
+/**
+ * Rewrite page-path links (`/about` -> `/` etc.) in button-like props, navbar `links` lists and
+ * JSON page actions. External URLs and contract actions are left alone.
+ */
 function remapLinks(root: LayoutNode, map: Map<string, string>): LayoutNode {
   return mapTree(root, (n) => {
     if (n.kind !== 'block') return n;
     let props = n.block.props;
+    const set = (key: string, value: string) => {
+      props = { ...props, [key]: value };
+    };
     for (const key of LINK_PROPS) {
       const v = props[key];
-      if (typeof v !== 'string') continue;
-      const hash = v.startsWith('#');
-      const path = hash ? v.slice(1) : v;
-      const next = map.get(path);
-      if (next !== undefined) props = { ...props, [key]: hash ? `#${next}` : next };
+      if (typeof v !== 'string' || /^[a-z]+:/i.test(v)) continue;
+      const next = remapLink(v, map);
+      if (next !== undefined) set(key, next);
+    }
+    const action = props.action;
+    if (typeof action === 'string' && action.trim().startsWith('{')) {
+      try {
+        const a = JSON.parse(action) as { type?: unknown; path?: unknown };
+        if (a.type === 'page' && typeof a.path === 'string') {
+          const next = remapLink(a.path, map);
+          if (next !== undefined) set('action', next === '' ? '' : JSON.stringify({ ...a, path: next }));
+        }
+      } catch {
+        /* not JSON: validation reports it */
+      }
+    }
+    const links = props.links;
+    if (typeof links === 'string' && links.includes('|')) {
+      const items = links.split(',').flatMap((item) => {
+        const [label, ...rest] = item.split('|');
+        const target = rest.join('|').trim();
+        const next = target && !/^[a-z]+:/i.test(target) ? remapLink(target, map) : undefined;
+        if (next === undefined) return [item];
+        return next === '' ? [] : [`${label}|${next}`];
+      });
+      const joined = items.join(',');
+      if (joined !== links) set('links', joined);
     }
     return props === n.block.props ? n : { kind: 'block', block: { ...n.block, props } };
   });
+}
+
+/** With an explicit nav order, a new page joins it (right after `after` when that page is listed). */
+function navWithPage(nav: DappSpec['nav'], path: string, after?: string): DappSpec['nav'] {
+  if (!nav?.links) return nav;
+  const at = after ? nav.links.indexOf(after) : -1;
+  const links = at >= 0 ? [...nav.links.slice(0, at + 1), path, ...nav.links.slice(at + 1)] : [...nav.links, path];
+  return { ...nav, links };
 }
 
 function pageHolding(spec: DappSpec, id: string): DappPage | undefined {
@@ -402,25 +502,35 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
     case 'setTheme':
       return commit(state, { ...s, theme: action.theme }, 'theme');
     case 'addPage': {
+      if (s.pages.length >= MAX_PAGES) return state;
       const title = action.title.slice(0, 60) || 'Page';
       const path = uniquePath(s, title);
-      const page = withBlocks({ path, title, root: wrapBlocksLocal([], 'unused') }, []);
-      return commit(state, { ...s, pages: [...s.pages, page] }, null, {
+      const root = uniqueIds(wrapBlocksLocal([], `${pathSegment(path)}-root`), allIds(s));
+      const nav = navWithPage(s.nav, path);
+      return commit(state, { ...s, pages: [...s.pages, withTree({ path, title, root }, root)], ...(nav ? { nav } : {}) }, null, {
         pagePath: path,
         selectedBlockId: null,
       });
     }
     case 'addPageFromTemplate': {
       const tpl = getPageTemplate(action.templateId);
-      if (!tpl) return state;
+      if (!tpl || s.pages.length >= MAX_PAGES) return state;
       const title = action.title.slice(0, 60) || tpl.title;
       const path = uniquePath(s, title);
-      const page = tpl.build(path, title);
-      return commit(state, { ...s, pages: [...s.pages, page] }, null, { pagePath: path, selectedBlockId: null });
+      const built = tpl.build(path, title);
+      if (!isContainer(built.root)) return state;
+      const root = uniqueIds(built.root, allIds(s));
+      const nav = navWithPage(s.nav, path);
+      return commit(state, { ...s, pages: [...s.pages, withTree({ ...built, root }, root)], ...(nav ? { nav } : {}) }, null, { pagePath: path, selectedBlockId: null });
     }
-    case 'removePage':
-      if (action.path === '/') return state;
-      return reconcile(commit(state, { ...s, pages: s.pages.filter((p) => p.path !== action.path) }, null));
+    case 'removePage': {
+      if (action.path === '/' || !s.pages.some((p) => p.path === action.path)) return state;
+      // Links to the removed page would point nowhere: clear them, and drop it from the nav order.
+      const gone = new Map([[action.path, '']]);
+      const pages = s.pages.filter((p) => p.path !== action.path).map((p) => withTree(p, remapLinks(p.root, gone)));
+      const nav = s.nav?.links ? { ...s.nav, links: s.nav.links.filter((l) => l !== action.path) } : s.nav;
+      return reconcile(commit(state, { ...s, pages, ...(nav ? { nav } : {}) }, null));
+    }
     case 'duplicatePage': {
       const src = s.pages.find((p) => p.path === action.path);
       if (!src || s.pages.length >= MAX_PAGES) return state;
@@ -430,7 +540,8 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
       const copy = withTree({ path, title, root }, root);
       const at = s.pages.indexOf(src);
       const pages = [...s.pages.slice(0, at + 1), copy, ...s.pages.slice(at + 1)];
-      return commit(state, { ...s, pages }, null, { pagePath: path, selectedBlockId: null });
+      const nav = navWithPage(s.nav, path, src.path);
+      return commit(state, { ...s, pages, ...(nav ? { nav } : {}) }, null, { pagePath: path, selectedBlockId: null });
     }
     case 'setHomePage': {
       if (action.path === '/') return state;
@@ -529,7 +640,7 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
       const source = blocks.find((b) => b.id === action.id);
       if (!page || !source || blocks.length >= MAX_BLOCKS_PER_PAGE) return state;
       const id = uniqueBlockId(s, source.widget);
-      const copy = { id, widget: source.widget, props: { ...source.props } };
+      const copy: DappBlock = { ...source, id, props: { ...source.props }, ...(source.style ? { style: { ...source.style } } : {}) };
       return commit(
         state,
         mapPage(s, page.path, (blocks) => {
@@ -546,7 +657,48 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
       if (i < 0 || j < 0 || j >= s.pages.length) return state;
       const pages = [...s.pages];
       [pages[i], pages[j]] = [pages[j]!, pages[i]!];
-      return commit(state, { ...s, pages }, null);
+      // An explicit nav order follows the move: the two pages swap places when both are listed.
+      const links = s.nav?.links;
+      const a = links?.indexOf(action.path) ?? -1;
+      const b = links?.indexOf(s.pages[j]!.path) ?? -1;
+      let nav = s.nav;
+      if (links && a >= 0 && b >= 0) {
+        const next = [...links];
+        [next[a], next[b]] = [next[b]!, next[a]!];
+        nav = { ...s.nav, links: next };
+      }
+      return commit(state, { ...s, pages, ...(nav ? { nav } : {}) }, null);
+    }
+    case 'setPageAccess': {
+      const page = s.pages.find((p) => p.path === action.path);
+      if (!page || action.path === '/') return state;
+      const current = page.access ?? 'public';
+      if (current === action.access) return state;
+      const next: DappPage = { ...page };
+      if (action.access === 'public') delete next.access;
+      else next.access = action.access;
+      return commit(state, replacePage(s, page.path, next), null);
+    }
+    case 'setNavVisible': {
+      if (!s.pages.some((p) => p.path === action.path)) return state;
+      const order = s.pages.map((p) => p.path);
+      const shown = s.nav?.links ? s.nav.links.filter((l) => order.includes(l)) : order;
+      const isShown = shown.includes(action.path);
+      if (isShown === action.visible) return state;
+      let links: string[];
+      if (action.visible) {
+        // Back in at the place its page order suggests: before the first shown page that follows it.
+        const rank = order.indexOf(action.path);
+        const at = shown.findIndex((l) => order.indexOf(l) > rank);
+        links = at < 0 ? [...shown, action.path] : [...shown.slice(0, at), action.path, ...shown.slice(at)];
+      } else {
+        links = shown.filter((l) => l !== action.path);
+      }
+      const nav = { ...(s.nav ?? {}) };
+      // Everything shown in page order is the default: no explicit list needed.
+      if (links.length === order.length && links.every((l, i) => l === order[i])) delete nav.links;
+      else nav.links = links;
+      return commit(state, { ...s, nav }, null);
     }
     case 'moveBlock': {
       const page = s.pages.find((p) => p.path === state.pagePath);
@@ -628,6 +780,23 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
       );
     case 'setContracts':
       return commit(state, { ...s, contracts: action.contracts }, null);
+    case 'setContractAddress': {
+      const target = s.contracts?.find((c) => c.id === action.id);
+      if (!target || target.address === action.address) return state;
+      const old = target.address;
+      const contracts = (s.contracts ?? []).map((c) => (c.id === action.id ? { ...c, address: action.address } : c));
+      const pages = old
+        ? s.pages.map((p) => {
+            const root = mapTree(p.root, (n) => {
+              if (n.kind !== 'block' || !Object.values(n.block.props).includes(old)) return n;
+              const props = Object.fromEntries(Object.entries(n.block.props).map(([k, v]) => [k, v === old ? action.address : v]));
+              return { ...n, block: { ...n.block, props } };
+            });
+            return withTree(p, root);
+          })
+        : s.pages;
+      return commit(state, { ...s, contracts, pages }, null);
+    }
     case 'selectBlock':
       return { ...state, selectedBlockId: action.id };
     case 'undo': {

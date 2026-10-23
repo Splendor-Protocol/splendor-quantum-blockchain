@@ -1,6 +1,93 @@
-import { PAGE_TEMPLATES, type DappSpec } from '@splendor/dapp-spec';
-import type { Dispatch } from 'react';
+import { PAGE_TEMPLATES, type DappPage, type DappSpec, type PageAccess } from '@splendor/dapp-spec';
+import { useEffect, useState, type Dispatch } from 'react';
 import { MAX_PAGES, type BuilderAction } from '../builder/state';
+import { collectLinks } from './FlowsPanel';
+
+/** Page title field that never commits an empty title: an empty field reverts on blur. */
+export function PageTitleInput({ title, onRename, id, ariaLabel, className }: { title: string; onRename: (title: string) => void; id?: string; ariaLabel?: string; className?: string }) {
+  const [draft, setDraft] = useState(title);
+  useEffect(() => setDraft(title), [title]);
+  const empty = !draft.trim();
+  return (
+    <input
+      id={id}
+      aria-label={ariaLabel}
+      className={className}
+      value={draft}
+      maxLength={60}
+      aria-invalid={empty ? true : undefined}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        if (e.target.value.trim()) onRename(e.target.value);
+      }}
+      onBlur={() => {
+        if (empty) setDraft(title);
+      }}
+    />
+  );
+}
+
+const ACCESS_LABEL: Record<PageAccess, string> = { public: 'Public', wallet: 'Wallet connected', signin: 'Signed in' };
+
+/** True when `spec.nav.links` (an explicit list of shown pages) includes the page, or there is no list. */
+export function isInNav(spec: Pick<DappSpec, 'nav'>, path: string): boolean {
+  return !spec.nav?.links || spec.nav.links.includes(path);
+}
+
+/** Who sees a page, whether it is in the navigation, and where it sits in the page order. */
+export function PageSettings({
+  page,
+  index,
+  count,
+  inNav,
+  idPrefix = 'page',
+  onAccess,
+  onNavVisible,
+  onMove,
+}: {
+  page: Pick<DappPage, 'path' | 'title' | 'access'>;
+  index: number;
+  count: number;
+  inNav: boolean;
+  idPrefix?: string;
+  onAccess: (access: PageAccess) => void;
+  onNavVisible: (visible: boolean) => void;
+  onMove: (delta: -1 | 1) => void;
+}) {
+  const home = page.path === '/';
+  const id = `${idPrefix}-access`;
+  return (
+    <div className="pg-page-settings" data-testid="page-settings">
+      <div className="pg-field">
+        <label htmlFor={id}>Who can see this page</label>
+        <select id={id} value={home ? 'public' : (page.access ?? 'public')} disabled={home} aria-describedby={home ? `${id}-hint` : undefined} onChange={(e) => onAccess(e.target.value as PageAccess)}>
+          {(Object.keys(ACCESS_LABEL) as PageAccess[]).map((a) => (
+            <option key={a} value={a}>
+              {ACCESS_LABEL[a]}
+            </option>
+          ))}
+        </select>
+        {home ? (
+          <small id={`${id}-hint`} className="pg-muted">
+            The home page is always public
+          </small>
+        ) : null}
+      </div>
+      <div className="pg-field pg-field-inline">
+        <input id={`${idPrefix}-nav`} type="checkbox" checked={inNav} onChange={(e) => onNavVisible(e.target.checked)} />
+        <label htmlFor={`${idPrefix}-nav`}>Show in navigation</label>
+      </div>
+      <div className="pg-row">
+        <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={index <= 0} aria-label={`Move page ${page.title} earlier`} onClick={() => onMove(-1)}>
+          Earlier
+        </button>
+        <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={index < 0 || index >= count - 1} aria-label={`Move page ${page.title} later`} onClick={() => onMove(1)}>
+          Later
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function PagesPanel({
   spec,
@@ -19,7 +106,7 @@ export function PagesPanel({
     <div className="pg-stack">
       <p className="pg-toybox-lead">Pages</p>
       <ul className="pg-pages-list">
-        {spec.pages.map((p) => (
+        {spec.pages.map((p, pageIndex) => (
           <li key={p.path} className={p.path === pagePath ? 'is-active' : ''}>
             <button
               type="button"
@@ -31,13 +118,7 @@ export function PagesPanel({
               <small className="pg-muted">{p.path}</small>
             </button>
             {p.path === pagePath ? (
-              <input
-                aria-label="Page title"
-                className="pg-pages-rename"
-                value={p.title}
-                maxLength={60}
-                onChange={(e) => dispatch({ type: 'renamePage', path: p.path, title: e.target.value })}
-              />
+              <PageTitleInput ariaLabel="Page title" className="pg-pages-rename" title={p.title} onRename={(title) => dispatch({ type: 'renamePage', path: p.path, title })} />
             ) : null}
             <div className="pg-row pg-pages-actions">
             <button
@@ -73,12 +154,28 @@ export function PagesPanel({
                 className="pg-icon-btn"
                 aria-label={`Delete page ${p.title}`}
                 title="Delete page"
-                onClick={() => dispatch({ type: 'removePage', path: p.path })}
+                onClick={() => {
+                  const links = collectLinks(spec).filter((l) => l.to === p.path && l.fromPath !== p.path).length;
+                  const warning = links ? `${links} link${links === 1 ? '' : 's'} to it will break.` : 'Any links to it will break.';
+                  if (window.confirm(`Delete page "${p.title}" (${p.path})? ${warning}`)) dispatch({ type: 'removePage', path: p.path });
+                }}
               >
                 ×
               </button>
             ) : null}
             </div>
+            {p.path === pagePath ? (
+              <PageSettings
+                page={p}
+                index={pageIndex}
+                count={spec.pages.length}
+                inNav={isInNav(spec, p.path)}
+                idPrefix="pages-panel"
+                onAccess={(access) => dispatch({ type: 'setPageAccess', path: p.path, access })}
+                onNavVisible={(visible) => dispatch({ type: 'setNavVisible', path: p.path, visible })}
+                onMove={(delta) => dispatch({ type: 'movePage', path: p.path, delta })}
+              />
+            ) : null}
           </li>
         ))}
       </ul>

@@ -1,12 +1,17 @@
-import { Component, type ReactNode } from 'react';
+import { Component, type MouseEvent, type ReactNode } from 'react';
 import { themeOverridesToStyle } from '@splendor/connect-react';
-import { blocksFromTree, isContainer, styleToCss, type CatalogEntry, type DappBlock, type DappSpec, type LayoutNode } from '@splendor/dapp-spec';
+import { bindBlock, blocksFromTree, isContainer, styleToCss, type CatalogEntry, type DappBlock, type DappSpec, type LayoutNode, type NodeStyle } from '@splendor/dapp-spec';
+import { AccessGate } from '@splendor/dapp-spec/blocks/AccessGate.tsx';
 import { resolveComponent } from './componentMap';
 
-class BlockBoundary extends Component<{ label: string; children: ReactNode }, { error: Error | null }> {
+/** Shows a failed widget instead of crashing the page, and tries again when `resetKey` (its props) changes. */
+class BlockBoundary extends Component<{ label: string; resetKey: string; children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
   static getDerivedStateFromError(error: Error) {
     return { error };
+  }
+  componentDidUpdate(prev: { resetKey: string }) {
+    if (this.state.error && prev.resetKey !== this.props.resetKey) this.setState({ error: null });
   }
   render() {
     if (this.state.error) {
@@ -32,12 +37,13 @@ export type SpecRendererProps = {
   onSelectBlock?: (id: string) => void;
 };
 
-function renderBlockBody(block: DappBlock, entry: CatalogEntry | undefined): ReactNode {
+function renderBlockBody(block: DappBlock, entry: CatalogEntry | undefined, spec: DappSpec): ReactNode {
   const C = entry ? resolveComponent(entry) : null;
   if (C) {
+    const { props } = bindBlock(spec, block, entry);
     return (
-      <BlockBoundary label={entry!.title}>
-        <C {...block.props} />
+      <BlockBoundary label={entry!.title} resetKey={`${block.widget}:${JSON.stringify(props)}`}>
+        <C {...props} />
       </BlockBoundary>
     );
   }
@@ -69,6 +75,17 @@ function wrapSelectable(
   );
 }
 
+const hideClass = (style: NodeStyle | undefined) => (style?.hideOn ? ` dapp-hide-${style.hideOn}` : '');
+
+/** Page paths are `/` or `/segment`; strips `#`, query, hash and a trailing slash. */
+function hrefToPath(href: string): string | null {
+  if (href.startsWith('//')) return null;
+  const isHash = href.startsWith('#/');
+  if (!isHash && !href.startsWith('/')) return null;
+  const path = (isHash ? href.slice(1) : href).split(/[?#]/)[0]!;
+  return path.length > 1 ? path.replace(/\/+$/, '') || '/' : path;
+}
+
 /**
  * Renders a validated DappSpec with the real widgets and blocks. Shared by the builder preview
  * (mock and live), the widget gallery, share links and — in phase 2 — hosted builds.
@@ -79,26 +96,27 @@ export function SpecRenderer({ spec, catalog, pagePath, onNavigate, headerExtra,
   /** Builder mode: the caller wants selection + drop targets (the preview frame). */
   const builder = Boolean(onSelectBlock);
 
+  /** Leaf blocks carry their own style and hide-on-device class, like containers. */
+  const renderLeaf = (block: DappBlock): ReactNode => {
+    const entry = byId.get(block.widget);
+    const body = renderBlockBody(block, entry, spec);
+    return (
+      <div key={block.id} className={`dapp-block${hideClass(block.style)}`} data-block-id={block.id} style={styleToCss(block.style)}>
+        {wrapSelectable(block.id, body, selectedBlockId, onSelectBlock)}
+      </div>
+    );
+  };
+
   const renderTreeNode = (node: LayoutNode): ReactNode => {
-    if (node.kind === 'block') {
-      const block = node.block;
-      const entry = byId.get(block.widget);
-      const body = renderBlockBody(block, entry);
-      return (
-        <div key={block.id} data-block-id={block.id}>
-          {wrapSelectable(block.id, body, selectedBlockId, onSelectBlock)}
-        </div>
-      );
-    }
-    const hide = node.style?.hideOn ? ` dapp-hide-${node.style.hideOn}` : '';
+    if (node.kind === 'block') return renderLeaf(node.block);
     const selected = builder && selectedBlockId === node.id;
     return (
       <div
         key={node.id}
-        className={`dapp-${node.kind}${hide}${selected ? ' pg-node-selected' : ''}`}
+        className={`dapp-${node.kind}${hideClass(node.style)}${selected ? ' pg-node-selected' : ''}`}
         data-node-id={node.id}
         data-node-kind={node.kind}
-        style={styleToCss(node.style)}
+        style={styleToCss(node.style, node.kind)}
         onClick={
           onSelectBlock
             ? (e) => {
@@ -119,34 +137,83 @@ export function SpecRenderer({ spec, catalog, pagePath, onNavigate, headerExtra,
   };
 
   const flatBlocks = page ? (page.blocks ?? blocksFromTree(page.root)) : [];
-  const mainBody =
-    page?.root && isContainer(page.root) ? (
-      renderTreeNode(page.root)
-    ) : (
-      <>
-        {flatBlocks.map((block) => {
-          const entry = byId.get(block.widget);
-          const body = renderBlockBody(block, entry);
-          return (
-            <div key={block.id} data-block-id={block.id}>
-              {wrapSelectable(block.id, body, selectedBlockId, onSelectBlock)}
-            </div>
-          );
-        })}
-        {page && flatBlocks.length === 0 ? <p className="dapp-empty">This page has no blocks yet.</p> : null}
-      </>
+  const treeMode = Boolean(page?.root && isContainer(page.root));
+  const mainBody = treeMode ? (
+    renderTreeNode(page!.root)
+  ) : (
+    <>
+      {flatBlocks.map((block) => renderLeaf(block))}
+      {page && flatBlocks.length === 0 ? <p className="dapp-empty">This page has no blocks yet.</p> : null}
+    </>
+  );
+
+  /**
+   * Links to other pages (`#/path`, or plain `/path` when it names one of this dApp's pages) switch
+   * the page here instead of navigating the frame away.
+   */
+  const onRootClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!onNavigate || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const anchor = (e.target as Element).closest?.('a');
+    if (!anchor || !e.currentTarget.contains(anchor)) return;
+    const target = anchor.getAttribute('target');
+    if (target && target !== '_self') return;
+    const href = anchor.getAttribute('href');
+    if (!href) return;
+    const path = hrefToPath(href);
+    if (path === null) return;
+    const known = spec.pages.some((p) => p.path === path);
+    if (known) {
+      e.preventDefault();
+      onNavigate(path);
+    } else if (href.startsWith('#/')) {
+      // A hash link to a missing page: do nothing rather than change the frame's URL.
+      e.preventDefault();
+    }
+  };
+
+  /**
+   * Protected pages: visitors (preview app, share links, live) meet the connect / sign-in gate.
+   * While editing, the content stays visible with a note, so the page can still be built.
+   */
+  const access = page?.access ?? 'public';
+  const gate = (body: ReactNode): ReactNode => {
+    if (access === 'public') return body;
+    if (builder) {
+      return (
+        <>
+          <p className="pg-access-note" role="note">
+            {access === 'wallet' ? 'Visitors must connect a wallet to see this page.' : 'Visitors must sign in with their wallet to see this page.'}
+          </p>
+          {body}
+        </>
+      );
+    }
+    return (
+      <AccessGate access={access} title={page?.title}>
+        {body}
+      </AccessGate>
     );
+  };
+
+  // Same header, link order and footer as the exported app (`navModel` in dapp-spec codegen).
+  const nav = spec.nav ?? {};
+  const brand = nav.brand?.trim() || spec.name;
+  const navPages = nav.links
+    ? nav.links
+        .map((path) => spec.pages.find((p) => p.path === path))
+        .filter((p, i, all): p is DappSpec['pages'][number] => !!p && all.indexOf(p) === i)
+    : spec.pages;
 
   return (
-    <div data-sqc-theme={spec.theme.base} className="sqc-root dapp-root" style={themeOverridesToStyle(spec.theme.overrides)}>
+    <div data-sqc-theme={spec.theme.base} className="sqc-root dapp-root" style={themeOverridesToStyle(spec.theme.overrides)} onClick={onRootClick}>
       <div className="dapp-shell">
         <header className="dapp-header">
-          <p className="dapp-brand">{spec.name}</p>
-          {headerExtra}
+          <span className="dapp-brand">{brand}</span>
+          {nav.showConnect !== false ? headerExtra : null}
         </header>
-        {spec.pages.length > 1 ? (
+        {navPages.length > 1 ? (
           <nav className="dapp-nav" aria-label="dApp pages">
-            {spec.pages.map((p) => (
+            {navPages.map((p) => (
               <a
                 key={p.path}
                 href={`#${p.path}`}
@@ -161,7 +228,14 @@ export function SpecRenderer({ spec, catalog, pagePath, onNavigate, headerExtra,
             ))}
           </nav>
         ) : null}
-        <main className="dapp-grid">{mainBody}</main>
+        {treeMode ? (
+          <main>
+            <div className="dapp-page">{gate(mainBody)}</div>
+          </main>
+        ) : (
+          <main className="dapp-grid">{gate(mainBody)}</main>
+        )}
+        {nav.footer?.trim() ? <footer className="dapp-footer">{nav.footer}</footer> : null}
       </div>
     </div>
   );

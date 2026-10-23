@@ -44,10 +44,16 @@ export type ContainerKind = 'section' | 'row' | 'column' | 'card' | 'stack';
 
 /** Layout / spacing tokens. Values are validated as plain CSS tokens. */
 export type NodeStyle = {
+  /** On a `column` this is the flex-basis (the column does not grow); elsewhere it is `width`. */
   width?: string;
   maxWidth?: string;
   gap?: string;
   padding?: string;
+  /**
+   * Content alignment. Column-like containers (section, stack, card, column): `start`/`center`/`end`
+   * align children horizontally, `between` spreads them vertically. Rows: `start`/`center`/`end`
+   * place the children at that edge on both axes, `between` spreads them horizontally.
+   */
   align?: 'start' | 'center' | 'end' | 'stretch' | 'between';
   background?: string;
   hideOn?: 'mobile' | 'desktop';
@@ -85,12 +91,23 @@ export type ContractRef = {
   name: string;
   address: string;
   functions: ContractFunction[];
+  /** `token`: a QRC-20 the kits read name/symbol/supply from. Default `contract`. */
+  kind?: 'token' | 'contract';
+  /** Display decimals for `token` contracts (default 18). */
+  decimals?: number;
 };
+
+/** Who may see a page. `wallet`: a connected wallet. `signin`: a signed sign-in message. */
+export type PageAccess = 'public' | 'wallet' | 'signin';
+export const PAGE_ACCESS: readonly PageAccess[] = ['public', 'wallet', 'signin'];
 
 export type DappNav = {
   brand?: string;
   showConnect?: boolean;
-  /** Page paths in display order. Missing paths are appended. */
+  /**
+   * Pages shown in the navigation, in display order. Pages not listed stay reachable by links but
+   * are not in the menu. Absent: every page, in page order.
+   */
   links?: string[];
   footer?: string;
 };
@@ -101,6 +118,8 @@ export type DappPage = {
   title: string;
   /** Layout tree for the page body. */
   root: LayoutNode;
+  /** Who may see the page (default `public`). Gated pages show a connect / sign-in panel first. */
+  access?: PageAccess;
   /**
    * Flat list kept for tooling that still walks blocks (export summaries, issue paths).
    * Always derived from `root` on normalize; may be absent on raw input before migrate.
@@ -128,7 +147,27 @@ export type PropSchema = {
   label: string;
   type: PropType;
   description?: string;
-  format?: 'address' | 'amount' | 'text' | 'url' | 'action' | 'image';
+  /**
+   * - `integer`: a non-negative base-10 integer without a sign or decimals (token ids, counts).
+   * - `contract`: the id of an entry in `spec.contracts` (studio shows a contract picker). At render
+   *   time the contract's address is filled into the block's address prop (see `bindBlockProps`).
+   * - `function`: a function signature of the contract named by `contractProp` (picker filtered by
+   *   `functionKind`). The function's ABI params are passed to the block as `fnParams`.
+   * - `list`: rows of `columns` separated by `|`, one row per line (studio shows a row editor).
+   */
+  format?: 'address' | 'amount' | 'integer' | 'text' | 'url' | 'action' | 'image' | 'contract' | 'function' | 'list';
+  /** With `format: 'url'`: only `https://` is accepted (images, server endpoints). */
+  httpsOnly?: boolean;
+  /** With `format: 'contract'`: which contracts the picker offers. */
+  contractKind?: 'token' | 'contract' | 'any';
+  /** With `format: 'contract'`: the block prop that receives the contract's address (default `contract`). */
+  addressProp?: string;
+  /** With `format: 'function'`: the prop holding the contract id (default `contractId`). */
+  contractProp?: string;
+  /** With `format: 'function'`: only read or only write functions. */
+  functionKind?: 'read' | 'write';
+  /** With `format: 'list'`: the columns of one row, in order. */
+  columns?: { key: string; label: string; placeholder?: string }[];
   placeholder?: string;
   required?: boolean;
   min?: number;
@@ -161,6 +200,8 @@ export type CatalogEntry = {
   thumb?: string;
   /** True when this entry is a layout container shell (section/row/…). */
   container?: boolean;
+  /** Still renders and validates (old specs) but is not offered in the palette. */
+  hidden?: boolean;
 };
 
 export type ValidationIssue = { path: string; message: string };

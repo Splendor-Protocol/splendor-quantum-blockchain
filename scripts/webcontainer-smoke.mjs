@@ -54,6 +54,7 @@ for (const name of PACKAGES) {
       const pkg = JSON.parse(bundle[key]);
       check(pkg.name === `@splendor/${name}`, `${key} is @splendor/${name}`);
       check(!pkg.scripts?.prepare && !pkg.scripts?.prepublishOnly, `${name}: prepare/prepublishOnly scripts stripped`);
+      check(!pkg.devDependencies, `${name}: devDependencies stripped (npm would install them for a file: dependency)`);
     } catch {
       check(false, `${key} is valid JSON`);
     }

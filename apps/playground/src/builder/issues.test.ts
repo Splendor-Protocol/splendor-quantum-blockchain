@@ -27,4 +27,24 @@ describe('describeIssue', () => {
     expect(describeIssue(spec, catalog, { path: 'theme.overrides.accent', message: 'x' }).where).toBe('Theme → accent');
     expect(describeIssue(spec, catalog, { path: 'name', message: 'x' }).where).toBe('Name');
   });
+
+  it('names style, layout-tree, contract and nav paths, and targets the node', () => {
+    const spec = instantiateTemplate(getTemplate('tip-jar')!);
+    spec.contracts = [{ id: 'c', name: 'Counter', address: '', functions: [{ name: 'inc', signature: 'inc', params: [], kind: 'write' }] }];
+    expect(describeIssue(spec, catalog, { path: 'pages[0].blocks[1].style.width', message: 'x' })).toMatchObject({
+      where: 'Tip → Tip jar → Style → width',
+      target: { blockId: 'tips' },
+    });
+    const root = spec.pages[0]!.root as { id: string };
+    expect(describeIssue(spec, catalog, { path: 'pages[0].root.style.gap', message: 'x' })).toMatchObject({
+      where: 'Tip → Section → Style → gap',
+      target: { blockId: root.id },
+    });
+    expect(describeIssue(spec, catalog, { path: 'pages[0].root.children[0].children[1].block.id', message: 'x' })).toMatchObject({
+      where: 'Tip → Tip jar → id',
+      target: { blockId: 'tips' },
+    });
+    expect(describeIssue(spec, catalog, { path: 'contracts[0].functions[0].signature', message: 'x' }).where).toBe('Contracts → Counter → inc → signature');
+    expect(describeIssue(spec, catalog, { path: 'nav.links', message: 'x' }).where).toBe('Navigation → links');
+  });
 });

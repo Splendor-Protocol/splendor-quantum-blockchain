@@ -10,7 +10,7 @@ export type MembersAreaProps = {
    * Your server's base URL. When set, the block fetches `GET {apiUrl}/auth/nonce` and posts the
    * signed challenge to `POST {apiUrl}/auth/verify`, which must call `verifySignIn` from
    * `@splendor/sqc-sdk/auth`. Sign out posts to `POST {apiUrl}/auth/logout`.
-   * When empty it runs a client-only demo (not secure).
+   * Must be https. When empty it runs a client-only demo (not access control).
    */
   apiUrl?: string;
 };
@@ -25,7 +25,16 @@ export function MembersArea({
   const { address } = useAccount();
   const [member, setMember] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const base = apiUrl.replace(/\/+$/, '');
+  const trimmed = apiUrl.trim();
+  const badUrl = trimmed !== '' && !/^https:\/\//i.test(trimmed);
+  // A non-https apiUrl is never used: the block stays in demo mode and says so.
+  const base = badUrl ? '' : trimmed.replace(/\/+$/, '');
+  const demoNote = (
+    <p className="sqc-widget__msg dapp-note">
+      {badUrl ? 'apiUrl must start with https:// and is ignored. ' : ''}Demo mode: not access control. Set <code>apiUrl</code> (https) to verify
+      sign-ins on your server.
+    </p>
+  );
 
   // A sign-in belongs to one address: switching or disconnecting the wallet locks the area again.
   useEffect(() => {
@@ -82,15 +91,12 @@ export function MembersArea({
           <button type="button" className="sqc-btn sqc-btn--block" onClick={signOut}>
             Sign out
           </button>
+          {!base ? demoNote : null}
         </div>
       ) : (
         <>
           <SignInButton hideTitle statement={statement} nonce={nonce} onSuccess={verify} />
-          {!base ? (
-            <p className="sqc-widget__msg dapp-note">
-              Demo mode: set <code>apiUrl</code> to verify sign-ins on your server.
-            </p>
-          ) : null}
+          {!base ? demoNote : null}
           {error ? (
             <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
               {error}

@@ -1,6 +1,7 @@
 import type { NetworkId } from '@splendor/connect-react';
 import { MOCK_ADDRESS, createMockConnectController, mockWallet, type MockConnectController } from '@splendor/connect-react/testing';
-import { fromUnits, qrc1155Address, qrc20Address, qrc721Address, toUnits } from '@splendor/sqc-sdk';
+import { DEMO_CONTRACT_ADDRESS, DEMO_TOKEN_ADDRESS } from '@splendor/dapp-spec';
+import { fromUnits, functionSelectorHex, qrc1155Address, qrc20Address, qrc721Address, toUnits } from '@splendor/sqc-sdk';
 
 export type MockWalletState = 'connected' | 'disconnected';
 
@@ -22,6 +23,13 @@ const big = (v: unknown): bigint => {
     return 0n;
   }
 };
+const word = (n: bigint) => '0x' + n.toString(16).padStart(64, '0');
+/** Read selectors the mock answers for token addresses on the contract-call path (ContractRead, LiveStat). */
+const TOKEN_SELECTORS = {
+  totalSupply: functionSelectorHex('totalSupply()'),
+  decimals: functionSelectorHex('decimals()'),
+  balanceOf: functionSelectorHex('balanceOf(address)'),
+};
 const lower = (a: unknown) => (typeof a === 'string' && /^SQ:/i.test(a) ? `SQ:${a.slice(3).toLowerCase()}` : String(a ?? ''));
 
 /**
@@ -38,6 +46,17 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
   const contracts = new Map<string, bigint>();
   const confirmAt = new Map<string, number>();
   let seq = 0;
+
+  // The demo assets the templates and the Content pickers point at (DEMO_TOKEN_ADDRESS / DEMO_CONTRACT_ADDRESS).
+  tokens.set(lower(DEMO_TOKEN_ADDRESS), {
+    name: 'Demo Token',
+    symbol: 'DEMO',
+    decimals: 18,
+    owner: me,
+    total: 1_000_000n * 10n ** 18n,
+    balances: new Map([[me, 25_000n * 10n ** 18n]]),
+  });
+  contracts.set(lower(DEMO_CONTRACT_ADDRESS), 42n);
 
   // Addresses the dApp did not deploy here (pasted into a block) behave like a demo asset you hold.
   const token = (addr: string): Token => {
@@ -177,7 +196,19 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
     balanceRaw: () => String(spld),
     estimate: { fee: String(DEFAULT_FEE), fee_is_floor: false, gas: 21000 },
     moduleCall: ({ module, action, params }) => answerRead(module, action, params ?? {}),
-    call: (req) => ({ return_data: '0x' + (contracts.get(lower(req.to)) ?? 0n).toString(16).padStart(64, '0') }),
+    call: (req) => {
+      const to = lower(req.to);
+      const t = tokens.get(to);
+      if (t) {
+        // Token addresses answer the standard reads, so a contract-call block on a token works too.
+        const data = String(req.data ?? '').replace(/^0x/i, '');
+        const sel = data.slice(0, 8);
+        if (sel === TOKEN_SELECTORS.totalSupply) return { return_data: word(t.total) };
+        if (sel === TOKEN_SELECTORS.decimals) return { return_data: word(BigInt(t.decimals)) };
+        if (sel === TOKEN_SELECTORS.balanceOf) return { return_data: word(t.balances.get(lower('SQ:' + data.slice(8, 72))) ?? 0n) };
+      }
+      return { return_data: word(contracts.get(to) ?? 0n) };
+    },
     // Throwing here fails the send, like a revert, before any fee is charged.
     onSend: (call, res) => {
       const o = (call.args[0] ?? {}) as Record<string, unknown>;

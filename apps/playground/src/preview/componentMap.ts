@@ -43,6 +43,10 @@ import { Steps } from '@splendor/dapp-spec/blocks/Steps.tsx';
 import { Testimonial } from '@splendor/dapp-spec/blocks/Testimonial.tsx';
 import { TxHistoryTable } from '@splendor/dapp-spec/blocks/TxHistoryTable.tsx';
 import { TxStatusCard } from '@splendor/dapp-spec/blocks/TxStatusCard.tsx';
+import { TokenStats } from '@splendor/dapp-spec/blocks/TokenStats.tsx';
+import { Tokenomics } from '@splendor/dapp-spec/blocks/Tokenomics.tsx';
+import { LiveStat } from '@splendor/dapp-spec/blocks/LiveStat.tsx';
+import { ContractForm } from '@splendor/dapp-spec/blocks/ContractForm.tsx';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyComponent = ComponentType<any>;
@@ -91,6 +95,10 @@ const BLOCKS: Record<string, AnyComponent> = {
   Testimonial,
   TxHistoryTable,
   TxStatusCard,
+  TokenStats,
+  Tokenomics,
+  LiveStat,
+  ContractForm,
 };
 
 /** Packages the playground can render. Third-party widget packages register here (phase 2). */

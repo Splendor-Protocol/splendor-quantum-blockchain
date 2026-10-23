@@ -1,3 +1,5 @@
+import { pageHref } from './pageHref';
+
 export type CtaBannerProps = {
   heading?: string;
   text?: string;
@@ -5,18 +7,14 @@ export type CtaBannerProps = {
   buttonPath?: string;
 };
 
-/** Full-width call-to-action strip. */
+/** Full-width call-to-action strip. The button renders only when both a label and a path are set. */
 export function CtaBanner({
   heading = 'Ready?',
   text = '',
   buttonLabel = 'Get started',
   buttonPath = '',
 }: CtaBannerProps) {
-  const href = buttonPath
-    ? buttonPath.startsWith('http')
-      ? buttonPath
-      : `#${buttonPath.startsWith('/') ? buttonPath : `/${buttonPath}`}`
-    : '';
+  const href = pageHref(buttonPath);
   return (
     <section
       className="sqc-widget dapp-cta-banner"
@@ -36,16 +34,10 @@ export function CtaBanner({
         <h3 style={{ margin: 0 }}>{heading}</h3>
         {text ? <p className="sqc-widget__msg" style={{ margin: '0.35rem 0 0' }}>{text}</p> : null}
       </div>
-      {buttonLabel ? (
-        href ? (
-          <a className="sqc-btn" href={href}>
-            {buttonLabel}
-          </a>
-        ) : (
-          <button type="button" className="sqc-btn" disabled>
-            {buttonLabel}
-          </button>
-        )
+      {buttonLabel && href ? (
+        <a className="sqc-btn" href={href}>
+          {buttonLabel}
+        </a>
       ) : null}
     </section>
   );

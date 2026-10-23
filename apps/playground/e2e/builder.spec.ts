@@ -27,7 +27,7 @@ test.describe('templates in the builder (mock wallet)', () => {
 
   test('wallet dashboard: no wallet shows the connect hint', async ({ page }) => {
     await openTemplate(page, 'wallet-dashboard');
-    await page.getByRole('group', { name: 'Mock wallet state' }).getByRole('button', { name: 'No wallet' }).click();
+    await page.getByRole('group', { name: 'Test wallet state' }).getByRole('button', { name: 'No wallet' }).click();
     await expect(preview(page).getByText('Connect a wallet to send SPLD.')).toBeVisible();
   });
 

@@ -1,3 +1,5 @@
+import { pageHref } from './pageHref';
+
 export type HeroSplitProps = {
   heading?: string;
   text?: string;
@@ -9,7 +11,7 @@ export type HeroSplitProps = {
   reverse?: boolean;
 };
 
-/** Two-column hero: text and call-to-action next to an image. */
+/** Two-column hero: text and call-to-action next to an image. The button renders only when both a label and a path are set. */
 export function HeroSplit({
   heading = 'Build on Splendor',
   text = '',
@@ -18,7 +20,7 @@ export function HeroSplit({
   imageUrl = '',
   reverse = false,
 }: HeroSplitProps) {
-  const href = ctaPath ? (ctaPath.startsWith('http') ? ctaPath : `#${ctaPath.startsWith('/') ? ctaPath : `/${ctaPath}`}`) : '';
+  const href = pageHref(ctaPath);
   const safe = /^https:\/\//i.test(imageUrl) ? imageUrl : '';
   return (
     <section
@@ -36,16 +38,10 @@ export function HeroSplit({
       <div style={{ flex: '1 1 260px' }}>
         <h1 style={{ fontSize: '2.1rem', margin: '0 0 0.75rem', fontFamily: 'var(--sqc-font-display, inherit)' }}>{heading}</h1>
         {text ? <p className="sqc-widget__msg" style={{ margin: '0 0 1.25rem' }}>{text}</p> : null}
-        {ctaLabel ? (
-          href ? (
-            <a className="sqc-btn" href={href}>
-              {ctaLabel}
-            </a>
-          ) : (
-            <button type="button" className="sqc-btn" disabled>
-              {ctaLabel}
-            </button>
-          )
+        {ctaLabel && href ? (
+          <a className="sqc-btn" href={href}>
+            {ctaLabel}
+          </a>
         ) : null}
       </div>
       <div style={{ flex: '1 1 260px' }}>

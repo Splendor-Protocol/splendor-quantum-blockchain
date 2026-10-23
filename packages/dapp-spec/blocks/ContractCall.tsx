@@ -3,6 +3,10 @@ import { TxResult, WidgetShell, connectErrorMessage, useContract } from '@splend
 
 export type ContractCallProps = {
   title?: string;
+  /** Contract id picked in the studio. Replaced by `contract` before render; ignored here. */
+  contractId?: string;
+  /** ABI params of the picked function (JSON). Passed by generated code; not used here. */
+  fnParams?: string;
   /** SQ: address of the deployed contract. */
   contract?: string;
   /** Function signature as compiled, e.g. `get()` or `set(uint256)`. */

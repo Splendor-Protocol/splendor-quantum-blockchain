@@ -1,18 +1,16 @@
+import { parseList } from './parseList';
+
 export type StepsProps = {
   title?: string;
-  /** `Title|Description` items, comma-separated. */
+  /** `Title|Description` items, comma-separated (or one per line when the value contains a newline). */
   items?: string;
 };
 
 function parseItems(items: string): { title: string; text: string }[] {
-  return items
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => {
-      const [title, ...rest] = s.split('|');
-      return { title: (title ?? '').trim(), text: rest.join('|').trim() };
-    });
+  return parseList(items).map((s) => {
+    const [title, ...rest] = s.split('|');
+    return { title: (title ?? '').trim(), text: rest.join('|').trim() };
+  });
 }
 
 /** Numbered how-it-works list. */

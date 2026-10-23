@@ -85,9 +85,10 @@ test.describe('builder scenarios (mock wallet)', () => {
     await expect(blocks).toHaveCount(4);
     await page.getByRole('button', { name: 'Duplicate SPLD transfer' }).click();
     await expect(blocks).toHaveCount(5);
+    await page.getByRole('tab', { name: 'Pages' }).click();
     await page.getByRole('button', { name: '+ Add page' }).click();
     await page.getByLabel('New page title').fill('About');
-    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    await page.getByRole('button', { name: 'Add blank', exact: true }).click();
     await expect(page.getByRole('button', { name: /About \/about/ })).toBeVisible();
   });
 });
@@ -96,13 +97,13 @@ test.describe('live mode safety', () => {
   test('live preview stays off while the playground is on another network', async ({ page }) => {
     await openTemplate(page, 'wallet-dashboard');
     await page.locator('#dapp-network').selectOption('devnet');
-    await page.getByRole('group', { name: 'Preview mode' }).getByRole('button', { name: 'Live' }).click();
+    await page.getByRole('group', { name: 'Preview mode' }).getByRole('button', { name: 'Real wallet' }).click();
     await expect(page.getByTestId('live-network-mismatch')).toContainText('devnet');
   });
 
   test('switching a live preview to mainnet asks first, and declining keeps the network', async ({ page }) => {
     await openTemplate(page, 'wallet-dashboard');
-    await page.getByRole('group', { name: 'Preview mode' }).getByRole('button', { name: 'Live' }).click();
+    await page.getByRole('group', { name: 'Preview mode' }).getByRole('button', { name: 'Real wallet' }).click();
     const asked: string[] = [];
     page.on('dialog', (d) => {
       asked.push(d.message());
@@ -158,18 +159,33 @@ test.describe('projects', () => {
 });
 
 test.describe('accessibility and navigation', () => {
-  test('editor tabs follow the ARIA tabs pattern with arrow keys', async ({ page }) => {
+  test('studio rail follows the ARIA tabs pattern with arrow keys', async ({ page }) => {
     await openTemplate(page, 'wallet-dashboard');
-    const block = page.getByRole('tab', { name: 'Block' });
-    await expect(block).toHaveAttribute('aria-selected', 'true');
-    await block.focus();
-    await page.keyboard.press('ArrowRight');
-    const theme = page.getByRole('tab', { name: 'Theme' });
+    const railTabs = page.getByRole('tablist', { name: 'Studio panels' });
+    const components = railTabs.getByRole('tab', { name: 'Components' });
+    await expect(components).toHaveAttribute('aria-selected', 'true');
+    await components.focus();
+    await page.keyboard.press('ArrowDown');
+    const theme = railTabs.getByRole('tab', { name: 'Theme' });
     await expect(theme).toBeFocused();
     await expect(theme).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByRole('tabpanel', { name: 'Theme' })).toContainText('Base theme');
+    await expect(page.getByRole('tabpanel', { name: 'Theme' })).toContainText('Theme presets');
     await page.keyboard.press('End');
-    await expect(page.getByRole('tab', { name: 'Save & share' })).toBeFocused();
+    await expect(railTabs.getByRole('tab', { name: 'Flows' })).toBeFocused();
+    await page.keyboard.press('Home');
+    await expect(railTabs.getByRole('tab', { name: 'Pages' })).toBeFocused();
+  });
+
+  test('export dialog takes focus, closes on Escape and gives focus back', async ({ page }) => {
+    await openTemplate(page, 'wallet-dashboard');
+    const opener = page.getByTestId('tab-export');
+    await opener.click();
+    const dialog = page.getByRole('dialog', { name: 'Export' });
+    await expect(dialog).toBeVisible();
+    await expect.poll(() => dialog.evaluate((d) => d.contains(document.activeElement))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(opener).toBeFocused();
   });
 
   test('a skip link jumps past the header, and pages have their own titles', async ({ page }) => {

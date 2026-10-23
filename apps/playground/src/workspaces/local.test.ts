@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptySpec } from '@splendor/dapp-spec';
 import {
   clearLocalProjects,
@@ -7,11 +7,15 @@ import {
   deleteLocalWorkspace,
   getLocalProject,
   isLocalWorkspaceId,
+  LocalStorageError,
+  MAX_LOCAL_PROJECTS_PER_WORKSPACE,
   listLocalProjects,
   saveLocalProject,
+  saveLocalProjectWithInfo,
 } from './local';
 
 beforeEach(() => localStorage.clear());
+afterEach(() => vi.restoreAllMocks());
 
 describe('local projects keyed by workspace', () => {
   it('creates, updates and lists per workspace, newest first', async () => {
@@ -58,5 +62,25 @@ describe('local projects keyed by workspace', () => {
     expect(isLocalWorkspaceId('local-x')).toBe(true);
     expect(isLocalWorkspaceId('3f2a')).toBe(false);
     expect(isLocalWorkspaceId(null)).toBe(false);
+  });
+});
+
+describe('storage failures and trimming are reported', () => {
+  it('says which projects were trimmed past the per-workspace limit', () => {
+    for (let i = 0; i < MAX_LOCAL_PROJECTS_PER_WORKSPACE; i += 1) saveLocalProject('local-a', emptySpec(`P${i}`));
+    const result = saveLocalProjectWithInfo('local-a', emptySpec('One too many'));
+    expect(result.saved).toBe(true);
+    expect(result.trimmed).toHaveLength(1);
+    expect(listLocalProjects('local-a')).toHaveLength(MAX_LOCAL_PROJECTS_PER_WORKSPACE);
+  });
+
+  it('reports a refused write instead of swallowing it', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
+    });
+    const result = saveLocalProjectWithInfo('local-a', emptySpec('Nope'));
+    expect(result.saved).toBe(false);
+    expect(result.trimmed).toEqual([]);
+    expect(() => createLocalWorkspace('Nope')).toThrow(LocalStorageError);
   });
 });

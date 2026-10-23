@@ -78,6 +78,9 @@ for (const p of packs) {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
     delete pkg.scripts?.prepare;
     delete pkg.scripts?.prepublishOnly;
+    // npm installs a file: dependency's devDependencies too (a published tarball never has them):
+    // they would pull a second Vite/React into exported projects and clash with the app's own.
+    delete pkg.devDependencies;
     writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
   }
   const files = [];

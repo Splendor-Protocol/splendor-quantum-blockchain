@@ -11,7 +11,20 @@ export type PreviewRender = {
   network: NetworkId;
   walletState: MockWalletState;
   selectedBlockId: string | null;
+  /**
+   * `edit` (default): builder mode, with selection outlines, measured rects and drop targets.
+   * `play`: the app as a visitor sees it: page gates are enforced, nothing is selectable or measured.
+   * Links still post `navigate` so the parent can follow them.
+   */
+  mode?: PreviewMode;
+  /**
+   * Bump to restart the app: the frame clears its signed-in state (sessionStorage
+   * `sqc-dapp-signed-in`) and remounts the page. The first value a frame sees changes nothing.
+   */
+  resetKey?: number;
 };
+
+export type PreviewMode = 'edit' | 'play';
 
 export type ParentToPreview =
   | PreviewRender

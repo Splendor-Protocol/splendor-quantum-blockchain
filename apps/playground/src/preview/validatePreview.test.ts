@@ -18,7 +18,17 @@ describe('validateForPreview', () => {
     expect(r.issues).toEqual([{ path: 'pages[0].blocks[1].props.recipient', message: 'required' }]);
   });
 
-  it('blocks rendering on any other issue', () => {
+  it('keeps rendering while a value is half-typed, leaving that prop out, and still reports it', () => {
+    const spec = tipJar();
+    setRecipient(spec, 'SQ:ab');
+    const r = validateForPreview(spec, catalog);
+    expect(r.spec).not.toBeNull();
+    const tips = r.spec!.pages[0]!.blocks!.find((b) => b.id === 'tips')!;
+    expect(tips.props.recipient).toBeUndefined();
+    expect(r.issues).toEqual([{ path: 'pages[0].blocks[1].props.recipient', message: 'must be an SQ: address' }]);
+  });
+
+  it('blocks rendering on structural or unsafe issues', () => {
     const spec = tipJar();
     setRecipient(spec, '0xnope');
     spec.theme.overrides.accent = 'url(https://evil)';

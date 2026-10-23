@@ -1,8 +1,11 @@
+import { pageHref } from './pageHref';
+import { parseList } from './parseList';
+
 export type PricingCardProps = {
   name?: string;
   price?: string;
   period?: string;
-  /** Feature lines, comma-separated. */
+  /** Feature lines, comma-separated (or one per line when the value contains a newline). */
   features?: string;
   ctaLabel?: string;
   ctaPath?: string;
@@ -19,11 +22,8 @@ export function PricingCard({
   ctaPath = '',
   highlighted = false,
 }: PricingCardProps) {
-  const list = features
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const href = ctaPath ? (ctaPath.startsWith('http') ? ctaPath : `#${ctaPath.startsWith('/') ? ctaPath : `/${ctaPath}`}`) : '';
+  const list = parseList(features);
+  const href = pageHref(ctaPath);
   return (
     <div
       className="sqc-widget dapp-pricing-card"
@@ -36,8 +36,8 @@ export function PricingCard({
         {period ? <span className="sqc-widget__msg"> {period}</span> : null}
       </p>
       <ul style={{ listStyle: 'none', margin: '0 0 1.25rem', padding: 0, display: 'grid', gap: '0.4rem' }}>
-        {list.map((f) => (
-          <li key={f}>
+        {list.map((f, i) => (
+          <li key={`${i}-${f}`}>
             <span aria-hidden="true" style={{ color: 'var(--sqc-success, #3ecf8e)', marginRight: '0.5rem' }}>
               ✓
             </span>
@@ -45,16 +45,10 @@ export function PricingCard({
           </li>
         ))}
       </ul>
-      {ctaLabel ? (
-        href ? (
-          <a className="sqc-btn sqc-btn--block" href={href}>
-            {ctaLabel}
-          </a>
-        ) : (
-          <button type="button" className="sqc-btn sqc-btn--block" disabled>
-            {ctaLabel}
-          </button>
-        )
+      {ctaLabel && href ? (
+        <a className="sqc-btn sqc-btn--block" href={href}>
+          {ctaLabel}
+        </a>
       ) : null}
     </div>
   );

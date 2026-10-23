@@ -1,8 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { TxResult, WidgetShell, connectErrorMessage, useAccount, useContract } from '@splendor/connect-react';
 
 export type ContractWriteProps = {
   title?: string;
+  /** Contract id picked in the studio. Replaced by `contract` before render; ignored here. */
+  contractId?: string;
+  /** ABI params of the picked function (JSON). Passed by generated code; not used here. */
+  fnParams?: string;
   contract?: string;
   functionSig?: string;
   args?: string;
@@ -30,16 +34,19 @@ export function ContractWrite({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hash, setHash] = useState<string | null>(null);
+  // New defaults from the parent (or the playground's settings form) replace what was typed.
+  useEffect(() => setArgs(defaultArgs), [defaultArgs]);
 
-  const needsArgs = !/\(\s*\)$/.test(functionSig);
+  const sig = functionSig.trim();
+  const needsArgs = !/\(\s*\)$/.test(sig);
 
   const submit = async () => {
-    if (!contract || !functionSig) return;
+    if (!contract || !sig) return;
     setBusy(true);
     setError(null);
     setHash(null);
     try {
-      const res = await c.call(functionSig, parseArgs(args), { waitForConfirmation: true });
+      const res = await c.call(sig, parseArgs(args), { waitForConfirmation: true });
       setHash(res.hash ?? null);
     } catch (e) {
       setError(connectErrorMessage(e));
@@ -48,6 +55,20 @@ export function ContractWrite({
     }
   };
 
+  if (!contract) {
+    return (
+      <WidgetShell kind="contract-write" title={title} gate={false}>
+        <p className="sqc-widget__msg">Set a contract address.</p>
+      </WidgetShell>
+    );
+  }
+  if (!sig) {
+    return (
+      <WidgetShell kind="contract-write" title={title} gate={false}>
+        <p className="sqc-widget__msg">Set a function signature, e.g. set(uint256).</p>
+      </WidgetShell>
+    );
+  }
   if (!address) {
     return (
       <WidgetShell kind="contract-write" title={title}>
@@ -55,17 +76,10 @@ export function ContractWrite({
       </WidgetShell>
     );
   }
-  if (!contract) {
-    return (
-      <WidgetShell kind="contract-write" title={title}>
-        <p className="sqc-widget__msg">Set a contract address.</p>
-      </WidgetShell>
-    );
-  }
 
   return (
     <WidgetShell kind="contract-write" title={title}>
-      <p className="sqc-widget__msg dapp-mono">{functionSig}</p>
+      <p className="sqc-widget__msg dapp-mono">{sig}</p>
       {needsArgs ? (
         <label className="sqc-field">
           <span>Arguments</span>
@@ -75,7 +89,11 @@ export function ContractWrite({
       <button type="button" className="sqc-btn" disabled={busy} onClick={() => void submit()}>
         {busy ? 'Sending…' : buttonLabel}
       </button>
-      {error ? <p className="sqc-widget__error">{error}</p> : null}
+      {error ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
+          {error}
+        </p>
+      ) : null}
       {hash ? <TxResult hash={hash} /> : null}
     </WidgetShell>
   );

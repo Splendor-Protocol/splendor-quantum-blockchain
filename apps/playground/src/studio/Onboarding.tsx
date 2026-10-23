@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { StudioRail } from './StudioShell';
 
 /** localStorage flag: set once the tour was finished or skipped. */
@@ -58,6 +58,12 @@ export function Onboarding({ onRailChange }: { onRailChange?: (rail: StudioRail)
   const [open, setOpen] = useState(shouldShowOnboarding);
   const [index, setIndex] = useState(0);
   const step = ONBOARDING_STEPS[index]!;
+  const card = useRef<HTMLDivElement>(null);
+
+  // Keyboard and screen-reader users start in the card; Escape (while focus is inside it) skips the tour.
+  useEffect(() => {
+    if (open) card.current?.focus();
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -78,7 +84,21 @@ export function Onboarding({ onRailChange }: { onRailChange?: (rail: StudioRail)
   const last = index === ONBOARDING_STEPS.length - 1;
 
   return (
-    <div className="pg-coach" role="dialog" aria-label="Studio tour" aria-live="polite" data-testid="onboarding">
+    <div
+      ref={card}
+      className="pg-coach"
+      role="dialog"
+      aria-label="Studio tour"
+      aria-live="polite"
+      tabIndex={-1}
+      data-testid="onboarding"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          finish();
+        }
+      }}
+    >
       <p className="pg-coach-step pg-muted" data-testid="onboarding-step">
         Step {index + 1} of {ONBOARDING_STEPS.length}
       </p>

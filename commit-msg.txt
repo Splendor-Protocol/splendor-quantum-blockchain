@@ -1,0 +1,28 @@
+﻿feat(studio): ready-made Landing + Dashboard kits, data binding, flow preview, simpler studio
+
+Kits and data
+- Token project and Contract app kits (landing + gated dashboard) with a setup
+  wizard: kit -> token or contract/ABI -> theme -> name; demo token and contract
+  preview with live-looking data
+- Bind components to spec.contracts by id (contract/function pickers); exports
+  reference CONTRACTS[id].address, so one address edit updates every block
+- New components: Token stats, Tokenomics, Live stat, Contract form (typed
+  fields from the ABI); polished contract, token and tx blocks
+- Page access (public / wallet / signed in) via AccessGate in preview and export
+
+Studio
+- Full-screen Preview app (click-through flow, wallet toggle, restart)
+- Flows storyboard with labelled links and "Play from here"
+- Illustrated component palette with hover cards; Layers panel replaces the
+  old block row; list row editors; page settings; plain-language labels;
+  one network picker; Finish setup checklist
+
+Fixes and hardening
+- Safe link validation, zip-slip guard on exports, bounded preview messages,
+  pinned signer for mainnet embeds, fastify upgrade
+- Unique ids for new and template pages; drafts no longer dropped on bad
+  values; vendored SDK strips devDependencies so Vite exports compile
+- Accessible rail tabs, focus-trapped dialogs, keyboard nesting
+
+Tests: unit and e2e for kits, binding, access and preview flow; all 16
+template exports build for Vite and Next.js

@@ -13,10 +13,10 @@ export async function testLogin(page: Page, address: string) {
   expect(res.ok(), await res.text()).toBeTruthy();
 }
 
-/** Wallet calls the mock preview has recorded, as shown under "Mock wallet activity". */
+/** Wallet calls the test-wallet preview has recorded, as shown under "Test wallet activity". */
 export async function mockCalls(page: Page) {
   const panel = page.getByTestId('mock-calls');
-  if (!(await panel.isVisible())) await page.getByText(/Mock wallet activity/).click();
+  if (!(await panel.isVisible())) await page.getByText(/Test wallet activity/).click();
   return panel;
 }
 

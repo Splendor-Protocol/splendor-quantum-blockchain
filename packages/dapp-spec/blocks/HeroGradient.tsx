@@ -1,3 +1,5 @@
+import { pageHref } from './pageHref';
+
 export type HeroGradientProps = {
   heading?: string;
   text?: string;
@@ -5,9 +7,9 @@ export type HeroGradientProps = {
   ctaPath?: string;
 };
 
-/** Centered hero on the theme's hero gradient. */
+/** Centered hero on the theme's hero gradient. The button renders only when both a label and a path are set. */
 export function HeroGradient({ heading = 'Build on Splendor', text = '', ctaLabel = '', ctaPath = '' }: HeroGradientProps) {
-  const href = ctaPath ? (ctaPath.startsWith('http') ? ctaPath : `#${ctaPath.startsWith('/') ? ctaPath : `/${ctaPath}`}`) : '';
+  const href = pageHref(ctaPath);
   return (
     <section
       className="sqc-widget dapp-hero-gradient"
@@ -21,16 +23,10 @@ export function HeroGradient({ heading = 'Build on Splendor', text = '', ctaLabe
     >
       <h1 style={{ fontSize: '2.6rem', margin: '0 0 0.75rem', fontFamily: 'var(--sqc-font-display, inherit)' }}>{heading}</h1>
       {text ? <p className="sqc-widget__msg" style={{ maxWidth: 560, margin: '0 auto 1.5rem', fontSize: '1.05rem' }}>{text}</p> : null}
-      {ctaLabel ? (
-        href ? (
-          <a className="sqc-btn" href={href}>
-            {ctaLabel}
-          </a>
-        ) : (
-          <button type="button" className="sqc-btn" disabled>
-            {ctaLabel}
-          </button>
-        )
+      {ctaLabel && href ? (
+        <a className="sqc-btn" href={href}>
+          {ctaLabel}
+        </a>
       ) : null}
     </section>
   );

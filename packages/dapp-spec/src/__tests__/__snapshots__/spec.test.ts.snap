@@ -1,5 +1,153 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`generateProject > next: contract-app > files 1`] = `
+[
+  ".env.example",
+  ".gitignore",
+  "README.md",
+  "app/HomePage.tsx",
+  "app/actions.ts",
+  "app/app.css",
+  "app/app/AppPage.tsx",
+  "app/app/page.tsx",
+  "app/client-root.tsx",
+  "app/contracts.ts",
+  "app/layout.tsx",
+  "app/networks.ts",
+  "app/page.tsx",
+  "app/providers.tsx",
+  "blocks/AccessGate.tsx",
+  "blocks/ContractForm.tsx",
+  "blocks/CtaBanner.tsx",
+  "blocks/FeatureGrid.tsx",
+  "blocks/FooterBar.tsx",
+  "blocks/Hero.tsx",
+  "blocks/HeroCentered.tsx",
+  "blocks/LiveStat.tsx",
+  "blocks/TxHistoryTable.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
+  "next-env.d.ts",
+  "next.config.mjs",
+  "package.json",
+  "scripts/copy-sqc-wasm.mjs",
+  "tsconfig.json",
+]
+`;
+
+exports[`generateProject > next: contract-app > pages 1`] = `
+{
+  "app/HomePage.tsx": "'use client';
+
+import { HeroCentered } from '../blocks/HeroCentered';
+import { LiveStat } from '../blocks/LiveStat';
+import { FeatureGrid } from '../blocks/FeatureGrid';
+import { CtaBanner } from '../blocks/CtaBanner';
+import { FooterBar } from '../blocks/FooterBar';
+import { CONTRACTS } from './contracts';
+
+export function HomePage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="landing-root"
+        style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+        <HeroCentered
+          heading={"My contract"}
+          text={"Live numbers straight from the contract. Sign in to take part."}
+          ctaLabel={"Open the app"}
+          ctaPath={"/app"}
+        />
+        <div className="dapp-row" data-node-id="landing-stats"
+          style={{ gap: "1rem", alignItems: "stretch" }}>
+          <div className="dapp-column" data-node-id="landing-stat-1"
+            style={{ gap: "1rem" }}>
+            <LiveStat
+              label={"Get"}
+              functionSig={"get()"}
+              format={"number"}
+              refreshMs={0}
+              fnParams={"[]"}
+              contract={CONTRACTS["app"].address}
+            />
+          </div>
+        </div>
+        <FeatureGrid
+          title={"How it works"}
+          items={"Read|Anyone can see the live numbers\\nSign in|Prove your wallet with a free signature\\nAct|Send transactions from the dashboard"}
+        />
+        <CtaBanner
+          heading={"Take part"}
+          text={"Sign in with your Splendor wallet."}
+          buttonLabel={"Open the app"}
+          buttonPath={"/app"}
+        />
+        <FooterBar text={"Built with the Splendor dApp Studio"} />
+      </div>
+    </div>
+  );
+}
+",
+  "app/app/AppPage.tsx": "'use client';
+
+import { AccountCard } from '@splendor/connect-react';
+import { Hero } from '../../blocks/Hero';
+import { LiveStat } from '../../blocks/LiveStat';
+import { ContractForm } from '../../blocks/ContractForm';
+import { TxHistoryTable } from '../../blocks/TxHistoryTable';
+import { AccessGate } from '../../blocks/AccessGate';
+import { CONTRACTS } from '../contracts';
+
+export function AppPage() {
+  return (
+    <div className="dapp-page">
+      <AccessGate access="signin" title={"Dashboard"}>
+        <div className="dapp-section" data-node-id="app-root"
+          style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+          <Hero heading={"Dashboard"} text={"Read and write My contract."} />
+          <div className="dapp-row" data-node-id="app-top"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-top-left"
+              style={{ gap: "1rem" }}>
+              <AccountCard showBalance showNetwork />
+            </div>
+            <div className="dapp-column" data-node-id="app-stat-1"
+              style={{ gap: "1rem" }}>
+              <LiveStat
+                label={"Get"}
+                functionSig={"get()"}
+                format={"number"}
+                refreshMs={0}
+                fnParams={"[]"}
+                contract={CONTRACTS["app"].address}
+              />
+            </div>
+          </div>
+          <ContractForm
+            title={"Set"}
+            functionSig={"set(uint256)"}
+            buttonLabel={"Set"}
+            successMessage={"Transaction sent."}
+            fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+            contract={CONTRACTS["app"].address}
+          />
+          <ContractForm
+            title={"Increment"}
+            functionSig={"increment()"}
+            buttonLabel={"Increment"}
+            successMessage={"Transaction sent."}
+            fnParams={"[]"}
+            contract={CONTRACTS["app"].address}
+          />
+          <TxHistoryTable title={"Recent transactions"} limit={10} />
+        </div>
+      </AccessGate>
+    </div>
+  );
+}
+",
+}
+`;
+
 exports[`generateProject > next: landing > files 1`] = `
 [
   ".env.example",
@@ -16,12 +164,21 @@ exports[`generateProject > next: landing > files 1`] = `
   "app/networks.ts",
   "app/page.tsx",
   "app/providers.tsx",
+  "blocks/AccessGate.tsx",
+  "blocks/ContractForm.tsx",
   "blocks/CtaBanner.tsx",
   "blocks/Faq.tsx",
   "blocks/FeatureGrid.tsx",
   "blocks/FooterBar.tsx",
   "blocks/Hero.tsx",
-  "blocks/HeroCentered.tsx",
+  "blocks/HeroGradient.tsx",
+  "blocks/LiveStat.tsx",
+  "blocks/Steps.tsx",
+  "blocks/TokenStats.tsx",
+  "blocks/Tokenomics.tsx",
+  "blocks/TxHistoryTable.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -34,41 +191,70 @@ exports[`generateProject > next: landing > pages 1`] = `
 {
   "app/HomePage.tsx": "'use client';
 
-import { HeroCentered } from '../blocks/HeroCentered';
+import { HeroGradient } from '../blocks/HeroGradient';
+import { TokenStats } from '../blocks/TokenStats';
+import { Tokenomics } from '../blocks/Tokenomics';
+import { Steps } from '../blocks/Steps';
 import { FeatureGrid } from '../blocks/FeatureGrid';
-import { CtaBanner } from '../blocks/CtaBanner';
 import { Faq } from '../blocks/Faq';
+import { CtaBanner } from '../blocks/CtaBanner';
 import { FooterBar } from '../blocks/FooterBar';
+import { CONTRACTS } from './contracts';
 
 export function HomePage() {
   return (
     <div className="dapp-page">
-      <div className="dapp-section" data-node-id="home-root"
-        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
-        <div className="dapp-stack" data-node-id="home-root-stack"
-          style={{ gap: "1rem" }}>
-          <HeroCentered
-            heading={"Build on Splendor"}
-            text={"Post-quantum dApps without the boilerplate."}
-            ctaLabel={"Open app"}
-            ctaPath={"/app"}
-          />
-          <FeatureGrid
-            title={"Why Splendor"}
-            items={"Wallet ready|Drop-in connect kit,Tokens|QRC-20 and NFT modules,Contracts|Bind any deployed ABI"}
-          />
-          <CtaBanner
-            heading={"Ready to ship?"}
-            text={"Export a Vite or Next.js project in one click."}
-            buttonLabel={"Start building"}
-            buttonPath={"/app"}
-          />
-          <Faq
-            title={"FAQ"}
-            items={"Is it post-quantum?|Yes — ML-DSA-65 signatures.,Do I need a wallet?|Use the extension or an in-page seed."}
-          />
-          <FooterBar text={"Built with the Splendor dApp Studio"} />
+      <div className="dapp-section" data-node-id="landing-root"
+        style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+        <HeroGradient
+          heading={"Meet the Demo Token"}
+          text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
+          ctaLabel={"Launch app"}
+          ctaPath={"/app"}
+        />
+        <TokenStats
+          title={"Token at a glance"}
+          showSupply
+          showBalance={false}
+          layout={"row"}
+          decimals={18}
+          tokenAddress={CONTRACTS["token"].address}
+        />
+        <div className="dapp-row" data-node-id="landing-info"
+          style={{ gap: "1rem", alignItems: "stretch" }}>
+          <div className="dapp-column" data-node-id="landing-info-left"
+            style={{ gap: "1rem" }}>
+            <Tokenomics
+              title={"Tokenomics"}
+              chart={"donut"}
+              items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
+              decimals={18}
+              tokenAddress={CONTRACTS["token"].address}
+            />
+          </div>
+          <div className="dapp-column" data-node-id="landing-info-right"
+            style={{ gap: "1rem" }}>
+            <Steps
+              title={"How it works"}
+              items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
+            />
+          </div>
         </div>
+        <FeatureGrid
+          title={"Why hold DEMO"}
+          items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
+        />
+        <Faq
+          title={"FAQ"}
+          items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
+        />
+        <CtaBanner
+          heading={"Ready?"}
+          text={"Connect your wallet and open the dashboard."}
+          buttonLabel={"Launch app"}
+          buttonPath={"/app"}
+        />
+        <FooterBar text={"Built with the Splendor dApp Studio"} />
       </div>
     </div>
   );
@@ -76,21 +262,77 @@ export function HomePage() {
 ",
   "app/app/AppPage.tsx": "'use client';
 
-import { AccountCard, TransferWidget } from '@splendor/connect-react';
+import { AccountCard, TokenPanel } from '@splendor/connect-react';
 import { Hero } from '../../blocks/Hero';
+import { TokenStats } from '../../blocks/TokenStats';
+import { LiveStat } from '../../blocks/LiveStat';
+import { ContractForm } from '../../blocks/ContractForm';
+import { TxHistoryTable } from '../../blocks/TxHistoryTable';
+import { AccessGate } from '../../blocks/AccessGate';
+import { CONTRACTS } from '../contracts';
 
 export function AppPage() {
   return (
     <div className="dapp-page">
-      <div className="dapp-section" data-node-id="app-root"
-        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
-        <div className="dapp-stack" data-node-id="app-root-stack"
-          style={{ gap: "1rem" }}>
-          <Hero heading={"Your app"} text={"Connect and try it live."} />
-          <AccountCard showBalance showNetwork />
-          <TransferWidget defaultAmount={"0.01"} showFee toast />
+      <AccessGate access="wallet" title={"Dashboard"}>
+        <div className="dapp-section" data-node-id="app-root"
+          style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+          <Hero
+            heading={"Dashboard"}
+            text={"Your balance, your token and your contract in one place."}
+          />
+          <div className="dapp-row" data-node-id="app-top"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-top-left"
+              style={{ gap: "1rem" }}>
+              <AccountCard showBalance showNetwork showExplorer />
+            </div>
+            <div className="dapp-column" data-node-id="app-top-right"
+              style={{ gap: "1rem" }}>
+              <TokenStats
+                title={"Your DEMO"}
+                showSupply={false}
+                showBalance
+                layout={"card"}
+                decimals={18}
+                tokenAddress={CONTRACTS["token"].address}
+              />
+            </div>
+          </div>
+          <div className="dapp-row" data-node-id="app-actions"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-actions-left"
+              style={{ gap: "1rem" }}>
+              <TokenPanel
+                tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
+                defaultAmount={"1"}
+                showFee
+                toast
+              />
+            </div>
+            <div className="dapp-column" data-node-id="app-actions-right"
+              style={{ gap: "1rem" }}>
+              <LiveStat
+                label={"Current value"}
+                functionSig={"get()"}
+                format={"number"}
+                refreshMs={0}
+                fnParams={"[]"}
+                contract={CONTRACTS["app"].address}
+              />
+              <ContractForm
+                title={"Update the value"}
+                functionSig={"set(uint256)"}
+                buttonLabel={"Save on-chain"}
+                successMessage={"Saved."}
+                fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+                contract={CONTRACTS["app"].address}
+              />
+            </div>
+          </div>
+          <TxHistoryTable title={"Recent transactions"} limit={10} />
         </div>
-      </div>
+      </AccessGate>
     </div>
   );
 }
@@ -114,6 +356,8 @@ exports[`generateProject > next: members-area > files 1`] = `
   "app/providers.tsx",
   "blocks/Hero.tsx",
   "blocks/MembersArea.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -172,6 +416,8 @@ exports[`generateProject > next: nft-drop > files 1`] = `
   "app/providers.tsx",
   "blocks/Hero.tsx",
   "blocks/NftDrop.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -227,6 +473,8 @@ exports[`generateProject > next: tip-jar > files 1`] = `
   "blocks/BalanceSummary.tsx",
   "blocks/Hero.tsx",
   "blocks/TipJar.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -283,6 +531,8 @@ exports[`generateProject > next: token-launchpad > files 1`] = `
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/Hero.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -344,6 +594,198 @@ export function ManagePage() {
 }
 `;
 
+exports[`generateProject > next: token-project > files 1`] = `
+[
+  ".env.example",
+  ".gitignore",
+  "README.md",
+  "app/HomePage.tsx",
+  "app/actions.ts",
+  "app/app.css",
+  "app/app/AppPage.tsx",
+  "app/app/page.tsx",
+  "app/client-root.tsx",
+  "app/contracts.ts",
+  "app/layout.tsx",
+  "app/networks.ts",
+  "app/page.tsx",
+  "app/providers.tsx",
+  "blocks/AccessGate.tsx",
+  "blocks/ContractForm.tsx",
+  "blocks/CtaBanner.tsx",
+  "blocks/Faq.tsx",
+  "blocks/FeatureGrid.tsx",
+  "blocks/FooterBar.tsx",
+  "blocks/Hero.tsx",
+  "blocks/HeroGradient.tsx",
+  "blocks/LiveStat.tsx",
+  "blocks/Steps.tsx",
+  "blocks/TokenStats.tsx",
+  "blocks/Tokenomics.tsx",
+  "blocks/TxHistoryTable.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
+  "next-env.d.ts",
+  "next.config.mjs",
+  "package.json",
+  "scripts/copy-sqc-wasm.mjs",
+  "tsconfig.json",
+]
+`;
+
+exports[`generateProject > next: token-project > pages 1`] = `
+{
+  "app/HomePage.tsx": "'use client';
+
+import { HeroGradient } from '../blocks/HeroGradient';
+import { TokenStats } from '../blocks/TokenStats';
+import { Tokenomics } from '../blocks/Tokenomics';
+import { Steps } from '../blocks/Steps';
+import { FeatureGrid } from '../blocks/FeatureGrid';
+import { Faq } from '../blocks/Faq';
+import { CtaBanner } from '../blocks/CtaBanner';
+import { FooterBar } from '../blocks/FooterBar';
+import { CONTRACTS } from './contracts';
+
+export function HomePage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="landing-root"
+        style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+        <HeroGradient
+          heading={"Meet the Demo Token"}
+          text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
+          ctaLabel={"Launch app"}
+          ctaPath={"/app"}
+        />
+        <TokenStats
+          title={"Token at a glance"}
+          showSupply
+          showBalance={false}
+          layout={"row"}
+          decimals={18}
+          tokenAddress={CONTRACTS["token"].address}
+        />
+        <div className="dapp-row" data-node-id="landing-info"
+          style={{ gap: "1rem", alignItems: "stretch" }}>
+          <div className="dapp-column" data-node-id="landing-info-left"
+            style={{ gap: "1rem" }}>
+            <Tokenomics
+              title={"Tokenomics"}
+              chart={"donut"}
+              items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
+              decimals={18}
+              tokenAddress={CONTRACTS["token"].address}
+            />
+          </div>
+          <div className="dapp-column" data-node-id="landing-info-right"
+            style={{ gap: "1rem" }}>
+            <Steps
+              title={"How it works"}
+              items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
+            />
+          </div>
+        </div>
+        <FeatureGrid
+          title={"Why hold DEMO"}
+          items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
+        />
+        <Faq
+          title={"FAQ"}
+          items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
+        />
+        <CtaBanner
+          heading={"Ready?"}
+          text={"Connect your wallet and open the dashboard."}
+          buttonLabel={"Launch app"}
+          buttonPath={"/app"}
+        />
+        <FooterBar text={"Built with the Splendor dApp Studio"} />
+      </div>
+    </div>
+  );
+}
+",
+  "app/app/AppPage.tsx": "'use client';
+
+import { AccountCard, TokenPanel } from '@splendor/connect-react';
+import { Hero } from '../../blocks/Hero';
+import { TokenStats } from '../../blocks/TokenStats';
+import { LiveStat } from '../../blocks/LiveStat';
+import { ContractForm } from '../../blocks/ContractForm';
+import { TxHistoryTable } from '../../blocks/TxHistoryTable';
+import { AccessGate } from '../../blocks/AccessGate';
+import { CONTRACTS } from '../contracts';
+
+export function AppPage() {
+  return (
+    <div className="dapp-page">
+      <AccessGate access="wallet" title={"Dashboard"}>
+        <div className="dapp-section" data-node-id="app-root"
+          style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+          <Hero
+            heading={"Dashboard"}
+            text={"Your balance, your token and your contract in one place."}
+          />
+          <div className="dapp-row" data-node-id="app-top"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-top-left"
+              style={{ gap: "1rem" }}>
+              <AccountCard showBalance showNetwork showExplorer />
+            </div>
+            <div className="dapp-column" data-node-id="app-top-right"
+              style={{ gap: "1rem" }}>
+              <TokenStats
+                title={"Your DEMO"}
+                showSupply={false}
+                showBalance
+                layout={"card"}
+                decimals={18}
+                tokenAddress={CONTRACTS["token"].address}
+              />
+            </div>
+          </div>
+          <div className="dapp-row" data-node-id="app-actions"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-actions-left"
+              style={{ gap: "1rem" }}>
+              <TokenPanel
+                tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
+                defaultAmount={"1"}
+                showFee
+                toast
+              />
+            </div>
+            <div className="dapp-column" data-node-id="app-actions-right"
+              style={{ gap: "1rem" }}>
+              <LiveStat
+                label={"Current value"}
+                functionSig={"get()"}
+                format={"number"}
+                refreshMs={0}
+                fnParams={"[]"}
+                contract={CONTRACTS["app"].address}
+              />
+              <ContractForm
+                title={"Update the value"}
+                functionSig={"set(uint256)"}
+                buttonLabel={"Save on-chain"}
+                successMessage={"Saved."}
+                fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+                contract={CONTRACTS["app"].address}
+              />
+            </div>
+          </div>
+          <TxHistoryTable title={"Recent transactions"} limit={10} />
+        </div>
+      </AccessGate>
+    </div>
+  );
+}
+",
+}
+`;
+
 exports[`generateProject > next: wallet-dashboard > files 1`] = `
 [
   ".env.example",
@@ -359,6 +801,8 @@ exports[`generateProject > next: wallet-dashboard > files 1`] = `
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/Hero.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -394,6 +838,146 @@ export function HomePage() {
 }
 `;
 
+exports[`generateProject > vite: contract-app > files 1`] = `
+[
+  ".env.example",
+  ".gitignore",
+  "README.md",
+  "index.html",
+  "package.json",
+  "src/App.tsx",
+  "src/actions.ts",
+  "src/app.css",
+  "src/blocks/AccessGate.tsx",
+  "src/blocks/ContractForm.tsx",
+  "src/blocks/CtaBanner.tsx",
+  "src/blocks/FeatureGrid.tsx",
+  "src/blocks/FooterBar.tsx",
+  "src/blocks/Hero.tsx",
+  "src/blocks/HeroCentered.tsx",
+  "src/blocks/LiveStat.tsx",
+  "src/blocks/TxHistoryTable.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
+  "src/contracts.ts",
+  "src/main.tsx",
+  "src/networks.ts",
+  "src/pages/AppPage.tsx",
+  "src/pages/HomePage.tsx",
+  "tsconfig.json",
+  "vite.config.ts",
+]
+`;
+
+exports[`generateProject > vite: contract-app > pages 1`] = `
+{
+  "src/pages/AppPage.tsx": "import { AccountCard } from '@splendor/connect-react';
+import { Hero } from '../blocks/Hero';
+import { LiveStat } from '../blocks/LiveStat';
+import { ContractForm } from '../blocks/ContractForm';
+import { TxHistoryTable } from '../blocks/TxHistoryTable';
+import { AccessGate } from '../blocks/AccessGate';
+import { CONTRACTS } from '../contracts';
+
+export function AppPage() {
+  return (
+    <div className="dapp-page">
+      <AccessGate access="signin" title={"Dashboard"}>
+        <div className="dapp-section" data-node-id="app-root"
+          style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+          <Hero heading={"Dashboard"} text={"Read and write My contract."} />
+          <div className="dapp-row" data-node-id="app-top"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-top-left"
+              style={{ gap: "1rem" }}>
+              <AccountCard showBalance showNetwork />
+            </div>
+            <div className="dapp-column" data-node-id="app-stat-1"
+              style={{ gap: "1rem" }}>
+              <LiveStat
+                label={"Get"}
+                functionSig={"get()"}
+                format={"number"}
+                refreshMs={0}
+                fnParams={"[]"}
+                contract={CONTRACTS["app"].address}
+              />
+            </div>
+          </div>
+          <ContractForm
+            title={"Set"}
+            functionSig={"set(uint256)"}
+            buttonLabel={"Set"}
+            successMessage={"Transaction sent."}
+            fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+            contract={CONTRACTS["app"].address}
+          />
+          <ContractForm
+            title={"Increment"}
+            functionSig={"increment()"}
+            buttonLabel={"Increment"}
+            successMessage={"Transaction sent."}
+            fnParams={"[]"}
+            contract={CONTRACTS["app"].address}
+          />
+          <TxHistoryTable title={"Recent transactions"} limit={10} />
+        </div>
+      </AccessGate>
+    </div>
+  );
+}
+",
+  "src/pages/HomePage.tsx": "import { HeroCentered } from '../blocks/HeroCentered';
+import { LiveStat } from '../blocks/LiveStat';
+import { FeatureGrid } from '../blocks/FeatureGrid';
+import { CtaBanner } from '../blocks/CtaBanner';
+import { FooterBar } from '../blocks/FooterBar';
+import { CONTRACTS } from '../contracts';
+
+export function HomePage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="landing-root"
+        style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+        <HeroCentered
+          heading={"My contract"}
+          text={"Live numbers straight from the contract. Sign in to take part."}
+          ctaLabel={"Open the app"}
+          ctaPath={"/app"}
+        />
+        <div className="dapp-row" data-node-id="landing-stats"
+          style={{ gap: "1rem", alignItems: "stretch" }}>
+          <div className="dapp-column" data-node-id="landing-stat-1"
+            style={{ gap: "1rem" }}>
+            <LiveStat
+              label={"Get"}
+              functionSig={"get()"}
+              format={"number"}
+              refreshMs={0}
+              fnParams={"[]"}
+              contract={CONTRACTS["app"].address}
+            />
+          </div>
+        </div>
+        <FeatureGrid
+          title={"How it works"}
+          items={"Read|Anyone can see the live numbers\\nSign in|Prove your wallet with a free signature\\nAct|Send transactions from the dashboard"}
+        />
+        <CtaBanner
+          heading={"Take part"}
+          text={"Sign in with your Splendor wallet."}
+          buttonLabel={"Open the app"}
+          buttonPath={"/app"}
+        />
+        <FooterBar text={"Built with the Splendor dApp Studio"} />
+      </div>
+    </div>
+  );
+}
+",
+}
+`;
+
 exports[`generateProject > vite: landing > files 1`] = `
 [
   ".env.example",
@@ -404,12 +988,21 @@ exports[`generateProject > vite: landing > files 1`] = `
   "src/App.tsx",
   "src/actions.ts",
   "src/app.css",
+  "src/blocks/AccessGate.tsx",
+  "src/blocks/ContractForm.tsx",
   "src/blocks/CtaBanner.tsx",
   "src/blocks/Faq.tsx",
   "src/blocks/FeatureGrid.tsx",
   "src/blocks/FooterBar.tsx",
   "src/blocks/Hero.tsx",
-  "src/blocks/HeroCentered.tsx",
+  "src/blocks/HeroGradient.tsx",
+  "src/blocks/LiveStat.tsx",
+  "src/blocks/Steps.tsx",
+  "src/blocks/TokenStats.tsx",
+  "src/blocks/Tokenomics.tsx",
+  "src/blocks/TxHistoryTable.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
   "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
@@ -422,60 +1015,145 @@ exports[`generateProject > vite: landing > files 1`] = `
 
 exports[`generateProject > vite: landing > pages 1`] = `
 {
-  "src/pages/AppPage.tsx": "import { AccountCard, TransferWidget } from '@splendor/connect-react';
+  "src/pages/AppPage.tsx": "import { AccountCard, TokenPanel } from '@splendor/connect-react';
 import { Hero } from '../blocks/Hero';
+import { TokenStats } from '../blocks/TokenStats';
+import { LiveStat } from '../blocks/LiveStat';
+import { ContractForm } from '../blocks/ContractForm';
+import { TxHistoryTable } from '../blocks/TxHistoryTable';
+import { AccessGate } from '../blocks/AccessGate';
+import { CONTRACTS } from '../contracts';
 
 export function AppPage() {
   return (
     <div className="dapp-page">
-      <div className="dapp-section" data-node-id="app-root"
-        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
-        <div className="dapp-stack" data-node-id="app-root-stack"
-          style={{ gap: "1rem" }}>
-          <Hero heading={"Your app"} text={"Connect and try it live."} />
-          <AccountCard showBalance showNetwork />
-          <TransferWidget defaultAmount={"0.01"} showFee toast />
+      <AccessGate access="wallet" title={"Dashboard"}>
+        <div className="dapp-section" data-node-id="app-root"
+          style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+          <Hero
+            heading={"Dashboard"}
+            text={"Your balance, your token and your contract in one place."}
+          />
+          <div className="dapp-row" data-node-id="app-top"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-top-left"
+              style={{ gap: "1rem" }}>
+              <AccountCard showBalance showNetwork showExplorer />
+            </div>
+            <div className="dapp-column" data-node-id="app-top-right"
+              style={{ gap: "1rem" }}>
+              <TokenStats
+                title={"Your DEMO"}
+                showSupply={false}
+                showBalance
+                layout={"card"}
+                decimals={18}
+                tokenAddress={CONTRACTS["token"].address}
+              />
+            </div>
+          </div>
+          <div className="dapp-row" data-node-id="app-actions"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-actions-left"
+              style={{ gap: "1rem" }}>
+              <TokenPanel
+                tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
+                defaultAmount={"1"}
+                showFee
+                toast
+              />
+            </div>
+            <div className="dapp-column" data-node-id="app-actions-right"
+              style={{ gap: "1rem" }}>
+              <LiveStat
+                label={"Current value"}
+                functionSig={"get()"}
+                format={"number"}
+                refreshMs={0}
+                fnParams={"[]"}
+                contract={CONTRACTS["app"].address}
+              />
+              <ContractForm
+                title={"Update the value"}
+                functionSig={"set(uint256)"}
+                buttonLabel={"Save on-chain"}
+                successMessage={"Saved."}
+                fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+                contract={CONTRACTS["app"].address}
+              />
+            </div>
+          </div>
+          <TxHistoryTable title={"Recent transactions"} limit={10} />
         </div>
-      </div>
+      </AccessGate>
     </div>
   );
 }
 ",
-  "src/pages/HomePage.tsx": "import { HeroCentered } from '../blocks/HeroCentered';
+  "src/pages/HomePage.tsx": "import { HeroGradient } from '../blocks/HeroGradient';
+import { TokenStats } from '../blocks/TokenStats';
+import { Tokenomics } from '../blocks/Tokenomics';
+import { Steps } from '../blocks/Steps';
 import { FeatureGrid } from '../blocks/FeatureGrid';
-import { CtaBanner } from '../blocks/CtaBanner';
 import { Faq } from '../blocks/Faq';
+import { CtaBanner } from '../blocks/CtaBanner';
 import { FooterBar } from '../blocks/FooterBar';
+import { CONTRACTS } from '../contracts';
 
 export function HomePage() {
   return (
     <div className="dapp-page">
-      <div className="dapp-section" data-node-id="home-root"
-        style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
-        <div className="dapp-stack" data-node-id="home-root-stack"
-          style={{ gap: "1rem" }}>
-          <HeroCentered
-            heading={"Build on Splendor"}
-            text={"Post-quantum dApps without the boilerplate."}
-            ctaLabel={"Open app"}
-            ctaPath={"/app"}
-          />
-          <FeatureGrid
-            title={"Why Splendor"}
-            items={"Wallet ready|Drop-in connect kit,Tokens|QRC-20 and NFT modules,Contracts|Bind any deployed ABI"}
-          />
-          <CtaBanner
-            heading={"Ready to ship?"}
-            text={"Export a Vite or Next.js project in one click."}
-            buttonLabel={"Start building"}
-            buttonPath={"/app"}
-          />
-          <Faq
-            title={"FAQ"}
-            items={"Is it post-quantum?|Yes — ML-DSA-65 signatures.,Do I need a wallet?|Use the extension or an in-page seed."}
-          />
-          <FooterBar text={"Built with the Splendor dApp Studio"} />
+      <div className="dapp-section" data-node-id="landing-root"
+        style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+        <HeroGradient
+          heading={"Meet the Demo Token"}
+          text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
+          ctaLabel={"Launch app"}
+          ctaPath={"/app"}
+        />
+        <TokenStats
+          title={"Token at a glance"}
+          showSupply
+          showBalance={false}
+          layout={"row"}
+          decimals={18}
+          tokenAddress={CONTRACTS["token"].address}
+        />
+        <div className="dapp-row" data-node-id="landing-info"
+          style={{ gap: "1rem", alignItems: "stretch" }}>
+          <div className="dapp-column" data-node-id="landing-info-left"
+            style={{ gap: "1rem" }}>
+            <Tokenomics
+              title={"Tokenomics"}
+              chart={"donut"}
+              items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
+              decimals={18}
+              tokenAddress={CONTRACTS["token"].address}
+            />
+          </div>
+          <div className="dapp-column" data-node-id="landing-info-right"
+            style={{ gap: "1rem" }}>
+            <Steps
+              title={"How it works"}
+              items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
+            />
+          </div>
         </div>
+        <FeatureGrid
+          title={"Why hold DEMO"}
+          items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
+        />
+        <Faq
+          title={"FAQ"}
+          items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
+        />
+        <CtaBanner
+          heading={"Ready?"}
+          text={"Connect your wallet and open the dashboard."}
+          buttonLabel={"Launch app"}
+          buttonPath={"/app"}
+        />
+        <FooterBar text={"Built with the Splendor dApp Studio"} />
       </div>
     </div>
   );
@@ -496,6 +1174,8 @@ exports[`generateProject > vite: members-area > files 1`] = `
   "src/app.css",
   "src/blocks/Hero.tsx",
   "src/blocks/MembersArea.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
   "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
@@ -549,6 +1229,8 @@ exports[`generateProject > vite: nft-drop > files 1`] = `
   "src/app.css",
   "src/blocks/Hero.tsx",
   "src/blocks/NftDrop.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
   "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
@@ -599,6 +1281,8 @@ exports[`generateProject > vite: tip-jar > files 1`] = `
   "src/blocks/BalanceSummary.tsx",
   "src/blocks/Hero.tsx",
   "src/blocks/TipJar.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
   "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
@@ -648,6 +1332,8 @@ exports[`generateProject > vite: token-launchpad > files 1`] = `
   "src/actions.ts",
   "src/app.css",
   "src/blocks/Hero.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
   "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",
@@ -707,6 +1393,190 @@ export function ManagePage() {
 }
 `;
 
+exports[`generateProject > vite: token-project > files 1`] = `
+[
+  ".env.example",
+  ".gitignore",
+  "README.md",
+  "index.html",
+  "package.json",
+  "src/App.tsx",
+  "src/actions.ts",
+  "src/app.css",
+  "src/blocks/AccessGate.tsx",
+  "src/blocks/ContractForm.tsx",
+  "src/blocks/CtaBanner.tsx",
+  "src/blocks/Faq.tsx",
+  "src/blocks/FeatureGrid.tsx",
+  "src/blocks/FooterBar.tsx",
+  "src/blocks/Hero.tsx",
+  "src/blocks/HeroGradient.tsx",
+  "src/blocks/LiveStat.tsx",
+  "src/blocks/Steps.tsx",
+  "src/blocks/TokenStats.tsx",
+  "src/blocks/Tokenomics.tsx",
+  "src/blocks/TxHistoryTable.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
+  "src/contracts.ts",
+  "src/main.tsx",
+  "src/networks.ts",
+  "src/pages/AppPage.tsx",
+  "src/pages/HomePage.tsx",
+  "tsconfig.json",
+  "vite.config.ts",
+]
+`;
+
+exports[`generateProject > vite: token-project > pages 1`] = `
+{
+  "src/pages/AppPage.tsx": "import { AccountCard, TokenPanel } from '@splendor/connect-react';
+import { Hero } from '../blocks/Hero';
+import { TokenStats } from '../blocks/TokenStats';
+import { LiveStat } from '../blocks/LiveStat';
+import { ContractForm } from '../blocks/ContractForm';
+import { TxHistoryTable } from '../blocks/TxHistoryTable';
+import { AccessGate } from '../blocks/AccessGate';
+import { CONTRACTS } from '../contracts';
+
+export function AppPage() {
+  return (
+    <div className="dapp-page">
+      <AccessGate access="wallet" title={"Dashboard"}>
+        <div className="dapp-section" data-node-id="app-root"
+          style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+          <Hero
+            heading={"Dashboard"}
+            text={"Your balance, your token and your contract in one place."}
+          />
+          <div className="dapp-row" data-node-id="app-top"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-top-left"
+              style={{ gap: "1rem" }}>
+              <AccountCard showBalance showNetwork showExplorer />
+            </div>
+            <div className="dapp-column" data-node-id="app-top-right"
+              style={{ gap: "1rem" }}>
+              <TokenStats
+                title={"Your DEMO"}
+                showSupply={false}
+                showBalance
+                layout={"card"}
+                decimals={18}
+                tokenAddress={CONTRACTS["token"].address}
+              />
+            </div>
+          </div>
+          <div className="dapp-row" data-node-id="app-actions"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="app-actions-left"
+              style={{ gap: "1rem" }}>
+              <TokenPanel
+                tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
+                defaultAmount={"1"}
+                showFee
+                toast
+              />
+            </div>
+            <div className="dapp-column" data-node-id="app-actions-right"
+              style={{ gap: "1rem" }}>
+              <LiveStat
+                label={"Current value"}
+                functionSig={"get()"}
+                format={"number"}
+                refreshMs={0}
+                fnParams={"[]"}
+                contract={CONTRACTS["app"].address}
+              />
+              <ContractForm
+                title={"Update the value"}
+                functionSig={"set(uint256)"}
+                buttonLabel={"Save on-chain"}
+                successMessage={"Saved."}
+                fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+                contract={CONTRACTS["app"].address}
+              />
+            </div>
+          </div>
+          <TxHistoryTable title={"Recent transactions"} limit={10} />
+        </div>
+      </AccessGate>
+    </div>
+  );
+}
+",
+  "src/pages/HomePage.tsx": "import { HeroGradient } from '../blocks/HeroGradient';
+import { TokenStats } from '../blocks/TokenStats';
+import { Tokenomics } from '../blocks/Tokenomics';
+import { Steps } from '../blocks/Steps';
+import { FeatureGrid } from '../blocks/FeatureGrid';
+import { Faq } from '../blocks/Faq';
+import { CtaBanner } from '../blocks/CtaBanner';
+import { FooterBar } from '../blocks/FooterBar';
+import { CONTRACTS } from '../contracts';
+
+export function HomePage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="landing-root"
+        style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+        <HeroGradient
+          heading={"Meet the Demo Token"}
+          text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
+          ctaLabel={"Launch app"}
+          ctaPath={"/app"}
+        />
+        <TokenStats
+          title={"Token at a glance"}
+          showSupply
+          showBalance={false}
+          layout={"row"}
+          decimals={18}
+          tokenAddress={CONTRACTS["token"].address}
+        />
+        <div className="dapp-row" data-node-id="landing-info"
+          style={{ gap: "1rem", alignItems: "stretch" }}>
+          <div className="dapp-column" data-node-id="landing-info-left"
+            style={{ gap: "1rem" }}>
+            <Tokenomics
+              title={"Tokenomics"}
+              chart={"donut"}
+              items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
+              decimals={18}
+              tokenAddress={CONTRACTS["token"].address}
+            />
+          </div>
+          <div className="dapp-column" data-node-id="landing-info-right"
+            style={{ gap: "1rem" }}>
+            <Steps
+              title={"How it works"}
+              items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
+            />
+          </div>
+        </div>
+        <FeatureGrid
+          title={"Why hold DEMO"}
+          items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
+        />
+        <Faq
+          title={"FAQ"}
+          items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
+        />
+        <CtaBanner
+          heading={"Ready?"}
+          text={"Connect your wallet and open the dashboard."}
+          buttonLabel={"Launch app"}
+          buttonPath={"/app"}
+        />
+        <FooterBar text={"Built with the Splendor dApp Studio"} />
+      </div>
+    </div>
+  );
+}
+",
+}
+`;
+
 exports[`generateProject > vite: wallet-dashboard > files 1`] = `
 [
   ".env.example",
@@ -718,6 +1588,8 @@ exports[`generateProject > vite: wallet-dashboard > files 1`] = `
   "src/actions.ts",
   "src/app.css",
   "src/blocks/Hero.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
   "src/contracts.ts",
   "src/main.tsx",
   "src/networks.ts",

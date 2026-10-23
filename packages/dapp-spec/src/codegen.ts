@@ -1,6 +1,7 @@
+import { bindBlockProps } from './bind.js';
 import { BLOCK_MANIFESTS, blockSource } from './blocks.js';
 import { blocksFromTree, styleToCss } from './tree.js';
-import type { BlockAction, CatalogEntry, DappBlock, DappPage, DappSpec, LayoutNode, PropValue, ThemeOverrides } from './types.js';
+import type { BlockAction, CatalogEntry, ContractRef, DappBlock, DappPage, DappSpec, LayoutNode, PropValue, ThemeOverrides } from './types.js';
 
 export type Framework = 'vite' | 'next';
 /** `npm` pins registry versions; `vendor` uses file:vendor/@splendor/* (for StackBlitz / unpublished SDKs). */
@@ -60,9 +61,18 @@ function jsxProp(name: string, value: PropValue): string {
   return `${name}={${JSON.stringify(value)}}`;
 }
 
-function renderBlock(block: DappBlock, entry: CatalogEntry, indent: string): string {
-  const props = Object.entries(block.props).filter(([, v]) => v !== '' && v != null);
-  const attrs = props.map(([k, v]) => jsxProp(k, v));
+/** Per-page codegen state: the spec's contracts, and whether the page references `CONTRACTS`. */
+type RenderCtx = { contracts: readonly ContractRef[]; usesContracts: boolean };
+
+function renderBlock(block: DappBlock, entry: CatalogEntry, indent: string, ctx?: RenderCtx): string {
+  const bound = ctx ? bindBlockProps(block, entry, ctx.contracts) : { props: block.props, addressRefs: {} as Record<string, string> };
+  const refs = Object.entries(bound.addressRefs);
+  if (refs.length && ctx) ctx.usesContracts = true;
+  const props = Object.entries(bound.props).filter(([k, v]) => v !== '' && v != null && !(k in bound.addressRefs));
+  const attrs = [
+    ...props.map(([k, v]) => jsxProp(k, v)),
+    ...refs.map(([k, id]) => `${k}={CONTRACTS[${JSON.stringify(id).replace(/[{}<>]/g, '')}].address}`),
+  ];
   const one = `<${entry.importName}${attrs.length ? ' ' + attrs.join(' ') : ''} />`;
   if (one.length + indent.length <= 100) return indent + one;
   return `${indent}<${entry.importName}\n${attrs.map((a) => `${indent}  ${a}`).join('\n')}\n${indent}/>`;
@@ -81,8 +91,28 @@ function pageBlocks(page: DappPage): DappBlock[] {
   return page.blocks ?? [];
 }
 
+/**
+ * One component name per page, unique even on case-insensitive file systems. `/` always gets
+ * `HomePage`; a page whose name is taken (`/home`, `/a-b` vs `/ab`) gets a numeric suffix
+ * (`HomePage2`), so imports and generated files never collide.
+ */
+function componentNames(pages: readonly DappPage[]): Map<DappPage, string> {
+  const taken = new Set<string>();
+  const out = new Map<DappPage, string>();
+  const ordered = [...pages].sort((a, b) => Number(b.path === '/') - Number(a.path === '/'));
+  for (const page of ordered) {
+    const base = pageComponent(page);
+    let name = base;
+    for (let n = 2; taken.has(name.toLowerCase()); n += 1) name = `${base.replace(/Page$/, '')}Page${n}`;
+    taken.add(name.toLowerCase());
+    out.set(page, name);
+  }
+  return out;
+}
+
 function resolvePages(spec: DappSpec, catalog: readonly CatalogEntry[]): Resolved[] {
   const byId = new Map(catalog.map((c) => [c.id, c]));
+  const names = componentNames(spec.pages);
   return spec.pages.map((page) => {
     const entries = pageBlocks(page).map((b) => {
       const e = byId.get(b.widget);
@@ -92,7 +122,7 @@ function resolvePages(spec: DappSpec, catalog: readonly CatalogEntry[]): Resolve
     const uniq = (list: CatalogEntry[]) => [...new Map(list.map((e) => [e.id, e])).values()];
     return {
       page,
-      component: pageComponent(page),
+      component: names.get(page)!,
       usedWidgets: uniq(entries.filter((e) => e.kind !== 'block')),
       usedBlocks: uniq(entries.filter((e) => e.kind === 'block')),
     };
@@ -107,23 +137,40 @@ function styleAttr(style: Record<string, string> | undefined, indent: string): s
   return `\n${indent}  style={{ ${inner} }}`;
 }
 
-function renderTree(node: LayoutNode, byId: Map<string, CatalogEntry>, indent: string): string {
+function renderTree(node: LayoutNode, byId: Map<string, CatalogEntry>, indent: string, ctx?: RenderCtx): string {
   if (node.kind === 'block') {
     const entry = byId.get(node.block.widget);
     if (!entry) throw new Error(`dapp-spec codegen: unknown widget "${node.block.widget}"`);
-    return renderBlock(node.block, entry, indent);
+    return renderBlock(node.block, entry, indent, ctx);
   }
   const cls = `dapp-${node.kind}`;
   const hide = node.style?.hideOn ? ` dapp-hide-${node.style.hideOn}` : '';
-  const style = styleToCss(node.style);
+  const style = styleToCss(node.style, node.kind);
   const open = `${indent}<div className="${cls}${hide}" data-node-id=${JSON.stringify(node.id)}${styleAttr(style, indent)}>`;
   if (!node.children.length) return `${open}\n${indent}</div>`;
-  const kids = node.children.map((c) => renderTree(c, byId, indent + '  ')).join('\n');
+  const kids = node.children.map((c) => renderTree(c, byId, indent + '  ', ctx)).join('\n');
   return `${open}\n${kids}\n${indent}</div>`;
 }
 
-function pageSource(r: Resolved, opts: { blocksDir: string; client: boolean }, catalog: readonly CatalogEntry[]): string {
+const isGated = (page: DappPage) => page.access === 'wallet' || page.access === 'signin';
+
+function pageSource(
+  r: Resolved,
+  opts: { blocksDir: string; client: boolean; contractsPath: string },
+  catalog: readonly CatalogEntry[],
+  contracts: readonly ContractRef[],
+): string {
   const byId = new Map(catalog.map((c) => [c.id, c]));
+  const ctx: RenderCtx = { contracts, usesContracts: false };
+  const gated = isGated(r.page);
+  const root = r.page.root;
+  const indent = gated ? '        ' : '      ';
+  const body = root
+    ? renderTree(root, byId, indent, ctx)
+    : pageBlocks(r.page).length
+      ? pageBlocks(r.page).map((b) => renderBlock(b, byId.get(b.widget)!, indent, ctx)).join('\n')
+      : `${indent}<p className="dapp-empty">This page has no blocks yet.</p>`;
+
   const lines: string[] = [];
   if (opts.client) lines.push(`'use client';`, '');
   const pkgs = new Map<string, string[]>();
@@ -133,18 +180,16 @@ function pageSource(r: Resolved, opts: { blocksDir: string; client: boolean }, c
   }
   for (const [pkg, names] of pkgs) lines.push(`import { ${[...new Set(names)].sort().join(', ')} } from '${pkg}';`);
   for (const b of r.usedBlocks) lines.push(`import { ${b.importName} } from '${opts.blocksDir}/${b.importName}';`);
+  if (gated) lines.push(`import { AccessGate } from '${opts.blocksDir}/AccessGate';`);
+  if (ctx.usesContracts) lines.push(`import { CONTRACTS } from '${opts.contractsPath}';`);
   if (lines.length) lines.push('');
-  const root = r.page.root;
-  const body = root
-    ? renderTree(root, byId, '      ')
-    : pageBlocks(r.page).length
-      ? pageBlocks(r.page).map((b) => renderBlock(b, byId.get(b.widget)!, '      ')).join('\n')
-      : '      <p className="dapp-empty">This page has no blocks yet.</p>';
   lines.push(
     `export function ${r.component}() {`,
     '  return (',
     '    <div className="dapp-page">',
+    ...(gated ? [`      <AccessGate access=${JSON.stringify(r.page.access)} title=${jsxProp('title', r.page.title).slice('title='.length)}>`] : []),
     body,
+    ...(gated ? ['      </AccessGate>'] : []),
     '    </div>',
     '  );',
     '}',
@@ -209,6 +254,30 @@ body {
 }
 .dapp-nav a[aria-current='page'] {
   color: var(--sqc-accent, #7c5cff);
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 0.3em;
+}
+.dapp-gate {
+  display: grid;
+  justify-items: center;
+  gap: 0.75rem;
+  max-width: 28rem;
+  margin: 3rem auto;
+  padding: 2rem 1.5rem;
+  text-align: center;
+}
+.dapp-gate__title {
+  margin: 0;
+  font-size: 1.35rem;
+}
+.dapp-footer {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--sqc-border, #262b38);
+  color: var(--sqc-text-muted, #9aa4b2);
+  font-size: 0.875rem;
+  text-align: center;
 }
 .dapp-page {
   display: flex;
@@ -360,6 +429,45 @@ when you add one, include \`'wasm-unsafe-eval'\` in \`script-src\` for the signe
 `;
 }
 
+/** Escape text for use between JSX tags (entities keep every character, nothing can open a tag or expression). */
+function jsxText(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\{/g, '&#123;')
+    .replace(/\}/g, '&#125;')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * What the app shell shows, from `spec.nav`: brand (falls back to the app name), the connect
+ * button (default on), nav links (listed pages first, in order; the rest follow in page order)
+ * and an optional footer line.
+ */
+function navModel(spec: DappSpec, pages: Resolved[]) {
+  const nav = spec.nav ?? {};
+  const byPath = new Map(pages.map((r) => [r.page.path, r.page]));
+  const order: DappPage[] = [];
+  const seen = new Set<string>();
+  for (const p of nav.links ?? []) {
+    const page = byPath.get(p);
+    if (page && !seen.has(p)) {
+      seen.add(p);
+      order.push(page);
+    }
+  }
+  // No explicit list: every page, in page order. An explicit list shows only those pages.
+  if (!nav.links) for (const r of pages) order.push(r.page);
+  return {
+    brand: jsxText(nav.brand?.trim() || spec.name) || jsxText(spec.name),
+    showConnect: nav.showConnect !== false,
+    links: order.map((p) => ({ path: p.path, title: p.title })),
+    footer: jsxText(nav.footer ?? ''),
+  };
+}
+
 function viteFiles(
   spec: DappSpec,
   pages: Resolved[],
@@ -473,10 +581,10 @@ createRoot(document.getElementById('root')!).render(
   files['src/networks.ts'] = networksSource();
   files['src/app.css'] = APP_CSS;
   const routes = pages.map((r) => ({ path: r.page.path, title: r.page.title, component: r.component }));
+  const shell = navModel(spec, pages);
   files['src/App.tsx'] = `import { useEffect, useState } from 'react';
 import {
-  ConnectKit,
-  SplendorConnectProvider,
+${shell.showConnect ? '  ConnectKit,\n' : ''}  SplendorConnectProvider,
   TxToastHost,
   WrongNetworkBanner,
   themeOverridesToStyle,
@@ -493,6 +601,9 @@ const CUSTOM_NETWORKS = appNetworks(import.meta.env.VITE_SQC_DIRECT_RPC === '1')
 const ROUTES = [
 ${routes.map((r) => `  { path: ${JSON.stringify(r.path)}, title: ${JSON.stringify(r.title)}, Page: ${r.component} },`).join('\n')}
 ];
+
+/** Nav links in display order (from the spec's nav). */
+const NAV_LINKS = ${JSON.stringify(shell.links)};
 
 function useHashPath(): string {
   const read = () => window.location.hash.replace(/^#/, '') || '/';
@@ -527,14 +638,13 @@ export function App() {
         <div className="dapp-root" style={themeOverridesToStyle(THEME_OVERRIDES)}>
           <div className="dapp-shell">
             <header className="dapp-header">
-              <p className="dapp-brand">${spec.name.replace(/[<>{}&]/g, '')}</p>
-              <ConnectKit />
+              <p className="dapp-brand">${shell.brand}</p>${shell.showConnect ? '\n              <ConnectKit />' : ''}
             </header>
             <WrongNetworkBanner expectedNetworkId={NETWORK} />
-            {ROUTES.length > 1 ? (
-              <nav className="dapp-nav">
-                {ROUTES.map((r) => (
-                  <a key={r.path} href={\`#\${r.path}\`} aria-current={r === route ? 'page' : undefined}>
+            {NAV_LINKS.length > 1 ? (
+              <nav className="dapp-nav" aria-label="Pages">
+                {NAV_LINKS.map((r) => (
+                  <a key={r.path} href={\`#\${r.path}\`} aria-current={r.path === route.path ? 'page' : undefined}>
                     {r.title}
                   </a>
                 ))}
@@ -542,7 +652,7 @@ export function App() {
             ) : null}
             <main>
               <route.Page />
-            </main>
+            </main>${shell.footer ? `\n            <footer className="dapp-footer">${shell.footer}</footer>` : ''}
           </div>
         </div>
       </TxToastHost>
@@ -550,8 +660,10 @@ export function App() {
   );
 }
 `;
-  for (const r of pages) files[`src/pages/${r.component}.tsx`] = pageSource(r, { blocksDir: '../blocks', client: false }, catalog);
-  addBlocks(files, pages, 'src/blocks');
+  for (const r of pages) {
+    files[`src/pages/${r.component}.tsx`] = pageSource(r, { blocksDir: '../blocks', client: false, contractsPath: '../contracts' }, catalog, spec.contracts ?? []);
+  }
+  addBlocks(files, pages, 'src/blocks', 'vite');
   files['.env.example'] = `# Call public RPCs directly instead of through the dev proxy (/rpc/<network>).
 # VITE_SQC_DIRECT_RPC=1
 `;
@@ -577,12 +689,36 @@ export function appNetworks(direct: boolean): NetworkConfig[] | undefined {
 `;
 }
 
-function addBlocks(files: Record<string, string>, pages: Resolved[], dir: string): void {
+/** Helper modules shared by blocks (`blocks/*.ts`). Copied next to the blocks whenever any block is used. */
+const SHARED_BLOCK_FILES = ['pageHref.ts', 'parseList.ts'] as const;
+
+/**
+ * `pageHref` for Next.js exports: pages are real routes there (`/about`), so links are plain
+ * paths instead of the `#/about` hash links the Vite export and the preview use.
+ */
+const NEXT_PAGE_HREF = `/**
+ * Link target of a page path or external URL. Pages are routes in this app, so the path is used as is.
+ */
+export function pageHref(path: string): string {
+  const v = path.trim();
+  if (!v) return '';
+  if (/^https?:\\/\\//i.test(v)) return v;
+  const p = v.replace(/^#/, '');
+  return p.startsWith('/') ? p : \`/\${p}\`;
+}
+`;
+
+function addBlocks(files: Record<string, string>, pages: Resolved[], dir: string, framework: Framework): void {
   const blocks = new Map(pages.flatMap((r) => r.usedBlocks).map((b) => [b.id, b]));
   for (const b of blocks.values()) {
     const manifest = BLOCK_MANIFESTS.find((m) => m.id === b.id);
     if (!manifest) throw new Error(`dapp-spec codegen: block "${b.id}" has no source`);
     files[`${dir}/${manifest.importName}.tsx`] = blockSource(manifest.file);
+  }
+  if (pages.some((r) => isGated(r.page))) files[`${dir}/AccessGate.tsx`] = blockSource('AccessGate.tsx');
+  if (!blocks.size) return;
+  for (const file of SHARED_BLOCK_FILES) {
+    files[`${dir}/${file}`] = framework === 'next' && file === 'pageHref.ts' ? NEXT_PAGE_HREF : blockSource(file);
   }
 }
 
@@ -705,7 +841,7 @@ console.log('[sqc-wasm] copied signer to public/ and pinned it in .env.productio
 `;
   files['app/networks.ts'] = networksSource();
   files['app/app.css'] = APP_CSS;
-  const routes = pages.map((r) => ({ path: r.page.path, title: r.page.title }));
+  const shell = navModel(spec, pages);
   files['app/layout.tsx'] = `import type { ReactNode } from 'react';
 import '@splendor/connect-react/style.css';
 import './app.css';
@@ -741,8 +877,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 import {
-  ConnectKit,
-  SplendorConnectProvider,
+${shell.showConnect ? '  ConnectKit,\n' : ''}  SplendorConnectProvider,
   TxToastHost,
   WrongNetworkBanner,
   themeOverridesToStyle,
@@ -753,7 +888,8 @@ import { appNetworks } from './networks';
 const NETWORK = ${JSON.stringify(spec.network)} as const;
 const THEME = ${JSON.stringify(spec.theme.base)} as const;
 const THEME_OVERRIDES: ThemeOverrides = ${themeConst(spec.theme.overrides)};
-const ROUTES = ${JSON.stringify(routes)};
+/** Nav links in display order (from the spec's nav). */
+const ROUTES = ${JSON.stringify(shell.links)};
 
 export function Providers({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -775,12 +911,11 @@ export function Providers({ children }: { children: ReactNode }) {
         <div className="dapp-root" style={themeOverridesToStyle(THEME_OVERRIDES)}>
           <div className="dapp-shell">
             <header className="dapp-header">
-              <p className="dapp-brand">${spec.name.replace(/[<>{}&]/g, '')}</p>
-              <ConnectKit />
+              <p className="dapp-brand">${shell.brand}</p>${shell.showConnect ? '\n              <ConnectKit />' : ''}
             </header>
             <WrongNetworkBanner expectedNetworkId={NETWORK} />
             {ROUTES.length > 1 ? (
-              <nav className="dapp-nav">
+              <nav className="dapp-nav" aria-label="Pages">
                 {ROUTES.map((r) => (
                   <Link key={r.path} href={r.path} aria-current={r.path === pathname ? 'page' : undefined}>
                     {r.title}
@@ -788,7 +923,7 @@ export function Providers({ children }: { children: ReactNode }) {
                 ))}
               </nav>
             ) : null}
-            <main>{children}</main>
+            <main>{children}</main>${shell.footer ? `\n            <footer className="dapp-footer">${shell.footer}</footer>` : ''}
           </div>
         </div>
       </TxToastHost>
@@ -799,7 +934,12 @@ export function Providers({ children }: { children: ReactNode }) {
   for (const r of pages) {
     const dir = r.page.path === '/' ? 'app' : `app${r.page.path}`;
     const depth = r.page.path === '/' ? '..' : '../..';
-    files[`${dir}/${r.component}.tsx`] = pageSource(r, { blocksDir: `${depth}/blocks`, client: true }, catalog);
+    files[`${dir}/${r.component}.tsx`] = pageSource(
+      r,
+      { blocksDir: `${depth}/blocks`, client: true, contractsPath: r.page.path === '/' ? './contracts' : '../contracts' },
+      catalog,
+      spec.contracts ?? [],
+    );
     files[`${dir}/page.tsx`] = `import { ${r.component} } from './${r.component}';
 
 export const metadata = { title: ${JSON.stringify(r.page.title)} };
@@ -809,9 +949,10 @@ export default function Page() {
 }
 `;
   }
-  addBlocks(files, pages, 'blocks');
+  addBlocks(files, pages, 'blocks', 'next');
+  // Block components are client components; the shared .ts helpers stay plain modules.
   for (const [path, src] of Object.entries(files)) {
-    if (path.startsWith('blocks/')) files[path] = `'use client';\n\n${src}`;
+    if (path.startsWith('blocks/') && path.endsWith('.tsx')) files[path] = `'use client';\n\n${src}`;
   }
   files['.env.example'] = `# Call public RPCs directly instead of through the /rpc/<network> rewrite.
 # NEXT_PUBLIC_SQC_DIRECT_RPC=1

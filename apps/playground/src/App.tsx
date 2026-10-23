@@ -87,6 +87,7 @@ function Layout() {
   const { session } = useSession();
   const { pathname } = useLocation();
   useDocumentTitle(pathname);
+  const onBuild = /^\/build(\/|$)/.test(pathname);
   return (
     <div className="pg-app">
       <a className="pg-skip-link" href="#main">
@@ -103,7 +104,8 @@ function Layout() {
           {session?.isAdmin ? <NavLink to="/admin">Admin</NavLink> : null}
         </nav>
         <div className="pg-header-right">
-          <NetworkSelect />
+          {/* The studio has its own network choice for the dApp: one picker on /build, not two. */}
+          {onBuild ? null : <NetworkSelect />}
           <ConnectKit showNetwork={false} />
         </div>
       </header>

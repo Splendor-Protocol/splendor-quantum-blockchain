@@ -3,6 +3,10 @@ import { TxResult, WidgetShell, connectErrorMessage, useContract } from '@splend
 
 export type ContractActionProps = {
   title?: string;
+  /** Contract id picked in the studio. Replaced by `contract` before render; ignored here. */
+  contractId?: string;
+  /** ABI params of the picked function (JSON). Passed by generated code; not used here. */
+  fnParams?: string;
   contract?: string;
   functionSig?: string;
   /** Fixed arguments, comma-separated. */
@@ -56,7 +60,11 @@ export function ContractAction({
       <button type="button" className="sqc-btn sqc-btn--primary sqc-btn--block" disabled={busy} onClick={() => void run()}>
         {busy ? 'Sending…' : buttonLabel}
       </button>
-      {error ? <p className="sqc-widget__error">{error}</p> : null}
+      {error ? (
+        <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
+          {error}
+        </p>
+      ) : null}
       {hash ? <TxResult hash={hash} confirmed /> : null}
     </WidgetShell>
   );

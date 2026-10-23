@@ -18,6 +18,17 @@ const WASM_KEY = 'vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm.b64';
 
 let cached: VendorOptions | null = null;
 
+/** Relative path with no traversal, drive letters or backslashes (zip-slip guard). */
+export function isSafeRelativePath(path: string): boolean {
+  if (!path || path.length > 300 || path.startsWith('/') || /[\\:\0]/.test(path)) return false;
+  return path.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
+}
+
+/** Bundle entries must stay inside `vendor/@splendor/`. */
+function isSafeVendorPath(path: string): boolean {
+  return path.startsWith('vendor/@splendor/') && isSafeRelativePath(path);
+}
+
 /** Parse a vendor bundle; null unless it carries both SDK packages. Exported for tests. */
 export function parseVendorBundle(raw: unknown): VendorOptions | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
@@ -25,7 +36,7 @@ export function parseVendorBundle(raw: unknown): VendorOptions | null {
   if (typeof files['vendor/@splendor/sqc-sdk/package.json'] !== 'string') return null;
   if (typeof files['vendor/@splendor/connect-react/package.json'] !== 'string') return null;
   const vendorFiles: Record<string, string> = {};
-  for (const [k, v] of Object.entries(files)) if (typeof v === 'string') vendorFiles[k] = v;
+  for (const [k, v] of Object.entries(files)) if (typeof v === 'string' && isSafeVendorPath(k)) vendorFiles[k] = v;
   return { sdk: 'vendor', vendorFiles, vendorWasmBase64: vendorFiles[WASM_KEY] };
 }
 

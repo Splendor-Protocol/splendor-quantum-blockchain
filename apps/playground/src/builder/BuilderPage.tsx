@@ -15,8 +15,10 @@ import { validateForPreview } from '../preview/validatePreview';
 import { useRegistry } from '../registry';
 import { type CloudState } from './ProjectPanel';
 import { Studio } from './Studio';
-import { getLocalProject, isLocalWorkspaceId, saveLocalProject } from '../workspaces/local';
-import { specFromWizard } from './newProject';
+import { getLocalProject, isLocalWorkspaceId, saveLocalProjectWithInfo } from '../workspaces/local';
+import { decodeAnswers, specFromWizard } from './newProject';
+import { KitCards } from '../home/KitCards';
+import { NewProjectWizard } from '../home/NewProjectWizard';
 import { builderReducer, initBuilder } from './state';
 import { clearDraft, loadDraft, saveDraft } from './storage';
 
@@ -24,14 +26,30 @@ type EditorTab = 'block' | 'theme' | 'export' | 'project';
 
 function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
   const { templates } = useRegistry();
+  /** Kit id the setup wizard is open on. */
+  const [kitWizard, setKitWizard] = useState<string | null>(null);
   return (
     <div className="pg-page">
       <section>
         <h1>What do you want to make?</h1>
         <p className="pg-muted">Choose a ready-made dApp and change it, or start blank and drop pieces onto the page.</p>
       </section>
+      <section aria-label="Ready-made apps">
+        <KitCards kits={templates.filter((t) => t.kit)} testIdPrefix="pick-kit" onPick={setKitWizard} />
+      </section>
+      {kitWizard ? (
+        <NewProjectWizard
+          templates={templates}
+          initialTemplate={kitWizard}
+          onCancel={() => setKitWizard(null)}
+          onCreate={(r) => {
+            setKitWizard(null);
+            onPick(specFromWizard({ template: r.template, preset: r.preset, name: r.name, answers: r.answers }) ?? emptySpec());
+          }}
+        />
+      ) : null}
       <div className="pg-cards">
-        {templates.map((t) => (
+        {templates.filter((t) => !t.kit).map((t) => (
           <button key={t.id} type="button" className="pg-card" style={{ textAlign: 'left', font: 'inherit', cursor: 'pointer' }} data-testid={`pick-${t.id}`} onClick={() => onPick(instantiateTemplate(t))}>
             <h3>{t.title}</h3>
             <p>{t.description}</p>
@@ -48,7 +66,7 @@ function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
 }
 
 /** Query params that only seed a new project; they are removed once consumed. `workspace` stays. */
-const SEED_PARAMS = ['template', 'preset', 'name', 'project'] as const;
+const SEED_PARAMS = ['template', 'preset', 'name', 'answers', 'project'] as const;
 
 type Start = { spec: DappSpec; projectId: string | null; key: number; synced?: boolean; localProjectId?: string | null };
 
@@ -63,7 +81,7 @@ export function BuilderPage() {
     const t = params.get('template');
     if (t) {
       // The home wizard passes template + preset + name; a bare ?template= keeps the template as is.
-      const spec = specFromWizard({ template: t, preset: params.get('preset'), name: params.get('name') });
+      const spec = specFromWizard({ template: t, preset: params.get('preset'), name: params.get('name'), answers: decodeAnswers(params.get('answers')) });
       if (spec) return { spec, projectId: null, key: Date.now() };
     }
     const draft = loadDraft();
@@ -147,6 +165,8 @@ function Editor({
   const { session } = useSession();
   const [params, setParams] = useSearchParams();
   const [state, dispatch] = useReducer(builderReducer, initial, initBuilder);
+  // `initBuilder` normalizes `initial` into a new object: "unchanged" means still this one.
+  const openedSpec = useRef(state.spec);
   const [projectId, setProjectId] = useState<string | null>(initialProjectId);
   const [mode, setMode] = useState<'mock' | 'live'>('mock');
   const [walletState, setWalletState] = useState<MockWalletState>('connected');
@@ -209,7 +229,7 @@ function Editor({
   useEffect(() => saveDraft({ spec, projectId }), [spec, projectId]);
 
   // Cloud autosave (debounced) once the project lives in the user's account.
-  const lastSaved = useRef<DappSpec | null>(initialSynced ? initial : null);
+  const lastSaved = useRef<DappSpec | null>(initialSynced ? openedSpec.current : null);
   useEffect(() => {
     if (!session || !projectId || lastSaved.current === spec) return;
     if (!validation.ok) {
@@ -259,14 +279,20 @@ function Editor({
   const remoteWorkspaceId = workspaceId && !isLocalWorkspaceId(workspaceId) ? workspaceId : null;
   const localWorkspaceId = workspaceId && (isLocalWorkspaceId(workspaceId) || !session) ? workspaceId : null;
   const localProjectId = useRef<string | null>(initialLocalProjectId);
+  const [localNotice, setLocalNotice] = useState<string | null>(null);
   useEffect(() => {
     // Nothing to save until the user changes something.
-    if (!localWorkspaceId || spec === initial) return;
+    if (!localWorkspaceId || spec === openedSpec.current) return;
     const t = window.setTimeout(() => {
-      localProjectId.current = saveLocalProject(localWorkspaceId, spec, localProjectId.current).id;
+      const r = saveLocalProjectWithInfo(localWorkspaceId, spec, localProjectId.current);
+      localProjectId.current = r.project.id;
+      if (!r.saved) setLocalNotice('This browser refused to save the project (storage full or disabled). Export it or sign in so you do not lose it.');
+      else if (r.trimmed.length) {
+        setLocalNotice(`Removed ${r.trimmed.length} oldest project${r.trimmed.length === 1 ? '' : 's'} from this workspace to stay within the browser limit: ${r.trimmed.map((p) => p.name).join(', ')}.`);
+      }
     }, 800);
     return () => window.clearTimeout(t);
-  }, [spec, initial, localWorkspaceId]);
+  }, [spec, localWorkspaceId]);
 
   const saveNew = useCallback(async () => {
     setCloud({ status: 'saving' });
@@ -283,12 +309,21 @@ function Editor({
   const openProject = useCallback(
     async (id: string) => {
       const p = await api.getProject(id);
-      onOpen(p.spec, p.id);
+      onOpen(migrateSpec(p.spec), p.id);
     },
     [onOpen],
   );
 
   return (
+    <>
+    {localNotice ? (
+      <div className="pg-local-notice" role="alert">
+        <span>{localNotice}</span>
+        <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => setLocalNotice(null)}>
+          Dismiss
+        </button>
+      </div>
+    ) : null}
     <Studio
       spec={spec}
       pagePath={pagePath}
@@ -330,5 +365,6 @@ function Editor({
       onDeleted={() => setProjectId(null)}
       onNew={onNew}
     />
+    </>
   );
 }

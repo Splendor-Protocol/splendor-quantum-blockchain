@@ -18,6 +18,7 @@ type AnyProps = Record<string, unknown>;
 type EmbedNetwork = 'testnet' | 'devnet' | 'mainnet' | 'local';
 
 const NETWORKS: readonly EmbedNetwork[] = ['testnet', 'devnet', 'mainnet', 'local'];
+const SHA256_RE = /^[0-9a-f]{64}$/i;
 
 const WIDGETS: Record<string, ComponentType<AnyProps>> = {
   transfer: TransferWidget as ComponentType<AnyProps>,
@@ -67,10 +68,21 @@ function mountOne(el: Element): void {
     root = createRoot(el);
     roots.set(el, root);
   }
-  // Pin the signer with data-wasm-sha256 + data-exec-sha256; without both the digests are not checked.
+  // Pin the signer with data-wasm-sha256 + data-exec-sha256. Unpinned is tolerated on test networks;
+  // mainnet (real funds) needs both digests or an explicit data-allow-unpinned-wasm="true".
   const wasmSha256 = el.getAttribute('data-wasm-sha256')?.trim();
   const execSha256 = el.getAttribute('data-exec-sha256')?.trim();
-  const integrity = wasmSha256 && execSha256 ? { wasmSha256, execSha256 } : { allowUnpinnedWasm: true };
+  const pinned = !!(wasmSha256 && execSha256 && SHA256_RE.test(wasmSha256) && SHA256_RE.test(execSha256));
+  if (!pinned && network === 'mainnet' && el.getAttribute('data-allow-unpinned-wasm') !== 'true') {
+    root.render(
+      <p role="alert" style={{ font: '14px system-ui, sans-serif', color: '#b42318' }}>
+        Splendor widget not loaded: mainnet embeds must pin the signer with data-wasm-sha256 and data-exec-sha256.
+      </p>,
+    );
+    return;
+  }
+  if (!pinned) console.warn(`[splendor-embed] "${name}" on ${network} uses an unpinned signer; add data-wasm-sha256 and data-exec-sha256.`);
+  const integrity = pinned ? { wasmSha256: wasmSha256!, execSha256: execSha256! } : { allowUnpinnedWasm: true };
   root.render(
     <SplendorConnectProvider network={network} connectors="auto" theme="splendor" {...integrity}>
       <TxToastHost>

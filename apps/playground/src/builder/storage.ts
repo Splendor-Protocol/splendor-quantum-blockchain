@@ -1,19 +1,30 @@
-import { migrateSpec, validateSpec, type DappSpec } from '@splendor/dapp-spec';
+import { isContainer, migrateSpec, type DappSpec } from '@splendor/dapp-spec';
 
 const KEY = 'splendor-playground:draft:v1';
 
 export type Draft = { spec: DappSpec; projectId: string | null; savedAt: string };
 
-/** Last draft from this browser, migrated to the current spec version. Invalid drafts are dropped. */
+/** Enough structure for the editor to open it; value problems are shown as issues, not dropped. */
+function isEditable(spec: DappSpec): boolean {
+  if (typeof spec.name !== 'string' || !Array.isArray(spec.pages) || spec.pages.length === 0) return false;
+  if (typeof spec.theme !== 'object' || spec.theme === null) return false;
+  return spec.pages.every(
+    (p) => typeof p === 'object' && p !== null && typeof p.path === 'string' && typeof p.title === 'string' && !!p.root && isContainer(p.root),
+  );
+}
+
+/**
+ * Last draft from this browser, migrated to the current spec version. A draft with invalid values
+ * (a half-typed address, a duplicate id) still opens so the user can fix it; only drafts the editor
+ * cannot open at all are dropped.
+ */
 export function loadDraft(): Draft | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { spec?: unknown; projectId?: unknown; savedAt?: unknown };
     const spec = migrateSpec(parsed.spec);
-    // Shape check only: a draft may legitimately have unfilled required props.
-    const r = validateSpec(spec);
-    if (!r.ok && r.issues.some((i) => !i.message.includes('required'))) return null;
+    if (!isEditable(spec)) return null;
     return {
       spec,
       projectId: typeof parsed.projectId === 'string' ? parsed.projectId : null,

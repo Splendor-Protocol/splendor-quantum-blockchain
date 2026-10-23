@@ -1,10 +1,34 @@
 import { describe, expect, it, vi } from 'vitest';
-import { blocksFromTree, emptySpec, findNode, getTemplate, instantiateTemplate, type ContainerNode, type DappSpec } from '@splendor/dapp-spec';
+import { blocksFromTree, emptySpec, findNode, getTemplate, instantiateTemplate, validateSpec, type ContainerNode, type DappSpec } from '@splendor/dapp-spec';
 import { MAX_BLOCKS_PER_PAGE, builderReducer, initBuilder, type BuilderAction, type BuilderState } from './state';
 
 const run = (s: BuilderState, ...actions: BuilderAction[]) => actions.reduce(builderReducer, s);
 
 describe('builderReducer', () => {
+  it('repairs invalid ids from older drafts on load (e.g. `/dashboard-hero`)', () => {
+    const spec = emptySpec();
+    const root: ContainerNode = {
+      kind: 'section',
+      id: '/dashboard-root',
+      children: [
+        { kind: 'block', block: { id: '/dashboard-hero', widget: 'hero', props: {} } },
+        { kind: 'block', block: { id: 'dashboard-hero', widget: 'hero', props: {} } },
+      ],
+    };
+    spec.pages.push({ path: '/dashboard', title: 'Dashboard', root, blocks: blocksFromTree(root) });
+    const page = initBuilder(spec).spec.pages[1]!;
+    const ids = page.blocks!.map((b) => b.id);
+    expect(ids.every((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id))).toBe(true);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect((page.root as ContainerNode).id).toBe('dashboard-root');
+  });
+
+  it('adds pages from templates with valid ids', () => {
+    const s = run(initBuilder(emptySpec()), { type: 'addPageFromTemplate', title: 'Dashboard', templateId: 'dashboard' });
+    const page = s.spec.pages.find((p) => p.path === '/dashboard')!;
+    expect(page.blocks!.map((b) => b.id)).toEqual(['dashboard-hero', 'dashboard-account', 'dashboard-pending']);
+  });
+
   it('adds blocks with unique ids and selects them', () => {
     const s = run(initBuilder(emptySpec()), { type: 'addBlock', widget: 'transfer', props: {} }, { type: 'addBlock', widget: 'transfer', props: {} });
     const ids = s.spec.pages[0]!.blocks!.map((b) => b.id);
@@ -41,6 +65,59 @@ describe('builderReducer', () => {
     s = run(s, { type: 'removePage', path: '/' }, { type: 'removePage', path: '/about-us-2' });
     expect(s.spec.pages.map((p) => p.path)).toEqual(['/', '/about-us']);
     expect(s.pagePath).toBe('/');
+  });
+
+  it('gives every added page (blank or template) unique node ids, so the spec stays valid', () => {
+    const s = run(
+      initBuilder(emptySpec()),
+      { type: 'addPage', title: 'One' },
+      { type: 'addPage', title: 'Two' },
+      { type: 'addPageFromTemplate', title: 'Dash', templateId: 'dashboard' },
+      { type: 'addPageFromTemplate', title: 'Dash', templateId: 'dashboard' },
+    );
+    const ids = s.spec.pages.flatMap((p) => {
+      const out: string[] = [];
+      const visit = (n: ContainerNode | { kind: 'block'; block: { id: string } }) => {
+        if (n.kind === 'block') out.push(n.block.id);
+        else {
+          out.push(n.id);
+          n.children.forEach((c) => visit(c as ContainerNode));
+        }
+      };
+      visit(p.root as ContainerNode);
+      return out;
+    });
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(validateSpec(s.spec).ok).toBe(true);
+  });
+
+  it('enforces the page limit in the reducer, not only in the UI', () => {
+    let s = initBuilder(emptySpec());
+    for (let i = 0; i < 30; i++) s = builderReducer(s, { type: 'addPage', title: `P${i}` });
+    expect(s.spec.pages).toHaveLength(20);
+  });
+
+  it('clears links (buttons, navbar items, nav order) to a page when it is deleted', () => {
+    let s = run(
+      initBuilder(emptySpec()),
+      { type: 'addPage', title: 'About' },
+      { type: 'selectPage', path: '/' },
+      { type: 'addBlock', widget: 'action-button', props: { label: 'About', href: '/about' } },
+      { type: 'addBlock', widget: 'navbar', props: { links: 'Home|/,About|/about' } },
+    );
+    s = { ...s, spec: { ...s.spec, nav: { links: ['/', '/about'] } } };
+    s = run(s, { type: 'removePage', path: '/about' });
+    const home = s.spec.pages[0]!.blocks!;
+    expect(home.find((b) => b.widget === 'action-button')!.props.href).toBe('');
+    expect(home.find((b) => b.widget === 'navbar')!.props.links).toBe('Home|/');
+    expect(s.spec.nav!.links).toEqual(['/']);
+  });
+
+  it('keeps the style when duplicating a block', () => {
+    const spec = instantiateTemplate(getTemplate('wallet-dashboard')!);
+    let s = run(initBuilder(spec), { type: 'setBlockStyle', id: 'send', style: { padding: '2rem' } });
+    s = run(s, { type: 'duplicateBlock', id: 'send' });
+    expect(s.spec.pages[0]!.blocks!.find((b) => b.id === 'transfer-1')!.style).toEqual({ padding: '2rem' });
   });
 
   it('moves and removes blocks on the current page', () => {
@@ -84,6 +161,22 @@ describe('builderReducer', () => {
   it('clears a prop when set to undefined', () => {
     const s = run(initBuilder(emptySpec()), { type: 'setProp', id: 'hero', name: 'text', value: undefined });
     expect('text' in s.spec.pages[0]!.blocks![0]!.props).toBe(false);
+  });
+});
+
+describe('setContractAddress', () => {
+  it('changes the contract once: bound components follow, and raw widget props holding the old address too', () => {
+    const mine = `SQ:${'ab'.repeat(32)}`;
+    const s0 = initBuilder(instantiateTemplate(getTemplate('token-project')!));
+    const old = s0.spec.contracts!.find((c) => c.id === 'token')!.address;
+    const s = builderReducer(s0, { type: 'setContractAddress', id: 'token', address: mine });
+    expect(s.spec.contracts!.find((c) => c.id === 'token')!.address).toBe(mine);
+    const blocks = s.spec.pages.flatMap((p) => p.blocks ?? []);
+    expect(blocks.find((b) => b.id === 'send-token')!.props.tokenAddress).toBe(mine);
+    expect(blocks.find((b) => b.id === 'stats')!.props).toMatchObject({ contractId: 'token' });
+    expect(JSON.stringify(s.spec.pages)).not.toContain(old);
+    expect(builderReducer(s, { type: 'undo' }).spec.contracts!.find((c) => c.id === 'token')!.address).toBe(old);
+    expect(builderReducer(s, { type: 'setContractAddress', id: 'ghost', address: mine })).toBe(s);
   });
 });
 
@@ -286,5 +379,61 @@ describe('tree insert limits', () => {
     const ok = run(s, { type: 'moveNode', id: 'side', parentId: 'deep-5', index: 0 });
     expect(ok).not.toBe(s);
     expect(ok.spec.pages[0]!.blocks!.map((b) => b.id).sort()).toEqual(['leaf', 'x']);
+  });
+});
+describe('page settings', () => {
+  const three = () => run(initBuilder(emptySpec()), { type: 'addPage', title: 'About' }, { type: 'addPage', title: 'Pricing' });
+
+  it('sets who can see a page; public clears the field; the home page stays public', () => {
+    let s = three();
+    s = run(s, { type: 'setPageAccess', path: '/about', access: 'wallet' });
+    expect(s.spec.pages.find((p) => p.path === '/about')!.access).toBe('wallet');
+    s = run(s, { type: 'setPageAccess', path: '/about', access: 'signin' });
+    expect(s.spec.pages.find((p) => p.path === '/about')!.access).toBe('signin');
+    s = run(s, { type: 'setPageAccess', path: '/about', access: 'public' });
+    expect('access' in s.spec.pages.find((p) => p.path === '/about')!).toBe(false);
+    const before = s;
+    expect(run(s, { type: 'setPageAccess', path: '/', access: 'wallet' })).toBe(before);
+    expect(run(s, { type: 'setPageAccess', path: '/nope', access: 'wallet' })).toBe(before);
+    expect(run(s, { type: 'setPageAccess', path: '/about', access: 'public' })).toBe(before);
+    expect(s.spec.pages.find((p) => p.path === '/')!.access).toBeUndefined();
+  });
+
+  it('hides a page from the navigation with an explicit ordered list, and shows it again in place', () => {
+    let s = three();
+    expect(s.spec.nav!.links).toBeUndefined();
+    s = run(s, { type: 'setNavVisible', path: '/about', visible: false });
+    expect(s.spec.nav!.links).toEqual(['/', '/pricing']);
+    s = run(s, { type: 'setNavVisible', path: '/pricing', visible: false });
+    expect(s.spec.nav!.links).toEqual(['/']);
+    s = run(s, { type: 'setNavVisible', path: '/pricing', visible: true });
+    expect(s.spec.nav!.links).toEqual(['/', '/pricing']);
+    s = run(s, { type: 'setNavVisible', path: '/about', visible: true });
+    // Everything shown, in page order: back to the default (no explicit list).
+    expect(s.spec.nav!.links).toBeUndefined();
+    expect(s.spec.nav!.showConnect).toBe(true);
+    expect(run(s, { type: 'setNavVisible', path: '/about', visible: true })).toBe(s);
+    expect(run(s, { type: 'setNavVisible', path: '/nope', visible: false })).toBe(s);
+  });
+
+  it('keeps the explicit nav list in step with page moves and new pages', () => {
+    let s = three();
+    s = run(s, { type: 'setNavVisible', path: '/about', visible: false });
+    s = run(s, { type: 'addPage', title: 'Docs' });
+    expect(s.spec.nav!.links).toEqual(['/', '/pricing', '/docs']);
+    s = run(s, { type: 'movePage', path: '/docs', delta: -1 });
+    expect(s.spec.pages.map((p) => p.path)).toEqual(['/', '/about', '/docs', '/pricing']);
+    expect(s.spec.nav!.links).toEqual(['/', '/docs', '/pricing']);
+    s = run(s, { type: 'duplicatePage', path: '/pricing' });
+    expect(s.spec.nav!.links).toEqual(['/', '/docs', '/pricing', '/pricing-copy']);
+    // Moving past a hidden page leaves the shown order alone.
+    s = run(s, { type: 'movePage', path: '/docs', delta: -1 });
+    expect(s.spec.nav!.links).toEqual(['/', '/docs', '/pricing', '/pricing-copy']);
+  });
+
+  it('keeps a validated spec valid', () => {
+    let s = three();
+    s = run(s, { type: 'setPageAccess', path: '/about', access: 'wallet' }, { type: 'setNavVisible', path: '/pricing', visible: false });
+    expect(validateSpec(s.spec).ok).toBe(true);
   });
 });
