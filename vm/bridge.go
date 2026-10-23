@@ -684,6 +684,13 @@ func (b *Bridge) Claim(ctx ModuleContext, p bridgeClaimParams, receipt *types.Re
 		return err
 	}
 	if p.ID == 0 {
+		threshold, err := b.getU64Slot(slotBRThreshold)
+		if err != nil {
+			return fmt.Errorf(what+"threshold: %w", err)
+		}
+		if threshold == 0 {
+			return errors.New(what + "bridge threshold is zero; any single attestation would pass")
+		}
 		return errors.New(what + "id must be positive (burn ids start at 1)")
 	}
 	assetWord, err := bridgeAssetWord(p.Asset)
