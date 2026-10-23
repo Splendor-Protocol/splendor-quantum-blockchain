@@ -118,8 +118,9 @@ type Relayer struct {
 	State     *relayerState
 	StatePath string
 
-	attempts map[uint64]int
-	Logf     func(format string, args ...any)
+	attempts    map[uint64]int
+	transientAt map[uint64]time.Time // last transient submit failure per burn, for backoff
+	Logf        func(format string, args ...any)
 }
 
 func (r *Relayer) logf(format string, args ...any) {
@@ -348,11 +349,33 @@ func (r *Relayer) settle(b Burn, info *BridgeInfo) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if r.transientAt == nil {
+		r.transientAt = map[uint64]time.Time{}
+	}
+	// Exponential backoff on transient submit failures: wait progressively
+	// longer between attempts so a congested quantum node isn't hammered on
+	// every pass. First retry after 1s, doubling each time, capped at 60s.
+	now := time.Now()
+	if last, ok := r.transientAt[b.ID]; ok {
+		backoff := time.Second
+		for i := 0; i < r.attempts[b.ID]; i++ {
+			backoff *= 2
+			if backoff > 60*time.Second {
+				backoff = 60 * time.Second
+				break
+			}
+		}
+		if now.Sub(last) < backoff {
+			r.logf("burn %d: transient backoff, %v remaining", b.ID, backoff-now.Sub(last))
+			return false, nil
+		}
+	}
 	hash, err := r.Quantum.SubmitClaim(r.Priv, r.Operator, nonce, r.Fee, r.Bridge, b, atts)
 	if err != nil {
 		// Transient by nature — not counted. Held and retried next pass; the
 		// on-chain claimed slot keeps a duplicate safe if a prior submit
 		// actually landed.
+		r.transientAt[b.ID] = now
 		r.logf("burn %d: submit deferred (transient, not counted): %v", b.ID, err)
 		return false, nil
 	}
