@@ -42,6 +42,14 @@ func keccak256(s string) string {
 
 var burnedTopic0 = "0x" + keccak256(burnedEventSig)
 
+// MaxOutboundBlocks caps how many source blocks one Outbound call may scan.
+// When the relayer cursor falls far behind (restart, reorg, outage) an
+// unbounded [from, to] range would ask the legacy RPC for millions of logs at
+// once — a runaway query that can OOM the node or time out the RPC. Cap it so
+// the relayer simply does multiple passes instead of one giant one. A var so
+// tests can shrink it.
+var MaxOutboundBlocks uint64 = 100_000
+
 // EVMChain adapts an EVM chain to the bridge.Chain interface.
 type EVMChain struct {
 	cfg    EVMConfig
@@ -171,10 +179,16 @@ type evmLog struct {
 	Removed     bool     `json:"removed"`
 }
 
-// Outbound returns the escrow contract's Burned events in [from, to].
+// Outbound returns the escrow contract's Burned events in [from, to], capped
+// at MaxOutboundBlocks blocks per call. If the caller asks for more, we scan
+// [from, from+MaxOutboundBlocks-1] and let the relayer continue on the next
+// pass — one bounded RPC per pass instead of one runaway query.
 func (c *EVMChain) Outbound(ctx context.Context, from, to uint64) ([]OutboundEvent, error) {
 	if c.cfg.BurnContract == "" {
 		return nil, nil
+	}
+	if to-from+1 > MaxOutboundBlocks {
+		to = from + MaxOutboundBlocks - 1
 	}
 	var logs []evmLog
 	err := c.call(ctx, "eth_getLogs", []any{map[string]any{
