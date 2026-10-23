@@ -244,6 +244,9 @@ func decodeBurned(l evmLog) (OutboundEvent, error) {
 	if err != nil {
 		return OutboundEvent{}, fmt.Errorf("sender: %w", err)
 	}
+	if sender == "0x"+strings.Repeat("0", 40) {
+		return OutboundEvent{}, fmt.Errorf("zero sender")
+	}
 	data := strings.TrimPrefix(l.Data, "0x")
 	if len(data) != 128 {
 		return OutboundEvent{}, fmt.Errorf("want 64 data bytes, got %d hex chars", len(data))
