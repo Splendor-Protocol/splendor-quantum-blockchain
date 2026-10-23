@@ -72,6 +72,11 @@ type Server struct {
 	cors *CORSPolicy
 	// submitLimiter bounds public transaction submission per client IP.
 	submitLimiter *RateLimiter
+	// maxRequestBody caps the size of any single JSON-RPC request body.
+	// Without it, a client can send a multi-megabyte payload and OOM the node
+	// while json.Decoder reads it into memory. 4 MiB is plenty for any valid
+	// transaction or X402 settlement envelope.
+	maxRequestBody int64
 	// simGuard meters the anonymous VM-execution routes (/call, /estimate) and
 	// the receipt scan behind /logs.
 	simGuard *ExecGuard
@@ -133,6 +138,9 @@ type Config struct {
 	// reverse proxy you control — otherwise the header is attacker-controlled and
 	// rate limits can be bypassed by spoofing it.
 	TrustProxy bool
+	// MaxRequestBodyBytes caps any single JSON-RPC request body. Zero means
+	// a sane default of 4 MiB.
+	MaxRequestBodyBytes int
 
 	// SimRatePerSec / SimBurst / SimMaxInFlight / SimTimeout bound the routes
 	// that execute the VM or scan the receipt index for an anonymous caller
@@ -206,8 +214,14 @@ func New(
 		writeAuth:          NewWriteAuth(cfg.AuthToken),
 		cors:               NewCORSPolicy(cfg.CORSOrigins),
 		submitLimiter:      NewRateLimiter(cfg.SubmitRatePerSec, cfg.SubmitBurst, cfg.TrustProxy),
-		simGuard:           newSimGuard(cfg),
-		lookupReceipt:      cfg.LookupReceipt,
+		maxRequestBody: func() int64 {
+			if cfg.MaxRequestBodyBytes > 0 {
+				return int64(cfg.MaxRequestBodyBytes)
+			}
+			return 4 * 1024 * 1024
+		}(),
+		simGuard:      newSimGuard(cfg),
+		lookupReceipt: cfg.LookupReceipt,
 	}
 	s.router = s.buildRouter()
 	s.httpServer = &http.Server{
@@ -283,9 +297,17 @@ func (s *Server) buildRouter() *mux.Router {
 	return r
 }
 
-// limited wraps a handler with the public-submission rate limiter.
+// limited wraps a handler with the public-submission rate limiter and a
+// request-body size cap so an oversized payload cannot OOM the node.
 func (s *Server) limited(h http.HandlerFunc) http.Handler {
-	return s.submitLimiter.Middleware(h)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > s.maxRequestBody && s.maxRequestBody > 0 {
+			writeError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("request body too large: %d bytes (max %d)", r.ContentLength, s.maxRequestBody))
+			return
+		}
+		s.submitLimiter.Middleware(h).ServeHTTP(w, r)
+	})
 }
 
 // newSimGuard builds the simulation-plane guard, substituting defaults for
