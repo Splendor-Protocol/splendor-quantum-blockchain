@@ -12,10 +12,11 @@ import type { ConnectControllerState } from '../core/types.js';
 const ADDR = 'SQ:' + 'ab'.repeat(32);
 const TOKEN = 'SQ:' + 'aa'.repeat(32);
 
-const { balanceOf, tokenInfo, transfer, approve, deployQRC20 } = vi.hoisted(() => ({
+const { balanceOf, tokenInfo, transfer, transferHuman, approve, deployQRC20 } = vi.hoisted(() => ({
   balanceOf: vi.fn(async () => '100'),
   tokenInfo: vi.fn(async () => ({ name: 'T', symbol: 'T' })),
   transfer: vi.fn(async () => ({ hash: '0xt' })),
+  transferHuman: vi.fn(async () => ({ hash: '0xh' })),
   approve: vi.fn(async () => ({ hash: '0xa' })),
   deployQRC20: vi.fn(async () => ({
     address: 'SQ:' + 'aa'.repeat(32),
@@ -34,6 +35,10 @@ vi.mock('@splendor/sqc-sdk/tokens', () => ({
     transfer(...args: unknown[]) {
       return transfer(...args);
     }
+    transferHuman(...args: unknown[]) {
+      return transferHuman(...args);
+    }
+    pinDecimals() {}
     approve(...args: unknown[]) {
       return approve(...args);
     }
@@ -148,6 +153,19 @@ describe('useQRC20', () => {
     });
     expect(result.current.status).toBe('error');
     expect(result.current.error?.message).toMatch(/insufficient/);
+  });
+
+  it('transfer and transferHuman pass WriteOpts (the reviewed fee) to the token client', async () => {
+    const ctrl = makeController(makeState());
+    const wallet = ctrl.getWallet();
+    const { result } = renderHook(() => useQRC20(TOKEN, 0), { wrapper: wrapperFor(ctrl) });
+    await act(async () => {
+      await result.current.transfer(ADDR, '5', { fee: '4321' });
+      await result.current.transferHuman(ADDR, '1.5', { fee: '9876', waitForConfirmation: false });
+    });
+    expect(transfer).toHaveBeenCalledWith(wallet, ADDR, '5', { fee: '4321' });
+    expect(transferHuman).toHaveBeenCalledWith(wallet, ADDR, '1.5', { fee: '9876', waitForConfirmation: false });
+    expect(result.current.hash).toBe('0xh');
   });
 
   it('throws when wallet missing', async () => {

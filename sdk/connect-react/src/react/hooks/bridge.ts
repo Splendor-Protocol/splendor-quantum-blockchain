@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { useConnectState } from '../context.js';
+import { notReady } from '../hookErrors.js';
 import { useDeployAction, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet } from './core.js';
 
@@ -19,6 +20,8 @@ export function useBridge(bridgeAddress: string | null): {
   hash: string | null;
   explorerUrl: string | null;
   error: Error | null;
+  /** UI copy for `error`. */
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
@@ -26,14 +29,14 @@ export function useBridge(bridgeAddress: string | null): {
   const tx = useTxAction(network);
 
   const info = useCallback(async () => {
-    if (!bridgeAddress || !ready || !wallet) throw new Error('Bridge not ready');
+    if (!bridgeAddress || !ready || !wallet) throw notReady('Bridge not ready', ready && wallet ? 'bridge' : null);
     const { BridgeModule } = await import('@splendor/sqc-sdk/bridge');
     return new BridgeModule(wallet.connection, bridgeAddress).info();
   }, [bridgeAddress, ready, wallet]);
 
   const claimed = useCallback(
     async (id: number) => {
-      if (!bridgeAddress || !ready || !wallet) throw new Error('Bridge not ready');
+      if (!bridgeAddress || !ready || !wallet) throw notReady('Bridge not ready', ready && wallet ? 'bridge' : null);
       const { BridgeModule } = await import('@splendor/sqc-sdk/bridge');
       return new BridgeModule(wallet.connection, bridgeAddress).claimed(id);
     },
@@ -49,7 +52,7 @@ export function useBridge(bridgeAddress: string | null): {
       evmTx: string;
       attestations: Array<{ pubkey: string; signature: string }>;
     }) => {
-      if (!bridgeAddress || !ready || !wallet) throw new Error('Bridge not ready');
+      if (!bridgeAddress || !ready || !wallet) throw notReady('Bridge not ready', ready && wallet ? 'bridge' : null);
       const res = await tx.run(async () => {
         const { BridgeModule } = await import('@splendor/sqc-sdk/bridge');
         return new BridgeModule(wallet.connection, bridgeAddress).claim(wallet, params);
@@ -67,6 +70,7 @@ export function useBridge(bridgeAddress: string | null): {
     hash: tx.hash,
     explorerUrl: tx.explorerUrl,
     error: tx.error,
+    errorMessage: tx.errorMessage,
     reset: tx.reset,
   };
 }
@@ -96,7 +100,7 @@ export function useDeployBridge(): {
   const action = useDeployAction(
     network,
     async (params: DeployBridgeParams) => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (!ready || !wallet) throw notReady('Wallet not connected');
       const { deployBridge } = await import('@splendor/sqc-sdk/bridge');
       return deployBridge(wallet, params, { fee: params.fee, waitForConfirmation: params.waitForConfirmation });
     },

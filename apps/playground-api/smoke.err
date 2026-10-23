@@ -1,3 +1,0 @@
-[sqc-sdk] network "local" uses the mainnet chain id (splendor-quantum-1); signatures made against it are valid on mainnet. Never use a mainnet seed with a local node.
-(node:31164) ExperimentalWarning: SQLite is an experimental feature and might change at any time
-(Use `node --trace-warnings ...` to show where the warning was created)

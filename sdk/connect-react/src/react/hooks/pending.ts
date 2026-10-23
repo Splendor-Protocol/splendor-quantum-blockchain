@@ -10,6 +10,7 @@ import {
 } from '../../core/pendingTx.js';
 import { useOptionalTxToast } from '../../ui/TxToastHost.js';
 import { useConnectState } from '../context.js';
+import { usePageVisible } from '../usePageVisible.js';
 import { useReadConnection } from './core.js';
 
 export type { PendingTx } from '../../core/pendingTx.js';
@@ -38,9 +39,11 @@ export function usePendingTransactions(opts: { pollMs?: number; toast?: boolean 
   const networkId = network?.id ?? null;
   const pending = useMemo(() => all.filter((p) => p.network === networkId), [all, networkId]);
   const hashesKey = pending.map((p) => p.hash).join(',');
+  // Hidden tabs do not poll; coming back checks right away.
+  const visible = usePageVisible();
 
   useEffect(() => {
-    if (!conn || !network || !hashesKey || !pollMs) return;
+    if (!conn || !network || !hashesKey || !pollMs || !visible) return;
     let cancelled = false;
     const check = async () => {
       const list = loadPendingTxs().filter((x) => x.network === network.id);
@@ -75,7 +78,7 @@ export function usePendingTransactions(opts: { pollMs?: number; toast?: boolean 
       cancelled = true;
       clearInterval(id);
     };
-  }, [conn, network, hashesKey, pollMs, wantToast, toast]);
+  }, [conn, network, hashesKey, pollMs, wantToast, toast, visible]);
 
   const remove = useCallback((hash: string) => removePendingTx(hash), []);
   const clear = useCallback(() => clearPendingTxs(), []);

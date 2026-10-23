@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { useConnectState } from '../context.js';
+import { notReady } from '../hookErrors.js';
 import { useDeployAction, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useReadConnection, useWallet } from './core.js';
 import { loadTokens } from './qrc20.js';
@@ -17,7 +18,10 @@ export function useQRC1155(collectionAddress: string | null): {
   hash: string | null;
   explorerUrl: string | null;
   error: Error | null;
+  /** UI copy for `error`. */
+  errorMessage: string | null;
   reset: () => void;
+  /** @deprecated Does nothing: this hook's reads are not cached. Call `balanceOf` again instead. */
   refresh: () => void;
 } {
   const { wallet, ready } = useWallet();
@@ -29,7 +33,7 @@ export function useQRC1155(collectionAddress: string | null): {
 
   const balanceOf = useCallback(
     async (owner: string, id: string) => {
-      if (!collectionAddress || !readConnection) throw new Error('Collection not ready');
+      if (!collectionAddress || !readConnection) throw notReady('Collection not ready', readConnection ? 'collection' : null);
       const { QRC1155 } = await loadTokens();
       return new QRC1155(readConnection, collectionAddress).balanceOf(owner, id);
     },
@@ -37,14 +41,14 @@ export function useQRC1155(collectionAddress: string | null): {
   );
 
   const collectionInfo = useCallback(async () => {
-    if (!collectionAddress || !readConnection) throw new Error('Collection not ready');
+    if (!collectionAddress || !readConnection) throw notReady('Collection not ready', readConnection ? 'collection' : null);
     const { QRC1155 } = await loadTokens();
     return new QRC1155(readConnection, collectionAddress).collectionInfo();
   }, [collectionAddress, readConnection]);
 
   const mint = useCallback(
     async (to: string, id: string, amount: string, uri?: string) => {
-      if (!collectionAddress || !ready || !wallet) throw new Error('Wallet or collection not ready');
+      if (!collectionAddress || !ready || !wallet) throw notReady('Wallet or collection not ready', ready && wallet ? 'collection' : null);
       const res = await tx.run(async () => {
         const { QRC1155 } = await loadTokens();
         return new QRC1155(wallet.connection, collectionAddress).mint(wallet, to, id, amount, uri);
@@ -57,7 +61,7 @@ export function useQRC1155(collectionAddress: string | null): {
 
   const transfer = useCallback(
     async (to: string, id: string, amount: string) => {
-      if (!collectionAddress || !ready || !wallet) throw new Error('Wallet or collection not ready');
+      if (!collectionAddress || !ready || !wallet) throw notReady('Wallet or collection not ready', ready && wallet ? 'collection' : null);
       const res = await tx.run(async () => {
         const { QRC1155 } = await loadTokens();
         return new QRC1155(wallet.connection, collectionAddress).transfer(wallet, to, id, amount);
@@ -70,7 +74,7 @@ export function useQRC1155(collectionAddress: string | null): {
 
   const setApprovalForAll = useCallback(
     async (operator: string, approved: boolean) => {
-      if (!collectionAddress || !ready || !wallet) throw new Error('Wallet or collection not ready');
+      if (!collectionAddress || !ready || !wallet) throw notReady('Wallet or collection not ready', ready && wallet ? 'collection' : null);
       const res = await tx.run(async () => {
         const { QRC1155 } = await loadTokens();
         return new QRC1155(wallet.connection, collectionAddress).setApprovalForAll(
@@ -95,6 +99,7 @@ export function useQRC1155(collectionAddress: string | null): {
     hash: tx.hash,
     explorerUrl: tx.explorerUrl,
     error: tx.error,
+    errorMessage: tx.errorMessage,
     reset: tx.reset,
     refresh,
   };
@@ -120,7 +125,7 @@ export function useDeployCollection(): {
   const action = useDeployAction(
     network,
     async (params: { name: string; uriPrefix?: string; fee?: string; waitForConfirmation?: boolean }) => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (!ready || !wallet) throw notReady('Wallet not connected');
       const { deployQRC1155 } = await loadTokens();
       return deployQRC1155(wallet, params, { fee: params.fee, waitForConfirmation: params.waitForConfirmation });
     },

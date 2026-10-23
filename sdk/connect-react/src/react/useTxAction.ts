@@ -133,7 +133,7 @@ export function useTxAction(network?: NetworkConfig | null): {
       hash,
       explorerUrl,
       error,
-      errorMessage: error ? connectErrorMessage(error) : null,
+      errorMessage: error ? connectErrorMessage(error, 'tx') : null,
       reset,
       run,
     }),
@@ -202,5 +202,5 @@ export function useDeployAction<P, R extends { address: string; result: { hash?:
   );
 
   const explorerUrl = network && hash ? txExplorerUrl(network, hash) : null;
-  return { deploy, status, address, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
+  return { deploy, status, address, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error, 'tx') : null, reset };
 }

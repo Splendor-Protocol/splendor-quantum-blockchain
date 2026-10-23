@@ -5,8 +5,29 @@ import { SignInPanel } from '../auth/SignInPanel';
 import { useSession } from '../auth/session';
 import { validateForPreview } from '../preview/validatePreview';
 
-/** `unsaved`: the account copy is behind because the draft has issues the API would reject. */
-export type CloudState = { status: 'local' | 'saving' | 'saved' | 'unsaved' | 'error'; message?: string };
+/**
+ * `unsaved`: the account copy is behind because the draft has issues the API would reject.
+ * `conflict`: the account has a newer copy than the one these edits started from.
+ */
+export type CloudState = { status: 'local' | 'saving' | 'saved' | 'unsaved' | 'conflict' | 'error'; message?: string };
+
+/** Short label for the studio top bar. */
+export function cloudLabel(cloud: CloudState): string {
+  switch (cloud.status) {
+    case 'local':
+      return 'In this browser';
+    case 'saving':
+      return 'Syncing…';
+    case 'saved':
+      return 'Synced';
+    case 'unsaved':
+      return 'Not synced';
+    case 'conflict':
+      return 'Conflict';
+    case 'error':
+      return 'Sync failed';
+  }
+}
 
 const shareUrlFor = (shareId: string) => `${window.location.origin}/s/${shareId}`;
 
@@ -49,6 +70,8 @@ export function ProjectPanel({
   onImport,
   onDeleted,
   onNew,
+  onOpenNewer,
+  onKeepMine,
 }: {
   spec: DappSpec;
   catalog: readonly CatalogEntry[];
@@ -61,6 +84,10 @@ export function ProjectPanel({
   /** The project was deleted from the account; the editor keeps the local draft. */
   onDeleted: (id: string) => void;
   onNew: () => void;
+  /** Conflict: reload the account copy, dropping these edits. */
+  onOpenNewer?: () => Promise<void>;
+  /** Conflict: save these edits over the account copy. */
+  onKeepMine?: () => Promise<void>;
 }) {
   const { session } = useSession();
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
@@ -135,13 +162,29 @@ export function ProjectPanel({
 
   return (
     <div className="pg-stack">
-      <p className={cloud.status === 'error' || cloud.status === 'unsaved' ? 'pg-error' : 'pg-muted'} style={{ margin: 0 }} data-testid="save-status" role="status">
+      <p
+        className={cloud.status === 'error' || cloud.status === 'unsaved' || cloud.status === 'conflict' ? 'pg-error' : 'pg-muted'}
+        style={{ margin: 0 }}
+        data-testid="save-status"
+        role="status"
+      >
         {cloud.status === 'local' && 'Saved in this browser.'}
         {cloud.status === 'saving' && 'Saving to your account…'}
         {cloud.status === 'saved' && 'Saved to your account.'}
         {cloud.status === 'unsaved' && 'Latest changes are only in this browser. Fix the listed issues to save them to your account.'}
+        {cloud.status === 'conflict' && 'A newer copy was saved in another tab or device. Choose which one to keep.'}
         {cloud.status === 'error' && `Cloud save failed: ${cloud.message ?? 'unknown error'}`}
       </p>
+      {cloud.status === 'conflict' && onOpenNewer && onKeepMine ? (
+        <div className="pg-row">
+          <button type="button" className="pg-btn pg-btn-sm" onClick={() => void onOpenNewer()}>
+            Open the newer copy
+          </button>
+          <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => void onKeepMine()}>
+            Keep my version
+          </button>
+        </div>
+      ) : null}
       <SignInPanel />
       {session ? (
         <>

@@ -55,7 +55,7 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
           </button>
         ))}
       </div>
-      {!valid ? <p className="pg-error">Fix the issues listed under the preview before exporting.</p> : null}
+      {!valid ? <p className="pg-error">Fix the issues under Finish setup, above the preview, before exporting.</p> : null}
       {project instanceof Error ? <p className="pg-error">{project.message}</p> : null}
       <p className="pg-muted" style={{ margin: 0 }}>
         Uses the {sdkSourceLabel(vendor)}. Set <code>VITE_PLAYGROUND_SDK_SOURCE=npm</code> after publishing the packages.

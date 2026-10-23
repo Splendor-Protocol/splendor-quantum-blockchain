@@ -124,7 +124,8 @@ export function initBuilder(spec: DappSpec): BuilderState {
     // The layout tree is the source of truth when present (nested containers survive); the flat list follows it.
     pages: repairIds(spec.pages).map((p) => (p.root && isContainer(p.root) ? withTree(p, p.root) : withBlocks(p, pageBlocks(p)))),
     contracts: spec.contracts ?? [],
-    nav: spec.nav ?? { showConnect: true, brand: spec.name },
+    // No brand: the header shows the dApp name, so renaming the dApp renames the header.
+    nav: spec.nav ?? { showConnect: true },
   };
   return { spec: synced, pagePath: synced.pages[0]?.path ?? '/', selectedBlockId: null, past: [], future: [], lastKey: null, lastAt: 0 };
 }
@@ -493,8 +494,11 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
   switch (action.type) {
     case 'load':
       return initBuilder(action.spec);
-    case 'setName':
-      return commit(state, { ...s, name: action.name }, 'name');
+    case 'setName': {
+      // Templates copy the name into the brand; keep that brand in step until the user sets its own.
+      const nav = s.nav && s.nav.brand === s.name ? { ...s.nav, brand: action.name } : s.nav;
+      return commit(state, { ...s, name: action.name, ...(nav ? { nav } : {}) }, 'name');
+    }
     case 'setDescription':
       return commit(state, { ...s, description: action.description }, 'description');
     case 'setNetwork':

@@ -1,4 +1,4 @@
-import type { AuditEntry, CatalogFlag, DeploymentRow, ProjectRow, Store, WorkspaceRow } from './types.js';
+import type { AuditEntry, CatalogFlag, DeploymentRow, ProjectPatch, ProjectRow, Store, WorkspaceRow } from './types.js';
 
 type Row = Record<string, unknown>;
 
@@ -103,6 +103,13 @@ ALTER TABLE projects ADD COLUMN workspace_id TEXT;
 CREATE INDEX IF NOT EXISTS projects_workspace ON projects (workspace_id);
 `,
   },
+  {
+    id: 4,
+    name: 'project-versions',
+    sql: () => `
+ALTER TABLE projects ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+`,
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.id;
@@ -117,6 +124,7 @@ function project(r: Row): ProjectRow {
     workspaceId: r.workspace_id == null ? null : String(r.workspace_id),
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
+    version: r.version == null ? 1 : Number(r.version),
   };
 }
 
@@ -221,19 +229,18 @@ export class SqlStore implements Store {
     await this.db.run('UPDATE projects SET workspace_id = NULL WHERE workspace_id = ?', [id]);
     return (await this.db.run('DELETE FROM workspaces WHERE id = ?', [id])).changes > 0;
   }
+  async getWorkspace(id: string, owner: string) {
+    const [r] = await this.db.all('SELECT id, owner, name, created_at FROM workspaces WHERE id = ? AND owner = ?', [id, owner]);
+    return r ? workspace(r) : null;
+  }
   async listProjects(owner: string, workspaceId?: string | null) {
+    const cols = 'id, owner, name, share_id, workspace_id, created_at, updated_at, version';
     const rows =
       workspaceId === undefined
-        ? await this.db.all('SELECT id, owner, name, share_id, workspace_id, created_at, updated_at FROM projects WHERE owner = ? ORDER BY updated_at DESC', [owner])
+        ? await this.db.all(`SELECT ${cols} FROM projects WHERE owner = ? ORDER BY updated_at DESC`, [owner])
         : workspaceId === null
-          ? await this.db.all(
-              'SELECT id, owner, name, share_id, workspace_id, created_at, updated_at FROM projects WHERE owner = ? AND workspace_id IS NULL ORDER BY updated_at DESC',
-              [owner],
-            )
-          : await this.db.all(
-              'SELECT id, owner, name, share_id, workspace_id, created_at, updated_at FROM projects WHERE owner = ? AND workspace_id = ? ORDER BY updated_at DESC',
-              [owner, workspaceId],
-            );
+          ? await this.db.all(`SELECT ${cols} FROM projects WHERE owner = ? AND workspace_id IS NULL ORDER BY updated_at DESC`, [owner])
+          : await this.db.all(`SELECT ${cols} FROM projects WHERE owner = ? AND workspace_id = ? ORDER BY updated_at DESC`, [owner, workspaceId]);
     return rows.map((r) => {
       const { spec: _s, ...rest } = project(r);
       return rest;
@@ -263,10 +270,26 @@ export class SqlStore implements Store {
       t,
       t,
     ]);
-    return { id: row.id, owner: row.owner, name: row.name, spec: row.spec, shareId: null, workspaceId, createdAt: t, updatedAt: t };
+    return { id: row.id, owner: row.owner, name: row.name, spec: row.spec, shareId: null, workspaceId, createdAt: t, updatedAt: t, version: 1 };
   }
-  async updateProject(id: string, patch: Pick<ProjectRow, 'name' | 'spec'>) {
-    const res = await this.db.run('UPDATE projects SET name = ?, spec = ?, updated_at = ? WHERE id = ?', [patch.name, patch.spec, now(), id]);
+  async updateProject(id: string, patch: ProjectPatch, expectedVersion?: number) {
+    const sets: string[] = [];
+    const args: unknown[] = [];
+    const set = (column: string, value: unknown) => {
+      sets.push(`${column} = ?`);
+      args.push(value);
+    };
+    if (patch.name !== undefined) set('name', patch.name);
+    if (patch.spec !== undefined) set('spec', patch.spec);
+    if (patch.workspaceId !== undefined) set('workspace_id', patch.workspaceId);
+    sets.push('updated_at = ?', 'version = version + 1');
+    args.push(now(), id);
+    let where = 'id = ?';
+    if (expectedVersion !== undefined) {
+      where += ' AND version = ?';
+      args.push(expectedVersion);
+    }
+    const res = await this.db.run(`UPDATE projects SET ${sets.join(', ')} WHERE ${where}`, args);
     return res.changes ? this.getProject(id) : null;
   }
   async setShareId(id: string, shareId: string | null) {

@@ -5,6 +5,6 @@ export { LayersPanel, type LayersPanelProps, type LayerDrop } from './LayersPane
 export { ThemePanel } from './ThemePanel';
 export { ContractsPanel, describeTry } from './ContractsPanel';
 export { FlowsPanel, collectLinks, ACTION_KEYS, type FlowLink } from './FlowsPanel';
-export { Inspector } from './Inspector';
+export { Inspector, type InspectorTab } from './Inspector';
 export { CanvasOverlay, CONTRACT_FN_MIME, type CanvasDrop, type CanvasOverlayProps } from './CanvasOverlay';
 export { Onboarding, ONBOARDING_KEY, ONBOARDING_FORCE_KEY, ONBOARDING_STEPS, shouldShowOnboarding, markOnboarded } from './Onboarding';

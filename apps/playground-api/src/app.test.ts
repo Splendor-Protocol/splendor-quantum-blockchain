@@ -206,6 +206,150 @@ describe('projects', () => {
   });
 });
 
+describe('project versions, rename and duplicate', () => {
+  const spec = (name = 'Versioned') => ({ ...instantiateTemplate(TEMPLATES.find((t) => t.id === 'wallet-dashboard')!), name });
+  const create = async (cookie: string | undefined, body: Record<string, unknown> = { spec: spec() }) =>
+    (await app.inject({ method: 'POST', url: '/projects', ...json(body, cookie) })).json() as { id: string; version: number; workspaceId: string | null };
+
+  it('starts at version 1 and bumps it on every save', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const p = await create(user.cookie);
+    expect(p.version).toBe(1);
+    const saved = await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec('Two'), baseVersion: 1 }, user.cookie) });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ name: 'Two', version: 2 });
+    const got = await app.inject({ method: 'GET', url: `/projects/${p.id}`, headers: { cookie: user.cookie! } });
+    expect(got.json().version).toBe(2);
+    const listed = await app.inject({ method: 'GET', url: '/projects', headers: { cookie: user.cookie! } });
+    expect(listed.json().projects[0].version).toBe(2);
+  });
+
+  it('refuses a save based on an older version with 409 CONFLICT, and keeps the newer copy', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const p = await create(user.cookie);
+    await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec('Tab A'), baseVersion: 1 }, user.cookie) });
+
+    const stale = await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec('Tab B'), baseVersion: 1 }, user.cookie) });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({ code: 'CONFLICT', current: { id: p.id, name: 'Tab A', version: 2 } });
+    expect(stale.json().current).not.toHaveProperty('spec');
+    const got = await app.inject({ method: 'GET', url: `/projects/${p.id}`, headers: { cookie: user.cookie! } });
+    expect(got.json()).toMatchObject({ name: 'Tab A', version: 2 });
+
+    // "Keep my version": saving on top of the current version applies.
+    const retry = await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec('Tab B'), baseVersion: 2 }, user.cookie) });
+    expect(retry.json()).toMatchObject({ name: 'Tab B', version: 3 });
+    // Without baseVersion the save always applies (older clients).
+    const blind = await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec('Blind') }, user.cookie) });
+    expect(blind.json()).toMatchObject({ name: 'Blind', version: 4 });
+    expect((await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec(), baseVersion: 0 }, user.cookie) })).statusCode).toBe(400);
+  });
+
+  it('PATCH renames (in the spec too) and moves a project between the owner’s workspaces', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const other = await signIn(PUB_ADMIN, ADMIN);
+    const ws = (await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'Team' }, user.cookie) })).json().id as string;
+    const foreignWs = (await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'Theirs' }, other.cookie) })).json().id as string;
+    const p = await create(user.cookie);
+
+    const patch = (body: unknown, cookie = user.cookie) => app.inject({ method: 'PATCH', url: `/projects/${p.id}`, ...json(body, cookie) });
+    const renamed = await patch({ name: '  New name  ' });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({ name: 'New name', version: 2 });
+    const got = await app.inject({ method: 'GET', url: `/projects/${p.id}`, headers: { cookie: user.cookie! } });
+    expect(got.json().spec.name).toBe('New name');
+
+    expect((await patch({ workspaceId: ws })).json()).toMatchObject({ workspaceId: ws, version: 3 });
+    expect((await patch({ workspaceId: null })).json().workspaceId).toBeNull();
+    expect((await patch({ workspaceId: foreignWs })).statusCode).toBe(400);
+    expect((await patch({ name: '   ' })).statusCode).toBe(400);
+    expect((await patch({})).statusCode).toBe(400);
+    expect((await patch({ name: 'x', baseVersion: 1 })).statusCode).toBe(409);
+    expect((await patch({ name: 'Mine' }, other.cookie)).statusCode).toBe(404);
+  });
+
+  it('duplicates a project into the same workspace, as a separate copy', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const other = await signIn(PUB_ADMIN, ADMIN);
+    const ws = (await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'Team' }, user.cookie) })).json().id as string;
+    const p = await create(user.cookie, { spec: spec('Original'), workspaceId: ws });
+
+    const dup = await app.inject({ method: 'POST', url: `/projects/${p.id}/duplicate`, ...json({}, user.cookie) });
+    expect(dup.statusCode).toBe(201);
+    expect(dup.json()).toMatchObject({ name: 'Original copy', workspaceId: ws, version: 1, shareId: null });
+    expect(dup.json().id).not.toBe(p.id);
+    expect(dup.json().spec.name).toBe('Original copy');
+    expect((await app.inject({ method: 'POST', url: `/projects/${p.id}/duplicate`, ...json({}, other.cookie) })).statusCode).toBe(404);
+  });
+
+  it('duplicate respects the per-user project limit', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const p = await create(user.cookie);
+    for (let i = 1; i < 100; i++) await store.createProject({ id: `filler-project-${String(i).padStart(3, '0')}`, owner: USER, name: 'f', spec: '{}' });
+    const dup = await app.inject({ method: 'POST', url: `/projects/${p.id}/duplicate`, ...json({}, user.cookie) });
+    expect(dup.statusCode).toBe(429);
+  });
+
+  it('migration 4 gives projects saved before versions a version of 1', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { DatabaseSync } = await import('node:sqlite');
+    const dir = mkdtempSync(join(tmpdir(), 'pg-api-'));
+    const file = join(dir, 'old.db');
+    try {
+      const fresh = await createStore(`sqlite:${file}`);
+      await fresh.createProject({ id: 'old-project-0001', owner: USER, name: 'Old', spec: '{}' });
+      await fresh.close();
+      // Roll the file back to schema 3, as a database from before this migration.
+      const raw = new DatabaseSync(file);
+      raw.exec('ALTER TABLE projects DROP COLUMN version; DELETE FROM schema_migrations WHERE id = 4;');
+      raw.close();
+
+      const upgraded = await createStore(`sqlite:${file}`);
+      expect((await upgraded.getProject('old-project-0001'))?.version).toBe(1);
+      expect((await upgraded.updateProject('old-project-0001', { name: 'New' }, 1))?.version).toBe(2);
+      await upgraded.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('api hardening', () => {
+  it('allows PATCH in the CORS preflight', async () => {
+    const res = await app.inject({
+      method: 'OPTIONS',
+      url: '/workspaces/abcdefghij12',
+      headers: { origin: ORIGIN, 'access-control-request-method': 'PATCH' },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(String(res.headers['access-control-allow-methods'])).toMatch(/PATCH/);
+  });
+
+  it('answers unknown routes and bad input with a code and a request id', async () => {
+    const missing = await app.inject({ method: 'GET', url: '/nope', headers: { 'x-request-id': 'req-123' } });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'Not found', code: 'NOT_FOUND', requestId: 'req-123' });
+
+    const user = await signIn(PUB_USER, USER);
+    const bad = await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'x'.repeat(201) }, user.cookie) });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json()).toMatchObject({ code: 'INVALID_REQUEST', requestId: expect.any(String), issues: expect.any(Array) });
+    expect((await app.inject({ method: 'GET', url: '/projects?workspaceId=../x', headers: { cookie: user.cookie! } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/projects', ...json({ spec: {}, workspaceId: 'short' }, user.cookie) })).statusCode).toBe(400);
+  });
+
+  it('keeps workspaces private to their owner', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const other = await signIn(PUB_ADMIN, ADMIN);
+    const ws = (await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'Mine' }, user.cookie) })).json().id as string;
+    expect((await app.inject({ method: 'PATCH', url: `/workspaces/${ws}`, ...json({ name: 'Stolen' }, other.cookie) })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'DELETE', url: `/workspaces/${ws}`, headers: { origin: ORIGIN, cookie: other.cookie! } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/workspaces/${ws}/projects`, headers: { cookie: other.cookie! } })).statusCode).toBe(404);
+  });
+});
+
 describe('admin', () => {
   it('rejects non-admins', async () => {
     const { cookie } = await signIn(PUB_USER, USER);

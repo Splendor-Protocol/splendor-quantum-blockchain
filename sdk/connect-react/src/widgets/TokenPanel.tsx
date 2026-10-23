@@ -236,7 +236,7 @@ export function TokenPanel({
       <TxResult hash={hash} explorerUrl={explorerUrl} labels={l} />
       {status === 'error' && error ? (
         <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
-          {connectErrorMessage(error)}
+          {connectErrorMessage(error, 'tx')}
         </p>
       ) : null}
     </WidgetShell>

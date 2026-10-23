@@ -68,7 +68,7 @@ export function useWidgetToast(enabled: boolean) {
         status: 'error',
         hash: null,
         explorerUrl: null,
-        errorMessage: connectErrorMessage(err),
+        errorMessage: connectErrorMessage(err, 'tx'),
       });
     },
     [active, clearPending],

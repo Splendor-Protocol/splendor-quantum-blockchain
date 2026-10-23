@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { useConnectState } from '../context.js';
+import { notReady } from '../hookErrors.js';
 import { useDeployAction, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useReadConnection, useWallet } from './core.js';
 
@@ -21,6 +22,8 @@ export function useContract(contractAddress: string | null): {
   hash: string | null;
   explorerUrl: string | null;
   error: Error | null;
+  /** UI copy for `error`. */
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
@@ -30,7 +33,7 @@ export function useContract(contractAddress: string | null): {
 
   const read = useCallback(
     async (functionSig: string, args: unknown[] = []) => {
-      if (!contractAddress || !readConnection) throw new Error('Contract not ready');
+      if (!contractAddress || !readConnection) throw notReady('Contract not ready', readConnection ? 'contract' : null);
       const { Contract } = await import('@splendor/sqc-sdk/contracts');
       return new Contract(readConnection, contractAddress).read(
         functionSig,
@@ -42,7 +45,7 @@ export function useContract(contractAddress: string | null): {
 
   const readUint256 = useCallback(
     async (functionSig: string, args: unknown[] = []) => {
-      if (!contractAddress || !readConnection) throw new Error('Contract not ready');
+      if (!contractAddress || !readConnection) throw notReady('Contract not ready', readConnection ? 'contract' : null);
       const { Contract } = await import('@splendor/sqc-sdk/contracts');
       return new Contract(readConnection, contractAddress).readUint256(
         functionSig,
@@ -58,7 +61,7 @@ export function useContract(contractAddress: string | null): {
       args: unknown[] = [],
       opts?: { fee?: string; value?: string; waitForConfirmation?: boolean },
     ) => {
-      if (!contractAddress || !ready || !wallet) throw new Error('Contract not ready');
+      if (!contractAddress || !ready || !wallet) throw notReady('Contract not ready', ready && wallet ? 'contract' : null);
       const res = await tx.run(async () => {
         const { Contract } = await import('@splendor/sqc-sdk/contracts');
         return new Contract(wallet.connection, contractAddress).call(
@@ -81,6 +84,7 @@ export function useContract(contractAddress: string | null): {
     hash: tx.hash,
     explorerUrl: tx.explorerUrl,
     error: tx.error,
+    errorMessage: tx.errorMessage,
     reset: tx.reset,
   };
 }
@@ -103,7 +107,7 @@ export function useDeployBytecode(): {
   const action = useDeployAction(
     network,
     async (p: { bytecode: Uint8Array | string; opts?: { fee?: string; waitForConfirmation?: boolean } }) => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (!ready || !wallet) throw notReady('Wallet not connected');
       const { deployBytecode } = await import('@splendor/sqc-sdk/contracts');
       return deployBytecode(wallet, p.bytecode, p.opts);
     },

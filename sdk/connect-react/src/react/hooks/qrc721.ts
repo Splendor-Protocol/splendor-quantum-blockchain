@@ -1,6 +1,8 @@
 import { useCallback } from 'react';
+import type { WriteOpts } from '@splendor/sqc-sdk';
 import type { QRC721CollectionInfo } from '@splendor/sqc-sdk/tokens';
 import { useConnectState } from '../context.js';
+import { notReady } from '../hookErrors.js';
 import { useDeployAction, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useReadConnection, useWallet } from './core.js';
 import { loadTokens } from './qrc20.js';
@@ -12,10 +14,10 @@ export function useQRC721(collectionAddress: string | null): {
   ownerOf: (id: string) => Promise<string>;
   balanceOf: (owner: string) => Promise<string>;
   collectionInfo: () => Promise<QRC721CollectionInfo>;
-  /** Collection owner only; `id` must be unminted. */
-  mint: (to: string, id: string, uri?: string) => Promise<{ hash?: string }>;
-  transfer: (to: string, id: string) => Promise<{ hash?: string }>;
-  burn: (id: string) => Promise<{ hash?: string }>;
+  /** Collection owner only; `id` must be unminted. `opts.fee` is in atto-SPLD. */
+  mint: (to: string, id: string, uri?: string, opts?: WriteOpts) => Promise<{ hash?: string }>;
+  transfer: (to: string, id: string, opts?: WriteOpts) => Promise<{ hash?: string }>;
+  burn: (id: string, opts?: WriteOpts) => Promise<{ hash?: string }>;
   status: TxHookStatus;
   hash: string | null;
   explorerUrl: string | null;
@@ -29,7 +31,7 @@ export function useQRC721(collectionAddress: string | null): {
   const tx = useTxAction(network);
 
   const reader = useCallback(async () => {
-    if (!collectionAddress || !readConnection) throw new Error('Collection not ready');
+    if (!collectionAddress || !readConnection) throw notReady('Collection not ready', readConnection ? 'collection' : null);
     const { QRC721 } = await loadTokens();
     return new QRC721(readConnection, collectionAddress);
   }, [collectionAddress, readConnection]);
@@ -43,7 +45,7 @@ export function useQRC721(collectionAddress: string | null): {
       fn: (c: import('@splendor/sqc-sdk/tokens').QRC721, w: NonNullable<typeof wallet>) => Promise<{ hash?: string }>,
       summary: string,
     ) => {
-      if (!collectionAddress || !ready || !wallet) throw new Error('Wallet or collection not ready');
+      if (!collectionAddress || !ready || !wallet) throw notReady('Wallet or collection not ready', ready && wallet ? 'collection' : null);
       const res = await tx.run(async () => {
         const { QRC721 } = await loadTokens();
         return fn(new QRC721(wallet.connection, collectionAddress), wallet);
@@ -54,14 +56,15 @@ export function useQRC721(collectionAddress: string | null): {
   );
 
   const mint = useCallback(
-    (to: string, id: string, uri?: string) => write((c, w) => c.mint(w, to, id, uri), `Mint NFT #${id} to ${to}`),
+    (to: string, id: string, uri?: string, opts?: WriteOpts) =>
+      write((c, w) => c.mint(w, to, id, uri, opts), `Mint NFT #${id} to ${to}`),
     [write],
   );
   const transfer = useCallback(
-    (to: string, id: string) => write((c, w) => c.transfer(w, to, id), `Send NFT #${id} to ${to}`),
+    (to: string, id: string, opts?: WriteOpts) => write((c, w) => c.transfer(w, to, id, opts), `Send NFT #${id} to ${to}`),
     [write],
   );
-  const burn = useCallback((id: string) => write((c, w) => c.burn(w, id), `Burn NFT #${id}`), [write]);
+  const burn = useCallback((id: string, opts?: WriteOpts) => write((c, w) => c.burn(w, id, opts), `Burn NFT #${id}`), [write]);
 
   return {
     ownerOf,
@@ -100,7 +103,7 @@ export function useDeployQRC721(): {
   const action = useDeployAction(
     network,
     async (params: { name: string; symbol: string; fee?: string; waitForConfirmation?: boolean }) => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (!ready || !wallet) throw notReady('Wallet not connected');
       const { deployQRC721 } = await loadTokens();
       return deployQRC721(wallet, { name: params.name, symbol: params.symbol }, {
         fee: params.fee,

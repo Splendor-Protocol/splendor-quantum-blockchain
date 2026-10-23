@@ -269,6 +269,35 @@ test.describe('workspaces', () => {
     await expect(page.getByTestId('block-list').locator('li')).toHaveCount(4);
   });
 
+  test('a browser workspace can be renamed, and the new name survives a reload', async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() => localStorage.clear());
+    await page.goto('/');
+
+    await page.getByLabel('New workspace name').fill('Team A');
+    await page.getByRole('button', { name: 'New workspace' }).click();
+    const card = page.locator('[data-testid^="workspace-card-"]').first();
+    await expect(card).toContainText('Team A');
+    await card.getByRole('button', { name: 'Open workspace Team A' }).click();
+    await expect(page.getByTestId('workspace-projects')).toContainText('Projects in Team A');
+
+    // Escape cancels without saving.
+    await card.getByRole('button', { name: 'Rename workspace Team A' }).click();
+    await card.getByLabel('New name for workspace Team A').fill('Discarded');
+    await page.keyboard.press('Escape');
+    await expect(card.getByRole('heading', { name: 'Team A' })).toBeVisible();
+
+    await card.getByRole('button', { name: 'Rename workspace Team A' }).click();
+    await card.getByLabel('New name for workspace Team A').fill('Team Rocket');
+    await page.keyboard.press('Enter');
+    await expect(card.getByRole('heading', { name: 'Team Rocket' })).toBeVisible();
+    await expect(page.getByTestId('workspace-projects')).toContainText('Projects in Team Rocket');
+
+    await page.reload();
+    await expect(page.locator('[data-testid^="workspace-card-"]').first().getByRole('heading', { name: 'Team Rocket' })).toBeVisible();
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('sqc-playground-workspaces-v1') ?? '{}').workspaces?.[0]?.name)).toBe('Team Rocket');
+  });
+
   test('template cards still go straight to the studio', async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => localStorage.clear());

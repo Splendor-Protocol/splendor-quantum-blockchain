@@ -16,6 +16,8 @@ import { bindModules } from '@splendor/sqc-sdk';
 import { listSelectableNetworks, txExplorerUrl } from '@splendor/sqc-sdk/networks';
 import type { Connector } from '../../connectors/types.js';
 import { connectErrorMessage } from '../../core/controller.js';
+import { notReady } from '../hookErrors.js';
+import { useVisiblePolling } from '../usePageVisible.js';
 import { onSharedReadsInvalidated, sharedRead } from '../../core/readCache.js';
 import type { ConnectAccount, ConnectingStep, ConnectionStatus } from '../../core/types.js';
 import { toAccountDto, type AccountDto } from '../../core/dto.js';
@@ -163,10 +165,8 @@ export function useBalance(pollMs = 12_000): {
 
   useEffect(() => {
     void load(false);
-    if (!isConnected || !pollMs) return;
-    const id = setInterval(() => void load(false), pollMs);
-    return () => clearInterval(id);
-  }, [load, isConnected, pollMs]);
+  }, [load]);
+  useVisiblePolling(() => void load(false), pollMs, isConnected);
 
   useEffect(() => {
     if (!address || !isConnected || ctrl.isStub) return;
@@ -322,7 +322,7 @@ export function usePreflight(): {
 
   const preflight = useCallback(
     async (opts?: { fee?: string; amount?: string; amountSPLD?: string }) => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (!ready || !wallet) throw notReady('Wallet not connected');
       setStatus('pending');
       setError(null);
       try {
@@ -340,7 +340,7 @@ export function usePreflight(): {
     [wallet, ready],
   );
 
-  return { preflight, status, result, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
+  return { preflight, status, result, error, errorMessage: error ? connectErrorMessage(error, 'tx') : null, reset };
 }
 
 export function useSendTransfer(): {
@@ -375,7 +375,7 @@ export function useSendTransfer(): {
   const recordPending = useRecordPendingTx();
   const sendTransfer = useCallback(
     (opts: TransferOpts) => singleFlight(async () => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (!ready || !wallet) throw notReady('Wallet not connected');
       setStatus('pending');
       setError(null);
       setHash(null);
@@ -410,7 +410,7 @@ export function useSendTransfer(): {
     [wallet, ready, network, singleFlight, recordPending],
   );
 
-  return { sendTransfer, status, hash, explorerUrl, confirmed, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
+  return { sendTransfer, status, hash, explorerUrl, confirmed, error, errorMessage: error ? connectErrorMessage(error, 'tx') : null, reset };
 }
 
 export function useCallContract(): {
@@ -440,7 +440,7 @@ export function useCallContract(): {
   const recordPending = useRecordPendingTx();
   const callContract = useCallback(
     (opts: CallOpts) => singleFlight(async () => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (!ready || !wallet) throw notReady('Wallet not connected');
       setStatus('pending');
       setError(null);
       setHash(null);
@@ -464,7 +464,7 @@ export function useCallContract(): {
     [wallet, ready, network, singleFlight, recordPending],
   );
 
-  return { callContract, status, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
+  return { callContract, status, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error, 'tx') : null, reset };
 }
 
 /** @deprecated Prefer `useDeployBytecode` — same underlying deployBytecode helper. */
@@ -500,7 +500,7 @@ export function useDeployContract(): {
   const recordPending = useRecordPendingTx();
   const deployContract = useCallback(
     (opts: DeployOpts) => singleFlight(async () => {
-      if (!ready || !wallet) throw new Error('Wallet not connected');
+      if (!ready || !wallet) throw notReady('Wallet not connected');
       setStatus('pending');
       setError(null);
       setHash(null);
@@ -527,7 +527,7 @@ export function useDeployContract(): {
     [wallet, ready, network, singleFlight, recordPending],
   );
 
-  return { deployContract, status, hash, address, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
+  return { deployContract, status, hash, address, explorerUrl, error, errorMessage: error ? connectErrorMessage(error, 'tx') : null, reset };
 }
 
 export function useWaitForConfirmation(): {

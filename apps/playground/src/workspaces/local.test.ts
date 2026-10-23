@@ -10,6 +10,10 @@ import {
   LocalStorageError,
   MAX_LOCAL_PROJECTS_PER_WORKSPACE,
   listLocalProjects,
+  duplicateLocalProject,
+  listLocalWorkspaces,
+  renameLocalProject,
+  renameLocalWorkspace,
   saveLocalProject,
   saveLocalProjectWithInfo,
 } from './local';
@@ -62,6 +66,66 @@ describe('local projects keyed by workspace', () => {
     expect(isLocalWorkspaceId('local-x')).toBe(true);
     expect(isLocalWorkspaceId('3f2a')).toBe(false);
     expect(isLocalWorkspaceId(null)).toBe(false);
+  });
+});
+
+describe('renaming local workspaces', () => {
+  it('renames in place and keeps the id and projects', () => {
+    const ws = createLocalWorkspace('Team A');
+    saveLocalProject(ws.id, emptySpec('Kept'));
+    expect(renameLocalWorkspace(ws.id, '  Team B  ')).toMatchObject({ id: ws.id, name: 'Team B' });
+    expect(listLocalWorkspaces()).toEqual([expect.objectContaining({ id: ws.id, name: 'Team B', createdAt: ws.createdAt })]);
+    expect(listLocalProjects(ws.id).map((p) => p.name)).toEqual(['Kept']);
+  });
+
+  it('returns null for an unknown id', () => {
+    createLocalWorkspace('Mine');
+    expect(renameLocalWorkspace('local-missing', 'X')).toBeNull();
+  });
+
+  it('ignores a blank name and caps long names at 80 characters', () => {
+    const ws = createLocalWorkspace('Mine');
+    expect(renameLocalWorkspace(ws.id, '   ')?.name).toBe('Mine');
+    expect(renameLocalWorkspace(ws.id, 'x'.repeat(120))?.name).toBe('x'.repeat(80));
+  });
+
+  it('throws when the browser refuses the write', () => {
+    const ws = createLocalWorkspace('Mine');
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
+    });
+    expect(() => renameLocalWorkspace(ws.id, 'New')).toThrow(LocalStorageError);
+  });
+});
+
+describe('renaming and duplicating local projects', () => {
+  it('renames in the spec too, and ignores blank names and unknown ids', () => {
+    const p = saveLocalProject('local-a', emptySpec('Draft'));
+    const renamed = renameLocalProject('local-a', p.id, '  Launch page  ')!;
+    expect(renamed).toMatchObject({ id: p.id, name: 'Launch page', createdAt: p.createdAt });
+    expect(getLocalProject('local-a', p.id)?.spec.name).toBe('Launch page');
+    expect(renameLocalProject('local-a', p.id, '   ')?.name).toBe('Launch page');
+    expect(renameLocalProject('local-a', 'lp-missing', 'X')).toBeNull();
+    expect(renameLocalProject('local-a', p.id, 'y'.repeat(100))?.name).toBe('y'.repeat(80));
+  });
+
+  it('duplicates as a new project named "<name> copy"', () => {
+    const p = saveLocalProject('local-a', emptySpec('Shop'));
+    const r = duplicateLocalProject('local-a', p.id)!;
+    expect(r.saved).toBe(true);
+    expect(r.project.id).not.toBe(p.id);
+    expect(r.project.spec.name).toBe('Shop copy');
+    expect(listLocalProjects('local-a').map((x) => x.name).sort()).toEqual(['Shop', 'Shop copy']);
+    expect(duplicateLocalProject('local-a', 'lp-missing')).toBeNull();
+  });
+
+  it('throws when the browser refuses the write', () => {
+    const p = saveLocalProject('local-a', emptySpec('Shop'));
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
+    });
+    expect(() => renameLocalProject('local-a', p.id, 'New')).toThrow(LocalStorageError);
+    expect(() => duplicateLocalProject('local-a', p.id)).toThrow(LocalStorageError);
   });
 });
 

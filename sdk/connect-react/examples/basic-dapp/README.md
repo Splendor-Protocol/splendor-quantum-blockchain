@@ -144,7 +144,7 @@ deployed bytecode. A module call is a signed transaction sent to the node's modu
 | `bridge` | `useBridge` | `bridge_v1` |
 | `validators` | `useModuleCall` | `validators_v1` |
 | `verify` | `useModuleCall` | `verify_v1` |
-| `qrc721` | `useModuleCall` | `qrc721_v1` |
+| `qrc721` | `useQRC721`, `useDeployQRC721` | `qrc721_v1` |
 
 `useModules().contract` is the client for SQC-VM bytecode contracts; it is not a module. A module
 only works on a network where its fork is active; card 13's **Check availability** reads that from

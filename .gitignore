@@ -3,6 +3,8 @@ node_modules/
 /apps/*/dist/
 /packages/*/dist/
 /apps/playground-api/data/
+smoke.out
+smoke.err
 /apps/playground/test-results/
 /apps/playground/playwright-report/
 .env.local

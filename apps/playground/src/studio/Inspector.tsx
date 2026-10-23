@@ -6,7 +6,7 @@ import { StatusBadge } from '../gallery/GalleryPage';
 import { ACTION_KEYS, isExternalHref, pagePathOf } from './FlowsPanel';
 import { PageSettings, PageTitleInput } from './PagesPanel';
 
-type InspectorTab = 'props' | 'style' | 'actions';
+export type InspectorTab = 'props' | 'style' | 'actions';
 
 const TABS: readonly TabItem<InspectorTab>[] = [
   { id: 'props', label: 'Content' },
@@ -178,6 +178,8 @@ export function Inspector({
   onPageAccess,
   onNavVisible,
   onMovePage,
+  tab: tabProp,
+  onTabChange,
 }: {
   page: DappPage;
   /** The selected block or container (null: nothing selected). */
@@ -209,8 +211,16 @@ export function Inspector({
   onPageAccess?: (access: PageAccess) => void;
   onNavVisible?: (visible: boolean) => void;
   onMovePage?: (delta: -1 | 1) => void;
+  /** Controlled tab, so the studio can switch to Content before focusing a field. */
+  tab?: InspectorTab;
+  onTabChange?: (tab: InspectorTab) => void;
 }) {
-  const [tab, setTab] = useState<InspectorTab>('props');
+  const [ownTab, setOwnTab] = useState<InspectorTab>('props');
+  const tab = tabProp ?? ownTab;
+  const setTab = (next: InspectorTab) => {
+    setOwnTab(next);
+    onTabChange?.(next);
+  };
 
   if (selectedNode && selectedNode.kind !== 'block') {
     const container: ContainerNode = selectedNode;

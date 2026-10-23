@@ -20,9 +20,44 @@ import { decodeAnswers, specFromWizard } from './newProject';
 import { KitCards } from '../home/KitCards';
 import { NewProjectWizard } from '../home/NewProjectWizard';
 import { builderReducer, initBuilder } from './state';
-import { clearDraft, loadDraft, saveDraft } from './storage';
+import { clearDraft, discardStashedDraft, loadDraft, peekStashedDraft, saveDraft, stashDraft, takeStashedDraft } from './storage';
 
 type EditorTab = 'block' | 'theme' | 'export' | 'project';
+
+/** Offers the draft that a template, New, Import or Remix replaced before it was saved anywhere. */
+function StashNotice({ onRestore }: { onRestore: (spec: DappSpec) => void }) {
+  const [stash, setStash] = useState(() => peekStashedDraft());
+  if (!stash) return null;
+  return (
+    <div className="pg-local-notice" role="status" data-testid="stash-notice">
+      <span>
+        Your previous draft “{stash.spec.name}” was replaced. It was not saved anywhere else.
+      </span>
+      <button
+        type="button"
+        className="pg-btn pg-btn-sm"
+        data-testid="stash-restore"
+        onClick={() => {
+          const d = takeStashedDraft();
+          setStash(null);
+          if (d) onRestore(d.spec);
+        }}
+      >
+        Restore it
+      </button>
+      <button
+        type="button"
+        className="pg-btn pg-btn-ghost pg-btn-sm"
+        onClick={() => {
+          discardStashedDraft();
+          setStash(null);
+        }}
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
 
 function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
   const { templates } = useRegistry();
@@ -30,6 +65,7 @@ function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
   const [kitWizard, setKitWizard] = useState<string | null>(null);
   return (
     <div className="pg-page">
+      <StashNotice onRestore={onPick} />
       <section>
         <h1>What do you want to make?</h1>
         <p className="pg-muted">Choose a ready-made dApp and change it, or start blank and drop pieces onto the page.</p>
@@ -65,34 +101,50 @@ function TemplatePicker({ onPick }: { onPick: (spec: DappSpec) => void }) {
   );
 }
 
-/** Query params that only seed a new project; they are removed once consumed. `workspace` stays. */
-const SEED_PARAMS = ['template', 'preset', 'name', 'answers', 'project'] as const;
+/** Query params that only seed a new project; they are removed once consumed. `workspace` and `project` stay. */
+const SEED_PARAMS = ['template', 'preset', 'name', 'answers'] as const;
 
-type Start = { spec: DappSpec; projectId: string | null; key: number; synced?: boolean; localProjectId?: string | null };
+type Start = {
+  spec: DappSpec;
+  projectId: string | null;
+  key: number;
+  /** The spec was just loaded from the account, so it matches the saved copy. */
+  synced?: boolean;
+  localProjectId?: string | null;
+  /** Cloud version the spec is based on. */
+  version?: number;
+  /** The spec has edits the account copy does not have yet. */
+  dirty?: boolean;
+};
 
 export function BuilderPage() {
   const [params, setParams] = useSearchParams();
   const workspaceId = params.get('workspace');
   const projectParam = params.get('project');
   const [loadingProject, setLoadingProject] = useState(projectParam != null);
-  /** `synced`: the spec was just loaded from the account, so it matches the saved copy. */
+  /** Project the editor has open (cloud id or `lp-…`), so writing it to the URL does not reload it. */
+  const editorProject = useRef<string | null>(null);
   const [start, setStart] = useState<Start | null>(() => {
     if (projectParam) return null;
     const t = params.get('template');
     if (t) {
       // The home wizard passes template + preset + name; a bare ?template= keeps the template as is.
       const spec = specFromWizard({ template: t, preset: params.get('preset'), name: params.get('name'), answers: decodeAnswers(params.get('answers')) });
-      if (spec) return { spec, projectId: null, key: Date.now() };
+      if (spec) {
+        stashDraft();
+        return { spec, projectId: null, key: Date.now() };
+      }
     }
     const draft = loadDraft();
-    if (draft) return { spec: draft.spec, projectId: draft.projectId, key: Date.now() };
+    if (draft) return { spec: draft.spec, projectId: draft.projectId, version: draft.version, dirty: draft.dirty, key: Date.now() };
     return null;
   });
 
-  // ?project=<id> from the home page: a cloud project, or `lp-…` from this browser's workspace store.
+  // ?project=<id>: a cloud project, or `lp-…` from this browser's workspace store.
   useEffect(() => {
-    if (!projectParam) return;
+    if (!projectParam || editorProject.current === projectParam) return;
     let live = true;
+    setLoadingProject(true);
     void (async () => {
       try {
         if (projectParam.startsWith('lp-')) {
@@ -100,12 +152,21 @@ export function BuilderPage() {
           if (local && live) setStart({ spec: migrateSpec(local.spec), projectId: null, localProjectId: local.id, key: Date.now() });
         } else {
           const p = await api.getProject(projectParam);
-          if (live) setStart({ spec: migrateSpec(p.spec), projectId: p.id, key: Date.now(), synced: true });
+          // Unsaved edits to this same version (a reload before autosave ran) win over the account copy.
+          const draft = loadDraft();
+          const resume = draft && draft.projectId === p.id && draft.dirty && draft.version != null && draft.version === p.version;
+          if (live) {
+            setStart(
+              resume
+                ? { spec: draft.spec, projectId: p.id, version: p.version, dirty: true, key: Date.now() }
+                : { spec: migrateSpec(p.spec), projectId: p.id, version: p.version, key: Date.now(), synced: true },
+            );
+          }
         }
       } catch {
         // Missing or unreadable project: fall through to the draft / picker.
         const draft = loadDraft();
-        if (draft && live) setStart({ spec: draft.spec, projectId: draft.projectId, key: Date.now() });
+        if (draft && live) setStart({ spec: draft.spec, projectId: draft.projectId, version: draft.version, dirty: draft.dirty, key: Date.now() });
       } finally {
         if (live) setLoadingProject(false);
       }
@@ -124,6 +185,10 @@ export function BuilderPage() {
     setParams(next, { replace: true });
   }, [params, setParams, loadingProject]);
 
+  const onProjectIdChange = useCallback((id: string | null) => {
+    editorProject.current = id;
+  }, []);
+
   if (loadingProject) return <p className="pg-muted pg-page">Opening project…</p>;
 
   if (!start) {
@@ -137,9 +202,18 @@ export function BuilderPage() {
       initialProjectId={start.projectId}
       initialLocalProjectId={start.localProjectId ?? null}
       initialSynced={start.synced === true}
-      onOpen={(spec, projectId) => setStart({ spec, projectId, key: Date.now(), synced: projectId != null })}
+      initialVersion={start.version}
+      initialDirty={start.dirty === true}
+      onProjectIdChange={onProjectIdChange}
+      onOpen={(spec, projectId, version) => setStart({ spec, projectId, version, key: Date.now(), synced: projectId != null })}
+      onImport={(spec) => {
+        stashDraft();
+        setStart({ spec, projectId: null, key: Date.now() });
+      }}
       onNew={() => {
+        stashDraft();
         clearDraft();
+        editorProject.current = null;
         setStart(null);
       }}
     />
@@ -151,14 +225,22 @@ function Editor({
   initialProjectId,
   initialLocalProjectId,
   initialSynced,
+  initialVersion,
+  initialDirty,
+  onProjectIdChange,
   onOpen,
+  onImport,
   onNew,
 }: {
   initial: DappSpec;
   initialProjectId: string | null;
   initialLocalProjectId: string | null;
   initialSynced: boolean;
-  onOpen: (spec: DappSpec, projectId: string | null) => void;
+  initialVersion: number | undefined;
+  initialDirty: boolean;
+  onProjectIdChange: (id: string | null) => void;
+  onOpen: (spec: DappSpec, projectId: string | null, version?: number) => void;
+  onImport: (spec: DappSpec) => void;
   onNew: () => void;
 }) {
   const { all, catalog, compatibilityNote } = useRegistry();
@@ -226,28 +308,76 @@ function Editor({
     setParams(params, { replace: true });
   }, [params, setParams, catalog]);
 
-  useEffect(() => saveDraft({ spec, projectId }), [spec, projectId]);
+  // Cloud saves send the version they started from, so a newer copy from another tab or device is
+  // reported as a conflict instead of being overwritten.
+  const versionRef = useRef<number | undefined>(initialVersion);
+  const lastSaved = useRef<DappSpec | null>(initialSynced ? openedSpec.current : null);
+  /** Set while the account has a newer copy than the one these edits started from. */
+  const conflictRef = useRef<{ version?: number } | null>(null);
+  const specRef = useRef(spec);
+  specRef.current = spec;
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
+  /** Edits the account copy does not have: nothing counts until the user changes something. */
+  const hasPendingEdits = (s: DappSpec) => lastSaved.current !== s && (initialDirty || s !== openedSpec.current);
+
+  const persistDraft = useCallback(() => {
+    const s = specRef.current;
+    const id = projectIdRef.current;
+    saveDraft({ spec: s, projectId: id, ...(id && versionRef.current ? { version: versionRef.current } : {}), dirty: id != null && hasPendingEdits(s) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => persistDraft(), [spec, projectId, persistDraft]);
+
+  /** Saves run one at a time, each with the version the previous one returned. */
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const saveToCloud = useCallback(
+    (s: DappSpec) => {
+      const run = async () => {
+        const id = projectIdRef.current;
+        if (!id || lastSaved.current === s || conflictRef.current) return;
+        setCloud({ status: 'saving' });
+        try {
+          const p = await api.updateProject(id, s, versionRef.current);
+          if (p.version) versionRef.current = p.version;
+          lastSaved.current = s;
+          setCloud({ status: 'saved' });
+        } catch (e) {
+          if (e instanceof ApiError && e.code === 'CONFLICT') {
+            conflictRef.current = { version: e.current?.version };
+            setCloud({ status: 'conflict', message: e.message });
+          } else {
+            setCloud({ status: 'error', message: e instanceof ApiError ? e.message : String(e) });
+          }
+        }
+        persistDraft();
+      };
+      saveQueue.current = saveQueue.current.then(run);
+      return saveQueue.current;
+    },
+    [persistDraft],
+  );
 
   // Cloud autosave (debounced) once the project lives in the user's account.
-  const lastSaved = useRef<DappSpec | null>(initialSynced ? openedSpec.current : null);
   useEffect(() => {
-    if (!session || !projectId || lastSaved.current === spec) return;
+    if (!session || !projectId || !hasPendingEdits(spec) || conflictRef.current) return;
     if (!validation.ok) {
       setCloud({ status: 'unsaved' });
       return;
     }
-    const t = window.setTimeout(() => {
-      setCloud({ status: 'saving' });
-      api
-        .updateProject(projectId, spec)
-        .then(() => {
-          lastSaved.current = spec;
-          setCloud({ status: 'saved' });
-        })
-        .catch((e) => setCloud({ status: 'error', message: e instanceof ApiError ? e.message : String(e) }));
-    }, 1500);
+    const t = window.setTimeout(() => void saveToCloud(spec), 1500);
     return () => window.clearTimeout(t);
-  }, [spec, session, projectId, validation.ok]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, session, projectId, validation.ok, saveToCloud]);
+
+  /** Conflict: save these edits on top of the newer copy. */
+  const keepMine = useCallback(async () => {
+    const c = conflictRef.current;
+    conflictRef.current = null;
+    if (c?.version) versionRef.current = c.version;
+    lastSaved.current = null;
+    await saveToCloud(specRef.current);
+  }, [saveToCloud]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -279,6 +409,7 @@ function Editor({
   const remoteWorkspaceId = workspaceId && !isLocalWorkspaceId(workspaceId) ? workspaceId : null;
   const localWorkspaceId = workspaceId && (isLocalWorkspaceId(workspaceId) || !session) ? workspaceId : null;
   const localProjectId = useRef<string | null>(initialLocalProjectId);
+  const [localProject, setLocalProject] = useState<string | null>(initialLocalProjectId);
   const [localNotice, setLocalNotice] = useState<string | null>(null);
   useEffect(() => {
     // Nothing to save until the user changes something.
@@ -286,6 +417,7 @@ function Editor({
     const t = window.setTimeout(() => {
       const r = saveLocalProjectWithInfo(localWorkspaceId, spec, localProjectId.current);
       localProjectId.current = r.project.id;
+      if (r.saved) setLocalProject(r.project.id);
       if (!r.saved) setLocalNotice('This browser refused to save the project (storage full or disabled). Export it or sign in so you do not lose it.');
       else if (r.trimmed.length) {
         setLocalNotice(`Removed ${r.trimmed.length} oldest project${r.trimmed.length === 1 ? '' : 's'} from this workspace to stay within the browser limit: ${r.trimmed.map((p) => p.name).join(', ')}.`);
@@ -294,11 +426,23 @@ function Editor({
     return () => window.clearTimeout(t);
   }, [spec, localWorkspaceId]);
 
+  // The open project lives in the URL, so a reload or a second tab opens the same one.
+  const urlProject = projectId ?? (localWorkspaceId ? localProject : null);
+  useEffect(() => {
+    onProjectIdChange(urlProject);
+    if ((params.get('project') ?? null) === urlProject) return;
+    const next = new URLSearchParams(params);
+    if (urlProject) next.set('project', urlProject);
+    else next.delete('project');
+    setParams(next, { replace: true });
+  }, [urlProject, params, setParams, onProjectIdChange]);
+
   const saveNew = useCallback(async () => {
     setCloud({ status: 'saving' });
     try {
       const p = await api.createProject(spec, remoteWorkspaceId);
       lastSaved.current = spec;
+      versionRef.current = p.version;
       setProjectId(p.id);
       setCloud({ status: 'saved' });
     } catch (e) {
@@ -309,13 +453,34 @@ function Editor({
   const openProject = useCallback(
     async (id: string) => {
       const p = await api.getProject(id);
-      onOpen(migrateSpec(p.spec), p.id);
+      onOpen(migrateSpec(p.spec), p.id, p.version);
     },
     [onOpen],
   );
 
+  const openNewer = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      await openProject(projectId);
+    } catch (e) {
+      setCloud({ status: 'conflict', message: e instanceof ApiError ? e.message : String(e) });
+    }
+  }, [projectId, openProject]);
+
   return (
     <>
+    <StashNotice onRestore={(restored) => onOpen(restored, null)} />
+    {cloud.status === 'conflict' && session && projectId ? (
+      <div className="pg-local-notice" role="alert" data-testid="save-conflict">
+        <span>A newer copy of this project was saved in another tab or device. Your edits here are kept in this browser until you choose.</span>
+        <button type="button" className="pg-btn pg-btn-sm" data-testid="conflict-open-newer" onClick={() => void openNewer()}>
+          Open the newer copy
+        </button>
+        <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" data-testid="conflict-keep-mine" onClick={() => void keepMine()}>
+          Keep my version
+        </button>
+      </div>
+    ) : null}
     {localNotice ? (
       <div className="pg-local-notice" role="alert">
         <span>{localNotice}</span>
@@ -361,9 +526,11 @@ function Editor({
       canRedo={state.future.length > 0}
       onSaveNew={saveNew}
       onOpenProject={openProject}
-      onImport={(imported) => onOpen(imported, null)}
+      onImport={onImport}
       onDeleted={() => setProjectId(null)}
       onNew={onNew}
+      onOpenNewer={openNewer}
+      onKeepMine={keepMine}
     />
     </>
   );

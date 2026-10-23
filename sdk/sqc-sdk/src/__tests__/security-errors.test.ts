@@ -60,6 +60,17 @@ describe('security-errors SQDP-1 codes', () => {
     expect(busy.userHint).toBeTruthy();
   });
 
+  it('txBusy is BUSY with transaction wording, distinct from a busy connect', () => {
+    const tx = BridgeError.txBusy();
+    expect(tx).toBeInstanceOf(BridgeError);
+    expect(tx.code).toBe('BUSY');
+    expect(tx.message).toMatch(/transaction is already being signed/i);
+    expect(tx.userHint).toMatch(/transaction is already in progress/i);
+    expect(tx.userHint).not.toBe(BridgeError.busy().userHint);
+    expect(BridgeError.txBusy('custom').message).toBe('custom');
+    expect(BridgeError.busy('m', 'hint').userHint).toBe('hint');
+  });
+
   it('CHAIN_MISMATCH from assertChainId with missing remote', async () => {
     const original = globalThis.fetch;
     globalThis.fetch = (async () =>

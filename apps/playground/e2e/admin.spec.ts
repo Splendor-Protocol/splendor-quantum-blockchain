@@ -23,6 +23,32 @@ test.describe('accounts and sharing', () => {
     await expect(visitor.getByTestId('block-list')).toContainText('SPLD transfer');
     await visitor.close();
   });
+
+  test('a signed-in user renames an account workspace through the API', async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() => localStorage.clear());
+    await testLogin(page, E2E.user);
+    await page.goto('/');
+    const name = `Cloud ${Date.now().toString(36)}`;
+    await page.getByLabel('New workspace name').fill(name);
+    await page.getByRole('button', { name: 'New workspace' }).click();
+    const found = page.locator('[data-testid^="workspace-card-"]', { hasText: name });
+    await expect(found).toBeVisible();
+    await expect(found).not.toContainText('this browser');
+    // While editing, the name is an input value rather than card text, so pin the card by id.
+    const card = page.getByTestId((await found.getAttribute('data-testid'))!);
+
+    const renamed = `${name} renamed`;
+    await card.getByRole('button', { name: `Rename workspace ${name}` }).click();
+    await card.getByLabel(`New name for workspace ${name}`).fill(renamed);
+    const patch = page.waitForResponse((r) => r.request().method() === 'PATCH' && /\/workspaces\//.test(r.url()));
+    await card.getByRole('button', { name: 'Save' }).click();
+    expect((await patch).ok()).toBeTruthy();
+    await expect(card.getByRole('heading', { name: renamed })).toBeVisible();
+
+    await page.reload();
+    await expect(page.locator('[data-testid^="workspace-card-"]', { hasText: renamed })).toBeVisible();
+  });
 });
 
 test.describe('admin', () => {

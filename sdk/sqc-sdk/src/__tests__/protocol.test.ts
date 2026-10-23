@@ -24,6 +24,8 @@ describe('SQDP-1 protocol constants', () => {
     // The chain's admission floor (core/mempool.MinFee, /status min_fee).
     expect(PROTOCOL.minFee).toBe('1000');
     expect(PROTOCOL.confirmation).toBe('nonce');
+    // 3.0: a receipt is required; nonce-only confirmation is an explicit opt-in.
+    expect(PROTOCOL.confirmationCaveat).toBe('receipt-required;nonce-opt-in-race');
     expect(PROTOCOL.derivationDomainVersion).toBe('v1');
     expect(PROTOCOL.derivationDomainMessage).toBe(DERIVATION_DOMAIN_MESSAGE);
     expect(PROTOCOL.bridgeClientHeader).toBe(BRIDGE_CLIENT_VERSION);

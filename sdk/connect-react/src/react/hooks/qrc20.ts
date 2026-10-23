@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WriteOpts } from '@splendor/sqc-sdk';
+import { connectErrorMessage } from '../../core/controller.js';
 import { useConnectState } from '../context.js';
+import { notReady } from '../hookErrors.js';
+import { useVisiblePolling } from '../usePageVisible.js';
 import { onSharedReadsInvalidated, sharedRead } from '../../core/readCache.js';
 import { rememberDeployedToken } from '../../core/recentTokens.js';
 import { useRecordPendingTx, useSingleFlight, useTxAction, type TxHookStatus } from '../useTxAction.js';
@@ -51,7 +54,10 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   status: TxHookStatus;
   hash: string | null;
   explorerUrl: string | null;
+  /** The last transaction error, else the last read error. */
   error: Error | null;
+  /** UI copy for `error`. */
+  errorMessage: string | null;
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
@@ -112,10 +118,8 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
 
   useEffect(() => {
     void load(false);
-    if (!tokenAddress || !pollMs) return;
-    const id = setInterval(() => void load(false), pollMs);
-    return () => clearInterval(id);
-  }, [load, tokenAddress, pollMs]);
+  }, [load]);
+  useVisiblePolling(() => void load(false), pollMs, !!tokenAddress);
 
   useEffect(() => {
     if (!tokenAddress || !readConnection || !address) return;
@@ -130,7 +134,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
 
   const transfer = useCallback(
     async (to: string, amount: string, opts?: WriteOpts) => {
-      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      if (!ready || !wallet || !tokenAddress) throw notReady('Wallet or token not ready', ready && wallet ? 'token' : null);
       const res = await tx.run(async () => {
         const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).transfer(wallet, to, amount, opts);
@@ -142,7 +146,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
 
   const transferHuman = useCallback(
     async (to: string, amountHuman: string, opts?: WriteOpts) => {
-      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      if (!ready || !wallet || !tokenAddress) throw notReady('Wallet or token not ready', ready && wallet ? 'token' : null);
       const res = await tx.run(async () => {
         const { QRC20 } = await loadTokens();
         const token = new QRC20(wallet.connection, tokenAddress);
@@ -157,7 +161,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
 
   const approve = useCallback(
     async (spender: string, amount: string) => {
-      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      if (!ready || !wallet || !tokenAddress) throw notReady('Wallet or token not ready', ready && wallet ? 'token' : null);
       const res = await tx.run(async () => {
         const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).approve(wallet, spender, amount);
@@ -169,7 +173,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
 
   const mint = useCallback(
     async (to: string, amount: string) => {
-      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      if (!ready || !wallet || !tokenAddress) throw notReady('Wallet or token not ready', ready && wallet ? 'token' : null);
       const res = await tx.run(async () => {
         const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).mint(wallet, to, amount);
@@ -180,7 +184,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   );
 
   const pause = useCallback(async () => {
-    if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+    if (!ready || !wallet || !tokenAddress) throw notReady('Wallet or token not ready', ready && wallet ? 'token' : null);
     const res = await tx.run(async () => {
       const { QRC20 } = await loadTokens();
       return new QRC20(wallet.connection, tokenAddress).pause(wallet);
@@ -189,7 +193,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   }, [ready, wallet, tokenAddress, tx]);
 
   const unpause = useCallback(async () => {
-    if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+    if (!ready || !wallet || !tokenAddress) throw notReady('Wallet or token not ready', ready && wallet ? 'token' : null);
     const res = await tx.run(async () => {
       const { QRC20 } = await loadTokens();
       return new QRC20(wallet.connection, tokenAddress).unpause(wallet);
@@ -207,7 +211,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
       signature: number[];
       owner_pubkey: number[];
     }) => {
-      if (!ready || !wallet || !tokenAddress) throw new Error('Wallet or token not ready');
+      if (!ready || !wallet || !tokenAddress) throw notReady('Wallet or token not ready', ready && wallet ? 'token' : null);
       const res = await tx.run(async () => {
         const { QRC20 } = await loadTokens();
         return new QRC20(wallet.connection, tokenAddress).submitPermit(wallet, signed as never);
@@ -235,6 +239,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
     hash: tx.hash,
     explorerUrl: tx.explorerUrl,
     error: tx.error ?? readError,
+    errorMessage: tx.error ? tx.errorMessage : readError ? connectErrorMessage(readError) : null,
     reset: tx.reset,
   };
 }
@@ -282,7 +287,7 @@ export function useDeployToken(): {
       waitForConfirmation?: boolean;
     }) =>
       singleFlight(async () => {
-        if (!ready || !wallet) throw new Error('Wallet not connected');
+        if (!ready || !wallet) throw notReady('Wallet not connected');
         setStatus('pending');
         setError(null);
         try {

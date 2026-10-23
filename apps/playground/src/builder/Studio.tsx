@@ -26,11 +26,12 @@ import {
   ThemePanel,
   type DeviceSize,
   type CanvasDrop,
+  type InspectorTab,
   type StudioRail,
 } from '../studio';
 import { ExportPanel } from './ExportPanel';
 import { describeIssue, setupItems } from './issues';
-import { ProjectPanel, type CloudState } from './ProjectPanel';
+import { ProjectPanel, cloudLabel, type CloudState } from './ProjectPanel';
 import { MAX_BLOCKS_PER_PAGE, type BuilderAction } from './state';
 
 type EditorTab = 'block' | 'theme' | 'export' | 'project';
@@ -65,7 +66,7 @@ export function Studio({
   setCalls,
   issues,
   blockErrors,
-  goToIssue,
+  goToIssue: goToIssueField,
   newPageTitle,
   setNewPageTitle,
   blockQuery,
@@ -85,6 +86,8 @@ export function Studio({
   onImport,
   onDeleted,
   onNew,
+  onOpenNewer,
+  onKeepMine,
 }: {
   spec: DappSpec;
   pagePath: string;
@@ -125,6 +128,8 @@ export function Studio({
   onImport: (spec: DappSpec) => void;
   onDeleted: () => void;
   onNew: () => void;
+  onOpenNewer?: () => Promise<void>;
+  onKeepMine?: () => Promise<void>;
 }) {
   const { networkId } = useNetwork();
   const { switchNetwork, switching } = useNetworkSwitch();
@@ -142,6 +147,13 @@ export function Studio({
   const selectedIndex = selected ? blocks.indexOf(selected) : -1;
   const full = blocks.length >= MAX_BLOCKS_PER_PAGE;
   const overlayOpen = tab === 'export' || tab === 'project';
+  const shownCloud: CloudState = signedIn && projectId ? cloud : { status: 'local' };
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('props');
+  /** The field to focus lives on the Content tab. */
+  const goToIssue: typeof goToIssueField = (target) => {
+    setInspectorTab('props');
+    goToIssueField(target);
+  };
 
   // "Finish setup": unbound contracts and tokens first, then what the validator reports.
   const setup = useMemo(() => setupItems(spec, all), [spec, all]);
@@ -152,6 +164,8 @@ export function Studio({
       // A component that still needs a contract is already listed above: skip its "needs a value" twin.
       .filter(({ issue, d }) => !(issue.message === 'required' && d.target && unbound.has(d.target.blockId)));
   }, [issues, setup, spec, all]);
+  /** What the list shows: issues already covered by a setup item are not counted twice. */
+  const setupLeft = setup.length + shownIssues.length;
 
   // In-canvas editing: the preview frame reports where nodes and insertion points are.
   const [rects, setRects] = useState<PreviewRects | null>(null);
@@ -302,11 +316,11 @@ export function Studio({
         </div>
       </div>
 
-      {setup.length || issues.length ? (
+      {setupLeft ? (
         <div className="pg-setup" data-testid="spec-issues" role="region" aria-label="Finish setup">
           <div className="pg-setup-head">
             <strong>Finish setup</strong>
-            <span className="pg-muted">{setup.length + issues.length === 1 ? '1 thing left' : `${setup.length + issues.length} things left`}</span>
+            <span className="pg-muted" data-testid="setup-count">{setupLeft === 1 ? '1 thing left' : `${setupLeft} things left`}</span>
           </div>
           <ul>
             {setup.map((item) => (
@@ -490,6 +504,17 @@ export function Studio({
           <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" data-testid="tab-project" onClick={() => setTab('project')}>
             Share
           </button>
+          <button
+            type="button"
+            className="pg-save-chip"
+            data-status={shownCloud.status}
+            data-testid="save-chip"
+            title={shownCloud.message ?? 'Account sync'}
+            aria-label={`Account sync: ${cloudLabel(shownCloud)}`}
+            onClick={() => setTab('project')}
+          >
+            {cloudLabel(shownCloud)}
+          </button>
         </StudioTopBar>
       }
       sidebar={sidebar}
@@ -519,6 +544,8 @@ export function Studio({
           onPageAccess={(access) => dispatch({ type: 'setPageAccess', path: page.path, access })}
           onNavVisible={(visible) => dispatch({ type: 'setNavVisible', path: page.path, visible })}
           onMovePage={(delta) => dispatch({ type: 'movePage', path: page.path, delta })}
+          tab={inspectorTab}
+          onTabChange={setInspectorTab}
         />
       }
       dock={
@@ -564,13 +591,15 @@ export function Studio({
                     spec={spec}
                     catalog={all}
                     projectId={projectId}
-                    cloud={signedIn && projectId ? cloud : { status: 'local' }}
+                    cloud={shownCloud}
                     valid={validationOk}
                     onSaveNew={onSaveNew}
                     onOpen={onOpenProject}
                     onImport={onImport}
                     onDeleted={onDeleted}
                     onNew={onNew}
+                    onOpenNewer={onOpenNewer}
+                    onKeepMine={onKeepMine}
                   />
                 ) : null}
               </Tabs>

@@ -7,9 +7,12 @@ import {
   createLocalWorkspace,
   deleteLocalProject,
   deleteLocalWorkspace,
+  duplicateLocalProject,
   isLocalWorkspaceId,
   listLocalProjects,
   listLocalWorkspaces,
+  renameLocalProject,
+  renameLocalWorkspace,
 } from '../workspaces/local';
 import { KitCards } from './KitCards';
 import { NewProjectWizard, wizardQuery } from './NewProjectWizard';
@@ -30,6 +33,8 @@ export function HomePage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [newWs, setNewWs] = useState('');
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  const [renamingProject, setRenamingProject] = useState<{ id: string; name: string } | null>(null);
   const [wizard, setWizard] = useState<{ template: string | null } | null>(null);
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
@@ -149,6 +154,33 @@ export function HomePage() {
     await reloadWorkspaces();
   };
 
+  const saveRename = async (w: Workspace) => {
+    const name = (renaming?.id === w.id ? renaming.name : '').trim().slice(0, 80);
+    setRenaming(null);
+    if (!name || name === w.name) return;
+    setError(null);
+    setNotice(null);
+    if (!isLocalWorkspaceId(w.id) && session) {
+      try {
+        await api.renameWorkspace(w.id, name);
+      } catch (e) {
+        setError(`Could not rename workspace "${w.name}": ${errorText(e)}.`);
+        return;
+      }
+    } else {
+      try {
+        if (!renameLocalWorkspace(w.id, name)) {
+          setError(`Workspace "${w.name}" was not found in this browser.`);
+          return;
+        }
+      } catch (e) {
+        setError(errorText(e));
+        return;
+      }
+    }
+    await reloadWorkspaces();
+  };
+
   const removeWorkspace = async (w: Workspace) => {
     if (!window.confirm(`Delete workspace "${w.name}" and all of its projects? This cannot be undone.`)) return;
     setError(null);
@@ -188,6 +220,51 @@ export function HomePage() {
         setError(`Could not delete project "${p.name}": ${errorText(e)}.`);
         return;
       }
+    }
+    await reloadProjects();
+  };
+
+  const saveProjectRename = async (p: ProjectCard) => {
+    const name = (renamingProject?.id === p.id ? renamingProject.name : '').trim().slice(0, 80);
+    setRenamingProject(null);
+    if (!name || name === p.name) return;
+    setError(null);
+    setNotice(null);
+    try {
+      if (p.local) {
+        if (!workspaceId || !renameLocalProject(workspaceId, p.id, name)) {
+          setError(`Project "${p.name}" was not found in this browser.`);
+          return;
+        }
+      } else {
+        await api.patchProject(p.id, { name });
+      }
+    } catch (e) {
+      setError(`Could not rename project "${p.name}": ${errorText(e)}.`);
+      return;
+    }
+    await reloadProjects();
+  };
+
+  const duplicateProject = async (p: ProjectCard) => {
+    setError(null);
+    setNotice(null);
+    try {
+      if (p.local) {
+        const r = workspaceId ? duplicateLocalProject(workspaceId, p.id) : null;
+        if (!r) {
+          setError(`Project "${p.name}" was not found in this browser.`);
+          return;
+        }
+        if (r.trimmed.length) {
+          setNotice(`Removed ${r.trimmed.length} oldest project${r.trimmed.length === 1 ? '' : 's'} to stay within the browser limit: ${r.trimmed.map((t) => t.name).join(', ')}.`);
+        }
+      } else {
+        await api.duplicateProject(p.id);
+      }
+    } catch (e) {
+      setError(`Could not duplicate project "${p.name}": ${errorText(e)}.`);
+      return;
     }
     await reloadProjects();
   };
@@ -248,7 +325,35 @@ export function HomePage() {
         <div className="pg-cards">
           {workspaces.map((w) => (
             <div key={w.id} className={`pg-card pg-ws-card${w.id === workspaceId ? ' is-selected' : ''}`} data-testid={`workspace-card-${w.id}`}>
-              <h3>{w.name}</h3>
+              {renaming?.id === w.id ? (
+                <form
+                  className="pg-row"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void saveRename(w);
+                  }}
+                >
+                  <input
+                    aria-label={`New name for workspace ${w.name}`}
+                    data-testid={`workspace-rename-input-${w.id}`}
+                    maxLength={80}
+                    autoFocus
+                    value={renaming.name}
+                    onChange={(e) => setRenaming({ id: w.id, name: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') setRenaming(null);
+                    }}
+                  />
+                  <button type="submit" className="pg-btn pg-btn-sm" data-testid={`workspace-rename-save-${w.id}`}>
+                    Save
+                  </button>
+                  <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => setRenaming(null)}>
+                    Cancel
+                  </button>
+                </form>
+              ) : (
+                <h3>{w.name}</h3>
+              )}
               <p className="pg-muted">
                 Created {new Date(w.createdAt).toLocaleDateString()}
                 {isLocalWorkspaceId(w.id) ? ' \u00B7 this browser' : ''}
@@ -267,6 +372,15 @@ export function HomePage() {
                 <Link className="pg-btn pg-btn-ghost pg-btn-sm" aria-label={`Open studio in workspace ${w.name}`} to={`/build?workspace=${encodeURIComponent(w.id)}`}>
                   Studio
                 </Link>
+                <button
+                  type="button"
+                  className="pg-btn pg-btn-ghost pg-btn-sm"
+                  aria-label={`Rename workspace ${w.name}`}
+                  data-testid={`workspace-rename-${w.id}`}
+                  onClick={() => setRenaming({ id: w.id, name: w.name })}
+                >
+                  Rename
+                </button>
                 <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" aria-label={`Delete workspace ${w.name}`} onClick={() => void removeWorkspace(w)}>
                   Delete
                 </button>
@@ -303,7 +417,34 @@ export function HomePage() {
           <div className="pg-cards">
             {projects.map((p) => (
               <div key={p.id} className="pg-card" data-testid={`project-card-${p.id}`}>
-                <h3>{p.name}</h3>
+                {renamingProject?.id === p.id ? (
+                  <form
+                    className="pg-row"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void saveProjectRename(p);
+                    }}
+                  >
+                    <input
+                      aria-label={`New name for project ${p.name}`}
+                      maxLength={80}
+                      autoFocus
+                      value={renamingProject.name}
+                      onChange={(e) => setRenamingProject({ id: p.id, name: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setRenamingProject(null);
+                      }}
+                    />
+                    <button type="submit" className="pg-btn pg-btn-sm">
+                      Save
+                    </button>
+                    <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => setRenamingProject(null)}>
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <h3>{p.name}</h3>
+                )}
                 <p className="pg-muted">
                   Updated {new Date(p.updatedAt).toLocaleString()}
                   {p.local ? ' \u00B7 this browser' : ''}
@@ -312,6 +453,17 @@ export function HomePage() {
                   <Link className="pg-btn pg-btn-sm" aria-label={`Open project ${p.name}`} to={`/build?project=${encodeURIComponent(p.id)}&workspace=${encodeURIComponent(workspaceId)}`}>
                     Open
                   </Link>
+                  <button
+                    type="button"
+                    className="pg-btn pg-btn-ghost pg-btn-sm"
+                    aria-label={`Rename project ${p.name}`}
+                    onClick={() => setRenamingProject({ id: p.id, name: p.name })}
+                  >
+                    Rename
+                  </button>
+                  <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" aria-label={`Duplicate project ${p.name}`} onClick={() => void duplicateProject(p)}>
+                    Duplicate
+                  </button>
                   <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" aria-label={`Delete project ${p.name}`} onClick={() => void removeProject(p)}>
                     Delete
                   </button>

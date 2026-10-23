@@ -4,7 +4,7 @@ import { migrateSpec, validateSpec, type DappSpec } from '@splendor/dapp-spec';
 import { api, ApiError } from '../api/client';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import { useRegistry } from '../registry';
-import { saveDraft } from './storage';
+import { saveDraft, stashDraft } from './storage';
 
 /** Read-only view of a shared project, with "Remix" to copy it into the builder. */
 export function SharedPage() {
@@ -64,6 +64,7 @@ export function SharedPage() {
           type="button"
           className="pg-btn"
           onClick={() => {
+            stashDraft();
             saveDraft({ spec, projectId: null });
             navigate('/build');
           }}

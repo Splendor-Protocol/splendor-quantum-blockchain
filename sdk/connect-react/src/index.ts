@@ -32,6 +32,7 @@ export {
 export type {
   ConnectController,
   CreateConnectControllerOptions,
+  ErrorContext,
   SessionWallet,
 } from './core/controller.js';
 export type {

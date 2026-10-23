@@ -437,3 +437,82 @@ describe('page settings', () => {
     expect(validateSpec(s.spec).ok).toBe(true);
   });
 });
+
+describe('project-level edits', () => {
+  const token = { id: 'token', name: 'Token', address: `SQ:${'ab'.repeat(32)}`, functions: [], kind: 'token' as const };
+
+  it('load replaces the spec and clears history and selection', () => {
+    let s = run(initBuilder(emptySpec('Old')), { type: 'addBlock', widget: 'transfer', props: {} });
+    expect(s.past).toHaveLength(1);
+    s = run(s, { type: 'load', spec: emptySpec('New') });
+    expect(s.spec.name).toBe('New');
+    expect(s).toMatchObject({ past: [], future: [], selectedBlockId: null, pagePath: '/' });
+  });
+
+  it('setName and setDescription coalesce typing into one undo step each', () => {
+    vi.useFakeTimers();
+    try {
+      let s = initBuilder(emptySpec('A'));
+      for (const name of ['M', 'My', 'My app']) s = builderReducer(s, { type: 'setName', name });
+      expect(s.spec.name).toBe('My app');
+      expect(s.past).toHaveLength(1);
+      s = builderReducer(s, { type: 'setDescription', description: 'About it' });
+      expect(s.spec.description).toBe('About it');
+      expect(s.past).toHaveLength(2);
+      s = run(s, { type: 'undo' }, { type: 'undo' });
+      expect(s.spec.name).toBe('A');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renaming the dApp renames a header brand that was only a copy of the name', () => {
+    // `emptySpec` copies the name into `nav.brand`.
+    expect(run(initBuilder(emptySpec('Old')), { type: 'setName', name: 'New' }).spec.nav?.brand).toBe('New');
+    const { nav: _nav, ...noNav } = emptySpec('Old');
+    const loaded = initBuilder(noNav as ReturnType<typeof emptySpec>);
+    expect(loaded.spec.nav?.brand).toBeUndefined();
+    expect(run(loaded, { type: 'setName', name: 'New' }).spec.nav?.brand).toBeUndefined();
+    const kit = initBuilder({ ...emptySpec('Old'), nav: { showConnect: true, brand: 'Old' } });
+    expect(run(kit, { type: 'setName', name: 'New' }).spec.nav?.brand).toBe('New');
+    const own = initBuilder({ ...emptySpec('Old'), nav: { showConnect: true, brand: 'Acme' } });
+    expect(run(own, { type: 'setName', name: 'New' }).spec.nav?.brand).toBe('Acme');
+  });
+
+  it('setNetwork is its own undo step every time', () => {
+    let s = run(initBuilder(emptySpec()), { type: 'setNetwork', network: 'devnet' }, { type: 'setNetwork', network: 'mainnet' });
+    expect(s.spec.network).toBe('mainnet');
+    expect(s.past).toHaveLength(2);
+    s = run(s, { type: 'undo' });
+    expect(s.spec.network).toBe('devnet');
+  });
+
+  it('setTheme replaces the theme and undoes back to the old one', () => {
+    const start = initBuilder(emptySpec());
+    const before = start.spec.theme;
+    const theme = { base: 'dark' as const, overrides: { accent: '#ff00aa' }, preset: 'mint' };
+    let s = run(start, { type: 'setTheme', theme });
+    expect(s.spec.theme).toEqual(theme);
+    s = run(s, { type: 'undo' });
+    expect(s.spec.theme).toEqual(before);
+  });
+
+  it('renamePage changes only the title of that page', () => {
+    let s = run(initBuilder(emptySpec()), { type: 'addPage', title: 'About' });
+    s = run(s, { type: 'renamePage', path: '/about', title: 'About us' });
+    expect(s.spec.pages.map((p) => [p.path, p.title])).toEqual([
+      ['/', s.spec.pages[0]!.title],
+      ['/about', 'About us'],
+    ]);
+    expect(run(s, { type: 'renamePage', path: '/missing', title: 'X' }).spec.pages.map((p) => p.title)).toEqual(s.spec.pages.map((p) => p.title));
+  });
+
+  it('setContracts replaces the contract list and can be undone', () => {
+    let s = run(initBuilder(emptySpec()), { type: 'setContracts', contracts: [token] });
+    expect(s.spec.contracts).toEqual([token]);
+    s = run(s, { type: 'setContracts', contracts: [] });
+    expect(s.spec.contracts).toEqual([]);
+    s = run(s, { type: 'undo' });
+    expect(s.spec.contracts).toEqual([token]);
+  });
+});

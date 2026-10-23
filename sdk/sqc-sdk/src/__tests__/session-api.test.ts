@@ -1,5 +1,6 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { createSession } from '../session.js';
+import { qrc721Address } from '../addresses/index.js';
 import { modules } from '../modules.js';
 import golden from '../../testdata/golden-vectors.json' with { type: 'json' };
 
@@ -57,6 +58,22 @@ describe('createSession', () => {
     expect(typeof session.getBalance).toBe('function');
     expect(typeof session.deployToken).toBe('function');
     expect(typeof session.deployBridge).toBe('function');
+  }, 30_000);
+
+  it('deployNftCollection deploys through the session wallet and returns a bound collection', async () => {
+    const session = await createSession({ network: 'local', mode: 'seed', seed: golden.seedHex });
+    sessions.push(session);
+    const send = vi
+      .spyOn(session.wallet, 'sendModuleCall')
+      .mockResolvedValue({ status: 'submitted', hash: 'nft-hash', signedTx: { nonce: 3 } } as never);
+    vi.spyOn(session.wallet, 'getNonce').mockResolvedValue({ nonce: 1 } as never);
+
+    const res = await session.deployNftCollection({ name: 'Art', symbol: 'ART' }, { fee: '5000' });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toMatchObject({ module: 'qrc721', action: 'deploy', params: { name: 'Art', symbol: 'ART' }, fee: '5000' });
+    expect(res.hash).toBe('nft-hash');
+    expect(res.address).toBe(qrc721Address(golden.address, 3));
+    expect(res.nft.getAddress()).toBe(res.address);
   }, 30_000);
 
   it('mode none leaves wallet disconnected (address throws)', async () => {

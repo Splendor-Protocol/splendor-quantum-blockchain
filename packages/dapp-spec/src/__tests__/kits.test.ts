@@ -4,6 +4,7 @@ import {
   DEMO_CONTRACT_ADDRESS,
   DEMO_TOKEN_ADDRESS,
   PAGE_TEMPLATES,
+  bindBlock,
   bindBlockProps,
   blocksFromTree,
   createCatalog,
@@ -58,6 +59,13 @@ describe('contract bindings', () => {
   it('leaves raw props alone for unknown ids or unbound blocks', () => {
     expect(bindBlockProps({ id: 'a', widget: 'x-stat', props: { contract: MY_CONTRACT } }, liveStat, contracts).props).toEqual({ contract: MY_CONTRACT });
     expect(bindBlockProps({ id: 'a', widget: 'x-stat', props: { contractId: 'nope' } }, liveStat, contracts).addressRefs).toEqual({});
+  });
+
+  it('bindBlock (used by the preview) binds against spec.contracts, and a spec without contracts leaves props raw', () => {
+    const block = { id: 'a', widget: 'x-stat', props: { contractId: 'app', functionSig: 'get()' } };
+    expect(bindBlock({ contracts }, block, liveStat)).toEqual(bindBlockProps(block, liveStat, contracts));
+    expect(bindBlock({}, block, liveStat)).toEqual({ props: { functionSig: 'get()' }, addressRefs: {} });
+    expect(bindBlock({ contracts }, block, undefined)).toEqual({ props: block.props, addressRefs: {} });
   });
 });
 

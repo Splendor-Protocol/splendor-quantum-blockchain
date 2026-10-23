@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
-import { bindModules, listModules } from '@splendor/sqc-sdk';
+import { BridgeError, bindModules, listModules } from '@splendor/sqc-sdk';
 import { txExplorerUrl } from '@splendor/sqc-sdk/networks';
 import { connectErrorMessage } from '../../core/controller.js';
 import { useConnectState } from '../context.js';
+import { notReady } from '../hookErrors.js';
 import { useRecordPendingTx, useSingleFlight, type TxHookStatus } from '../useTxAction.js';
 import { useWallet } from './core.js';
 
@@ -34,7 +35,7 @@ function moduleCallProblem(opts: { module: unknown; action: unknown; params: unk
 
 /**
  * Raw module router call (`{ module, action, params }`) for routed modules without a typed
- * client, such as verify, validators and qrc721.
+ * client, such as verify and validators. QRC-721 has `useQRC721` / `useDeployQRC721`.
  */
 export function useModuleCall(): {
   call: (opts: {
@@ -74,10 +75,10 @@ export function useModuleCall(): {
       waitForConfirmation?: boolean;
     }) =>
       singleFlight(async () => {
-        if (!ready || !wallet) throw new Error('Wallet not connected');
+        if (!ready || !wallet) throw notReady('Wallet not connected');
         const invalid = moduleCallProblem(opts);
         if (invalid) {
-          const err = new Error(invalid);
+          const err = BridgeError.invalidParams(invalid);
           setHash(null);
           setError(err);
           setStatus('error');
@@ -105,5 +106,5 @@ export function useModuleCall(): {
   );
 
   const explorerUrl = network && hash ? txExplorerUrl(network, hash) : null;
-  return { call, status, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error) : null, reset };
+  return { call, status, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error, 'tx') : null, reset };
 }

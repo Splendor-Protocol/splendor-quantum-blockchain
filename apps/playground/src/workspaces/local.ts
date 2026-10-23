@@ -157,6 +157,29 @@ export function saveLocalProject(workspaceId: string, spec: DappSpec, id?: strin
   return saveLocalProjectWithInfo(workspaceId, spec, id).project;
 }
 
+/**
+ * Rename a project (the name lives in its spec). Null when it does not exist; throws
+ * `LocalStorageError` when the change could not be stored. A blank name keeps the old one.
+ */
+export function renameLocalProject(workspaceId: string, id: string, name: string): LocalProject | null {
+  const existing = getLocalProject(workspaceId, id);
+  if (!existing) return null;
+  const next = name.trim().slice(0, 80);
+  if (!next || next === existing.name) return existing;
+  const r = saveLocalProjectWithInfo(workspaceId, { ...existing.spec, name: next }, id);
+  if (!r.saved) throw new LocalStorageError('the project name');
+  return r.project;
+}
+
+/** Copy a project as "<name> copy". Null when it does not exist; throws `LocalStorageError` when it could not be stored. */
+export function duplicateLocalProject(workspaceId: string, id: string): LocalSaveResult | null {
+  const existing = getLocalProject(workspaceId, id);
+  if (!existing) return null;
+  const r = saveLocalProjectWithInfo(workspaceId, { ...existing.spec, name: `${existing.name} copy`.slice(0, 80) });
+  if (!r.saved) throw new LocalStorageError('the copy');
+  return r;
+}
+
 /** False when the project does not exist, or when the change could not be stored. */
 export function deleteLocalProject(workspaceId: string, id: string): boolean {
   const store = readProjects();

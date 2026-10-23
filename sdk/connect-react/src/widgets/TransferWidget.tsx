@@ -182,7 +182,7 @@ export function TransferWidget({
       <TxResult hash={hash} confirmed={confirmed} explorerUrl={explorerUrl} labels={l} />
       {error ? (
         <p className="sqc-widget__msg sqc-widget__msg--error" role="alert">
-          {connectErrorMessage(error)}
+          {connectErrorMessage(error, 'tx')}
         </p>
       ) : null}
     </WidgetShell>

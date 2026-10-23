@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { createAuthMessage, type AuthMessageParams, type SignedAuth } from '../auth.js';
 import { useAccount, useNetwork, useWallet } from './core.js';
 import { connectErrorMessage } from '../../core/controller.js';
+import { notReady } from '../hookErrors.js';
 import { useSingleFlight } from '../useTxAction.js';
 
 export type UseSignInResult = {
@@ -35,7 +36,7 @@ export function useSignIn(): UseSignInResult {
   const signIn = useCallback(
     (params: Omit<AuthMessageParams, 'address' | 'chainId'> & Partial<AuthMessageParams>) => singleFlight(async () => {
       if (!ready || !wallet || !address) {
-        throw new Error('Wallet not connected');
+        throw notReady('Wallet not connected');
       }
       setStatus('pending');
       setError(null);

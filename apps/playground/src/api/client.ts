@@ -7,7 +7,15 @@ export type CatalogFlag = CatalogFlags & { featured?: boolean; minVersion?: stri
 export type Session = { address: string; isAdmin: boolean };
 
 export type Workspace = { id: string; name: string; createdAt: string; owner?: string };
-export type ProjectSummary = { id: string; name: string; updatedAt: string; shareId: string | null; workspaceId?: string | null };
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  updatedAt: string;
+  shareId: string | null;
+  workspaceId?: string | null;
+  /** Bumped on every save; older API versions omit it. */
+  version?: number;
+};
 export type Project = ProjectSummary & { spec: DappSpec; createdAt: string };
 
 export type ReleasePackage = { name: string; repoVersion: string | null; distTags: Record<string, string> };
@@ -27,6 +35,10 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly issues?: { path: string; message: string }[],
+    /** Machine-readable code when the API sends one (`CONFLICT`, `NOT_FOUND`, …). */
+    readonly code?: string,
+    /** For `CONFLICT`: the project as it is now on the server. */
+    readonly current?: ProjectSummary,
   ) {
     super(message);
   }
@@ -53,7 +65,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     const message = body?.error ?? (res.status >= 500 ? `Playground API error (${res.status})` : res.statusText || `HTTP ${res.status}`);
-    throw new ApiError(String(message), res.status, body?.issues as ApiError['issues']);
+    throw new ApiError(
+      String(message),
+      res.status,
+      body?.issues as ApiError['issues'],
+      typeof body?.code === 'string' ? body.code : undefined,
+      body?.current && typeof body.current === 'object' ? (body.current as ProjectSummary) : undefined,
+    );
   }
   if (body === null) throw new ApiError('Playground API sent an unexpected response', res.status);
   return body as T;
@@ -81,7 +99,12 @@ export const api = {
   getProject: (id: string) => request<Project>(`/projects/${encodeURIComponent(id)}`),
   createProject: (spec: DappSpec, workspaceId?: string | null) =>
     request<Project>('/projects', json('POST', workspaceId ? { spec, workspaceId } : { spec })),
-  updateProject: (id: string, spec: DappSpec) => request<Project>(`/projects/${encodeURIComponent(id)}`, json('PUT', { spec })),
+  /** With `baseVersion`, a save on top of a newer copy fails with `ApiError` code `CONFLICT`. */
+  updateProject: (id: string, spec: DappSpec, baseVersion?: number) =>
+    request<Project>(`/projects/${encodeURIComponent(id)}`, json('PUT', baseVersion ? { spec, baseVersion } : { spec })),
+  patchProject: (id: string, patch: { name?: string; workspaceId?: string | null }) =>
+    request<ProjectSummary & { createdAt: string }>(`/projects/${encodeURIComponent(id)}`, json('PATCH', patch)),
+  duplicateProject: (id: string) => request<Project>(`/projects/${encodeURIComponent(id)}/duplicate`, json('POST', {})),
   deleteProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}`, json('DELETE')),
   shareProject: (id: string) => request<{ shareId: string }>(`/projects/${encodeURIComponent(id)}/share`, json('POST', {})),
   unshareProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}/share`, json('DELETE')),

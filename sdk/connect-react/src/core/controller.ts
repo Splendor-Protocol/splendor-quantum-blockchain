@@ -62,30 +62,39 @@ function toAccount(info: DeriveInfo): ConnectAccount {
   };
 }
 
-function errorFromWalletPayload(payload: { code: string; message: string }): Error {
-  const code = payload.code as BridgeErrorCode;
-  const known: BridgeErrorCode[] = [
-    'NOT_CONNECTED',
-    'USER_REJECTED',
-    'NO_PROVIDER',
-    'BUSY',
-    'RPC',
-    'RPC_UNAVAILABLE',
-    'NETWORK',
-    'WASM',
-    'INVALID_ADDRESS',
-    'INVALID_AMOUNT',
-    'INVALID_FEE',
-    'TIMEOUT',
-    'TX_NOT_CONFIRMED',
-    'TX_FAILED',
-    'CHAIN_MISMATCH',
-    'UNKNOWN',
-  ];
-  if (known.includes(code)) {
-    return new BridgeError(code, payload.message);
-  }
-  return new BridgeError('UNKNOWN', payload.message);
+const KNOWN_WALLET_CODES: readonly BridgeErrorCode[] = [
+  'NOT_CONNECTED',
+  'USER_REJECTED',
+  'NO_PROVIDER',
+  'BUSY',
+  'RPC',
+  'RPC_UNAVAILABLE',
+  'NETWORK',
+  'WASM',
+  'INVALID_ADDRESS',
+  'INVALID_AMOUNT',
+  'INVALID_FEE',
+  'INVALID_PARAMS',
+  'TIMEOUT',
+  'TX_NOT_CONFIRMED',
+  'TX_FAILED',
+  'CHAIN_MISMATCH',
+  'UNKNOWN',
+];
+
+/** Exported for tests. Keeps a short `userHint` the wallet sends along with the code. */
+export function errorFromWalletPayload(payload: { code: string; message: string; userHint?: unknown }): BridgeError {
+  const code = KNOWN_WALLET_CODES.includes(payload.code as BridgeErrorCode) ? (payload.code as BridgeErrorCode) : 'UNKNOWN';
+  const hint = typeof payload.userHint === 'string' && payload.userHint.trim() ? safeCopy(payload.userHint) : undefined;
+  return new BridgeError(code, payload.message, undefined, hint);
+}
+
+const GENERIC_PARAMS_HINT = BridgeError.invalidParams('').userHint;
+
+/** One line of at most 160 characters, without control characters. */
+function safeCopy(text: string): string {
+  const line = text.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
 }
 
 export type ConnectController = {
@@ -786,20 +795,31 @@ export function createStubConnectController(
   };
 }
 
+/**
+ * Where an error happened: `connect` (connecting, signing in) or `tx` (a transaction or other
+ * hook action). Only changes the fallback copy for errors that have no specific message.
+ */
+export type ErrorContext = 'connect' | 'tx';
+
 /** Map bridge / connector errors to short UI copy. Never surface raw messages with secrets. */
-export function connectErrorMessage(err: unknown): string {
+export function connectErrorMessage(err: unknown, context: ErrorContext = 'connect'): string {
+  const fallback = context === 'tx' ? 'Transaction failed — try again' : 'Connection failed';
   if (isBridgeError(err)) {
     // Prefer modal-aligned install / unlock copy over generic BridgeError hints.
     if (err.code === 'NO_PROVIDER') return 'Install Splendor Quantum Wallet';
     if (err.code === 'NOT_CONNECTED') {
       return err.userHint ?? 'Unlock or connect your Splendor Quantum Wallet';
     }
+    // The SDK writes INVALID_PARAMS messages itself (which argument is wrong), so they beat its generic hint.
+    if (err.code === 'INVALID_PARAMS' && (!err.userHint || err.userHint === GENERIC_PARAMS_HINT)) {
+      return safeCopy(err.message) || 'Invalid request';
+    }
     if (err.userHint) return err.userHint;
     switch (err.code) {
       case 'USER_REJECTED':
         return 'Request rejected in wallet';
       case 'BUSY':
-        return 'Connection already in progress — wait a moment';
+        return context === 'tx' ? 'A transaction is already in progress — wait for it to finish' : 'Connection already in progress — wait a moment';
       case 'WASM':
         return 'Signer failed to load — check WASM hosting';
       case 'RPC_UNAVAILABLE':
@@ -822,10 +842,8 @@ export function connectErrorMessage(err: unknown): string {
         return 'Invalid fee';
       case 'INVALID_ADDRESS':
         return 'Invalid address';
-      case 'UNKNOWN':
-        return 'Connection failed';
       default:
-        return 'Connection failed';
+        return fallback;
     }
   }
   if (err instanceof Error) {
@@ -845,7 +863,7 @@ export function connectErrorMessage(err: unknown): string {
     if (/user rejected|denied/i.test(err.message)) {
       return 'Request rejected in wallet';
     }
-    return 'Connection failed';
+    return fallback;
   }
-  return 'Connection failed';
+  return fallback;
 }

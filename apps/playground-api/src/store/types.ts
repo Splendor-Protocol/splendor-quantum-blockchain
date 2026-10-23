@@ -23,7 +23,11 @@ export type ProjectRow = {
   workspaceId: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Starts at 1 and goes up on every update; saves can require the version they started from. */
+  version: number;
 };
+
+export type ProjectPatch = Partial<Pick<ProjectRow, 'name' | 'spec' | 'workspaceId'>>;
 
 export type AuditEntry = { id: number; at: string; actor: string; action: string; target: string | null; detail: string | null };
 
@@ -66,11 +70,16 @@ export interface Store {
   renameWorkspace(id: string, name: string): Promise<WorkspaceRow | null>;
   deleteWorkspace(id: string): Promise<boolean>;
   listProjects(owner: string, workspaceId?: string | null): Promise<Omit<ProjectRow, 'spec'>[]>;
+  getWorkspace(id: string, owner: string): Promise<WorkspaceRow | null>;
   countProjects(owner: string): Promise<number>;
   getProject(id: string): Promise<ProjectRow | null>;
   getProjectByShareId(shareId: string): Promise<ProjectRow | null>;
   createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'> & { workspaceId?: string | null }): Promise<ProjectRow>;
-  updateProject(id: string, patch: Pick<ProjectRow, 'name' | 'spec'>): Promise<ProjectRow | null>;
+  /**
+   * Applies `patch` and bumps `version`. With `expectedVersion`, only updates a row still at that
+   * version. `null`: no such project, or it moved past `expectedVersion`.
+   */
+  updateProject(id: string, patch: ProjectPatch, expectedVersion?: number): Promise<ProjectRow | null>;
   /** `null` revokes the share link. */
   setShareId(id: string, shareId: string | null): Promise<void>;
   deleteProject(id: string): Promise<boolean>;

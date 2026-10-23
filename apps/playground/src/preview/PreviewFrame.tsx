@@ -57,7 +57,8 @@ export function PreviewFrame({
   height = 640,
 }: PreviewFrameProps) {
   const ref = useRef<HTMLIFrameElement>(null);
-  /** Counts every eady message: a reloaded frame says it again and needs the spec re-sent. */
+  /** Counts every 
+eady message: a reloaded frame says it again and needs the spec re-sent. */
   const [readyCount, setReadyCount] = useState(0);
   const ready = readyCount > 0;
   const handlers = useRef({ onNavigate, onSelectBlock, onCalls, onRects, onHover, onDrop });

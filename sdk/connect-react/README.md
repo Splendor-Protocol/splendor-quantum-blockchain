@@ -86,10 +86,11 @@ Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Bridge, QRC-1
 | QRC-20 read / transfer / approve | `useQRC20` |
 | Deploy QRC-20 | `useDeployToken` |
 | QRC-1155 | `useQRC1155`, `useDeployCollection` |
+| QRC-721 | `useQRC721`, `useDeployQRC721` |
 | Bridge claim | `useBridge`, `useDeployBridge` |
 | Bytecode contract | `useContract`, `useDeployBytecode` (`useDeployContract` deprecated alias) |
-| Typed module clients (qrc20, qrc1155, bridge, contract) | `useModules()` |
-| Routed modules without a typed client (verify, validators, qrc721) | `useModuleCall({ module, action, params })` |
+| Typed module clients (qrc20, qrc1155, qrc721, bridge, contract) | `useModules()` |
+| Routed modules without a typed client (verify, validators) | `useModuleCall({ module, action, params })` |
 | ML-DSA Sign-In | `useSignIn`, `createAuthMessage`, `checkAuthMessage`, `<SignInButton />` |
 | Account / tx DTOs | `useAccountDto`, `toTxResultDto` |
 | Send safety helpers | `reviewTransfer`, `normalizeSqAddress`, `compareDecimal`, `getRecentRecipients`, `spendableAfterFee`, `exceedsBalanceWithFee` |

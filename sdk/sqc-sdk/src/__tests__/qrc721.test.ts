@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { QRC721, deployQRC721, getNftCollection } from '../tokens/qrc721.js';
+import { qrc721Address } from '../addresses/index.js';
 import type { Connection } from '../core/connection.js';
 import type { Signer } from '../core/signer.js';
 
@@ -108,5 +109,44 @@ describe('QRC721 writes', () => {
       waitForConfirmation: true,
       allowNonceConfirmation: true,
     });
+  });
+
+  it('transfer and burn send their action scoped to the collection, with opts', async () => {
+    const sendModuleCall = vi.fn(async () => ({ status: 'submitted', hash: 'h' }));
+    const wallet = { sendModuleCall, getAddress: () => OWNER } as unknown as Signer;
+    const nft = getNftCollection(conn(() => null).connection, COLLECTION);
+    const to = 'SQ:' + 'CD'.repeat(32);
+    await nft.transfer(wallet, to, '3', { fee: '9', waitForConfirmation: false });
+    await nft.burn(wallet, 3 as unknown as string, { fee: '11' });
+    expect(sendModuleCall.mock.calls.map((c) => (c as unknown[])[0])).toEqual([
+      expect.objectContaining({
+        module: 'qrc721',
+        action: 'transfer',
+        params: { collection: COLLECTION, to: to.replace(/CD/g, 'cd'), id: '3' },
+        fee: '9',
+        waitForConfirmation: false,
+      }),
+      expect.objectContaining({ module: 'qrc721', action: 'burn', params: { collection: COLLECTION, id: '3' }, fee: '11' }),
+    ]);
+  });
+
+  it('transfer and burn reject bad input before signing', async () => {
+    const sendModuleCall = vi.fn();
+    const wallet = { sendModuleCall, getAddress: () => OWNER } as unknown as Signer;
+    const nft = getNftCollection(conn(() => null).connection, COLLECTION);
+    await expect(nft.transfer(wallet, '0xdead', '1')).rejects.toMatchObject({ code: 'INVALID_ADDRESS' });
+    await expect(nft.burn(wallet, '1.5')).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    await expect(nft.mint(wallet, OWNER, '1', 'x'.repeat(2049))).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    expect(sendModuleCall).not.toHaveBeenCalled();
+  });
+});
+
+describe('qrc721Address', () => {
+  it('is deterministic per deployer and nonce, and matches predictAddress', () => {
+    const a = qrc721Address(OWNER, 1);
+    expect(a).toMatch(/^SQ:[0-9a-f]{64}$/);
+    expect(qrc721Address(OWNER, 1)).toBe(a);
+    expect(qrc721Address(OWNER, 2)).not.toBe(a);
+    expect(QRC721.predictAddress(OWNER, 1)).toBe(a);
   });
 });

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EstimateGasRequest, EstimateGasResponse } from '@splendor/sqc-sdk';
 import { toUnits } from '@splendor/sqc-sdk';
 import { useConnectState } from '../context.js';
+import { useVisiblePolling } from '../usePageVisible.js';
 import { useReadConnection } from './core.js';
 import { loadTokens, validDecimals } from './qrc20.js';
 
@@ -61,10 +62,8 @@ function usePolledRead<T>(
 
   useEffect(() => {
     void refresh();
-    if (!key || !pollMs) return;
-    const id = setInterval(() => void refresh(), pollMs);
-    return () => clearInterval(id);
-  }, [refresh, key, pollMs, networkId]);
+  }, [refresh, networkId]);
+  useVisiblePolling(() => void refresh(), pollMs, !!key);
 
   return { data, loading, error, refresh };
 }

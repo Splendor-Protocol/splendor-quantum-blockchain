@@ -192,7 +192,7 @@ networks where that fork is active.
 | `bridge` | `useBridge`, `useModules().bridge(addr)` | `bridge_v1` |
 | `validators` | none, use `useModuleCall` | `validators_v1` |
 | `verify` | none, use `useModuleCall` | `verify_v1` |
-| `qrc721` | none, use `useModuleCall` | `qrc721_v1` |
+| `qrc721` | `useQRC721`, `useDeployQRC721`, `useModules().qrc721(addr)` | `qrc721_v1` |
 
 `useModules()` returns address-bound clients that already carry the wallet (`null` until
 connected):

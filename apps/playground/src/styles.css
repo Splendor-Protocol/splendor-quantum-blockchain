@@ -1513,6 +1513,32 @@ input[type='checkbox'] {
   background: rgba(240, 193, 74, 0.1);
   border: 1px solid rgba(240, 193, 74, 0.35);
 }
+.pg-local-notice > span {
+  flex: 1;
+}
+
+/* Account sync status in the studio top bar; opens Save and share. */
+.pg-save-chip {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--pg-border);
+  background: transparent;
+  color: var(--pg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pg-save-chip[data-status='saved'] {
+  color: var(--pg-ok);
+  border-color: color-mix(in srgb, var(--pg-ok) 45%, transparent);
+}
+.pg-save-chip[data-status='unsaved'],
+.pg-save-chip[data-status='conflict'],
+.pg-save-chip[data-status='error'] {
+  color: var(--pg-danger);
+  border-color: color-mix(in srgb, var(--pg-danger) 45%, transparent);
+}
 
 /* ---- Component palette: illustrated tiles + hover card ------------------------------- */
 .pg-palette {

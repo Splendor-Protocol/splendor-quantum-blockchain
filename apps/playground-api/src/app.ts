@@ -10,7 +10,7 @@ import { issueNonce, parseAuthMessage, verifySignIn, type NonceStore } from '@sp
 import { canonicalAddress, type ApiConfig } from './config.js';
 import { startHousekeeping } from './housekeeping.js';
 import { createReleaseService, type FetchLike, type ReleaseService } from './releases.js';
-import type { CatalogFlag, Store } from './store/types.js';
+import type { CatalogFlag, ProjectPatch, Store } from './store/types.js';
 
 export type AppDeps = {
   config: ApiConfig;
@@ -49,8 +49,12 @@ declare module 'fastify' {
 const obj = (properties: Record<string, object> = {}, required: string[] = []) => ({ type: 'object', additionalProperties: false, properties, required });
 const str = (maxLength: number, pattern?: string) => ({ type: 'string', maxLength, ...(pattern ? { pattern } : {}) });
 const idParams = obj({ id: str(40, ID) }, ['id']);
-const specBody = obj({ spec: { type: 'object' } }, ['spec']);
-const createProjectBody = obj({ spec: { type: 'object' }, workspaceId: { type: 'string' } }, ['spec']);
+/** `baseVersion`: the version the edit started from; a stale one is refused with 409 instead of overwriting. */
+const specBody = obj({ spec: { type: 'object' }, baseVersion: { type: 'integer', minimum: 1 } }, ['spec']);
+const createProjectBody = obj({ spec: { type: 'object' }, workspaceId: str(40, ID) }, ['spec']);
+const workspaceNameBody = obj({ name: str(200) });
+const patchProjectBody = obj({ name: str(200), workspaceId: { anyOf: [str(40, ID), { type: 'null' }] }, baseVersion: { type: 'integer', minimum: 1 } });
+const listProjectsQuery = obj({ workspaceId: str(40, ID) });
 
 export async function buildApp(deps: AppDeps) {
   const { config, store } = deps;
@@ -69,7 +73,7 @@ export async function buildApp(deps: AppDeps) {
   });
 
   await app.register(cookie);
-  await app.register(cors, { origin: config.origins, credentials: true, methods: ['GET', 'POST', 'PUT', 'DELETE'] });
+  await app.register(cors, { origin: config.origins, credentials: true, methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] });
   await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });
 
   // CSRF: state changes need JSON (a plain HTML form cannot send it) and an allowed Origin. A
@@ -107,11 +111,15 @@ export async function buildApp(deps: AppDeps) {
     if (err.validation) {
       return reply.code(400).send({
         error: 'Invalid request',
+        code: 'INVALID_REQUEST',
+        requestId: req.id,
         issues: err.validation.map((v) => ({ path: v.instancePath ?? '', message: v.message ?? 'invalid' })),
       });
     }
-    return reply.code(status).send({ error: err.message });
+    return reply.code(status).send({ error: err.message, requestId: req.id });
   });
+
+  app.setNotFoundHandler((req, reply) => reply.code(404).send({ error: 'Not found', code: 'NOT_FOUND', requestId: req.id }));
 
   const isAdmin = async (address: string) => config.adminAddresses.includes(address) || (await store.isAdmin(address));
 
@@ -243,20 +251,31 @@ export async function buildApp(deps: AppDeps) {
     return { ok: true };
   });
 
-  const summary = (p: { id: string; name: string; updatedAt: string; shareId: string | null; workspaceId?: string | null }) => ({
+  const summary = (p: { id: string; name: string; updatedAt: string; shareId: string | null; workspaceId?: string | null; version: number }) => ({
     id: p.id,
     name: p.name,
     updatedAt: p.updatedAt,
     shareId: p.shareId,
     workspaceId: p.workspaceId ?? null,
+    version: p.version,
   });
+  const conflict = async (reply: FastifyReply, id: string) => {
+    const current = await store.getProject(id);
+    if (!current) return reply.code(404).send({ error: 'Not found' });
+    return reply.code(409).send({
+      error: 'This project was changed somewhere else since you opened it',
+      code: 'CONFLICT',
+      current: { ...summary(current), createdAt: current.createdAt },
+    });
+  };
+  const ownsWorkspace = async (owner: string, id: string) => (await store.getWorkspace(id, owner)) !== null;
 
   // ---- workspaces ----
   app.get('/workspaces', { preHandler: requireUser }, async (req) => ({
     workspaces: await store.listWorkspaces(req.session!.address),
   }));
 
-  app.post<{ Body: { name?: string } }>('/workspaces', { preHandler: requireUser, schema: { body: obj({ name: { type: 'string' } }) } }, async (req, reply) => {
+  app.post<{ Body: { name?: string } }>('/workspaces', { preHandler: requireUser, schema: { body: workspaceNameBody } }, async (req, reply) => {
     const name = (typeof req.body.name === 'string' && req.body.name.trim() ? req.body.name.trim() : 'My workspace').slice(0, 80);
     const row = await store.createWorkspace({ id: newId(), owner: req.session!.address, name });
     return reply.code(201).send(row);
@@ -264,10 +283,9 @@ export async function buildApp(deps: AppDeps) {
 
   app.patch<{ Params: { id: string }; Body: { name: string } }>(
     '/workspaces/:id',
-    { preHandler: requireUser, schema: { params: idParams, body: obj({ name: { type: 'string' } }) } },
+    { preHandler: requireUser, schema: { params: idParams, body: workspaceNameBody } },
     async (req, reply) => {
-      const list = await store.listWorkspaces(req.session!.address);
-      if (!list.some((w) => w.id === req.params.id)) return reply.code(404).send({ error: 'Not found' });
+      if (!(await ownsWorkspace(req.session!.address, req.params.id))) return reply.code(404).send({ error: 'Not found' });
       const name = String(req.body.name ?? '').trim().slice(0, 80);
       if (!name) return reply.code(400).send({ error: 'name required' });
       const row = await store.renameWorkspace(req.params.id, name);
@@ -277,25 +295,22 @@ export async function buildApp(deps: AppDeps) {
   );
 
   app.delete<{ Params: { id: string } }>('/workspaces/:id', { preHandler: requireUser, schema: { params: idParams } }, async (req, reply) => {
-    const list = await store.listWorkspaces(req.session!.address);
-    if (!list.some((w) => w.id === req.params.id)) return reply.code(404).send({ error: 'Not found' });
+    if (!(await ownsWorkspace(req.session!.address, req.params.id))) return reply.code(404).send({ error: 'Not found' });
     await store.deleteWorkspace(req.params.id);
     return { ok: true };
   });
 
   app.get<{ Params: { id: string } }>('/workspaces/:id/projects', { preHandler: requireUser, schema: { params: idParams } }, async (req, reply) => {
-    const list = await store.listWorkspaces(req.session!.address);
-    if (!list.some((w) => w.id === req.params.id)) return reply.code(404).send({ error: 'Not found' });
+    if (!(await ownsWorkspace(req.session!.address, req.params.id))) return reply.code(404).send({ error: 'Not found' });
     return {
       projects: (await store.listProjects(req.session!.address, req.params.id)).map(summary),
     };
   });
 
   // ---- projects ----
-  app.get<{ Querystring: { workspaceId?: string } }>('/projects', { preHandler: requireUser }, async (req) => {
-    const wid = typeof req.query.workspaceId === 'string' ? req.query.workspaceId : undefined;
-    return { projects: (await store.listProjects(req.session!.address, wid)).map(summary) };
-  });
+  app.get<{ Querystring: { workspaceId?: string } }>('/projects', { preHandler: requireUser, schema: { querystring: listProjectsQuery } }, async (req) => ({
+    projects: (await store.listProjects(req.session!.address, req.query.workspaceId)).map(summary),
+  }));
 
   app.post<{ Body: { spec: unknown; workspaceId?: string } }>('/projects', { preHandler: requireUser, schema: { body: createProjectBody } }, async (req, reply) => {
     const r = checkSpec(req.body.spec);
@@ -303,11 +318,8 @@ export async function buildApp(deps: AppDeps) {
     if ((await store.countProjects(req.session!.address)) >= MAX_PROJECTS_PER_USER) {
       return reply.code(429).send({ error: `Project limit reached (${MAX_PROJECTS_PER_USER})` });
     }
-    const workspaceId = typeof (req.body as { workspaceId?: string }).workspaceId === 'string' ? (req.body as { workspaceId: string }).workspaceId : null;
-    if (workspaceId) {
-      const list = await store.listWorkspaces(req.session!.address);
-      if (!list.some((w) => w.id === workspaceId)) return reply.code(400).send({ error: 'Unknown workspace' });
-    }
+    const workspaceId = req.body.workspaceId ?? null;
+    if (workspaceId && !(await ownsWorkspace(req.session!.address, workspaceId))) return reply.code(400).send({ error: 'Unknown workspace' });
     const row = await store.createProject({
       id: newId(),
       owner: req.session!.address,
@@ -333,7 +345,7 @@ export async function buildApp(deps: AppDeps) {
     return { ...summary(p), createdAt: p.createdAt, spec: JSON.parse(p.spec) as DappSpec };
   });
 
-  app.put<{ Params: { id: string }; Body: { spec: unknown } }>(
+  app.put<{ Params: { id: string }; Body: { spec: unknown; baseVersion?: number } }>(
     '/projects/:id',
     { preHandler: requireUser, schema: { params: idParams, body: specBody } },
     async (req, reply) => {
@@ -341,10 +353,51 @@ export async function buildApp(deps: AppDeps) {
       if (!p) return reply;
       const r = checkSpec(req.body.spec);
       if (!r.ok) return reply.code(422).send({ error: 'Invalid spec', issues: r.issues });
-      const row = await store.updateProject(p.id, { name: r.spec.name, spec: JSON.stringify(r.spec) });
-      return { ...summary(row!), createdAt: row!.createdAt, spec: r.spec };
+      const row = await store.updateProject(p.id, { name: r.spec.name, spec: JSON.stringify(r.spec) }, req.body.baseVersion);
+      if (!row) return conflict(reply, p.id);
+      return { ...summary(row), createdAt: row.createdAt, spec: r.spec };
     },
   );
+
+  // Rename or move without resending the spec. The name is kept in the stored spec too.
+  app.patch<{ Params: { id: string }; Body: { name?: string; workspaceId?: string | null; baseVersion?: number } }>(
+    '/projects/:id',
+    { preHandler: requireUser, schema: { params: idParams, body: patchProjectBody } },
+    async (req, reply) => {
+      const p = await ownedProject(req, reply);
+      if (!p) return reply;
+      const patch: ProjectPatch = {};
+      if (req.body.name !== undefined) {
+        const name = req.body.name.trim().slice(0, 80);
+        if (!name) return reply.code(400).send({ error: 'name required' });
+        const spec = { ...(JSON.parse(p.spec) as DappSpec), name };
+        patch.name = name;
+        patch.spec = JSON.stringify(spec);
+      }
+      if (req.body.workspaceId !== undefined) {
+        if (req.body.workspaceId !== null && !(await ownsWorkspace(req.session!.address, req.body.workspaceId))) {
+          return reply.code(400).send({ error: 'Unknown workspace' });
+        }
+        patch.workspaceId = req.body.workspaceId;
+      }
+      if (!Object.keys(patch).length) return reply.code(400).send({ error: 'Nothing to change' });
+      const row = await store.updateProject(p.id, patch, req.body.baseVersion);
+      if (!row) return conflict(reply, p.id);
+      return { ...summary(row), createdAt: row.createdAt };
+    },
+  );
+
+  app.post<{ Params: { id: string } }>('/projects/:id/duplicate', { preHandler: requireUser, schema: { params: idParams, body: obj() } }, async (req, reply) => {
+    const p = await ownedProject(req, reply);
+    if (!p) return reply;
+    if ((await store.countProjects(req.session!.address)) >= MAX_PROJECTS_PER_USER) {
+      return reply.code(429).send({ error: `Project limit reached (${MAX_PROJECTS_PER_USER})` });
+    }
+    const name = `${p.name} copy`.slice(0, 80);
+    const spec = { ...(JSON.parse(p.spec) as DappSpec), name };
+    const row = await store.createProject({ id: newId(), owner: p.owner, name, spec: JSON.stringify(spec), workspaceId: p.workspaceId });
+    return reply.code(201).send({ ...summary(row), createdAt: row.createdAt, spec });
+  });
 
   app.delete<{ Params: { id: string } }>('/projects/:id', { preHandler: requireUser, schema: { params: idParams } }, async (req, reply) => {
     const p = await ownedProject(req, reply);

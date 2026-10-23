@@ -4,7 +4,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React, { type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, renderHook, waitFor, within } from '@testing-library/react';
-import { useDeployCollection, useDeployQRC721, useDeployToken, useModuleCall, useQRC1155, useQRC721 } from '../react/hooks.js';
+import {
+  useCallContract,
+  useDeployBridge,
+  useDeployBytecode,
+  useDeployCollection,
+  useDeployQRC721,
+  useDeployToken,
+  useModuleCall,
+  usePreflight,
+  useQRC1155,
+  useQRC721,
+} from '../react/hooks.js';
 import { TokenPanel } from '../widgets/TokenPanel.js';
 import { SignInButton } from '../widgets/SignInButton.js';
 import { resolveThemeAttr } from '../theme/themes.js';
@@ -121,6 +132,172 @@ describe('QRC-721 hooks', () => {
       expect.objectContaining({ module: 'qrc721', action: 'mint', params: expect.objectContaining({ to: TO, id: '7' }) }),
     ]);
     expect(result.current.nft.status).toBe('success');
+  });
+
+  it('reads ownership and collection info without a connected wallet', async () => {
+    const wallet = mockWallet({
+      moduleCall: ({ action }) =>
+        action === 'owner_of' ? TO : action === 'balance_of' ? 2 : { name: 'Art', symbol: 'ART', owner: TO, total_supply: 5 },
+    });
+    const ctrl = createMockConnectController({ network: 'testnet', wallet, status: 'disconnected' });
+    const wrapper = ({ children }: { children: ReactNode }) => React.createElement(MockSplendorProvider, { controller: ctrl }, children);
+    const { result } = renderHook(() => useQRC721(COLLECTION), { wrapper });
+    expect(await result.current.ownerOf('7')).toBe(TO);
+    expect(await result.current.balanceOf(TO)).toBe('2');
+    expect(await result.current.collectionInfo()).toEqual({ name: 'Art', symbol: 'ART', owner: TO, total_supply: '5' });
+    expect(wallet.calls.filter((c) => c.method === 'connection.moduleCall').map((c) => (c.args[0] as { action: string }).action)).toEqual([
+      'owner_of',
+      'balance_of',
+      'token_info',
+    ]);
+    await expect(result.current.mint(TO, '1')).rejects.toThrow(/not ready/i);
+    expect(wallet.calls.some((c) => c.method === 'sendModuleCall')).toBe(false);
+  });
+
+  it('mint, transfer and burn forward WriteOpts and record a pending send each', async () => {
+    const { ctrl, wrapper } = setup({ confirm: false });
+    const { result } = renderHook(() => useQRC721(COLLECTION), { wrapper });
+    await act(async () => {
+      await result.current.mint(TO, '1', 'ipfs://x', { fee: '1111' });
+    });
+    await act(async () => {
+      await result.current.transfer(TO, '1', { fee: '2222', waitForConfirmation: false });
+    });
+    await act(async () => {
+      await result.current.burn('1', { fee: '3333' });
+    });
+    const sends = ctrl.wallet.calls.filter((c) => c.method === 'sendModuleCall').map((c) => c.args[0]);
+    expect(sends).toEqual([
+      expect.objectContaining({ module: 'qrc721', action: 'mint', params: { collection: COLLECTION, to: TO, id: '1', uri: 'ipfs://x' }, fee: '1111' }),
+      expect.objectContaining({ module: 'qrc721', action: 'transfer', params: { collection: COLLECTION, to: TO, id: '1' }, fee: '2222', waitForConfirmation: false }),
+      expect.objectContaining({ module: 'qrc721', action: 'burn', params: { collection: COLLECTION, id: '1' }, fee: '3333' }),
+    ]);
+    expect(loadPendingTxs().map((p) => p.summary)).toEqual(
+      expect.arrayContaining([`Mint NFT #1 to ${TO}`, `Send NFT #1 to ${TO}`, 'Burn NFT #1']),
+    );
+  });
+});
+
+describe('contract, bridge and preflight hooks', () => {
+  const CONTRACT = 'SQ:' + '12'.repeat(32);
+
+  function disconnected() {
+    const wallet = mockWallet();
+    const ctrl = createMockConnectController({ network: 'testnet', wallet, status: 'disconnected' });
+    const wrapper = ({ children }: { children: ReactNode }) => React.createElement(MockSplendorProvider, { controller: ctrl }, children);
+    return { wallet, wrapper };
+  }
+
+  it('useCallContract sends through callContract and records the call', async () => {
+    const { ctrl, wrapper } = setup({ confirm: false });
+    const { result } = renderHook(() => useCallContract(), { wrapper });
+    const opts = { contract: CONTRACT, function: 'set(uint256)', args: ['42'], fee: '5000' };
+    await act(async () => {
+      await result.current.callContract(opts as never);
+    });
+    expect(ctrl.wallet.calls.find((c) => c.method === 'callContract')!.args[0]).toEqual(opts);
+    expect(result.current.status).toBe('success');
+    expect(result.current.explorerUrl).toContain('/tx/');
+    expect(loadPendingTxs()[0]).toMatchObject({ kind: 'call', summary: `Call set(uint256) on ${CONTRACT}` });
+  });
+
+  it('useCallContract refuses without a wallet', async () => {
+    const { wallet, wrapper } = disconnected();
+    const { result } = renderHook(() => useCallContract(), { wrapper });
+    await expect(result.current.callContract({ contract: CONTRACT } as never)).rejects.toThrow(/not connected/i);
+    expect(wallet.calls.some((c) => c.method === 'callContract')).toBe(false);
+  });
+
+  it('useDeployBytecode deploys with the given fee and predicts the address from the signed nonce', async () => {
+    const { ctrl, wrapper } = setup();
+    const { result } = renderHook(() => useDeployBytecode(), { wrapper });
+    let address = '';
+    await act(async () => {
+      address = (await result.current.deploy('0x0061736d', { fee: '7000' })).address;
+    });
+    expect(ctrl.wallet.calls.find((c) => c.method === 'deployContract')!.args[0]).toEqual({ bytecode: '0x0061736d', fee: '7000' });
+    expect(address).toMatch(/^SQ:[0-9a-f]{64}$/);
+    expect(result.current.address).toBe(address);
+    expect(result.current.status).toBe('success');
+  });
+
+  it('useDeployBytecode refuses without a wallet', async () => {
+    const { wallet, wrapper } = disconnected();
+    const { result } = renderHook(() => useDeployBytecode(), { wrapper });
+    await act(async () => {
+      await expect(result.current.deploy('0x00')).rejects.toThrow(/not connected/i);
+    });
+    expect(result.current.status).toBe('error');
+    expect(wallet.calls.some((c) => c.method === 'deployContract')).toBe(false);
+  });
+
+  const bridgeParams = {
+    evmChainId: 1,
+    evmContract: '0x' + 'ab'.repeat(20),
+    splvName: 'Bridged SPLV',
+    splvSymbol: 'SPLV',
+    splvMaxSupply: '1000000',
+    maxClaimAmount: '1000',
+    threshold: 2,
+  };
+
+  it('useDeployBridge sends bridge.deploy and returns the bridge and SPLV addresses', async () => {
+    const { ctrl, wrapper } = setup();
+    const { result } = renderHook(() => useDeployBridge(), { wrapper });
+    let res = { address: '', splvAddress: '' };
+    await act(async () => {
+      res = await result.current.deploy({ ...bridgeParams, fee: '9000' });
+    });
+    expect(ctrl.wallet.calls.find((c) => c.method === 'sendModuleCall')!.args[0]).toMatchObject({
+      module: 'bridge',
+      action: 'deploy',
+      params: { evm_chain_id: 1, splv_symbol: 'SPLV', splv_max_supply: '1000000', max_claim_amount: '1000', threshold: 2 },
+      fee: '9000',
+    });
+    expect(res.address).toMatch(/^SQ:/);
+    expect(res.splvAddress).toMatch(/^SQ:/);
+    expect(res.splvAddress).not.toBe(res.address);
+    expect(result.current.address).toBe(res.address);
+  });
+
+  it('useDeployBridge rejects bad params before signing', async () => {
+    const { ctrl, wrapper } = setup();
+    const { result } = renderHook(() => useDeployBridge(), { wrapper });
+    await act(async () => {
+      await expect(result.current.deploy({ ...bridgeParams, threshold: 0 })).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    });
+    expect(result.current.status).toBe('error');
+    expect(result.current.errorMessage).toBeTruthy();
+    expect(ctrl.wallet.calls.some((c) => c.method === 'sendModuleCall')).toBe(false);
+  });
+
+  it('usePreflight returns the wallet preflight and surfaces failures', async () => {
+    const { ctrl, wrapper } = setup();
+    const preflight = vi.fn(async () => ({ ok: true, balance: '10', fee: '1000' }));
+    (ctrl.wallet as unknown as { preflight: typeof preflight }).preflight = preflight;
+    const { result } = renderHook(() => usePreflight(), { wrapper });
+    await act(async () => {
+      await result.current.preflight({ amountSPLD: '1' });
+    });
+    expect(preflight).toHaveBeenCalledWith({ amountSPLD: '1' });
+    expect(result.current).toMatchObject({ status: 'success', result: { ok: true } });
+
+    preflight.mockRejectedValueOnce(new Error('insufficient balance'));
+    await act(async () => {
+      await expect(result.current.preflight()).rejects.toThrow(/insufficient/);
+    });
+    expect(preflight).toHaveBeenLastCalledWith({});
+    expect(result.current.status).toBe('error');
+    expect(result.current.errorMessage).toBeTruthy();
+    act(() => result.current.reset());
+    expect(result.current).toMatchObject({ status: 'idle', result: null, error: null });
+  });
+
+  it('usePreflight refuses without a wallet', async () => {
+    const { wrapper } = disconnected();
+    const { result } = renderHook(() => usePreflight(), { wrapper });
+    await expect(result.current.preflight()).rejects.toThrow(/not connected/i);
+    expect(result.current.status).toBe('idle');
   });
 });
 

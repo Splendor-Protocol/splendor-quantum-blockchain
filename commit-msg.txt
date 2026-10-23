@@ -1,28 +1,44 @@
-﻿feat(studio): ready-made Landing + Dashboard kits, data binding, flow preview, simpler studio
+﻿feat(playground,api,connect-react): conflict-safe saves, draft recovery, clearer hook errors
 
-Kits and data
-- Token project and Contract app kits (landing + gated dashboard) with a setup
-  wizard: kit -> token or contract/ABI -> theme -> name; demo token and contract
-  preview with live-looking data
-- Bind components to spec.contracts by id (contract/function pickers); exports
-  reference CONTRACTS[id].address, so one address edit updates every block
-- New components: Token stats, Tokenomics, Live stat, Contract form (typed
-  fields from the ABI); polished contract, token and tx blocks
-- Page access (public / wallet / signed in) via AccessGate in preview and export
+Playground API
+- Projects get a `version` (migration 4). PUT/PATCH /projects/:id accept
+  `baseVersion` and answer 409 CONFLICT with the current summary instead of
+  overwriting a newer copy.
+- New PATCH /projects/:id (rename, move between workspaces) and
+  POST /projects/:id/duplicate (counts toward the project limit).
+- CORS allows PATCH (workspace rename failed cross-origin).
+- Stricter schemas for workspace names, workspaceId and GET /projects.
+- Errors carry `code` and `requestId`; unknown routes return NOT_FOUND.
+- README route table lists every route.
 
-Studio
-- Full-screen Preview app (click-through flow, wallet toggle, restart)
-- Flows storyboard with labelled links and "Play from here"
-- Illustrated component palette with hover cards; Layers panel replaces the
-  old block row; list row editors; page settings; plain-language labels;
-  one network picker; Finish setup checklist
+Playground
+- Autosave sends the base version, runs only after real edits, and saves
+  one request at a time. A conflict shows "Open the newer copy" /
+  "Keep my version". Top-bar chip shows the sync state.
+- ?project= stays in the URL; the draft records its version and unsaved
+  edits so a reload resumes them.
+- A draft replaced by a template, New, Import or Remix is stashed and can
+  be restored.
+- Rename and Duplicate on workspace and project cards (account and
+  browser).
+- Fixes: header brand follows the dApp name, Finish setup count, jumping
+  to an issue from Style/Actions tabs, export panel copy.
 
-Fixes and hardening
-- Safe link validation, zip-slip guard on exports, bounded preview messages,
-  pinned signer for mainnet embeds, fastify upgrade
-- Unique ids for new and template pages; drafts no longer dropped on bad
-  values; vendored SDK strips devDependencies so Vite exports compile
-- Accessible rail tabs, focus-trapped dialogs, keyboard nesting
+connect-react
+- connectErrorMessage(err, 'tx'): transactions no longer read
+  "Connection failed"; INVALID_PARAMS shows the SDK message.
+- Hooks throw BridgeError (NOT_CONNECTED / INVALID_PARAMS) when called
+  too early; useQRC20, useQRC1155, useBridge, useContract return
+  errorMessage; wallet error events keep INVALID_PARAMS and userHint.
+- useQRC721 mint/transfer/burn accept WriteOpts.
+- Polling pauses in hidden tabs and refreshes on return.
+- useQRC1155().refresh deprecated (no-op). Docs list QRC-721 hooks.
 
-Tests: unit and e2e for kits, binding, access and preview flow; all 16
-template exports build for Vite and Next.js
+Tests and docs
+- New unit, integration and e2e coverage: API versions/conflicts,
+  migration 4, CORS, error shape; playground storage, export, measure,
+  reducer, local workspaces; SDK QRC-721 writes, session deploy,
+  protocol caveat, txBusy; connect-react hooks, errors, polling;
+  e2e saving, conflict, draft restore, rename and duplicate.
+- docs/PLAYGROUND_SDK_ARCHITECTURE.md: architecture, findings, roadmap.
+- Remove stray playground-api smoke logs and ignore them.
