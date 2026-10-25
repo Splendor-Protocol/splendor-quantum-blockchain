@@ -1,7 +1,7 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────
 # Pinned to the go directive in go.mod; move go.mod, this line, sdk/sqc-sdk/wasm/build.sh,
 # install.sh and the Makefile together. circl v1.6.5 (FIPS-204 ML-DSA-65) needs go 1.25+.
-FROM golang:1.26.10-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git gcc musl-dev
