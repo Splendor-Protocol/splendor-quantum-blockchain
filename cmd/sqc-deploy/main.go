@@ -362,7 +362,10 @@ func (c *client) getJSON(path string, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return fmt.Errorf("read GET %s body: %w", path, err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
 	}
@@ -375,7 +378,10 @@ func (c *client) postJSON(path string, body []byte, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	rb, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return fmt.Errorf("read POST %s body: %w", path, err)
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("POST %s: %s: %s", path, resp.Status, strings.TrimSpace(string(rb)))
 	}
