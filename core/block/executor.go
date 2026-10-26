@@ -1727,10 +1727,13 @@ func (e *Executor) storeBlockAndReceipts(b *types.Block, receipts []*types.Recei
 	// ever forward. Folding the head write into the batch means a block body can
 	// never be persisted without its head (or vice-versa) — the two move together.
 	if curH, ok := e.latestHeightRaw(); !ok || b.Header.Height > curH {
-		latestData, _ := json.Marshal(map[string]interface{}{
+		latestData, err := json.Marshal(map[string]interface{}{
 			"height": b.Header.Height,
 			"hash":   hashHex,
 		})
+		if err != nil {
+			return fmt.Errorf("marshal chain head: %w", err)
+		}
 		batch.Put([]byte(keyLatest), latestData)
 	}
 	// Durable before the matching state commit (C3). Sync=false can lose the
