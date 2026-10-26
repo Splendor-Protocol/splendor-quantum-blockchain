@@ -1161,7 +1161,10 @@ func (d *driver) post(n *node, path string, body []byte) (int, string, error) {
 		return 0, "", err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return 0, "", fmt.Errorf("read POST %s body: %w", path, err)
+	}
 	return resp.StatusCode, string(bytes.TrimSpace(b)), nil
 }
 
