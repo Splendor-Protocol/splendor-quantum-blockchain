@@ -1569,16 +1569,16 @@ func (e *Executor) assembleBlock(
 		// b.Transactions. Using i made a producing node disagree with its own
 		// transaction index, and with every other node, about the same block.
 		receipt, err := types.NewReceipt(tx, uint32(len(executed)), height, [32]byte{})
-				if err != nil {
-					if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
-						e.state.DiscardPending()
-						return nil, nil, fmt.Errorf("revert of failed receipt: %w (receipt error: %v)", rerr, err)
-					}
-					log.Warn().Err(err).Msg("skipping tx: receipt creation failed")
-					dropped++
-					skip(tx, err)
-					continue
-				}
+		if err != nil {
+			if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
+				e.state.DiscardPending()
+				return nil, nil, fmt.Errorf("revert of failed receipt: %w (receipt error: %v)", rerr, err)
+			}
+			log.Warn().Err(err).Msg("skipping tx: receipt creation failed")
+			dropped++
+			skip(tx, err)
+			continue
+		}
 		if err := e.executeTx(tx, height, blockTime, validatorAddr, receipt); err != nil {
 			if rerr := e.state.RevertToSnapshot(snap); rerr != nil {
 				e.state.DiscardPending()

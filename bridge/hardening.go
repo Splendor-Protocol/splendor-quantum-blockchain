@@ -44,12 +44,12 @@ type CircuitBreaker struct {
 	recoveryTimeout  time.Duration
 	successThreshold int
 
-	state          atomic.Int32 // CircuitState
-	failures       atomic.Int32
-	successes      atomic.Int32
-	lastFailure    atomic.Int64 // unix nanos
-	halfOpenCalls  atomic.Int32
-	mu             sync.Mutex
+	state         atomic.Int32 // CircuitState
+	failures      atomic.Int32
+	successes     atomic.Int32
+	lastFailure   atomic.Int64 // unix nanos
+	halfOpenCalls atomic.Int32
+	mu            sync.Mutex
 }
 
 // NewCircuitBreaker creates a circuit breaker that opens after failureThreshold
@@ -310,9 +310,9 @@ func truncate(s string) string {
 // runtime guard that catches reorgs shallower than the confirm depth (or a tip
 // that moves backward, which confirm depth alone cannot detect).
 type ReorgDetector struct {
-	mu     sync.Mutex
-	window int             // max recent heights to remember
-	hashes map[uint64]string
+	mu         sync.Mutex
+	window     int // max recent heights to remember
+	hashes     map[uint64]string
 	lastHeight uint64 // highest height ever observed
 }
 
@@ -373,10 +373,10 @@ func (d *ReorgDetector) Reset() {
 
 // ReorgError is returned when the chain shows signs of a reorganization.
 type ReorgError struct {
-	Reason        string
-	Height        uint64
-	PreviousHash  string
-	CurrentHash   string
+	Reason         string
+	Height         uint64
+	PreviousHash   string
+	CurrentHash    string
 	PreviousHeight uint64
 }
 
