@@ -167,7 +167,10 @@ func buildCall(from qcrypto.Address, priv *qcrypto.PrivateKey, data []byte, nonc
 }
 
 func submit(tx *types.Transaction) {
-	body, _ := json.Marshal(tx)
+	body, err := json.Marshal(tx)
+	if err != nil {
+		log.Fatalf("marshal tx: %v", err)
+	}
 	raw := post("/tx/submit", body)
 	var res map[string]any
 	json.Unmarshal(raw, &res)
@@ -202,9 +205,12 @@ func qrc20AddressFor(deployer qcrypto.Address, nonce uint64) qcrypto.Address {
 // callString runs a read-only module call through POST /call. Calldata is
 // hex-encoded and the module result arrives under "decoded".
 func callString(data []byte, field string) string {
-	body, _ := json.Marshal(map[string]any{
+	body, err := json.Marshal(map[string]any{
 		"to": vm.ModuleRouterAddress.String(), "data": fmt.Sprintf("%x", data),
 	})
+	if err != nil {
+		log.Fatalf("marshal /call body: %v", err)
+	}
 	raw := post("/call", body)
 	var res struct {
 		Decoded map[string]any `json:"decoded"`
