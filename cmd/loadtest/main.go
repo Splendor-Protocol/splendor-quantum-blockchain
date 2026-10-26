@@ -319,7 +319,10 @@ func report(name string, pass bool, code int, resp string) {
 var client = &http.Client{Timeout: 15 * time.Second}
 
 func submit(rpc string, tx *types.Transaction) (int, string) {
-	b, _ := json.Marshal(tx)
+	b, err := json.Marshal(tx)
+	if err != nil {
+		return 0, err.Error()
+	}
 	return postRaw(rpc, "/tx/submit", b)
 }
 
@@ -329,7 +332,10 @@ func postRaw(rpc, path string, body []byte) (int, string) {
 		return 0, err.Error()
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	rb, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return 0, err.Error()
+	}
 	return resp.StatusCode, string(bytes.TrimSpace(rb))
 }
 
