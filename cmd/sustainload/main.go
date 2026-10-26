@@ -623,7 +623,10 @@ func (d *driver) get(path string) (int, string) {
 		return 0, err.Error()
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, err.Error()
+	}
 	return resp.StatusCode, string(bytes.TrimSpace(b))
 }
 
@@ -633,7 +636,10 @@ func (d *driver) post(path string, body []byte) (int, string) {
 		return 0, err.Error()
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, err.Error()
+	}
 	return resp.StatusCode, string(bytes.TrimSpace(b))
 }
 
