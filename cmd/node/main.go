@@ -1036,6 +1036,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 		go func() {
 			if err := producer.Run(ctx); err != nil && ctx.Err() == nil {
 				log.Error().Err(err).Msg("Validator exited with error")
+				cancel()
 			}
 		}()
 
