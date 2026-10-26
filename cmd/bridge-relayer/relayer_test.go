@@ -410,14 +410,25 @@ func TestRelayerRevertsThenSkips(t *testing.T) {
 // failure. The burn holds and is retried indefinitely; the cursor never moves.
 func TestRelayerTransientSubmitNeverSkips(t *testing.T) {
 	r, s := newRelayerFixture(t)
+	now := time.Unix(0, 0)
+	r.now = func() time.Time { return now }
 	rec := strings.Repeat("cd", 32)
 	s.head = 300
 	s.logs = []evmLog{makeLog(1, 0, "1000", rec, 50)}
 	s.failNext = 999 // every submit rejected, forever
 
 	for i := 0; i < 5; i++ {
+		// Advance past the maximum backoff so every pass submits and is
+		// rejected, rather than only exercising the backoff guard.
+		now = now.Add(time.Minute)
 		if _, err := r.RunOnce(); err != nil {
 			t.Fatalf("pass %d: %v", i, err)
+		}
+		s.mu.Lock()
+		remaining := s.failNext
+		s.mu.Unlock()
+		if remaining != 999-(i+1) {
+			t.Fatalf("pass %d: remaining rejections = %d, want %d", i, remaining, 999-(i+1))
 		}
 	}
 	if r.State.LastProcessed != 0 {
@@ -426,16 +437,28 @@ func TestRelayerTransientSubmitNeverSkips(t *testing.T) {
 	if len(r.State.Skipped) != 0 {
 		t.Fatalf("transient submit failures were recorded as skips: %+v", r.State.Skipped)
 	}
+	if r.attempts[1] != 0 {
+		t.Fatalf("transient submit failures counted as mined reverts: %d", r.attempts[1])
+	}
 
-	// Once the transient condition clears, the burn settles and the cursor
-	// advances — no manual replay needed.
+	// Clearing the transient condition does not bypass the retry delay.
 	s.mu.Lock()
 	s.failNext = 0
 	s.mu.Unlock()
 	if _, err := r.RunOnce(); err != nil {
+		t.Fatalf("backoff pass: %v", err)
+	}
+	if len(s.submits) != 0 || r.State.LastProcessed != 0 || len(r.State.Skipped) != 0 {
+		t.Fatalf("acted before backoff expired: submits=%d state=%+v", len(s.submits), r.State)
+	}
+
+	// After the maximum retry delay the burn settles and the cursor advances,
+	// without sleeping in the test or requiring manual replay.
+	now = now.Add(time.Minute)
+	if _, err := r.RunOnce(); err != nil {
 		t.Fatalf("recovery pass: %v", err)
 	}
-	if len(s.submits) == 0 || r.State.LastProcessed != 200 {
+	if len(s.submits) != 1 || r.State.LastProcessed != 200 {
 		t.Fatalf("did not self-heal: submits=%d cursor=%d", len(s.submits), r.State.LastProcessed)
 	}
 }
