@@ -52,15 +52,41 @@ var MaxOutboundBlocks uint64 = 100_000
 
 // EVMChain adapts an EVM chain to the bridge.Chain interface.
 type EVMChain struct {
-	cfg    EVMConfig
-	client *http.Client
+	cfg     EVMConfig
+	client  *http.Client
+	circuit *CircuitBreaker
+	limiter *RateLimiter
+	reorg   *ReorgDetector
 }
 
+// NewEVMChain adapts an EVM chain to the bridge.Chain interface, wrapping every
+// upstream call in a circuit breaker, rate limiter, and reorg detector.
+//
+// Defaults: circuit opens after 5 consecutive failures and stays open for 30s;
+// rate limiter allows 10 calls/s with a burst of 20; reorg detector remembers
+// the last 100 observed heights.
 func NewEVMChain(cfg EVMConfig) *EVMChain {
 	if cfg.ConfirmDepthValue == 0 {
 		cfg.ConfirmDepthValue = 120
 	}
-	return &EVMChain{cfg: cfg, client: &http.Client{Timeout: 30 * time.Second}}
+	return &EVMChain{
+		cfg:     cfg,
+		client:  &http.Client{Timeout: 30 * time.Second},
+		circuit: NewCircuitBreaker("legacy-evm", 5, 30*time.Second),
+		limiter: NewRateLimiter(10, 20),
+		reorg:   NewReorgDetector(100),
+	}
+}
+
+// withHardening applies rate limiting and circuit breaking to one upstream
+// call. Rate limiting is checked first (cheap, no lock on the fast path), then
+// the circuit breaker. A rejected call returns immediately without touching the
+// chain.
+func (c *EVMChain) withHardening(f func() error) error {
+	if !c.limiter.Allow() {
+		return fmt.Errorf("legacy: rate limited")
+	}
+	return c.circuit.Call(f)
 }
 
 func (c *EVMChain) Name() string    { return "legacy" }
@@ -130,23 +156,61 @@ func hexQuantity(s string) (uint64, error) {
 }
 
 func (c *EVMChain) Height(ctx context.Context) (uint64, error) {
-	var s string
-	if err := c.call(ctx, "eth_blockNumber", []any{}, &s); err != nil {
+	var height uint64
+	err := c.withHardening(func() error {
+		var s string
+		if err := c.call(ctx, "eth_blockNumber", []any{}, &s); err != nil {
+			return err
+		}
+		h, err := hexQuantity(s)
+		if err != nil {
+			return err
+		}
+		height = h
+		return nil
+	})
+	if err != nil {
 		return 0, err
 	}
-	return hexQuantity(s)
+	// Reorg detection after a successful head read: a backward-moving tip is a
+	// reorg in flight. Return the error so the relayer pauses rather than
+	// settling against a chain that may be reorged out. This is not counted as
+	// a circuit-breaker failure — the RPC is working, the chain is just
+	// unsettled.
+	if err := c.reorg.Observe(height, ""); err != nil {
+		return 0, err
+	}
+	return height, nil
 }
 
 func (c *EVMChain) Balance(ctx context.Context, owner string, asset Asset) (*big.Int, error) {
+	if err := ValidateEVMAddress(owner); err != nil {
+		return nil, err
+	}
+	if err := ValidateAsset(asset); err != nil {
+		return nil, err
+	}
 	if asset == AssetSPLV {
 		tok, ok := c.cfg.TokenAddresses[asset]
 		if !ok {
 			return nil, fmt.Errorf("legacy: no token contract for %s", asset)
 		}
-		return c.tokenBalance(ctx, owner, tok)
+		var bal *big.Int
+		err := c.withHardening(func() error {
+			var err error
+			bal, err = c.tokenBalance(ctx, owner, tok)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		return bal, nil
 	}
 	var s string
-	if err := c.call(ctx, "eth_getBalance", []any{owner, "latest"}, &s); err != nil {
+	err := c.withHardening(func() error {
+		return c.call(ctx, "eth_getBalance", []any{owner, "latest"}, &s)
+	})
+	if err != nil {
 		return nil, err
 	}
 	v, ok := new(big.Int).SetString(strings.TrimPrefix(s, "0x"), 16)
@@ -194,12 +258,14 @@ func (c *EVMChain) Outbound(ctx context.Context, from, to uint64) ([]OutboundEve
 		to = from + MaxOutboundBlocks - 1
 	}
 	var logs []evmLog
-	err := c.call(ctx, "eth_getLogs", []any{map[string]any{
-		"address":   c.cfg.BurnContract,
-		"fromBlock": fmt.Sprintf("0x%x", from),
-		"toBlock":   fmt.Sprintf("0x%x", to),
-		"topics":    []string{burnedTopic0},
-	}}, &logs)
+	err := c.withHardening(func() error {
+		return c.call(ctx, "eth_getLogs", []any{map[string]any{
+			"address":   c.cfg.BurnContract,
+			"fromBlock": fmt.Sprintf("0x%x", from),
+			"toBlock":   fmt.Sprintf("0x%x", to),
+			"topics":    []string{burnedTopic0},
+		}}, &logs)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -296,6 +362,18 @@ func decodeBurned(l evmLog) (OutboundEvent, error) {
 // delegated to the injected Release func. Until a release contract is deployed
 // the reverse direction holds (fails closed).
 func (c *EVMChain) Settle(ctx context.Context, e OutboundEvent) (string, error) {
+	if err := ValidateEVMAddress(e.Sender); err != nil {
+		return "", err
+	}
+	if err := ValidateSQAddress(e.Recipient); err != nil {
+		return "", err
+	}
+	if err := ValidateAsset(e.Asset); err != nil {
+		return "", err
+	}
+	if err := ValidateAmount(e.Amount); err != nil {
+		return "", err
+	}
 	if c.cfg.Release == nil {
 		return "", fmt.Errorf("legacy: no release contract wired (reverse direction not yet deployable)")
 	}

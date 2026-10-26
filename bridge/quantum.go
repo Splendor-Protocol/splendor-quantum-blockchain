@@ -32,16 +32,42 @@ type QuantumConfig struct {
 
 // QuantumChain adapts the quantum node REST API to bridge.Chain.
 type QuantumChain struct {
-	cfg    QuantumConfig
-	client *http.Client
+	cfg     QuantumConfig
+	client  *http.Client
+	circuit *CircuitBreaker
+	limiter *RateLimiter
+	reorg   *ReorgDetector
 }
 
+// NewQuantumChain adapts the quantum node REST API to bridge.Chain, wrapping
+// every upstream call in a circuit breaker, rate limiter, and reorg detector.
+//
+// Defaults: circuit opens after 5 consecutive failures and stays open for 30s;
+// rate limiter allows 10 calls/s with a burst of 20; reorg detector remembers
+// the last 100 observed heights.
 func NewQuantumChain(cfg QuantumConfig) *QuantumChain {
 	if cfg.ConfirmDepthValue == 0 {
 		cfg.ConfirmDepthValue = 1
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
-	return &QuantumChain{cfg: cfg, client: &http.Client{Timeout: 30 * time.Second}}
+	return &QuantumChain{
+		cfg:     cfg,
+		client:  &http.Client{Timeout: 30 * time.Second},
+		circuit: NewCircuitBreaker("quantum", 5, 30*time.Second),
+		limiter: NewRateLimiter(10, 20),
+		reorg:   NewReorgDetector(100),
+	}
+}
+
+// withHardening applies rate limiting and circuit breaking to one upstream
+// call. Rate limiting is checked first (cheap, no lock on the fast path), then
+// the circuit breaker. A rejected call returns immediately without touching the
+// chain.
+func (c *QuantumChain) withHardening(f func() error) error {
+	if !c.limiter.Allow() {
+		return fmt.Errorf("quantum: rate limited")
+	}
+	return c.circuit.Call(f)
 }
 
 func (c *QuantumChain) Name() string    { return "quantum" }
@@ -91,28 +117,60 @@ func (c *QuantumChain) getJSON(ctx context.Context, path string, out any) error 
 
 // Height returns the node's head height.
 func (c *QuantumChain) Height(ctx context.Context) (uint64, error) {
-	var s struct {
-		Height uint64 `json:"height"`
-	}
-	if err := c.getJSON(ctx, "/status", &s); err != nil {
+	var height uint64
+	err := c.withHardening(func() error {
+		var s struct {
+			Height uint64 `json:"height"`
+		}
+		if err := c.getJSON(ctx, "/status", &s); err != nil {
+			return err
+		}
+		height = s.Height
+		return nil
+	})
+	if err != nil {
 		return 0, err
 	}
-	return s.Height, nil
+	// Reorg detection after a successful head read: a backward-moving tip is a
+	// reorg in flight. Return the error so the relayer pauses rather than
+	// settling against a chain that may be reorged out.
+	if err := c.reorg.Observe(height, ""); err != nil {
+		return 0, err
+	}
+	return height, nil
 }
 
 // Balance returns the native SPLD balance (or, via TokenBalance, the QRC-20
 // SPLV balance) of owner, in smallest units.
 func (c *QuantumChain) Balance(ctx context.Context, owner string, asset Asset) (*big.Int, error) {
+	if err := ValidateSQAddress(owner); err != nil {
+		return nil, err
+	}
+	if err := ValidateAsset(asset); err != nil {
+		return nil, err
+	}
 	if asset == AssetSPLV {
 		if c.cfg.TokenBalance == nil {
 			return nil, fmt.Errorf("quantum: no QRC-20 balance reader wired for %s", asset)
 		}
-		return c.cfg.TokenBalance(ctx, owner)
+		var bal *big.Int
+		err := c.withHardening(func() error {
+			var err error
+			bal, err = c.cfg.TokenBalance(ctx, owner)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		return bal, nil
 	}
 	var s struct {
 		Balance string `json:"balance"`
 	}
-	if err := c.getJSON(ctx, "/balance/"+owner, &s); err != nil {
+	err := c.withHardening(func() error {
+		return c.getJSON(ctx, "/balance/"+owner, &s)
+	})
+	if err != nil {
 		return nil, err
 	}
 	v, ok := new(big.Int).SetString(s.Balance, 10)
@@ -127,12 +185,32 @@ func (c *QuantumChain) Balance(ctx context.Context, owner string, asset Asset) (
 // a lock action that emits a source event is the on-chain primitive the
 // reverse direction still needs, so this returns no events until it lands.
 func (c *QuantumChain) Outbound(ctx context.Context, from, to uint64) ([]OutboundEvent, error) {
-	return nil, nil
+	var events []OutboundEvent
+	err := c.withHardening(func() error {
+		events = nil
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 // Settle credits value on the quantum chain for a legacy source event, via the
 // injected Claim func (bridge.claim). nil holds the legacy->quantum direction.
 func (c *QuantumChain) Settle(ctx context.Context, e OutboundEvent) (string, error) {
+	if err := ValidateSQAddress(e.Recipient); err != nil {
+		return "", err
+	}
+	if err := ValidateEVMAddress(e.Sender); err != nil {
+		return "", err
+	}
+	if err := ValidateAsset(e.Asset); err != nil {
+		return "", err
+	}
+	if err := ValidateAmount(e.Amount); err != nil {
+		return "", err
+	}
 	if c.cfg.Claim == nil {
 		return "", fmt.Errorf("quantum: no claim submitter wired (legacy->quantum direction)")
 	}
@@ -144,10 +222,16 @@ func (c *QuantumChain) Settled(ctx context.Context, id string) (bool, error) {
 	if c.cfg.BridgeAddress == "" {
 		return false, nil
 	}
+	if err := ValidateSQAddress(c.cfg.BridgeAddress); err != nil {
+		return false, err
+	}
 	var out struct {
 		Claimed bool `json:"claimed"`
 	}
-	if err := c.getJSON(ctx, "/bridge/"+c.cfg.BridgeAddress+"/claim/"+id, &out); err != nil {
+	err := c.withHardening(func() error {
+		return c.getJSON(ctx, "/bridge/"+c.cfg.BridgeAddress+"/claim/"+id, &out)
+	})
+	if err != nil {
 		return false, err
 	}
 	return out.Claimed, nil

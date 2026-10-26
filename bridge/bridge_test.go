@@ -66,8 +66,8 @@ func TestRelayerSettlesOnlyFinalEvents(t *testing.T) {
 	src := newMockChain("src", 10, 2) // safe tip = 8
 	dst := newMockChain("dst", 0, 0)
 	src.events = []OutboundEvent{
-		{ID: "1", Asset: AssetNative, Amount: big.NewInt(100), Height: 8, Recipient: "SQ:a"},
-		{ID: "2", Asset: AssetNative, Amount: big.NewInt(200), Height: 9, Recipient: "SQ:b"},
+		{ID: "1", Asset: AssetNative, Amount: big.NewInt(100), Height: 8, Sender: "0x1234567890123456789012345678901234567890", Recipient: "SQ:a"},
+		{ID: "2", Asset: AssetNative, Amount: big.NewInt(200), Height: 9, Sender: "0x1234567890123456789012345678901234567890", Recipient: "SQ:b"},
 	}
 	r := NewRelayer(src, dst)
 	got, err := r.RunOnce(context.Background(), LeftToRight)
@@ -87,8 +87,8 @@ func TestRelayerSkipsAlreadySettled(t *testing.T) {
 	dst := newMockChain("dst", 0, 0)
 	dst.settled["1"] = true
 	src.events = []OutboundEvent{
-		{ID: "1", Asset: AssetNative, Amount: big.NewInt(100), Height: 8, Recipient: "SQ:a"},
-		{ID: "2", Asset: AssetNative, Amount: big.NewInt(200), Height: 7, Recipient: "SQ:b"},
+		{ID: "1", Asset: AssetNative, Amount: big.NewInt(100), Height: 8, Sender: "0x1234567890123456789012345678901234567890", Recipient: "SQ:a"},
+		{ID: "2", Asset: AssetNative, Amount: big.NewInt(200), Height: 7, Sender: "0x1234567890123456789012345678901234567890", Recipient: "SQ:b"},
 	}
 	r := NewRelayer(src, dst)
 	got, err := r.RunOnce(context.Background(), LeftToRight)
