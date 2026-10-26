@@ -266,7 +266,10 @@ func get(path string) []byte {
 		log.Fatalf("GET %s: %v", path, err)
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("read GET %s body: %v", path, err)
+	}
 	return b
 }
 
@@ -276,6 +279,9 @@ func post(path string, body []byte) []byte {
 		log.Fatalf("POST %s: %v", path, err)
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("read POST %s body: %v", path, err)
+	}
 	return b
 }
