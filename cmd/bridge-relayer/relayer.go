@@ -118,9 +118,11 @@ type Relayer struct {
 	State     *relayerState
 	StatePath string
 
-	attempts    map[uint64]int
-	transientAt map[uint64]time.Time // last transient submit failure per burn, for backoff
-	Logf        func(format string, args ...any)
+	attempts          map[uint64]int       // mined reverts only; controls the skip limit
+	transientAt       map[uint64]time.Time // last transient submit failure per burn
+	transientFailures map[uint64]int       // consecutive transient failures, separate from mined reverts
+	now               func() time.Time     // optional backoff clock; nil uses time.Now
+	Logf              func(format string, args ...any)
 }
 
 func (r *Relayer) logf(format string, args ...any) {
@@ -331,6 +333,8 @@ func (r *Relayer) settle(b Burn, info *BridgeInfo) (bool, error) {
 		return false, err
 	}
 	if already {
+		delete(r.transientAt, b.ID)
+		delete(r.transientFailures, b.ID)
 		return true, nil
 	}
 	// Gather >= threshold distinct attestations (this relayer's own, plus
@@ -352,13 +356,19 @@ func (r *Relayer) settle(b Burn, info *BridgeInfo) (bool, error) {
 	if r.transientAt == nil {
 		r.transientAt = map[uint64]time.Time{}
 	}
+	if r.transientFailures == nil {
+		r.transientFailures = map[uint64]int{}
+	}
 	// Exponential backoff on transient submit failures: wait progressively
 	// longer between attempts so a congested quantum node isn't hammered on
 	// every pass. First retry after 1s, doubling each time, capped at 60s.
 	now := time.Now()
+	if r.now != nil {
+		now = r.now()
+	}
 	if last, ok := r.transientAt[b.ID]; ok {
 		backoff := time.Second
-		for i := 0; i < r.attempts[b.ID]; i++ {
+		for i := 1; i < r.transientFailures[b.ID]; i++ {
 			backoff *= 2
 			if backoff > 60*time.Second {
 				backoff = 60 * time.Second
@@ -372,13 +382,17 @@ func (r *Relayer) settle(b Burn, info *BridgeInfo) (bool, error) {
 	}
 	hash, err := r.Quantum.SubmitClaim(r.Priv, r.Operator, nonce, r.Fee, r.Bridge, b, atts)
 	if err != nil {
-		// Transient by nature — not counted. Held and retried next pass; the
-		// on-chain claimed slot keeps a duplicate safe if a prior submit
-		// actually landed.
+		// Count only toward backoff, never the mined-revert skip limit. The
+		// on-chain claimed slot keeps a duplicate safe if a prior submit landed.
 		r.transientAt[b.ID] = now
+		r.transientFailures[b.ID]++
 		r.logf("burn %d: submit deferred (transient, not counted): %v", b.ID, err)
 		return false, nil
 	}
+	// An accepted submission ends the transient failure streak, even if its
+	// receipt is pending or later reports a mined revert.
+	delete(r.transientAt, b.ID)
+	delete(r.transientFailures, b.ID)
 	r.logf("burn %d (%s %s -> %s): claim %s submitted", b.ID, b.Amount, b.Asset, b.Recipient, hash)
 
 	deadline := time.Now().Add(r.ReceiptWait)
