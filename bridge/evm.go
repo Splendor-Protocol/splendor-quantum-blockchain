@@ -84,7 +84,10 @@ func (c *EVMChain) Assets() map[Asset]AssetInfo {
 var maxRPCResponseBytes = 64 << 20
 
 func (c *EVMChain) call(ctx context.Context, method string, params []any, out any) error {
-	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	if err != nil {
+		return fmt.Errorf("%s: marshal request: %w", method, err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.RPCURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("%s: %w", method, err)
