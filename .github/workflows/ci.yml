@@ -9,8 +9,8 @@ name: CI
 #
 # The binary is no longer tracked, so there is nothing left to drift: CI builds
 # it, and npm `prepack` builds it into the published tarball. What is still
-# committed is the sha256 pins consumers verify at load, and wasm-drift below
-# re-pins those itself rather than asking a person to.
+# committed is the sha256 pins consumers verify at load. wasm-drift below
+# verifies them; make signer-pins regenerates them for inclusion in the PR.
 
 on:
   push:
@@ -26,19 +26,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: lint
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    env:
+      LINT_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting guardrails
+        run: make test-lint
+      - name: Formatting and static analysis
+        run: make lint
+
   go:
     name: build and test
+    needs: lint
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 25
     steps:
-      # fetch-depth is pinned because the gofmt gate below needs the PR's base
-      # commit to exist locally. A hosted runner hands out a depth-1 clone, so
-      # that gate has been hitting its "shallow history, skipping" path and
-      # doing nothing. A self-hosted runner reuses its _work directory, so
-      # history accumulates and the gate would start firing on its own, at a
-      # moment nobody chose, against 141 files that are already unformatted.
-      # Fetching the history makes the behaviour the same on both and makes it
-      # a decision rather than a side effect.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -50,31 +62,8 @@ jobs:
         run: go build ./...
       - name: go vet
         run: go vet ./...
-      # Scoped to files this change touches, not the whole tree. 36 files predate
-      # this workflow and are unformatted (struct alignment only); reformatting
-      # them wholesale would collide with work in flight in vm/ and x402/ for no
-      # correctness gain. This enforces the rule going forward and lets the
-      # backlog be cleared when nothing is mid-air.
-      - name: gofmt (changed files)
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="${{ github.event.pull_request.base.sha }}"
-          else
-            base="${{ github.event.before }}"
-          fi
-          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            echo "no usable base ref; checking HEAD only"
-            base="HEAD~1"
-            git cat-file -e "$base^{commit}" 2>/dev/null || { echo "shallow history, skipping"; exit 0; }
-          fi
-          changed="$(git diff --name-only --diff-filter=ACM "$base" HEAD -- '*.go' | grep -v '^vendor/' || true)"
-          if [ -z "$changed" ]; then echo "no Go files changed"; exit 0; fi
-          echo "checking:"; echo "$changed"
-          unformatted="$(gofmt -l $changed || true)"
-          if [ -n "$unformatted" ]; then
-            echo "::error::gofmt would rewrite these files you changed:"; echo "$unformatted"; exit 1
-          fi
+      - name: gofmt
+        run: make fmt-check
       # -p 4 is pinned, not inherited. `go test` defaults -p to NumCPU, so on
       # ubuntu-24.04 this suite has always run at -p 4 by accident of the
       # runner having 4 vCPUs. Several consensus tests race real wall-clock
@@ -153,10 +142,6 @@ jobs:
     name: signer WASM matches its source
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 25
-    # To push the re-pin below. It writes only the two sqc.networks.json files,
-    # and only values it derived from a build of this commit's own source.
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -187,41 +172,21 @@ jobs:
       # The digest is Go-release-sensitive, so this has to build under the same
       # toolchain build.sh pins, or it would re-pin to bytes nobody else gets.
       #
-      # The pins are a pure function of that build, so on main this makes them
-      # right instead of asking a person to. core/types and core/crypto are
-      # linked into the signer, so any chain commit can move the bytes, and this
-      # repo has no branch protection — most changes arrive as a direct push to
-      # main and never see a PR, which is where a "go rebuild it" error just
-      # leaves main red. This job cannot approve source; it only makes the
-      # committed pins name the bytes this commit's own source builds, which is
-      # exactly what a person would have run by hand. Off main it warns instead,
-      # and main re-pins when the change lands.
-      #
-      # A push made with GITHUB_TOKEN starts no further workflow run, so this
-      # cannot loop.
-      - name: Rebuild the signer and re-pin whatever moved
-        env:
-          EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
+      # Pin updates go through the same checks as source changes. A bot push
+      # after merging would otherwise bypass (or fail) main's required checks.
+      - name: Rebuild signer and verify committed pins
         run: |
           set -euo pipefail
           bash sdk/sqc-sdk/wasm/build.sh
           node sdk/sqc-sdk/scripts/sync-config.mjs
-          pins='sdk/sqc-sdk/config/sqc.networks.json sdk/sqc-sdk/src/config/sqc.networks.json'
-          if git diff --quiet -- $pins; then
+          pins=(sdk/sqc-sdk/config/sqc.networks.json sdk/sqc-sdk/src/config/sqc.networks.json)
+          if git diff --quiet -- "${pins[@]}"; then
             echo "the pins already name the bytes this source builds"
             exit 0
           fi
-          git diff --stat -- $pins
-          if [ "$EVENT" != push ] || [ "$REF" != refs/heads/main ]; then
-            echo "::warning::the signer moved; main re-pins itself when this lands"
-            exit 0
-          fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -q -m "chore(signer): re-pin to the signer ${GITHUB_SHA:0:7} builds" -- $pins
-          git push origin "HEAD:$GITHUB_REF_NAME" \
-            || { git pull --rebase origin "$GITHUB_REF_NAME" && git push origin "HEAD:$GITHUB_REF_NAME"; }
+          git diff --stat -- "${pins[@]}"
+          echo "::error::Signer pins changed. Run make signer-pins and commit both sqc.networks.json files in this PR."
+          exit 1
 
       # The pins themselves, per network and per field. The grep this replaced
       # only asked whether the wasm digest appeared ANYWHERE in the file, so one

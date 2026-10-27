@@ -1,5 +1,5 @@
 # Splendor Quantum Chain — Build System
-# Requires: Go 1.25+ or Docker
+# Requires: the Go version in go.mod, or Docker
 # All crypto: ML-DSA-65 (NIST FIPS 204) + SHA-3-256 (NIST FIPS 202)
 # ML-DSA-65 is the standardised form of what CRYSTALS-Dilithium called Mode 3.
 # The two are NOT interchangeable — signatures do not cross-verify — so the old
@@ -18,7 +18,7 @@ else
   GO := $(shell which go 2>/dev/null || echo go)
 endif
 
-.PHONY: all build node wallet docker docker-run docker-validator test test-crypto test-race clean deps tidy fmt lint vet vulncheck fuzz install-go setup-validator setup-rpc run-node run-validator gen-validator-wallet help
+.PHONY: all build node wallet docker docker-run docker-validator test test-crypto test-race clean deps tidy fmt fmt-check lint lint-all lint-tools dev-setup test-lint signer-pins vet vulncheck fuzz install-go setup-validator setup-rpc run-node run-validator gen-validator-wallet help
 
 # ── Default ───────────────────────────────────────────────────────────────
 all: deps build
@@ -123,12 +123,34 @@ fuzz:
 	done
 
 # ── Code quality ──────────────────────────────────────────────────────────
-fmt:
-	gofmt -w .
+# Compare feature branches and local edits against the current main branch.
+LINT_BASE ?= origin/main
+export LINT_BASE GO
 
-lint:
-	@which golangci-lint > /dev/null || (echo "Install golangci-lint first"; exit 1)
-	golangci-lint run ./...
+fmt:
+	bash scripts/go-format.sh write
+
+fmt-check:
+	bash scripts/go-format.sh check
+
+lint-tools:
+	bash scripts/install-lint.sh
+
+lint: fmt-check lint-tools
+	bash scripts/lint.sh
+
+lint-all: lint-tools
+	.tools/bin/golangci-lint run ./...
+
+dev-setup: lint-tools
+	bash scripts/setup-hooks.sh
+
+test-lint:
+	bash scripts/test-go-format.sh
+
+signer-pins:
+	bash sdk/sqc-sdk/wasm/build.sh
+	node sdk/sqc-sdk/scripts/sync-config.mjs
 
 vet:
 	$(GO) vet ./...
@@ -189,7 +211,11 @@ help:
 	@echo "  make test-race         Run all tests under the race detector"
 	@echo "  make fuzz              Fuzz the SQCO wire decoders (FUZZTIME ?= 15s)"
 	@echo "  make vulncheck         Scan reachable deps against the Go vuln DB"
-	@echo "  make lint / vet / fmt  Code quality"
+	@echo "  make dev-setup         Install pinned linter and local commit hook"
+	@echo "  make fmt               Format the Go source tree"
+	@echo "  make lint              Check formatting and new Go lint issues"
+	@echo "  make lint-all / vet    Audit all Go code (includes legacy lint debt)"
+	@echo "  make signer-pins       Rebuild signer digest pins for the current source"
 	@echo "  make clean             Remove binaries and data"
 	@echo ""
 	@echo "Quick start (validator):"
