@@ -246,6 +246,8 @@ var zeroEVMAddress = "0x" + strings.Repeat("0", 40) // "0x0000...0000"
 // ValidateEVMAddress checks that addr is a well-formed, non-zero EVM address.
 // Returns a *ValidationError on failure.
 func ValidateEVMAddress(addr string) error {
+	// ValidateEVMAddress checks that addr is a well-formed, non-zero EVM address.
+	// Returns a *ValidationError on failure.
 	if !evmAddressRe.MatchString(addr) {
 		return &ValidationError{Field: "evm_address", Reason: "must be 0x-prefixed 40-hex-char address", Value: truncate(addr)}
 	}
@@ -261,6 +263,8 @@ var sqAddressRe = regexp.MustCompile(`^SQ:[A-Za-z0-9]{1,64}$`)
 // ValidateSQAddress checks that addr is a well-formed Splendor Quantum address.
 // Returns a *ValidationError on failure.
 func ValidateSQAddress(addr string) error {
+	// ValidateSQAddress checks that addr is a well-formed Splendor Quantum address.
+	// Returns a *ValidationError on failure.
 	if !sqAddressRe.MatchString(addr) {
 		return &ValidationError{Field: "sq_address", Reason: "must be SQ: prefix followed by 1-64 alphanumeric chars", Value: truncate(addr)}
 	}
@@ -276,6 +280,34 @@ func ValidateAsset(asset Asset) error {
 	default:
 		return &ValidationError{Field: "asset", Reason: "unknown bridge asset", Value: string(asset)}
 	}
+}
+
+// ValidateQuantumAddress checks that addr is a well-formed Splendor Quantum address.
+// This is a more general function that can validate any SQ: address, including the
+// bridge address and other quantum addresses.
+// Returns a *ValidationError on failure.
+func ValidateQuantumAddress(addr string) error {
+	// Reject empty addresses
+	if addr == "" {
+		return &ValidationError{Field: "quantum_address", Reason: "address must not be empty", Value: addr}
+	}
+	// Accept both SQ: and sq: prefixes for case-insensitivity
+	lowerAddr := strings.ToLower(addr)
+	if strings.HasPrefix(lowerAddr, "sq:") {
+		// Validate the remainder after the prefix is alphanumeric and 1-64 chars
+		rest := lowerAddr[3:] // skip "sq:" prefix
+		if rest == "" || len(rest) > 64 {
+			return &ValidationError{Field: "quantum_address", Reason: "must be SQ: or sq: prefix followed by 1-64 alphanumeric chars", Value: truncate(addr)}
+		}
+		// Check that all characters are alphanumeric using regex
+		matched, _ := regexp.MatchString(`^[A-Za-z0-9]+$`, rest)
+		if !matched {
+			return &ValidationError{Field: "quantum_address", Reason: "must be SQ: or sq: prefix followed by 1-64 alphanumeric chars", Value: truncate(addr)}
+		}
+	} else {
+		return &ValidationError{Field: "quantum_address", Reason: "must be SQ: or sq: prefix followed by 1-64 alphanumeric chars", Value: truncate(addr)}
+	}
+	return nil
 }
 
 // ValidateAmount checks that amount is non-nil and strictly positive.
