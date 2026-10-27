@@ -38,3 +38,6 @@
 id_rsa
 id_ed25519
 
+
+# Pinned developer tooling downloaded by make lint-tools.
+/.tools/

@@ -2336,8 +2336,13 @@ exchange module; see §8.
 
 ### Build, test, run
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the shared formatting, lint, and commit checks.
+
 ```bash
-# toolchain: Go 1.25 (circl v1.6.5 requires it); Node 20+ for the release tool, Node 22.20+ for the SDK
+# toolchain: use the Go version in go.mod; Node 20+ for the release tool, Node 22.20+ for the SDK
+make dev-setup                  # pinned linter and staged-file formatting hook
+make fmt                       # format the Go source tree
+make lint                      # the same formatting and lint checks as CI
 make build                      # ./sqc-node and ./sqc-wallet
 make test                       # go test -v -count=1 ./...
 make test-crypto                # only core/crypto (ML-DSA, ML-KEM, ACVP vectors, wallet store)
@@ -2363,24 +2368,22 @@ firewall rules and troubleshooting.
 
 ### Continuous integration
 
-Two workflows run on every push to `main` and every pull request
-(`.github/workflows/`):
+The workflows in `.github/workflows/` run on pull requests and pushes to `main`:
 
-- **CI** — `go build`, `go vet`, `gofmt` on changed files, `go test -count=1
-  ./...`; then a **signer-drift** job that rebuilds the WASM signer from source
-  under the pinned Go toolchain and fails if the committed
-  `sdk/sqc-sdk/wasm/dist/sqc_signer.wasm`, any per-network digest pin, or the
-  golden address vector disagrees with the rebuild. That file is the only
-  committed copy of the signer; the browser extension syncs from it and checks
-  its own copy against it in its own CI. The signer has drifted from
-  its source twice before this job existed.
-- **Force-push alarm** — detects a non-fast-forward rewrite of `main`, the
-  failure that on 27 August 2026 left the tiers serving commits the repository
-  no longer contained.
+- **CI** starts with the shared `lint` job: formatting guardrail tests, `gofmt`
+  on the Go source tree, and the pinned static-analysis checks. The Go job then
+  runs build, vet, the full test suite, vulnerability scanning, and bounded
+  fuzzing. Separate jobs test the SDKs and rebuild the WASM signer, verify its
+  committed digest pins and golden address vector. Use `make signer-pins` to
+  regenerate changed pins and include them in the PR.
+- **Secret scan** runs gitleaks, including a weekly scan of the history.
+- **Force-push alarm** reports any detected non-fast-forward update of `main`;
+  repository rules also protect against force pushes and branch deletion.
 
-CI at the commit this README was written against
-(`d2ed9cfa9f66b6c0151c0e204b0588e8372a10ef`) is green. A green CI run is
-evidence for that commit only; it is not an external audit.
+Lint, Go tests, SDK tests, signer verification, and secret scanning are required
+on `main`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for local setup and the incremental lint
+policy. A green run is evidence for its tested commit, not an external audit.
 
 ---
 
