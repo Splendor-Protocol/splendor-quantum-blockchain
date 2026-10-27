@@ -253,6 +253,12 @@ input[type='checkbox'] {
   align-items: center;
   gap: 0.75rem;
 }
+.pg-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
 .pg-page {
   max-width: 1200px;
   margin: 0 auto;
@@ -1318,6 +1324,8 @@ input[type='checkbox'] {
 }
 .pg-selection-handle {
   cursor: grab;
+  /* A finger on the handle moves the node instead of scrolling the page. */
+  touch-action: none;
 }
 .pg-drop-parent {
   outline: 2px dashed var(--pg-accent-text);
@@ -1535,7 +1543,8 @@ input[type='checkbox'] {
 }
 .pg-save-chip[data-status='unsaved'],
 .pg-save-chip[data-status='conflict'],
-.pg-save-chip[data-status='error'] {
+.pg-save-chip[data-status='error'],
+.pg-save-chip[data-status='storage'] {
   color: var(--pg-danger);
   border-color: color-mix(in srgb, var(--pg-danger) 45%, transparent);
 }
@@ -2091,5 +2100,65 @@ input[type='checkbox'] {
   }
   .pg-layers-dock {
     max-height: 22rem;
+  }
+  /* The canvas keeps the screen; panels slide over it as drawers (StudioShell, `is-drawer`). */
+  .pg-studio-shell-body > .pg-rail-icons {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--pg-border);
+  }
+  .pg-drawer-toggles {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0.35rem 0.5rem 0;
+  }
+  .pg-studio-side.is-drawer,
+  .pg-studio-inspector.is-drawer {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    /* In a grid parent, `align-self: start` would size a fixed box to its content instead of top/bottom. */
+    align-self: stretch;
+    z-index: 36;
+    width: min(380px, 92vw);
+    max-height: 100vh;
+    overflow: auto;
+    background: var(--pg-surface);
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.5);
+    padding-top: 2.5rem;
+  }
+  .pg-studio-side.is-drawer {
+    left: 0;
+    border-right: 1px solid var(--pg-border);
+  }
+  .pg-studio-inspector.is-drawer {
+    right: 0;
+    border-left: 1px solid var(--pg-border);
+  }
+  .pg-studio-side.is-drawer[hidden],
+  .pg-studio-inspector.is-drawer[hidden] {
+    display: none;
+  }
+  .pg-drawer-close {
+    position: absolute;
+    top: 0.45rem;
+    right: 0.5rem;
+  }
+  .pg-drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  /* Touch: the tiles are the way to add (tap), so make them easy to hit. */
+  .pg-piece {
+    min-height: 44px;
+  }
+}
+@media (min-width: 1101px) {
+  .pg-drawer-toggles {
+    display: none;
   }
 }

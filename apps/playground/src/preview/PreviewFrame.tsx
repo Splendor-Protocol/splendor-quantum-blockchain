@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DappSpec, NetworkId } from '@splendor/dapp-spec';
 import type { MockWalletState } from './mock';
-import { PREVIEW_SOURCE, isPreviewMessage, sanitizeRects, type ParentToPreview, type PreviewMode, type PreviewRects, type PreviewToParent } from './protocol';
+import { PREVIEW_SOURCE, PREVIEW_SRC, isPreviewMessage, sanitizeRects, type ParentToPreview, type PreviewMode, type PreviewRects, type PreviewToParent } from './protocol';
 
 export type PreviewFrameProps = {
   /** `edit` (default) is the builder canvas; `play` runs the app like a visitor (gates enforced, no selection). */
@@ -34,9 +34,16 @@ export type PreviewFrameProps = {
  */
 const ISOLATED = !import.meta.env.DEV;
 const SANDBOX = ISOLATED ? 'allow-scripts allow-forms allow-popups' : 'allow-scripts allow-same-origin allow-forms allow-popups';
+/** How long a frame may take to say `ready` before the canvas offers a reload. */
+export const PREVIEW_READY_TIMEOUT_MS = 8_000;
+/** Reloads in a row without a `ready` in between; past this the frame is left alone. */
+const MAX_RELOADS = 3;
 
-/** /preview unless the app is hosted under a base path. */
-const PREVIEW_SRC = `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}preview`;
+function newToken(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /** Mock-wallet preview in an isolated iframe, fed the spec via postMessage. */
 export function PreviewFrame({
@@ -57,22 +64,41 @@ export function PreviewFrame({
   height = 640,
 }: PreviewFrameProps) {
   const ref = useRef<HTMLIFrameElement>(null);
-  /** Counts every 
-eady message: a reloaded frame says it again and needs the spec re-sent. */
+  /**
+   * Each frame document gets a fresh token in its URL fragment and must echo it. A document the
+   * frame navigates to (a link in an untrusted spec) cannot know it, so its messages are ignored.
+   */
+  const [frame, setFrame] = useState(() => ({ key: 0, token: newToken() }));
+  const tokenRef = useRef(frame.token);
+  tokenRef.current = frame.token;
+  /** Counts every `ready` message: a reloaded frame says it again and needs the spec re-sent. */
   const [readyCount, setReadyCount] = useState(0);
   const ready = readyCount > 0;
+  const [timedOut, setTimedOut] = useState(false);
+  const loads = useRef(0);
+  const reloads = useRef(0);
   const handlers = useRef({ onNavigate, onSelectBlock, onCalls, onRects, onHover, onDrop });
   handlers.current = { onNavigate, onSelectBlock, onCalls, onRects, onHover, onDrop };
+
+  const reload = () => {
+    loads.current = 0;
+    setReadyCount(0);
+    setTimedOut(false);
+    setFrame((f) => ({ key: f.key + 1, token: newToken() }));
+  };
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       // The frame's window identity is the check that matters; its origin is "null" when isolated.
       if (e.source !== ref.current?.contentWindow) return;
       if (e.origin !== (ISOLATED ? 'null' : window.location.origin)) return;
-      if (!isPreviewMessage<PreviewToParent>(e.data)) return;
+      if (!isPreviewMessage<PreviewToParent>(e.data) || e.data.token !== tokenRef.current) return;
       const msg = e.data;
-      if (msg.type === 'ready') setReadyCount((n) => n + 1);
-      else if (msg.type === 'navigate') {
+      if (msg.type === 'ready') {
+        reloads.current = 0;
+        setTimedOut(false);
+        setReadyCount((n) => n + 1);
+      } else if (msg.type === 'navigate') {
         if (typeof msg.pagePath === 'string' && /^\/[a-z0-9-]{0,40}$/.test(msg.pagePath)) handlers.current.onNavigate?.(msg.pagePath);
       } else if (msg.type === 'select') {
         if (typeof msg.blockId === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(msg.blockId)) handlers.current.onSelectBlock?.(msg.blockId);
@@ -101,35 +127,72 @@ eady message: a reloaded frame says it again and needs the spec re-sent. */
   }, []);
 
   useEffect(() => {
-    if (!readyCount) return;
-    const msg: ParentToPreview = { source: PREVIEW_SOURCE, type: 'render', spec, pagePath, network, walletState, selectedBlockId, mode, resetKey };
+    if (ready) return;
+    const t = window.setTimeout(() => setTimedOut(true), PREVIEW_READY_TIMEOUT_MS);
+    return () => window.clearTimeout(t);
+  }, [ready, frame.key]);
+
+  const post = (msg: ParentToPreview) => {
     // An opaque origin cannot be named as a target. The spec is the user's own draft, and the
     // frame is addressed by its window, not broadcast.
     ref.current?.contentWindow?.postMessage(msg, ISOLATED ? '*' : window.location.origin);
-  }, [readyCount, spec, pagePath, network, walletState, selectedBlockId, mode, resetKey]);
+  };
+
+  // Selection travels on its own, so selecting a block does not resend the whole spec.
+  const selectedRef = useRef(selectedBlockId);
+  selectedRef.current = selectedBlockId;
+  useEffect(() => {
+    if (!readyCount) return;
+    post({ source: PREVIEW_SOURCE, type: 'render', spec, pagePath, network, walletState, selectedBlockId: selectedRef.current, mode, resetKey });
+  }, [readyCount, spec, pagePath, network, walletState, mode, resetKey]);
+  const firstSelect = useRef(true);
+  useEffect(() => {
+    if (firstSelect.current) {
+      firstSelect.current = false;
+      return;
+    }
+    if (readyCount) post({ source: PREVIEW_SOURCE, type: 'select', selectedBlockId });
+    // Only selection changes; a fresh `ready` already got it with the render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBlockId]);
 
   // The frame is resized by the device switch and the window; ask it to re-measure.
   useEffect(() => {
     const el = ref.current;
     if (!ready || !el || typeof ResizeObserver !== 'function') return;
-    const ro = new ResizeObserver(() => {
-      const msg: ParentToPreview = { source: PREVIEW_SOURCE, type: 'requestRects' };
-      el.contentWindow?.postMessage(msg, ISOLATED ? '*' : window.location.origin);
-    });
+    const ro = new ResizeObserver(() => post({ source: PREVIEW_SOURCE, type: 'requestRects' }));
     ro.observe(el);
     return () => ro.disconnect();
   }, [ready, readyCount]);
 
   return (
-    <iframe
-      ref={ref}
-      src={PREVIEW_SRC}
-      title={title}
-      className="pg-preview-frame"
-      style={{ height }}
-      sandbox={SANDBOX}
-      data-testid="preview-frame"
-      data-isolated={ISOLATED ? 'true' : 'false'}
-    />
+    <>
+      {timedOut && !ready ? (
+        <div className="pg-local-notice" role="alert" data-testid="preview-timeout">
+          <span>The preview has not started. Check your connection, or reload it.</span>
+          <button type="button" className="pg-btn pg-btn-sm" onClick={reload}>
+            Reload preview
+          </button>
+        </div>
+      ) : null}
+      <iframe
+        key={frame.key}
+        ref={ref}
+        src={`${PREVIEW_SRC}#t=${frame.token}`}
+        title={title}
+        className="pg-preview-frame"
+        style={{ height }}
+        sandbox={SANDBOX}
+        data-testid="preview-frame"
+        data-isolated={ISOLATED ? 'true' : 'false'}
+        onLoad={() => {
+          // One document per frame: a second load means it navigated away from the preview.
+          loads.current += 1;
+          if (loads.current < 2 || reloads.current >= MAX_RELOADS) return;
+          reloads.current += 1;
+          reload();
+        }}
+      />
+    </>
   );
 }

@@ -25,11 +25,19 @@ npm run playground:api          # from the repo root: http://127.0.0.1:8787
   - Responses are `no-store` unless public, and carry `nosniff` and `DENY` framing headers.
 - **Saving projects**:
   - Every project has a `version` that goes up on each change.
-  - `PUT /projects/:id` and `PATCH /projects/:id` accept `baseVersion`. When the project has moved past it (another tab or device saved first), the API answers `409` with code `CONFLICT` and the current project summary instead of overwriting it. Without `baseVersion` the save always applies.
+  - `PUT /projects/:id` and `PATCH /projects/:id` accept `baseVersion`. When the project has moved past it (another tab or device saved first), the API answers `409` with code `CONFLICT` and the current project summary instead of overwriting it. A `PUT` without `baseVersion` always applies; a `PATCH` without it is checked against the version it read, since it rewrites the stored spec.
+  - Each saved spec is kept as a revision (the last 20 per project). Restoring one saves it again as the newest version, on top of `baseVersion`.
+- **Trash**:
+  - Deleting a project, or a workspace with its projects, moves it to the trash for 30 days. Trashed projects are out of every list, their share links stop, and they do not count toward the 100-project cap.
+  - A workspace restores with the projects deleted together with it; a project restored on its own leaves a workspace that is still in the trash.
+- **Lists**: `GET /projects` and `GET /workspaces/:id/projects` take `q` (name contains), `sort` (`updated` or `name`), `limit` (1–100) and `cursor`, and return `{ projects, nextCursor }`.
+- **Share links** are the live spec until revoked. `POST /projects/:id/share` takes an optional `expiresInDays` (1–365); summaries report `shareExpiresAt` and `shareViews`. An expired link answers `404` with code `EXPIRED`, and sharing again issues a new id.
+- **Audit**: sign-in, logout, project and workspace create, update, delete, restore and purge, share and unshare, catalog flags, admins and releases. Autosaves are recorded once per project per 10 minutes.
 - **Storage**:
   - One SQL store over `node:sqlite` (development) or Postgres (production), chosen by `DATABASE_URL`.
   - Ordered migrations run on startup.
-  - A housekeeping timer purges expired sessions and nonces, and old audit rows.
+  - A housekeeping timer purges expired sessions and nonces, old audit rows, and trash older than 30 days.
+  - Routes live in `src/routes/` (auth, workspaces and trash, projects and revisions, share, admin, deployments); `src/app.ts` wires the store, hooks and limits.
 - **Releases**:
   - Reads repo versions, changesets and workflow runs from GitHub, and dist-tags from npm, each call with a 10-second timeout.
   - Dispatches `release-packages.yml`. It holds a GitHub token that can start the workflow, never an npm token.
@@ -41,9 +49,11 @@ Every route is limited to 300 requests per minute per IP unless the table says o
 | `GET /health` (liveness), `GET /health/ready` (database), `GET /catalog`, `GET /share/:shareId` | anyone |
 | `POST /auth/nonce`, `POST /auth/verify` | anyone (30/min per IP) |
 | `GET /auth/me`, `POST /auth/logout` | anyone (401 / no-op without a session) |
-| `GET /workspaces`, `POST /workspaces`, `PATCH /workspaces/:id` (rename), `DELETE /workspaces/:id`, `GET /workspaces/:id/projects` | signed-in owner |
-| `GET /projects?workspaceId=`, `POST /projects`, `GET /projects/:id`, `PUT /projects/:id` (spec), `PATCH /projects/:id` (name, workspace), `DELETE /projects/:id` | signed-in owner |
+| `GET /workspaces`, `POST /workspaces`, `PATCH /workspaces/:id` (rename), `DELETE /workspaces/:id` (to trash), `GET /workspaces/:id/projects` | signed-in owner |
+| `GET /projects?workspaceId=&q=&sort=&limit=&cursor=`, `POST /projects`, `GET /projects/:id`, `PUT /projects/:id` (spec), `PATCH /projects/:id` (name, workspace), `DELETE /projects/:id` (to trash) | signed-in owner |
 | `POST /projects/:id/duplicate`, `POST /projects/:id/share`, `DELETE /projects/:id/share` | signed-in owner |
+| `GET /projects/:id/revisions`, `GET /projects/:id/revisions/:version`, `POST /projects/:id/revisions/:version/restore` | signed-in owner |
+| `GET /trash`, `POST /trash/projects/:id/restore`, `DELETE /trash/projects/:id`, `POST /trash/workspaces/:id/restore`, `DELETE /trash/workspaces/:id` | signed-in owner |
 | `PUT /admin/catalog/:id`, `GET /admin/releases`, `GET /admin/audit`, `GET /admin/admins`, `POST /admin/admins`, `DELETE /admin/admins/:address` | admins |
 | `POST /admin/releases` | admins (5/min) |
 | `POST /deployments`, `GET /deployments/:id` | signed-in, only with `HOSTING_ENABLED=1` (phase 2) |

@@ -12,6 +12,13 @@ export const PACKAGE_VERSIONS = {
   connectReact: import.meta.env.VITE_CONNECT_REACT_VERSION,
 };
 
+/** Signer digests this playground was built with (required for production builds), or null. */
+export function wasmPinsFromEnv(): { wasmSha256: string; execSha256: string } | null {
+  const wasmSha256 = import.meta.env.VITE_SQC_WASM_SHA256?.trim();
+  const execSha256 = import.meta.env.VITE_SQC_EXEC_SHA256?.trim();
+  return wasmSha256 && execSha256 ? { wasmSha256, execSha256 } : null;
+}
+
 export const DEFAULT_NETWORK: NetworkId =
   (import.meta.env.VITE_PLAYGROUND_DEFAULT_NETWORK as NetworkId | undefined) ?? 'testnet';
 

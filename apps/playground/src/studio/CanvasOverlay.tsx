@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent } from 'react';
 import { isWithin, pickDropTarget } from '../preview/dropTarget';
-import type { PreviewDropTarget, PreviewNodeRect, PreviewRect, PreviewRects } from '../preview/protocol';
+import type { PreviewDropTarget, PreviewNodeRect, PreviewRect } from '../preview/protocol';
+import { useCanvasHover, useCanvasRects, type CanvasStore } from './canvasStore';
 
 export const CONTRACT_FN_MIME = 'application/x-splendor-contract-fn';
 
@@ -15,11 +16,12 @@ export type CanvasDrop = {
 };
 
 export type CanvasOverlayProps = {
-  /** Rects reported by the preview frame (null until it has rendered). */
-  rects: PreviewRects | null;
+  /**
+   * Rects (null until the frame has rendered) and the node under the pointer inside the frame,
+   * as the preview frame reports them.
+   */
+  store: CanvasStore;
   selectedId: string | null;
-  /** Node under the pointer inside the frame (reported by the frame, which owns the pointer). */
-  hoverId: string | null;
   labelFor?: (id: string, kind: string) => string;
   /** Decides whether a drag that started in the studio (palette, block list…) can be dropped on the canvas. */
   acceptsDrag: (dataTransfer: DataTransfer | null) => boolean;
@@ -42,7 +44,9 @@ function defaultLabel(_id: string, kind: string): string {
  * clicking widgets and reporting hover) except while a drag is in flight, when it catches the drag
  * itself and shows the insertion points the frame reported.
  */
-export function CanvasOverlay({ rects, selectedId, hoverId, labelFor = defaultLabel, acceptsDrag, full = false, onSelect, onDuplicate, onRemove, onDrop }: CanvasOverlayProps) {
+export function CanvasOverlay({ store, selectedId, labelFor = defaultLabel, acceptsDrag, full = false, onSelect, onDuplicate, onRemove, onDrop }: CanvasOverlayProps) {
+  const rects = useCanvasRects(store);
+  const hoverId = useCanvasHover(store);
   const root = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [movingId, setMovingId] = useState<string | null>(null);
@@ -71,10 +75,36 @@ export function CanvasOverlay({ rects, selectedId, hoverId, labelFor = defaultLa
     };
   }, [acceptsDrag]);
 
-  const pick = (e: DragEvent): PreviewDropTarget | null => {
+  const pick = (e: { clientX: number; clientY: number }): PreviewDropTarget | null => {
     if (!rects || !root.current) return null;
     const box = root.current.getBoundingClientRect();
     return pickDropTarget(rects, e.clientX - box.left, e.clientY - box.top, movingId);
+  };
+
+  // Touch and pen: HTML5 drag does not start from a finger, so the handle follows the pointer.
+  const pointerMove = useRef<number | null>(null);
+  const onHandlePointerDown = (e: PointerEvent<HTMLElement>, id: string) => {
+    if (e.pointerType === 'mouse') return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    pointerMove.current = e.pointerId;
+    setMovingId(id);
+    setDragging(true);
+  };
+  const onHandlePointerMove = (e: PointerEvent<HTMLElement>) => {
+    if (pointerMove.current !== e.pointerId) return;
+    const next = pick(e);
+    setActive((prev) => (prev?.parentId === next?.parentId && prev?.index === next?.index ? prev : next));
+  };
+  const onHandlePointerEnd = (e: PointerEvent<HTMLElement>, drop: boolean) => {
+    if (pointerMove.current !== e.pointerId) return;
+    pointerMove.current = null;
+    const target = drop ? (active ?? pick(e)) : null;
+    const moveId = movingId;
+    setDragging(false);
+    setMovingId(null);
+    setActive(null);
+    if (target && moveId) onDrop({ parentId: target.parentId, index: target.index, moveId });
   };
 
   const selected = selectedId ? byId.get(selectedId) : undefined;
@@ -164,6 +194,10 @@ export function CanvasOverlay({ rects, selectedId, hoverId, labelFor = defaultLa
                   title="Drag to move"
                   data-testid="canvas-move-handle"
                   onDragStart={(e) => startMove(e, selected.id)}
+                  onPointerDown={(e) => onHandlePointerDown(e, selected.id)}
+                  onPointerMove={onHandlePointerMove}
+                  onPointerUp={(e) => onHandlePointerEnd(e, true)}
+                  onPointerCancel={(e) => onHandlePointerEnd(e, false)}
                 >
                   ⠿
                 </span>

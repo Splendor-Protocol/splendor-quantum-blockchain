@@ -5,8 +5,22 @@ import { BLOCK_MANIFESTS, TEMPLATES } from '@splendor/dapp-spec';
 import { RECIPES } from '../registry/recipes';
 import { api, ApiError, type AuditEntry, type CatalogFlag, type ReleaseStatus } from '../api/client';
 import { SignInPanel } from '../auth/SignInPanel';
+import { useConfirm } from '../components/ConfirmDialog';
 import { useSession } from '../auth/session';
 import { recipeFlagId, templateFlagId, useRegistry } from '../registry';
+
+/**
+ * Run links come from the GitHub API through ours. Only https links to github.com, or to an
+ * Actions run on a GitHub Enterprise host, become clickable.
+ */
+export function isGitHubRunUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && (u.hostname === 'github.com' || /\/actions\/runs\/\d+$/.test(u.pathname));
+  } catch {
+    return false;
+  }
+}
 
 function useLoad<T>(fn: () => Promise<T>) {
   const [data, setData] = useState<T | null>(null);
@@ -173,9 +187,21 @@ function ReleasesAdmin() {
   const [result, setResult] = useState<string | null>(null);
   const [triggerError, setTriggerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmDialog, confirm] = useConfirm();
 
   const trigger = async () => {
-    if (!dryRun && channel === 'latest' && !window.confirm('Publish to npm under the "latest" tag? Every user installing the packages will get this release.')) return;
+    if (
+      !dryRun &&
+      channel === 'latest' &&
+      !(await confirm({
+        title: 'Publish to npm under "latest"?',
+        message: 'Every user installing the packages will get this release.',
+        confirmLabel: 'Publish to latest',
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     setBusy(true);
     setTriggerError(null);
     setResult(null);
@@ -266,9 +292,13 @@ function ReleasesAdmin() {
                 {data.runs.map((r) => (
                   <tr key={r.id}>
                     <td>
-                      <a href={r.url} target="_blank" rel="noreferrer noopener">
-                        {r.title || `#${r.id}`}
-                      </a>
+                      {isGitHubRunUrl(r.url) ? (
+                        <a href={r.url} target="_blank" rel="noreferrer noopener">
+                          {r.title || `#${r.id}`}
+                        </a>
+                      ) : (
+                        <span>{r.title || `#${r.id}`}</span>
+                      )}
                     </td>
                     <td>{r.event}</td>
                     <td className={r.conclusion === 'success' ? 'pg-ok' : r.conclusion === 'failure' ? 'pg-error' : ''}>{r.conclusion ?? r.status}</td>
@@ -284,6 +314,7 @@ function ReleasesAdmin() {
       ) : null}
 
       <h3>Start a release</h3>
+      {confirmDialog}
       <div className="pg-panel pg-form" style={{ maxWidth: 520 }}>
         <div className="pg-field">
           <label htmlFor="release-channel">Channel</label>
@@ -311,8 +342,10 @@ function ReleasesAdmin() {
 
 function AuditAdmin() {
   const load = useCallback(() => api.audit(), []);
-  const { data, error } = useLoad<{ entries: AuditEntry[] }>(load);
+  const { data, error, loading } = useLoad<{ entries: AuditEntry[] }>(load);
   if (error) return <p className="pg-error">{error}</p>;
+  if (!data) return <p className="pg-muted" role="status">{loading ? 'Loading the audit log…' : 'No audit entries.'}</p>;
+  if (!data.entries.length) return <p className="pg-muted" data-testid="audit-empty">No audit entries yet.</p>;
   return (
     <table className="pg-table" data-testid="audit-log">
       <thead>
@@ -348,8 +381,21 @@ function AdminsAdmin() {
   const { data, error, reload } = useLoad(load);
   const [address, setAddress] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
+  const [confirmDialog, confirm] = useConfirm();
+  const remove = async (address: string) => {
+    const ok = await confirm({ title: 'Remove this admin?', message: <code className="pg-mono">{address}</code>, confirmLabel: 'Remove admin', danger: true });
+    if (!ok) return;
+    setMsg(null);
+    try {
+      await api.removeAdmin(address);
+      await reload();
+    } catch (e) {
+      setMsg(e instanceof ApiError ? e.message : String(e));
+    }
+  };
   return (
     <div className="pg-stack">
+      {confirmDialog}
       {error ? <p className="pg-error">{error}</p> : null}
       <table className="pg-table">
         <thead>
@@ -366,7 +412,7 @@ function AdminsAdmin() {
               <td>{a.source === 'env' ? 'ADMIN_ADDRESSES (env)' : `added ${a.addedAt ? new Date(a.addedAt).toLocaleDateString() : ''}`}</td>
               <td>
                 {a.source === 'db' ? (
-                  <button type="button" className="pg-btn pg-btn-danger pg-btn-sm" onClick={() => void api.removeAdmin(a.address).then(reload).catch((e) => setMsg(String(e.message ?? e)))}>
+                  <button type="button" className="pg-btn pg-btn-danger pg-btn-sm" aria-label={`Remove admin ${a.address}`} onClick={() => void remove(a.address)}>
                     Remove
                   </button>
                 ) : null}

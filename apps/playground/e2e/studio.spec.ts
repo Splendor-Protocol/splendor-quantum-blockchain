@@ -116,7 +116,7 @@ test.describe('simplified studio', () => {
     await expect(tree.locator('li')).toHaveCount(4);
     const before = await titles.allTextContents();
 
-    await tree.getByRole('button', { name: 'SPLD transfer', exact: true }).click();
+    await tree.getByRole('treeitem', { name: 'SPLD transfer', exact: true }).click();
     await expect(tree.locator('li.is-active')).toHaveCount(1);
     await page.keyboard.press('Alt+ArrowUp');
     const moved = [...before];
@@ -124,7 +124,7 @@ test.describe('simplified studio', () => {
     [moved[at - 1], moved[at]] = [moved[at]!, moved[at - 1]!];
     await expect(titles).toHaveText(moved);
     // The row keeps keyboard focus after it moves.
-    await expect(tree.getByRole('button', { name: 'SPLD transfer', exact: true })).toBeFocused();
+    await expect(tree.getByRole('treeitem', { name: 'SPLD transfer', exact: true })).toBeFocused();
 
     await page.keyboard.press('Delete');
     await expect(tree.locator('li')).toHaveCount(3);
@@ -139,7 +139,7 @@ test.describe('simplified studio', () => {
     // The playground header's own network select is hidden in the studio.
     await expect(page.getByRole('banner').first().getByLabel('Network', { exact: true })).toHaveCount(0);
     await expect(page.getByText('Click a component on the page to edit it.')).toBeVisible();
-    await page.getByTestId('block-list').getByRole('button', { name: 'SPLD transfer', exact: true }).click();
+    await page.getByTestId('block-list').getByRole('treeitem', { name: 'SPLD transfer', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'Content' })).toBeVisible();
   });
 

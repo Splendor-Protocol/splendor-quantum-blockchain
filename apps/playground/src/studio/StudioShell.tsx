@@ -1,7 +1,25 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from 'react';
 
 export type StudioRail = 'pages' | 'components' | 'theme' | 'contracts' | 'flows';
 export type DeviceSize = 'desktop' | 'tablet' | 'mobile';
+/** Below the narrow breakpoint the side panel and the inspector are drawers over the canvas. */
+export type StudioDrawer = 'side' | 'inspector' | null;
+
+/** Same width as the `max-width: 1100px` rules in styles.css. */
+export const NARROW_STUDIO = '(max-width: 1100px)';
+
+export function useMediaQuery(query: string): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      if (typeof window.matchMedia !== 'function') return () => undefined;
+      const m = window.matchMedia(query);
+      m.addEventListener('change', onChange);
+      return () => m.removeEventListener('change', onChange);
+    },
+    () => typeof window.matchMedia === 'function' && window.matchMedia(query).matches,
+    () => false,
+  );
+}
 
 const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
 
@@ -77,6 +95,8 @@ export function StudioShell({
   overlay,
   dock,
   dockTitle = 'Layers',
+  drawer: drawerProp,
+  onDrawerChange,
 }: {
   topBar: ReactNode;
   rail: StudioRail;
@@ -88,9 +108,35 @@ export function StudioShell({
   /** A collapsible panel under the rail panel that stays put while the rail changes (the page's layers). */
   dock?: ReactNode;
   dockTitle?: string;
+  /** Open drawer on a narrow screen (controlled); the shell keeps its own when not given. */
+  drawer?: StudioDrawer;
+  onDrawerChange?: (drawer: StudioDrawer) => void;
 }) {
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const [dockOpen, setDockOpen] = useState(true);
+  const narrow = useMediaQuery(NARROW_STUDIO);
+  const [ownDrawer, setOwnDrawer] = useState<StudioDrawer>(null);
+  const drawer = narrow ? (drawerProp !== undefined ? drawerProp : ownDrawer) : null;
+  const setDrawer = (next: StudioDrawer) => {
+    setOwnDrawer(next);
+    onDrawerChange?.(next);
+  };
+  const setDrawerRef = useRef(setDrawer);
+  setDrawerRef.current = setDrawer;
+  useEffect(() => {
+    if (!drawer) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      // A dialog over the drawer handles its own Escape.
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
+      setDrawerRef.current(null);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [drawer]);
+  const pickRail = (id: StudioRail) => {
+    onRailChange(id);
+    if (narrow) setDrawer(drawer === 'side' && rail === id ? null : 'side');
+  };
 
   // ARIA tabs pattern (vertical): arrows move and select, Home/End jump to the ends.
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -111,10 +157,17 @@ export function StudioShell({
     tabs.current[next]?.focus();
   };
 
+  const closeDrawer = (
+    <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm pg-drawer-close" onClick={() => setDrawer(null)}>
+      Close
+    </button>
+  );
+
   return (
-    <div className="pg-studio pg-studio-shell">
+    <div className={`pg-studio pg-studio-shell${narrow ? ' is-narrow' : ''}`}>
       {topBar}
       <div className="pg-studio-body pg-studio-shell-body">
+        {drawer ? <div className="pg-drawer-backdrop" aria-hidden="true" onClick={() => setDrawer(null)} /> : null}
         <div className="pg-rail-icons" role="tablist" aria-label="Studio panels" aria-orientation="vertical">
           {RAIL.map((item, i) => {
             const active = rail === item.id;
@@ -133,7 +186,7 @@ export function StudioShell({
                 aria-controls={PANEL_ID}
                 tabIndex={active ? 0 : -1}
                 data-tip={item.label}
-                onClick={() => onRailChange(item.id)}
+                onClick={() => pickRail(item.id)}
                 onKeyDown={(e) => onKeyDown(e, i)}
               >
                 <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -143,7 +196,21 @@ export function StudioShell({
             );
           })}
         </div>
-        <div className="pg-studio-side">
+        {narrow ? (
+          <div className="pg-drawer-toggles">
+            <button
+              type="button"
+              className="pg-btn pg-btn-ghost pg-btn-sm"
+              aria-expanded={drawer === 'inspector'}
+              data-testid="drawer-inspector"
+              onClick={() => setDrawer(drawer === 'inspector' ? null : 'inspector')}
+            >
+              Edit selection
+            </button>
+          </div>
+        ) : null}
+        <div className={`pg-studio-side${narrow ? ' is-drawer' : ''}`} hidden={narrow && drawer !== 'side'} data-testid="studio-side">
+          {narrow ? closeDrawer : null}
           <aside id={PANEL_ID} className="pg-toybox pg-studio-sidebar" role="tabpanel" aria-labelledby={tabId(rail)}>
             {sidebar}
           </aside>
@@ -170,7 +237,13 @@ export function StudioShell({
         <section className="pg-stage pg-studio-canvas" aria-label="Your page">
           {canvas}
         </section>
-        <aside className="pg-inspector pg-studio-inspector" aria-label="Inspector">
+        <aside
+          className={`pg-inspector pg-studio-inspector${narrow ? ' is-drawer' : ''}`}
+          aria-label="Inspector"
+          hidden={narrow && drawer !== 'inspector'}
+          data-testid="studio-inspector"
+        >
+          {narrow ? closeDrawer : null}
           {inspector}
         </aside>
       </div>

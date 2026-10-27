@@ -11,6 +11,8 @@ export type WorkspaceRow = {
   owner: string;
   name: string;
   createdAt: string;
+  /** Set while the workspace is in the trash. */
+  deletedAt?: string | null;
 };
 
 export type ProjectRow = {
@@ -25,9 +27,35 @@ export type ProjectRow = {
   updatedAt: string;
   /** Starts at 1 and goes up on every update; saves can require the version they started from. */
   version: number;
+  /** Set while the project is in the trash. */
+  deletedAt?: string | null;
+  /** The share link stops working after this time; null: until revoked. */
+  shareExpiresAt?: string | null;
+  /** Times the current share link was opened. */
+  shareViews?: number;
 };
 
 export type ProjectPatch = Partial<Pick<ProjectRow, 'name' | 'spec' | 'workspaceId'>>;
+
+export type ProjectSort = 'updated' | 'name';
+
+export type ListProjectsOptions = {
+  /** `undefined`: every workspace; `null`: projects in no workspace. */
+  workspaceId?: string | null;
+  /** Case-insensitive name filter. */
+  q?: string;
+  sort?: ProjectSort;
+  limit?: number;
+  /** Opaque value from the previous page's `nextCursor`. */
+  cursor?: string;
+};
+
+export type ProjectSummaryRow = Omit<ProjectRow, 'spec'>;
+
+export type RevisionRow = { version: number; savedAt: string };
+
+/** Revisions kept per project; older ones are dropped as new saves come in. */
+export const MAX_REVISIONS = 20;
 
 export type AuditEntry = { id: number; at: string; actor: string; action: string; target: string | null; detail: string | null };
 
@@ -41,6 +69,13 @@ export type DeploymentRow = {
   createdAt: string;
 };
 
+export class SubdomainTakenError extends Error {
+  constructor() {
+    super('Subdomain is taken');
+    this.name = 'SubdomainTakenError';
+  }
+}
+
 /** Persistence used by the API. One SQL implementation runs on SQLite (dev) and Postgres (prod). */
 export interface Store {
   /** Applies pending schema migrations in order; safe to run on every start. */
@@ -48,8 +83,15 @@ export interface Store {
   close(): Promise<void>;
   /** Cheap round trip for readiness checks. */
   ping(): Promise<void>;
-  /** Deletes expired nonces and sessions, and audit rows older than `auditBeforeIso`. Returns rows removed. */
-  purgeExpired(nowSec: number, auditBeforeIso: string): Promise<{ nonces: number; sessions: number; audit: number }>;
+  /**
+   * Deletes expired nonces and sessions, audit rows older than `auditBeforeIso`, and trash older
+   * than `trashBeforeIso` (when given). Returns rows removed.
+   */
+  purgeExpired(
+    nowSec: number,
+    auditBeforeIso: string,
+    trashBeforeIso?: string,
+  ): Promise<{ nonces: number; sessions: number; audit: number; trash: number }>;
 
   putNonce(nonce: string, expiresAtSec: number): Promise<void>;
   /** Atomic: true only for the first caller with an unexpired nonce. */
@@ -65,24 +107,48 @@ export interface Store {
   addAdmin(address: string, addedBy: string): Promise<void>;
   removeAdmin(address: string): Promise<boolean>;
 
+  /** Live workspaces (not in the trash). */
   listWorkspaces(owner: string): Promise<WorkspaceRow[]>;
   createWorkspace(row: Pick<WorkspaceRow, 'id' | 'owner' | 'name'>): Promise<WorkspaceRow>;
   renameWorkspace(id: string, name: string): Promise<WorkspaceRow | null>;
+  /** Moves the workspace and its live projects to the trash, together. */
   deleteWorkspace(id: string): Promise<boolean>;
-  listProjects(owner: string, workspaceId?: string | null): Promise<Omit<ProjectRow, 'spec'>[]>;
-  getWorkspace(id: string, owner: string): Promise<WorkspaceRow | null>;
+  /** Brings a trashed workspace back with the projects that went to the trash with it. */
+  restoreWorkspace(id: string): Promise<boolean>;
+  /** Deletes a trashed workspace and its trashed projects for good. */
+  purgeWorkspace(id: string): Promise<boolean>;
+  /** Live projects, newest first unless `sort` says otherwise. */
+  listProjects(owner: string, opts?: ListProjectsOptions): Promise<{ projects: ProjectSummaryRow[]; nextCursor: string | null }>;
+  /** Trashed projects and workspaces, most recently deleted first. */
+  listTrash(owner: string): Promise<{ projects: ProjectSummaryRow[]; workspaces: WorkspaceRow[] }>;
+  /** A live workspace owned by `owner`; with `includeDeleted`, one in the trash too. */
+  getWorkspace(id: string, owner: string, includeDeleted?: boolean): Promise<WorkspaceRow | null>;
+  /** Live projects only: the per-user cap does not count the trash. */
   countProjects(owner: string): Promise<number>;
+  /** Live or trashed; callers check `deletedAt`. */
   getProject(id: string): Promise<ProjectRow | null>;
+  /** A live project with this share id. */
   getProjectByShareId(shareId: string): Promise<ProjectRow | null>;
   createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'> & { workspaceId?: string | null }): Promise<ProjectRow>;
   /**
    * Applies `patch` and bumps `version`. With `expectedVersion`, only updates a row still at that
-   * version. `null`: no such project, or it moved past `expectedVersion`.
+   * version. `null`: no such project, or it moved past `expectedVersion`. A new spec is kept as a
+   * revision.
    */
   updateProject(id: string, patch: ProjectPatch, expectedVersion?: number): Promise<ProjectRow | null>;
-  /** `null` revokes the share link. */
-  setShareId(id: string, shareId: string | null): Promise<void>;
+  /** `null` revokes the share link. A new link starts with no views. */
+  setShareId(id: string, shareId: string | null, expiresAt?: string | null): Promise<void>;
+  recordShareView(id: string): Promise<void>;
+  /** Moves a project to the trash. */
   deleteProject(id: string): Promise<boolean>;
+  /** Brings a trashed project back (out of its workspace if that is still in the trash). */
+  restoreProject(id: string): Promise<boolean>;
+  /** Deletes a project, its revisions and deployments for good. */
+  purgeProject(id: string): Promise<boolean>;
+  /** Saved versions, newest first. */
+  listRevisions(projectId: string): Promise<RevisionRow[]>;
+  /** The spec JSON saved as `version`, or null. */
+  getRevision(projectId: string, version: number): Promise<string | null>;
 
   getFlags(): Promise<Record<string, CatalogFlag>>;
   setFlag(id: string, flag: CatalogFlag | null): Promise<void>;
@@ -92,6 +158,7 @@ export interface Store {
   /** Rows with this action written at or after `sinceIso` (used to cap noisy entries). */
   countAuditSince(action: string, sinceIso: string): Promise<number>;
 
+  /** Throws `SubdomainTakenError` when the subdomain is already used. */
   createDeployment(row: Omit<DeploymentRow, 'createdAt' | 'url'>): Promise<DeploymentRow>;
   getDeployment(id: string): Promise<DeploymentRow | null>;
 }

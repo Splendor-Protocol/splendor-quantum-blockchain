@@ -3,6 +3,9 @@ import type { MockWalletState } from './mock';
 
 export const PREVIEW_SOURCE = 'splendor-playground-preview';
 
+/** The preview's own entry (preview.html), under the app's base path. */
+export const PREVIEW_SRC = `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}preview.html`;
+
 export type PreviewRender = {
   source: typeof PREVIEW_SOURCE;
   type: 'render';
@@ -28,6 +31,8 @@ export type PreviewMode = 'edit' | 'play';
 
 export type ParentToPreview =
   | PreviewRender
+  /** Only the selection changed: the frame keeps the spec it has. */
+  | { source: typeof PREVIEW_SOURCE; type: 'select'; selectedBlockId: string | null }
   /** Ask the frame to re-measure and post `rects` (e.g. after the frame was resized). */
   | { source: typeof PREVIEW_SOURCE; type: 'requestRects' };
 
@@ -54,17 +59,31 @@ export type PreviewDropTarget = {
 
 export type PreviewRects = { nodes: PreviewNodeRect[]; dropTargets: PreviewDropTarget[] };
 
-export type PreviewToParent =
-  | { source: typeof PREVIEW_SOURCE; type: 'ready' }
-  | { source: typeof PREVIEW_SOURCE; type: 'navigate'; pagePath: string }
-  | { source: typeof PREVIEW_SOURCE; type: 'select'; blockId: string }
-  | { source: typeof PREVIEW_SOURCE; type: 'invalid'; issues: { path: string; message: string }[] }
-  | { source: typeof PREVIEW_SOURCE; type: 'calls'; calls: { method: string; args: string }[] }
-  | ({ source: typeof PREVIEW_SOURCE; type: 'rects' } & PreviewRects)
-  /** Pointer is over this node (block or container id), or null when it left the page. */
-  | { source: typeof PREVIEW_SOURCE; type: 'hover'; id: string | null }
-  /** A native drag was dropped inside the frame. `contractFn` is the raw contract-function MIME payload, if any. */
-  | { source: typeof PREVIEW_SOURCE; type: 'drop'; parentId: string; index: number; contractFn?: string };
+/**
+ * Every frame message echoes `token`, the value the parent put in the frame URL's fragment
+ * (`#t=…`). The parent drops messages without it.
+ */
+type FromFrame = { source: typeof PREVIEW_SOURCE; token?: string };
+
+export type PreviewToParent = FromFrame &
+  (
+    | { type: 'ready' }
+    | { type: 'navigate'; pagePath: string }
+    | { type: 'select'; blockId: string }
+    | { type: 'invalid'; issues: { path: string; message: string }[] }
+    | { type: 'calls'; calls: { method: string; args: string }[] }
+    | ({ type: 'rects' } & PreviewRects)
+    /** Pointer is over this node (block or container id), or null when it left the page. */
+    | { type: 'hover'; id: string | null }
+    /** A native drag was dropped inside the frame. `contractFn` is the raw contract-function MIME payload, if any. */
+    | { type: 'drop'; parentId: string; index: number; contractFn?: string }
+  );
+
+/** The token this frame document was opened with (`#t=…`), or an empty string. */
+export function frameTokenFrom(hash: string): string {
+  const t = new URLSearchParams(hash.replace(/^#/, '')).get('t') ?? '';
+  return /^[0-9a-f]{32}$/.test(t) ? t : '';
+}
 
 export function isPreviewMessage<T extends { source: string }>(data: unknown): data is T {
   return typeof data === 'object' && data !== null && (data as { source?: unknown }).source === PREVIEW_SOURCE;

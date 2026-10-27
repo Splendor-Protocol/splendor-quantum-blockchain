@@ -88,8 +88,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
 
   const allowTestLogin = env.ALLOW_TEST_LOGIN === '1';
   if (allowTestLogin && production) throw new Error('ALLOW_TEST_LOGIN must not be set in production');
-  if (allowTestLogin && env.NODE_ENV !== 'test' && !LOOPBACK.has(host)) {
-    throw new Error('ALLOW_TEST_LOGIN needs NODE_ENV=test or a loopback HOST');
+  // Test login mints a session for any address, admins included: never on a reachable interface,
+  // whatever NODE_ENV says.
+  if (allowTestLogin && !LOOPBACK.has(host)) {
+    throw new Error('ALLOW_TEST_LOGIN needs a loopback HOST (127.0.0.1, ::1 or localhost)');
   }
 
   const origins = list(env.PLAYGROUND_ORIGINS).map(parseOrigin);

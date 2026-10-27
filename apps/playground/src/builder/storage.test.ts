@@ -76,7 +76,7 @@ describe('draft storage', () => {
     expect(takeStashedDraft()).toBeNull();
   });
 
-  it('does not stash a draft that belongs to an account project, and can discard a stash', () => {
+  it('does not stash an account project the account already has, and can discard a stash', () => {
     saveDraft({ spec: emptySpec('Cloud'), projectId: 'p1', version: 2 });
     expect(stashDraft()).toBe(false);
     expect(peekStashedDraft()).toBeNull();
@@ -86,11 +86,19 @@ describe('draft storage', () => {
     expect(peekStashedDraft()).toBeNull();
   });
 
-  it('ignores storage that refuses writes or reads', () => {
+  it('stashes account-project edits that were not saved yet, with the version they started from', () => {
+    saveDraft({ spec: emptySpec('Cloud edits'), projectId: 'p1', version: 3, dirty: true });
+    expect(stashDraft()).toBe(true);
+    saveDraft({ spec: emptySpec('Remix'), projectId: null });
+    expect(takeStashedDraft()).toMatchObject({ spec: { name: 'Cloud edits' }, projectId: 'p1', version: 3, dirty: true });
+  });
+
+  it('reports a refused write, and ignores storage that refuses reads', () => {
+    expect(saveDraft({ spec: emptySpec(), projectId: null })).toBe(true);
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('full', 'QuotaExceededError');
     });
-    expect(() => saveDraft({ spec: emptySpec(), projectId: null })).not.toThrow();
+    expect(saveDraft({ spec: emptySpec(), projectId: null })).toBe(false);
     vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
       throw new Error('disabled');
     });

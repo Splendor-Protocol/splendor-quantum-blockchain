@@ -3,6 +3,8 @@ import type { ContractFunction, ContractRef, DappSpec } from '@splendor/dapp-spe
 import type { Dispatch } from 'react';
 import type { BuilderAction } from '../builder/state';
 import { isValidAddress, isValidSignature, parseAbiInput, paramsFromSignature } from './abi';
+import { useConfirm } from '../components/ConfirmDialog';
+import { ModalDialog } from '../components/ModalDialog';
 
 // The ABI + signature parsing lives in ./abi; these re-exports keep older imports working.
 export { isValidAddress, isValidSignature, paramsFromSignature, parseFunctionsJson } from './abi';
@@ -151,8 +153,15 @@ export function ContractsPanel({
     setFnSig('get()');
   };
 
-  const removeContract = (c: ContractRef) => {
-    if (!window.confirm(`Remove contract "${c.name}"? Components that use it will ask you to pick another contract.`)) return;
+  const [confirmDialog, confirm] = useConfirm();
+  const removeContract = async (c: ContractRef) => {
+    const ok = await confirm({
+      title: `Remove contract "${c.name}"?`,
+      message: 'Components that use it will ask you to pick another contract.',
+      confirmLabel: 'Remove contract',
+      danger: true,
+    });
+    if (!ok) return;
     if (tryTarget?.contract.id === c.id) setTryTarget(null);
     saveContracts(contracts.filter((x) => x.id !== c.id));
   };
@@ -174,7 +183,7 @@ export function ContractsPanel({
           <li key={c.id}>
             <div className="pg-row">
               <strong>{c.name}</strong>
-              <button type="button" className="pg-icon-btn" aria-label={`Remove ${c.name}`} onClick={() => removeContract(c)}>
+              <button type="button" className="pg-icon-btn" aria-label={`Remove ${c.name}`} onClick={() => void removeContract(c)}>
                 ×
               </button>
             </div>
@@ -216,22 +225,25 @@ export function ContractsPanel({
           </li>
         ))}
       </ul>
+      {confirmDialog}
       {tryTarget ? (
-        <div className="pg-panel pg-stack" role="dialog" aria-label="Try contract call" data-testid="contract-try-dialog">
-          <strong>{tryTarget.contract.name}: {tryTarget.fn.name}</strong>
-          <p data-testid="contract-try-result" role="status" aria-live="polite" style={{ margin: 0 }}>
-            {describeTry(tryTarget.contract, tryTarget.fn, mode)}
-          </p>
-          <p className="pg-muted" style={{ margin: 0 }}>
-            {tryTarget.fn.kind === 'write' ? 'This is a write: live mode asks your wallet to sign it.' : 'This is a read: it needs no wallet.'}{' '}
-            {mode === 'mock' ? 'Mock mode sends nothing.' : 'Switch to the block on the page to run it for real.'}
-          </p>
-          <div className="pg-row">
-            <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => setTryTarget(null)}>
-              Close
-            </button>
+        <ModalDialog label="Try contract call" onClose={() => setTryTarget(null)} className="pg-modal" testId="contract-try-dialog">
+          <div className="pg-modal-panel">
+            <strong>{tryTarget.contract.name}: {tryTarget.fn.name}</strong>
+            <p data-testid="contract-try-result" role="status" aria-live="polite" style={{ margin: 0 }}>
+              {describeTry(tryTarget.contract, tryTarget.fn, mode)}
+            </p>
+            <p className="pg-muted" style={{ margin: 0 }}>
+              {tryTarget.fn.kind === 'write' ? 'This is a write: live mode asks your wallet to sign it.' : 'This is a read: it needs no wallet.'}{' '}
+              {mode === 'mock' ? 'Mock mode sends nothing.' : 'Switch to the block on the page to run it for real.'}
+            </p>
+            <div className="pg-row">
+              <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => setTryTarget(null)}>
+                Close
+              </button>
+            </div>
           </div>
-        </div>
+        </ModalDialog>
       ) : null}
       <p className="pg-list-title">Add contract</p>
       <div className="pg-form">

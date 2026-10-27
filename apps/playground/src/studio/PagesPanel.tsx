@@ -2,6 +2,7 @@ import { PAGE_TEMPLATES, type DappPage, type DappSpec, type PageAccess } from '@
 import { useEffect, useState, type Dispatch } from 'react';
 import { MAX_PAGES, type BuilderAction } from '../builder/state';
 import { collectLinks } from './FlowsPanel';
+import { useConfirm } from '../components/ConfirmDialog';
 
 /** Page title field that never commits an empty title: an empty field reverts on blur. */
 export function PageTitleInput({ title, onRename, id, ariaLabel, className }: { title: string; onRename: (title: string) => void; id?: string; ariaLabel?: string; className?: string }) {
@@ -102,8 +103,17 @@ export function PagesPanel({
   newPageTitle: string | null;
   setNewPageTitle: (title: string | null) => void;
 }) {
+  const [confirmDialog, confirm] = useConfirm();
+  const removePage = async (p: DappPage) => {
+    const links = collectLinks(spec).filter((l) => l.to === p.path && l.fromPath !== p.path).length;
+    const warning = links ? `${links} link${links === 1 ? '' : 's'} to it will break.` : 'Any links to it will break.';
+    if (await confirm({ title: `Delete page "${p.title}" (${p.path})?`, message: warning, confirmLabel: 'Delete page', danger: true })) {
+      dispatch({ type: 'removePage', path: p.path });
+    }
+  };
   return (
     <div className="pg-stack">
+      {confirmDialog}
       <p className="pg-toybox-lead">Pages</p>
       <ul className="pg-pages-list">
         {spec.pages.map((p, pageIndex) => (
@@ -154,11 +164,7 @@ export function PagesPanel({
                 className="pg-icon-btn"
                 aria-label={`Delete page ${p.title}`}
                 title="Delete page"
-                onClick={() => {
-                  const links = collectLinks(spec).filter((l) => l.to === p.path && l.fromPath !== p.path).length;
-                  const warning = links ? `${links} link${links === 1 ? '' : 's'} to it will break.` : 'Any links to it will break.';
-                  if (window.confirm(`Delete page "${p.title}" (${p.path})? ${warning}`)) dispatch({ type: 'removePage', path: p.path });
-                }}
+                onClick={() => void removePage(p)}
               >
                 ×
               </button>

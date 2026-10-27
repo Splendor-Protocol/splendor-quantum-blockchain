@@ -6,8 +6,15 @@ export type CodeTheme = { base: string; overrides: Record<string, string | undef
 /** Widgets the `@splendor/connect-react/embed` script can mount (see `src/embed.tsx`). */
 export const EMBED_WIDGETS: ReadonlySet<string> = new Set(['transfer', 'account-card', 'token-panel', 'deploy-token', 'sign-in', 'pending-tx']);
 
-export const EMBED_SCRIPT_URL = 'https://unpkg.com/@splendor/connect-react/dist/embed.js';
-export const EMBED_STYLE_URL = 'https://unpkg.com/@splendor/connect-react/dist/theme/tokens.css';
+/** Signer digests to put in copied code; the playground's own when it was built with them. */
+export type WasmPins = { wasmSha256: string; execSha256: string };
+
+/**
+ * The embed script and stylesheet at an exact version. An unversioned CDN URL would follow
+ * whatever is published as latest, into pages that ask visitors to sign.
+ */
+export const embedScriptUrl = (version: string) => `https://unpkg.com/@splendor/connect-react@${version}/dist/embed.js`;
+export const embedStyleUrl = (version: string) => `https://unpkg.com/@splendor/connect-react@${version}/dist/theme/tokens.css`;
 
 export function themeProp(theme: CodeTheme): string {
   const overrides = Object.fromEntries(Object.entries(theme.overrides).filter(([, v]) => v));
@@ -57,30 +64,53 @@ ${indent(elementJsx(entry, props), 6)}
 }
 
 /** Plain-HTML embed snippet, or null when the embed script does not support this entry. */
-export function embedSnippet(entry: CatalogEntry, props: Record<string, PropValue>, network: NetworkId): string | null {
+export function embedSnippet(
+  entry: CatalogEntry,
+  props: Record<string, PropValue>,
+  network: NetworkId,
+  version: string,
+  pins: WasmPins | null = null,
+): string | null {
   if (!EMBED_WIDGETS.has(entry.id)) return null;
   const json = JSON.stringify(props).replace(/&/g, '&amp;').replace(/'/g, '&#39;');
-  return `<link rel="stylesheet" href="${EMBED_STYLE_URL}" />
+  const pinAttrs = pins ? ` data-wasm-sha256="${pins.wasmSha256}" data-exec-sha256="${pins.execSha256}"` : '';
+  const pinNote = pins
+    ? `The digests pin the signer from @splendor/connect-react@${version}; update them with the version.`
+    : 'Add data-wasm-sha256 and data-exec-sha256 to pin the signer; mainnet widgets refuse to load without them.';
+  return `<link rel="stylesheet" href="${embedStyleUrl(version)}" />
 
-<div data-sqc-widget="${entry.id}" data-network="${network}" data-props='${json}'></div>
+<div data-sqc-widget="${entry.id}" data-network="${network}" data-props='${json}'${pinAttrs}></div>
 
-<script src="${EMBED_SCRIPT_URL}"></script>
+<script src="${embedScriptUrl(version)}"></script>
 <!-- Serve sqc_signer.wasm and wasm_exec.js from your site root (npx sqc-copy-wasm).
-     Add data-wasm-sha256 and data-exec-sha256 to pin the signer; mainnet widgets refuse to load without them. -->`;
+     ${pinNote} -->`;
 }
 
 /** A complete `App.tsx` that renders the entry inside the provider. */
-export function fullPageSource(entry: CatalogEntry, props: Record<string, PropValue>, theme: CodeTheme, network: NetworkId): string {
+export function fullPageSource(
+  entry: CatalogEntry,
+  props: Record<string, PropValue>,
+  theme: CodeTheme,
+  network: NetworkId,
+  pins: WasmPins | null = null,
+): string {
   const note = entry.kind === 'block' ? `// Save ${entry.importName}.tsx (Download as component) next to this file.\n` : '';
   const widgetImport = entry.kind === 'block' ? '' : `, ${entry.importName}`;
   const blockImport = entry.kind === 'block' ? `\n${importLine(entry, importSource(entry))}` : '';
+  // The signer is always pinned: literal digests when known, else the ones sqcWasmPlugin defines.
+  const pinProps = pins
+    ? `wasmSha256="${pins.wasmSha256}" execSha256="${pins.execSha256}"`
+    : 'wasmSha256={import.meta.env.VITE_SQC_WASM_SHA256} execSha256={import.meta.env.VITE_SQC_EXEC_SHA256}';
+  const pinComment = pins
+    ? '// The digests pin the signer this package version ships (npx sqc-copy-wasm serves it).'
+    : '// sqcWasmPlugin (from @splendor/connect-react/vite) defines both digests from the signer it serves.';
   return `${note}import '@splendor/connect-react/style.css';
 import { SplendorConnectProvider, ConnectKit, TxToastHost${widgetImport} } from '@splendor/connect-react';${blockImport}
 
 export default function App() {
   return (
-    // For production, pass wasmSha256 and execSha256 instead of allowUnpinnedWasm.
-    <SplendorConnectProvider network="${network}" connectors="auto" ${themeProp(theme)} allowUnpinnedWasm>
+    ${pinComment}
+    <SplendorConnectProvider network="${network}" connectors="auto" ${themeProp(theme)} ${pinProps}>
       <TxToastHost>
         <main style={{ maxWidth: 720, margin: '0 auto', padding: '2rem 1rem', display: 'grid', gap: '1rem' }}>
           <ConnectKit />

@@ -6,7 +6,7 @@ export type CatalogFlag = CatalogFlags & { featured?: boolean; minVersion?: stri
 
 export type Session = { address: string; isAdmin: boolean };
 
-export type Workspace = { id: string; name: string; createdAt: string; owner?: string };
+export type Workspace = { id: string; name: string; createdAt: string; owner?: string; deletedAt?: string | null };
 export type ProjectSummary = {
   id: string;
   name: string;
@@ -15,8 +15,28 @@ export type ProjectSummary = {
   workspaceId?: string | null;
   /** Bumped on every save; older API versions omit it. */
   version?: number;
+  /** With a share link: when it stops working (null: until revoked) and how often it was opened. */
+  shareExpiresAt?: string | null;
+  shareViews?: number;
+  /** Set for projects in the trash. */
+  deletedAt?: string;
 };
 export type Project = ProjectSummary & { spec: DappSpec; createdAt: string };
+export type ProjectList = { projects: ProjectSummary[]; nextCursor?: string | null };
+export type ListOptions = { q?: string; sort?: 'updated' | 'name'; limit?: number; cursor?: string | null };
+export type Revision = { version: number; savedAt: string };
+export type ShareLink = { shareId: string; expiresAt?: string | null; views?: number };
+
+function listQuery(opts: ListOptions & { workspaceId?: string } = {}): string {
+  const q = new URLSearchParams();
+  if (opts.workspaceId) q.set('workspaceId', opts.workspaceId);
+  if (opts.q?.trim()) q.set('q', opts.q.trim().slice(0, 80));
+  if (opts.sort) q.set('sort', opts.sort);
+  if (opts.limit) q.set('limit', String(opts.limit));
+  if (opts.cursor) q.set('cursor', opts.cursor);
+  const s = q.toString();
+  return s ? `?${s}` : '';
+}
 
 export type ReleasePackage = { name: string; repoVersion: string | null; distTags: Record<string, string> };
 export type ReleaseRun = { id: number; status: string; conclusion: string | null; url: string; createdAt: string; event: string; title: string };
@@ -91,22 +111,36 @@ export const api = {
   listWorkspaces: () => request<{ workspaces: Workspace[] }>('/workspaces'),
   createWorkspace: (name: string) => request<Workspace>('/workspaces', json('POST', { name })),
   renameWorkspace: (id: string, name: string) => request<Workspace>(`/workspaces/${encodeURIComponent(id)}`, json('PATCH', { name })),
+  /** Moves the workspace and its projects to the trash. */
   deleteWorkspace: (id: string) => request<{ ok: true }>(`/workspaces/${encodeURIComponent(id)}`, json('DELETE')),
-  listWorkspaceProjects: (id: string) => request<{ projects: ProjectSummary[] }>(`/workspaces/${encodeURIComponent(id)}/projects`),
+  listWorkspaceProjects: (id: string, opts: ListOptions = {}) => request<ProjectList>(`/workspaces/${encodeURIComponent(id)}/projects${listQuery(opts)}`),
 
-  listProjects: (workspaceId?: string) =>
-    request<{ projects: ProjectSummary[] }>(workspaceId ? `/projects?workspaceId=${encodeURIComponent(workspaceId)}` : '/projects'),
+  listProjects: (workspaceId?: string, opts: ListOptions = {}) => request<ProjectList>(`/projects${listQuery({ ...opts, workspaceId })}`),
+
+  trash: () => request<{ projects: ProjectSummary[]; workspaces: Workspace[] }>('/trash'),
+  restoreProject: (id: string) => request<{ ok: true }>(`/trash/projects/${encodeURIComponent(id)}/restore`, json('POST', {})),
+  purgeProject: (id: string) => request<{ ok: true }>(`/trash/projects/${encodeURIComponent(id)}`, json('DELETE')),
+  restoreWorkspace: (id: string) => request<{ ok: true }>(`/trash/workspaces/${encodeURIComponent(id)}/restore`, json('POST', {})),
+  purgeWorkspace: (id: string) => request<{ ok: true }>(`/trash/workspaces/${encodeURIComponent(id)}`, json('DELETE')),
+
+  revisions: (id: string) => request<{ revisions: Revision[] }>(`/projects/${encodeURIComponent(id)}/revisions`),
+  /** Saves revision `version` as the newest version, on top of `baseVersion`. */
+  restoreRevision: (id: string, version: number, baseVersion: number) =>
+    request<Project>(`/projects/${encodeURIComponent(id)}/revisions/${version}/restore`, json('POST', { baseVersion })),
   getProject: (id: string) => request<Project>(`/projects/${encodeURIComponent(id)}`),
   createProject: (spec: DappSpec, workspaceId?: string | null) =>
     request<Project>('/projects', json('POST', workspaceId ? { spec, workspaceId } : { spec })),
   /** With `baseVersion`, a save on top of a newer copy fails with `ApiError` code `CONFLICT`. */
   updateProject: (id: string, spec: DappSpec, baseVersion?: number) =>
     request<Project>(`/projects/${encodeURIComponent(id)}`, json('PUT', baseVersion ? { spec, baseVersion } : { spec })),
-  patchProject: (id: string, patch: { name?: string; workspaceId?: string | null }) =>
+  /** `baseVersion`: the version the change started from; a newer copy on the server is a `CONFLICT`. */
+  patchProject: (id: string, patch: { name?: string; workspaceId?: string | null; baseVersion?: number }) =>
     request<ProjectSummary & { createdAt: string }>(`/projects/${encodeURIComponent(id)}`, json('PATCH', patch)),
   duplicateProject: (id: string) => request<Project>(`/projects/${encodeURIComponent(id)}/duplicate`, json('POST', {})),
+  /** Moves the project to the trash. */
   deleteProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}`, json('DELETE')),
-  shareProject: (id: string) => request<{ shareId: string }>(`/projects/${encodeURIComponent(id)}/share`, json('POST', {})),
+  shareProject: (id: string, expiresInDays?: number) =>
+    request<ShareLink>(`/projects/${encodeURIComponent(id)}/share`, json('POST', expiresInDays ? { expiresInDays } : {})),
   unshareProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}/share`, json('DELETE')),
   getShared: (shareId: string) => request<{ name: string; spec: DappSpec }>(`/share/${encodeURIComponent(shareId)}`),
 

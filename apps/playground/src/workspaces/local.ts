@@ -121,6 +121,16 @@ export function listLocalProjects(workspaceId: string): LocalProject[] {
   return [...(readProjects()[workspaceId] ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+/**
+ * Every project kept in this browser, newest first, with the key it is stored under. That key is
+ * usually a `local-…` workspace; older builds also filed signed-out work under account workspace ids.
+ */
+export function listAllLocalProjects(): { workspaceId: string; project: LocalProject }[] {
+  return Object.entries(readProjects())
+    .flatMap(([workspaceId, list]) => list.map((project) => ({ workspaceId, project })))
+    .sort((a, b) => b.project.updatedAt.localeCompare(a.project.updatedAt));
+}
+
 export function getLocalProject(workspaceId: string, id: string): LocalProject | null {
   return (readProjects()[workspaceId] ?? []).find((p) => p.id === id) ?? null;
 }

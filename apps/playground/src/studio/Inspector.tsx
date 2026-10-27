@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { CatalogEntry, ContainerNode, ContractRef, DappPage, LayoutNode, NodeStyle, PageAccess, PropValue } from '@splendor/dapp-spec';
 import { PropsForm } from '../components/PropsForm';
 import { Tabs, type TabItem } from '../components/Tabs';
@@ -154,7 +154,7 @@ function ActionField({
   );
 }
 
-export function Inspector({
+export const Inspector = memo(function Inspector({
   page,
   selectedNode,
   selectedEntry,
@@ -321,4 +321,4 @@ export function Inspector({
       ) : null}
     </Tabs>
   );
-}
+});

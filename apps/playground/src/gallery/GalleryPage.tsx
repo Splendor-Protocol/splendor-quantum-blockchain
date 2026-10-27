@@ -13,7 +13,7 @@ import { CodeBlock } from '../components/CodeBlock';
 import { PropsForm } from '../components/PropsForm';
 import { Tabs, type TabItem } from '../components/Tabs';
 import { ThemeEditor, type ThemeValue } from '../components/ThemeEditor';
-import { DEFAULT_NETWORK } from '../config';
+import { DEFAULT_NETWORK, PACKAGE_VERSIONS, wasmPinsFromEnv } from '../config';
 import { DEMO_RECIPIENT, type MockWalletState } from '../preview/mock';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import { useRegistry } from '../registry';
@@ -25,6 +25,8 @@ export function StatusBadge({ status }: { status: CatalogEntry['status'] }) {
   if (status === 'stable') return null;
   return <span className={`pg-badge pg-badge-${status}`}>{status}</span>;
 }
+
+const WASM_PINS = wasmPinsFromEnv();
 
 type CodeView = 'react' | 'embed' | 'page';
 const CODE_VIEWS: readonly { id: CodeView; label: string }[] = [
@@ -72,7 +74,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
   const [codeView, setCodeView] = useState<CodeView>('react');
   /** Props for copied code: demo values never leave the preview. */
   const shown = snippetProps(props);
-  const embed = embedSnippet(entry, shown, DEFAULT_NETWORK);
+  const embed = embedSnippet(entry, shown, DEFAULT_NETWORK, PACKAGE_VERSIONS.connectReact, WASM_PINS);
 
   /** One .tsx file plus a README; browsers ask once before saving a second file. */
   const downloadComponent = () => {
@@ -185,7 +187,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
                 </p>
               )
             ) : null}
-            {codeView === 'page' ? <CodeBlock code={fullPageSource(entry, shown, theme, DEFAULT_NETWORK)} /> : null}
+            {codeView === 'page' ? <CodeBlock code={fullPageSource(entry, shown, theme, DEFAULT_NETWORK, WASM_PINS)} /> : null}
             <button type="button" className="pg-btn pg-btn-ghost" onClick={downloadComponent}>
               Download as component
             </button>

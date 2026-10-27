@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent } from 'react';
+import { memo, useEffect, useRef, useState, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { defaultProps, type CatalogEntry } from '@splendor/dapp-spec';
 import { groupMeta, groupOrder } from '../registry/groups';
@@ -85,7 +85,7 @@ function PieceTooltip({ hover }: { hover: Hover }) {
   );
 }
 
-export function Palette({
+export const Palette = memo(function Palette({
   catalog,
   query,
   onQueryChange,
@@ -264,4 +264,4 @@ export function Palette({
       {hover ? <PieceTooltip hover={hover} /> : null}
     </div>
   );
-}
+});

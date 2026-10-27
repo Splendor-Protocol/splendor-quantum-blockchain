@@ -5,7 +5,20 @@ import { defineConfig, loadEnv, searchForWorkspaceRoot, type PluginOption, type 
 import react from '@vitejs/plugin-react';
 import { sqcWasmPlugin } from '@splendor/connect-react/vite';
 import { resolveNetworks } from './src/networks';
-import { SECURITY_HEADERS } from './src/securityHeaders';
+import { ASSET_HEADERS, SECURITY_HEADERS } from './src/securityHeaders';
+
+/** `vite preview`: /assets/* gets ASSET_HEADERS, like `/assets/*` in public/_headers and vercel.json. */
+function assetHeaders(): PluginOption {
+  return {
+    name: 'playground-asset-headers',
+    configurePreviewServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.startsWith('/assets/')) for (const [k, v] of Object.entries(ASSET_HEADERS)) res.setHeader(k, v);
+        next();
+      });
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ['VITE_', 'PLAYGROUND_']), ...process.env };
@@ -35,7 +48,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     // In this monorepo connect-react's .d.ts sees its own dev copy of vite; the plugin is version-agnostic.
-    plugins: [react(), sqcWasmPlugin() as unknown as PluginOption],
+    plugins: [react(), sqcWasmPlugin() as unknown as PluginOption, assetHeaders()],
     define: {
       'import.meta.env.VITE_SQC_SDK_VERSION': JSON.stringify(version('../../sdk/sqc-sdk/package.json')),
       'import.meta.env.VITE_CONNECT_REACT_VERSION': JSON.stringify(version('../../sdk/connect-react/package.json')),
@@ -53,10 +66,19 @@ export default defineConfig(({ mode }) => {
     },
     // `vite preview` serves the production build the way the deploy configs do (public/_headers,
     // vercel.json), so the e2e suite runs under the real CSP and with the isolated preview iframe.
-    // CORS is open only here: the dev server keeps Vite's localhost-only default.
-    preview: { port: 5180, proxy, headers: SECURITY_HEADERS, cors: { origin: '*' } },
-    // The entry chunk carries the SDK + widgets that every page needs.
-    build: { chunkSizeWarningLimit: 800 },
+    // As in those configs, only /assets is cross-origin (assetHeaders below), never /api or /rpc.
+    preview: { port: 5180, proxy, headers: SECURITY_HEADERS, cors: false },
+    // The entry chunk carries the SDK + widgets that every page needs. preview.html is the preview
+    // iframe's own entry, so a frame does not load the playground's pages and router.
+    build: {
+      chunkSizeWarningLimit: 800,
+      rollupOptions: {
+        input: {
+          main: fileURLToPath(new URL('./index.html', import.meta.url)),
+          preview: fileURLToPath(new URL('./preview.html', import.meta.url)),
+        },
+      },
+    },
     resolve: {
       dedupe: ['react', 'react-dom', '@splendor/connect-react', '@splendor/sqc-sdk'],
     },

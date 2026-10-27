@@ -259,6 +259,20 @@ describe('tree edits (in-canvas drag/drop)', () => {
     expect(run(s, { type: 'duplicateNode', id: 'r' })).toBe(s);
   });
 
+  it('pastes a copied node after the selection, or at the end of the page, with fresh ids', () => {
+    const start = initBuilder(nested());
+    const col = (root(start).children[1] as ContainerNode);
+    let s = run(start, { type: 'pasteNode', node: col, afterId: 'col-1' });
+    expect(root(s).children.map((c) => c.kind)).toEqual(['row', 'column', 'column']);
+    expect(new Set(ids(s)).size).toBe(ids(s).length);
+    expect(s.selectedBlockId).toBe((root(s).children[2] as ContainerNode).id);
+    s = run(start, { type: 'pasteNode', node: { kind: 'block', block: { id: 'a', widget: 'transfer', props: {} } }, afterId: null });
+    expect(root(s).children).toHaveLength(3);
+    expect(ids(s)).toHaveLength(3);
+    s = run(s, { type: 'undo' });
+    expect(root(s).children).toHaveLength(2);
+  });
+
   it('removes nodes, clears the selection, and never removes the page root', () => {
     let s = run(initBuilder(nested()), { type: 'selectBlock', id: 'col-1' }, { type: 'removeNodeFromTree', id: 'col-1' });
     expect(root(s).children.map((c) => c.kind)).toEqual(['row']);

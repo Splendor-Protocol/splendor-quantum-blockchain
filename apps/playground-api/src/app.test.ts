@@ -138,8 +138,177 @@ describe('workspaces', () => {
 
     const del = await app.inject({ method: 'DELETE', url: `/workspaces/${wsId}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
     expect(del.statusCode).toBe(200);
+    // The workspace and its project go to the trash together; nothing is left orphaned.
     const after = await app.inject({ method: 'GET', url: '/projects', headers: { cookie: user.cookie! } });
-    expect(after.json().projects[0].workspaceId).toBeNull();
+    expect(after.json().projects).toEqual([]);
+    const trash = (await app.inject({ method: 'GET', url: '/trash', headers: { cookie: user.cookie! } })).json();
+    expect(trash.workspaces.map((w: { id: string }) => w.id)).toEqual([wsId]);
+    expect(trash.projects.map((p: { id: string }) => p.id)).toEqual([project.json().id]);
+  });
+
+  it('restores a trashed workspace with the projects deleted with it, and purges for good', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const other = await signIn(PUB_ADMIN, ADMIN);
+    const get = (url: string, cookie = user.cookie) => app.inject({ method: 'GET', url, headers: { cookie: cookie! } });
+    const ws = (await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'Team' }, user.cookie) })).json().id as string;
+    const a = (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec(), workspaceId: ws }, user.cookie) })).json().id as string;
+    const b = (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec(), workspaceId: ws }, user.cookie) })).json().id as string;
+    // b was deleted on its own before the workspace: restoring the workspace leaves it in the trash.
+    await app.inject({ method: 'DELETE', url: `/projects/${b}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    await new Promise((r) => setTimeout(r, 5));
+    await app.inject({ method: 'DELETE', url: `/workspaces/${ws}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    expect((await get(`/projects/${a}`)).statusCode).toBe(404);
+    expect((await get('/workspaces')).json().workspaces).toEqual([]);
+
+    const restore = (url: string, cookie = user.cookie) => app.inject({ method: 'POST', url, ...json({}, cookie) });
+    expect((await restore(`/trash/workspaces/${ws}/restore`, other.cookie)).statusCode).toBe(404);
+    expect((await restore(`/trash/workspaces/${ws}/restore`)).statusCode).toBe(200);
+    expect((await get(`/workspaces/${ws}/projects`)).json().projects.map((p: { id: string }) => p.id)).toEqual([a]);
+    expect((await get('/trash')).json().projects.map((p: { id: string }) => p.id)).toEqual([b]);
+
+    // A project restored on its own returns to its (live) workspace.
+    expect((await restore(`/trash/projects/${b}/restore`)).statusCode).toBe(200);
+    expect((await get(`/projects/${b}`)).json().workspaceId).toBe(ws);
+    expect((await restore(`/trash/projects/${b}/restore`)).statusCode).toBe(404);
+
+    // Purge: only from the trash, then gone with its revisions.
+    const purge = (url: string) => app.inject({ method: 'DELETE', url, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    expect((await purge(`/trash/projects/${a}`)).statusCode).toBe(404);
+    await app.inject({ method: 'DELETE', url: `/workspaces/${ws}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    expect((await purge(`/trash/workspaces/${ws}`)).statusCode).toBe(200);
+    expect((await get('/trash')).json()).toEqual({ projects: [], workspaces: [] });
+    expect(await store.getProject(a)).toBeNull();
+    expect(await store.listRevisions(a)).toEqual([]);
+  });
+});
+
+describe('trash, revisions, search and audit', () => {
+  const spec = (name = 'Doc') => ({ ...instantiateTemplate(TEMPLATES.find((t) => t.id === 'wallet-dashboard')!), name });
+
+  it('a deleted project leaves the list, its share link stops, and it can be restored', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const id = (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec() }, user.cookie) })).json().id as string;
+    const shareId = (await app.inject({ method: 'POST', url: `/projects/${id}/share`, ...json({}, user.cookie) })).json().shareId as string;
+    await app.inject({ method: 'DELETE', url: `/projects/${id}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    expect((await app.inject({ method: 'GET', url: '/projects', headers: { cookie: user.cookie! } })).json().projects).toEqual([]);
+    expect((await app.inject({ method: 'GET', url: `/share/${shareId}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'PUT', url: `/projects/${id}`, ...json({ spec: spec() }, user.cookie) })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: `/trash/projects/${id}/restore`, ...json({}, user.cookie) })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/share/${shareId}` })).statusCode).toBe(200);
+  });
+
+  it('keeps a revision per saved spec, at most 20, and restores one as a new version', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const id = (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec('v1') }, user.cookie) })).json().id as string;
+    for (let v = 2; v <= 23; v++) {
+      const r = await app.inject({ method: 'PUT', url: `/projects/${id}`, ...json({ spec: spec(`v${v}`), baseVersion: v - 1 }, user.cookie) });
+      expect(r.statusCode).toBe(200);
+    }
+    const list = (await app.inject({ method: 'GET', url: `/projects/${id}/revisions`, headers: { cookie: user.cookie! } })).json().revisions as { version: number }[];
+    expect(list).toHaveLength(20);
+    expect(list[0]!.version).toBe(23);
+    expect(list[list.length - 1]!.version).toBe(4);
+    const old = await app.inject({ method: 'GET', url: `/projects/${id}/revisions/10`, headers: { cookie: user.cookie! } });
+    expect(old.json().spec.name).toBe('v10');
+    expect((await app.inject({ method: 'GET', url: `/projects/${id}/revisions/2`, headers: { cookie: user.cookie! } })).statusCode).toBe(404);
+
+    const restore = (baseVersion: number) => app.inject({ method: 'POST', url: `/projects/${id}/revisions/10/restore`, ...json({ baseVersion }, user.cookie) });
+    expect((await restore(22)).statusCode).toBe(409);
+    const restored = await restore(23);
+    expect(restored.json()).toMatchObject({ name: 'v10', version: 24 });
+    expect((await app.inject({ method: 'GET', url: `/projects/${id}/revisions`, headers: { cookie: user.cookie! } })).json().revisions[0]).toMatchObject({ version: 24 });
+
+    // A move between workspaces saves no new content, so it adds no revision.
+    const ws = (await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'W' }, user.cookie) })).json().id as string;
+    await app.inject({ method: 'PATCH', url: `/projects/${id}`, ...json({ workspaceId: ws }, user.cookie) });
+    expect((await app.inject({ method: 'GET', url: `/projects/${id}/revisions`, headers: { cookie: user.cookie! } })).json().revisions[0].version).toBe(24);
+  });
+
+  it('searches, sorts and pages project lists', async () => {
+    const user = await signIn(PUB_USER, USER);
+    for (const name of ['Alpha shop', 'beta Shop', 'Gamma', 'delta 100%', 'Echo_1']) {
+      await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec(name) }, user.cookie) });
+      await new Promise((r) => setTimeout(r, 3));
+    }
+    const list = async (qs: string) => (await app.inject({ method: 'GET', url: `/projects?${qs}`, headers: { cookie: user.cookie! } })).json() as { projects: { name: string }[]; nextCursor: string | null };
+    expect((await list('q=shop&sort=name')).projects.map((p) => p.name)).toEqual(['Alpha shop', 'beta Shop']);
+    expect((await list('q=100%25')).projects.map((p) => p.name)).toEqual(['delta 100%']);
+    expect((await list('q=o_')).projects.map((p) => p.name)).toEqual(['Echo_1']);
+
+    const names: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await list(`sort=name&limit=2${cursor ? `&cursor=${cursor}` : ''}`);
+      expect(page.projects.length).toBeLessThanOrEqual(2);
+      names.push(...page.projects.map((p) => p.name));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(names).toEqual(['Alpha shop', 'beta Shop', 'delta 100%', 'Echo_1', 'Gamma']);
+
+    const newest = await list('limit=3');
+    expect(newest.projects.map((p) => p.name)).toEqual(['Echo_1', 'delta 100%', 'Gamma']);
+    const rest = await list(`limit=3&cursor=${newest.nextCursor}`);
+    expect(rest.projects.map((p) => p.name)).toEqual(['beta Shop', 'Alpha shop']);
+    expect(rest.nextCursor).toBeNull();
+    expect((await app.inject({ method: 'GET', url: '/projects?limit=0', headers: { cookie: user.cookie! } })).statusCode).toBe(400);
+  });
+
+  it('audits project, workspace, share and logout events, once per window for autosaves', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const ws = (await app.inject({ method: 'POST', url: '/workspaces', ...json({ name: 'W' }, user.cookie) })).json().id as string;
+    await app.inject({ method: 'PATCH', url: `/workspaces/${ws}`, ...json({ name: 'W2' }, user.cookie) });
+    const id = (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec() }, user.cookie) })).json().id as string;
+    await app.inject({ method: 'PUT', url: `/projects/${id}`, ...json({ spec: spec('a') }, user.cookie) });
+    await app.inject({ method: 'PUT', url: `/projects/${id}`, ...json({ spec: spec('b') }, user.cookie) });
+    await app.inject({ method: 'POST', url: `/projects/${id}/share`, ...json({}, user.cookie) });
+    await app.inject({ method: 'DELETE', url: `/projects/${id}/share`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    await app.inject({ method: 'DELETE', url: `/projects/${id}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    await app.inject({ method: 'DELETE', url: `/workspaces/${ws}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    await app.inject({ method: 'POST', url: '/auth/logout', ...json({}, user.cookie) });
+    const actions = (await store.listAudit(50)).filter((e) => e.actor === USER).map((e) => e.action).reverse();
+    expect(actions).toEqual([
+      'auth.signin',
+      'workspace.create',
+      'workspace.update',
+      'project.create',
+      'project.update',
+      'project.share',
+      'project.unshare',
+      'project.delete',
+      'workspace.delete',
+      'auth.logout',
+    ]);
+  });
+
+  it('share links can expire and count their views', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const id = (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec() }, user.cookie) })).json().id as string;
+    const shared = (await app.inject({ method: 'POST', url: `/projects/${id}/share`, ...json({ expiresInDays: 7 }, user.cookie) })).json();
+    expect(Date.parse(shared.expiresAt) - Date.now()).toBeGreaterThan(6.9 * 24 * 3600 * 1000);
+    await app.inject({ method: 'GET', url: `/share/${shared.shareId}` });
+    await app.inject({ method: 'GET', url: `/share/${shared.shareId}` });
+    const listed = (await app.inject({ method: 'GET', url: '/projects', headers: { cookie: user.cookie! } })).json().projects[0];
+    expect(listed).toMatchObject({ shareId: shared.shareId, shareViews: 2, shareExpiresAt: shared.expiresAt });
+    expect((await app.inject({ method: 'POST', url: `/projects/${id}/share`, ...json({ expiresInDays: 0 }, user.cookie) })).statusCode).toBe(400);
+
+    // Past its expiry the link is gone, and sharing again issues a new one.
+    await store.setShareId(id, shared.shareId, new Date(Date.now() - 1000).toISOString());
+    const gone = await app.inject({ method: 'GET', url: `/share/${shared.shareId}` });
+    expect(gone.statusCode).toBe(404);
+    expect(gone.json().code).toBe('EXPIRED');
+    const again = (await app.inject({ method: 'POST', url: `/projects/${id}/share`, ...json({}, user.cookie) })).json();
+    expect(again.shareId).not.toBe(shared.shareId);
+    expect(again.expiresAt).toBeNull();
+  });
+
+  it('housekeeping purges trash older than 30 days', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const id = (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec() }, user.cookie) })).json().id as string;
+    await app.inject({ method: 'DELETE', url: `/projects/${id}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
+    const { runHousekeeping } = await import('./housekeeping.js');
+    expect((await runHousekeeping(store, { auditRetentionDays: 365 })).trash).toBe(0);
+    expect((await runHousekeeping(store, { auditRetentionDays: 365 }, Date.now() + 31 * 24 * 3600 * 1000)).trash).toBe(1);
+    expect(await store.getProject(id)).toBeNull();
   });
 });
 
@@ -266,6 +435,24 @@ describe('project versions, rename and duplicate', () => {
     expect((await patch({})).statusCode).toBe(400);
     expect((await patch({ name: 'x', baseVersion: 1 })).statusCode).toBe(409);
     expect((await patch({ name: 'Mine' }, other.cookie)).statusCode).toBe(404);
+  });
+
+  it('PATCH without baseVersion cannot write an older spec over a save that landed after it read the row', async () => {
+    // The rename reads version 1; a studio save moves the row to version 2 before the rename writes.
+    let stale: Awaited<ReturnType<Store['getProject']>> = null;
+    const t = await makeApp({ ALLOW_TEST_LOGIN: '1' }, (s) =>
+      Object.assign(Object.create(s) as Store, { getProject: async (id: string) => stale ?? s.getProject(id) }),
+    );
+    const login = await t.app.inject({ method: 'POST', url: '/auth/test-login', ...json({ address: USER }) });
+    const cookie = cookieOf(login);
+    const p = (await t.app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec('Before') }, cookie) })).json() as { id: string };
+    stale = await t.store.getProject(p.id);
+    await t.store.updateProject(p.id, { name: 'Studio save', spec: JSON.stringify(spec('Studio save')) }, 1);
+    const rename = await t.app.inject({ method: 'PATCH', url: `/projects/${p.id}`, ...json({ name: 'Renamed' }, cookie) });
+    expect(rename.statusCode).toBe(409);
+    stale = null;
+    expect((await t.store.getProject(p.id))?.name).toBe('Studio save');
+    await t.close();
   });
 
   it('duplicates a project into the same workspace, as a separate copy', async () => {
@@ -524,6 +711,8 @@ describe('config validation', () => {
     expect(() => loadConfig({ NODE_ENV: 'test', PORT: 'http' })).toThrow(/PORT/);
     expect(() => loadConfig({ NODE_ENV: 'test', SESSION_TTL_SEC: '5' })).toThrow(/SESSION_TTL_SEC/);
     expect(() => loadConfig({ NODE_ENV: 'development', ALLOW_TEST_LOGIN: '1', HOST: '0.0.0.0' })).toThrow(/ALLOW_TEST_LOGIN/);
+    expect(() => loadConfig({ NODE_ENV: 'test', ALLOW_TEST_LOGIN: '1', HOST: '0.0.0.0' })).toThrow(/loopback HOST/);
+    expect(loadConfig({ NODE_ENV: 'test', ALLOW_TEST_LOGIN: '1', HOST: '::1' }).allowTestLogin).toBe(true);
     expect(loadConfig({ NODE_ENV: 'development', ALLOW_TEST_LOGIN: '1', HOST: '127.0.0.1' }).allowTestLogin).toBe(true);
   });
 
@@ -613,5 +802,21 @@ describe('deployments', () => {
     const { cookie } = await signIn(PUB_USER, USER);
     const res = await app.inject({ method: 'POST', url: '/deployments', ...json({ projectId: 'xxxxxxxxxxxx', subdomain: 'demo' }, cookie) });
     expect(res.statusCode).toBe(404);
+  });
+
+  it('reports a taken subdomain as 409 and any other failure as 500', async () => {
+    let fail: Error | null = null;
+    const t = await makeApp({ HOSTING_ENABLED: '1', ALLOW_TEST_LOGIN: '1' }, (s) =>
+      Object.assign(Object.create(s) as Store, { createDeployment: (row: Parameters<Store['createDeployment']>[0]) => (fail ? Promise.reject(fail) : s.createDeployment(row)) }),
+    );
+    const cookie = cookieOf(await t.app.inject({ method: 'POST', url: '/auth/test-login', ...json({ address: USER }) }));
+    const spec = instantiateTemplate(TEMPLATES.find((x) => x.id === 'wallet-dashboard')!);
+    const id = (await t.app.inject({ method: 'POST', url: '/projects', ...json({ spec }, cookie) })).json().id as string;
+    const deploy = () => t.app.inject({ method: 'POST', url: '/deployments', ...json({ projectId: id, subdomain: 'demo' }, cookie) });
+    expect((await deploy()).statusCode).toBe(202);
+    expect((await deploy()).statusCode).toBe(409);
+    fail = new Error('connection reset');
+    expect((await deploy()).statusCode).toBe(500);
+    await t.close();
   });
 });

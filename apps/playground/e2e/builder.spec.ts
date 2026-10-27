@@ -39,7 +39,7 @@ test.describe('templates in the builder (mock wallet)', () => {
     // Export opens as a modal overlay in the studio; close it before editing blocks.
     await page.getByRole('dialog', { name: 'Export' }).getByRole('button', { name: 'Close' }).click();
 
-    await page.getByTestId('block-list').getByRole('button', { name: /tip jar/i }).first().click();
+    await page.getByTestId('block-list').getByRole('treeitem', { name: /tip jar/i }).first().click();
     await page.locator('#prop-tip-jar-recipient').fill(E2E.recipient);
     await expect(page.getByTestId('spec-issues')).toHaveCount(0);
 
@@ -114,7 +114,7 @@ test.describe('gallery', () => {
     await page.getByRole('button', { name: 'Add to my dApp' }).click();
     await expect(page).toHaveURL(/\/build\?add=transfer/);
     await page.getByTestId('pick-blank').click();
-    await expect(page.getByTestId('block-list').getByRole('button', { name: 'SPLD transfer', exact: true })).toBeVisible();
+    await expect(page.getByTestId('block-list').getByRole('treeitem', { name: 'SPLD transfer', exact: true })).toBeVisible();
     await expect(preview(page).getByText('Transfer SPLD')).toBeVisible();
   });
 });

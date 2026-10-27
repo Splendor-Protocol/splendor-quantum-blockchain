@@ -1,10 +1,39 @@
-import type { ContractFunction, ContractParam } from '@splendor/dapp-spec';
+import type { ContractFunction, ContractParam, ContractRef } from '@splendor/dapp-spec';
 
 const ADDRESS_RE = /^SQ:[0-9a-fA-F]{64}$/;
 const SIGNATURE_RE = /^[A-Za-z_$][A-Za-z0-9_$]*\([^()]*\)$/;
 
 export const isValidAddress = (value: string): boolean => ADDRESS_RE.test(value.trim());
 export const isValidSignature = (value: string): boolean => SIGNATURE_RE.test(value.trim());
+
+export type ContractDrop = {
+  /** The spec's own contract when the payload names one; its address wins over the payload's. */
+  contract: ContractRef | null;
+  address: string;
+  fn: { name: string; signature: string; kind: 'read' | 'write' };
+};
+
+/**
+ * A contract-function drag payload. It can arrive from the preview frame, which renders untrusted
+ * specs, so it is checked like typed input in the Contracts panel. Null when it does not hold up.
+ */
+export function parseContractDrop(raw: string, contracts: readonly ContractRef[]): ContractDrop | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isObject(parsed) || !isObject(parsed.fn)) return null;
+  const { name, signature, kind } = parsed.fn;
+  if (typeof name !== 'string' || typeof signature !== 'string' || !isValidSignature(signature)) return null;
+  const sig = signature.trim();
+  if (sig.slice(0, sig.indexOf('(')) !== name) return null;
+  const contract = typeof parsed.contractId === 'string' ? (contracts.find((c) => c.id === parsed.contractId) ?? null) : null;
+  const address = contract ? contract.address : typeof parsed.address === 'string' ? parsed.address.trim() : '';
+  if (!contract && !isValidAddress(address)) return null;
+  return { contract, address, fn: { name, signature: sig, kind: kind === 'write' ? 'write' : 'read' } };
+}
 
 /** Parameters from the types in a signature: `set(uint256 value, address)` -> value:uint256, arg1:address. */
 export function paramsFromSignature(signature: string): ContractParam[] {

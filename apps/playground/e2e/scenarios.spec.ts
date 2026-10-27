@@ -104,14 +104,12 @@ test.describe('live mode safety', () => {
   test('switching a live preview to mainnet asks first, and declining keeps the network', async ({ page }) => {
     await openTemplate(page, 'wallet-dashboard');
     await page.getByRole('group', { name: 'Preview mode' }).getByRole('button', { name: 'Real wallet' }).click();
-    const asked: string[] = [];
-    page.on('dialog', (d) => {
-      asked.push(d.message());
-      void d.dismiss();
-    });
     await page.locator('#dapp-network').selectOption('mainnet');
-    await expect.poll(() => asked.length).toBe(1);
-    expect(asked[0]).toContain('real SPLD');
+    const dialog = page.getByTestId('confirm-dialog');
+    await expect(dialog).toContainText('real SPLD');
+    await expect(dialog.getByTestId('confirm-cancel')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
     await expect(page.locator('#dapp-network')).toHaveValue('testnet');
   });
 });
@@ -126,9 +124,13 @@ test.describe('projects', () => {
     await expect(page.getByTestId('save-status')).toHaveText('Saved to your account.');
     await page.getByRole('button', { name: 'Create share link' }).click();
     const shareUrl = await page.locator('#share-url').inputValue();
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.getByTestId('share-copy').click();
+    await expect(page.getByTestId('share-copy')).toHaveText('Copied');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(shareUrl);
 
-    page.on('dialog', (d) => void d.accept());
     await page.getByTestId('unshare').click();
+    await page.getByTestId('confirm-ok').click();
     await expect(page.getByRole('button', { name: 'Create share link' })).toBeVisible();
     const visitor = await browser.newPage();
     await visitor.goto(shareUrl);
@@ -136,6 +138,7 @@ test.describe('projects', () => {
     await visitor.close();
 
     await page.getByRole('button', { name: 'Delete project Members Club' }).click();
+    await page.getByTestId('confirm-ok').click();
     await expect(page.getByRole('button', { name: 'Delete project Members Club' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Save to my account' })).toBeVisible();
   });
@@ -155,6 +158,68 @@ test.describe('projects', () => {
     await page.getByTestId('import-spec').click();
     await expect(preview(page).getByRole('heading', { name: 'From JSON' })).toBeVisible();
     await expect(page.locator('#dapp-name')).toHaveValue('Imported');
+  });
+});
+
+test.describe('preview containment', () => {
+  test('a web link in the preview opens a new window; the frame stays on the preview', async ({ page, context }) => {
+    await context.route('https://example.com/**', (r) => r.fulfill({ contentType: 'text/html', body: '<h1>elsewhere</h1>' }));
+    await openTemplate(page, 'wallet-dashboard');
+    await page.getByTestId('tab-project').click();
+    await page.getByText('Spec JSON').click();
+    const spec = {
+      version: 1,
+      name: 'Links',
+      network: 'testnet',
+      theme: { base: 'dark', overrides: {} },
+      pages: [
+        {
+          path: '/',
+          title: 'Home',
+          blocks: [
+            { id: 'hero', widget: 'hero', props: { heading: 'Link test' } },
+            { id: 'go', widget: 'action-button', props: { label: 'Elsewhere', href: 'https://example.com/' } },
+          ],
+        },
+      ],
+    };
+    await page.locator('#import-spec').fill(JSON.stringify(spec));
+    await page.getByTestId('import-spec').click();
+    await expect(preview(page).getByRole('heading', { name: 'Link test' })).toBeVisible();
+
+    const popup = context.waitForEvent('page');
+    await preview(page).getByRole('link', { name: 'Elsewhere' }).click();
+    expect((await popup).url()).toContain('example.com');
+    // Same frame document: still the preview, still rendering the draft.
+    expect(page.frames().some((f) => /\/preview(\.html)?(#|$)/.test(f.url()))).toBe(true);
+    expect(page.frames().some((f) => f.url().includes('example.com'))).toBe(false);
+    await expect(preview(page).getByRole('heading', { name: 'Link test' })).toBeVisible();
+  });
+});
+
+test.describe('narrow studio', () => {
+  test.use({ viewport: { width: 820, height: 1000 } });
+
+  test('panels open as drawers, and tapping a component adds it and shows the page', async ({ page }) => {
+    // Not openTemplate: the layers list it waits for lives in the closed drawer here.
+    await page.goto('/');
+    await page.evaluate(() => localStorage.clear());
+    await page.goto('/build?template=tip-jar');
+    await expect(preview(page).getByRole('heading').first()).toBeVisible();
+    const side = page.getByTestId('studio-side');
+    await expect(side).toBeHidden();
+    await expect(page.getByTestId('studio-inspector')).toBeHidden();
+
+    await page.getByRole('tablist', { name: 'Studio panels' }).getByRole('tab', { name: 'Components' }).click();
+    await expect(side).toBeVisible();
+    await page.getByTestId('add-transfer').click();
+    await expect(side).toBeHidden();
+    await expect(preview(page).getByText('Transfer SPLD')).toBeVisible();
+
+    await page.getByTestId('drawer-inspector').click();
+    await expect(page.getByTestId('studio-inspector')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('studio-inspector')).toBeHidden();
   });
 });
 

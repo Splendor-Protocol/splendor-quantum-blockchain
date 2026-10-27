@@ -44,10 +44,21 @@ flowchart TB
 
 The studio owns a `builderReducer` state (`apps/playground/src/builder/state.ts`) with undo
 history. On every change it posts a `render` message (`apps/playground/src/preview/protocol.ts`)
-to the preview iframe, which runs on an opaque origin in production. The frame answers with
-`rects` (measured nodes and drop targets), `hover`, `select`, `navigate`, `drop`, `calls` (the
-mock wallet log) and `invalid`. Rects are sanitized and capped on the parent side
-(`sanitizeRects`) before the overlay uses them.
+to the preview iframe, which runs on an opaque origin in production; a selection change alone
+posts a smaller `select` message. The frame is its own entry (`apps/playground/preview.html`),
+so it loads the renderer and mock wallet but not the playground's pages and router. It answers
+with `rects` (measured nodes and drop targets), `hover`, `select`, `navigate`, `drop`, `calls`
+(the mock wallet log) and `invalid`.
+
+- Each frame document gets a random token in its URL fragment and must echo it; messages
+  without it are dropped. If the frame loads a second document (it navigated away), the parent
+  replaces the frame. Inside the frame, web links open a new window and forms never submit.
+- Rects are sanitized and capped on the parent side (`sanitizeRects`). Hover and rects go to a
+  small store read only by the canvas overlay (`studio/canvasStore.ts`), so they do not
+  re-render the studio; the palette, inspector and layers panels are memoized.
+- A contract-function drop is checked like typed input (`parseContractDrop` in `studio/abi.ts`).
+- Below 1100 px the rail panels and the inspector open as drawers over the canvas; tapping a
+  component adds it, and the selection's move handle follows a finger (pointer events).
 
 ### Saving
 
@@ -60,15 +71,24 @@ flowchart LR
   put -->|409| conflict[Conflict: open newer copy or keep mine]
 ```
 
-- Every edit is written to the browser draft (`apps/playground/src/builder/storage.ts`), with
-  the project id and the cloud version it was based on.
-- Projects in a browser workspace, or created while signed out, are also kept in the local
-  workspace store (`apps/playground/src/workspaces/local.ts`).
-- Cloud projects autosave 1.5 s after the last edit, only after an actual edit. The save
-  carries `baseVersion`; the API rejects a stale one with `409 CONFLICT` instead of
-  overwriting a newer copy from another tab.
-- A draft that is saved nowhere else is stashed before a template, New, Import or Remix
-  replaces it, and the studio offers to restore it.
+- Edits are written to the browser draft (`apps/playground/src/builder/storage.ts`) 800 ms
+  after the last one, and right away on leave, unmount, New and Import, with the project id
+  and the cloud version they were based on. A refused write (storage full or disabled) shows
+  "Not saved" in the top bar and makes the browser ask before leaving.
+- Projects in a browser (`local-…`) workspace are also kept in the local workspace store
+  (`apps/playground/src/workspaces/local.ts`). An account workspace id is never used as a
+  browser key; signed out, such a link asks to sign in. Signed in, the home page lists browser
+  projects and saves the chosen ones to the account, removing each browser copy only once the
+  account has it.
+- Cloud projects autosave 1.5 s after the last edit, only after an actual edit, and retry
+  network and server errors (2 s, 5 s, 15 s). The save carries `baseVersion`; the API rejects
+  a stale one with `409 CONFLICT` instead of overwriting a newer copy from another tab. A rename
+  from the home page is checked the same way.
+- A draft that is saved nowhere else, or has edits its account project does not have yet, is
+  stashed before a template, New, Import or Remix replaces it, and the studio offers to restore
+  it.
+- Every saved spec is a revision (the last 20). Deletes go to a 30-day trash; a workspace goes
+  with its projects and comes back with them.
 
 ### Sign-in
 
@@ -98,10 +118,31 @@ compose hooks with review, fee and confirmation UI.
 | Jumping to an issue failed while the Inspector was on Style or Actions. | `studio/Inspector.tsx` | Fixed |
 | The export panel pointed to issues "under the preview". | `builder/ExportPanel.tsx` | Fixed |
 | Projects could not be renamed or duplicated from the home page. | `home/HomePage.tsx` | Fixed |
-| Below 1100 px the studio collapses to one column; drag and drop needs a mouse. | `styles.css` | Next |
-| Every preview hover re-renders the whole studio (no memoized panels). | `builder/Studio.tsx`, `preview/PreviewRuntime.tsx` | Next |
-| Routes are not lazy-loaded; each preview frame loads the main bundle. | `App.tsx`, `vite.config.ts` | Next |
-| `window.confirm` for destructive actions and mainnet live mode. | `home/HomePage.tsx`, `builder/BuilderPage.tsx` | Next (`ModalDialog`) |
+| Below 1100 px the studio collapses to one column; drag and drop needs a mouse. | `styles.css`, `studio/StudioShell.tsx`, `studio/CanvasOverlay.tsx` | Fixed (drawers, tap to add, pointer move handle) |
+| Every preview hover re-renders the whole studio (no memoized panels). | `builder/Studio.tsx`, `studio/canvasStore.ts` | Fixed (overlay store, memoized panels) |
+| Each preview frame loads the main bundle; every selection change resends the spec. | `preview.html`, `preview/main.tsx`, `preview/PreviewFrame.tsx` | Fixed (own entry, `select` message). The pages were already lazy-loaded. |
+| `window.confirm` for destructive actions and mainnet live mode. | `components/ConfirmDialog.tsx` | Fixed (focus-trapped dialog, Cancel first; stacked dialogs handle their own Escape) |
+| Unsaved edits to an account project were dropped by New, Import and Remix. | `builder/storage.ts` | Fixed (stashed with their version) |
+| Draft writes failed silently when storage was full; every keystroke wrote the draft. | `builder/storage.ts`, `builder/BuilderPage.tsx` | Fixed (reported, debounced, flushed on leave) |
+| A missing `?project=` silently opened an unrelated draft. | `builder/BuilderPage.tsx` | Fixed (error, picker) |
+| Signed out, an account workspace id became a browser key; browser projects could not move to the account. | `builder/BuilderPage.tsx`, `home/LocalUpload.tsx` | Fixed |
+| Playground sign-in only existed inside Share and Admin; home flashed "No workspaces yet" before the session loaded. | `auth/AccountMenu.tsx`, `home/HomePage.tsx` | Fixed |
+| No copy button for share links; no timeout when the preview never starts. | `builder/ProjectPanel.tsx`, `preview/PreviewFrame.tsx` | Fixed |
+| The export dialog pointed to setup issues behind itself. | `builder/ExportPanel.tsx` | Fixed (lists them, jumps to the first) |
+| Layer rows put buttons inside tree items. | `studio/LayersPanel.tsx` | Fixed (focusable tree item, actions beside it, Ctrl+D) |
+| No copy and paste of blocks. | `builder/BuilderPage.tsx`, `builder/state.ts` | Fixed (Ctrl/Cmd+C, Ctrl/Cmd+V, across projects in one tab) |
+| No search or trash on the home page; no version history in the studio. | `home/HomePage.tsx`, `home/Trash.tsx`, `builder/ProjectPanel.tsx` | Fixed |
+
+### Playground security
+
+| Finding | Where | Status |
+| --- | --- | --- |
+| The mock preview kept trusting the iframe after it navigated, and accepted contract drops after a type check only. | `preview/PreviewFrame.tsx`, `preview/PreviewRuntime.tsx`, `studio/abi.ts` | Fixed (frame token, reload on navigation, links in a new window, checked drops) |
+| `ALLOW_TEST_LOGIN` was allowed on a public host when `NODE_ENV=test`. | `playground-api/src/config.ts` | Fixed (loopback `HOST` only) |
+| Gallery code used `allowUnpinnedWasm` and an unversioned unpkg embed script. | `gallery/codeExport.ts` | Fixed (pinned digests or the plugin's, versioned URLs) |
+| Release run links were rendered from upstream data without a check. | `admin/AdminPage.tsx` | Fixed (https GitHub run links only) |
+| `vite preview` allowed CORS on every path, wider than the deploy configs. | `vite.config.ts` | Fixed (`/assets/*` only) |
+| Mainnet live confirmation lasting across projects. | `builder/BuilderPage.tsx` | Not an issue: the editor remounts per opened, imported or remixed spec, so the yes does not carry over. |
 
 ### Playground API
 
@@ -112,10 +153,14 @@ compose hooks with review, fee and confirmation UI.
 | Workspace `name` / `workspaceId` had no length or pattern; `GET /projects` had no query schema. | `src/app.ts` | Fixed |
 | Unknown routes returned Fastify's default body; 4xx errors had no `requestId`. | `src/app.ts` | Fixed |
 | No way to rename, move or duplicate a project without resending the spec. | `src/app.ts` | Fixed (`PATCH /projects/:id`, `POST /projects/:id/duplicate`) |
-| No project history, no soft delete. | `src/store/sql.ts` | Next |
-| `app.ts` is one 500+ line function with every route. | `src/app.ts` | Next (route modules) |
-| Audit log skips project, workspace, share and logout events. | `src/app.ts` | Next |
-| No pagination, search or sort on project lists. | `src/store/sql.ts` | Next |
+| No project history, no soft delete. | `src/store/sql.ts` | Fixed (20 revisions per project, restore as a new version; 30-day trash) |
+| `app.ts` is one 500+ line function with every route. | `src/routes/*` | Fixed (auth, workspaces, projects, share, admin, deployments) |
+| Audit log skips project, workspace, share and logout events. | `src/routes/*` | Fixed (autosaves once per project per 10 minutes) |
+| No pagination, search or sort on project lists. | `src/store/sql.ts` | Fixed (`q`, `sort`, keyset `cursor`; index on `(owner, updated_at)`) |
+| Deleting a workspace unlinked its projects in two statements, while the home page said they were deleted. | `src/store/sql.ts` | Fixed (one transaction, to the trash together) |
+| `PATCH /projects/:id` without `baseVersion` could write an older spec over a newer save. | `src/routes/projects.ts` | Fixed (checked against the version it read) |
+| Share links had no expiry or view count. | `src/routes/share.ts` | Fixed (`expiresInDays`, `shareViews`) |
+| Every deployment insert failure was reported as "Subdomain is taken". | `src/routes/deployments.ts` | Fixed (unique violation 409, otherwise 500). Hosting stays off and has no worker. |
 | Rate limits and caches are per process; no Postgres migration lock; no metrics or OpenAPI. | `src/app.ts`, `src/store/sql.ts` | Later |
 
 ### connect-react widgets and hooks
@@ -176,13 +221,27 @@ compose hooks with review, fee and confirmation UI.
 - connect-react: transaction-aware error copy, `INVALID_PARAMS` mapping, `BridgeError` from
   hooks, `errorMessage` on four more hooks, polling paused in hidden tabs, docs fixes.
 
+### Done in the playground review pass
+
+- Drafts: dirty account edits stashed, refused writes reported, writes debounced and flushed,
+  a failed `?project=` reported, account workspace ids never used as browser keys, browser
+  projects saved to the account on request, autosave retries, one create at a time.
+- Security: preview frame token and reload on navigation, links in a new window, checked
+  contract drops, loopback-only test login, pinned gallery snippets, release-link check,
+  preview CORS on `/assets` only.
+- Experience: header sign-in, focus-trapped confirmations, share link copy, preview start
+  timeout, export setup list, layers tree semantics, block copy and paste, audit loading and
+  empty states.
+- Studio: drawers below 1100 px, tap to add, pointer move handle, hover and rects outside the
+  studio state, memoized panels, `preview.html` entry, `select` message.
+- API: revisions and restore, 30-day trash for projects and workspaces, search, sort and keyset
+  pages, audit for project, workspace, share and logout events, route modules, share expiry and
+  view counts, deployment error codes.
+
 ### Next
 
-- Project version history and restore; soft delete with a trash and 30-day purge.
-- Split `app.ts` into route modules; audit project, workspace, share and logout events.
-- Pagination, search and sort on project lists.
-- Studio usable below 1100 px, touch drag and drop, memoized panels for preview hover, lazy
-  routes and a lighter preview bundle.
+- Hosted publishing: a worker that builds queued deployments (the route records them; nothing
+  builds them yet).
 - connect-react: `useChainEvents`, consistent hook results, translatable `ui/` strings,
   `system` theme and mobile polish.
 - sqc-sdk: RPC total time budget and per-URL circuit breaker; CSP review for `wasm_exec.js`;
@@ -196,5 +255,6 @@ compose hooks with review, fee and confirmation UI.
   (aliases ship in a minor first).
 - New widgets: activity feed, NFT gallery, receive with QR, fee selector, address book,
   token balances.
-- API: workspace members and roles, share-link expiry and view counts, metrics, OpenAPI,
-  Postgres migration lock, shared rate-limit store.
+- API: workspace members and roles, metrics, OpenAPI, Postgres migration lock, shared
+  rate-limit store (the API stays a single instance until then).
+- Studio: multi-select and a command palette.

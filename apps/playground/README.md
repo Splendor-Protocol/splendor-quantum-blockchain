@@ -31,9 +31,11 @@ admin flags (API /catalog)       ─┘
 - A dApp is a `DappSpec` (`@splendor/dapp-spec`): name, network, theme, pages, and blocks of
   `{ widget, props }`. `validateSpec` runs everywhere a spec arrives (the editor, the preview
   iframe, and the API), so a hand-edited or shared spec is treated as untrusted input.
-- The mock preview runs in a same-origin iframe at `/preview`. It only accepts `postMessage` from
-  its parent window, validates the spec again, and renders it inside `MockSplendorProvider`. Wallet
-  calls are listed under **Mock wallet activity**.
+- The mock preview runs in an iframe with its own entry, `preview.html` (opaque origin in
+  production builds). It only accepts `postMessage` from its parent window, validates the spec
+  again, and renders it inside `MockSplendorProvider`. Its messages carry a per-frame token, web
+  links open in a new window, and the parent reloads the frame if it ever navigates away. Wallet
+  calls are listed under **Test wallet activity**.
 - Export uses `generateProject`, the same code generator as `npm create splendor-dapp`. The
   generated project pins the connect-react and sqc-sdk versions bundled into this playground,
   so an export behaves like its preview.
@@ -70,7 +72,7 @@ address in `ADMIN_ADDRESSES`.
 
 | Command (repo root) | What it covers |
 |---------|----------------|
-| `npm run test:playground` | Builder state (undo/redo) and API unit tests (auth, CSRF, projects, flags, releases, audit). |
+| `npm run test:playground` | Builder state (undo/redo, copy and paste), drafts and stashes, preview frame checks (links, tokens, contract drops), gallery code pins, and API unit tests (auth, CSRF, projects, revisions, trash, search and pages, share expiry, flags, releases, audit). |
 | `npm run test:e2e` | Playwright: every template in the builder with the mock wallet (transfer, tip, sign-in, token deploy), zip export for both frameworks, save, share and remix, plus the admin flows (catalog flags, release dry run, audit) against a fake GitHub and npm. It also checks the CSP and that the preview iframe is isolated. It builds the playground and serves it with `vite preview` under the deploy headers, alongside its own API (in-memory SQLite) and a fake GitHub, on ports 5181, 8797 and 8798. `E2E_DEV=1` uses the dev server instead (faster, but no CSP and a same-origin preview). Run `npx playwright install chromium` in this folder first. |
 | `npm run test:codegen` | Generates every template for Vite and Next.js, installs the SDKs from `npm pack` tarballs, and runs each production build. |
 | `E2E_LIVE=1 E2E_LIVE_NETWORK=devnet npx playwright test e2e/live` | Read-only recipes against a real network (the nightly workflow runs this). |
@@ -88,8 +90,8 @@ npm run playground:build         # → apps/playground/dist
 `dist/` is static. The build copies the signer into it and pins its sha256 (`sqcWasmPlugin`),
 so the live wallet refuses a swapped binary. Serve it from any static host or CDN with:
 
-- **SPA fallback**: unknown paths (`/build`, `/widgets/transfer`, `/s/<id>`, `/admin/...`,
-  `/preview`) must serve `index.html`.
+- **SPA fallback**: unknown paths (`/build`, `/widgets/transfer`, `/s/<id>`, `/admin/...`) must
+  serve `index.html`. `preview.html` is a real file and must be served as itself.
 - `sqc_signer.wasm` served as `application/wasm`.
 
 Build-time variables (`apps/playground/.env.production.local` or the CI environment):
@@ -139,7 +141,7 @@ Point your process manager or load balancer at `GET /health` (liveness: the proc
 | `SIGNIN_CHAIN_ID` | no | Reject sign-in messages for other chains. |
 | `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_RELEASE_WORKFLOW`, `GITHUB_RELEASE_REF` | for releases | See [Releasing packages](../../docs/RELEASING_PACKAGES.md). Without a token the release page is read-only (npm versions only). |
 | `HOSTING_ENABLED` | no | Phase-2 hosted publishing routes (`/deployments`). Leave off. |
-| `ALLOW_TEST_LOGIN` | never | Test-only password-less login. The API refuses to start with it in production, or on any host other than loopback unless `NODE_ENV=test`. |
+| `ALLOW_TEST_LOGIN` | never | Test-only password-less login. The API refuses to start with it in production, or on any `HOST` other than loopback (`127.0.0.1`, `::1`, `localhost`). |
 
 ### 3. Connect them
 

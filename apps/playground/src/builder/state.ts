@@ -62,6 +62,11 @@ export type BuilderAction =
   | { type: 'insertIntoTree'; parentId: string; index: number; widget: string; props: Record<string, PropValue> }
   | { type: 'moveNode'; id: string; parentId: string; index: number }
   | { type: 'duplicateNode'; id: string }
+  /**
+   * Paste a copied node (from this page or another, even another project) with fresh ids: after
+   * `afterId`, inside it when it is the page root, or at the end of the current page.
+   */
+  | { type: 'pasteNode'; node: LayoutNode; afterId: string | null }
   | { type: 'removeNodeFromTree'; id: string }
   | { type: 'movePage'; path: string; delta: -1 | 1 }
   /** Who may see a page. `public` clears the field. The home page (`/`) is always public (ignored). */
@@ -753,6 +758,16 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
       if (!root) return state;
       if (blocksFromTree(root).length > MAX_BLOCKS_PER_PAGE || countNodes(root) > MAX_NODES_PER_PAGE || treeDepth(root) > MAX_TREE_DEPTH) return state;
       return commit(state, replacePage(s, page.path, withTree(page, root)), null, { pagePath: page.path, selectedBlockId: nodeId(copy) });
+    }
+    case 'pasteNode': {
+      const page = s.pages.find((p) => p.path === state.pagePath);
+      if (!page || !isContainer(page.root)) return state;
+      const at = action.afterId ? locate(page.root, action.afterId) : null;
+      const copy = cloneNode(action.node, allIds(s));
+      const root = at ? insertChild(page.root, at.parent.id, at.index + 1, copy) : insertChild(page.root, page.root.id, page.root.children.length, copy);
+      if (!root) return state;
+      if (blocksFromTree(root).length > MAX_BLOCKS_PER_PAGE || countNodes(root) > MAX_NODES_PER_PAGE || treeDepth(root) > MAX_TREE_DEPTH) return state;
+      return commit(state, replacePage(s, page.path, withTree(page, root)), null, { selectedBlockId: nodeId(copy) });
     }
     case 'removeNodeFromTree': {
       const page = pageHolding(s, action.id);

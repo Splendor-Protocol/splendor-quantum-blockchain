@@ -1,18 +1,29 @@
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type DragEvent, type RefObject } from 'react';
 import { WrongNetworkBanner, useNetwork, useNetworkSwitch } from '@splendor/connect-react';
-import { blocksFromTree, defaultProps, findNode, type CatalogEntry, type DappSpec, type NetworkId, type PropValue } from '@splendor/dapp-spec';
+import {
+  blocksFromTree,
+  defaultProps,
+  findNode,
+  type CatalogEntry,
+  type DappSpec,
+  type NetworkId,
+  type NodeStyle,
+  type PageAccess,
+  type PropValue,
+} from '@splendor/dapp-spec';
 import { ModalDialog } from '../components/ModalDialog';
 import { Tabs, type TabItem } from '../components/Tabs';
+import { useStableCallback } from '../components/useStableCallback';
 import { PLAYGROUND_NETWORKS } from '../config';
 import type { MockWalletState } from '../preview/mock';
 import { PreviewFrame } from '../preview/PreviewFrame';
-import type { PreviewRects } from '../preview/protocol';
 import { SpecRenderer } from '../preview/SpecRenderer';
 import { PreviewApp } from '../studio/PreviewApp';
 import {
   CanvasOverlay,
   CONTRACT_FN_MIME,
   ContractsPanel,
+  createCanvasStore,
   DeviceSwitch,
   FlowsPanel,
   Inspector,
@@ -27,8 +38,10 @@ import {
   type DeviceSize,
   type CanvasDrop,
   type InspectorTab,
+  type StudioDrawer,
   type StudioRail,
 } from '../studio';
+import { parseContractDrop } from '../studio/abi';
 import { ExportPanel } from './ExportPanel';
 import { describeIssue, setupItems } from './issues';
 import { ProjectPanel, cloudLabel, type CloudState } from './ProjectPanel';
@@ -42,6 +55,8 @@ const OVERLAY_TABS: readonly TabItem<EditorTab>[] = [
 ];
 
 type DragPayload = { kind: 'widget' | 'block'; id: string };
+
+const NO_CONTRACTS: NonNullable<DappSpec['contracts']> = [];
 
 function pageBlocks(page: DappSpec['pages'][number]) {
   return page.blocks ?? blocksFromTree(page.root);
@@ -78,6 +93,7 @@ export function Studio({
   renderable,
   projectId,
   cloud,
+  draftSaveFailed = false,
   signedIn,
   canUndo,
   canRedo,
@@ -88,6 +104,7 @@ export function Studio({
   onNew,
   onOpenNewer,
   onKeepMine,
+  onRestoreRevision,
 }: {
   spec: DappSpec;
   pagePath: string;
@@ -100,7 +117,7 @@ export function Studio({
   setMode: (mode: 'mock' | 'live') => void;
   walletState: MockWalletState;
   setWalletState: (state: MockWalletState) => void;
-  confirmMainnetLive: () => boolean;
+  confirmMainnetLive: () => Promise<boolean>;
   tab: EditorTab;
   setTab: (tab: EditorTab) => void;
   calls: { method: string; args: string }[];
@@ -120,6 +137,8 @@ export function Studio({
   renderable: DappSpec | null;
   projectId: string | null;
   cloud: CloudState;
+  /** The browser refused the last draft write. */
+  draftSaveFailed?: boolean;
   signedIn: boolean;
   canUndo: boolean;
   canRedo: boolean;
@@ -130,10 +149,13 @@ export function Studio({
   onNew: () => void;
   onOpenNewer?: () => Promise<void>;
   onKeepMine?: () => Promise<void>;
+  onRestoreRevision?: (version: number) => Promise<void>;
 }) {
   const { networkId } = useNetwork();
   const { switchNetwork, switching } = useNetworkSwitch();
   const [rail, setRail] = useState<StudioRail>('components');
+  /** Narrow screens: which panel is open over the canvas. */
+  const [drawer, setDrawer] = useState<StudioDrawer>(null);
   const [device, setDevice] = useState<DeviceSize>('desktop');
   /** Page the full-screen Preview app starts on, or null when it is closed. */
   const [playFrom, setPlayFrom] = useState<string | null>(null);
@@ -147,7 +169,9 @@ export function Studio({
   const selectedIndex = selected ? blocks.indexOf(selected) : -1;
   const full = blocks.length >= MAX_BLOCKS_PER_PAGE;
   const overlayOpen = tab === 'export' || tab === 'project';
-  const shownCloud: CloudState = signedIn && projectId ? cloud : { status: 'local' };
+  const accountCloud: CloudState = signedIn && projectId ? cloud : { status: 'local' };
+  // An account copy that is in sync is enough; otherwise a refused draft write means nothing is kept.
+  const shownCloud: CloudState = draftSaveFailed && accountCloud.status !== 'saved' && accountCloud.status !== 'saving' ? { status: 'storage' } : accountCloud;
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('props');
   /** The field to focus lives on the Content tab. */
   const goToIssue: typeof goToIssueField = (target) => {
@@ -166,13 +190,24 @@ export function Studio({
   }, [issues, setup, spec, all]);
   /** What the list shows: issues already covered by a setup item are not counted twice. */
   const setupLeft = setup.length + shownIssues.length;
+  /** From the Export dialog: close it and go where the first setup item is fixed. */
+  const fixFirstSetupItem = () => {
+    setTab('block');
+    const first = setup[0];
+    if (first?.kind === 'contracts') setRail('contracts');
+    else if (first) goToIssue(first.target);
+    else {
+      const target = shownIssues.find(({ d }) => d.target)?.d.target;
+      if (target) goToIssue(target);
+    }
+  };
 
-  // In-canvas editing: the preview frame reports where nodes and insertion points are.
-  const [rects, setRects] = useState<PreviewRects | null>(null);
-  const [hoverId, setHoverId] = useState<string | null>(null);
+  // In-canvas editing: the preview frame reports where nodes and insertion points are, and what is
+  // under the pointer. Only the canvas overlay reads that, so it does not re-render the studio.
+  const canvasStore = useMemo(createCanvasStore, []);
   useEffect(() => {
-    setHoverId(null);
-  }, [mode, pagePath]);
+    canvasStore.setHover(null);
+  }, [canvasStore, mode, pagePath]);
 
   const labelFor = (id: string, kind: string): string => {
     const node = findNode(page.root, id);
@@ -189,7 +224,7 @@ export function Studio({
     [dragRef],
   );
 
-  const dropIntoTree = ({ parentId, index, moveId, contractFn }: { parentId: string; index: number; moveId?: string | null; contractFn?: string }) => {
+  const dropIntoTree = useStableCallback(({ parentId, index, moveId, contractFn }: { parentId: string; index: number; moveId?: string | null; contractFn?: string }) => {
     const drag = dragRef.current;
     dragRef.current = null;
     setDropIndex(null);
@@ -210,44 +245,72 @@ export function Studio({
       return;
     }
     if (!contractFn) return;
-    try {
-      const parsed = JSON.parse(contractFn) as { contractId?: unknown; address?: unknown; fn?: { name?: unknown; signature?: unknown; kind?: unknown } };
-      const fn = parsed.fn;
-      if (!fn || typeof fn.name !== 'string' || typeof fn.signature !== 'string') return;
-      const widget = fn.kind === 'write' ? 'contract-write' : 'contract-read';
-      const entry = all.find((e) => e.id === widget);
-      const contract = spec.contracts?.find((c) => c.id === parsed.contractId);
-      // Components that have a contract picker follow the contract; older ones get its address.
-      const picker = Boolean(contract && entry?.props.some((p) => p.name === 'contractId' && p.format === 'contract'));
-      const props: Record<string, PropValue> = {
-        ...(entry ? defaultProps(entry) : {}),
-        ...(picker && contract ? { contractId: contract.id } : { contract: typeof parsed.address === 'string' ? parsed.address : (contract?.address ?? '') }),
-        functionSig: fn.signature,
-        title: `${contract?.name ?? String(parsed.contractId ?? 'Contract')}: ${fn.name}`,
-        ...(fn.kind === 'write' ? { buttonLabel: fn.name } : {}),
-      };
-      dispatch({ type: 'insertIntoTree', parentId, index, widget, props });
-      setTab('block');
-    } catch {
-      // Not our payload.
-    }
-  };
+    const drop = parseContractDrop(contractFn, spec.contracts ?? []);
+    if (!drop) return;
+    const { contract, address, fn } = drop;
+    const widget = fn.kind === 'write' ? 'contract-write' : 'contract-read';
+    const entry = all.find((e) => e.id === widget);
+    // Components that have a contract picker follow the contract; older ones get its address.
+    const picker = Boolean(contract && entry?.props.some((p) => p.name === 'contractId' && p.format === 'contract'));
+    const props: Record<string, PropValue> = {
+      ...(entry ? defaultProps(entry) : {}),
+      ...(picker && contract ? { contractId: contract.id } : { contract: address }),
+      functionSig: fn.signature,
+      title: `${contract?.name ?? 'Contract'}: ${fn.name}`,
+      ...(fn.kind === 'write' ? { buttonLabel: fn.name } : {}),
+    };
+    dispatch({ type: 'insertIntoTree', parentId, index, widget, props });
+    setTab('block');
+  });
 
   const onOverlayDrop = (d: CanvasDrop) => dropIntoTree(d);
 
-  const startDrag = (event: DragEvent, payload: DragPayload) => {
+  const startDrag = useStableCallback((event: DragEvent, payload: DragPayload) => {
     skipClick.current = true;
     dragRef.current = payload;
     event.dataTransfer.setData('text/plain', payload.id);
     event.dataTransfer.effectAllowed = payload.kind === 'widget' ? 'copy' : 'move';
-  };
+  });
 
-  const endDrag = () => {
+  const endDrag = useStableCallback(() => {
     dragRef.current = null;
     setDropIndex(null);
     window.setTimeout(() => {
       skipClick.current = false;
     }, 50);
+  });
+
+  // Stable handlers for the memoized palette, layers and inspector.
+  const selectNode = useStableCallback((id: string) => {
+    dispatch({ type: 'selectBlock', id });
+    setTab('block');
+  });
+  const duplicateNode = useStableCallback((id: string) => dispatch({ type: 'duplicateNode', id }));
+  const removeNode = useStableCallback((id: string) => dispatch({ type: 'removeNodeFromTree', id }));
+  const moveNode = useStableCallback((move: { id: string; parentId: string; index: number }) => dispatch({ type: 'moveNode', ...move }));
+  const addFromPalette = useStableCallback((widget: string, props: Record<string, PropValue>) => {
+    // Keyboard-friendly nesting: with a container selected, new pieces go inside it.
+    if (selectedContainer) dispatch({ type: 'insertIntoTree', parentId: selectedContainer.id, index: selectedContainer.children.length, widget, props });
+    else dispatch({ type: 'addBlock', widget, props });
+    setTab('block');
+    // On a narrow screen, show the page the piece landed on.
+    setDrawer(null);
+  });
+  const inspectorHandlers = {
+    onPropChange: useStableCallback((name: string, value: PropValue | undefined) => {
+      if (selected) dispatch({ type: 'setProp', id: selected.id, name, value });
+    }),
+    onStyleChange: useStableCallback((style: NodeStyle) => {
+      if (selectedNode && selectedBlockId) dispatch({ type: 'setBlockStyle', id: selectedBlockId, style });
+    }),
+    onMoveBlock: useStableCallback((delta: -1 | 1) => {
+      if (selected) dispatch({ type: 'moveBlock', id: selected.id, delta });
+    }),
+    onRenamePage: useStableCallback((title: string) => dispatch({ type: 'renamePage', path: page.path, title })),
+    onOpenContracts: useStableCallback(() => setRail('contracts')),
+    onPageAccess: useStableCallback((access: PageAccess) => dispatch({ type: 'setPageAccess', path: page.path, access })),
+    onNavVisible: useStableCallback((visible: boolean) => dispatch({ type: 'setNavVisible', path: page.path, visible })),
+    onMovePage: useStableCallback((delta: -1 | 1) => dispatch({ type: 'movePage', path: page.path, delta })),
   };
 
   const sidebar =
@@ -260,12 +323,7 @@ export function Studio({
         onQueryChange={setBlockQuery}
         full={full}
         insertTarget={selectedContainer ? labelFor(selectedContainer.id, selectedContainer.kind) : null}
-        onAdd={(widget, props) => {
-          // Keyboard-friendly nesting: with a container selected, new pieces go inside it.
-          if (selectedContainer) dispatch({ type: 'insertIntoTree', parentId: selectedContainer.id, index: selectedContainer.children.length, widget, props });
-          else dispatch({ type: 'addBlock', widget, props });
-          setTab('block');
-        }}
+        onAdd={addFromPalette}
         startDrag={startDrag}
         endDrag={endDrag}
         skipClick={skipClick}
@@ -369,24 +427,20 @@ export function Studio({
                 setTab('block');
               }}
               onCalls={setCalls}
-              onRects={setRects}
-              onHover={setHoverId}
+              onRects={canvasStore.setRects}
+              onHover={canvasStore.setHover}
               onDrop={dropIntoTree}
               height="calc(100vh - 320px)"
             />
             <CanvasOverlay
-              rects={rects}
+              store={canvasStore}
               selectedId={selectedBlockId}
-              hoverId={hoverId}
               labelFor={labelFor}
               acceptsDrag={acceptsDrag}
               full={full}
-              onSelect={(id) => {
-                dispatch({ type: 'selectBlock', id });
-                setTab('block');
-              }}
-              onDuplicate={(id) => dispatch({ type: 'duplicateNode', id })}
-              onRemove={(id) => dispatch({ type: 'removeNodeFromTree', id })}
+              onSelect={selectNode}
+              onDuplicate={duplicateNode}
+              onRemove={removeNode}
               onDrop={onOverlayDrop}
             />
           </div>
@@ -428,6 +482,8 @@ export function Studio({
     <StudioShell
       rail={rail}
       onRailChange={setRail}
+      drawer={drawer}
+      onDrawerChange={setDrawer}
       topBar={
         <StudioTopBar>
           <input
@@ -447,8 +503,10 @@ export function Studio({
             value={spec.network}
             onChange={(e) => {
               const network = e.target.value as NetworkId;
-              if (network === 'mainnet' && mode === 'live' && !confirmMainnetLive()) return;
-              dispatch({ type: 'setNetwork', network });
+              void (async () => {
+                if (network === 'mainnet' && mode === 'live' && !(await confirmMainnetLive())) return;
+                dispatch({ type: 'setNetwork', network });
+              })();
             }}
           >
             {PLAYGROUND_NETWORKS.map((n) => (
@@ -466,8 +524,10 @@ export function Studio({
               type="button"
               aria-pressed={mode === 'live'}
               onClick={() => {
-                if (spec.network === 'mainnet' && !confirmMainnetLive()) return;
-                setMode('live');
+                void (async () => {
+                  if (spec.network === 'mainnet' && !(await confirmMainnetLive())) return;
+                  setMode('live');
+                })();
               }}
             >
               Real wallet
@@ -530,20 +590,20 @@ export function Studio({
           compatibilityNote={compatibilityNote}
           pages={spec.pages}
           canDuplicate={!full}
-          onPropChange={(name, value) => selected && dispatch({ type: 'setProp', id: selected.id, name, value })}
-          onStyleChange={(style) => selectedNode && dispatch({ type: 'setBlockStyle', id: selectedBlockId!, style })}
-          onDuplicateNode={(id) => dispatch({ type: 'duplicateNode', id })}
-          onRemoveNode={(id) => dispatch({ type: 'removeNodeFromTree', id })}
-          onMoveBlock={(delta) => selected && dispatch({ type: 'moveBlock', id: selected.id, delta })}
-          onRenamePage={(title) => dispatch({ type: 'renamePage', path: page.path, title })}
-          contracts={spec.contracts ?? []}
-          onOpenContracts={() => setRail('contracts')}
+          onPropChange={inspectorHandlers.onPropChange}
+          onStyleChange={inspectorHandlers.onStyleChange}
+          onDuplicateNode={duplicateNode}
+          onRemoveNode={removeNode}
+          onMoveBlock={inspectorHandlers.onMoveBlock}
+          onRenamePage={inspectorHandlers.onRenamePage}
+          contracts={spec.contracts ?? NO_CONTRACTS}
+          onOpenContracts={inspectorHandlers.onOpenContracts}
           pageIndex={spec.pages.findIndex((p) => p.path === page.path)}
           pageCount={spec.pages.length}
           navVisible={isInNav(spec, page.path)}
-          onPageAccess={(access) => dispatch({ type: 'setPageAccess', path: page.path, access })}
-          onNavVisible={(visible) => dispatch({ type: 'setNavVisible', path: page.path, visible })}
-          onMovePage={(delta) => dispatch({ type: 'movePage', path: page.path, delta })}
+          onPageAccess={inspectorHandlers.onPageAccess}
+          onNavVisible={inspectorHandlers.onNavVisible}
+          onMovePage={inspectorHandlers.onMovePage}
           tab={inspectorTab}
           onTabChange={setInspectorTab}
         />
@@ -554,13 +614,10 @@ export function Studio({
           catalog={all}
           selectedId={selectedBlockId}
           full={full}
-          onSelect={(id) => {
-            dispatch({ type: 'selectBlock', id });
-            setTab('block');
-          }}
-          onDuplicate={(id) => dispatch({ type: 'duplicateNode', id })}
-          onRemove={(id) => dispatch({ type: 'removeNodeFromTree', id })}
-          onMove={(move) => dispatch({ type: 'moveNode', ...move })}
+          onSelect={selectNode}
+          onDuplicate={duplicateNode}
+          onRemove={removeNode}
+          onMove={moveNode}
           onDrop={dropIntoTree}
           acceptsDrag={acceptsDrag}
           startDrag={startDrag}
@@ -585,13 +642,22 @@ export function Studio({
           <ModalDialog label={tab === 'export' ? 'Export' : 'Save and share'} onClose={() => setTab('block')}>
             <div className="pg-studio-overlay-panel">
               <Tabs idPrefix="builder" label="Editor" tabs={OVERLAY_TABS} value={tab} onChange={setTab}>
-                {tab === 'export' ? <ExportPanel spec={spec} catalog={all} valid={validationOk} /> : null}
+                {tab === 'export' ? (
+                  <ExportPanel
+                    spec={spec}
+                    catalog={all}
+                    valid={validationOk}
+                    setupLeft={[...setup.map((s) => s.message), ...shownIssues.map(({ d }) => `${d.where} ${d.message}`)]}
+                    onFixFirst={fixFirstSetupItem}
+                  />
+                ) : null}
                 {tab === 'project' ? (
                   <ProjectPanel
                     spec={spec}
                     catalog={all}
                     projectId={projectId}
                     cloud={shownCloud}
+                    saving={cloud.status === 'saving'}
                     valid={validationOk}
                     onSaveNew={onSaveNew}
                     onOpen={onOpenProject}
@@ -600,6 +666,7 @@ export function Studio({
                     onNew={onNew}
                     onOpenNewer={onOpenNewer}
                     onKeepMine={onKeepMine}
+                    onRestoreRevision={onRestoreRevision}
                   />
                 ) : null}
               </Tabs>

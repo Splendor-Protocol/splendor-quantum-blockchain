@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react';
 import { migrateSpec, type CatalogEntry, type DappSpec } from '@splendor/dapp-spec';
-import { api, ApiError, type ProjectSummary } from '../api/client';
+import { api, ApiError, type ProjectSummary, type Revision } from '../api/client';
 import { SignInPanel } from '../auth/SignInPanel';
 import { useSession } from '../auth/session';
+import { CopyButton } from '../components/CodeBlock';
+import { useConfirm } from '../components/ConfirmDialog';
 import { validateForPreview } from '../preview/validatePreview';
 
 /**
  * `unsaved`: the account copy is behind because the draft has issues the API would reject.
  * `conflict`: the account has a newer copy than the one these edits started from.
+ * `storage`: the browser refused to keep the draft (storage full or disabled) and no account copy has it.
  */
-export type CloudState = { status: 'local' | 'saving' | 'saved' | 'unsaved' | 'conflict' | 'error'; message?: string };
+export type CloudState = { status: 'local' | 'saving' | 'saved' | 'unsaved' | 'conflict' | 'error' | 'storage'; message?: string };
 
 /** Short label for the studio top bar. */
 export function cloudLabel(cloud: CloudState): string {
@@ -26,6 +29,8 @@ export function cloudLabel(cloud: CloudState): string {
       return 'Conflict';
     case 'error':
       return 'Sync failed';
+    case 'storage':
+      return 'Not saved';
   }
 }
 
@@ -64,6 +69,7 @@ export function ProjectPanel({
   catalog,
   projectId,
   cloud,
+  saving = false,
   valid,
   onSaveNew,
   onOpen,
@@ -72,11 +78,14 @@ export function ProjectPanel({
   onNew,
   onOpenNewer,
   onKeepMine,
+  onRestoreRevision,
 }: {
   spec: DappSpec;
   catalog: readonly CatalogEntry[];
   projectId: string | null;
   cloud: CloudState;
+  /** A save to the account is in flight. */
+  saving?: boolean;
   valid: boolean;
   onSaveNew: () => Promise<void>;
   onOpen: (id: string) => Promise<void>;
@@ -88,13 +97,41 @@ export function ProjectPanel({
   onOpenNewer?: () => Promise<void>;
   /** Conflict: save these edits over the account copy. */
   onKeepMine?: () => Promise<void>;
+  /** Save an older version of the open project as its newest one, and open it. */
+  onRestoreRevision?: (version: number) => Promise<void>;
 }) {
   const { session } = useSession();
+  const [confirmDialog, confirm] = useConfirm();
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importText, setImportText] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
+  const [projectQuery, setProjectQuery] = useState('');
+  const [expiryDays, setExpiryDays] = useState<'' | '7' | '30'>('');
+  const [revisions, setRevisions] = useState<Revision[] | null>(null);
+  const current = projects?.find((p) => p.id === projectId);
+  const shownProjects = (projects ?? []).filter((p) => !projectQuery.trim() || p.name.toLowerCase().includes(projectQuery.trim().toLowerCase()));
+
+  const loadRevisions = () => {
+    if (!projectId) return;
+    void api
+      .revisions(projectId)
+      .then((r) => setRevisions(r.revisions))
+      .catch(() => setRevisions([]));
+  };
+  useEffect(() => setRevisions(null), [projectId]);
+
+  const restoreRevision = (version: number) =>
+    guard(async () => {
+      if (!onRestoreRevision) return;
+      const ok = await confirm({
+        title: `Restore version ${version}?`,
+        message: 'It becomes the newest version. What is saved now stays in the history, so this can be undone the same way.',
+        confirmLabel: 'Restore this version',
+      });
+      if (ok) await onRestoreRevision(version);
+    });
 
   const reload = () =>
     api
@@ -128,14 +165,16 @@ export function ProjectPanel({
   const share = () =>
     guard(async () => {
       if (!projectId) return;
-      const { shareId } = await api.shareProject(projectId);
+      const { shareId } = await api.shareProject(projectId, expiryDays ? Number(expiryDays) : undefined);
       setShareUrl(shareUrlFor(shareId));
       void reload();
     });
 
   const unshare = () =>
     guard(async () => {
-      if (!projectId || !window.confirm('Stop sharing? The current link stops working for everyone.')) return;
+      if (!projectId) return;
+      const ok = await confirm({ title: 'Stop sharing?', message: 'The current link stops working for everyone.', confirmLabel: 'Stop sharing', danger: true });
+      if (!ok) return;
       await api.unshareProject(projectId);
       setShareUrl(null);
       void reload();
@@ -143,7 +182,13 @@ export function ProjectPanel({
 
   const remove = (p: ProjectSummary) =>
     guard(async () => {
-      if (!window.confirm(`Delete "${p.name}" from your account? This cannot be undone.`)) return;
+      const ok = await confirm({
+        title: `Delete "${p.name}"?`,
+        message: 'It moves to the trash on the home page, where it can be restored for 30 days.',
+        confirmLabel: 'Delete project',
+        danger: true,
+      });
+      if (!ok) return;
       await api.deleteProject(p.id);
       if (p.id === projectId) onDeleted(p.id);
       void reload();
@@ -162,8 +207,9 @@ export function ProjectPanel({
 
   return (
     <div className="pg-stack">
+      {confirmDialog}
       <p
-        className={cloud.status === 'error' || cloud.status === 'unsaved' || cloud.status === 'conflict' ? 'pg-error' : 'pg-muted'}
+        className={cloud.status === 'error' || cloud.status === 'unsaved' || cloud.status === 'conflict' || cloud.status === 'storage' ? 'pg-error' : 'pg-muted'}
         style={{ margin: 0 }}
         data-testid="save-status"
         role="status"
@@ -174,6 +220,8 @@ export function ProjectPanel({
         {cloud.status === 'unsaved' && 'Latest changes are only in this browser. Fix the listed issues to save them to your account.'}
         {cloud.status === 'conflict' && 'A newer copy was saved in another tab or device. Choose which one to keep.'}
         {cloud.status === 'error' && `Cloud save failed: ${cloud.message ?? 'unknown error'}`}
+        {cloud.status === 'storage' &&
+          'This browser refused to save the draft (storage full or disabled). Download the spec or save it to your account before you leave.'}
       </p>
       {cloud.status === 'conflict' && onOpenNewer && onKeepMine ? (
         <div className="pg-row">
@@ -189,22 +237,74 @@ export function ProjectPanel({
       {session ? (
         <>
           {!projectId ? (
-            <button type="button" className="pg-btn" disabled={!valid} onClick={() => void onSaveNew()}>
+            <button type="button" className="pg-btn" disabled={!valid || saving} onClick={() => void onSaveNew()}>
               Save to my account
             </button>
           ) : shareUrl ? (
             <div className="pg-field">
               <label htmlFor="share-url">Share link (read-only, anyone can remix)</label>
               <input id="share-url" readOnly value={shareUrl} onFocus={(e) => e.currentTarget.select()} />
-              <button type="button" className="pg-btn pg-btn-danger pg-btn-sm" onClick={() => void unshare()} data-testid="unshare">
-                Stop sharing
-              </button>
+              <small className="pg-muted" data-testid="share-details">
+                {current?.shareExpiresAt ? `Expires ${new Date(current.shareExpiresAt).toLocaleDateString()}` : 'Works until you stop sharing'}
+                {current?.shareViews ? ` \u00B7 opened ${current.shareViews} time${current.shareViews === 1 ? '' : 's'}` : ''}
+              </small>
+              <div className="pg-row">
+                <CopyButton text={shareUrl} label="Copy link" testId="share-copy" />
+                <button type="button" className="pg-btn pg-btn-danger pg-btn-sm" onClick={() => void unshare()} data-testid="unshare">
+                  Stop sharing
+                </button>
+              </div>
             </div>
           ) : (
-            <button type="button" className="pg-btn pg-btn-ghost" onClick={() => void share()}>
-              Create share link
-            </button>
+            <div className="pg-row">
+              <button type="button" className="pg-btn pg-btn-ghost" onClick={() => void share()}>
+                Create share link
+              </button>
+              <label className="pg-muted" htmlFor="share-expiry">
+                Link works
+              </label>
+              <select id="share-expiry" value={expiryDays} onChange={(e) => setExpiryDays(e.target.value as '' | '7' | '30')}>
+                <option value="">until I stop sharing</option>
+                <option value="7">for 7 days</option>
+                <option value="30">for 30 days</option>
+              </select>
+            </div>
           )}
+          {projectId && onRestoreRevision ? (
+            <details
+              data-testid="version-history"
+              onToggle={(e) => {
+                if (e.currentTarget.open && revisions === null) loadRevisions();
+              }}
+            >
+              <summary>Version history</summary>
+              {revisions === null ? (
+                <p className="pg-muted" role="status">
+                  Loading versions…
+                </p>
+              ) : revisions.length ? (
+                <ul className="pg-list">
+                  {revisions.map((r, i) => (
+                    <li key={r.version} className="pg-row">
+                      <span>
+                        Version {r.version} <small className="pg-muted">{new Date(r.savedAt).toLocaleString()}</small>
+                      </span>
+                      <span className="pg-spacer" />
+                      {i === 0 ? (
+                        <small className="pg-muted">current</small>
+                      ) : (
+                        <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" aria-label={`Restore version ${r.version}`} onClick={() => void restoreRevision(r.version)}>
+                          Restore
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="pg-muted">No saved versions yet.</p>
+              )}
+            </details>
+          ) : null}
           {!valid && !projectId ? <small className="pg-muted">Fix the listed issues to save to your account.</small> : null}
           {error ? (
             <p className="pg-error" role="alert">
@@ -214,8 +314,20 @@ export function ProjectPanel({
           {projects?.length ? (
             <div>
               <p className="pg-list-title">My projects</p>
+              {projects.length > 5 ? (
+                <input
+                  type="search"
+                  aria-label="Search my projects"
+                  placeholder="Search my projects"
+                  value={projectQuery}
+                  maxLength={80}
+                  onChange={(e) => setProjectQuery(e.target.value)}
+                  style={{ marginBottom: '0.4rem' }}
+                />
+              ) : null}
+              {!shownProjects.length ? <p className="pg-muted">No projects match "{projectQuery.trim()}".</p> : null}
               <ul className="pg-list" data-testid="my-projects">
-                {projects.map((p) => (
+                {shownProjects.map((p) => (
                   <li key={p.id} style={{ display: 'flex' }}>
                     <button type="button" className={p.id === projectId ? 'is-active' : ''} onClick={() => void onOpen(p.id)}>
                       {p.name}

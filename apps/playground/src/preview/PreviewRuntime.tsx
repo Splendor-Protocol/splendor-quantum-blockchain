@@ -5,10 +5,10 @@ import { WIDGET_MANIFESTS } from '@splendor/connect-react/manifest';
 import { createCatalog, migrateSpec, type DappSpec } from '@splendor/dapp-spec';
 import { createPlaygroundMock } from './mock';
 import { validateForPreview } from './validatePreview';
-import { PREVIEW_SOURCE, isPreviewMessage, type ParentToPreview, type PreviewRects, type PreviewToParent, type RenderRequest } from './protocol';
+import { PREVIEW_SOURCE, frameTokenFrom, isPreviewMessage, type ParentToPreview, type PreviewRects, type PreviewToParent, type RenderRequest } from './protocol';
 import { pickDropTarget } from './dropTarget';
 import { measureRects, nodeIdAt } from './measure';
-import { SpecRenderer } from './SpecRenderer';
+import { SpecRenderer, hrefToPath } from './SpecRenderer';
 
 const CONTRACT_FN_MIME = 'application/x-splendor-contract-fn';
 /** Where the page gate (AccessGate) remembers a test-wallet sign-in. */
@@ -36,10 +36,24 @@ function postHover(id: string | null) {
 
 const catalog = createCatalog(WIDGET_MANIFESTS);
 
-type Outgoing = PreviewToParent extends infer T ? (T extends PreviewToParent ? Omit<T, 'source'> : never) : never;
+type Outgoing = PreviewToParent extends infer T ? (T extends PreviewToParent ? Omit<T, 'source' | 'token'> : never) : never;
+
+let token: string | null = null;
 
 function post(msg: Outgoing) {
-  window.parent.postMessage({ source: PREVIEW_SOURCE, ...msg }, window.location.origin);
+  token ??= frameTokenFrom(window.location.hash);
+  window.parent.postMessage({ source: PREVIEW_SOURCE, token, ...msg }, window.location.origin);
+}
+
+/**
+ * What a link click inside the frame may do. The frame never leaves this document: a page it
+ * navigated to would keep receiving the builder's drafts. In-app page links are followed by the
+ * renderer; web links open in a new window; anything else does nothing.
+ */
+export function frameLinkAction(href: string, pagePaths: readonly string[]): 'app' | 'popup' | 'none' {
+  const path = hrefToPath(href);
+  if (path !== null && pagePaths.includes(path)) return 'app';
+  return /^https?:\/\//i.test(href) ? 'popup' : 'none';
 }
 
 function short(v: unknown): string {
@@ -52,7 +66,7 @@ function short(v: unknown): string {
 }
 
 /**
- * Runs inside the preview iframe (`/preview`). Takes specs only from a parent window on the
+ * Runs inside the preview iframe (`preview.html`). Takes specs only from a parent window on the
  * playground's origin (`location.origin` is the URL's origin even when this document's own origin
  * is opaque), validates them like any untrusted input, and renders them against the mock wallet.
  */
@@ -72,6 +86,11 @@ export function PreviewRuntime() {
       if (!isPreviewMessage<ParentToPreview>(e.data)) return;
       if (e.data.type === 'requestRects') {
         if (!playRef.current) postRects(true);
+        return;
+      }
+      if (e.data.type === 'select') {
+        const selectedBlockId = typeof e.data.selectedBlockId === 'string' ? e.data.selectedBlockId : null;
+        setReq((r) => (r ? { ...r, selectedBlockId } : r));
         return;
       }
       if (e.data.type !== 'render') return;
@@ -109,6 +128,29 @@ export function PreviewRuntime() {
     window.addEventListener('message', onMessage);
     post({ type: 'ready' });
     return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  const pagePaths = useRef<string[]>([]);
+  pagePaths.current = req?.spec.pages.map((p) => p.path) ?? [];
+  // Capture phase: decided before any widget handler, so nothing in the spec can opt out.
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
+      if (!(a instanceof HTMLAnchorElement)) return;
+      const href = a.getAttribute('href') ?? '';
+      const action = frameLinkAction(href, pagePaths.current);
+      // In-app links are followed by the renderer's own handler.
+      if (action === 'app') return;
+      e.preventDefault();
+      if (action === 'popup') window.open(href, '_blank', 'noopener,noreferrer');
+    };
+    const onSubmit = (e: SubmitEvent) => e.preventDefault();
+    window.addEventListener('click', onClick, true);
+    window.addEventListener('submit', onSubmit, true);
+    return () => {
+      window.removeEventListener('click', onClick, true);
+      window.removeEventListener('submit', onSubmit, true);
+    };
   }, []);
 
   // Report node rects + drop targets after every render, and whenever layout can change.

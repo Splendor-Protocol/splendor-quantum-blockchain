@@ -5,7 +5,23 @@ import { PACKAGE_VERSIONS } from '../config';
 import { deployLinks, downloadZip, openInStackBlitz } from './export';
 import { loadVendorOptions, sdkSourceLabel } from './vendor';
 
-export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog: readonly CatalogEntry[]; valid: boolean }) {
+const FILE_LIST_LIMIT = 80;
+
+export function ExportPanel({
+  spec,
+  catalog,
+  valid,
+  setupLeft = [],
+  onFixFirst,
+}: {
+  spec: DappSpec;
+  catalog: readonly CatalogEntry[];
+  valid: boolean;
+  /** What "Finish setup" still lists, so the dialog can say it without sending the user behind itself. */
+  setupLeft?: string[];
+  /** Close the dialog and go to the first setup item. */
+  onFixFirst?: () => void;
+}) {
   const [framework, setFramework] = useState<Framework>('vite');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +61,7 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
 
   const links = deployLinks(repoUrl);
   const ready: GeneratedProject | null = project && !(project instanceof Error) ? project : null;
+  const files = ready ? Object.keys(ready.files).filter((f) => !f.startsWith('vendor/') || f.endsWith('package.json')) : [];
 
   return (
     <div className="pg-stack" data-testid="export-panel">
@@ -55,10 +72,33 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
           </button>
         ))}
       </div>
-      {!valid ? <p className="pg-error">Fix the issues under Finish setup, above the preview, before exporting.</p> : null}
+      {!valid ? (
+        <div className="pg-error" role="alert" data-testid="export-setup-left">
+          <p style={{ margin: 0 }}>Finish setup before exporting:</p>
+          {setupLeft.length ? (
+            <ul style={{ margin: '0.35rem 0' }}>
+              {setupLeft.slice(0, 5).map((m) => (
+                <li key={m}>{m}</li>
+              ))}
+              {setupLeft.length > 5 ? <li>…and {setupLeft.length - 5} more</li> : null}
+            </ul>
+          ) : null}
+          {onFixFirst ? (
+            <button type="button" className="pg-btn pg-btn-sm" data-testid="export-fix-first" onClick={onFixFirst}>
+              Go to the first one
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {project instanceof Error ? <p className="pg-error">{project.message}</p> : null}
-      <p className="pg-muted" style={{ margin: 0 }}>
-        Uses the {sdkSourceLabel(vendor)}. Set <code>VITE_PLAYGROUND_SDK_SOURCE=npm</code> after publishing the packages.
+      <p className="pg-muted" style={{ margin: 0 }} role="status">
+        {vendor ? (
+          <>
+            Uses the {sdkSourceLabel(vendor)}. Set <code>VITE_PLAYGROUND_SDK_SOURCE=npm</code> after publishing the packages.
+          </>
+        ) : (
+          'Preparing the export…'
+        )}
       </p>
       <button type="button" className="pg-btn" disabled={!ready || !!busy} data-testid="export-zip" onClick={() => ready && void run('zip', () => downloadZip(ready))}>
         {busy === 'zip' ? 'Preparing…' : 'Download .zip'}
@@ -116,17 +156,15 @@ export function ExportPanel({ spec, catalog, valid }: { spec: DappSpec; catalog:
         <details>
           <summary>Files ({Object.keys(ready.files).length})</summary>
           <ul className="pg-list">
-            {Object.keys(ready.files)
-              .filter((f) => !f.startsWith('vendor/') || f.endsWith('package.json'))
-              .slice(0, 80)
-              .map((f) => (
-                <li key={f}>
-                  <button type="button" className={peek === f ? 'is-active' : ''} onClick={() => setPeek(peek === f ? null : f)}>
-                    <code>{f}</code>
-                  </button>
-                </li>
-              ))}
+            {files.slice(0, FILE_LIST_LIMIT).map((f) => (
+              <li key={f}>
+                <button type="button" className={peek === f ? 'is-active' : ''} onClick={() => setPeek(peek === f ? null : f)}>
+                  <code>{f}</code>
+                </button>
+              </li>
+            ))}
           </ul>
+          {files.length > FILE_LIST_LIMIT ? <p className="pg-muted">…and {files.length - FILE_LIST_LIMIT} more files in the zip.</p> : null}
           {peek && ready.files[peek] != null ? <CodeBlock code={ready.files[peek]!} /> : null}
         </details>
       ) : null}

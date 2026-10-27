@@ -1,4 +1,4 @@
-import { cleanup, createEvent, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TEMPLATES, blocksFromTree, createCatalog, instantiateTemplate, type CatalogEntry, type DappSpec } from '@splendor/dapp-spec';
 import { WIDGET_MANIFESTS } from '@splendor/connect-react/manifest';
@@ -255,18 +255,18 @@ describe('ContractsPanel validation', () => {
     expect(uniqueContractId('counter', ['counter'])).toBe('counter-2');
   });
 
-  it('asks before removing a contract', () => {
+  it('asks before removing a contract', async () => {
     const dispatch = vi.fn();
     const spec: DappSpec = { ...launchpad(), contracts: [{ id: 'counter', name: 'Counter', address, functions: [] }] };
     render(<ContractsPanel spec={spec} dispatch={dispatch} onInsertContractBlock={() => undefined} />);
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     fireEvent.click(screen.getByRole('button', { name: 'Remove Counter' }));
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('confirm-dialog')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('confirm-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).toBeNull());
     expect(dispatch).not.toHaveBeenCalled();
-    confirm.mockReturnValue(true);
     fireEvent.click(screen.getByRole('button', { name: 'Remove Counter' }));
-    expect(dispatch).toHaveBeenCalledWith({ type: 'setContracts', contracts: [] });
-    confirm.mockRestore();
+    fireEvent.click(screen.getByTestId('confirm-ok'));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'setContracts', contracts: [] }));
   });
 
   it('edits a contract address in place, validating it first', () => {
@@ -411,7 +411,23 @@ describe('LayersPanel', () => {
     const tree = screen.getByTestId('block-list');
     expect(tree.querySelectorAll('li')).toHaveLength(blocksFromTree(page.root).length);
     expect(tree.querySelectorAll('[data-kind="section"], [data-kind="stack"]').length).toBeGreaterThan(0);
-    expect(tree.querySelector('li')!.getAttribute('role')).toBe('treeitem');
+    // The row is presentational; its tree item holds no buttons.
+    expect(tree.querySelector('li')!.getAttribute('role')).toBe('none');
+    const item = tree.querySelector('li [role="treeitem"]')!;
+    expect(item.querySelector('button')).toBeNull();
+    expect(tree.querySelectorAll('[role="treeitem"][tabindex="0"]')).toHaveLength(1);
+  });
+
+  it('duplicates a component with Ctrl+D on its tree item', () => {
+    const page = launchpad().pages[0]!;
+    const p = props();
+    const first = blocksFromTree(page.root)[0]!;
+    render(<LayersPanel page={page} selectedId={null} {...p} />);
+    const item = screen.getByTestId('block-list').querySelector<HTMLElement>('li [data-layer-select]')!;
+    fireEvent.keyDown(item, { key: 'd', ctrlKey: true });
+    expect(p.onDuplicate).toHaveBeenLastCalledWith(first.id);
+    fireEvent.keyDown(item, { key: 'Enter' });
+    expect(p.onSelect).toHaveBeenLastCalledWith(first.id);
   });
 
   it('selects on click (leaf and container) and marks the selection', () => {
@@ -421,7 +437,7 @@ describe('LayersPanel', () => {
     const first = blocksFromTree(page.root)[0]!;
     render(<LayersPanel page={page} selectedId={first.id} {...p} />);
     expect(screen.getByTestId('block-list').querySelectorAll('li.is-active')).toHaveLength(1);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Page' })[0]!);
+    fireEvent.click(screen.getAllByRole('treeitem', { name: 'Page' })[0]!);
     expect(p.onSelect).toHaveBeenLastCalledWith((page.root as { id: string }).id);
   });
 

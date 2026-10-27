@@ -1,12 +1,12 @@
 import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { ConnectKit, SplendorConnectProvider, TxToastHost } from '@splendor/connect-react';
+import { AccountMenu } from './auth/AccountMenu';
 import { SessionProvider, useSession } from './auth/session';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { NetworkSelect } from './components/NetworkSelect';
 import { DEFAULT_NETWORK } from './config';
 import { playgroundNetworks } from './networks';
-import { PreviewRuntime } from './preview/PreviewRuntime';
 import { RegistryProvider } from './registry';
 import { HomePage } from './home/HomePage';
 
@@ -106,6 +106,7 @@ function Layout() {
         <div className="pg-header-right">
           {/* The studio has its own network choice for the dApp: one picker on /build, not two. */}
           {onBuild ? null : <NetworkSelect />}
+          <AccountMenu />
           <ConnectKit showNetwork={false} />
         </div>
       </header>
@@ -124,7 +125,6 @@ export function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/preview" element={<PreviewRuntime />} />
         <Route element={<Shell />}>
           <Route index element={<HomePage />} />
           <Route path="learn/*" element={<LearnPage />} />

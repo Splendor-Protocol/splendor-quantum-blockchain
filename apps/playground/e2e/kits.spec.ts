@@ -122,6 +122,8 @@ test.describe('kits: token project', () => {
 
     await expect(myToken).toContainText('1,000', { timeout: 30_000 });
     await expect(myToken).not.toContainText('25,000');
+    // The browser draft is written a moment after the edit.
+    await expect.poll(async () => (await draftSpec(page)).contracts.find((c: { id: string }) => c.id === 'token').address).toBe(other);
     const spec = await draftSpec(page);
     expect(spec.contracts.find((c: { id: string }) => c.id === 'token').address).toBe(other);
     const blocks = spec.pages.flatMap((p: { blocks: { id: string; props: Record<string, unknown> }[] }) => p.blocks);

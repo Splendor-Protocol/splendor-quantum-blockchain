@@ -1,44 +1,52 @@
-﻿feat(playground,api,connect-react): conflict-safe saves, draft recovery, clearer hook errors
+﻿feat(playground,api): data-safe drafts, preview hardening, trash and revisions, narrow studio
 
-Playground API
-- Projects get a `version` (migration 4). PUT/PATCH /projects/:id accept
-  `baseVersion` and answer 409 CONFLICT with the current summary instead of
-  overwriting a newer copy.
-- New PATCH /projects/:id (rename, move between workspaces) and
-  POST /projects/:id/duplicate (counts toward the project limit).
-- CORS allows PATCH (workspace rename failed cross-origin).
-- Stricter schemas for workspace names, workspaceId and GET /projects.
-- Errors carry `code` and `requestId`; unknown routes return NOT_FOUND.
-- README route table lists every route.
+Drafts and saving
+- Stash unsaved account-project edits before New/Import/Remix; restore keeps their version
+- saveDraft reports refused writes ("Not saved" chip, warn before leaving);
+  draft writes debounced 800ms and flushed on leave/unmount/New/Import
+- A failed ?project= load shows an error instead of opening an unrelated draft
+- Account workspace ids are never used as browser keys; signed out, such links ask to sign in
+- Home: review browser-only projects and save chosen ones to the account
+- Autosave retries network/5xx errors; one project create at a time
+- PATCH /projects/:id checks the version it read (no stale rename overwrite)
 
-Playground
-- Autosave sends the base version, runs only after real edits, and saves
-  one request at a time. A conflict shows "Open the newer copy" /
-  "Keep my version". Top-bar chip shows the sync state.
-- ?project= stays in the URL; the draft records its version and unsaved
-  edits so a reload resumes them.
-- A draft replaced by a template, New, Import or Remix is stashed and can
-  be restored.
-- Rename and Duplicate on workspace and project cards (account and
-  browser).
-- Fixes: header brand follows the dApp name, Finish setup count, jumping
-  to an issue from Style/Actions tabs, export panel copy.
+Security
+- Preview frame: per-frame token on messages, reload if it navigates away,
+  web links open a new window, forms never submit
+- Contract-function drops validated like Contracts panel input (parseContractDrop)
+- ALLOW_TEST_LOGIN requires a loopback HOST for every NODE_ENV
+- Gallery code pins the signer and uses versioned unpkg embed URLs
+- Admin release links limited to https GitHub run pages
+- vite preview CORS limited to /assets/*
 
-connect-react
-- connectErrorMessage(err, 'tx'): transactions no longer read
-  "Connection failed"; INVALID_PARAMS shows the SDK message.
-- Hooks throw BridgeError (NOT_CONNECTED / INVALID_PARAMS) when called
-  too early; useQRC20, useQRC1155, useBridge, useContract return
-  errorMessage; wallet error events keep INVALID_PARAMS and userHint.
-- useQRC721 mint/transfer/burn accept WriteOpts.
-- Polling pauses in hidden tabs and refreshes on return.
-- useQRC1155().refresh deprecated (no-op). Docs list QRC-721 hooks.
+Experience
+- Header account menu (sign in, sign out, offline notice); home waits for session
+- Focus-trapped ConfirmDialog replaces window.confirm; stacked dialogs handle Escape
+- Share link copy button, link expiry choice and view count, version history
+- Preview start timeout with reload; Export lists setup issues and jumps to the first
+- Layers: focusable tree items with actions beside them, Ctrl+D duplicate
+- Ctrl/Cmd+C / Ctrl/Cmd+V copy and paste blocks; admin audit loading/empty states
+- Home: project search, sort, load more, and a Trash section
+
+Studio layout and performance
+- Below 1100px the side panels and inspector open as drawers; tap to add;
+  pointer-based move handle for touch
+- Hover and rects moved to a canvas store; palette, inspector and layers memoized
+- preview.html is the iframe's own entry; selection sent as a separate message
+
+API
+- Migration 5: project_revisions (last 20), deleted_at on projects and workspaces,
+  share_expires_at, share_views, (owner, updated_at) index
+- Revisions list, get and restore (saved as a new version)
+- 30-day trash: workspace and its projects deleted and restored together in one
+  transaction; purge routes; housekeeping removes old trash
+- Project lists: q, sort, limit and keyset cursor
+- Audit project, workspace, share and logout events (autosaves throttled)
+- Routes split into src/routes (auth, workspaces, projects, share, admin, deployments)
+- Deployments: taken subdomain 409, other failures 500
 
 Tests and docs
-- New unit, integration and e2e coverage: API versions/conflicts,
-  migration 4, CORS, error shape; playground storage, export, measure,
-  reducer, local workspaces; SDK QRC-721 writes, session deploy,
-  protocol caveat, txBusy; connect-react hooks, errors, polling;
-  e2e saving, conflict, draft restore, rename and duplicate.
-- docs/PLAYGROUND_SDK_ARCHITECTURE.md: architecture, findings, roadmap.
-- Remove stray playground-api smoke logs and ignore them.
+- Unit tests for stash, refused writes, PATCH clash, test-login host, gallery pins,
+  drop validation, frame links and tokens, trash, revisions, paging, audit, share expiry
+- Playwright: external link stays out of the frame, share copy, narrow-studio drawers
+- Update PLAYGROUND_SDK_ARCHITECTURE.md findings/roadmap and both READMEs

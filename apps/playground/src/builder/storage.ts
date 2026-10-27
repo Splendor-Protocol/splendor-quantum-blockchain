@@ -42,11 +42,13 @@ function read(key: string): Draft | null {
   }
 }
 
-function write(key: string, draft: Omit<Draft, 'savedAt'>): void {
+/** False when storage is full or disabled; the editor keeps working in memory and says so. */
+function write(key: string, draft: Omit<Draft, 'savedAt'>): boolean {
   try {
     localStorage.setItem(key, JSON.stringify({ ...draft, savedAt: new Date().toISOString() }));
+    return true;
   } catch {
-    /* storage full or disabled: the editor keeps working in memory */
+    return false;
   }
 }
 
@@ -67,8 +69,9 @@ export function loadDraft(): Draft | null {
   return read(KEY);
 }
 
-export function saveDraft(draft: Omit<Draft, 'savedAt'>): void {
-  write(KEY, draft);
+/** True when the draft was written; false when the browser refused (storage full or disabled). */
+export function saveDraft(draft: Omit<Draft, 'savedAt'>): boolean {
+  return write(KEY, draft);
 }
 
 export function clearDraft(): void {
@@ -77,13 +80,18 @@ export function clearDraft(): void {
 
 /**
  * Before something replaces the current draft: keep it aside when it exists nowhere else (no
- * account project). Returns true when a draft was stashed.
+ * account project), or when it has edits its account project does not have yet. Returns true when
+ * a draft was stashed.
  */
 export function stashDraft(): boolean {
   const draft = read(KEY);
-  if (!draft || draft.projectId) return false;
-  write(STASH_KEY, { spec: draft.spec, projectId: null });
-  return true;
+  if (!draft || (draft.projectId && !draft.dirty)) return false;
+  return write(STASH_KEY, {
+    spec: draft.spec,
+    projectId: draft.projectId,
+    ...(draft.projectId && draft.version ? { version: draft.version } : {}),
+    ...(draft.projectId ? { dirty: true } : {}),
+  });
 }
 
 export function peekStashedDraft(): Draft | null {

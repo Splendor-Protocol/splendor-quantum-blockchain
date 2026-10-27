@@ -1,4 +1,4 @@
-export { StudioShell, StudioTopBar, DeviceSwitch, type StudioRail, type DeviceSize } from './StudioShell';
+export { StudioShell, StudioTopBar, DeviceSwitch, type StudioRail, type DeviceSize, type StudioDrawer } from './StudioShell';
 export { Palette, type PaletteDragPayload } from './Palette';
 export { PagesPanel, PageSettings, isInNav } from './PagesPanel';
 export { LayersPanel, type LayersPanelProps, type LayerDrop } from './LayersPanel';
@@ -7,4 +7,5 @@ export { ContractsPanel, describeTry } from './ContractsPanel';
 export { FlowsPanel, collectLinks, ACTION_KEYS, type FlowLink } from './FlowsPanel';
 export { Inspector, type InspectorTab } from './Inspector';
 export { CanvasOverlay, CONTRACT_FN_MIME, type CanvasDrop, type CanvasOverlayProps } from './CanvasOverlay';
+export { createCanvasStore, type CanvasStore } from './canvasStore';
 export { Onboarding, ONBOARDING_KEY, ONBOARDING_FORCE_KEY, ONBOARDING_STEPS, shouldShowOnboarding, markOnboarded } from './Onboarding';

@@ -26,7 +26,7 @@ test.describe('production protections', () => {
     await expect(page.getByTestId('preview-frame')).not.toHaveAttribute('sandbox', /allow-same-origin/);
     await expect(preview(page).getByRole('heading', { name: 'Wallet dashboard' })).toBeVisible();
 
-    const frame = page.frames().find((f) => f.url().endsWith('/preview'))!;
+    const frame = page.frames().find((f) => /\/preview(\.html)?(#|$)/.test(f.url()))!;
     const probe = await frame.evaluate(() => {
       const attempt = (fn: () => unknown) => {
         try {

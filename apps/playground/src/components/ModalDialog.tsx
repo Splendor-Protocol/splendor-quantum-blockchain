@@ -2,6 +2,9 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/** Open dialogs, innermost last: only that one handles Escape and Tab (a confirm inside Share, say). */
+const openDialogs: HTMLElement[] = [];
+
 /** Modal dialog: focus moves in on open, Tab stays inside, Escape closes, focus returns on close. */
 export function ModalDialog({
   label,
@@ -27,6 +30,8 @@ export function ModalDialog({
 
   useEffect(() => {
     const opener = openerRef.current;
+    const self = ref.current;
+    if (self) openDialogs.push(self);
     // Respect a child that already took focus with autoFocus.
     if (!ref.current?.contains(document.activeElement)) {
       const first = ref.current?.querySelector<HTMLElement>(FOCUSABLE);
@@ -34,7 +39,7 @@ export function ModalDialog({
     }
     const onKey = (e: globalThis.KeyboardEvent) => {
       const root = ref.current;
-      if (!root) return;
+      if (!root || openDialogs[openDialogs.length - 1] !== root) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         close.current();
@@ -64,6 +69,8 @@ export function ModalDialog({
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
+      const i = self ? openDialogs.lastIndexOf(self) : -1;
+      if (i >= 0) openDialogs.splice(i, 1);
       opener?.focus();
     };
   }, []);

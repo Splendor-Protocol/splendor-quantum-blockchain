@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { SqlStore, type SqlDriver } from './sql.js';
+import { SqlStore, type SqlDriver, type SqlTx } from './sql.js';
 import type { Store } from './types.js';
 
 export type { Store } from './types.js';
@@ -16,8 +16,27 @@ async function sqliteDriver(file: string): Promise<SqlDriver> {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   const norm = (params: unknown[]) => params.map((p) => (typeof p === 'boolean' ? Number(p) : p)) as (string | number | null)[];
+  const run = async (sql: string, params: unknown[] = []) => ({ changes: Number(db.prepare(sql).run(...norm(params)).changes) });
+  const all = async (sql: string, params: unknown[] = []) => db.prepare(sql).all(...norm(params)) as never[];
+  // One connection: transactions take turns, so two of them never share a BEGIN.
+  let queue: Promise<unknown> = Promise.resolve();
   return {
     dialect: 'sqlite',
+    transaction<T>(fn: (tx: SqlTx) => Promise<T>): Promise<T> {
+      const next = queue.then(async () => {
+        db.exec('BEGIN');
+        try {
+          const out = await fn({ run, all });
+          db.exec('COMMIT');
+          return out;
+        } catch (e) {
+          db.exec('ROLLBACK');
+          throw e;
+        }
+      });
+      queue = next.catch(() => undefined);
+      return next;
+    },
     async exec(sql) {
       db.exec(sql);
     },
@@ -31,13 +50,8 @@ async function sqliteDriver(file: string): Promise<SqlDriver> {
         throw e;
       }
     },
-    async run(sql, params = []) {
-      const r = db.prepare(sql).run(...norm(params));
-      return { changes: Number(r.changes) };
-    },
-    async all(sql, params = []) {
-      return db.prepare(sql).all(...norm(params)) as never[];
-    },
+    run,
+    all,
     async close() {
       db.close();
     },
@@ -62,6 +76,23 @@ async function postgresDriver(url: string, opts: StoreOptions): Promise<SqlDrive
   };
   return {
     dialect: 'postgres',
+    async transaction<T>(fn: (tx: SqlTx) => Promise<T>): Promise<T> {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const out = await fn({
+          run: async (sql, params = []) => ({ changes: (await client.query(toPg(sql), params)).rowCount ?? 0 }),
+          all: async (sql, params = []) => (await client.query(toPg(sql), params)).rows as never[],
+        });
+        await client.query('COMMIT');
+        return out;
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw e;
+      } finally {
+        client.release();
+      }
+    },
     async exec(sql) {
       await pool.query(sql);
     },

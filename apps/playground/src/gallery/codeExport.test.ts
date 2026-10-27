@@ -13,17 +13,38 @@ describe('code export', () => {
     const props = defaultProps(e);
     expect(reactUsage(e, props, theme, 'testnet')).toContain('<TransferWidget');
     expect(fullPageSource(e, props, theme, 'testnet')).toContain('export default function App');
-    const embed = embedSnippet(e, props, 'testnet')!;
+    const embed = embedSnippet(e, props, 'testnet', '3.0.0')!;
     expect(embed).toContain('data-sqc-widget="transfer"');
     expect(embed).toContain('embed.js');
   });
 
+  it('pins the signer in full-page code and never allows an unpinned one', () => {
+    const e = entry('transfer');
+    const unpinned = fullPageSource(e, defaultProps(e), theme, 'mainnet');
+    expect(unpinned).not.toContain('allowUnpinnedWasm');
+    expect(unpinned).toContain('wasmSha256={import.meta.env.VITE_SQC_WASM_SHA256}');
+    const pins = { wasmSha256: 'a'.repeat(64), execSha256: 'b'.repeat(64) };
+    const pinned = fullPageSource(e, defaultProps(e), theme, 'mainnet', pins);
+    expect(pinned).not.toContain('allowUnpinnedWasm');
+    expect(pinned).toContain(`wasmSha256="${pins.wasmSha256}" execSha256="${pins.execSha256}"`);
+  });
+
+  it('loads the embed script and styles at an exact version, with pins when known', () => {
+    const e = entry('transfer');
+    const embed = embedSnippet(e, defaultProps(e), 'testnet', '3.0.0')!;
+    expect(embed).toContain('https://unpkg.com/@splendor/connect-react@3.0.0/dist/embed.js');
+    expect(embed).toContain('https://unpkg.com/@splendor/connect-react@3.0.0/dist/theme/tokens.css');
+    expect(embed).not.toMatch(/connect-react\/dist/);
+    const pinned = embedSnippet(e, defaultProps(e), 'mainnet', '3.0.0', { wasmSha256: 'a'.repeat(64), execSha256: 'b'.repeat(64) })!;
+    expect(pinned).toContain(`data-wasm-sha256="${'a'.repeat(64)}" data-exec-sha256="${'b'.repeat(64)}"`);
+  });
+
   it('only offers the embed script for widgets it can mount', () => {
-    expect(embedSnippet(entry('hero'), {}, 'testnet')).toBeNull();
+    expect(embedSnippet(entry('hero'), {}, 'testnet', '3.0.0')).toBeNull();
   });
 
   it('escapes quotes in embed props', () => {
-    const out = embedSnippet(entry('transfer'), { defaultAmount: "it's" }, 'testnet')!;
+    const out = embedSnippet(entry('transfer'), { defaultAmount: "it's" }, 'testnet', '3.0.0')!;
     expect(out).toContain('&#39;');
     expect(out).not.toContain("it's");
   });

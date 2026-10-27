@@ -78,7 +78,8 @@ function wrapSelectable(
 const hideClass = (style: NodeStyle | undefined) => (style?.hideOn ? ` dapp-hide-${style.hideOn}` : '');
 
 /** Page paths are `/` or `/segment`; strips `#`, query, hash and a trailing slash. */
-function hrefToPath(href: string): string | null {
+/** The page path an in-app link (`#/page` or `/page`) points at, or null for anything else. */
+export function hrefToPath(href: string): string | null {
   if (href.startsWith('//')) return null;
   const isHash = href.startsWith('#/');
   if (!isHash && !href.startsWith('/')) return null;

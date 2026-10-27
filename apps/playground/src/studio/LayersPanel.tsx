@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { memo, useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { isContainer, nodeId, type CatalogEntry, type ContainerNode, type DappPage, type LayoutNode } from '@splendor/dapp-spec';
 import { groupMeta } from '../registry/groups';
 import { CONTRACT_FN_MIME } from './CanvasOverlay';
@@ -95,7 +95,7 @@ function whereIs(root: LayoutNode, id: string): { parent: ContainerNode; index: 
  * component as a list item under its container. Click to select, drag to reorder or nest,
  * Alt+Arrow to move within the parent, Delete to remove.
  */
-export function LayersPanel({ page, catalog, selectedId, full = false, onSelect, onDuplicate, onRemove, onMove, onDrop, acceptsDrag, startDrag, endDrag }: LayersPanelProps) {
+export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId, full = false, onSelect, onDuplicate, onRemove, onMove, onDrop, acceptsDrag, startDrag, endDrag }: LayersPanelProps) {
   const root = useRef<HTMLDivElement>(null);
   const focusAfter = useRef<string | null>(null);
   const [mark, setMark] = useState<DropMark | null>(null);
@@ -154,6 +154,16 @@ export function LayersPanel({ page, catalog, selectedId, full = false, onSelect,
     if (!target.hasAttribute('data-layer-select')) return;
     const id = target.closest<HTMLElement>('[data-layer-id]')?.dataset.layerId;
     if (!id) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onSelect(id);
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && whereIs(page.root, id)) {
+      event.preventDefault();
+      if (!full) onDuplicate(id);
+      return;
+    }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       if (event.altKey) {
@@ -195,13 +205,13 @@ export function LayersPanel({ page, catalog, selectedId, full = false, onSelect,
     const active = id === selectedId;
     const m = mark?.id === id ? mark.pos : null;
     const className = `pg-layer${node.kind === 'block' ? ' is-leaf' : ' is-container'}${active ? ' is-active' : ''}${m ? ` is-drop-${m}` : ''}`;
+    // The row is presentational; its tree item is the focusable label, with the actions beside it
+    // (a tree item must not contain buttons).
     const common = {
       className,
       'data-layer-id': id,
       'data-kind': node.kind,
-      role: 'treeitem',
-      'aria-level': depth + 1,
-      'aria-selected': active,
+      role: 'none',
       draggable: !isRoot,
       onDragStart: (e: DragEvent<HTMLElement>) => {
         if (isRoot) return;
@@ -220,17 +230,21 @@ export function LayersPanel({ page, catalog, selectedId, full = false, onSelect,
     } as const;
     const body = (
       <>
-        <button
-          type="button"
+        <div
+          role="treeitem"
           className="pg-layer-main"
           data-layer-select=""
+          tabIndex={id === tabStop ? 0 : -1}
           style={{ paddingLeft: `${0.35 + depth * 0.8}rem` }}
-          aria-current={active ? 'true' : undefined}
+          aria-level={depth + 1}
+          aria-selected={active}
+          aria-expanded={isContainer(node) ? true : undefined}
+          aria-keyshortcuts={isRoot ? undefined : 'Delete Control+D Alt+ArrowUp Alt+ArrowDown'}
           onClick={() => onSelect(id)}
         >
           <KindIcon kind={node.kind === 'block' ? 'block' : node.kind} color={color} />
           <span className="pg-layer-title">{title}</span>
-        </button>
+        </div>
         {!isRoot ? (
           <>
             <button type="button" className="pg-icon-btn" aria-label={`Duplicate ${title}`} title="Duplicate" disabled={full} onClick={() => onDuplicate(id)}>
@@ -248,7 +262,7 @@ export function LayersPanel({ page, catalog, selectedId, full = false, onSelect,
         {body}
       </li>
     ) : (
-      <div key={id} {...common} aria-expanded="true">
+      <div key={id} {...common}>
         {body}
       </div>
     );
@@ -281,14 +295,16 @@ export function LayersPanel({ page, catalog, selectedId, full = false, onSelect,
   };
 
   const tree = page.root;
+  // One tab stop for the whole tree (the selection, else the page); arrows move between items.
+  const tabStop = selectedId && whereIs(tree, selectedId) ? selectedId : nodeId(tree);
   return (
     <div ref={root} className="pg-layers" role="tree" aria-label="Page layers" data-testid="block-list" onKeyDown={onKeyDown}>
       {isContainer(tree) ? (
         <>
           {row(tree, 0, false)}
-          {children(tree, 1)}
+          <div role="group">{children(tree, 1)}</div>
         </>
       ) : null}
     </div>
   );
-}
+});
