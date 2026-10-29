@@ -40,7 +40,8 @@ export function registerShareRoutes(ctx: RouteContext) {
     const p = await store.getProjectByShareId(req.params.shareId);
     if (!p) return reply.code(404).send({ error: 'Not found' });
     if (expired(p.shareExpiresAt)) return reply.code(404).send({ error: 'This share link has expired', code: 'EXPIRED' });
-    await store.recordShareView(p.id);
+    // Fastify answers HEAD with this handler too; only a real GET is a view.
+    if (req.method === 'GET') await store.recordShareView(p.id);
     reply.header('cache-control', 'no-cache');
     return { name: p.name, spec: parseStoredSpec(p) };
   });

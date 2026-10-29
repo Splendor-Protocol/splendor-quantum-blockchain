@@ -135,9 +135,10 @@ export function PreviewRuntime() {
   // Capture phase: decided before any widget handler, so nothing in the spec can opt out.
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
-      const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
-      if (!(a instanceof HTMLAnchorElement)) return;
-      const href = a.getAttribute('href') ?? '';
+      // HTML links, image-map areas and SVG links all navigate.
+      const a = e.target instanceof Element ? e.target.closest('a[href], area[href], a[*|href]') : null;
+      if (!a) return;
+      const href = a.getAttribute('href') ?? a.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ?? '';
       const action = frameLinkAction(href, pagePaths.current);
       // In-app links are followed by the renderer's own handler.
       if (action === 'app') return;

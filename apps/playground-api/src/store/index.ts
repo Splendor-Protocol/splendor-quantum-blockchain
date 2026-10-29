@@ -8,7 +8,11 @@ export type { Store } from './types.js';
 export type StoreOptions = {
   /** Errors the driver reports outside a query (e.g. a Postgres idle client dropping). */
   onError?: (err: Error) => void;
+  /** Postgres only: run every connection in this schema (tests give each case its own). */
+  schema?: string;
 };
+
+const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
 async function sqliteDriver(file: string): Promise<SqlDriver> {
   const { DatabaseSync } = await import('node:sqlite');
@@ -16,17 +20,26 @@ async function sqliteDriver(file: string): Promise<SqlDriver> {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   const norm = (params: unknown[]) => params.map((p) => (typeof p === 'boolean' ? Number(p) : p)) as (string | number | null)[];
-  const run = async (sql: string, params: unknown[] = []) => ({ changes: Number(db.prepare(sql).run(...norm(params)).changes) });
-  const all = async (sql: string, params: unknown[] = []) => db.prepare(sql).all(...norm(params)) as never[];
-  // One connection: transactions take turns, so two of them never share a BEGIN.
+  // Inside a transaction: run directly (the transaction already holds the queue).
+  const tx: SqlTx = {
+    run: async (sql, params = []) => ({ changes: Number(db.prepare(sql).run(...norm(params)).changes) }),
+    all: async (sql, params = []) => db.prepare(sql).all(...norm(params)) as never[],
+  };
+  // One connection for every request. Everything goes through one queue, so while a transaction
+  // is open no other request's statement lands inside its BEGIN (and is rolled back with it).
   let queue: Promise<unknown> = Promise.resolve();
+  const enqueue = <T>(fn: () => T | Promise<T>): Promise<T> => {
+    const next = queue.then(fn);
+    queue = next.catch(() => undefined);
+    return next;
+  };
   return {
     dialect: 'sqlite',
-    transaction<T>(fn: (tx: SqlTx) => Promise<T>): Promise<T> {
-      const next = queue.then(async () => {
+    transaction<T>(fn: (t: SqlTx) => Promise<T>): Promise<T> {
+      return enqueue(async () => {
         db.exec('BEGIN');
         try {
-          const out = await fn({ run, all });
+          const out = await fn(tx);
           db.exec('COMMIT');
           return out;
         } catch (e) {
@@ -34,27 +47,22 @@ async function sqliteDriver(file: string): Promise<SqlDriver> {
           throw e;
         }
       });
-      queue = next.catch(() => undefined);
-      return next;
     },
-    async exec(sql) {
-      db.exec(sql);
-    },
-    async execAtomic(sql) {
-      db.exec('BEGIN');
-      try {
-        db.exec(sql);
-        db.exec('COMMIT');
-      } catch (e) {
-        db.exec('ROLLBACK');
-        throw e;
-      }
-    },
-    run,
-    all,
-    async close() {
-      db.close();
-    },
+    exec: (sql) => enqueue(() => void db.exec(sql)),
+    execAtomic: (sql) =>
+      enqueue(() => {
+        db.exec('BEGIN');
+        try {
+          db.exec(sql);
+          db.exec('COMMIT');
+        } catch (e) {
+          db.exec('ROLLBACK');
+          throw e;
+        }
+      }),
+    run: (sql, params) => enqueue(() => tx.run(sql, params)),
+    all: <T,>(sql: string, params?: unknown[]) => enqueue(() => tx.all<T>(sql, params)),
+    close: () => enqueue(() => db.close()),
   };
 }
 
@@ -70,6 +78,12 @@ async function postgresDriver(url: string, opts: StoreOptions): Promise<SqlDrive
   });
   // Without a listener, an idle client's network error is an unhandled 'error' event and kills the process.
   pool.on('error', (err) => (opts.onError ?? ((e) => console.error('[db]', e)))(err));
+  if (opts.schema) {
+    if (!SCHEMA_NAME.test(opts.schema)) throw new Error(`Invalid schema name: ${opts.schema}`);
+    const setPath = `SET search_path TO ${opts.schema}`;
+    // Queued on the new client before any other query, so every statement sees the schema.
+    pool.on('connect', (client) => void client.query(setPath).catch(() => undefined));
+  }
   const toPg = (sql: string) => {
     let i = 0;
     return sql.replace(/\?/g, () => `$${++i}`);
@@ -78,6 +92,8 @@ async function postgresDriver(url: string, opts: StoreOptions): Promise<SqlDrive
     dialect: 'postgres',
     async transaction<T>(fn: (tx: SqlTx) => Promise<T>): Promise<T> {
       const client = await pool.connect();
+      /** Set when ROLLBACK itself failed: the connection is broken and must not go back to the pool. */
+      let broken: Error | undefined;
       try {
         await client.query('BEGIN');
         const out = await fn({
@@ -87,10 +103,12 @@ async function postgresDriver(url: string, opts: StoreOptions): Promise<SqlDrive
         await client.query('COMMIT');
         return out;
       } catch (e) {
-        await client.query('ROLLBACK').catch(() => undefined);
+        await client.query('ROLLBACK').catch((err: unknown) => {
+          broken = err instanceof Error ? err : new Error(String(err));
+        });
         throw e;
       } finally {
-        client.release();
+        client.release(broken);
       }
     },
     async exec(sql) {

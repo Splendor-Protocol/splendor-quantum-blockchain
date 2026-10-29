@@ -35,19 +35,41 @@ const MAX_PAGE = 100;
 /** Columns of a project list row (no spec). */
 const SUMMARY_COLS = 'id, owner, name, share_id, workspace_id, created_at, updated_at, version, deleted_at, share_expires_at, share_views';
 
-/** Cursor for keyset pages: the sort key and id of the last row, base64url JSON. */
-function encodeCursor(key: string, id: string): string {
-  return Buffer.from(JSON.stringify([key, id])).toString('base64url');
+/** Trashed projects kept per owner; deleting more purges the oldest. */
+export const MAX_TRASHED_PROJECTS = 200;
+
+/** A request error the API reports as 400 (the error handler reads `statusCode`). */
+const badRequest = (message: string) => Object.assign(new Error(message), { statusCode: 400 });
+
+/**
+ * Cursor for keyset pages: which list it belongs to, the sort key exactly as the database
+ * computed it, and the id of the last row, as base64url JSON.
+ */
+function encodeCursor(kind: string, key: string, id: string): string {
+  return Buffer.from(JSON.stringify([kind, key, id])).toString('base64url');
 }
-function decodeCursor(cursor: string | undefined): [string, string] | null {
+/** Null without a cursor; a cursor that is not one of ours (or from another sort) is a 400. */
+function decodeCursor(cursor: string | undefined, kind: string): [string, string] | null {
   if (!cursor) return null;
+  let v: unknown;
   try {
-    const v = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
-    return Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && typeof v[1] === 'string' ? [v[0], v[1]] : null;
+    v = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
   } catch {
-    return null;
+    throw badRequest('Invalid cursor');
   }
+  if (!Array.isArray(v) || v.length !== 3 || v[0] !== kind || typeof v[1] !== 'string' || typeof v[2] !== 'string') {
+    throw badRequest('Invalid cursor');
+  }
+  return [v[1], v[2]];
 }
+
+/** `x IN (?, ?, …)` for a list of ids, in chunks small enough for every driver. */
+function chunks<T>(list: T[], size = 500): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+const placeholders = (n: number) => Array.from({ length: n }, () => '?').join(', ');
 
 const isUniqueViolation = (e: unknown) =>
   (typeof e === 'object' && e !== null && (e as { code?: unknown }).code === '23505') || /UNIQUE constraint failed/i.test(String((e as Error)?.message ?? e));
@@ -244,14 +266,41 @@ export class SqlStore implements Store {
     if (trashBeforeIso) {
       trash = await this.db.transaction(async (tx) => {
         const old = 'deleted_at IS NOT NULL AND deleted_at < ?';
-        await tx.run(`DELETE FROM deployments WHERE project_id IN (SELECT id FROM projects WHERE ${old})`, [trashBeforeIso]);
-        await tx.run(`DELETE FROM project_revisions WHERE project_id IN (SELECT id FROM projects WHERE ${old})`, [trashBeforeIso]);
-        const p = (await tx.run(`DELETE FROM projects WHERE ${old}`, [trashBeforeIso])).changes;
+        // Lock the rows first (Postgres), so a restore that commits meanwhile either waits or wins
+        // outright; revisions go with their project (ON DELETE CASCADE).
+        const ids = (await tx.all(`SELECT id FROM projects WHERE ${old}${this.forUpdate}`, [trashBeforeIso])).map((r) => String(r.id));
+        const p = await this.purgeProjectRows(tx, ids);
         const w = (await tx.run(`DELETE FROM workspaces WHERE ${old}`, [trashBeforeIso])).changes;
         return p + w;
       });
     }
     return { nonces, sessions, audit, trash };
+  }
+
+  /** Row lock for a SELECT that is followed by deletes of the same rows (Postgres only). */
+  private get forUpdate(): string {
+    return this.db.dialect === 'postgres' ? ' FOR UPDATE' : '';
+  }
+
+  /** Deletes trashed projects by id with their deployments; revisions cascade. Returns projects removed. */
+  private async purgeProjectRows(tx: SqlTx, ids: string[]): Promise<number> {
+    let removed = 0;
+    for (const part of chunks(ids)) {
+      await tx.run(`DELETE FROM deployments WHERE project_id IN (${placeholders(part.length)})`, part);
+      removed += (await tx.run(`DELETE FROM projects WHERE deleted_at IS NOT NULL AND id IN (${placeholders(part.length)})`, part)).changes;
+    }
+    return removed;
+  }
+
+  /** Keeps the newest `MAX_TRASHED_PROJECTS` trashed projects of an owner; older ones are purged. */
+  private async trimTrash(tx: SqlTx, owner: string): Promise<void> {
+    // "Everything after the first N": SQLite spells no limit as -1, Postgres as ALL.
+    const noLimit = this.db.dialect === 'postgres' ? 'ALL' : '-1';
+    const extra = await tx.all(
+      `SELECT id FROM projects WHERE owner = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC LIMIT ${noLimit} OFFSET ?`,
+      [owner, MAX_TRASHED_PROJECTS],
+    );
+    if (extra.length) await this.purgeProjectRows(tx, extra.map((r) => String(r.id)));
   }
 
   async putNonce(nonce: string, expiresAtSec: number) {
@@ -312,26 +361,34 @@ export class SqlStore implements Store {
       const res = await tx.run('UPDATE workspaces SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', [t, id]);
       if (!res.changes) return false;
       await tx.run('UPDATE projects SET deleted_at = ? WHERE workspace_id = ? AND deleted_at IS NULL', [t, id]);
+      const [w] = await tx.all('SELECT owner FROM workspaces WHERE id = ?', [id]);
+      if (w) await this.trimTrash(tx, String(w.owner));
       return true;
     });
   }
-  async restoreWorkspace(id: string) {
-    return this.db.transaction(async (tx) => {
-      const [r] = await tx.all('SELECT deleted_at FROM workspaces WHERE id = ? AND deleted_at IS NOT NULL', [id]);
-      if (!r) return false;
+  async restoreWorkspace(id: string, opts: { maxProjects?: number } = {}) {
+    return this.db.transaction(async (tx): Promise<'ok' | 'not-found' | 'limit'> => {
+      const [r] = await tx.all(`SELECT owner, deleted_at FROM workspaces WHERE id = ? AND deleted_at IS NOT NULL${this.forUpdate}`, [id]);
+      if (!r) return 'not-found';
+      if (opts.maxProjects !== undefined) {
+        // The projects coming back count toward the owner's cap like new ones would.
+        const [live] = await tx.all('SELECT COUNT(*) AS n FROM projects WHERE owner = ? AND deleted_at IS NULL', [r.owner]);
+        const [back] = await tx.all('SELECT COUNT(*) AS n FROM projects WHERE workspace_id = ? AND deleted_at = ?', [id, r.deleted_at]);
+        if (Number(live?.n ?? 0) + Number(back?.n ?? 0) > opts.maxProjects) return 'limit';
+      }
       await tx.run('UPDATE projects SET deleted_at = NULL WHERE workspace_id = ? AND deleted_at = ?', [id, r.deleted_at]);
       await tx.run('UPDATE workspaces SET deleted_at = NULL WHERE id = ?', [id]);
-      return true;
+      return 'ok';
     });
   }
   async purgeWorkspace(id: string) {
     return this.db.transaction(async (tx) => {
       const [r] = await tx.all('SELECT 1 AS ok FROM workspaces WHERE id = ? AND deleted_at IS NOT NULL', [id]);
       if (!r) return false;
-      const trashed = 'SELECT id FROM projects WHERE workspace_id = ? AND deleted_at IS NOT NULL';
-      await tx.run(`DELETE FROM deployments WHERE project_id IN (${trashed})`, [id]);
-      await tx.run(`DELETE FROM project_revisions WHERE project_id IN (${trashed})`, [id]);
-      await tx.run('DELETE FROM projects WHERE workspace_id = ? AND deleted_at IS NOT NULL', [id]);
+      const ids = (await tx.all(`SELECT id FROM projects WHERE workspace_id = ? AND deleted_at IS NOT NULL${this.forUpdate}`, [id])).map((p) =>
+        String(p.id),
+      );
+      await this.purgeProjectRows(tx, ids);
       await tx.run('DELETE FROM workspaces WHERE id = ?', [id]);
       return true;
     });
@@ -351,37 +408,55 @@ export class SqlStore implements Store {
       where.push('workspace_id = ?');
       args.push(opts.workspaceId);
     }
-    const q = opts.q?.trim().toLowerCase();
+    // Both sides lowercased by the database, which may lowercase differently from JavaScript.
+    const q = opts.q?.trim();
     if (q) {
-      where.push("lower(name) LIKE ? ESCAPE '\\'");
-      args.push(`%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+      where.push('lower(name) LIKE lower(?) ESCAPE ?');
+      args.push(`%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`, '\\');
     }
-    // Keyset pages: a stable order (sort key, then id) and "after the last row seen".
+    // Keyset pages: a stable order (sort key, then id) and "after the last row seen". The cursor
+    // carries the sort key as the database computed it, so the next page compares like with like.
     const byName = opts.sort === 'name';
     const key = byName ? 'lower(name)' : 'updated_at';
-    const after = decodeCursor(opts.cursor);
+    const after = decodeCursor(opts.cursor, byName ? 'name' : 'updated');
     if (after) {
       where.push(byName ? `(${key} > ? OR (${key} = ? AND id > ?))` : `(${key} < ? OR (${key} = ? AND id < ?))`);
       args.push(after[0], after[0], after[1]);
     }
     const limit = Math.min(MAX_PAGE, Math.max(1, opts.limit ?? MAX_PAGE));
     const order = byName ? `${key} ASC, id ASC` : `${key} DESC, id DESC`;
-    const rows = await this.db.all(`SELECT ${SUMMARY_COLS} FROM projects WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ?`, [...args, limit + 1]);
-    const page = rows.slice(0, limit).map(summaryRow);
+    const rows = await this.db.all(`SELECT ${SUMMARY_COLS}, ${key} AS sort_key FROM projects WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ?`, [
+      ...args,
+      limit + 1,
+    ]);
+    const page = rows.slice(0, limit);
     const last = page[page.length - 1];
-    const nextCursor = rows.length > limit && last ? encodeCursor(byName ? last.name.toLowerCase() : last.updatedAt, last.id) : null;
-    return { projects: page, nextCursor };
+    const nextCursor = rows.length > limit && last ? encodeCursor(byName ? 'name' : 'updated', String(last.sort_key), String(last.id)) : null;
+    return { projects: page.map(summaryRow), nextCursor };
   }
-  async listTrash(owner: string) {
-    const projects = await this.db.all(
-      `SELECT ${SUMMARY_COLS} FROM projects WHERE owner = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC LIMIT ?`,
-      [owner, MAX_PAGE * 2],
-    );
-    const workspaces = await this.db.all(
-      'SELECT id, owner, name, created_at, deleted_at FROM workspaces WHERE owner = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC',
-      [owner],
-    );
-    return { projects: projects.map(summaryRow), workspaces: workspaces.map(workspace) };
+  async listTrash(owner: string, opts: { limit?: number; cursor?: string } = {}) {
+    const where = ['owner = ?', 'deleted_at IS NOT NULL'];
+    const args: unknown[] = [owner];
+    const after = decodeCursor(opts.cursor, 'trash');
+    if (after) {
+      where.push('(deleted_at < ? OR (deleted_at = ? AND id < ?))');
+      args.push(after[0], after[0], after[1]);
+    }
+    const limit = Math.min(MAX_PAGE, Math.max(1, opts.limit ?? MAX_PAGE));
+    const rows = await this.db.all(`SELECT ${SUMMARY_COLS} FROM projects WHERE ${where.join(' AND ')} ORDER BY deleted_at DESC, id DESC LIMIT ?`, [
+      ...args,
+      limit + 1,
+    ]);
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    const nextCursor = rows.length > limit && last ? encodeCursor('trash', String(last.deleted_at), String(last.id)) : null;
+    // Workspaces only on the first page: there are few, and they are listed in full.
+    const workspaces = after
+      ? []
+      : await this.db.all('SELECT id, owner, name, created_at, deleted_at FROM workspaces WHERE owner = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC', [
+          owner,
+        ]);
+    return { projects: page.map(summaryRow), workspaces: workspaces.map(workspace), nextCursor };
   }
   async countProjects(owner: string) {
     const [r] = await this.db.all('SELECT COUNT(*) AS n FROM projects WHERE owner = ? AND deleted_at IS NULL', [owner]);
@@ -453,7 +528,11 @@ export class SqlStore implements Store {
       // A move between workspaces bumps the version but saves no new content.
       if (patch.spec !== undefined) {
         await tx.run('INSERT INTO project_revisions (project_id, version, spec, saved_at) VALUES (?, ?, ?, ?)', [id, updated.version, updated.spec, t]);
-        await tx.run('DELETE FROM project_revisions WHERE project_id = ? AND version <= ?', [id, updated.version - MAX_REVISIONS]);
+        // The newest MAX_REVISIONS rows stay, even where moves left gaps in the version numbers.
+        await tx.run(
+          'DELETE FROM project_revisions WHERE project_id = ? AND version NOT IN (SELECT version FROM project_revisions WHERE project_id = ? ORDER BY version DESC LIMIT ?)',
+          [id, id, MAX_REVISIONS],
+        );
       }
       return updated;
     });
@@ -466,15 +545,21 @@ export class SqlStore implements Store {
     await this.db.run('UPDATE projects SET share_views = share_views + 1 WHERE id = ?', [id]);
   }
   async deleteProject(id: string) {
-    return (await this.db.run('UPDATE projects SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', [now(), id])).changes > 0;
+    return this.db.transaction(async (tx) => {
+      const res = await tx.run('UPDATE projects SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL', [now(), id]);
+      if (!res.changes) return false;
+      const [p] = await tx.all('SELECT owner FROM projects WHERE id = ?', [id]);
+      if (p) await this.trimTrash(tx, String(p.owner));
+      return true;
+    });
   }
   async restoreProject(id: string) {
     return this.db.transaction(async (tx) => {
       const res = await tx.run('UPDATE projects SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL', [id]);
       if (!res.changes) return false;
-      // Its workspace may still be in the trash: then it comes back without one.
+      // Its workspace may be in the trash, or gone: then it comes back without one.
       await tx.run(
-        'UPDATE projects SET workspace_id = NULL WHERE id = ? AND workspace_id IN (SELECT id FROM workspaces WHERE deleted_at IS NOT NULL)',
+        'UPDATE projects SET workspace_id = NULL WHERE id = ? AND workspace_id IS NOT NULL AND workspace_id NOT IN (SELECT id FROM workspaces WHERE deleted_at IS NULL)',
         [id],
       );
       return true;
@@ -483,7 +568,7 @@ export class SqlStore implements Store {
   async purgeProject(id: string) {
     return this.db.transaction(async (tx) => {
       await tx.run('DELETE FROM deployments WHERE project_id = ?', [id]);
-      await tx.run('DELETE FROM project_revisions WHERE project_id = ?', [id]);
+      // Revisions go with the row (ON DELETE CASCADE).
       return (await tx.run('DELETE FROM projects WHERE id = ?', [id])).changes > 0;
     });
   }

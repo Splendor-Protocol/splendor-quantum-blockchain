@@ -169,15 +169,23 @@ export function Studio({
   const selectedIndex = selected ? blocks.indexOf(selected) : -1;
   const full = blocks.length >= MAX_BLOCKS_PER_PAGE;
   const overlayOpen = tab === 'export' || tab === 'project';
-  const accountCloud: CloudState = signedIn && projectId ? cloud : { status: 'local' };
+  // Before the first save only a failed or running "Save to my account" is about the account.
+  const accountCloud: CloudState =
+    signedIn && (projectId || cloud.status === 'error' || cloud.status === 'saving') ? cloud : { status: 'local' };
   // An account copy that is in sync is enough; otherwise a refused draft write means nothing is kept.
   const shownCloud: CloudState = draftSaveFailed && accountCloud.status !== 'saved' && accountCloud.status !== 'saving' ? { status: 'storage' } : accountCloud;
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('props');
-  /** The field to focus lives on the Content tab. */
+  /** The field to focus lives on the Content tab (in the inspector drawer on a narrow screen). */
   const goToIssue: typeof goToIssueField = (target) => {
     setInspectorTab('props');
+    setDrawer('inspector');
     goToIssueField(target);
   };
+  /** Shows a rail panel; on a narrow screen that means opening its drawer. */
+  const openRail = useStableCallback((next: StudioRail) => {
+    setRail(next);
+    setDrawer('side');
+  });
 
   // "Finish setup": unbound contracts and tokens first, then what the validator reports.
   const setup = useMemo(() => setupItems(spec, all), [spec, all]);
@@ -194,7 +202,7 @@ export function Studio({
   const fixFirstSetupItem = () => {
     setTab('block');
     const first = setup[0];
-    if (first?.kind === 'contracts') setRail('contracts');
+    if (first?.kind === 'contracts') openRail('contracts');
     else if (first) goToIssue(first.target);
     else {
       const target = shownIssues.find(({ d }) => d.target)?.d.target;
@@ -307,7 +315,7 @@ export function Studio({
       if (selected) dispatch({ type: 'moveBlock', id: selected.id, delta });
     }),
     onRenamePage: useStableCallback((title: string) => dispatch({ type: 'renamePage', path: page.path, title })),
-    onOpenContracts: useStableCallback(() => setRail('contracts')),
+    onOpenContracts: useStableCallback(() => openRail('contracts')),
     onPageAccess: useStableCallback((access: PageAccess) => dispatch({ type: 'setPageAccess', path: page.path, access })),
     onNavVisible: useStableCallback((visible: boolean) => dispatch({ type: 'setNavVisible', path: page.path, visible })),
     onMovePage: useStableCallback((delta: -1 | 1) => dispatch({ type: 'movePage', path: page.path, delta })),
@@ -339,6 +347,7 @@ export function Studio({
           dispatch({ type: 'addBlock', widget, props: props as Record<string, PropValue> });
           setTab('block');
           setRail('components');
+          setDrawer(null);
         }}
       />
     ) : (
@@ -385,7 +394,7 @@ export function Studio({
               <li key={item.key}>
                 {item.message}{' '}
                 {item.kind === 'contracts' ? (
-                  <button type="button" className="pg-link-btn" onClick={() => setRail('contracts')}>
+                  <button type="button" className="pg-link-btn" onClick={() => openRail('contracts')}>
                     Open Contracts
                   </button>
                 ) : (
@@ -626,7 +635,7 @@ export function Studio({
       }
       overlay={
         <>
-          <Onboarding onRailChange={setRail} />
+          <Onboarding onRailChange={openRail} />
           {playFrom && renderable ? (
             <PreviewApp
               spec={renderable}

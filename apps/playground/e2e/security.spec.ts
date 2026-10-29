@@ -26,7 +26,8 @@ test.describe('production protections', () => {
     await expect(page.getByTestId('preview-frame')).not.toHaveAttribute('sandbox', /allow-same-origin/);
     await expect(preview(page).getByRole('heading', { name: 'Wallet dashboard' })).toBeVisible();
 
-    const frame = page.frames().find((f) => /\/preview(\.html)?(#|$)/.test(f.url()))!;
+    const frame = page.frames().find((f) => /\/preview\.html#t=[0-9a-f]{32}$/.test(f.url()))!;
+    expect(frame, 'the frame loads preview.html with its token').toBeTruthy();
     const probe = await frame.evaluate(() => {
       const attempt = (fn: () => unknown) => {
         try {
@@ -44,5 +45,18 @@ test.describe('production protections', () => {
       };
     });
     expect(probe).toEqual({ origin: 'null', parentDom: 'blocked', storage: 'blocked', cookies: 'blocked' });
+  });
+
+  test('only /assets is readable cross-origin; the API and pages are not', async ({ request }) => {
+    const evil = { origin: 'https://evil.example' };
+    const api = await request.get('/api/health', { headers: evil });
+    expect(api.headers()['access-control-allow-origin']).toBeUndefined();
+    const index = await request.get('/', { headers: evil });
+    expect(index.headers()['access-control-allow-origin']).toBeUndefined();
+    const asset = (await index.text()).match(/\/assets\/[^"']+\.js/)?.[0];
+    expect(asset).toBeTruthy();
+    const res = await request.get(asset!, { headers: evil });
+    expect(res.headers()['access-control-allow-origin']).toBe('*');
+    expect(res.headers()['cache-control']).toContain('immutable');
   });
 });

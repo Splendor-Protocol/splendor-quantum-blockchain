@@ -88,6 +88,12 @@
   overflow: hidden;
   box-shadow: 0 0 0 1px var(--pg-border), 0 12px 40px rgba(0, 0, 0, 0.45);
 }
+.pg-preview-app-device .pg-preview-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 /* The frame's height is set inline by PreviewFrame; here it simply fills the device. */
 .pg-preview-app-device .pg-preview-frame {
   display: block;

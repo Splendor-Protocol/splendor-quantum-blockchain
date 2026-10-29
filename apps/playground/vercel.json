@@ -20,5 +20,8 @@
       ]
     }
   ],
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [
+    { "source": "/preview", "destination": "/preview.html" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }

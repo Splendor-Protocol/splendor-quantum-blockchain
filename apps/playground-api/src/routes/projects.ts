@@ -15,7 +15,7 @@ export const listQuery = obj({
   q: str(80),
   sort: { type: 'string', enum: ['updated', 'name'] },
   limit: str(3, '^[1-9][0-9]{0,2}$'),
-  cursor: str(400, '^[A-Za-z0-9_-]*$'),
+  cursor: str(1000, '^[A-Za-z0-9_-]+$'),
 });
 
 export function toListOptions(q: ListQuery): ListProjectsOptions {

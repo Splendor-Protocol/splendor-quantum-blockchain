@@ -82,30 +82,56 @@ export function CanvasOverlay({ store, selectedId, labelFor = defaultLabel, acce
   };
 
   // Touch and pen: HTML5 drag does not start from a finger, so the handle follows the pointer.
-  const pointerMove = useRef<number | null>(null);
+  const pointerMove = useRef<{ pointerId: number; id: string } | null>(null);
+  /** The last insertion point under the finger; read at pointerup, before a re-render could catch up. */
+  const activeRef = useRef<PreviewDropTarget | null>(null);
   const onHandlePointerDown = (e: PointerEvent<HTMLElement>, id: string) => {
     if (e.pointerType === 'mouse') return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    pointerMove.current = e.pointerId;
+    pointerMove.current = { pointerId: e.pointerId, id };
+    activeRef.current = null;
     setMovingId(id);
     setDragging(true);
   };
   const onHandlePointerMove = (e: PointerEvent<HTMLElement>) => {
-    if (pointerMove.current !== e.pointerId) return;
+    if (pointerMove.current?.pointerId !== e.pointerId) return;
     const next = pick(e);
+    activeRef.current = next;
     setActive((prev) => (prev?.parentId === next?.parentId && prev?.index === next?.index ? prev : next));
   };
+  /** Pointer up drops; cancel or a lost capture (the handle went away) just ends the move. */
   const onHandlePointerEnd = (e: PointerEvent<HTMLElement>, drop: boolean) => {
-    if (pointerMove.current !== e.pointerId) return;
+    const move = pointerMove.current;
+    if (move?.pointerId !== e.pointerId) return;
     pointerMove.current = null;
-    const target = drop ? (active ?? pick(e)) : null;
-    const moveId = movingId;
+    const target = drop ? (activeRef.current ?? pick(e)) : null;
+    activeRef.current = null;
     setDragging(false);
     setMovingId(null);
     setActive(null);
-    if (target && moveId) onDrop({ parentId: target.parentId, index: target.index, moveId });
+    if (target) onDrop({ parentId: target.parentId, index: target.index, moveId: move.id });
   };
+
+  // If the handle goes away mid-gesture (the frame reloaded, the node moved), its own events never
+  // arrive: end the move when the finger lifts anywhere, so the overlay stops catching the pointer.
+  useEffect(() => {
+    if (!dragging || !pointerMove.current) return;
+    const end = () => {
+      if (!pointerMove.current) return;
+      pointerMove.current = null;
+      activeRef.current = null;
+      setDragging(false);
+      setMovingId(null);
+      setActive(null);
+    };
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+    return () => {
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+    };
+  }, [dragging]);
 
   const selected = selectedId ? byId.get(selectedId) : undefined;
   const hovered = hoverId && hoverId !== selectedId && !dragging ? byId.get(hoverId) : undefined;
@@ -124,6 +150,11 @@ export function CanvasOverlay({ store, selectedId, labelFor = defaultLabel, acce
   const barBelow = selected ? selected.rect.top < 30 : false;
 
   const startMove = (e: DragEvent, id: string) => {
+    // A long press during a finger move can also start a native drag; the pointer move owns it.
+    if (pointerMove.current) {
+      e.preventDefault();
+      return;
+    }
     e.dataTransfer.setData('text/plain', id);
     e.dataTransfer.effectAllowed = 'move';
     setMovingId(id);
@@ -198,6 +229,7 @@ export function CanvasOverlay({ store, selectedId, labelFor = defaultLabel, acce
                   onPointerMove={onHandlePointerMove}
                   onPointerUp={(e) => onHandlePointerEnd(e, true)}
                   onPointerCancel={(e) => onHandlePointerEnd(e, false)}
+                  onLostPointerCapture={(e) => onHandlePointerEnd(e, false)}
                 >
                   ⠿
                 </span>

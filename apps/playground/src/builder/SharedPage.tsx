@@ -28,7 +28,8 @@ export function SharedPage() {
       })
       .catch((e) => {
         if (!live) return;
-        if (e instanceof ApiError && e.status === 404) setError('This share link was removed by its owner, or it never existed.');
+        if (e instanceof ApiError && e.code === 'EXPIRED') setError('This share link has expired. Ask its owner for a new one.');
+        else if (e instanceof ApiError && e.status === 404) setError('This share link was removed by its owner, or it never existed.');
         else setError(e instanceof Error ? e.message : String(e));
       });
     return () => {

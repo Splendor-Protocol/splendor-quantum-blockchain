@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { migrateSpec } from '@splendor/dapp-spec';
 import { api, ApiError, type Workspace } from '../api/client';
-import { deleteLocalProject, isLocalWorkspaceId, listAllLocalProjects } from '../workspaces/local';
+import { deleteLocalProject, getLocalProject, isLocalWorkspaceId, listAllLocalProjects } from '../workspaces/local';
 
 type Row = ReturnType<typeof listAllLocalProjects>[number];
 
@@ -12,15 +12,15 @@ const rowKey = (r: Row) => `${r.workspaceId}/${r.project.id}`;
  * the account. A browser copy is removed only after the account has it. Nothing moves on its own.
  */
 export function LocalUpload({ workspaces, onUploaded }: { workspaces: Workspace[]; onUploaded: () => void }) {
-  const [version, setVersion] = useState(0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const rows = useMemo(() => listAllLocalProjects(), [version]);
+  // Read on every render: Home renames, duplicates and deletes browser projects next to this list.
+  const rows = listAllLocalProjects();
+  const [, setVersion] = useState(0);
   const remote = workspaces.filter((w) => !isLocalWorkspaceId(w.id));
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState<string>('');
   const [busy, setBusy] = useState(false);
-  const [report, setReport] = useState<{ saved: number; failed: string[] } | null>(null);
+  const [report, setReport] = useState<{ saved: number; failed: string[]; kept: string[] } | null>(null);
 
   if (!rows.length && !report) return null;
 
@@ -28,14 +28,18 @@ export function LocalUpload({ workspaces, onUploaded }: { workspaces: Workspace[
     setBusy(true);
     let saved = 0;
     const failed: string[] = [];
-    for (const r of rows.filter((x) => picked.has(rowKey(x)))) {
+    const kept: string[] = [];
+    for (const r of listAllLocalProjects().filter((x) => picked.has(rowKey(x)))) {
       // Work filed under an account workspace id (older builds, signed out) goes back to that workspace.
       const own = remote.some((w) => w.id === r.workspaceId) ? r.workspaceId : null;
       const workspaceId = own ?? (target || null);
+      // The stored copy as it is now, not as it was when the list rendered.
+      const now = getLocalProject(r.workspaceId, r.project.id);
+      if (!now) continue;
       try {
-        await api.createProject(migrateSpec(r.project.spec), workspaceId);
-        deleteLocalProject(r.workspaceId, r.project.id);
+        await api.createProject(migrateSpec(now.spec), workspaceId);
         saved += 1;
+        if (!deleteLocalProject(r.workspaceId, now.id)) kept.push(now.name);
       } catch (e) {
         const why =
           e instanceof ApiError && e.status === 422
@@ -43,12 +47,12 @@ export function LocalUpload({ workspaces, onUploaded }: { workspaces: Workspace[
             : e instanceof Error
               ? e.message
               : String(e);
-        failed.push(`${r.project.name} (${why})`);
+        failed.push(`${now.name} (${why})`);
       }
     }
     setBusy(false);
     setPicked(new Set());
-    setReport({ saved, failed });
+    setReport({ saved, failed, kept });
     setVersion((v) => v + 1);
     if (saved) onUploaded();
   };
@@ -68,9 +72,12 @@ export function LocalUpload({ workspaces, onUploaded }: { workspaces: Workspace[
         </p>
       ) : null}
       {report ? (
-        <p className={report.failed.length ? 'pg-error' : 'pg-muted'} role="status" data-testid="local-upload-report">
+        <p className={report.failed.length || report.kept.length ? 'pg-error' : 'pg-muted'} role="status" data-testid="local-upload-report">
           {report.saved ? `Saved ${report.saved} to your account.` : ''}
           {report.failed.length ? ` Not saved: ${report.failed.join('; ')}.` : ''}
+          {report.kept.length
+            ? ` The browser copy of ${report.kept.join(', ')} could not be removed (storage refused); delete it here so it is not saved twice.`
+            : ''}
         </p>
       ) : null}
       {open && rows.length ? (

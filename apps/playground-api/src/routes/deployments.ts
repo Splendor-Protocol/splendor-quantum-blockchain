@@ -21,15 +21,17 @@ export function registerDeploymentRoutes(ctx: RouteContext) {
       if (!p || p.deletedAt || p.owner !== req.session!.address) return reply.code(404).send({ error: 'Not found' });
       const r = checkSpec(parseStoredSpec(p));
       if (!r.ok) return reply.code(422).send({ error: 'Invalid spec', issues: r.issues });
+      let d;
       try {
-        const d = await store.createDeployment({ id: newId(), projectId, owner: p.owner, subdomain, status: 'queued' });
-        await store.audit(p.owner, 'deployment.create', d.id, { projectId, subdomain });
-        return reply.code(202).send(d);
+        d = await store.createDeployment({ id: newId(), projectId, owner: p.owner, subdomain, status: 'queued' });
       } catch (e) {
         // Only a taken subdomain is the caller's problem; anything else is ours (500).
         if (e instanceof SubdomainTakenError) return reply.code(409).send({ error: 'Subdomain is taken' });
         throw e;
       }
+      // The deployment exists: a failed audit write must not report it as failed.
+      await ctx.audit(req, p.owner, 'deployment.create', d.id, { projectId, subdomain });
+      return reply.code(202).send(d);
     },
   );
 

@@ -111,16 +111,25 @@ export interface Store {
   listWorkspaces(owner: string): Promise<WorkspaceRow[]>;
   createWorkspace(row: Pick<WorkspaceRow, 'id' | 'owner' | 'name'>): Promise<WorkspaceRow>;
   renameWorkspace(id: string, name: string): Promise<WorkspaceRow | null>;
-  /** Moves the workspace and its live projects to the trash, together. */
+  /** Moves the workspace and its live projects to the trash, together (the owner's oldest trash past the cap is purged). */
   deleteWorkspace(id: string): Promise<boolean>;
-  /** Brings a trashed workspace back with the projects that went to the trash with it. */
-  restoreWorkspace(id: string): Promise<boolean>;
+  /**
+   * Brings a trashed workspace back with the projects that went to the trash with it. With
+   * `maxProjects`, refuses (`limit`) when that would leave the owner with more live projects.
+   */
+  restoreWorkspace(id: string, opts?: { maxProjects?: number }): Promise<'ok' | 'not-found' | 'limit'>;
   /** Deletes a trashed workspace and its trashed projects for good. */
   purgeWorkspace(id: string): Promise<boolean>;
   /** Live projects, newest first unless `sort` says otherwise. */
   listProjects(owner: string, opts?: ListProjectsOptions): Promise<{ projects: ProjectSummaryRow[]; nextCursor: string | null }>;
-  /** Trashed projects and workspaces, most recently deleted first. */
-  listTrash(owner: string): Promise<{ projects: ProjectSummaryRow[]; workspaces: WorkspaceRow[] }>;
+  /**
+   * Trashed projects (a page, most recently deleted first) and, on the first page, trashed
+   * workspaces. A bad cursor throws a 400 error.
+   */
+  listTrash(
+    owner: string,
+    opts?: { limit?: number; cursor?: string },
+  ): Promise<{ projects: ProjectSummaryRow[]; workspaces: WorkspaceRow[]; nextCursor: string | null }>;
   /** A live workspace owned by `owner`; with `includeDeleted`, one in the trash too. */
   getWorkspace(id: string, owner: string, includeDeleted?: boolean): Promise<WorkspaceRow | null>;
   /** Live projects only: the per-user cap does not count the trash. */
@@ -139,7 +148,7 @@ export interface Store {
   /** `null` revokes the share link. A new link starts with no views. */
   setShareId(id: string, shareId: string | null, expiresAt?: string | null): Promise<void>;
   recordShareView(id: string): Promise<void>;
-  /** Moves a project to the trash. */
+  /** Moves a project to the trash; past `MAX_TRASHED_PROJECTS` the owner's oldest trash is purged. */
   deleteProject(id: string): Promise<boolean>;
   /** Brings a trashed project back (out of its workspace if that is still in the trash). */
   restoreProject(id: string): Promise<boolean>;

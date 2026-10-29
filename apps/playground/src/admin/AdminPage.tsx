@@ -10,13 +10,13 @@ import { useSession } from '../auth/session';
 import { recipeFlagId, templateFlagId, useRegistry } from '../registry';
 
 /**
- * Run links come from the GitHub API through ours. Only https links to github.com, or to an
- * Actions run on a GitHub Enterprise host, become clickable.
+ * Run links come from the GitHub API through ours. Only https Actions run pages on github.com, or
+ * on the GitHub Enterprise host the API is configured for (`htmlHost`), become clickable.
  */
-export function isGitHubRunUrl(url: string): boolean {
+export function isGitHubRunUrl(url: string, htmlHost = 'github.com'): boolean {
   try {
     const u = new URL(url);
-    return u.protocol === 'https:' && (u.hostname === 'github.com' || /\/actions\/runs\/\d+$/.test(u.pathname));
+    return u.protocol === 'https:' && (u.hostname === 'github.com' || u.hostname === htmlHost) && /\/actions\/runs\/\d+$/.test(u.pathname);
   } catch {
     return false;
   }
@@ -292,7 +292,7 @@ function ReleasesAdmin() {
                 {data.runs.map((r) => (
                   <tr key={r.id}>
                     <td>
-                      {isGitHubRunUrl(r.url) ? (
+                      {isGitHubRunUrl(r.url, data.htmlHost) ? (
                         <a href={r.url} target="_blank" rel="noreferrer noopener">
                           {r.title || `#${r.id}`}
                         </a>

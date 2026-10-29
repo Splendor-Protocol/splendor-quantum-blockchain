@@ -187,7 +187,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
                 </p>
               )
             ) : null}
-            {codeView === 'page' ? <CodeBlock code={fullPageSource(entry, shown, theme, DEFAULT_NETWORK, WASM_PINS)} /> : null}
+            {codeView === 'page' ? <CodeBlock code={fullPageSource(entry, shown, theme, DEFAULT_NETWORK, WASM_PINS, PACKAGE_VERSIONS.connectReact)} /> : null}
             <button type="button" className="pg-btn pg-btn-ghost" onClick={downloadComponent}>
               Download as component
             </button>

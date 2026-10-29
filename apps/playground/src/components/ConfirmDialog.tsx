@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ModalDialog } from './ModalDialog';
 
 export type ConfirmOptions = {
@@ -37,6 +37,15 @@ export function useConfirm(): [dialog: ReactNode, confirm: (options: ConfirmOpti
     setPending(null);
     p?.resolve(ok);
   };
+  // The owner went away with a question open: the answer is "no", so no caller waits forever.
+  useEffect(
+    () => () => {
+      const p = pendingRef.current;
+      pendingRef.current = null;
+      p?.resolve(false);
+    },
+    [],
+  );
   const dialog = pending ? (
     <ModalDialog label={pending.title} onClose={() => done(false)} className="pg-modal" testId="confirm-dialog">
       <div className="pg-modal-panel pg-confirm">

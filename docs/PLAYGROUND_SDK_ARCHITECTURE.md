@@ -85,10 +85,16 @@ flowchart LR
   a stale one with `409 CONFLICT` instead of overwriting a newer copy from another tab. A rename
   from the home page is checked the same way.
 - A draft that is saved nowhere else, or has edits its account project does not have yet, is
-  stashed before a template, New, Import or Remix replaces it, and the studio offers to restore
-  it.
-- Every saved spec is a revision (the last 20). Deletes go to a 30-day trash; a workspace goes
-  with its projects and comes back with them.
+  stashed before anything replaces it (a template, the picker, New, Import, Remix, opening
+  another project, a restore), and the studio offers to restore it. Restoring swaps the stash
+  with the current draft. A draft nobody edited (`edited: false`) is never stashed, so an
+  untouched template cannot push real work out of the one-slot stash.
+- An editor that has unmounted never writes the draft slot again (a save that finishes late
+  would otherwise overwrite the next editor's draft). Restoring a revision refuses while edits
+  are not in the account yet.
+- Every saved spec is a revision (the newest 20 rows). Deletes go to a 30-day trash, at most 200
+  projects per owner; a workspace goes with its projects and comes back with them, within the
+  100-project limit.
 
 ### Sign-in
 
@@ -162,6 +168,26 @@ compose hooks with review, fee and confirmation UI.
 | Share links had no expiry or view count. | `src/routes/share.ts` | Fixed (`expiresInDays`, `shareViews`) |
 | Every deployment insert failure was reported as "Subdomain is taken". | `src/routes/deployments.ts` | Fixed (unique violation 409, otherwise 500). Hosting stays off and has no worker. |
 | Rate limits and caches are per process; no Postgres migration lock; no metrics or OpenAPI. | `src/app.ts`, `src/store/sql.ts` | Later |
+
+### Second review (of the pass above)
+
+| Finding | Where | Status |
+| --- | --- | --- |
+| An untouched draft could push real work out of the one-slot stash; the picker after a failed link, Restore, and opening another project replaced drafts without stashing them. | `builder/BuilderPage.tsx`, `builder/storage.ts` | Fixed (`edited` flag, stash on every replacement, Restore swaps) |
+| A save finishing after the editor unmounted wrote a stale draft; restoring a revision could drop edits the account did not have; a local-workspace project kept being written after it was saved to the account. | `builder/BuilderPage.tsx` | Fixed |
+| A reload right after typing could miss the debounced draft write. | `builder/BuilderPage.tsx` | Fixed (flush compares the on-screen spec with the last write) |
+| Below 1100 px, "Choose", "Open Contracts", "Go to the first one" and the tour targeted closed drawers. | `builder/Studio.tsx`, `studio/StudioShell.tsx` | Fixed |
+| Contract functions with a display name ("Get count" for `get()`) could not be dropped onto the page. | `studio/abi.ts` | Fixed (name and kind come from the spec's own contract) |
+| The preview frame's reload budget reset on every `ready`; drafts were posted to a frame that had navigated; stale rects stayed after a reload; the notice shifted the overlay. | `preview/PreviewFrame.tsx` | Fixed (budget returns after 5 s on the preview, stop with a notice, rects cleared, notice laid over the frame) |
+| SVG and image-map links were not captured in the frame; web links opened in a sandboxed window. | `preview/PreviewRuntime.tsx`, `preview/PreviewFrame.tsx` | Fixed (`allow-popups-to-escape-sandbox`, links use `noopener`) |
+| Touch moves could leave the overlay stuck if the handle unmounted; shortcuts changed the page behind dialogs. | `studio/CanvasOverlay.tsx`, `builder/BuilderPage.tsx` | Fixed |
+| Gallery pins did not name the version they belong to; release links accepted any host with a run-shaped path. | `gallery/codeExport.ts`, `admin/AdminPage.tsx`, API `releases.ts` | Fixed (exact install line, validated pins, `htmlHost`) |
+| Restoring a workspace bypassed the 100-project limit. | API `routes/workspaces.ts`, `store/sql.ts` | Fixed (429) |
+| Name-sorted pages could skip non-ASCII names; a bad cursor silently restarted at page 1. | API `store/sql.ts` | Fixed (cursor carries the database's own sort key and list kind; 400) |
+| SQLite statements from other requests could run inside an open transaction. | API `store/index.ts` | Fixed (one queue for every statement) |
+| Fewer than 20 revisions kept after moves; restore could leave a dangling workspace id; purge raced restore; trash grew without bound. | API `store/sql.ts` | Fixed (newest 20 rows, live-workspace check, row locks and cascade, 200-project trash cap with paging) |
+| A failed audit write turned a created deployment into 500; HEAD counted as a share view; a broken Postgres client went back to the pool. | API | Fixed |
+| The API suite only ever ran on SQLite. | `app.test.ts`, CI | Fixed (`TEST_DATABASE_URL`, per-test schemas, `playground-api-postgres` job) |
 
 ### connect-react widgets and hooks
 
@@ -237,6 +263,8 @@ compose hooks with review, fee and confirmation UI.
 - API: revisions and restore, 30-day trash for projects and workspaces, search, sort and keyset
   pages, audit for project, workspace, share and logout events, route modules, share expiry and
   view counts, deployment error codes.
+- Second review: the fixes in the table above, with tests for each scenario (API on SQLite and
+  Postgres, unit, and Playwright on the production build), and a Postgres CI job.
 
 ### Next
 

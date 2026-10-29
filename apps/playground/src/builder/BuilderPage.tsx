@@ -18,7 +18,7 @@ import { useConfirm } from '../components/ConfirmDialog';
 import { useRegistry } from '../registry';
 import { type CloudState } from './ProjectPanel';
 import { Studio } from './Studio';
-import { getLocalProject, isLocalWorkspaceId, saveLocalProjectWithInfo } from '../workspaces/local';
+import { deleteLocalProject, getLocalProject, isLocalWorkspaceId, saveLocalProjectWithInfo } from '../workspaces/local';
 import { decodeAnswers, specFromWizard } from './newProject';
 import { KitCards } from '../home/KitCards';
 import { NewProjectWizard } from '../home/NewProjectWizard';
@@ -132,7 +132,18 @@ type Start = {
   version?: number;
   /** The spec has edits the account copy does not have yet. */
   dirty?: boolean;
+  /** Someone changed the spec since it was a template, an opened project or a stash (see `Draft.edited`). */
+  edited?: boolean;
 };
+
+/** A start from a stored draft keeps that draft's state, including whether it was edited. */
+const fromDraft = (d: Draft): Omit<Start, 'key'> => ({
+  spec: d.spec,
+  projectId: d.projectId,
+  version: d.version,
+  dirty: d.dirty,
+  edited: d.edited !== false,
+});
 
 export function BuilderPage() {
   const [params, setParams] = useSearchParams();
@@ -141,6 +152,16 @@ export function BuilderPage() {
   const [loadingProject, setLoadingProject] = useState(projectParam != null);
   /** `?project=` could not be opened; shown above the picker or the editor until dismissed. */
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** The last `?project=` load was refused for want of a session: signing in tries it again. */
+  const [needsSession, setNeedsSession] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const { session } = useSession();
+  useEffect(() => {
+    if (session && needsSession) {
+      setNeedsSession(false);
+      setLoadAttempt((n) => n + 1);
+    }
+  }, [session, needsSession]);
   /** Project the editor has open (cloud id or `lp-…`), so writing it to the URL does not reload it. */
   const editorProject = useRef<string | null>(null);
   const [start, setStart] = useState<Start | null>(() => {
@@ -151,11 +172,11 @@ export function BuilderPage() {
       const spec = specFromWizard({ template: t, preset: params.get('preset'), name: params.get('name'), answers: decodeAnswers(params.get('answers')) });
       if (spec) {
         stashDraft();
-        return { spec, projectId: null, key: Date.now() };
+        return { spec, projectId: null, key: Date.now(), edited: false };
       }
     }
     const draft = loadDraft();
-    if (draft) return { spec: draft.spec, projectId: draft.projectId, version: draft.version, dirty: draft.dirty, key: Date.now() };
+    if (draft) return { ...fromDraft(draft), key: Date.now() };
     return null;
   });
 
@@ -170,8 +191,10 @@ export function BuilderPage() {
         if (projectParam.startsWith('lp-')) {
           const local = workspaceId ? getLocalProject(workspaceId, projectParam) : null;
           if (!live) return;
-          if (local) setStart({ spec: migrateSpec(local.spec), projectId: null, localProjectId: local.id, key: Date.now() });
-          else {
+          if (local) {
+            stashDraft();
+            setStart({ spec: migrateSpec(local.spec), projectId: null, localProjectId: local.id, key: Date.now(), edited: false });
+          } else {
             setStart(null);
             setLoadError('That project is not in this browser. Browser projects only exist where they were made.');
           }
@@ -181,10 +204,13 @@ export function BuilderPage() {
           const draft = loadDraft();
           const resume = draft && draft.projectId === p.id && draft.dirty && draft.version != null && draft.version === p.version;
           if (live) {
+            // Anything else in the draft slot (unsaved work, or edits made on an older version) is
+            // kept aside before the account copy replaces it.
+            if (!resume) stashDraft();
             setStart(
               resume
-                ? { spec: draft.spec, projectId: p.id, version: p.version, dirty: true, key: Date.now() }
-                : { spec: migrateSpec(p.spec), projectId: p.id, version: p.version, key: Date.now(), synced: true },
+                ? { spec: draft.spec, projectId: p.id, version: p.version, dirty: true, key: Date.now(), edited: true }
+                : { spec: migrateSpec(p.spec), projectId: p.id, version: p.version, key: Date.now(), synced: true, edited: false },
             );
           }
         }
@@ -194,11 +220,12 @@ export function BuilderPage() {
         // draft is unrelated to the link and is not opened in its place.
         const draft = loadDraft();
         if (draft && draft.projectId === projectParam) {
-          setStart({ spec: draft.spec, projectId: draft.projectId, version: draft.version, dirty: draft.dirty, key: Date.now() });
+          setStart({ ...fromDraft(draft), key: Date.now() });
           setLoadError(`Could not load the account copy (${errorText(e)}). Showing the copy saved in this browser.`);
         } else {
           setStart(null);
           const status = e instanceof ApiError ? e.status : -1;
+          setNeedsSession(status === 401);
           setLoadError(
             status === 404
               ? 'That project was not found. It may have been deleted, or it belongs to another account.'
@@ -214,9 +241,9 @@ export function BuilderPage() {
     return () => {
       live = false;
     };
-    // Once per project id; `workspaceId` only selects the local store.
+    // Once per project id (and again after a sign-in it was waiting for); `workspaceId` only selects the local store.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectParam]);
+  }, [projectParam, loadAttempt]);
 
   useEffect(() => {
     if (loadingProject || !SEED_PARAMS.some((k) => params.has(k))) return;
@@ -231,9 +258,11 @@ export function BuilderPage() {
 
   if (loadingProject) return <p className="pg-muted pg-page">Opening project…</p>;
 
+  /** The stash and the current draft swap places, so restoring one never loses the other. */
   const restore = (d: Draft) => {
+    stashDraft();
     setLoadError(null);
-    setStart({ spec: d.spec, projectId: d.projectId, version: d.version, dirty: d.dirty, key: Date.now() });
+    setStart({ ...fromDraft(d), key: Date.now() });
   };
   const loadNotice = loadError ? (
     <div className="pg-local-notice" role="alert" data-testid="project-load-error">
@@ -250,8 +279,10 @@ export function BuilderPage() {
         {loadNotice}
         <TemplatePicker
           onPick={(spec) => {
+            // After a link that failed to open, the draft slot still holds earlier work.
+            stashDraft();
             setLoadError(null);
-            setStart({ spec, projectId: null, key: Date.now() });
+            setStart({ spec, projectId: null, key: Date.now(), edited: false });
           }}
           onRestore={restore}
         />
@@ -270,16 +301,19 @@ export function BuilderPage() {
       initialSynced={start.synced === true}
       initialVersion={start.version}
       initialDirty={start.dirty === true}
+      initialEdited={start.edited !== false}
       onProjectIdChange={onProjectIdChange}
       onOpen={(spec, projectId, version) => {
+        stashDraft();
         setLoadError(null);
-        setStart({ spec, projectId, version, key: Date.now(), synced: projectId != null });
+        setStart({ spec, projectId, version, key: Date.now(), synced: projectId != null, edited: false });
       }}
       onRestore={restore}
       onImport={(spec) => {
         stashDraft();
         setLoadError(null);
-        setStart({ spec, projectId: null, key: Date.now() });
+        // Pasted JSON exists nowhere else in the playground: it counts as work to keep.
+        setStart({ spec, projectId: null, key: Date.now(), edited: true });
       }}
       onNew={() => {
         stashDraft();
@@ -300,9 +334,10 @@ function Editor({
   initialSynced,
   initialVersion,
   initialDirty,
+  initialEdited,
   onProjectIdChange,
-  onOpen,
-  onRestore,
+  onOpen: onOpenSpec,
+  onRestore: onRestoreDraft,
   onImport: onImportSpec,
   onNew: onNewProject,
 }: {
@@ -312,6 +347,7 @@ function Editor({
   initialSynced: boolean;
   initialVersion: number | undefined;
   initialDirty: boolean;
+  initialEdited: boolean;
   onProjectIdChange: (id: string | null) => void;
   onOpen: (spec: DappSpec, projectId: string | null, version?: number) => void;
   onRestore: (draft: Draft) => void;
@@ -416,11 +452,27 @@ function Editor({
   const draftWriteFailedRef = useRef(false);
   /** An edit is waiting for the debounced draft write. */
   const draftPending = useRef(false);
+  /**
+   * False once this editor has unmounted: a save that finishes later must not write its spec over
+   * whatever the next editor (or New) put in the draft slot.
+   */
+  const alive = useRef(true);
+  /** The spec the last draft write stored. */
+  const writtenSpec = useRef<DappSpec | null>(null);
   const persistDraft = useCallback(() => {
+    if (!alive.current) return;
     draftPending.current = false;
     const s = specRef.current;
+    writtenSpec.current = s;
     const id = projectIdRef.current;
-    const ok = saveDraft({ spec: s, projectId: id, ...(id && versionRef.current ? { version: versionRef.current } : {}), dirty: id != null && hasPendingEdits(s) });
+    const edited = initialEdited || s !== openedSpec.current;
+    const ok = saveDraft({
+      spec: s,
+      projectId: id,
+      ...(id && versionRef.current ? { version: versionRef.current } : {}),
+      dirty: id != null && hasPendingEdits(s),
+      ...(edited ? {} : { edited: false }),
+    });
     draftWriteFailedRef.current = !ok;
     setDraftWriteFailed(!ok);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -438,35 +490,58 @@ function Editor({
     return () => window.clearTimeout(t);
   }, [spec, projectId, persistDraft]);
   const flushDraft = useCallback(() => {
-    if (draftPending.current) persistDraft();
+    // Also when the edit rendered but its debounce effect has not run yet (a leave right after typing).
+    if (draftPending.current || specRef.current !== writtenSpec.current) persistDraft();
   }, [persistDraft]);
+  /** A browser-workspace save waiting for its debounce; run on leave and unmount too. */
+  const localPending = useRef<(() => void) | null>(null);
+  const flushAll = useCallback(() => {
+    flushDraft();
+    localPending.current?.();
+  }, [flushDraft]);
   useEffect(() => {
+    alive.current = true;
     // A pending write must not be lost to a closed tab, or to switching projects.
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      flushDraft();
+      flushAll();
       if (!draftWriteFailedRef.current) return;
       e.preventDefault();
       e.returnValue = '';
     };
-    window.addEventListener('pagehide', flushDraft);
+    window.addEventListener('pagehide', flushAll);
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => {
-      window.removeEventListener('pagehide', flushDraft);
+      window.removeEventListener('pagehide', flushAll);
       window.removeEventListener('beforeunload', onBeforeUnload);
-      flushDraft();
+      flushAll();
+      alive.current = false;
     };
-  }, [flushDraft]);
-  // New and Import read the draft to stash it, so it must be current first.
+  }, [flushAll]);
+  // New, Import, Open and Restore read the draft to stash it, so it must be current first.
   const onNew = useCallback(() => {
-    flushDraft();
+    flushAll();
     onNewProject();
-  }, [flushDraft, onNewProject]);
+  }, [flushAll, onNewProject]);
   const onImport = useCallback(
     (s: DappSpec) => {
-      flushDraft();
+      flushAll();
       onImportSpec(s);
     },
-    [flushDraft, onImportSpec],
+    [flushAll, onImportSpec],
+  );
+  const onOpen = useCallback(
+    (s: DappSpec, id: string | null, version?: number) => {
+      flushAll();
+      onOpenSpec(s, id, version);
+    },
+    [flushAll, onOpenSpec],
+  );
+  const onRestore = useCallback(
+    (d: Draft) => {
+      flushAll();
+      onRestoreDraft(d);
+    },
+    [flushAll, onRestoreDraft],
   );
 
   /** Saves run one at a time, each with the version the previous one returned. */
@@ -502,7 +577,8 @@ function Editor({
                 if (projectIdRef.current === id) void saveToCloudRef.current(specRef.current);
               }, delay);
             }
-            setCloud({ status: 'error', message: `${errorText(e)}${delay !== undefined ? ' Retrying…' : ''}` });
+            const reason = errorText(e).replace(/[.\s]+$/, '');
+            setCloud({ status: 'error', message: `${reason}.${delay !== undefined ? ' Retrying…' : ''}` });
           }
         }
         persistDraft();
@@ -542,6 +618,8 @@ function Editor({
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
+      // Behind an open dialog the page must not change.
+      if (target?.closest?.('[aria-modal="true"]') || document.querySelector('[aria-modal="true"]')) return;
       if (!(e.ctrlKey || e.metaKey)) return;
       const key = e.key.toLowerCase();
       if (key === 'z') {
@@ -585,19 +663,29 @@ function Editor({
   const [localProject, setLocalProject] = useState<string | null>(initialLocalProjectId);
   const [localNotice, setLocalNotice] = useState<string | null>(null);
   useEffect(() => {
-    // Nothing to save until the user changes something.
-    if (!localWorkspaceId || spec === openedSpec.current) return;
-    const t = window.setTimeout(() => {
+    // Nothing to save until the user changes something; once the project is in the account, the
+    // account copy is the one that is kept.
+    if (!localWorkspaceId || spec === openedSpec.current || projectId) return;
+    const save = () => {
+      localPending.current = null;
+      if (projectIdRef.current) return;
       const r = saveLocalProjectWithInfo(localWorkspaceId, spec, localProjectId.current);
       localProjectId.current = r.project.id;
+      if (!alive.current) return;
       if (r.saved) setLocalProject(r.project.id);
       if (!r.saved) setLocalNotice('This browser refused to save the project (storage full or disabled). Export it or sign in so you do not lose it.');
       else if (r.trimmed.length) {
         setLocalNotice(`Removed ${r.trimmed.length} oldest project${r.trimmed.length === 1 ? '' : 's'} from this workspace to stay within the browser limit: ${r.trimmed.map((p) => p.name).join(', ')}.`);
       }
-    }, 800);
-    return () => window.clearTimeout(t);
-  }, [spec, localWorkspaceId]);
+    };
+    localPending.current = save;
+    const t = window.setTimeout(save, DRAFT_DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(t);
+      // On unmount the flush effect (declared earlier) has already run it.
+      if (localPending.current === save) localPending.current = null;
+    };
+  }, [spec, localWorkspaceId, projectId]);
 
   // The open project lives in the URL, so a reload or a second tab opens the same one.
   const urlProject = projectId ?? (localWorkspaceId ? localProject : null);
@@ -622,12 +710,21 @@ function Editor({
       versionRef.current = p.version;
       setProjectId(p.id);
       setCloud({ status: 'saved' });
+      // A browser-workspace copy would be listed as "only in this browser" and uploaded twice.
+      if (localWorkspaceId && localProjectId.current) {
+        localPending.current = null;
+        if (deleteLocalProject(localWorkspaceId, localProjectId.current)) {
+          setLocalNotice('Saved to your account. The copy in this browser workspace was removed, so the project is kept once.');
+        }
+        localProjectId.current = null;
+        setLocalProject(null);
+      }
     } catch (e) {
       setCloud({ status: 'error', message: errorText(e) });
     } finally {
       creating.current = false;
     }
-  }, [spec, remoteWorkspaceId]);
+  }, [spec, remoteWorkspaceId, localWorkspaceId]);
 
   const openProject = useCallback(
     async (id: string) => {
@@ -644,6 +741,10 @@ function Editor({
       if (!id) return;
       if (hasPendingEdits(specRef.current) && !conflictRef.current && validation.ok) await saveToCloud(specRef.current);
       if (conflictRef.current) throw new Error('Resolve the save conflict first.');
+      // A restore replaces what is open; edits the account does not have would be lost.
+      if (hasPendingEdits(specRef.current)) {
+        throw new Error('Your latest edits are not saved to your account yet. Fix the listed issues or wait for the save, then try again.');
+      }
       const p = await api.restoreRevision(id, version, versionRef.current ?? 1);
       onOpen(migrateSpec(p.spec), p.id, p.version);
     },

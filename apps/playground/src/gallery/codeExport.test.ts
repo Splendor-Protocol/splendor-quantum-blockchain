@@ -24,9 +24,12 @@ describe('code export', () => {
     expect(unpinned).not.toContain('allowUnpinnedWasm');
     expect(unpinned).toContain('wasmSha256={import.meta.env.VITE_SQC_WASM_SHA256}');
     const pins = { wasmSha256: 'a'.repeat(64), execSha256: 'b'.repeat(64) };
-    const pinned = fullPageSource(e, defaultProps(e), theme, 'mainnet', pins);
+    const pinned = fullPageSource(e, defaultProps(e), theme, 'mainnet', pins, '3.0.0');
     expect(pinned).not.toContain('allowUnpinnedWasm');
     expect(pinned).toContain(`wasmSha256="${pins.wasmSha256}" execSha256="${pins.execSha256}"`);
+    // The digests belong to one version, so the install line names it.
+    expect(pinned).toContain('npm i @splendor/connect-react@3.0.0');
+    expect(pinned).toContain('@splendor/connect-react@3.0.0 ships');
   });
 
   it('loads the embed script and styles at an exact version, with pins when known', () => {

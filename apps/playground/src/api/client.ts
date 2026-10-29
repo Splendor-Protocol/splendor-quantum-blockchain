@@ -43,6 +43,8 @@ export type ReleaseRun = { id: number; status: string; conclusion: string | null
 export type ReleaseStatus = {
   configured: boolean;
   repo: string;
+  /** GitHub web host for run links; older APIs omit it (github.com only). */
+  htmlHost?: string;
   packages: ReleasePackage[];
   changesets: { file: string; summary: string }[];
   runs: ReleaseRun[];
@@ -117,7 +119,10 @@ export const api = {
 
   listProjects: (workspaceId?: string, opts: ListOptions = {}) => request<ProjectList>(`/projects${listQuery({ ...opts, workspaceId })}`),
 
-  trash: () => request<{ projects: ProjectSummary[]; workspaces: Workspace[] }>('/trash'),
+  trash: (cursor?: string | null) =>
+    request<{ projects: ProjectSummary[]; workspaces: Workspace[]; nextCursor?: string | null }>(
+      cursor ? `/trash?cursor=${encodeURIComponent(cursor)}` : '/trash',
+    ),
   restoreProject: (id: string) => request<{ ok: true }>(`/trash/projects/${encodeURIComponent(id)}/restore`, json('POST', {})),
   purgeProject: (id: string) => request<{ ok: true }>(`/trash/projects/${encodeURIComponent(id)}`, json('DELETE')),
   restoreWorkspace: (id: string) => request<{ ok: true }>(`/trash/workspaces/${encodeURIComponent(id)}/restore`, json('POST', {})),

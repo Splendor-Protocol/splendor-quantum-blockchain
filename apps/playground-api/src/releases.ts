@@ -13,11 +13,23 @@ export const RELEASED_PACKAGES = [
 export type ReleaseStatus = {
   configured: boolean;
   repo: string;
+  /** Host of the GitHub web UI that run links point to (`github.com`, or a GitHub Enterprise host). */
+  htmlHost: string;
   packages: { name: string; repoVersion: string | null; distTags: Record<string, string> }[];
   changesets: { file: string; summary: string }[];
   runs: { id: number; status: string; conclusion: string | null; url: string; createdAt: string; event: string; title: string }[];
   errors: string[];
 };
+
+/** `https://api.github.com` serves `github.com`; GitHub Enterprise serves its UI on the API's own host. */
+export function githubHtmlHost(apiUrl: string): string {
+  try {
+    const host = new URL(apiUrl).hostname;
+    return host === 'api.github.com' ? 'github.com' : host;
+  } catch {
+    return 'github.com';
+  }
+}
 
 const CACHE_MS = 30_000;
 const UPSTREAM_TIMEOUT_MS = 10_000;
@@ -125,7 +137,7 @@ export function createReleaseService(config: ApiConfig['github'], fetchImpl: Fet
         errors.push(String((e as Error).message));
       }
     }
-    const value = { configured, repo: config.repo, packages, changesets, runs, errors };
+    const value = { configured, repo: config.repo, htmlHost: githubHtmlHost(config.apiUrl), packages, changesets, runs, errors };
     cache = { at: Date.now(), value };
     return value;
   }

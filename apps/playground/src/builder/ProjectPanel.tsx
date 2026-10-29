@@ -110,6 +110,8 @@ export function ProjectPanel({
   const [projectQuery, setProjectQuery] = useState('');
   const [expiryDays, setExpiryDays] = useState<'' | '7' | '30'>('');
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
+  const [revisionsError, setRevisionsError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const current = projects?.find((p) => p.id === projectId);
   const shownProjects = (projects ?? []).filter((p) => !projectQuery.trim() || p.name.toLowerCase().includes(projectQuery.trim().toLowerCase()));
 
@@ -117,10 +119,24 @@ export function ProjectPanel({
     if (!projectId) return;
     void api
       .revisions(projectId)
-      .then((r) => setRevisions(r.revisions))
-      .catch(() => setRevisions([]));
+      .then((r) => {
+        setRevisions(r.revisions);
+        setRevisionsError(null);
+      })
+      .catch((e: unknown) => {
+        setRevisions([]);
+        setRevisionsError(e instanceof Error ? e.message : String(e));
+      });
   };
-  useEffect(() => setRevisions(null), [projectId]);
+  useEffect(() => {
+    setRevisions(null);
+    setRevisionsError(null);
+  }, [projectId]);
+  // Each save adds a version: an open history follows along.
+  useEffect(() => {
+    if (historyOpen && cloud.status === 'saved') loadRevisions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyOpen, cloud.status]);
 
   const restoreRevision = (version: number) =>
     guard(async () => {
@@ -274,11 +290,17 @@ export function ProjectPanel({
             <details
               data-testid="version-history"
               onToggle={(e) => {
-                if (e.currentTarget.open && revisions === null) loadRevisions();
+                const open = e.currentTarget.open;
+                setHistoryOpen(open);
+                if (open) loadRevisions();
               }}
             >
               <summary>Version history</summary>
-              {revisions === null ? (
+              {revisionsError ? (
+                <p className="pg-error" role="alert">
+                  Could not load the versions: {revisionsError}
+                </p>
+              ) : revisions === null ? (
                 <p className="pg-muted" role="status">
                   Loading versions…
                 </p>
@@ -329,7 +351,7 @@ export function ProjectPanel({
               <ul className="pg-list" data-testid="my-projects">
                 {shownProjects.map((p) => (
                   <li key={p.id} style={{ display: 'flex' }}>
-                    <button type="button" className={p.id === projectId ? 'is-active' : ''} onClick={() => void onOpen(p.id)}>
+                    <button type="button" className={p.id === projectId ? 'is-active' : ''} onClick={() => void guard(() => onOpen(p.id))}>
                       {p.name}
                       {p.shareId ? <span className="pg-badge">shared</span> : null}
                       <span className="pg-spacer" />

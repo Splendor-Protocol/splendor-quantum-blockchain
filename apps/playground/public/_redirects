@@ -1,2 +1,5 @@
+# The preview iframe moved from the /preview route to preview.html; tabs still running the
+# previous build load /preview.
+/preview  /preview.html  200
 # Netlify SPA fallback: every route is rendered by index.html.
 /*  /index.html  200

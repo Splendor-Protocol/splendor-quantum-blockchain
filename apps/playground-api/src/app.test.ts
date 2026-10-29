@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { addressFromPublicKey, createAuthMessage } from '@splendor/sqc-sdk/auth';
 import { TEMPLATES, instantiateTemplate } from '@splendor/dapp-spec';
@@ -30,12 +31,43 @@ function fakeGitHub() {
   return { calls, fetchImpl };
 }
 
+/**
+ * `TEST_DATABASE_URL=postgres://…` runs the suite on Postgres: each store gets its own schema,
+ * dropped when it closes. Default: in-memory SQLite.
+ */
+const TEST_DB = process.env.TEST_DATABASE_URL ?? 'sqlite::memory:';
+const isPg = /^postgres(ql)?:\/\//.test(TEST_DB);
+
+async function withPgAdmin(sql: string) {
+  const { default: pg } = await import('pg');
+  const c = new pg.Client({ connectionString: TEST_DB });
+  await c.connect();
+  try {
+    await c.query(sql);
+  } finally {
+    await c.end();
+  }
+}
+
+async function newStore(): Promise<Store> {
+  if (!isPg) return createStore('sqlite::memory:');
+  const schema = `t_${randomBytes(6).toString('hex')}`;
+  await withPgAdmin(`CREATE SCHEMA ${schema}`);
+  const s = await createStore(TEST_DB, { schema });
+  const close = s.close.bind(s);
+  s.close = async () => {
+    await close();
+    await withPgAdmin(`DROP SCHEMA ${schema} CASCADE`);
+  };
+  return s;
+}
+
 let store: Store;
 let app: App;
 let gh: ReturnType<typeof fakeGitHub>;
 
 beforeEach(async () => {
-  store = await createStore('sqlite::memory:');
+  store = await newStore();
   gh = fakeGitHub();
   const config = loadConfig({ NODE_ENV: 'test', ADMIN_ADDRESSES: ADMIN, GITHUB_TOKEN: 'gh-test', PLAYGROUND_ORIGINS: ORIGIN });
   app = await buildApp({
@@ -176,7 +208,7 @@ describe('workspaces', () => {
     expect((await purge(`/trash/projects/${a}`)).statusCode).toBe(404);
     await app.inject({ method: 'DELETE', url: `/workspaces/${ws}`, headers: { origin: ORIGIN, cookie: user.cookie! } });
     expect((await purge(`/trash/workspaces/${ws}`)).statusCode).toBe(200);
-    expect((await get('/trash')).json()).toEqual({ projects: [], workspaces: [] });
+    expect((await get('/trash')).json()).toEqual({ projects: [], workspaces: [], nextCursor: null });
     expect(await store.getProject(a)).toBeNull();
     expect(await store.listRevisions(a)).toEqual([]);
   });
@@ -477,7 +509,8 @@ describe('project versions, rename and duplicate', () => {
     expect(dup.statusCode).toBe(429);
   });
 
-  it('migration 4 gives projects saved before versions a version of 1', async () => {
+  // SQLite file surgery; the Postgres run covers migrations through every fresh schema.
+  it.skipIf(isPg)('migration 4 gives projects saved before versions a version of 1', async () => {
     const { mkdtempSync, rmSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
@@ -591,7 +624,7 @@ describe('admin', () => {
 
 /** A separate app with its own env, for the behaviour that depends on configuration. */
 async function makeApp(env: Record<string, string>, wrap: (s: Store) => Store = (s) => s) {
-  const s = await createStore('sqlite::memory:');
+  const s = await newStore();
   const config = loadConfig({ NODE_ENV: 'test', ADMIN_ADDRESSES: ADMIN, PLAYGROUND_ORIGINS: ORIGIN, ...env });
   const a = await buildApp({ config, store: wrap(s), verifier: async (_pk, _msg, sig) => sig === 'valid-signature' });
   return { app: a, store: s, config, close: async () => (await a.close(), await s.close()) };
@@ -818,5 +851,275 @@ describe('deployments', () => {
     fail = new Error('connection reset');
     expect((await deploy()).statusCode).toBe(500);
     await t.close();
+  });
+
+  it('a failed audit write does not turn a created deployment into an error', async () => {
+    const t = await makeApp({ HOSTING_ENABLED: '1', ALLOW_TEST_LOGIN: '1' }, (s) =>
+      Object.assign(Object.create(s) as Store, {
+        audit: (actor: string, action: string, target?: string | null, detail?: unknown) =>
+          action === 'deployment.create' ? Promise.reject(new Error('audit table locked')) : s.audit(actor, action, target, detail),
+      }),
+    );
+    const cookie = cookieOf(await t.app.inject({ method: 'POST', url: '/auth/test-login', ...json({ address: USER }) }));
+    const spec = instantiateTemplate(TEMPLATES.find((x) => x.id === 'wallet-dashboard')!);
+    const id = (await t.app.inject({ method: 'POST', url: '/projects', ...json({ spec }, cookie) })).json().id as string;
+    const res = await t.app.inject({ method: 'POST', url: '/deployments', ...json({ projectId: id, subdomain: 'demo' }, cookie) });
+    expect(res.statusCode).toBe(202);
+    await t.close();
+  });
+});
+
+describe('review scenarios: ownership, limits, paging, revisions and purge', () => {
+  const spec = (name = 'Doc') => ({ ...instantiateTemplate(TEMPLATES.find((t) => t.id === 'wallet-dashboard')!), name });
+  const create = async (cookie: string | undefined, name = 'Doc', workspaceId?: string) =>
+    (await app.inject({ method: 'POST', url: '/projects', ...json({ spec: spec(name), ...(workspaceId ? { workspaceId } : {}) }, cookie) })).json() as {
+      id: string;
+      version: number;
+      workspaceId: string | null;
+    };
+  const newWorkspace = async (cookie: string | undefined, name = 'W') =>
+    (await app.inject({ method: 'POST', url: '/workspaces', ...json({ name }, cookie) })).json().id as string;
+  const get = (url: string, cookie: string | undefined) => app.inject({ method: 'GET', url, headers: { cookie: cookie! } });
+  const del = (url: string, cookie: string | undefined) => app.inject({ method: 'DELETE', url, headers: { origin: ORIGIN, cookie: cookie! } });
+  const post = (url: string, body: unknown, cookie: string | undefined) => app.inject({ method: 'POST', url, ...json(body, cookie) });
+
+  it('keeps revisions and the trash private to their owner', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const other = await signIn(PUB_ADMIN, ADMIN);
+    const p = await create(user.cookie);
+    const ws = await newWorkspace(user.cookie);
+    expect((await get(`/projects/${p.id}/revisions`, other.cookie)).statusCode).toBe(404);
+    expect((await get(`/projects/${p.id}/revisions/1`, other.cookie)).statusCode).toBe(404);
+    expect((await post(`/projects/${p.id}/revisions/1/restore`, { baseVersion: 1 }, other.cookie)).statusCode).toBe(404);
+
+    await del(`/projects/${p.id}`, user.cookie);
+    await del(`/workspaces/${ws}`, user.cookie);
+    expect((await post(`/trash/projects/${p.id}/restore`, {}, other.cookie)).statusCode).toBe(404);
+    expect((await del(`/trash/projects/${p.id}`, other.cookie)).statusCode).toBe(404);
+    expect((await post(`/trash/workspaces/${ws}/restore`, {}, other.cookie)).statusCode).toBe(404);
+    expect((await del(`/trash/workspaces/${ws}`, other.cookie)).statusCode).toBe(404);
+    expect((await get('/trash', other.cookie)).json()).toMatchObject({ projects: [], workspaces: [] });
+    const mine = (await get('/trash', user.cookie)).json();
+    expect(mine.projects.map((x: { id: string }) => x.id)).toEqual([p.id]);
+    expect(mine.workspaces.map((x: { id: string }) => x.id)).toEqual([ws]);
+  });
+
+  it('a restore cannot take an owner past the project limit', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const ws = await newWorkspace(user.cookie);
+    await create(user.cookie, 'A', ws);
+    await create(user.cookie, 'B', ws);
+    await del(`/workspaces/${ws}`, user.cookie);
+    for (let i = 0; i < 99; i++) await store.createProject({ id: `filler-project-${String(i).padStart(3, '0')}`, owner: USER, name: 'f', spec: '{}' });
+
+    // 99 live + 2 coming back = 101.
+    const refused = await post(`/trash/workspaces/${ws}/restore`, {}, user.cookie);
+    expect(refused.statusCode).toBe(429);
+    expect((await get('/workspaces', user.cookie)).json().workspaces).toEqual([]);
+
+    await store.deleteProject('filler-project-000');
+    expect((await post(`/trash/workspaces/${ws}/restore`, {}, user.cookie)).statusCode).toBe(200);
+    expect(await store.countProjects(USER)).toBe(100);
+
+    // At the limit, a single project cannot come back either.
+    expect((await post('/trash/projects/filler-project-000/restore', {}, user.cookie)).statusCode).toBe(429);
+  });
+
+  it('a project restored while its workspace is trashed comes back unfiled, and stays put when the workspace returns', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const ws = await newWorkspace(user.cookie);
+    const p = await create(user.cookie, 'Lone', ws);
+    const q = await create(user.cookie, 'Sibling', ws);
+    await del(`/workspaces/${ws}`, user.cookie);
+    expect((await post(`/trash/projects/${p.id}/restore`, {}, user.cookie)).statusCode).toBe(200);
+    expect((await get(`/projects/${p.id}`, user.cookie)).json().workspaceId).toBeNull();
+
+    expect((await post(`/trash/workspaces/${ws}/restore`, {}, user.cookie)).statusCode).toBe(200);
+    expect((await get(`/projects/${p.id}`, user.cookie)).json().workspaceId).toBeNull();
+    expect((await get(`/workspaces/${ws}/projects`, user.cookie)).json().projects.map((x: { id: string }) => x.id)).toEqual([q.id]);
+  });
+
+  it('hides the revisions of a trashed project, and a restore needs the version it starts from', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const p = await create(user.cookie);
+    expect((await post(`/projects/${p.id}/revisions/1/restore`, {}, user.cookie)).statusCode).toBe(400);
+    await del(`/projects/${p.id}`, user.cookie);
+    expect((await get(`/projects/${p.id}/revisions`, user.cookie)).statusCode).toBe(404);
+    expect((await get(`/projects/${p.id}/revisions/1`, user.cookie)).statusCode).toBe(404);
+  });
+
+  it('keeps the newest 20 revisions even when moves skipped version numbers', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const ws = await newWorkspace(user.cookie);
+    const p = await create(user.cookie, 'v1');
+    // 25 moves: versions 2..26 carry no new content, so no revisions.
+    for (let i = 0; i < 25; i++) {
+      const res = await app.inject({ method: 'PATCH', url: `/projects/${p.id}`, ...json({ workspaceId: i % 2 ? null : ws }, user.cookie) });
+      expect(res.statusCode).toBe(200);
+    }
+    for (let v = 27; v <= 45; v++) {
+      const res = await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec(`v${v}`), baseVersion: v - 1 }, user.cookie) });
+      expect(res.statusCode).toBe(200);
+    }
+    const versions = ((await get(`/projects/${p.id}/revisions`, user.cookie)).json().revisions as { version: number }[]).map((r) => r.version);
+    expect(versions).toHaveLength(20);
+    expect(versions[0]).toBe(45);
+    expect(versions).toContain(1);
+  });
+
+  it('pages by name without skipping non-ASCII names, finds them by search, and rejects a bad cursor', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const names = ['Проект', 'Работа', 'Сайт', 'Émile', 'émile', 'École', 'Zeta', 'alpha'];
+    for (const n of names) await create(user.cookie, n);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 20; i++) {
+      const page = (await get(`/projects?sort=name&limit=1${cursor ? `&cursor=${cursor}` : ''}`, user.cookie)).json() as { projects: { name: string }[]; nextCursor: string | null };
+      seen.push(...page.projects.map((x) => x.name));
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+    expect([...seen].sort()).toEqual([...names].sort());
+
+    const found = (await get(`/projects?q=${encodeURIComponent('École')}`, user.cookie)).json().projects.map((x: { name: string }) => x.name);
+    expect(found).toContain('École');
+
+    expect((await get('/projects?cursor=garbage', user.cookie)).statusCode).toBe(400);
+    const byTime = (await get('/projects?limit=1', user.cookie)).json().nextCursor as string;
+    expect((await get(`/projects?sort=name&cursor=${byTime}`, user.cookie)).statusCode).toBe(400);
+    expect((await get('/trash?cursor=garbage', user.cookie)).statusCode).toBe(400);
+  });
+
+  it('two saves started from the same version: one is saved, the other is a conflict', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const p = await create(user.cookie);
+    const put = (name: string) => app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec(name), baseVersion: 1 }, user.cookie) });
+    const [a, b] = await Promise.all([put('Tab A'), put('Tab B')]);
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+    const revisions = (await get(`/projects/${p.id}/revisions`, user.cookie)).json().revisions as { version: number }[];
+    expect(revisions.map((r) => r.version)).toEqual([2, 1]);
+  });
+
+  it('a HEAD request does not count as a share view', async () => {
+    const user = await signIn(PUB_USER, USER);
+    const p = await create(user.cookie);
+    const { shareId } = (await post(`/projects/${p.id}/share`, {}, user.cookie)).json() as { shareId: string };
+    expect((await app.inject({ method: 'HEAD', url: `/share/${shareId}` })).statusCode).toBe(200);
+    await app.inject({ method: 'GET', url: `/share/${shareId}` });
+    expect((await get('/projects', user.cookie)).json().projects[0].shareViews).toBe(1);
+  });
+
+  it('keeps at most 200 projects per owner in the trash, dropping the oldest', async () => {
+    for (let i = 0; i < 201; i++) {
+      const id = `trash-project-${String(i).padStart(3, '0')}`;
+      await store.createProject({ id, owner: USER, name: 't', spec: '{}' });
+      await store.deleteProject(id);
+    }
+    expect(await store.getProject('trash-project-000')).toBeNull();
+    expect((await store.getProject('trash-project-200'))?.deletedAt).toBeTruthy();
+    let total = 0;
+    let cursor: string | undefined;
+    do {
+      const page = await store.listTrash(USER, { limit: 100, ...(cursor ? { cursor } : {}) });
+      total += page.projects.length;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(total).toBe(200);
+  });
+
+  it('housekeeping purges old trash with its revisions and deployments; recent trash and live projects stay', async () => {
+    const t = await makeApp({ HOSTING_ENABLED: '1', ALLOW_TEST_LOGIN: '1' });
+    const cookie = cookieOf(await t.app.inject({ method: 'POST', url: '/auth/test-login', ...json({ address: USER }) }));
+    const call = (method: 'POST' | 'DELETE', url: string, body?: unknown) =>
+      method === 'POST' ? t.app.inject({ method, url, ...json(body ?? {}, cookie) }) : t.app.inject({ method, url, headers: { origin: ORIGIN, cookie } });
+    const ws = (await call('POST', '/workspaces', { name: 'Old' })).json().id as string;
+    const filed = (await call('POST', '/projects', { spec: spec('Filed'), workspaceId: ws })).json().id as string;
+    const live = (await call('POST', '/projects', { spec: spec('Live') })).json().id as string;
+    const loose = (await call('POST', '/projects', { spec: spec('Loose') })).json().id as string;
+    const deployment = (await call('POST', '/deployments', { projectId: filed, subdomain: 'old-site' })).json().id as string;
+    await call('DELETE', `/workspaces/${ws}`);
+    await call('DELETE', `/projects/${loose}`);
+    const { runHousekeeping } = await import('./housekeeping.js');
+    const day = 24 * 3600 * 1000;
+
+    expect((await runHousekeeping(t.store, { auditRetentionDays: 365 }, Date.now() + 29 * day)).trash).toBe(0);
+    expect(await t.store.getProject(filed)).not.toBeNull();
+
+    const removed = await runHousekeeping(t.store, { auditRetentionDays: 365 }, Date.now() + 31 * day);
+    expect(removed.trash).toBe(3); // two projects and the workspace
+    expect(await t.store.getProject(filed)).toBeNull();
+    expect(await t.store.getProject(loose)).toBeNull();
+    expect(await t.store.listRevisions(filed)).toEqual([]);
+    expect(await t.store.getDeployment(deployment)).toBeNull();
+    expect(await t.store.getWorkspace(ws, USER, true)).toBeNull();
+    expect((await t.store.getProject(live))?.deletedAt).toBeNull();
+    await t.close();
+  });
+
+  // SQLite file surgery: timestamps set by hand, and the schema rolled back to version 4.
+  it.skipIf(isPg)('pages rows that share a timestamp once each', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { DatabaseSync } = await import('node:sqlite');
+    const dir = mkdtempSync(join(tmpdir(), 'pg-api-'));
+    try {
+      const file = join(dir, 'ties.db');
+      const s = await createStore(`sqlite:${file}`);
+      for (let i = 0; i < 5; i++) await s.createProject({ id: `tied-project-${i}0000`, owner: USER, name: `T${i}`, spec: '{}' });
+      const raw = new DatabaseSync(file);
+      raw.exec("UPDATE projects SET updated_at = '2026-01-01T00:00:00.000Z'");
+      raw.close();
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await s.listProjects(USER, { limit: 1, ...(cursor ? { cursor } : {}) });
+        ids.push(...page.projects.map((p) => p.id));
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      expect(ids).toHaveLength(5);
+      expect(new Set(ids).size).toBe(5);
+      await s.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(isPg)('migration 5 seeds one revision per existing project at its current version', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { DatabaseSync } = await import('node:sqlite');
+    const dir = mkdtempSync(join(tmpdir(), 'pg-api-'));
+    try {
+      const file = join(dir, 'v4.db');
+      const fresh = await createStore(`sqlite:${file}`);
+      await fresh.createProject({ id: 'old-project-0001', owner: USER, name: 'One', spec: '{"n":1}' });
+      await fresh.createProject({ id: 'old-project-0003', owner: USER, name: 'Three', spec: '{"n":1}' });
+      await fresh.updateProject('old-project-0003', { spec: '{"n":2}' });
+      await fresh.updateProject('old-project-0003', { spec: '{"n":3}' });
+      await fresh.close();
+      // Roll the file back to schema 4: no revisions, no trash or share-expiry columns.
+      const raw = new DatabaseSync(file);
+      raw.exec(`
+        DROP TABLE project_revisions;
+        DROP INDEX projects_owner_updated; DROP INDEX projects_deleted; DROP INDEX workspaces_deleted;
+        ALTER TABLE projects DROP COLUMN deleted_at; ALTER TABLE projects DROP COLUMN share_expires_at;
+        ALTER TABLE projects DROP COLUMN share_views; ALTER TABLE workspaces DROP COLUMN deleted_at;
+        DELETE FROM schema_migrations WHERE id = 5;`);
+      raw.close();
+
+      const upgraded = await createStore(`sqlite:${file}`);
+      expect(await upgraded.listRevisions('old-project-0001')).toEqual([{ version: 1, savedAt: expect.any(String) }]);
+      expect((await upgraded.listRevisions('old-project-0003')).map((r) => r.version)).toEqual([3]);
+      expect(await upgraded.getRevision('old-project-0003', 3)).toBe('{"n":3}');
+      const p = await upgraded.getProject('old-project-0003');
+      expect(p).toMatchObject({ deletedAt: null, shareViews: 0, shareExpiresAt: null });
+      await upgraded.updateProject('old-project-0003', { spec: '{"n":4}' }, 3);
+      expect((await upgraded.listRevisions('old-project-0003')).map((r) => r.version)).toEqual([4, 3]);
+      await upgraded.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

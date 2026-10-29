@@ -12,15 +12,25 @@ function daysLeft(deletedAt: string | null | undefined): number | null {
 
 /** Account projects and workspaces deleted in the last 30 days: restore them, or delete for good. */
 export function Trash({ reloadKey, onRestored }: { reloadKey: number; onRestored: () => void }) {
-  const [trash, setTrash] = useState<{ projects: ProjectSummary[]; workspaces: Workspace[] } | null>(null);
+  const [trash, setTrash] = useState<{ projects: ProjectSummary[]; workspaces: Workspace[]; nextCursor?: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [confirmDialog, confirm] = useConfirm();
 
+  const loadMore = async () => {
+    if (!trash?.nextCursor) return;
+    try {
+      const more = await api.trash(trash.nextCursor);
+      setTrash((t) => (t ? { projects: [...t.projects, ...more.projects], workspaces: t.workspaces, nextCursor: more.nextCursor ?? null } : t));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  /** Refreshes the list; it never clears an error, so a failed restore or purge stays on screen. */
   const reload = useCallback(async () => {
     try {
       setTrash(await api.trash());
-      setError(null);
     } catch (e) {
       // An older API without a trash: show nothing rather than an error.
       if (e instanceof ApiError && e.status === 404) setTrash({ projects: [], workspaces: [] });
@@ -29,18 +39,21 @@ export function Trash({ reloadKey, onRestored }: { reloadKey: number; onRestored
   }, []);
 
   useEffect(() => {
+    setError(null);
     void reload();
   }, [reload, reloadKey]);
 
   const act = async (fn: () => Promise<unknown>, restored: boolean) => {
     setError(null);
+    let ok = true;
     try {
       await fn();
     } catch (e) {
+      ok = false;
       setError(e instanceof Error ? e.message : String(e));
     }
     await reload();
-    if (restored) onRestored();
+    if (ok && restored) onRestored();
   };
 
   const purge = async (kind: 'project' | 'workspace', name: string, fn: () => Promise<unknown>) => {
@@ -61,7 +74,8 @@ export function Trash({ reloadKey, onRestored }: { reloadKey: number; onRestored
       {confirmDialog}
       <div className="pg-row">
         <h2 id="trash-title" style={{ margin: 0 }}>
-          Trash ({count})
+          Trash ({count}
+          {trash?.nextCursor ? '+' : ''})
         </h2>
         <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           {open ? 'Hide' : 'Show'}
@@ -104,6 +118,11 @@ export function Trash({ reloadKey, onRestored }: { reloadKey: number; onRestored
             </li>
           ))}
         </ul>
+      ) : null}
+      {open && trash?.nextCursor ? (
+        <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => void loadMore()}>
+          Load more
+        </button>
       ) : null}
     </section>
   );

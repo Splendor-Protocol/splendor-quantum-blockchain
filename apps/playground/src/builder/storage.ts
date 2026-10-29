@@ -12,6 +12,12 @@ export type Draft = {
   version?: number;
   /** Edits that the account copy does not have yet. */
   dirty?: boolean;
+  /**
+   * False while the draft is exactly what was opened (a template, a project, a stash) and nobody
+   * changed it. Such a draft is never stashed, so it cannot push real work out of the one-slot
+   * stash. Missing (older drafts) counts as edited.
+   */
+  edited?: boolean;
 };
 
 /** Enough structure for the editor to open it; value problems are shown as issues, not dropped. */
@@ -27,7 +33,7 @@ function read(key: string): Draft | null {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { spec?: unknown; projectId?: unknown; savedAt?: unknown; version?: unknown; dirty?: unknown };
+    const parsed = JSON.parse(raw) as { spec?: unknown; projectId?: unknown; savedAt?: unknown; version?: unknown; dirty?: unknown; edited?: unknown };
     const spec = migrateSpec(parsed.spec);
     if (!isEditable(spec)) return null;
     return {
@@ -36,6 +42,7 @@ function read(key: string): Draft | null {
       savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : new Date(0).toISOString(),
       ...(typeof parsed.version === 'number' && Number.isSafeInteger(parsed.version) && parsed.version > 0 ? { version: parsed.version } : {}),
       ...(parsed.dirty === true ? { dirty: true } : {}),
+      ...(parsed.edited === false ? { edited: false } : {}),
     };
   } catch {
     return null;
@@ -80,12 +87,12 @@ export function clearDraft(): void {
 
 /**
  * Before something replaces the current draft: keep it aside when it exists nowhere else (no
- * account project), or when it has edits its account project does not have yet. Returns true when
- * a draft was stashed.
+ * account project), or when it has edits its account project does not have yet. An untouched
+ * draft is not stashed. Returns true when a draft was stashed.
  */
 export function stashDraft(): boolean {
   const draft = read(KEY);
-  if (!draft || (draft.projectId && !draft.dirty)) return false;
+  if (!draft || draft.edited === false || (draft.projectId && !draft.dirty)) return false;
   return write(STASH_KEY, {
     spec: draft.spec,
     projectId: draft.projectId,

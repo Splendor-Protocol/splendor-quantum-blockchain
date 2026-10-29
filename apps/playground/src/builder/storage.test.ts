@@ -93,12 +93,26 @@ describe('draft storage', () => {
     expect(takeStashedDraft()).toMatchObject({ spec: { name: 'Cloud edits' }, projectId: 'p1', version: 3, dirty: true });
   });
 
-  it('reports a refused write, and ignores storage that refuses reads', () => {
-    expect(saveDraft({ spec: emptySpec(), projectId: null })).toBe(true);
+  it('never stashes an untouched draft, so it cannot push real work out of the stash', () => {
+    saveDraft({ spec: emptySpec('Real work'), projectId: null });
+    expect(stashDraft()).toBe(true);
+    // A template opened and left alone, then replaced again.
+    saveDraft({ spec: emptySpec('Untouched template'), projectId: null, edited: false });
+    expect(loadDraft()?.edited).toBe(false);
+    expect(stashDraft()).toBe(false);
+    expect(peekStashedDraft()?.spec.name).toBe('Real work');
+    // Older drafts without the flag count as edited.
+    put({ spec: emptySpec('Legacy'), projectId: null });
+    expect(stashDraft()).toBe(true);
+  });
+
+  it('reports a refused write and keeps the previous draft, and ignores storage that refuses reads', () => {
+    expect(saveDraft({ spec: emptySpec('Last good'), projectId: null })).toBe(true);
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('full', 'QuotaExceededError');
     });
-    expect(saveDraft({ spec: emptySpec(), projectId: null })).toBe(false);
+    expect(saveDraft({ spec: emptySpec('Too big'), projectId: null })).toBe(false);
+    expect(loadDraft()?.spec.name).toBe('Last good');
     vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
       throw new Error('disabled');
     });

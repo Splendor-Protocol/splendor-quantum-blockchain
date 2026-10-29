@@ -12,11 +12,17 @@ export const PACKAGE_VERSIONS = {
   connectReact: import.meta.env.VITE_CONNECT_REACT_VERSION,
 };
 
+const SHA256_HEX = /^[0-9a-f]{64}$/i;
+
 /** Signer digests this playground was built with (required for production builds), or null. */
-export function wasmPinsFromEnv(): { wasmSha256: string; execSha256: string } | null {
-  const wasmSha256 = import.meta.env.VITE_SQC_WASM_SHA256?.trim();
-  const execSha256 = import.meta.env.VITE_SQC_EXEC_SHA256?.trim();
-  return wasmSha256 && execSha256 ? { wasmSha256, execSha256 } : null;
+export function wasmPinsFromEnv(env: { VITE_SQC_WASM_SHA256?: string; VITE_SQC_EXEC_SHA256?: string } = import.meta.env): {
+  wasmSha256: string;
+  execSha256: string;
+} | null {
+  const wasmSha256 = env.VITE_SQC_WASM_SHA256?.trim();
+  const execSha256 = env.VITE_SQC_EXEC_SHA256?.trim();
+  // They are pasted into copied HTML and JSX: anything but a sha256 hex digest is not a pin.
+  return wasmSha256 && execSha256 && SHA256_HEX.test(wasmSha256) && SHA256_HEX.test(execSha256) ? { wasmSha256, execSha256 } : null;
 }
 
 export const DEFAULT_NETWORK: NetworkId =

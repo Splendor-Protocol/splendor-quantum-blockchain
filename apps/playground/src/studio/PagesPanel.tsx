@@ -205,7 +205,12 @@ export function PagesPanel({
             placeholder="Page title"
             value={newPageTitle}
             onChange={(e) => setNewPageTitle(e.target.value)}
-            onKeyDown={(e) => e.key === 'Escape' && setNewPageTitle(null)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape') return;
+              // Handled here: the same Escape must not also close the drawer around this panel.
+              e.preventDefault();
+              setNewPageTitle(null);
+            }}
           />
           <div className="pg-row">
             <button type="submit" className="pg-btn pg-btn-sm" disabled={!newPageTitle.trim()}>

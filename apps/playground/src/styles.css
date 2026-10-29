@@ -1231,6 +1231,23 @@ input[type='checkbox'] {
   position: relative;
   line-height: 0;
 }
+/* PreviewFrame: the frame plus notices laid over it (never above it, which would shift the overlay). */
+.pg-preview-wrap {
+  position: relative;
+}
+.pg-preview-notice {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  right: 0.5rem;
+  z-index: 3;
+  margin: 0;
+  line-height: 1.4;
+  background: var(--pg-surface);
+}
+.pg-preview-notice .pg-btn {
+  line-height: 1.4;
+}
 .pg-canvas-overlay {
   position: absolute;
   inset: 0;

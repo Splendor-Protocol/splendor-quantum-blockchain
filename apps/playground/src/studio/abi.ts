@@ -28,8 +28,14 @@ export function parseContractDrop(raw: string, contracts: readonly ContractRef[]
   const { name, signature, kind } = parsed.fn;
   if (typeof name !== 'string' || typeof signature !== 'string' || !isValidSignature(signature)) return null;
   const sig = signature.trim();
-  if (sig.slice(0, sig.indexOf('(')) !== name) return null;
   const contract = typeof parsed.contractId === 'string' ? (contracts.find((c) => c.id === parsed.contractId) ?? null) : null;
+  if (contract) {
+    // The spec's own contract: its function list decides the name (which may be a display name
+    // like "Get count") and whether it reads or writes, not the payload.
+    const own = contract.functions.find((f) => f.signature.trim() === sig);
+    if (own) return { contract, address: contract.address, fn: { name: own.name, signature: sig, kind: own.kind } };
+  }
+  if (sig.slice(0, sig.indexOf('(')) !== name) return null;
   const address = contract ? contract.address : typeof parsed.address === 'string' ? parsed.address.trim() : '';
   if (!contract && !isValidAddress(address)) return null;
   return { contract, address, fn: { name, signature: sig, kind: kind === 'write' ? 'write' : 'read' } };

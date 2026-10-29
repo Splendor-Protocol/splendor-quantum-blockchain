@@ -93,8 +93,11 @@ export function fullPageSource(
   theme: CodeTheme,
   network: NetworkId,
   pins: WasmPins | null = null,
+  version?: string,
 ): string {
   const note = entry.kind === 'block' ? `// Save ${entry.importName}.tsx (Download as component) next to this file.\n` : '';
+  // The digests belong to one exact package version, so the install line names it.
+  const install = version ? `// Install: npm i @splendor/connect-react@${version} @splendor/sqc-sdk\n` : '';
   const widgetImport = entry.kind === 'block' ? '' : `, ${entry.importName}`;
   const blockImport = entry.kind === 'block' ? `\n${importLine(entry, importSource(entry))}` : '';
   // The signer is always pinned: literal digests when known, else the ones sqcWasmPlugin defines.
@@ -102,9 +105,9 @@ export function fullPageSource(
     ? `wasmSha256="${pins.wasmSha256}" execSha256="${pins.execSha256}"`
     : 'wasmSha256={import.meta.env.VITE_SQC_WASM_SHA256} execSha256={import.meta.env.VITE_SQC_EXEC_SHA256}';
   const pinComment = pins
-    ? '// The digests pin the signer this package version ships (npx sqc-copy-wasm serves it).'
-    : '// sqcWasmPlugin (from @splendor/connect-react/vite) defines both digests from the signer it serves.';
-  return `${note}import '@splendor/connect-react/style.css';
+    ? `// The digests pin the signer that @splendor/connect-react${version ? `@${version}` : ''} ships (npx sqc-copy-wasm serves it); update them with the version.`
+    : '// sqcWasmPlugin (from @splendor/connect-react/vite, in vite.config) defines both digests from the signer it serves.';
+  return `${note}${install}import '@splendor/connect-react/style.css';
 import { SplendorConnectProvider, ConnectKit, TxToastHost${widgetImport} } from '@splendor/connect-react';${blockImport}
 
 export default function App() {

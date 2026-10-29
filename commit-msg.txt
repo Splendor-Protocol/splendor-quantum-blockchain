@@ -1,52 +1,66 @@
-﻿feat(playground,api): data-safe drafts, preview hardening, trash and revisions, narrow studio
+﻿fix(playground,api): close draft-loss paths, harden preview, Postgres test run
 
-Drafts and saving
-- Stash unsaved account-project edits before New/Import/Remix; restore keeps their version
-- saveDraft reports refused writes ("Not saved" chip, warn before leaving);
-  draft writes debounced 800ms and flushed on leave/unmount/New/Import
-- A failed ?project= load shows an error instead of opening an unrelated draft
-- Account workspace ids are never used as browser keys; signed out, such links ask to sign in
-- Home: review browser-only projects and save chosen ones to the account
-- Autosave retries network/5xx errors; one project create at a time
-- PATCH /projects/:id checks the version it read (no stale rename overwrite)
+Drafts
+- Never stash an untouched draft (edited: false), so an unedited template
+  cannot push real work out of the one-slot stash
+- Stash before every replacement: picker after a failed link, Restore (now a
+  swap), opening another project, the ?project= success path
+- Stop an unmounted editor from writing the draft slot (alive ref); flush
+  whenever the spec on screen differs from the last write
+- Refuse a revision restore while edits are not in the account yet
+- Stop local-workspace saves once a project is in the account; remove the
+  browser copy after "Save to my account"
+- Retry a ?project= load after sign-in when it failed with 401
 
-Security
-- Preview frame: per-frame token on messages, reload if it navigates away,
-  web links open a new window, forms never submit
-- Contract-function drops validated like Contracts panel input (parseContractDrop)
-- ALLOW_TEST_LOGIN requires a loopback HOST for every NODE_ENV
-- Gallery code pins the signer and uses versioned unpkg embed URLs
-- Admin release links limited to https GitHub run pages
-- vite preview CORS limited to /assets/*
+Studio and preview
+- Narrow screens: setup jumps, Open Contracts, Go to first and the tour open
+  their drawer; clear the drawer when the window turns wide
+- Contract drops take name and kind from the spec's own contract (display
+  names such as "Get count" for get() work again)
+- Preview frame: reload budget returns only after 5s stable, stop with a
+  notice past it, no posts after navigation, rects cleared, notice laid over
+  the frame
+- Catch SVG and image-map links; popups escape the sandbox (noopener)
+- Touch move handle: lost capture, active in a ref, window fallback
+- Shortcuts ignored behind dialogs; Escape in the new-page input stays local
+- Gallery: exact install line next to the pinned digests, pins must be
+  sha256 hex
+- Admin run links: github.com or the API's htmlHost only
+- /preview rewrites to /preview.html for tabs on the previous build
 
-Experience
-- Header account menu (sign in, sign out, offline notice); home waits for session
-- Focus-trapped ConfirmDialog replaces window.confirm; stacked dialogs handle Escape
-- Share link copy button, link expiry choice and view count, version history
-- Preview start timeout with reload; Export lists setup issues and jumps to the first
-- Layers: focusable tree items with actions beside them, Ctrl+D duplicate
-- Ctrl/Cmd+C / Ctrl/Cmd+V copy and paste blocks; admin audit loading/empty states
-- Home: project search, sort, load more, and a Trash section
-
-Studio layout and performance
-- Below 1100px the side panels and inspector open as drawers; tap to add;
-  pointer-based move handle for touch
-- Hover and rects moved to a canvas store; palette, inspector and layers memoized
-- preview.html is the iframe's own entry; selection sent as a separate message
+Smaller client fixes
+- Show "Save to my account" errors in the Share panel; Trash errors stay
+  visible; Trash "Load more"
+- ProjectPanel: guard project opens, refresh version history after saves,
+  show load errors
+- LocalUpload reads fresh rows and reports copies it could not remove
+- Expired share links say so; ConfirmDialog answers "no" on unmount
+- Retry message punctuation
 
 API
-- Migration 5: project_revisions (last 20), deleted_at on projects and workspaces,
-  share_expires_at, share_views, (owner, updated_at) index
-- Revisions list, get and restore (saved as a new version)
-- 30-day trash: workspace and its projects deleted and restored together in one
-  transaction; purge routes; housekeeping removes old trash
-- Project lists: q, sort, limit and keyset cursor
-- Audit project, workspace, share and logout events (autosaves throttled)
-- Routes split into src/routes (auth, workspaces, projects, share, admin, deployments)
-- Deployments: taken subdomain 409, other failures 500
+- Workspace restore respects the 100-project limit (429)
+- Name paging uses the database's own sort key in the cursor; search
+  lowercases both sides in SQL; a bad or mismatched cursor is a 400
+- SQLite: every statement goes through one queue with transactions
+- Keep exactly the newest 20 revisions; restore clears dangling workspace ids
+- Purge locks rows (Postgres) and relies on ON DELETE CASCADE for revisions
+- Trash capped at 200 projects per owner, /trash paged
+- Deployment audit is best effort; HEAD is not a share view; a broken
+  Postgres client is not returned to the pool
 
-Tests and docs
-- Unit tests for stash, refused writes, PATCH clash, test-login host, gallery pins,
-  drop validation, frame links and tokens, trash, revisions, paging, audit, share expiry
-- Playwright: external link stays out of the frame, share copy, narrow-studio drawers
-- Update PLAYGROUND_SDK_ARCHITECTURE.md findings/roadmap and both READMEs
+Tests and CI
+- API: ownership of revisions and trash, restore limits, unfiled restore,
+  revision pruning across moves, non-ASCII paging, bad cursors, concurrent
+  saves, HEAD views, trash cap, housekeeping (+29/+31 days), tied timestamps,
+  migration 5 upgrade
+- Unit: PreviewFrame tokens and reload limit, ConfirmDialog, pristine stash,
+  refused write keeps the last draft, contract drops by display name, pin
+  validation, run-link hosts
+- Playwright e2e/review.spec.ts: fast reload, New/Import stash, stash swap,
+  failed links, dirty cloud draft vs newer save, Not saved, autosave
+  503/422, double-click save, signed-out workspace link, trash restore,
+  version history, expired link, stacked Escape, narrow inspector jump,
+  contract drag; security.spec: preview.html token, CORS only on /assets
+- API tests run on Postgres via TEST_DATABASE_URL (schema per test);
+  npm run test:playground-api:pg; new playground-api-postgres CI job
+- Docs: architecture second-review table, READMEs

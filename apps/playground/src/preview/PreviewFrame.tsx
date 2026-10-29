@@ -16,8 +16,8 @@ export type PreviewFrameProps = {
   onNavigate?: (path: string) => void;
   onSelectBlock?: (id: string) => void;
   onCalls?: (calls: { method: string; args: string }[]) => void;
-  /** Measured node rects + insertion points, in the frame's viewport coordinates. */
-  onRects?: (rects: PreviewRects) => void;
+  /** Measured node rects + insertion points, in the frame's viewport coordinates; null when the frame is reloaded. */
+  onRects?: (rects: PreviewRects | null) => void;
   /** Node (block or container id) under the pointer inside the frame, or null. */
   onHover?: (id: string | null) => void;
   /** A native drag was dropped inside the frame (fallback when no overlay captures drags). */
@@ -33,11 +33,17 @@ export type PreviewFrameProps = {
  * stays same-origin.
  */
 const ISOLATED = !import.meta.env.DEV;
-const SANDBOX = ISOLATED ? 'allow-scripts allow-forms allow-popups' : 'allow-scripts allow-same-origin allow-forms allow-popups';
+// Web links open in a new window with `noopener`; that window leaves the sandbox so ordinary sites
+// (explorers, docs) work, and it has no handle back to this page.
+const SANDBOX = ISOLATED
+  ? 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox'
+  : 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox';
 /** How long a frame may take to say `ready` before the canvas offers a reload. */
 export const PREVIEW_READY_TIMEOUT_MS = 8_000;
-/** Reloads in a row without a `ready` in between; past this the frame is left alone. */
-const MAX_RELOADS = 3;
+/** Reloads within a short span; past this the frame is stopped until the user reloads it. */
+export const MAX_RELOADS = 3;
+/** A frame that stays on the preview this long gets its reload budget back. */
+const STABLE_MS = 5_000;
 
 function newToken(): string {
   const bytes = new Uint8Array(16);
@@ -75,13 +81,27 @@ export function PreviewFrame({
   const [readyCount, setReadyCount] = useState(0);
   const ready = readyCount > 0;
   const [timedOut, setTimedOut] = useState(false);
+  /** The frame kept leaving the preview document; it is left alone until the user reloads it. */
+  const [stopped, setStopped] = useState(false);
   const loads = useRef(0);
   const reloads = useRef(0);
+  /** Set when the frame's document is no longer the preview: nothing is posted to it. */
+  const navigatedAway = useRef(false);
+  const stableTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(stableTimer.current), []);
   const handlers = useRef({ onNavigate, onSelectBlock, onCalls, onRects, onHover, onDrop });
   handlers.current = { onNavigate, onSelectBlock, onCalls, onRects, onHover, onDrop };
 
-  const reload = () => {
+  const reload = (byUser = false) => {
+    window.clearTimeout(stableTimer.current);
+    if (byUser) {
+      reloads.current = 0;
+      setStopped(false);
+    }
     loads.current = 0;
+    navigatedAway.current = false;
+    // The old document's measurements describe nothing any more.
+    handlers.current.onRects?.(null);
     setReadyCount(0);
     setTimedOut(false);
     setFrame((f) => ({ key: f.key + 1, token: newToken() }));
@@ -95,7 +115,12 @@ export function PreviewFrame({
       if (!isPreviewMessage<PreviewToParent>(e.data) || e.data.token !== tokenRef.current) return;
       const msg = e.data;
       if (msg.type === 'ready') {
-        reloads.current = 0;
+        // The reload budget comes back only once a frame has stayed put for a while, so a document
+        // that keeps navigating away cannot reload the frame forever.
+        window.clearTimeout(stableTimer.current);
+        stableTimer.current = window.setTimeout(() => {
+          reloads.current = 0;
+        }, STABLE_MS);
         setTimedOut(false);
         setReadyCount((n) => n + 1);
       } else if (msg.type === 'navigate') {
@@ -133,6 +158,7 @@ export function PreviewFrame({
   }, [ready, frame.key]);
 
   const post = (msg: ParentToPreview) => {
+    if (navigatedAway.current) return;
     // An opaque origin cannot be named as a target. The spec is the user's own draft, and the
     // frame is addressed by its window, not broadcast.
     ref.current?.contentWindow?.postMessage(msg, ISOLATED ? '*' : window.location.origin);
@@ -166,11 +192,12 @@ export function PreviewFrame({
   }, [ready, readyCount]);
 
   return (
-    <>
-      {timedOut && !ready ? (
-        <div className="pg-local-notice" role="alert" data-testid="preview-timeout">
-          <span>The preview has not started. Check your connection, or reload it.</span>
-          <button type="button" className="pg-btn pg-btn-sm" onClick={reload}>
+    <div className="pg-preview-wrap">
+      {/* Positioned over the frame, so it never shifts the canvas overlay's coordinates. */}
+      {stopped || (timedOut && !ready) ? (
+        <div className="pg-local-notice pg-preview-notice" role="alert" data-testid="preview-timeout">
+          <span>{stopped ? 'The preview left this page and was stopped.' : 'The preview has not started. Check your connection, or reload it.'}</span>
+          <button type="button" className="pg-btn pg-btn-sm" onClick={() => reload(true)}>
             Reload preview
           </button>
         </div>
@@ -188,11 +215,17 @@ export function PreviewFrame({
         onLoad={() => {
           // One document per frame: a second load means it navigated away from the preview.
           loads.current += 1;
-          if (loads.current < 2 || reloads.current >= MAX_RELOADS) return;
+          if (loads.current < 2) return;
+          navigatedAway.current = true;
+          window.clearTimeout(stableTimer.current);
+          if (reloads.current >= MAX_RELOADS) {
+            setStopped(true);
+            return;
+          }
           reloads.current += 1;
           reload();
         }}
       />
-    </>
+    </div>
   );
 }

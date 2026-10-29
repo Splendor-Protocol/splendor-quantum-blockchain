@@ -8,6 +8,17 @@ cp .env.example .env.local      # put your address in ADMIN_ADDRESSES
 npm run playground:api          # from the repo root: http://127.0.0.1:8787
 ```
 
+Tests run on in-memory SQLite by default. Production runs on Postgres, so run them there too
+before changing SQL (CI does, in the `playground-api-postgres` job):
+
+```bash
+docker run --rm -e POSTGRES_PASSWORD=pg -p 5432:5432 postgres:16
+npm run test:playground-api:pg  # TEST_DATABASE_URL, default postgres://postgres:pg@127.0.0.1:5432/postgres
+```
+
+Each test case gets its own schema, created and dropped by the suite. The two SQLite file tests
+(migration upgrades, tied timestamps) are skipped on Postgres.
+
 - **Sign-in**:
   - Get a nonce from `POST /auth/nonce`, then send the signed message to `POST /auth/verify`.
   - The signature is checked with `verifySignIn` from `@splendor/sqc-sdk/auth` (ML-DSA-65). The domain must be in `PLAYGROUND_ORIGINS`, and each nonce works once, for 5 minutes.

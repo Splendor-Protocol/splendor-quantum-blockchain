@@ -359,6 +359,44 @@ jobs:
           npm run typecheck -w @splendor/playground-api
           npm test -w @splendor/playground-api
 
+  # The production database: migrations, transactions (row locks, client release), LIKE ... ESCAPE
+  # and name-sorted keyset pages behave differently on Postgres than on the SQLite the js job uses.
+  playground-api-postgres:
+    name: playground API on Postgres
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pg
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the signer and the packages
+        run: |
+          set -euo pipefail
+          bash sdk/sqc-sdk/wasm/build.sh
+          npm ci
+          npm run build:packages
+      - name: API tests on Postgres
+        env:
+          TEST_DATABASE_URL: postgres://postgres:pg@127.0.0.1:5432/postgres
+        run: npm run test:playground-api:pg
+
   # Browser scenarios: every template in the builder with the mock wallet (transfer,
   # tip, sign-in, deploy), zip export, save/share/remix through the real API, and the
   # admin flows (catalog flags, release dispatch, audit) against a fake GitHub and npm.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from 'react';
 
 export type StudioRail = 'pages' | 'components' | 'theme' | 'contracts' | 'flows';
 export type DeviceSize = 'desktop' | 'tablet' | 'mobile';
@@ -9,16 +9,18 @@ export type StudioDrawer = 'side' | 'inspector' | null;
 export const NARROW_STUDIO = '(max-width: 1100px)';
 
 export function useMediaQuery(query: string): boolean {
-  return useSyncExternalStore(
-    (onChange) => {
+  // Stable per query, so the listener is not re-added on every render.
+  const subscribe = useCallback(
+    (onChange: () => void) => {
       if (typeof window.matchMedia !== 'function') return () => undefined;
       const m = window.matchMedia(query);
       m.addEventListener('change', onChange);
       return () => m.removeEventListener('change', onChange);
     },
-    () => typeof window.matchMedia === 'function' && window.matchMedia(query).matches,
-    () => false,
+    [query],
   );
+  const matches = useCallback(() => typeof window.matchMedia === 'function' && window.matchMedia(query).matches, [query]);
+  return useSyncExternalStore(subscribe, matches, () => false);
 }
 
 const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
@@ -123,6 +125,11 @@ export function StudioShell({
   };
   const setDrawerRef = useRef(setDrawer);
   setDrawerRef.current = setDrawer;
+  // A drawer asked for on a wide screen (or left open when the window grew) must not pop up later.
+  const requested = drawerProp !== undefined ? drawerProp : ownDrawer;
+  useEffect(() => {
+    if (!narrow && requested) setDrawerRef.current(null);
+  }, [narrow, requested]);
   useEffect(() => {
     if (!drawer) return;
     const onKey = (e: globalThis.KeyboardEvent) => {

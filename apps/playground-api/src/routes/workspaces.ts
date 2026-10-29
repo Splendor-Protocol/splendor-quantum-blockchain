@@ -1,4 +1,4 @@
-import { idParams, newId, obj, str, summary, type RouteContext } from './context.js';
+import { MAX_PROJECTS_PER_USER, idParams, newId, obj, str, summary, type RouteContext } from './context.js';
 import { listQuery, toListOptions, type ListQuery } from './projects.js';
 
 const workspaceNameBody = obj({ name: str(200) });
@@ -50,10 +50,17 @@ export function registerWorkspaceRoutes(ctx: RouteContext) {
   );
 
   // ---- trash ----
-  app.get('/trash', { preHandler: requireUser }, async (req) => {
-    const trash = await store.listTrash(req.session!.address);
-    return { projects: trash.projects.map(summary), workspaces: trash.workspaces };
-  });
+  app.get<{ Querystring: { limit?: string; cursor?: string } }>(
+    '/trash',
+    { preHandler: requireUser, schema: { querystring: obj({ limit: str(3, '^[1-9][0-9]{0,2}$'), cursor: str(1000, '^[A-Za-z0-9_-]+$') }) } },
+    async (req) => {
+      const trash = await store.listTrash(req.session!.address, {
+        ...(req.query.limit ? { limit: Number(req.query.limit) } : {}),
+        ...(req.query.cursor ? { cursor: req.query.cursor } : {}),
+      });
+      return { projects: trash.projects.map(summary), workspaces: trash.workspaces, nextCursor: trash.nextCursor };
+    },
+  );
 
   const trashedWorkspace = async (owner: string, id: string) => {
     const w = await store.getWorkspace(id, owner, true);
@@ -65,7 +72,11 @@ export function registerWorkspaceRoutes(ctx: RouteContext) {
     { preHandler: requireUser, schema: { params: idParams, body: obj() } },
     async (req, reply) => {
       if (!(await trashedWorkspace(req.session!.address, req.params.id))) return reply.code(404).send({ error: 'Not found' });
-      await store.restoreWorkspace(req.params.id);
+      const result = await store.restoreWorkspace(req.params.id, { maxProjects: MAX_PROJECTS_PER_USER });
+      if (result === 'not-found') return reply.code(404).send({ error: 'Not found' });
+      if (result === 'limit') {
+        return reply.code(429).send({ error: `Restoring this workspace would exceed the project limit (${MAX_PROJECTS_PER_USER}). Delete some projects first.` });
+      }
       await audit(req, req.session!.address, 'workspace.restore', req.params.id);
       return { ok: true };
     },
