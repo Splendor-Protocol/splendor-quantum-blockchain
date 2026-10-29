@@ -14,7 +14,7 @@ import (
 // It is pinned as a literal rather than recomputed, because a test that derives
 // the expected bytes from the same struct it is checking would agree with any
 // change, including the one this exists to catch.
-const headerJSONBeforeQCRoot = `{"height":7,"timestamp":1700000000,"chain_id":"splendor-quantum-1","alg_id":"ML-DSA-65","prev_hash":[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"tx_merkle_root":[2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"state_root":[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"validator_addr":[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"tx_count":9,"genesis_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]`
+const headerJSONBeforeQCRoot = `{"height":7,"timestamp":1700000000,"chain_id":"splendor-quantum-1","alg_id":"ML-DSA-65","prev_hash":[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"tx_merkle_root":[2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"state_root":[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"validator_addr":[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"tx_count":9,"genesis_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}`
 
 func fixedHeader() BlockHeader {
 	var prev, txroot, state [32]byte
