@@ -103,6 +103,7 @@ type Executor struct {
 	// genesisHash pins the hash of block 0 when the operator supplied one.
 	// nil = unpinned, which is the pre-existing behaviour.
 	genesisHash *[32]byte
+        genesisHashStored [32]byte
 
 	// genesisValidatorKey supplies block 0's sealing key when the chain DB
 	// does not hold block 0; see WithGenesisValidatorKey.
