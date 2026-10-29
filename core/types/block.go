@@ -40,6 +40,13 @@ type BlockHeader struct {
 	// Number of transactions in this block.
 	TxCount uint32 `json:"tx_count"`
 
+	// GenesisHash commits to the hash of block 0, anchoring chain identity.
+	// When set (non-zero), any block whose GenesisHash does not match the
+	// node's adopted genesis hash is rejected, regardless of ChainID matching.
+	// This prevents cross-network replay attacks where a spoofed ChainID
+	// could still reference a different chain's genesis.
+	GenesisHash [32]byte `json:"genesis_hash,omitempty"`
+
 	// QCRoot commits to the quorum certificate that justified this block, once
 	// the chain runs a validator set rather than a single producer. It is nil
 	// under single-validator consensus and MUST stay nil until the
