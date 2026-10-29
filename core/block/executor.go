@@ -102,8 +102,8 @@ type Executor struct {
 
 	// genesisHash pins the hash of block 0 when the operator supplied one.
 	// nil = unpinned, which is the pre-existing behaviour.
-	genesisHash *[32]byte
-        genesisHashStored [32]byte
+	genesisHash       *[32]byte
+	genesisHashStored [32]byte
 
 	// genesisValidatorKey supplies block 0's sealing key when the chain DB
 	// does not hold block 0; see WithGenesisValidatorKey.
@@ -449,6 +449,23 @@ func (e *Executor) WithGenesisHash(h [32]byte) *Executor {
 	return e
 }
 
+// verifyChainIdentity checks that a block's GenesisHash matches the node's
+// adopted genesis hash. This prevents cross-network replay attacks where a
+// spoofed ChainID could still reference a different chain's genesis block.
+// If genesisHashStored is zero (not pinned), the check is skipped to avoid
+// breaking existing nodes that haven't pinned a genesis.
+func (e *Executor) verifyChainIdentity(b *types.Block) error {
+	if e.genesisHashStored == [32]byte{} {
+		// Not pinned; skip identity check for backwards compatibility
+		return nil
+	}
+	if b.Header.GenesisHash != e.genesisHashStored {
+		return fmt.Errorf("block genesis hash %x does not match node's adopted genesis %x",
+			b.Header.GenesisHash[:], e.genesisHashStored[:])
+	}
+	return nil
+}
+
 // WithGenesisValidatorKey names the key that sealed block 0, for the one place
 // the registry is not yet the authority on who produces: below two active
 // validators a block from an address the registry does not list is accepted,
@@ -636,6 +653,13 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 	defer e.mu.Unlock()
 	if e.applyHalt.Load() {
 		return ErrApplyHalted
+	}
+
+	// Verify chain identity: ensure the block's GenesisHash matches the node's
+	// adopted genesis hash. This prevents cross-network replay attacks where a
+	// spoofed ChainID could still reference a different chain's genesis block.
+	if err := e.verifyChainIdentity(b); err != nil {
+		return err
 	}
 
 	log.Info().
@@ -1662,6 +1686,7 @@ func (e *Executor) assembleBlock(
 		StateRoot:     stateRoot,
 		ValidatorAddr: validatorAddr,
 		TxCount:       uint32(len(executed)),
+		GenesisHash:   e.genesisHashStored,
 	}
 
 	b = &types.Block{Header: header, Transactions: executed}
