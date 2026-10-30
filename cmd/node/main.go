@@ -1131,7 +1131,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 				// pull below and readyToPropose (IsSynced reads BestPeerHeight,
 				// which only this loop refreshes) sit behind it. A pass now
 				// costs one timeout however many peers are down.
-				refreshPeerHeights(peerPool)
+				refreshPeerHeights(peerPool, executor.GenesisHash)
 				if n, err := syncer.SyncOnceContext(ctx); err != nil {
 					log.Warn().Err(err).Msg("sync failed")
 				} else if n > 0 {
@@ -2208,13 +2208,16 @@ func setupLogging(level string) {
 
 // refreshPeerHeights polls every known peer's /status concurrently and records
 // the heights that answer. Peers that do not answer are left as they were;
-// DialPeer's own 5s timeout bounds the pass.
+// DialPeer's own 5s timeout bounds the pass. A peer that answers with another
+// genesis than localGenesis is on another chain and is dropped from the pool
+// (network.ProbePeer); peer exchange may list it again, and the next pass
+// drops it again.
 //
 // maxPeerProbeFanout caps how many probes are in flight at once so a large
 // peer set cannot open a socket per peer every second.
 const maxPeerProbeFanout = 16
 
-func refreshPeerHeights(peerPool *network.PeerPool) {
+func refreshPeerHeights(peerPool *network.PeerPool, localGenesis func() ([32]byte, bool)) {
 	addrs := peerPool.Addrs()
 	if len(addrs) == 0 {
 		return
@@ -2227,8 +2230,13 @@ func refreshPeerHeights(peerPool *network.PeerPool) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if h, err := network.DialPeer(addr); err == nil {
+			h, err := network.ProbePeer(addr, localGenesis)
+			switch {
+			case err == nil:
 				peerPool.UpdatePeerHeight(addr, h)
+			case errors.Is(err, network.ErrPeerOnAnotherChain):
+				peerPool.Remove(addr)
+				log.Warn().Err(err).Str("peer", addr).Msg("dropped peer: it is not on this node's chain")
 			}
 		}(addr)
 	}

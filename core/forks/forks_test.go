@@ -249,3 +249,40 @@ func TestValidatorsAdmissionRequiresValidatorsV1NoLaterThanItself(t *testing.T) 
 		})
 	}
 }
+
+// genesis_hash_v1 is what binds block headers to their chain's block 0. It has
+// to be schedulable (a genesis document or a fork extension names it), it must
+// read "never" while unscheduled — which is how every live chain keeps hashing
+// the legacy header — and it depends on nothing else in the schedule.
+func TestGenesisHashV1UnscheduledMeansNever(t *testing.T) {
+	if !isKnown(GenesisHashV1) {
+		t.Fatal("genesis_hash_v1 must be a known name so a genesis can schedule it")
+	}
+	if (Schedule{}).Active(GenesisHashV1, 1) || (Schedule{GenesisHashV1: 0}).Active(GenesisHashV1, 1) {
+		t.Fatal("unscheduled genesis_hash_v1 must keep every header in its legacy form")
+	}
+	if !(Schedule{GenesisHashV1: 1}).Active(GenesisHashV1, 1) || (Schedule{GenesisHashV1: 1}).Active(GenesisHashV1, 0) {
+		t.Fatal("genesis_hash_v1 at 1 must bind block 1 onward and never block 0, which cannot name itself")
+	}
+	if err := (Schedule{GenesisHashV1: 100}).Validate(); err != nil {
+		t.Fatalf("scheduling genesis_hash_v1 alone must be accepted: %v", err)
+	}
+}
+
+func TestLiveGenesisDoesNotScheduleGenesisHashV1(t *testing.T) {
+	for _, path := range []string{"../../genesis-production.json", "../../genesis-local.json"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		var doc struct {
+			Forks map[string]uint64 `json:"forks"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if at := doc.Forks[GenesisHashV1]; at != 0 {
+			t.Fatalf("%s schedules %s at %d; live genesis must leave it unscheduled", path, GenesisHashV1, at)
+		}
+	}
+}

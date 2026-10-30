@@ -45,7 +45,16 @@ type BlockHeader struct {
 	// node's adopted genesis hash is rejected, regardless of ChainID matching.
 	// This prevents cross-network replay attacks where a spoofed ChainID
 	// could still reference a different chain's genesis.
-	GenesisHash [32]byte `json:"genesis_hash,omitempty"`
+	//
+	// It is omitzero, not omitempty: encoding/json never treats an array as
+	// empty, so with omitempty an unset field serialised as 32 zeros and
+	// changed the hash of every block ever produced (see QCRoot below). Unset,
+	// the header is byte-for-byte the legacy header, so every existing block
+	// keeps its hash. The executor refuses a set GenesisHash before the
+	// genesis_hash_v1 fork and requires one from it on (Executor.
+	// verifyChainIdentity); a node on an older binary cannot hash the field,
+	// which is why it must stay unset until the whole network can.
+	GenesisHash [32]byte `json:"genesis_hash,omitzero"`
 
 	// QCRoot commits to the quorum certificate that justified this block, once
 	// the chain runs a validator set rather than a single producer. It is nil

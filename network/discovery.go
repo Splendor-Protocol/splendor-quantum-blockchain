@@ -13,7 +13,9 @@ package network
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -403,6 +405,30 @@ var dialClient = &http.Client{
 // DialPeer checks if a peer is reachable by calling GET {addr}/status.
 // Returns the peer's reported height, or an error if unreachable.
 func DialPeer(addr string) (uint64, error) {
+	return ProbePeer(addr, nil)
+}
+
+// ErrPeerOnAnotherChain means a peer's /status names a genesis other than this
+// node's: it is on another network, or on a chain that has since been reset.
+var ErrPeerOnAnotherChain = errors.New("peer is on another chain")
+
+// ProbePeer is DialPeer that also refuses a peer that is not on this node's
+// chain. The probe is the handshake: the block-sync loop probes every pooled
+// peer each second, so a wrong-network peer is dropped within a second of
+// arriving, however it arrived (bootstrap, peer exchange, announce). Its
+// blocks fail validation regardless; this keeps the syncer off it.
+//
+// It compares genesis hashes, not chain ids: block 0's header carries the
+// chain id, so a different id means a different genesis, while a reset chain
+// keeps its id and mints a new genesis. /status has carried genesis_hash since
+// v1.2, so this asks peers for nothing they do not already send. Only a node
+// that stores block 0 reports it, though: the producer that minted the chain.
+// A joiner or follower applies from block 1 and never stores block 0, so the
+// probe catches a producer of another chain, not a joiner of one. The check
+// is skipped, not failed, when either side cannot name its genesis (this node
+// has not adopted one yet; the peer holds no block 0): block validation still
+// refuses another chain's blocks, this only saves syncing from it.
+func ProbePeer(addr string, localGenesis func() ([32]byte, bool)) (uint64, error) {
 	resp, err := dialClient.Get(addr + "/status")
 	if err != nil {
 		return 0, fmt.Errorf("peer %s unreachable: %w", addr, err)
@@ -410,10 +436,26 @@ func DialPeer(addr string) (uint64, error) {
 	defer resp.Body.Close()
 
 	var status struct {
-		Height uint64 `json:"height"`
+		Height      uint64 `json:"height"`
+		GenesisHash string `json:"genesis_hash"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		return 0, fmt.Errorf("peer %s returned invalid status: %w", addr, err)
+	}
+	if localGenesis == nil || status.GenesisHash == "" {
+		return status.Height, nil
+	}
+	ours, known := localGenesis()
+	if !known {
+		return status.Height, nil
+	}
+	theirs, err := hex.DecodeString(status.GenesisHash)
+	if err != nil || len(theirs) != len(ours) {
+		return 0, fmt.Errorf("peer %s reported an unreadable genesis_hash %q", addr, status.GenesisHash)
+	}
+	if !bytes.Equal(theirs, ours[:]) {
+		return 0, fmt.Errorf("%w: %s reports genesis %x, this node is on %x",
+			ErrPeerOnAnotherChain, addr, theirs[:8], ours[:8])
 	}
 	return status.Height, nil
 }
