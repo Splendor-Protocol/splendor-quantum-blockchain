@@ -14,7 +14,13 @@ import (
 // It is pinned as a literal rather than recomputed, because a test that derives
 // the expected bytes from the same struct it is checking would agree with any
 // change, including the one this exists to catch.
-const headerJSONBeforeQCRoot = `{"height":7,"timestamp":1700000000,"chain_id":"splendor-quantum-1","alg_id":"ML-DSA-65","prev_hash":[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"tx_merkle_root":[2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"state_root":[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"validator_addr":[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"tx_count":9,"genesis_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}`
+//
+// Never edit this literal to make a failing test pass. These are the bytes
+// every block on devnet, testnet and mainnet was hashed over; a header change
+// that alters them changes every block hash on every live chain. That is how
+// genesis_hash first shipped (#91): the field serialised as 32 zeros, this
+// constant was updated to match, and every existing block stopped validating.
+const headerJSONBeforeQCRoot = `{"height":7,"timestamp":1700000000,"chain_id":"splendor-quantum-1","alg_id":"ML-DSA-65","prev_hash":[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"tx_merkle_root":[2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"state_root":[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"validator_addr":[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"tx_count":9}`
 
 func fixedHeader() BlockHeader {
 	var prev, txroot, state [32]byte
