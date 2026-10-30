@@ -99,6 +99,66 @@ describe('createPlaygroundMock', () => {
     expect(await c.readUint256('get()')).toBe(7n);
   });
 
+  it('a pasted QRC-721 collection has owned, foreign and unminted ids; only owned ids move', async () => {
+    const { wallet, conn } = setup();
+    const n = new QRC721(conn, 'SQ:' + '71'.repeat(32));
+    expect(await n.ownerOf('1')).toBe(MOCK_ADDRESS);
+    expect(await n.ownerOf('4')).toBe(DEMO_RECIPIENT);
+    await expect(n.ownerOf('7')).rejects.toThrow(/does not exist/);
+    expect((await n.collectionInfo()).owner).toBe(MOCK_ADDRESS);
+    await expect(n.transfer(wallet, MOCK_ADDRESS, '4')).rejects.toThrow(/do not own/);
+    await n.transfer(wallet, DEMO_RECIPIENT, '2');
+    expect(await n.ownerOf('2')).toBe(DEMO_RECIPIENT);
+  });
+
+  it('a bridge reports status and records operator claims once', async () => {
+    const { wallet, conn, spld } = setup('10');
+    const { BridgeModule } = await import('@splendor/sqc-sdk/bridge');
+    const b = new BridgeModule(conn, 'SQ:' + 'b1'.repeat(32));
+    expect(await b.info()).toMatchObject({ paused: false, threshold: 2 });
+    expect(await b.claimed(1)).toMatchObject({ claimed: true, height: 1050 });
+    expect(await b.claimed(2)).toMatchObject({ claimed: false });
+    const att = [{ pubkey: 'a', signature: 'b' }, { pubkey: 'c', signature: 'd' }];
+    const claim = { id: 2, asset: 'spld' as const, amount: String(5n * 10n ** 18n), recipient: MOCK_ADDRESS, evmTx: '0xabc', attestations: att };
+    await b.claim(wallet, claim);
+    expect(await b.claimed(2)).toMatchObject({ claimed: true });
+    expect(await spld()).toBe('14.999979');
+    await expect(b.claim(wallet, claim)).rejects.toThrow(/already claimed/);
+    await expect(b.claim(wallet, { ...claim, id: 3, attestations: att.slice(0, 1) })).rejects.toThrow(/attestations/);
+  });
+
+  it('lists three demo validators with the 2500 SPLD bond', async () => {
+    const { conn } = setup();
+    const list = await conn.moduleCall<Array<{ status: number; bond: number }>>({ module: 'validators', action: 'list', params: {} });
+    expect(list).toHaveLength(3);
+    expect(list.every((v) => v.status === 1 && BigInt(v.bond) === 2500n * 10n ** 18n)).toBe(true);
+    expect(await conn.moduleCall({ module: 'validators', action: 'bond', params: {} })).toMatchObject({ spld: '2500' });
+  });
+
+  it('emits Transfer logs for token moves and serves them through getLogs with the head height', async () => {
+    const { TOPIC_TRANSFER, mergeActivity } = await import('@splendor/connect-react');
+    const { wallet, conn } = setup();
+    const c = conn as unknown as { getStatus(): Promise<{ height: number }>; getLogs(f: object): Promise<{ logs: unknown[] }> };
+    const before = (await c.getStatus()).height;
+    expect(before).toBe(1200);
+    const seeded = await c.getLogs({ topics: [TOPIC_TRANSFER, '', MOCK_ADDRESS.slice(3)], from_block: 0, to_block: before });
+    expect(mergeActivity(seeded.logs, MOCK_ADDRESS).map((i) => i.direction)).toEqual(['in', 'in']);
+    await new QRC20(conn, DEMO_TOKEN_ADDRESS).transfer(wallet, DEMO_RECIPIENT, '1000');
+    const head = (await c.getStatus()).height;
+    expect(head).toBe(before + 1);
+    const sent = await c.getLogs({ topics: [TOPIC_TRANSFER, MOCK_ADDRESS.slice(3)], from_block: head, to_block: head });
+    expect(mergeActivity(sent.logs, MOCK_ADDRESS)).toMatchObject([{ direction: 'out', amount: '1000', blockHeight: head }]);
+  });
+
+  it('settles x402 payments as SPLD sends', async () => {
+    const { ctrl, spld } = setup('10');
+    const w = ctrl.wallet as unknown as { payX402(o: object): Promise<{ settle: { status: string } }> };
+    const res = await w.payX402({ to: DEMO_RECIPIENT, amount: String(10n ** 18n), settle: true });
+    expect(res.settle.status).toBe('confirmed');
+    expect(await spld()).toBe('8.999979');
+    await expect(w.payX402({ to: DEMO_RECIPIENT, amount: '2', maxAmount: '1' })).rejects.toThrow(/exceeds maxAmount/);
+  });
+
   it('sends stay pending until the mock confirms them', async () => {
     vi.useFakeTimers();
     const { wallet, conn } = setup();

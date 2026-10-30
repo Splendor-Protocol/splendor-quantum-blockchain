@@ -319,6 +319,49 @@ describe('extension discovery performance', () => {
     expect(Date.now() - t0).toBeLessThan(200);
   });
 
+  function windowWithAnnouncer(announced: unknown, splendor?: unknown) {
+    const listeners = new Map<string, Set<(ev: Event) => void>>();
+    return {
+      ...(splendor ? { splendor } : {}),
+      addEventListener: (type: string, fn: (ev: Event) => void) => {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(fn);
+      },
+      removeEventListener: (type: string, fn: (ev: Event) => void) => listeners.get(type)?.delete(fn),
+      dispatchEvent: (ev: Event) => {
+        if (ev.type === 'eip6963:requestProvider' && announced) {
+          const announce = new CustomEvent('eip6963:announceProvider', {
+            detail: { info: { rdns: 'network.splendor.wallet', name: 'Splendor', uuid: 'x', icon: '' }, provider: announced },
+          });
+          for (const fn of listeners.get('eip6963:announceProvider') ?? []) fn(announce);
+        }
+        return true;
+      },
+    };
+  }
+
+  it('prefers the EIP-6963 Splendor announcement over a window.splendor global', async () => {
+    const real = { isSplendor: true, isExtension: true, request: async () => ['real'] };
+    const spoof = { isSplendor: true, isExtension: true, request: async () => ['spoof'] };
+    (globalThis as { window: unknown }).window = windowWithAnnouncer(real, spoof);
+    expect(await discoverExtensionProvider(1_000)).toBe(real);
+  });
+
+  it('keeps the first provider found even if window.splendor is replaced later', async () => {
+    const real = { isSplendor: true, isExtension: true, request: async () => [] };
+    const w = windowWithAnnouncer(null, real) as { splendor?: unknown };
+    (globalThis as { window: unknown }).window = w;
+    expect(await discoverExtensionProvider(1_000)).toBe(real);
+    w.splendor = { isSplendor: true, isExtension: true, request: async () => ['swapped'] };
+    expect(await discoverExtensionProvider(1_000)).toBe(real);
+  });
+
+  it('ignores EIP-6963 announcements from other wallets and in-page injects', async () => {
+    const inPage = { isSplendor: true, isInPage: true, request: async () => [] };
+    (globalThis as { window: unknown }).window = windowWithAnnouncer(inPage);
+    await expect(discoverExtensionProvider(150)).rejects.toMatchObject({ code: 'NO_PROVIDER' });
+  });
+
   it('timeout miss caches negative result so second call is instant', async () => {
     vi.useFakeTimers();
     (globalThis as { window: unknown }).window = {

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { MIN_FEE, fromUnits } from '@splendor/sqc-sdk';
-import { useAccount, useBalance, useEstimateFee, useNetwork, useSendTransfer } from '../react/hooks.js';
+import { useAccount, useAddressBook, useBalance, useEstimateFee, useNetwork, useSendTransfer } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import { TRANSFER_LABELS, formatLabel, useWidgetLabels, type TransferWidgetLabels } from './labels.js';
 import type { BaseWidgetProps } from './types.js';
@@ -57,6 +57,7 @@ export function TransferWidget({
   const { balanceSPLD } = useBalance();
   const { network, walletMismatch } = useNetwork();
   const { sendTransfer, status, hash, explorerUrl, confirmed, error, reset } = useSendTransfer();
+  const { contacts } = useAddressBook();
   const spendable = useMemo(() => spendableAfterFee(balanceSPLD, MIN_FEE), [balanceSPLD]);
   const form = useTransferForm({
     balance: spendable,
@@ -157,6 +158,7 @@ export function TransferWidget({
             onChange={form.setTo}
             error={form.errors.to}
             recents={form.recents}
+            contacts={contacts}
             labels={l}
           />
           <AmountInput

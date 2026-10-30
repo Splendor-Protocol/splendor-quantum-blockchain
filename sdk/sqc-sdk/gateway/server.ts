@@ -28,6 +28,7 @@ import { HYBRID_TLS_GROUP, decideTlsGroups } from './tls-policy.ts';
 export { CLASSICAL_TLS_GROUPS, HYBRID_TLS_GROUP, decideTlsGroups } from './tls-policy.ts';
 export type { TlsGroupDecision } from './tls-policy.ts';
 import {
+  BridgeError,
   SplendorPQBridge,
   fromSPLD,
   isBridgeError,
@@ -328,7 +329,12 @@ function assertSignedTxChainId(
   expectedChainId: string,
 ): void {
   if (signedTx == null) return;
-  const body = typeof signedTx === 'string' ? (JSON.parse(signedTx) as object) : signedTx;
+  let body: object;
+  try {
+    body = typeof signedTx === 'string' ? (JSON.parse(signedTx) as object) : signedTx;
+  } catch {
+    throw new BridgeError('INVALID_PARAMS', 'signedTx is not valid JSON', undefined, 'signedTx is not valid JSON');
+  }
   const remote =
     body && typeof body === 'object' && 'chain_id' in body
       ? String((body as { chain_id?: unknown }).chain_id ?? '').trim()
@@ -370,6 +376,7 @@ const PUBLIC_CODE_MESSAGE: Record<string, string> = {
   INVALID_ADDRESS: 'Invalid address',
   INVALID_AMOUNT: 'Invalid amount',
   INVALID_FEE: 'Invalid fee',
+  INVALID_PARAMS: 'Invalid request parameters',
   TIMEOUT: 'Request timed out',
   TX_NOT_CONFIRMED: 'Transaction not confirmed',
   TX_FAILED: 'Transaction failed',
@@ -762,7 +769,9 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     }
   });
 
-  app.get('/health', async () => {
+  app.get('/health', async (req) => {
+    // The service wallet's address is only for callers that hold the API key (or when none is set).
+    const mayKnowAddress = !API_KEY || requireApiKey(req.headers as Record<string, string | string[] | undefined>) === null;
     const body: Record<string, unknown> = {
       ok: true,
       mode: MODE,
@@ -775,7 +784,7 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
       },
       custodialProxy: MODE === 'proxy' && ALLOW_CUSTODIAL_PROXY,
       service_address:
-        MODE === 'service-wallet' && bridge.getConnectionState() === 'connected'
+        MODE === 'service-wallet' && mayKnowAddress && bridge.getConnectionState() === 'connected'
           ? bridge.getAddress()
           : null,
     };

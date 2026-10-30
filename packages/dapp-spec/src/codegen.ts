@@ -1265,6 +1265,15 @@ if (existsSync(b64) && !existsSync(out)) {
 `;
 }
 
+/**
+ * Vendored package files land in the generated project as-is, and callers write them to disk or a
+ * zip: keep them inside `vendor/@splendor/`, with no traversal, drive letters or backslashes.
+ */
+function isSafeVendorPath(path: string): boolean {
+  if (!path.startsWith('vendor/@splendor/') || path.length > 300 || /[\\:\0]/.test(path)) return false;
+  return path.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
+}
+
 /** Generate a ready-to-run project. Validate the spec first; this throws on unknown widgets. */
 export function generateProject(spec: DappSpec, opts: GenerateOptions): GeneratedProject {
   const sdk = opts.sdk ?? 'npm';
@@ -1281,7 +1290,12 @@ export function generateProject(spec: DappSpec, opts: GenerateOptions): Generate
   files[`${appDir}/actions.ts`] = actionsSource(spec, { framework: opts.framework, catalog: opts.catalog });
   if (sdk === 'vendor') {
     files['scripts/decode-wasm.mjs'] = decodeWasmScript();
-    if (opts.vendorFiles) Object.assign(files, opts.vendorFiles);
+    if (opts.vendorFiles) {
+      for (const [path, content] of Object.entries(opts.vendorFiles)) {
+        if (!isSafeVendorPath(path)) throw new Error(`vendorFiles: refusing unsafe path "${path}" (must be a relative path under vendor/@splendor/)`);
+        files[path] = content;
+      }
+    }
     if (opts.vendorWasmBase64) {
       files['vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm.b64'] = opts.vendorWasmBase64;
     }

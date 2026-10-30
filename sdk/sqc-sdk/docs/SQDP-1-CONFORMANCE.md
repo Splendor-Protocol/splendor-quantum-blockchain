@@ -22,11 +22,15 @@ Automated coverage (run from `sdk/sqc-sdk`): `npm test` (Vitest including `secur
 - [x] ConnectKit / dApp unlock is Splendor extension **or** native seed only — `extension-signer.test.ts` / connect-react `controller.test.ts` / `connectors.test.ts`
 - [x] Historical EVM→PQ domain message vectors remain for offline tooling only — `security-derive.test.ts` / Go `TestDomainMessageConstant` / `testdata/golden-vectors.json` (not a ConnectKit path)
 - [ ] Does not offer MetaMask / ECDSA derive as a primary connect option *(product / UI)*
+- [x] Extension discovery prefers an EIP-6963 announcement with rdns `network.splendor.wallet` over the `window.splendor` global, and keeps the first provider found for the page's lifetime — `audit-scenarios.test.ts` (extension discovery)
+  - Threat model: any script running on the dApp's origin can still fake either source (dispatch its own announcement, or define `window.splendor` before the wallet). Discovery rules only stop a later script from swapping itself in; they are not an authentication of the wallet. Keep third-party scripts off pages that connect a wallet, and serve a strict CSP.
 
 ## SDK / signing
 
 - [x] Signs with `@splendor/sqc-sdk` WASM **or** extension-held keys producing identical wire txs — `wasm-session.test.ts` / `extension-signer.test.ts` / Go round-trip + `TestTamperedTransferFailsVerify`
 - [ ] Does not hand-author signed JSON from README examples *(integration practice)*
+- [x] `signMessage(..., { raw: true })` is refused unless the wallet is created with `allowRawSign: true` (always refused by inject and extension) — `security-wasm.test.ts` / `wallet-api.test.ts` / `injected-provider.test.ts`
+- [x] Sign-in verification with an expected chain rejects messages that carry no `Chain ID` — `auth-server.test.ts` (chain binding)
 - [x] Calls `assertChainId` (or equivalent) before submit — `security-rpc.test.ts` (fail-closed on missing/mismatch)
 - [x] Confirms inclusion via a **required receipt** (nonce check only with `allowNonceConfirmation`) (`waitForConfirmation`) — `security-errors.test.ts` (`TX_NOT_CONFIRMED`) / `security-rpc.test.ts`
 
@@ -42,7 +46,7 @@ Automated coverage (run from `sdk/sqc-sdk`): `npm test` (Vitest including `secur
 - [ ] Imports `@splendor/sqc-sdk/browser` in browser builds *(bundler)*
 - [x] Calls `lock()` or `disconnect()` on logout (zeroizes ML-DSA-65 key for WASM sessions) — `security-wasm.test.ts`
 - [x] Sets `wasmSha256` when known; fails closed on mismatch — `security-wasm.test.ts` / `security-networks.test.ts` (browser pin required)
-- [x] Pins `execSha256` for `wasm_exec.js` when configured — loaders + networks JSON / `sync:config`
+- [x] Pins `execSha256` for `wasm_exec.js` when configured — loaders + networks JSON / `sync:config`; a `wasm_exec.js` preloaded by another script is refused when `wasmSha256` is pinned without `execSha256` — `security-wasm.test.ts`
 - [x] Parallel `sendTransfer` cannot share a nonce — `security-mutex.test.ts`
 - [x] Submits reject missing `signedTx.chain_id` — `security-rpc.test.ts` / `gateway/security.test.ts`
 
@@ -55,7 +59,8 @@ Automated coverage (run from `sdk/sqc-sdk`): `npm test` (Vitest including `secur
 - [ ] `ALLOW_CUSTODIAL_PROXY=1` never enabled on public internet *(ops)*
 - [x] `service-wallet` only for operator / automation keys + `GATEWAY_API_KEY` — `gateway/security.test.ts` (401 on missing/wrong key; timing-safe compare)
 - [x] Rate limit + CORS allowlist configured — global + per-route tx limits (`gateway/security.test.ts` 429); `TRUST_PROXY` default false
-- [x] `/ready` probes upstream `assertChainId`; `/health` is liveness — `gateway/security.test.ts`
+- [x] `/ready` probes upstream `assertChainId`; `/health` is liveness and shows `service_address` only to callers with the API key — `gateway/security.test.ts`
+- [x] Malformed `signedTx` JSON answers `400 INVALID_PARAMS` — `gateway/security.test.ts`
 
 ## Production RPC
 

@@ -59,6 +59,7 @@ export type DappTemplate = {
  */
 export const DEMO_TOKEN_ADDRESS = `SQ:${'de'.repeat(32)}`;
 export const DEMO_CONTRACT_ADDRESS = `SQ:${'c0'.repeat(32)}`;
+export const DEMO_NFT_ADDRESS = `SQ:${'a7'.repeat(32)}`;
 
 /** Id-safe segment for a page path (`/` → `home`, `/my-page` → `my-page`). Ids allow only [A-Za-z0-9_-]. */
 function pathSeg(path: string): string {
@@ -370,6 +371,46 @@ export const TEMPLATES: readonly DappTemplate[] = [
         { id: 'pending', widget: 'pending-tx', props: { pollMs: 5000 } },
       ]),
     ]),
+  },
+  {
+    id: 'nft-membership',
+    title: 'NFT membership',
+    description: 'Public QRC-721 gallery, plus a wallet-only members page to send your passes, receive with QR and see your activity.',
+    setup: [],
+    outline: ['Gallery (public)', 'Members (wallet)'],
+    spec: {
+      ...base('NFT Membership', 'Hold a pass from the collection to join the members area.', [
+        treePage(
+          '/',
+          'Gallery',
+          section('home-root', [
+            leaf('hero', 'hero-gradient', {
+              heading: 'Members pass',
+              text: 'Each QRC-721 pass in this collection opens the members area. Signed with post-quantum keys.',
+              ctaLabel: 'Open members area',
+              ctaPath: '/members',
+            }),
+            leaf('gallery', 'nft721-gallery', { title: 'The collection', collection: DEMO_NFT_ADDRESS, tokenIds: '1-12', showOwner: true }),
+          ]),
+        ),
+        treePage(
+          '/members',
+          'Members',
+          section('members-root', [
+            leaf('members-hero', 'hero', { heading: 'Members area', text: 'Your passes, your address and your recent activity.' }),
+            row('members-top', [
+              column('members-left', [
+                leaf('passes', 'nft-panel', { title: 'Your passes', collectionAddress: DEMO_NFT_ADDRESS, tokenIds: '1-12', showTransfer: true, showMint: true, toast: true }),
+              ]),
+              column('members-right', [leaf('receive', 'receive', { showAmount: true, qrSize: 176 }), leaf('contacts', 'address-book', { allowEdit: true })]),
+            ]),
+            leaf('activity', 'activity-feed', { blocks: 2000, limit: 25, showPending: true }),
+          ]),
+          'wallet',
+        ),
+      ]),
+      nav: { brand: 'NFT Membership', showConnect: true, links: ['/', '/members'], footer: '' },
+    },
   },
   {
     // Kept for old links (`/build?template=landing`): the Token project kit with the demo token.

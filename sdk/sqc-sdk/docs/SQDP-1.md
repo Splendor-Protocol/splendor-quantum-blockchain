@@ -125,7 +125,7 @@ dApps MAY install an in-page provider with `installSplendorProvider({ wallet })`
 | `splendor_signMessage` / `splendor_signTransaction` / `splendor_sendTransaction` | Signing |
 | `splendor_chainId` / `splendor_switchNetwork` | Network |
 
-Unstructured `signMessage` payloads MUST be domain-separated with `PROTOCOL.signMessageDomain` (`SPLENDOR-QC-MSG-v1`) unless the message already starts with a known protocol prefix (e.g. Splendor Connect v2) or `raw: true` is set.
+Unstructured `signMessage` payloads MUST be domain-separated with `PROTOCOL.signMessageDomain` (`SPLENDOR-QC-MSG-v1`) unless the message already starts with a known protocol prefix (e.g. Splendor Connect v2) or `raw: true` is set. `raw: true` MUST be refused by injected and extension providers, and by SDK wallets unless the integrator opts in with `allowRawSign: true`.
 
 WalletConnect v2 and Ethereum EIP-1193/`eth_*` for wagmi remain **out of scope**.
 

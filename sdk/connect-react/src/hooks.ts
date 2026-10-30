@@ -29,9 +29,24 @@ export {
   useReadContract,
   useEstimateFee,
   usePendingTransactions,
+  useValidators,
+  useActivity,
+  useAddressBook,
   createAuthMessage,
 } from './react/hooks.js';
-export type { TxHookStatus, TokenInfo, ReadState, ReadContractResult, FeeEstimate, PendingTx } from './react/hooks.js';
+export type {
+  TxHookStatus,
+  TokenInfo,
+  ReadState,
+  ReadContractResult,
+  FeeEstimate,
+  PendingTx,
+  ValidatorInfo,
+  ValidatorSet,
+  ActivityItem,
+  ActivityOptions,
+  ActivityResult,
+} from './react/hooks.js';
 export {
   PENDING_TX_KEY,
   loadPendingTxs,

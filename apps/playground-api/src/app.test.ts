@@ -111,13 +111,69 @@ describe('auth', () => {
     const { message } = await signIn(PUB_USER, USER);
     const replay = await app.inject({ method: 'POST', url: '/auth/verify', ...json({ message, signatureB64: 'valid-signature', publicKeyB64: PUB_USER, address: USER }) });
     expect(replay.statusCode).toBe(401);
-    expect(replay.json().error).toMatch(/nonce-used/);
+    expect(replay.json()).toEqual({ error: 'Sign-in failed', code: 'AUTH_FAILED' });
   });
 
   it('rejects bad signatures, foreign domains and key/address mismatches', async () => {
     expect((await signIn(PUB_USER, USER, { signature: 'forged' })).res.statusCode).toBe(401);
     expect((await signIn(PUB_USER, USER, { domain: 'https://evil.example' })).res.json().error).toMatch(/another site/);
-    expect((await signIn(PUB_USER, ADMIN)).res.json().error).toMatch(/key-mismatch/);
+    const mismatch = (await signIn(PUB_USER, ADMIN)).res;
+    expect(mismatch.statusCode).toBe(401);
+    expect(mismatch.json()).toEqual({ error: 'Sign-in failed', code: 'AUTH_FAILED' });
+  });
+
+  it('gives every failed sign-in the same answer, and keeps the reason in the audit log', async () => {
+    const bodies = [
+      (await signIn(PUB_USER, USER, { signature: 'forged' })).res.json(),
+      (await signIn(PUB_USER, ADMIN)).res.json(),
+    ];
+    for (const b of bodies) expect(b).toEqual({ error: 'Sign-in failed', code: 'AUTH_FAILED' });
+    const reasons = (await store.listAudit(10)).filter((e) => e.action === 'auth.failed').map((e) => JSON.parse(e.detail!).reason);
+    expect(reasons).toEqual(expect.arrayContaining(['bad-signature', 'key-mismatch']));
+  });
+
+  it('rejects a sign-in without a Chain ID when the server pins one', async () => {
+    const pinned = await buildApp({
+      config: loadConfig({ NODE_ENV: 'test', PLAYGROUND_ORIGINS: ORIGIN, SIGNIN_CHAIN_ID: 'splendor-quantum-1' }),
+      store,
+      verifier: async (_pk, _msg, sig) => sig === 'valid-signature',
+    });
+    try {
+      const attempt = async (chainId?: string) => {
+        const { nonce } = (await pinned.inject({ method: 'POST', url: '/auth/nonce', ...json({}) })).json() as { nonce: string };
+        const message = createAuthMessage({ domain: ORIGIN, nonce, address: USER, expirationTime: Math.floor(Date.now() / 1000) + 300, ...(chainId ? { chainId } : {}) });
+        return pinned.inject({ method: 'POST', url: '/auth/verify', ...json({ message, signatureB64: 'valid-signature', publicKeyB64: PUB_USER, address: USER }) });
+      };
+      expect((await attempt()).statusCode).toBe(401);
+      expect((await attempt('splendor-testnet')).statusCode).toBe(401);
+      expect((await attempt('splendor-quantum-1')).statusCode).toBe(200);
+    } finally {
+      await pinned.close();
+    }
+  });
+
+  it('sends security headers on every response', async () => {
+    const res = await app.inject({ method: 'GET', url: '/health' });
+    expect(res.headers['content-security-policy']).toBe("default-src 'none'; frame-ancestors 'none'");
+    expect(res.headers['referrer-policy']).toBe('no-referrer');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    // Tests run without Secure cookies, so no HSTS.
+    expect(res.headers['strict-transport-security']).toBeUndefined();
+  });
+
+  it('rate-limits public share reads more tightly than the global limit', async () => {
+    let last = 0;
+    for (let i = 0; i < 61; i++) last = (await app.inject({ method: 'GET', url: '/share/unknown-share-id' })).statusCode;
+    expect(last).toBe(429);
+    // Other routes still answer: the share limit has its own bucket.
+    expect((await app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
+  });
+
+  it('refuses TRUST_PROXY=true in production unless explicitly allowed', () => {
+    const base = { NODE_ENV: 'production', PLAYGROUND_ORIGINS: 'https://play.example.com', TRUST_PROXY: 'true' };
+    expect(() => loadConfig(base)).toThrow(/TRUST_PROXY=true/);
+    expect(loadConfig({ ...base, TRUST_PROXY_ALLOW_ALL: '1' }).trustProxy).toBe(true);
+    expect(loadConfig({ ...base, TRUST_PROXY: 'loopback' }).trustProxy).toEqual(['loopback']);
   });
 
   it('logs out', async () => {
@@ -440,9 +496,11 @@ describe('project versions, rename and duplicate', () => {
     // "Keep my version": saving on top of the current version applies.
     const retry = await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec('Tab B'), baseVersion: 2 }, user.cookie) });
     expect(retry.json()).toMatchObject({ name: 'Tab B', version: 3 });
-    // Without baseVersion the save always applies (older clients).
+    expect(retry.headers.deprecation).toBeUndefined();
+    // Without baseVersion the save always applies (older clients), and is flagged as deprecated.
     const blind = await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec('Blind') }, user.cookie) });
     expect(blind.json()).toMatchObject({ name: 'Blind', version: 4 });
+    expect(blind.headers.deprecation).toBe('true');
     expect((await app.inject({ method: 'PUT', url: `/projects/${p.id}`, ...json({ spec: spec(), baseVersion: 0 }, user.cookie) })).statusCode).toBe(400);
   });
 
@@ -507,6 +565,19 @@ describe('project versions, rename and duplicate', () => {
     for (let i = 1; i < 100; i++) await store.createProject({ id: `filler-project-${String(i).padStart(3, '0')}`, owner: USER, name: 'f', spec: '{}' });
     const dup = await app.inject({ method: 'POST', url: `/projects/${p.id}/duplicate`, ...json({}, user.cookie) });
     expect(dup.statusCode).toBe(429);
+    expect(dup.json().code).toBe('PROJECT_LIMIT');
+  });
+
+  it('concurrent creates cannot take an owner past the project limit', async () => {
+    const user = await signIn(PUB_USER, USER);
+    for (let i = 0; i < 95; i++) await store.createProject({ id: `filler-project-${String(i).padStart(3, '0')}`, owner: USER, name: 'f', spec: '{}' });
+    const spec = { ...instantiateTemplate(TEMPLATES.find((t) => t.id === 'wallet-dashboard')!), name: 'Race' };
+    const results = await Promise.all(
+      Array.from({ length: 12 }, () => app.inject({ method: 'POST', url: '/projects', ...json({ spec }, user.cookie) })),
+    );
+    expect(results.filter((r) => r.statusCode === 201)).toHaveLength(5);
+    expect(results.filter((r) => r.statusCode === 429)).toHaveLength(7);
+    expect(await store.countProjects(USER)).toBe(100);
   });
 
   // SQLite file surgery; the Postgres run covers migrations through every fresh schema.

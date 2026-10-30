@@ -78,6 +78,9 @@ export async function buildApp(deps: AppDeps) {
     reply.header('x-content-type-options', 'nosniff');
     reply.header('x-frame-options', 'DENY');
     reply.header('referrer-policy', 'no-referrer');
+    // JSON only: nothing here should ever run as a document, load subresources or be framed.
+    reply.header('content-security-policy', "default-src 'none'; frame-ancestors 'none'");
+    if (config.cookieSecure) reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
     // Responses are per-user unless a route says otherwise.
     if (!reply.hasHeader('cache-control')) reply.header('cache-control', 'no-store');
     return payload;

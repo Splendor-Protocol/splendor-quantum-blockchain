@@ -17,10 +17,11 @@ export function SharedPage() {
 
   useEffect(() => {
     let live = true;
+    const ctrl = new AbortController();
     setError(null);
     setSpec(null);
     api
-      .getShared(shareId)
+      .getShared(shareId, ctrl.signal)
       .then((r) => {
         const v = validateSpec(migrateSpec(r.spec), { catalog: all });
         if (!v.ok) throw new Error('This shared project cannot be opened here: it uses widgets or settings this playground does not support.');
@@ -28,12 +29,14 @@ export function SharedPage() {
       })
       .catch((e) => {
         if (!live) return;
-        if (e instanceof ApiError && e.code === 'EXPIRED') setError('This share link has expired. Ask its owner for a new one.');
+        if (e instanceof ApiError && e.code === 'TIMEOUT') setError('The playground API did not answer in time. Try again in a moment.');
+        else if (e instanceof ApiError && e.code === 'EXPIRED') setError('This share link has expired. Ask its owner for a new one.');
         else if (e instanceof ApiError && e.status === 404) setError('This share link was removed by its owner, or it never existed.');
         else setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       live = false;
+      ctrl.abort();
     };
   }, [shareId, all]);
 
@@ -78,7 +81,15 @@ export function SharedPage() {
         Shared project: anyone can publish one. Check every address in it (recipients, tokens, collections) before you use it
         {spec.network === 'mainnet' ? ' on mainnet with real SPLD' : ' with real funds'}. The preview below uses a mock wallet.
       </p>
-      <PreviewFrame spec={spec} pagePath={pagePath} network={spec.network} walletState="connected" onNavigate={setPagePath} height="70vh" />
+      <PreviewFrame
+        mode="play"
+        spec={spec}
+        pagePath={pagePath}
+        network={spec.network}
+        walletState="connected"
+        onNavigate={setPagePath}
+        height="70vh"
+      />
     </div>
   );
 }

@@ -50,6 +50,10 @@ export type MockWalletOptions = {
   balanceRaw?: string | (() => string);
   /** Human SPLD balance for `connection.getBalance`. */
   balanceSPLD?: string | (() => string);
+  /** Chain head reported by `connection.getStatus`. Default 1. */
+  height?: number | (() => number);
+  /** Answers `connection.getLogs` with the logs matching `filter`. Default: none. */
+  logs?: (filter: { address?: string; from_block?: number; to_block?: number; topics?: string[] }) => unknown[];
 };
 
 const value = (v: string | (() => string) | undefined, fallback: string): string =>
@@ -117,6 +121,14 @@ export function mockWallet(opts: MockWalletOptions = {}): MockWallet {
       opts.moduleCall ? opts.moduleCall(env as never) : {},
     ),
     call: method('connection.call', (req) => (opts.call ? opts.call(req as never) : { return_data: '0x' })),
+    getStatus: method('connection.getStatus', () => ({
+      height: typeof opts.height === 'function' ? opts.height() : (opts.height ?? 1),
+    })),
+    getLogs: method('connection.getLogs', (filter) => {
+      const f = (filter ?? {}) as { from_block?: number; to_block?: number };
+      const logs = opts.logs ? opts.logs(filter as never) : [];
+      return { logs, count: logs.length, from_block: f.from_block ?? 0, to_block: f.to_block ?? 0, truncated: false };
+    }),
   };
   return {
     calls,
@@ -128,6 +140,24 @@ export function mockWallet(opts: MockWalletOptions = {}): MockWallet {
     callContract: sender('callContract'),
     deployContract: sender('deployContract', () => ({ address: 'SQ:' + '77'.repeat(32) })),
     sendModuleCall: sender('sendModuleCall'),
+    // x402: one settled payment per call, reported to onSend like any other send.
+    payX402: async (...args: unknown[]) => {
+      const call = { method: 'payX402', args };
+      calls.push(call);
+      const err = opts.fail?.payX402;
+      if (err) throw err;
+      const o = (args[0] ?? {}) as { to?: string; amount?: string; maxAmount?: string };
+      if (o.maxAmount != null && o.amount != null && BigInt(o.amount) > BigInt(o.maxAmount)) {
+        throw new Error(`x402 amount ${o.amount} exceeds maxAmount ${o.maxAmount}`);
+      }
+      const hash = typeof opts.hash === 'function' ? opts.hash() : (opts.hash ?? MOCK_HASH);
+      opts.onSend?.(call, { status: 'ok', hash, signedTx: { nonce: nonce++ } });
+      return {
+        payload: { version: 1, from: address, to: o.to, amount: o.amount, nonce: hash.slice(0, 32), mock: true },
+        verify: { valid: true },
+        settle: { success: true, status: 'confirmed', tx_hash: hash },
+      };
+    },
     signMessage: method('signMessage', (message) => ({
       message,
       signatureB64: 'c2ln',

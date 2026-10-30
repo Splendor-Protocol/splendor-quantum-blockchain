@@ -100,6 +100,13 @@ describe('security-wasm session lifecycle', () => {
   }, 30_000);
 });
 
+describe('security-wasm raw signing', () => {
+  it('rejects raw:true before touching the key unless allowRawSign is set', async () => {
+    const b = track(new SplendorPQBridge());
+    await expect(b.signMessage('raw-bytes', { raw: true })).rejects.toMatchObject({ code: 'USER_REJECTED' });
+  });
+});
+
 describe('security-wasm integrity pin', () => {
   it('rejects invalid wasmSha256 pin format', async () => {
     await expect(assertWasmSha256(new ArrayBuffer(8), 'not-a-hash')).rejects.toMatchObject({
@@ -114,6 +121,26 @@ describe('security-wasm integrity pin', () => {
       code: 'WASM',
       message: expect.stringContaining('integrity check failed'),
     });
+  });
+
+  it('refuses a wasm_exec.js loaded by another script when only the .wasm is pinned', async () => {
+    const { loadWasmInBrowser, resetBrowserWasmState } = await import('../wasm-loader.browser.js');
+    const g = globalThis as unknown as { Go?: unknown; sqCreateSession?: unknown };
+    const prev = { Go: g.Go, sqCreateSession: g.sqCreateSession };
+    // Earlier tests in this file loaded the Node signer, which registers its functions globally.
+    delete g.sqCreateSession;
+    g.Go = function ForeignGo() {};
+    resetBrowserWasmState();
+    try {
+      await expect(loadWasmInBrowser({ wasmSha256: 'ab'.repeat(32) })).rejects.toMatchObject({
+        code: 'WASM',
+        message: expect.stringContaining('execSha256'),
+      });
+    } finally {
+      g.Go = prev.Go;
+      if (prev.sqCreateSession !== undefined) g.sqCreateSession = prev.sqCreateSession;
+      resetBrowserWasmState();
+    }
   });
 
   it('SplendorPQBridge init fails closed on wrong pin', async () => {

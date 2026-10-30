@@ -277,7 +277,8 @@ if (!check.ok) throw new Error(authCheckMessage(check.reason));
 ```
 
 `checkAuthMessage` checks the message layout only (domain, age or expiry, and the nonce, address
-and chain when you pass `expectedNonce`, `expectedAddress`, `expectedChainId`). Messages without an
+and chain when you pass `expectedNonce`, `expectedAddress`, `expectedChainId`). With
+`expectedChainId`, a message that names no chain is rejected too. Messages without an
 expiry are rejected after `maxAgeSec` (default 600 s). `<SignInButton />` wraps the same flow in a
 button.
 
@@ -386,6 +387,27 @@ Forms reset when the wallet or network changes, unless a send is pending.
 its form when an unlocked wallet is connected; otherwise it shows a Connect or Unlock button. The
 older `onSent`, `onDeployed` and `onSignedIn` callbacks still fire but are deprecated.
 The full prop list is in the [README](../README.md#widget-props).
+
+### Chain widgets
+
+```tsx
+<NftPanel collectionAddress="SQ:…" tokenIds="1-12" />        {/* QRC-721: grid, send, mint for the owner */}
+<BridgeClaimWidget bridgeAddress="SQ:…" />                   {/* status + burn lookup; allowClaim for operators */}
+<ValidatorList />                                            {/* active set and bond, no wallet needed */}
+<ActivityFeed blocks={2000} />                               {/* QRC-20 / QRC-1155 transfers + pending sends */}
+<ReceiveWidget />                                            {/* address, QR, optional splendor: payment link */}
+<AddressBook />                                              {/* local contacts, offered in transfer widgets */}
+<TokenBalances tokens="SQ:…, SQ:…" />
+```
+
+- QRC-721 has no enumeration read and emits no events, so `NftPanel` checks the ids in `tokenIds`
+  (at most 60) with `ownerOf`.
+- `ActivityFeed` / `useActivity` read `GET /logs`, which serves at most 2000 blocks per query. Pass
+  `indexerUrl` (https, or http on localhost) for older history; native SPLD transfers emit no logs
+  and only show while pending.
+- `useValidators` uses the routed `validators.list` and `validators.bond` reads.
+- `AddressBook` stores up to 100 contacts per network in `localStorage`, in this browser only.
+- `QrCode` and `encodeQr` need no dependency and always draw dark modules on white with a quiet zone.
 
 ### Customize text and styling
 

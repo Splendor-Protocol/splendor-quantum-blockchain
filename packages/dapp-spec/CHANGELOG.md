@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Spec format is now **`DappSpec` v2** (`DAPP_SPEC_VERSION = 2`): every page has a layout tree, and
+  `contracts` / `nav` are optional. `migrateSpec` upgrades v0 and v1 specs; run `validateSpec` on
+  the result.
+- `generateProject`: `vendorFiles` keys must be relative paths under `vendor/@splendor/` (no `..`,
+  absolute paths, drive letters or backslashes); anything else throws.
 - Codegen: unique page component names (`/` and `/home` no longer collide), Next exports get real
   route links via a shared `blocks/pageHref.ts`, `spec.nav` (brand, connect button, link order,
   footer) is honoured in both shells.

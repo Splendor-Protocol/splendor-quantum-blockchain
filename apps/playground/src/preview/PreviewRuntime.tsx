@@ -81,9 +81,11 @@ export function PreviewRuntime() {
   playRef.current = play;
 
   useEffect(() => {
+    const expectedToken = frameTokenFrom(window.location.hash);
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== window.location.origin || e.source !== window.parent) return;
       if (!isPreviewMessage<ParentToPreview>(e.data)) return;
+      if (!expectedToken || e.data.token !== expectedToken) return;
       if (e.data.type === 'requestRects') {
         if (!playRef.current) postRects(true);
         return;

@@ -1,5 +1,6 @@
 import {
   MAX_REVISIONS,
+  ProjectLimitError,
   SubdomainTakenError,
   type AuditEntry,
   type CatalogFlag,
@@ -282,6 +283,22 @@ export class SqlStore implements Store {
     return this.db.dialect === 'postgres' ? ' FOR UPDATE' : '';
   }
 
+  /**
+   * Serializes project-count checks per owner for the rest of the transaction. Postgres runs
+   * transactions concurrently, so two creates could both count 99; SQLite already runs one at a time.
+   */
+  private async lockOwnerProjects(tx: SqlTx, owner: string): Promise<void> {
+    if (this.db.dialect === 'postgres') await tx.all('SELECT pg_advisory_xact_lock(hashtext(?)) AS ok', [`projects:${owner}`]);
+  }
+
+  /** Throws `ProjectLimitError` when `adding` more live projects would put `owner` past `maxProjects`. */
+  private async assertProjectRoom(tx: SqlTx, owner: string, maxProjects: number | undefined, adding = 1): Promise<void> {
+    if (maxProjects === undefined) return;
+    await this.lockOwnerProjects(tx, owner);
+    const [r] = await tx.all('SELECT COUNT(*) AS n FROM projects WHERE owner = ? AND deleted_at IS NULL', [owner]);
+    if (Number(r?.n ?? 0) + adding > maxProjects) throw new ProjectLimitError(maxProjects);
+  }
+
   /** Deletes trashed projects by id with their deployments; revisions cascade. Returns projects removed. */
   private async purgeProjectRows(tx: SqlTx, ids: string[]): Promise<number> {
     let removed = 0;
@@ -372,6 +389,7 @@ export class SqlStore implements Store {
       if (!r) return 'not-found';
       if (opts.maxProjects !== undefined) {
         // The projects coming back count toward the owner's cap like new ones would.
+        await this.lockOwnerProjects(tx, String(r.owner));
         const [live] = await tx.all('SELECT COUNT(*) AS n FROM projects WHERE owner = ? AND deleted_at IS NULL', [r.owner]);
         const [back] = await tx.all('SELECT COUNT(*) AS n FROM projects WHERE workspace_id = ? AND deleted_at = ?', [id, r.deleted_at]);
         if (Number(live?.n ?? 0) + Number(back?.n ?? 0) > opts.maxProjects) return 'limit';
@@ -470,10 +488,11 @@ export class SqlStore implements Store {
     const [r] = await this.db.all('SELECT * FROM projects WHERE share_id = ? AND deleted_at IS NULL', [shareId]);
     return r ? project(r) : null;
   }
-  async createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'> & { workspaceId?: string | null }) {
+  async createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'> & { workspaceId?: string | null }, opts: { maxProjects?: number } = {}) {
     const t = now();
     const workspaceId = row.workspaceId ?? null;
     await this.db.transaction(async (tx) => {
+      await this.assertProjectRoom(tx, row.owner, opts.maxProjects);
       await tx.run('INSERT INTO projects (id, owner, name, spec, share_id, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)', [
         row.id,
         row.owner,
@@ -553,8 +572,13 @@ export class SqlStore implements Store {
       return true;
     });
   }
-  async restoreProject(id: string) {
+  async restoreProject(id: string, opts: { maxProjects?: number } = {}) {
     return this.db.transaction(async (tx) => {
+      if (opts.maxProjects !== undefined) {
+        const [p] = await tx.all('SELECT owner FROM projects WHERE id = ? AND deleted_at IS NOT NULL', [id]);
+        if (!p) return false;
+        await this.assertProjectRoom(tx, String(p.owner), opts.maxProjects);
+      }
       const res = await tx.run('UPDATE projects SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL', [id]);
       if (!res.changes) return false;
       // Its workspace may be in the trash, or gone: then it comes back without one.

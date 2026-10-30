@@ -34,6 +34,30 @@ export function RecentRecipients({
   );
 }
 
+/** Saved contacts as labelled quick picks (from `useAddressBook`). */
+export function ContactPicks({
+  contacts,
+  onPick,
+  labels,
+}: {
+  contacts: ReadonlyArray<{ address: string; label: string }>;
+  onPick: (address: string) => void;
+  labels?: Partial<Pick<CommonWidgetLabels, 'contacts'>>;
+}) {
+  const l = useWidgetLabels(COMMON_LABELS, labels);
+  if (contacts.length === 0) return null;
+  return (
+    <div className="sqc-recent" aria-label={l.contacts} data-testid="sqc-contact-picks">
+      <span className="sqc-widget__hint">{l.contacts}</span>
+      {contacts.slice(0, 8).map((c) => (
+        <button key={c.address} type="button" className="sqc-copy" title={c.address} onClick={() => onPick(c.address)}>
+          {c.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Validation message for an `SQ:` recipient field, or null when empty or valid. */
 export function addressFieldError(
   value: string,
@@ -79,6 +103,8 @@ export type AddressInputProps = {
   self?: string | null;
   /** Recent recipients shown as quick picks under the field. */
   recents?: string[];
+  /** Saved contacts shown as labelled quick picks under the field. */
+  contacts?: ReadonlyArray<{ address: string; label: string }>;
   labels?: Partial<CommonWidgetLabels>;
 };
 
@@ -92,6 +118,7 @@ export function AddressInput({
   error,
   self,
   recents,
+  contacts,
   labels,
 }: AddressInputProps) {
   const l = useWidgetLabels(COMMON_LABELS, labels);
@@ -115,6 +142,7 @@ export function AddressInput({
         aria-invalid={!!message}
         aria-describedby={message ? errId : undefined}
       />
+      {contacts ? <ContactPicks contacts={contacts} onPick={onChange} labels={l} /> : null}
       {recents ? <RecentRecipients recipients={recents} onPick={onChange} labels={l} /> : null}
       <FieldError id={errId} message={message} />
     </div>

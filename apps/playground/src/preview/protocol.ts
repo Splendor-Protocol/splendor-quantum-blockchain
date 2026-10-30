@@ -6,8 +6,13 @@ export const PREVIEW_SOURCE = 'splendor-playground-preview';
 /** The preview's own entry (preview.html), under the app's base path. */
 export const PREVIEW_SRC = `${import.meta.env.BASE_URL.replace(/\/?$/, '/')}preview.html`;
 
-export type PreviewRender = {
-  source: typeof PREVIEW_SOURCE;
+/**
+ * Parent messages carry the same `token` as the frame URL's fragment (`#t=…`). The frame drops
+ * messages without it, so only the PreviewFrame that opened this document can drive it.
+ */
+type ToFrame = { source: typeof PREVIEW_SOURCE; token?: string };
+
+export type PreviewRender = ToFrame & {
   type: 'render';
   spec: unknown;
   pagePath: string;
@@ -32,9 +37,9 @@ export type PreviewMode = 'edit' | 'play';
 export type ParentToPreview =
   | PreviewRender
   /** Only the selection changed: the frame keeps the spec it has. */
-  | { source: typeof PREVIEW_SOURCE; type: 'select'; selectedBlockId: string | null }
+  | (ToFrame & { type: 'select'; selectedBlockId: string | null })
   /** Ask the frame to re-measure and post `rects` (e.g. after the frame was resized). */
-  | { source: typeof PREVIEW_SOURCE; type: 'requestRects' };
+  | (ToFrame & { type: 'requestRects' });
 
 /** Rect in the preview frame's viewport coordinates (CSS px). */
 export type PreviewRect = { top: number; left: number; width: number; height: number };

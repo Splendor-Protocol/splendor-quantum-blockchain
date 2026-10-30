@@ -160,7 +160,7 @@ export type AuthCheckOptions = {
   expectedNonce?: string;
   /** When set, the message `Address` (if present) must match (case-insensitive). */
   expectedAddress?: string;
-  /** When set, the message `Chain ID` (if present) must match. */
+  /** When set, the message must carry this `Chain ID`; a message without one is rejected. */
   expectedChainId?: string;
 };
 
@@ -197,7 +197,8 @@ export function checkAuthMessage(message: string, opts: AuthCheckOptions): AuthC
   ) {
     return { ok: false, reason: 'address' };
   }
-  if (opts.expectedChainId != null && parsed.chainId != null && parsed.chainId !== opts.expectedChainId) {
+  // A server that pins a chain must not accept a message that names none: it would be valid on every chain.
+  if (opts.expectedChainId != null && parsed.chainId !== opts.expectedChainId) {
     return { ok: false, reason: 'chain' };
   }
   return { ok: true, parsed };

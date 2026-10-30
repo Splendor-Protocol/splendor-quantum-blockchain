@@ -1,4 +1,4 @@
-import type { NetworkId } from '@splendor/connect-react';
+import { TOPIC_TRANSFER, TOPIC_TRANSFER_SINGLE, type NetworkId } from '@splendor/connect-react';
 import { MOCK_ADDRESS, createMockConnectController, mockWallet, type MockConnectController } from '@splendor/connect-react/testing';
 import { DEMO_CONTRACT_ADDRESS, DEMO_TOKEN_ADDRESS } from '@splendor/dapp-spec';
 import { fromUnits, functionSelectorHex, qrc1155Address, qrc20Address, qrc721Address, toUnits } from '@splendor/sqc-sdk';
@@ -15,6 +15,13 @@ export const DEMO_RECIPIENT = 'SQ:' + '5e'.repeat(32);
 type Token = { name: string; symbol: string; decimals: number; owner: string; total: bigint; balances: Map<string, bigint> };
 type Collection = { name: string; owner: string; uriPrefix: string; balances: Map<string, bigint> };
 type Nft = { name: string; symbol: string; owner: string; owners: Map<string, string> };
+type Bridge = { paused: boolean; threshold: number; claimed: Map<number, number>; pool: bigint; claimedSpld: bigint; claimedSplv: bigint };
+type Log = { address: string; topics: string[]; data: string; block_height: number; tx_hash: string; log_index: number };
+
+/** Demo validator set the validator widgets list in previews. */
+export const DEMO_VALIDATORS = ['SQ:' + 'a1'.repeat(32), 'SQ:' + 'b2'.repeat(32), 'SQ:' + 'c3'.repeat(32)];
+const ZERO = 'SQ:' + '00'.repeat(32);
+const BOND = 2500n * 10n ** 18n;
 
 const big = (v: unknown): bigint => {
   try {
@@ -44,8 +51,32 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
   const collections = new Map<string, Collection>();
   const nfts = new Map<string, Nft>();
   const contracts = new Map<string, bigint>();
+  const bridges = new Map<string, Bridge>();
   const confirmAt = new Map<string, number>();
+  const logs: Log[] = [];
   let seq = 0;
+  // Chain head: starts with some history and moves one block per send.
+  let height = 1200;
+  let currentTx = '';
+
+  const topic = (addr: string) => lower(addr).slice(3);
+  const emit = (address: string, topics: string[], data: bigint[]) => {
+    logs.push({
+      address: lower(address),
+      topics,
+      data: '0x' + data.map((d) => d.toString(16).padStart(64, '0')).join(''),
+      block_height: height,
+      tx_hash: currentTx || `${height.toString(16)}`.padStart(64, '0'),
+      log_index: logs.filter((l) => l.block_height === height).length,
+    });
+  };
+  const transferLog = (token: string, from: string, to: string, amount: bigint) =>
+    emit(token, [TOPIC_TRANSFER, topic(from), topic(to)], [amount]);
+  const matches = (filter: { address?: string; from_block?: number; to_block?: number; topics?: string[] }, l: Log) =>
+    (!filter.address || lower(filter.address) === l.address) &&
+    (filter.from_block == null || l.block_height >= filter.from_block) &&
+    (filter.to_block == null || l.block_height <= filter.to_block) &&
+    (filter.topics ?? []).every((t, i) => !t || l.topics[i] === t.replace(/^0x/i, '').toLowerCase());
 
   // The demo assets the templates and the Content pickers point at (DEMO_TOKEN_ADDRESS / DEMO_CONTRACT_ADDRESS).
   tokens.set(lower(DEMO_TOKEN_ADDRESS), {
@@ -57,6 +88,18 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
     balances: new Map([[me, 25_000n * 10n ** 18n]]),
   });
   contracts.set(lower(DEMO_CONTRACT_ADDRESS), 42n);
+  // A little history so the activity feed has something to show before the first send.
+  for (const [h, from, to, amount] of [
+    [1100, ZERO, me, 25_000n],
+    [1150, DEMO_RECIPIENT, me, 500n],
+    [1180, me, DEMO_RECIPIENT, 500n],
+  ] as const) {
+    height = h;
+    currentTx = (h * 7919).toString(16).padStart(64, 'a');
+    transferLog(DEMO_TOKEN_ADDRESS, from, to, amount * 10n ** 18n);
+  }
+  height = 1200;
+  currentTx = '';
 
   // Addresses the dApp did not deploy here (pasted into a block) behave like a demo asset you hold.
   const token = (addr: string): Token => {
@@ -76,13 +119,24 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
     }
     return c;
   };
+  // A pasted QRC-721 collection: you own #1-#3, someone else #4-#6, #7 and up are unminted.
   const nft = (addr: string): Nft => {
     let n = nfts.get(addr);
     if (!n) {
-      n = { name: 'Demo NFTs', symbol: 'DNFT', owner: me, owners: new Map([['1', me]]) };
+      const owners = new Map<string, string>();
+      for (let i = 1; i <= 6; i++) owners.set(String(i), i <= 3 ? me : lower(DEMO_RECIPIENT));
+      n = { name: 'Demo NFTs', symbol: 'DNFT', owner: me, owners };
       nfts.set(addr, n);
     }
     return n;
+  };
+  const bridge = (addr: string): Bridge => {
+    let b = bridges.get(addr);
+    if (!b) {
+      b = { paused: false, threshold: 2, claimed: new Map([[1, 1050]]), pool: 50_000n * 10n ** 18n, claimedSpld: 120n * 10n ** 18n, claimedSplv: 0n };
+      bridges.set(addr, b);
+    }
+    return b;
   };
   const move = (balances: Map<string, bigint>, key: (owner: string) => string, from: string, to: string, amount: bigint) => {
     const have = balances.get(key(from)) ?? 0n;
@@ -106,13 +160,17 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
         return;
       }
       const t = token(lower(p.token));
-      if (action === 'transfer') move(t.balances, (o) => o, me, lower(p.to), big(p.amount));
-      else if (action === 'mint') {
+      if (action === 'transfer') {
+        move(t.balances, (o) => o, me, lower(p.to), big(p.amount));
+        transferLog(String(p.token), me, String(p.to), big(p.amount));
+      } else if (action === 'mint') {
         t.total += big(p.amount);
         t.balances.set(lower(p.to), (t.balances.get(lower(p.to)) ?? 0n) + big(p.amount));
+        transferLog(String(p.token), ZERO, String(p.to), big(p.amount));
       } else if (action === 'burn') {
         move(t.balances, (o) => o, me, 'burned', big(p.amount));
         t.total -= big(p.amount);
+        transferLog(String(p.token), me, ZERO, big(p.amount));
       }
       return;
     }
@@ -128,10 +186,35 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
       }
       const c = collection(lower(p.collection));
       const key = (id: string) => (o: string) => `${o}|${id}`;
+      const single = (from: string) =>
+        emit(String(p.collection), [TOPIC_TRANSFER_SINGLE, topic(me), topic(from), topic(String(p.to))], [big(p.id), big(p.amount)]);
       if (action === 'mint') {
         const k = `${lower(p.to)}|${String(p.id)}`;
         c.balances.set(k, (c.balances.get(k) ?? 0n) + big(p.amount));
-      } else if (action === 'transfer') move(c.balances, key(String(p.id)), me, lower(p.to), big(p.amount));
+        single(ZERO);
+      } else if (action === 'transfer') {
+        move(c.balances, key(String(p.id)), me, lower(p.to), big(p.amount));
+        single(me);
+      }
+      return;
+    }
+    if (module === 'bridge' && action === 'claim') {
+      const b = bridge(lower(p.bridge));
+      const id = Number(p.id);
+      if (b.paused) throw new Error('bridge is paused');
+      if (b.claimed.has(id)) throw new Error(`burn #${id} is already claimed`);
+      if (!Array.isArray(p.attestations) || p.attestations.length < b.threshold) {
+        throw new Error(`need ${b.threshold} attestations`);
+      }
+      const amount = big(p.amount);
+      b.claimed.set(id, height);
+      if (p.asset === 'splv') b.claimedSplv += amount;
+      else {
+        if (amount > b.pool) throw new Error('bridge pool is too small');
+        b.pool -= amount;
+        b.claimedSpld += amount;
+        if (lower(p.recipient) === me) spld += amount;
+      }
       return;
     }
     if (module === 'qrc721') {
@@ -144,8 +227,13 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
       if (action === 'mint') {
         if (n.owners.has(id)) throw new Error(`Token #${id} is already minted`);
         n.owners.set(id, lower(p.to));
-      } else if (action === 'transfer') n.owners.set(id, lower(p.to));
-      else if (action === 'burn') n.owners.delete(id);
+      } else if (action === 'transfer') {
+        if (n.owners.get(id) !== me) throw new Error(`You do not own token #${id}`);
+        n.owners.set(id, lower(p.to));
+      } else if (action === 'burn') {
+        if (n.owners.get(id) !== me) throw new Error(`You do not own token #${id}`);
+        n.owners.delete(id);
+      }
     }
   }
 
@@ -180,6 +268,42 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
         return o;
       }
     }
+    if (module === 'bridge') {
+      const b = bridge(lower(p.bridge));
+      if (action === 'bridge_info') {
+        return {
+          address: lower(p.bridge),
+          owner: me,
+          operators: [me],
+          paused: b.paused,
+          threshold: b.threshold,
+          evm_chain_id: 1,
+          evm_contract: '0x' + '42'.repeat(20),
+          splv_token: 'SQ:' + '5f'.repeat(32),
+          max_claim_amount: String(1000n * 10n ** 18n),
+          claimed_total_spld: String(b.claimedSpld),
+          claimed_total_splv: String(b.claimedSplv),
+          pool_balance: String(b.pool),
+        };
+      }
+      if (action === 'claim_status') {
+        const id = Number(p.id);
+        const at = b.claimed.get(id);
+        return { module: 'bridge', action: 'claim_status', bridge: lower(p.bridge), id, claimed: at != null, ...(at != null ? { height: at } : {}) };
+      }
+    }
+    if (module === 'validators') {
+      // Same shape as the node: big.Int bond as a JSON number, status 1 = active.
+      const record = (address: string, i: number) => ({ address, public_key: '', bond: Number(BOND), status: 1, joined_height: 10 + i * 40 });
+      if (action === 'list') return DEMO_VALIDATORS.map(record);
+      if (action === 'count') return { count: DEMO_VALIDATORS.length };
+      if (action === 'bond') return { bond: String(BOND), spld: '2500' };
+      if (action === 'approved') return { approved: DEMO_VALIDATORS.includes(lower(p.address)) || lower(p.address) === me };
+      if (action === 'validator') {
+        const i = DEMO_VALIDATORS.indexOf(lower(p.address));
+        return i >= 0 ? record(DEMO_VALIDATORS[i]!, i) : null;
+      }
+    }
     return {};
   }
 
@@ -195,6 +319,8 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
     balanceSPLD: () => toUnits(spld, 18),
     balanceRaw: () => String(spld),
     estimate: { fee: String(DEFAULT_FEE), fee_is_floor: false, gas: 21000 },
+    height: () => height,
+    logs: (filter) => logs.filter((l) => matches(filter, l)),
     moduleCall: ({ module, action, params }) => answerRead(module, action, params ?? {}),
     call: (req) => {
       const to = lower(req.to);
@@ -213,7 +339,16 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
     onSend: (call, res) => {
       const o = (call.args[0] ?? {}) as Record<string, unknown>;
       const fee = o.fee ? big(o.fee) : DEFAULT_FEE;
-      if (call.method === 'sendTransfer') {
+      height += 1;
+      currentTx = res.hash;
+      if (call.method === 'payX402') {
+        // x402 settles a native SPLD payment; the mock charges it like a transfer.
+        const amount = big(o.amount);
+        if (lower(o.to) !== me) {
+          if (amount + fee > spld) throw new Error('Insufficient SPLD balance');
+          spld -= amount;
+        }
+      } else if (call.method === 'sendTransfer') {
         const amount = o.amountSPLD != null ? BigInt(fromUnits(String(o.amountSPLD), 18)) : big(o.amount);
         const spent = (lower(o.to) === me ? 0n : amount) + fee;
         if (spent > spld) throw new Error('Insufficient SPLD balance');

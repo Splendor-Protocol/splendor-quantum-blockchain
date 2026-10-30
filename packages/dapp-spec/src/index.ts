@@ -21,6 +21,7 @@ export {
   PAGE_TEMPLATES,
   DEMO_TOKEN_ADDRESS,
   DEMO_CONTRACT_ADDRESS,
+  DEMO_NFT_ADDRESS,
   getTemplate,
   getPageTemplate,
   emptySpec,

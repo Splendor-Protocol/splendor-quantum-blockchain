@@ -1,66 +1,24 @@
-﻿fix(playground,api): close draft-loss paths, harden preview, Postgres test run
+﻿feat: chain-native widgets and blocks for the dApp builder (Phase 1)
 
-Drafts
-- Never stash an untouched draft (edited: false), so an unedited template
-  cannot push real work out of the one-slot stash
-- Stash before every replacement: picker after a failed link, Restore (now a
-  swap), opening another project, the ?project= success path
-- Stop an unmounted editor from writing the draft slot (alive ref); flush
-  whenever the spec on screen differs from the last write
-- Refuse a revision restore while edits are not in the account yet
-- Stop local-workspace saves once a project is in the account; remove the
-  browser copy after "Save to my account"
-- Retry a ?project= load after sign-in when it failed with 401
+connect-react
+- Widgets: NftPanel (QRC-721 grid, send, owner-only mint), BridgeClaimWidget,
+  ValidatorList, ActivityFeed, ReceiveWidget (QR + splendor: payment link),
+  AddressBook, TokenBalances, and a QrCode part; manifest and embed entries
+- Hooks: useValidators (routed validators reads), useActivity (QRC-20/QRC-1155
+  transfer logs + pending sends, optional /idx/v1/logs indexer), useAddressBook
+- useBridge reads work before a wallet connects
+- Dependency-free QR encoder (ISO Reed-Solomon vector, decoder-verified)
+- Saved contacts offered as quick picks in transfer widgets
+- testing: mockWallet answers getStatus/getLogs and records payX402
 
-Studio and preview
-- Narrow screens: setup jumps, Open Contracts, Go to first and the tour open
-  their drawer; clear the drawer when the window turns wide
-- Contract drops take name and kind from the spec's own contract (display
-  names such as "Get count" for get() work again)
-- Preview frame: reload budget returns only after 5s stable, stop with a
-  notice past it, no posts after navigation, rects cleared, notice laid over
-  the frame
-- Catch SVG and image-map links; popups escape the sandbox (noopener)
-- Touch move handle: lost capture, active in a ref, window fallback
-- Shortcuts ignored behind dialogs; Escape in the new-page input stays local
-- Gallery: exact install line next to the pinned digests, pins must be
-  sha256 hex
-- Admin run links: github.com or the API's htmlHost only
-- /preview rewrites to /preview.html for tabs on the previous build
+dapp-spec
+- Blocks: nft721-gallery, x402-paywall (402 -> payX402 -> X-Payment retry, price cap)
+- Validation for id ranges, https-or-localhost URLs and token lists
+- NFT membership template and DEMO_NFT_ADDRESS
 
-Smaller client fixes
-- Show "Save to my account" errors in the Share panel; Trash errors stay
-  visible; Trash "Load more"
-- ProjectPanel: guard project opens, refresh version history after saves,
-  show load errors
-- LocalUpload reads fresh rows and reports copies it could not remove
-- Expired share links say so; ConfirmDialog answers "no" on unmount
-- Retry message punctuation
+playground
+- Mock chain: QRC-721 ownership, bridge, validators, transfer logs, x402 settle
+- Learn recipes: NFT owners, validator dashboard, activity logs, x402 quote
+- Preview tests and a Playwright build/preview/export/share flow
 
-API
-- Workspace restore respects the 100-project limit (429)
-- Name paging uses the database's own sort key in the cursor; search
-  lowercases both sides in SQL; a bad or mismatched cursor is a 400
-- SQLite: every statement goes through one queue with transactions
-- Keep exactly the newest 20 revisions; restore clears dangling workspace ids
-- Purge locks rows (Postgres) and relies on ON DELETE CASCADE for revisions
-- Trash capped at 200 projects per owner, /trash paged
-- Deployment audit is best effort; HEAD is not a share view; a broken
-  Postgres client is not returned to the pool
-
-Tests and CI
-- API: ownership of revisions and trash, restore limits, unfiled restore,
-  revision pruning across moves, non-ASCII paging, bad cursors, concurrent
-  saves, HEAD views, trash cap, housekeeping (+29/+31 days), tied timestamps,
-  migration 5 upgrade
-- Unit: PreviewFrame tokens and reload limit, ConfirmDialog, pristine stash,
-  refused write keeps the last draft, contract drops by display name, pin
-  validation, run-link hosts
-- Playwright e2e/review.spec.ts: fast reload, New/Import stash, stash swap,
-  failed links, dirty cloud draft vs newer save, Not saved, autosave
-  503/422, double-click save, signed-out workspace link, trash restore,
-  version history, expired link, stacked Escape, narrow inspector jump,
-  contract drag; security.spec: preview.html token, CORS only on /assets
-- API tests run on Postgres via TEST_DATABASE_URL (schema per test);
-  npm run test:playground-api:pg; new playground-api-postgres CI job
-- Docs: architecture second-review table, READMEs
+docs: Phase 1-5 roadmap, gap table, connect-react guide; changesets (minor)

@@ -33,10 +33,11 @@ Each test case gets its own schema, created and dropped by the suite. The two SQ
 - **Errors and headers**:
   - Errors are `{ error, code?, requestId, issues? }`. `requestId` is also the `x-request-id` header and the log key.
   - 5xx responses say only `Internal error`. Unknown routes are `404` with code `NOT_FOUND`; schema failures are `400` with code `INVALID_REQUEST` and `issues`.
-  - Responses are `no-store` unless public, and carry `nosniff` and `DENY` framing headers.
+  - Responses are `no-store` unless public, and carry `nosniff`, `DENY` framing, `Referrer-Policy: no-referrer` and `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`. With Secure cookies they also carry `Strict-Transport-Security`.
+  - A failed sign-in answers `401` with `{ error: 'Sign-in failed', code: 'AUTH_FAILED' }` whatever the cause; the reason is kept in the audit log.
 - **Saving projects**:
   - Every project has a `version` that goes up on each change.
-  - `PUT /projects/:id` and `PATCH /projects/:id` accept `baseVersion`. When the project has moved past it (another tab or device saved first), the API answers `409` with code `CONFLICT` and the current project summary instead of overwriting it. A `PUT` without `baseVersion` always applies; a `PATCH` without it is checked against the version it read, since it rewrites the stored spec.
+  - `PUT /projects/:id` and `PATCH /projects/:id` accept `baseVersion`. When the project has moved past it (another tab or device saved first), the API answers `409` with code `CONFLICT` and the current project summary instead of overwriting it. A `PUT` without `baseVersion` always applies (deprecated: the response carries `Deprecation: true`); a `PATCH` without it is checked against the version it read, since it rewrites the stored spec.
   - Each saved spec is kept as a revision (the last 20 per project). Restoring one saves it again as the newest version, on top of `baseVersion`.
 - **Trash**:
   - Deleting a project, or a workspace with its projects, moves it to the trash for 30 days. Trashed projects are out of every list, their share links stop, and they do not count toward the 100-project cap.
@@ -57,7 +58,8 @@ Every route is limited to 300 requests per minute per IP unless the table says o
 
 | Route | Who |
 |-------|-----|
-| `GET /health` (liveness), `GET /health/ready` (database), `GET /catalog`, `GET /share/:shareId` | anyone |
+| `GET /health` (liveness), `GET /health/ready` (database), `GET /catalog` | anyone |
+| `GET /share/:shareId` | anyone (60/min per IP) |
 | `POST /auth/nonce`, `POST /auth/verify` | anyone (30/min per IP) |
 | `GET /auth/me`, `POST /auth/logout` | anyone (401 / no-op without a session) |
 | `GET /workspaces`, `POST /workspaces`, `PATCH /workspaces/:id` (rename), `DELETE /workspaces/:id` (to trash), `GET /workspaces/:id/projects` | signed-in owner |
@@ -71,7 +73,9 @@ Every route is limited to 300 requests per minute per IP unless the table says o
 | `POST /auth/test-login` | only with `ALLOW_TEST_LOGIN=1` (end-to-end tests) |
 
 Behind a reverse proxy, set `TRUST_PROXY` (e.g. `loopback`) so rate limits and the audit log see the
-real client IP. The API is designed for a single instance; see
+real client IP. `TRUST_PROXY=true` (trust every peer) is refused in production unless
+`TRUST_PROXY_ALLOW_ALL=1` is also set. The project cap (100 live projects) is enforced atomically
+in the store, so concurrent creates and restores cannot exceed it. The API is designed for a single instance; see
 [Security model and limits](../playground/README.md#security-model-and-limits). Configuration,
 deployment and the proxy setup are described in the [playground README](../playground/README.md#deploying).
 For the release flow, see [Releasing packages](../../docs/RELEASING_PACKAGES.md).

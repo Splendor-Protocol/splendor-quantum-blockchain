@@ -61,10 +61,11 @@ export function registerAuthRoutes(ctx: RouteContext) {
         if ((await store.countAuditSince('auth.failed', since)) < MAX_FAILED_AUTH_AUDITS_PER_MINUTE) {
           await store.audit(canonicalAddress(address) ?? 'invalid-address', 'auth.failed', null, { reason: result.reason, ip: req.ip });
         }
-        return reply.code(401).send({ error: `Sign-in failed (${result.reason})` });
+        // The reason stays in the audit log: telling the client which check failed helps probing.
+        return reply.code(401).send({ error: 'Sign-in failed', code: 'AUTH_FAILED' });
       }
       const signedIn = canonicalAddress(result.address);
-      if (!signedIn) return reply.code(401).send({ error: 'Sign-in failed (bad-address)' });
+      if (!signedIn) return reply.code(401).send({ error: 'Sign-in failed', code: 'AUTH_FAILED' });
       const session = await startSession(req, reply, signedIn);
       await store.audit(signedIn, 'auth.signin', null, { admin: session.isAdmin });
       return session;

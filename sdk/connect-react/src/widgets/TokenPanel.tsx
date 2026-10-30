@@ -1,7 +1,7 @@
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import { MODULE_ROUTER_ADDRESS, encodeModuleCallHex, fromUnits, toUnits } from '@splendor/sqc-sdk';
 import { getRecentTokens, subscribeRecentTokens } from '../core/recentTokens.js';
-import { useAccount, useBalance, useEstimateFee, useNetwork, useQRC20 } from '../react/hooks.js';
+import { useAccount, useAddressBook, useBalance, useEstimateFee, useNetwork, useQRC20 } from '../react/hooks.js';
 import { connectErrorMessage } from '../core/controller.js';
 import { exceedsBalanceWithFee, normalizeSqAddress } from './utils.js';
 import { TOKEN_LABELS, formatLabel, useWidgetLabels, type TokenPanelLabels } from './labels.js';
@@ -60,6 +60,7 @@ export function TokenPanel({
   const tokenAddress = tokenAddressProp?.trim() || (typedValid ? typed : '') || null;
   const { balance, tokenInfo, decimals, transferHuman, status, hash, explorerUrl, error, reset, loading } =
     useQRC20(tokenAddress);
+  const { contacts } = useAddressBook();
   const recentTokens = useSyncExternalStore(subscribeRecentTokens, getRecentTokens, getRecentTokens);
   const myTokens = useMemo(
     () => recentTokens.filter((t) => t.network === network?.id),
@@ -205,6 +206,7 @@ export function TokenPanel({
             onChange={form.setTo}
             error={form.errors.to}
             recents={form.recents}
+            contacts={contacts}
             labels={l}
           />
           <AmountInput

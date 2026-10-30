@@ -117,7 +117,7 @@ export type VerifySignInOptions = {
   domain: string;
   /** Required: the nonce in the message must be issued by and consumed from this store. */
   nonceStore: NonceStore;
-  /** Expected chain id; when set, a `Chain ID` line in the message must match. */
+  /** Expected chain id; when set, the message must carry a `Chain ID` line that matches. */
   chainId?: string;
   now?: number;
   maxAgeSec?: number;

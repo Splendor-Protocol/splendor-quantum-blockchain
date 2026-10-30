@@ -47,6 +47,8 @@ import { TokenStats } from '@splendor/dapp-spec/blocks/TokenStats.tsx';
 import { Tokenomics } from '@splendor/dapp-spec/blocks/Tokenomics.tsx';
 import { LiveStat } from '@splendor/dapp-spec/blocks/LiveStat.tsx';
 import { ContractForm } from '@splendor/dapp-spec/blocks/ContractForm.tsx';
+import { Nft721Gallery } from '@splendor/dapp-spec/blocks/Nft721Gallery.tsx';
+import { X402Paywall } from '@splendor/dapp-spec/blocks/X402Paywall.tsx';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyComponent = ComponentType<any>;
@@ -99,6 +101,8 @@ const BLOCKS: Record<string, AnyComponent> = {
   Tokenomics,
   LiveStat,
   ContractForm,
+  Nft721Gallery,
+  X402Paywall,
 };
 
 /** Packages the playground can render. Third-party widget packages register here (phase 2). */

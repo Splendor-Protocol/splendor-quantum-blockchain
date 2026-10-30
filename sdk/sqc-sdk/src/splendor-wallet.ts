@@ -896,6 +896,11 @@ export class SplendorPQBridge {
     message: string,
     opts?: SignMessageOpts,
   ): Promise<{ address: string; publicKeyB64: string; signatureB64: string; message: string }> {
+    if (opts?.raw === true && this.opts.allowRawSign !== true) {
+      throw BridgeError.userRejected(
+        'signMessage rejects raw:true unless the wallet is created with allowRawSign: true — domain separation required',
+      );
+    }
     return this.withSignLock(async () => {
       await this.init();
       if (!this.isUnlocked()) {

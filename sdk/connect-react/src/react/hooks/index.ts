@@ -8,4 +8,6 @@ export * from './modules.js';
 export * from './signIn.js';
 export * from './read.js';
 export * from './pending.js';
+export * from './chain.js';
+export * from './addressBook.js';
 // DEX / Exchange hooks removed — leftover adapters are @splendor/sqc-sdk/defi only until node routes them.

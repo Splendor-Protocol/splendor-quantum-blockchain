@@ -10,7 +10,22 @@
  */
 import type { ComponentType } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { AccountCard, DeployTokenWidget, PendingTxList, SignInButton, TokenPanel, TransferWidget } from './widgets/index.js';
+import {
+  AccountCard,
+  ActivityFeed,
+  AddressBook,
+  BridgeClaimWidget,
+  DeployTokenWidget,
+  NftPanel,
+  PendingTxList,
+  QrCode,
+  ReceiveWidget,
+  SignInButton,
+  TokenBalances,
+  TokenPanel,
+  TransferWidget,
+  ValidatorList,
+} from './widgets/index.js';
 import { SplendorConnectProvider } from './react/provider.js';
 import { TxToastHost } from './ui/index.js';
 
@@ -27,6 +42,14 @@ const WIDGETS: Record<string, ComponentType<AnyProps>> = {
   'deploy-token': DeployTokenWidget as ComponentType<AnyProps>,
   'sign-in': SignInButton as ComponentType<AnyProps>,
   'pending-tx': PendingTxList as ComponentType<AnyProps>,
+  'nft-panel': NftPanel as ComponentType<AnyProps>,
+  'bridge-claim': BridgeClaimWidget as ComponentType<AnyProps>,
+  'validator-list': ValidatorList as ComponentType<AnyProps>,
+  'activity-feed': ActivityFeed as ComponentType<AnyProps>,
+  receive: ReceiveWidget as ComponentType<AnyProps>,
+  'address-book': AddressBook as ComponentType<AnyProps>,
+  'token-balances': TokenBalances as ComponentType<AnyProps>,
+  'qr-code': QrCode as ComponentType<AnyProps>,
 };
 
 const roots = new WeakMap<Element, Root>();

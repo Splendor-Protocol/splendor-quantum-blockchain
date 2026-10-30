@@ -2,6 +2,10 @@
 /**
  * create-splendor-dapp — scaffold a Vite + React dApp with ConnectKit + TransferWidget.
  *
+ * Deprecated: this minimal template ships inside @splendor/connect-react under the same bin name
+ * as the full scaffolder (`npm create splendor-dapp@latest`, package `create-splendor-dapp`).
+ * It still works, but prints a notice pointing there.
+ *
  *   npx create-splendor-dapp my-dapp
  *   npm exec create-splendor-dapp my-dapp
  */
@@ -39,7 +43,15 @@ function copyDir(src, dest) {
   }
 }
 
+function deprecationNotice() {
+  console.warn(`[@splendor/connect-react] This create-splendor-dapp bin is deprecated and will be removed in a future major.
+Use the full scaffolder instead (more templates, Vite or Next.js):
+  npm create splendor-dapp@latest
+`);
+}
+
 function main() {
+  deprecationNotice();
   const name = process.argv[2];
   if (!name || name === '-h' || name === '--help') {
     usage();

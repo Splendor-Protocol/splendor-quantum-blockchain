@@ -424,6 +424,7 @@ go test ./sdk/sqc-sdk/signer -count=1
 - Hosting WASM assets: see [`docs/WASM_HOSTING.md`](docs/WASM_HOSTING.md).
 - **CSP:** the Go WASM runtime needs `script-src 'self' 'wasm-unsafe-eval'` (`'unsafe-eval'` on older browsers). Add `frame-ancestors 'none'` so other sites cannot frame your signing UI.
 - **ABI strings:** `"42"` is decimal; hex must be `0x`-prefixed. Bare hex and free text throw instead of being guessed.
+- **Message signing:** unstructured messages are domain-separated. `signMessage(msg, { raw: true })` is refused unless the wallet is created with `allowRawSign: true`; injected and extension providers always refuse it. `verifySignIn({ chainId })` rejects messages that carry no `Chain ID`.
 - **Amounts and fees:** raw amounts must be non-negative integers in base units. Set `maxFee` on the wallet to cap any fee a caller passes; `payX402` accepts `maxAmount` and defaults `valid_before` to now + 300 s.
 - **Seeds:** `Keypair` never serializes its seed (`JSON.stringify`, `console.log`), the wallet drops a `seed` passed in its options, and WASM exports are removed from `globalThis` after load.
 - **Explorer links:** `txExplorerUrl` only links 64-hex hashes, and `registerNetwork` rejects non-`https` explorer URLs (loopback `http` is allowed).

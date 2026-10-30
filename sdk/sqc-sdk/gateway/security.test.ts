@@ -168,6 +168,22 @@ describe('gateway service-wallet API key', () => {
     const health = await gw.app.inject({ method: 'GET', url: '/health' });
     expect(health.statusCode).toBe(200);
   }, 60_000);
+
+  it('shows the service wallet address in /health only to callers with the API key', async () => {
+    const apiKey = 'correct-key-32chars-xxxxxxxxxxxx';
+    gw = await buildServer({
+      mode: 'service-wallet',
+      serviceSeed: GOLDEN_SEED,
+      apiKey,
+      logger: false,
+      listen: false,
+      rateMax: 10_000,
+    });
+    const anon = await gw.app.inject({ method: 'GET', url: '/health' });
+    expect(anon.json().service_address).toBeNull();
+    const keyed = await gw.app.inject({ method: 'GET', url: '/health', headers: { 'x-api-key': apiKey } });
+    expect(keyed.json().service_address).toMatch(/^SQ:[0-9a-f]{64}$/i);
+  }, 60_000);
 });
 
 describe('gateway body limit and rate limit', () => {
@@ -305,6 +321,25 @@ describe('gateway custodial + CORS and chain_id', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ code: 'CHAIN_MISMATCH' });
+  }, 60_000);
+
+  it('answers malformed signedTx JSON with 400 INVALID_PARAMS', async () => {
+    gw = await buildServer({
+      mode: 'proxy',
+      allowCustodialProxy: false,
+      logger: false,
+      listen: false,
+      rateMax: 10_000,
+      rateTxMax: 10_000,
+      rpcUrl: 'http://127.0.0.1:1',
+    });
+    const res = await gw.app.inject({
+      method: 'POST',
+      url: '/v1/tx/submit',
+      payload: { signedTx: '{not json' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ code: 'INVALID_PARAMS' });
   }, 60_000);
 
   it('rejects unknown body fields via schema', async () => {

@@ -48,6 +48,15 @@ describe('PreviewFrame', () => {
     expect(onNavigate).toHaveBeenCalledWith('/x');
   });
 
+  it('sends the frame token with every message to the frame', () => {
+    renderFrame();
+    const el = frame();
+    const spy = vi.spyOn(el.contentWindow!, 'postMessage').mockImplementation(() => {});
+    fromFrame({ type: 'ready', token: tokenOf(el) });
+    expect(spy).toHaveBeenCalled();
+    for (const [msg] of spy.mock.calls) expect((msg as { token?: string }).token).toBe(tokenOf(el));
+  });
+
   it('replaces a frame that left the preview with a new one and a new token, and stops after a few', () => {
     const onNavigate = renderFrame();
     const tokens = new Set([tokenOf(frame())]);

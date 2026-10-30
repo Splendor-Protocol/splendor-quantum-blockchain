@@ -511,6 +511,23 @@ describe('generateProject: contracts.ts, actions.ts and vendor mode', () => {
     }
   });
 
+  it('vendor mode refuses vendorFiles paths outside vendor/@splendor/', () => {
+    const gen = (path: string) =>
+      generateProject(ready('wallet-dashboard'), { framework: 'vite', catalog, versions, sdk: 'vendor', vendorFiles: { [path]: 'x' } });
+    for (const path of [
+      '../escape.js',
+      'vendor/@splendor/../../escape.js',
+      '/etc/passwd',
+      'C:/Windows/evil.js',
+      'vendor\\@splendor\\x.js',
+      'src/App.tsx',
+      'vendor/@splendor//x.js',
+    ]) {
+      expect(() => gen(path), path).toThrow(/unsafe path/);
+    }
+    expect(gen('vendor/@splendor/sqc-sdk/dist/index.js').files['vendor/@splendor/sqc-sdk/dist/index.js']).toBe('x');
+  });
+
   it('npm mode never emits file: dependencies', () => {
     const pkg = JSON.parse(generateProject(ready('wallet-dashboard'), { framework: 'vite', catalog, versions }).files['package.json']!);
     expect(JSON.stringify(pkg.dependencies)).not.toContain('file:');
@@ -983,6 +1000,86 @@ describe('data blocks', () => {
       const copied = Object.keys(files).find((k) => k.endsWith('blocks/TokenStats.tsx'));
       expect(copied).toBeDefined();
       expect(files[copied!]).toContain('export function TokenStats');
+    });
+  }
+});
+
+describe('chain-native widgets and blocks', () => {
+  const COLLECTION = 'SQ:' + 'c1'.repeat(32);
+  function one(widget: string, props: Record<string, string | number | boolean>) {
+    const spec = emptySpec('x');
+    addBlock(spec, { id: 'blk', widget, props });
+    return issuesOf(spec);
+  }
+  const at = (prop: string) => `pages[0].blocks[1].props.${prop}`;
+  const entry = (id: string) => catalog.find((c) => c.id === id)!;
+
+  it('lists the new connect-react widgets and dapp-spec blocks in the catalog', () => {
+    const ids = catalog.map((e) => e.id);
+    for (const id of ['nft-panel', 'bridge-claim', 'validator-list', 'activity-feed', 'receive', 'address-book', 'token-balances', 'qr-code', 'nft721-gallery', 'x402-paywall']) {
+      expect(ids, id).toContain(id);
+    }
+    expect(entry('nft721-gallery').kind).toBe('block');
+    expect(entry('receive').kind).toBe('widget');
+  });
+
+  it('token id lists accept numbers and ascending ranges only', () => {
+    expect(one('nft721-gallery', { collection: COLLECTION, tokenIds: '1-12, 20' })).toEqual([]);
+    expect(one('nft-panel', { collectionAddress: COLLECTION, tokenIds: '3 5 7-9' })).toEqual([]);
+    for (const bad of ['9-3', '1.5', 'a-b', '1--2']) {
+      expect(one('nft721-gallery', { collection: COLLECTION, tokenIds: bad }).map((i) => i.path), bad).toEqual([at('tokenIds')]);
+    }
+  });
+
+  it('x402 resource and indexer URLs must be https, or http on localhost', () => {
+    expect(one('x402-paywall', { resourceUrl: 'https://api.example.com/premium' })).toEqual([]);
+    expect(one('x402-paywall', { resourceUrl: 'http://localhost:8787/premium' })).toEqual([]);
+    expect(one('x402-paywall', { resourceUrl: 'http://api.example.com/premium' })).toContainEqual({
+      path: at('resourceUrl'),
+      message: 'must be an https URL (http is allowed only for localhost)',
+    });
+    expect(one('x402-paywall', { resourceUrl: 'https://u:p@api.example.com' }).map((i) => i.path)).toContain(at('resourceUrl'));
+    expect(one('activity-feed', { indexerUrl: 'http://indexer.example' }).map((i) => i.path)).toContain(at('indexerUrl'));
+    expect(one('activity-feed', { indexerUrl: 'https://indexer.example', blocks: 500 })).toEqual([]);
+    expect(one('activity-feed', { blocks: 5000 }).map((i) => i.path)).toContain(at('blocks'));
+  });
+
+  it('token-balances takes up to 20 SQ: addresses', () => {
+    expect(one('token-balances', { tokens: `${RECIPIENT}, ${COLLECTION}` })).toEqual([]);
+    expect(one('token-balances', { tokens: `${RECIPIENT}, 0x12` }).map((i) => i.path)).toEqual([at('tokens')]);
+    const many = Array.from({ length: 21 }, (_, i) => 'SQ:' + i.toString(16).padStart(64, '0')).join(',');
+    expect(one('token-balances', { tokens: many })).toContainEqual({ path: at('tokens'), message: 'at most 20 tokens' });
+  });
+
+  it('bridge-claim needs its bridge address', () => {
+    expect(one('bridge-claim', {}).map((i) => i.path)).toEqual([at('bridgeAddress')]);
+    expect(one('bridge-claim', { bridgeAddress: COLLECTION })).toEqual([]);
+  });
+
+  for (const framework of ['vite', 'next'] as const) {
+    it(`${framework}: exports widgets from the package and copies the new block sources`, () => {
+      const spec = emptySpec('Chain page');
+      addBlock(spec, { id: 'gal', widget: 'nft721-gallery', props: { collection: COLLECTION, tokenIds: '1-4' } });
+      addBlock(spec, { id: 'pay', widget: 'x402-paywall', props: { payTo: RECIPIENT, price: '0.5' } });
+      addBlock(spec, { id: 'recv', widget: 'receive', props: { showAmount: true } });
+      addBlock(spec, { id: 'vals', widget: 'validator-list', props: { maxRows: 10 } });
+      const v = validateSpec(spec, { catalog });
+      expect(v.ok, JSON.stringify(!v.ok && v.issues)).toBe(true);
+      const files = generateProject(spec, { framework, catalog, versions }).files;
+      const usage = Object.entries(files)
+        .filter(([k]) => !/blocks\//.test(k))
+        .map(([, src]) => src)
+        .join('\n');
+      expect(usage).toContain('<Nft721Gallery');
+      expect(usage).toContain('<X402Paywall');
+      expect(usage).toContain('<ReceiveWidget');
+      expect(usage).toContain('<ValidatorList');
+      expect(usage).toMatch(/import \{[^}]*ReceiveWidget[^}]*\} from "@splendor\/connect-react"|from '@splendor\/connect-react'/);
+      for (const file of ['Nft721Gallery.tsx', 'X402Paywall.tsx', 'parseList.ts']) {
+        const copied = Object.keys(files).find((k) => k.endsWith(`blocks/${file}`));
+        expect(copied, file).toBeDefined();
+      }
+      expect(blockSource('X402Paywall.tsx')).toContain("'X-Payment'");
     });
   }
 });

@@ -124,6 +124,129 @@ console.log(await new QRC721(connection, 'SQ:…').collectionInfo());`,
     },
   },
   {
+    id: 'qrc721-owners',
+    title: 'NFT collection page: who owns what',
+    module: 'qrc721',
+    description:
+      'QRC-721 has no enumeration read, so a collection page checks a range of ids with ownerOf. Unminted ids throw. Drop the "QRC-721 NFT panel" widget to get this with send and mint.',
+    inputs: [
+      { name: 'collection', label: 'Collection address', placeholder: 'SQ:…' },
+      { name: 'ids', label: 'Token ids', defaultValue: '1-6' },
+    ],
+    code: `import { QRC721 } from '@splendor/sqc-sdk/tokens';
+
+const nft = new QRC721(connection, 'SQ:…');
+const owners = {};
+for (let id = 1; id <= 6; id++) {
+  owners[id] = await nft.ownerOf(String(id)).catch(() => null); // null = not minted
+}
+
+// React: <NftPanel collectionAddress="SQ:…" tokenIds="1-6" />`,
+    run: async ({ connection, inputs, address }) => {
+      if (!connection) throw new Error('Read connection not ready yet');
+      const { QRC721 } = await import('@splendor/sqc-sdk/tokens');
+      const nft = new QRC721(connection, needAddress(inputs.collection, 'Collection address'));
+      const m = /^(\d+)-(\d+)$/.exec((inputs.ids ?? '').trim() || '1-6');
+      const [from, to] = m ? [Number(m[1]), Math.min(Number(m[2]), Number(m[1]) + 49)] : [1, 6];
+      const owners: Record<string, string | null> = {};
+      for (let id = from; id <= to; id++) owners[id] = await nft.ownerOf(String(id)).catch(() => null);
+      const mine = address ? Object.keys(owners).filter((id) => owners[id] === address) : [];
+      return { collection: await nft.collectionInfo(), owners, yours: mine };
+    },
+  },
+  {
+    id: 'validators-list',
+    title: 'Validator dashboard',
+    module: 'validators',
+    description: 'The active validator set and the registration bond, from the routed validators module reads. No wallet needed.',
+    code: `// Module reads go through the router like token reads (POST /call).
+const list = await connection.moduleCall({ module: 'validators', action: 'list', params: {} });
+const bond = await connection.moduleCall({ module: 'validators', action: 'bond', params: {} });
+
+// React: const { validators } = useValidators();  or drop the "Validator directory" widget.`,
+    run: async ({ connection }) => {
+      if (!connection) throw new Error('Read connection not ready yet');
+      const list = await connection
+        .moduleCall<unknown[]>({ module: 'validators', action: 'list', params: {} })
+        .catch((e: unknown) => (e instanceof Error && /decoded result is empty/.test(e.message) ? [] : Promise.reject(e)));
+      const bond = await connection.moduleCall<Record<string, unknown>>({ module: 'validators', action: 'bond', params: {} });
+      const { parseValidator } = await import('@splendor/connect-react');
+      return { count: Array.isArray(list) ? list.length : 0, bond, validators: (Array.isArray(list) ? list : []).map(parseValidator) };
+    },
+  },
+  {
+    id: 'activity-logs',
+    title: 'Token activity from event logs',
+    module: 'activity',
+    description:
+      'QRC-20 Transfer events touching an address in the last 2000 blocks (the node limit per query). Topics are SHA3-256 of the event signature; an indexed address is its 32 raw bytes.',
+    inputs: [{ name: 'owner', label: 'Address', placeholder: 'SQ:… (empty: connected wallet)' }],
+    code: `import { TOPIC_TRANSFER, mergeActivity } from '@splendor/connect-react';
+
+const me = 'SQ:…';
+const { height } = await connection.getStatus();
+const window = { from_block: Math.max(0, height - 2000), to_block: height };
+const sent = await connection.getLogs({ ...window, topics: [TOPIC_TRANSFER, me.slice(3)] });
+const received = await connection.getLogs({ ...window, topics: [TOPIC_TRANSFER, '', me.slice(3)] });
+console.log(mergeActivity([...sent.logs, ...received.logs], me));
+
+// React: const { items } = useActivity();  or drop the "Activity feed" widget.`,
+    run: async ({ connection, inputs, address }) => {
+      if (!connection) throw new Error('Read connection not ready yet');
+      const me = inputs.owner?.trim() ? needAddress(inputs.owner, 'Address') : address;
+      if (!me) throw new Error('Connect a wallet or enter an address');
+      const { TOPIC_TRANSFER, mergeActivity } = await import('@splendor/connect-react');
+      const status = (await connection.getStatus()) as { height?: number };
+      const head = Number(status.height) || 0;
+      const window = { from_block: Math.max(0, head - 2000), to_block: head };
+      const topic = me.slice(3).toLowerCase();
+      const [sent, received] = await Promise.all([
+        connection.getLogs({ ...window, topics: [TOPIC_TRANSFER, topic] }),
+        connection.getLogs({ ...window, topics: [TOPIC_TRANSFER, '', topic] }),
+      ]);
+      return { window, activity: mergeActivity([...(sent.logs ?? []), ...(received.logs ?? [])], me) };
+    },
+  },
+  {
+    id: 'x402-quote',
+    title: 'Paid content: read an x402 price',
+    module: 'x402',
+    description:
+      'A server behind createX402Middleware answers 402 with payment requirements. Empty URL: show what such a server would send. The "Paywall (x402)" block runs the whole pay-and-retry flow.',
+    inputs: [
+      { name: 'url', label: 'Paid resource URL', placeholder: 'https://api.example.com/premium (empty: demo)' },
+      { name: 'payTo', label: 'Demo pay-to', defaultValue: 'SQ:' + '5e'.repeat(32) },
+      { name: 'price', label: 'Demo price (SPLD)', defaultValue: '0.1' },
+    ],
+    code: `// Server (Express-style):
+import { createX402Middleware } from '@splendor/sqc-sdk/x402';
+app.use('/premium', createX402Middleware({ payTo: 'SQ:…', price: '0.1', connection }));
+
+// Client: get the price, pay with the wallet, retry with the payment.
+const first = await fetch(url);                       // 402
+const { requirements } = await first.json();          // { pay_to, amount (atto) }
+const { payload } = await wallet.payX402({ to: requirements.pay_to, amount: requirements.amount, requirements, settle: true });
+const paid = await fetch(url, { headers: { 'X-Payment': JSON.stringify(payload) } });`,
+    run: async ({ connection, inputs }) => {
+      const url = inputs.url?.trim();
+      if (url) {
+        if (!/^https:\/\//i.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)[:/]/i.test(url)) {
+          throw new Error('URL must be https (http only for localhost)');
+        }
+        const res = await fetch(url, { credentials: 'omit' });
+        const body = await res.json().catch(() => null);
+        return { status: res.status, requirements: (body as { requirements?: unknown } | null)?.requirements ?? null };
+      }
+      if (!connection) throw new Error('Read connection not ready yet');
+      const { X402Client } = await import('@splendor/sqc-sdk/x402');
+      return {
+        demo: true,
+        status: 402,
+        requirements: X402Client.fromConnection(connection).buildRequirements(needAddress(inputs.payTo, 'Demo pay-to'), inputs.price?.trim() || '0.1'),
+      };
+    },
+  },
+  {
     id: 'qrc1155-balance',
     title: 'QRC-1155 balance',
     module: 'qrc1155',

@@ -4,6 +4,10 @@
  * that use file: dependencies (StackBlitz / unpublished npm).
  *
  *   npm run pack:sdk-vendor
+ *   node scripts/pack-sdk-vendor.mjs --check   # fail when the packed versions differ from source
+ *
+ * Packing refuses a package whose `src` is newer than its `dist` (a stale build), unless
+ * PACK_ALLOW_STALE=1.
  *
  * What ends up where:
  * - `vendor/@splendor/sqc-sdk` and `vendor/@splendor/connect-react` are copied AND listed in
@@ -50,6 +54,49 @@ function walkFiles(dir, base, into) {
   }
 }
 
+function newestMtime(dir) {
+  let newest = 0;
+  if (!existsSync(dir)) return newest;
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    const st = statSync(full);
+    newest = Math.max(newest, st.isDirectory() ? newestMtime(full) : st.mtimeMs);
+  }
+  return newest;
+}
+
+const readVersion = (dir) => JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version;
+
+// `--check`: the packed copy (manifest.json) must match the source package versions. For CI, after packing.
+if (process.argv.includes('--check')) {
+  const manifestPath = join(vendorRoot, 'manifest.json');
+  if (!existsSync(manifestPath)) {
+    console.error('[pack-sdk-vendor] no manifest.json; run npm run pack:sdk-vendor');
+    process.exit(1);
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const drift = packs
+    .filter((p) => manifest.versions?.[p.name] !== undefined || !p.optional)
+    .filter((p) => manifest.versions?.[p.name] !== readVersion(p.from))
+    .map((p) => `${p.name}: packed ${manifest.versions?.[p.name] ?? '(none)'}, source ${readVersion(p.from)}`);
+  if (drift.length) {
+    console.error(`[pack-sdk-vendor] vendored packages are stale:\n  ${drift.join('\n  ')}\nRun npm run build:packages && npm run pack:sdk-vendor`);
+    process.exit(1);
+  }
+  console.log('[pack-sdk-vendor] vendored packages match source versions');
+  process.exit(0);
+}
+
+// A dist older than its sources would ship last build's code under this version.
+for (const p of packs) {
+  const dist = join(p.from, 'dist');
+  if (!existsSync(dist)) continue;
+  if (newestMtime(join(p.from, 'src')) > newestMtime(dist) && process.env.PACK_ALLOW_STALE !== '1') {
+    console.error(`[pack-sdk-vendor] ${p.name}: src is newer than dist; run npm run build:packages (or set PACK_ALLOW_STALE=1)`);
+    process.exit(1);
+  }
+}
+
 rmSync(vendorRoot, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
@@ -76,6 +123,7 @@ for (const p of packs) {
   const pkgPath = join(dest, 'package.json');
   if (existsSync(pkgPath)) {
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    p.version = pkg.version;
     delete pkg.scripts?.prepare;
     delete pkg.scripts?.prepublishOnly;
     // npm installs a file: dependency's devDependencies too (a published tarball never has them):
@@ -107,6 +155,7 @@ writeFileSync(
     {
       packedAt: new Date().toISOString(),
       packages: packed.map((p) => p.name),
+      versions: Object.fromEntries(packs.filter((p) => p.version).map((p) => [p.name, p.version])),
       bundled: packed.filter((p) => p.bundled).map((p) => p.name),
       skipped,
       fileCount: Object.keys(bundle).length,

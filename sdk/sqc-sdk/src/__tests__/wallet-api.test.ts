@@ -78,7 +78,11 @@ describe('Phase 1 — canonical Wallet API', () => {
     const ok = await wallet.verifyMessage(signed.publicKeyB64, 'hello dapp', signed.signatureB64);
     expect(ok).toBe(true);
 
-    const raw = await wallet.signMessage('raw-bytes', { raw: true });
+    await expect(wallet.signMessage('raw-bytes', { raw: true })).rejects.toThrow(/allowRawSign/);
+
+    const rawWallet = track(new Wallet({ networkId: 'local', allowUnpinnedWasm: true, allowRawSign: true }));
+    await rawWallet.connect({ mode: 'seed', seed: GOLDEN_SEED });
+    const raw = await rawWallet.signMessage('raw-bytes', { raw: true });
     expect(raw.message).toBe('raw-bytes');
   }, 30_000);
 

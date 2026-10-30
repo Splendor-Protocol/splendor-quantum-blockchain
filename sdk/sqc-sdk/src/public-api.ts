@@ -221,6 +221,7 @@ export {
   requestWithAlias,
   isExtensionProvider,
   isInPageProvider,
+  SPLENDOR_WALLET_RDNS,
 } from './wallet/extension-provider.js';
 export type { SplendorProviderLike } from './wallet/extension-provider.js';
 export { createSession } from './session.js';

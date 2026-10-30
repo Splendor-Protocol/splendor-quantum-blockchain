@@ -77,7 +77,7 @@
     "node": ">=18"
   },
   "peerDependencies": {
-    "@splendor/sqc-sdk": ">=3.0.0",
+    "@splendor/sqc-sdk": ">=3.0.0 <4",
     "react": ">=18",
     "react-dom": ">=18",
     "vite": ">=5"

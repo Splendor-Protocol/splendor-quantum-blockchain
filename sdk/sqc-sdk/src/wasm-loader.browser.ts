@@ -39,7 +39,14 @@ async function loadAndPinExecJs(g: Record<string, unknown>, opts?: LoadWasmOpts)
     return existing;
   }
   if (existing && !opts?.execSha256) {
-    // An app may load wasm_exec.js with a <script> tag; without a pin we cannot verify it.
+    // A pinned .wasm is only as safe as the glue that instantiates it: a foreign Go we cannot verify
+    // could hand the signer any imports it likes.
+    if (opts?.wasmSha256) {
+      throw BridgeError.wasm(
+        'wasm_exec.js was loaded by another script and cannot be verified; pass execSha256 alongside wasmSha256',
+      );
+    }
+    // Unpinned (local development): an app may load wasm_exec.js with a <script> tag.
     return existing;
   }
   const src = opts?.execUrl || '/wasm_exec.js';

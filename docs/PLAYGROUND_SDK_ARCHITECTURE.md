@@ -204,7 +204,10 @@ compose hooks with review, fee and confirmation UI.
 | No hook uses `subscribe()`; everything polls. | `src/react/hooks/*` | Next |
 | `ui/` strings (modals, toasts, connect button) are not translatable. | `src/ui/*` | Next |
 | No `system` theme, no mobile modal height cap, no toast stack limit. | `src/theme/*`, `src/ui/*` | Next |
-| Missing widgets: activity, NFT gallery, receive with QR, fee selector, address book. | `src/widgets/*`, `src/manifest.ts` | Later |
+| Missing widgets: activity, NFT gallery, receive with QR, fee selector, address book. | `src/widgets/*`, `src/manifest.ts` | Fixed except the fee selector (Phase 1 chain widgets) |
+| `ValidatorsClient.list()` calls `GET /validators`, which the node does not serve. | `sqc-sdk/src/validators.ts` | `useValidators` uses the routed `validators.list` read; fix the client next |
+| QRC-721 emits no events, so ownership cannot be read from logs. | `vm/qrc721.go` | Open (NFT panel scans an id range) |
+| Explorer log JSON encodes topics, addresses and hashes as byte arrays and `data` as base64, unlike `ChainLog`'s string types. | `core/types/receipt.go`, `sqc-sdk/src/core/explorer-types.ts` | Parsed in `core/activity.ts`; align the type next |
 | The controller is built on the deprecated `createSplendorClient` and `SqcProvider`. | `src/core/controller.ts` | Later (major) |
 
 ### sqc-sdk core
@@ -266,10 +269,47 @@ compose hooks with review, fee and confirmation UI.
 - Second review: the fixes in the table above, with tests for each scenario (API on SQLite and
   Postgres, unit, and Playwright on the production build), and a Postgres CI job.
 
-### Next
+### Done in Phase 1: chain-native widgets
+
+- connect-react widgets, with manifest and embed entries: `nft-panel` (QRC-721 grid, send and
+  owner-only mint), `bridge-claim` (status, burn lookup, opt-in operator claim), `validator-list`
+  (active set, bond, admission lookup), `activity-feed` (QRC-20 / QRC-1155 transfer logs plus
+  pending sends, optional `/idx/v1/logs` indexer), `receive` (QR code and `splendor:` payment
+  link), `address-book` (per-network local contacts, offered as quick picks in transfer widgets),
+  `token-balances`, and a `qr-code` part.
+- Hooks `useValidators`, `useActivity` and `useAddressBook`; `useBridge` reads work before
+  connecting; a dependency-free QR encoder (`widgets/parts/qr.ts`) checked against the ISO
+  Reed-Solomon example and an independent decoder.
+- dapp-spec blocks `nft721-gallery` and `x402-paywall` (402 requirements, `payX402`, retry with
+  `X-Payment`, price cap; a labelled client-only demo without a resource URL), with validation
+  for id ranges, https-or-localhost URLs and token lists.
+- Playground: mock QRC-721 ownership, bridge, validators, Transfer logs with a moving head and
+  x402 settlement; four Learn recipes; the "NFT membership" template; unit, preview and
+  Playwright coverage.
+
+### Phase 2: builder logic
+
+- Shared variables in the spec, props bound to variables or contract reads, stored `onSuccess`
+  / `onError` actions (navigate, toast, set a variable, refresh), wired `form-*` blocks and
+  conditional visibility (spec v3 with a migration).
+
+### Phase 3: builder UX
+
+- Command palette, multi-select and group edits, asset library, per-page SEO and favicon,
+  an accessibility checker in the issues panel, breakpoint overrides, shortcut help.
+
+### Phase 4: publishing
 
 - Hosted publishing: a worker that builds queued deployments (the route records them; nothing
-  builds them yet).
+  builds them yet), preview subdomains, generated `_headers` / `vercel.json` with a CSP, CI and
+  smoke tests in exports, typed contract clients bound to the UI.
+
+### Phase 5: AI and collaboration
+
+- Spec generation from a prompt (checked by `validateSpec`), one-click fixes for issues,
+  workspace members and roles, comments on nodes, an activity log.
+
+### Next
 - connect-react: `useChainEvents`, consistent hook results, translatable `ui/` strings,
   `system` theme and mobile polish.
 - sqc-sdk: RPC total time budget and per-URL circuit breaker; CSP review for `wasm_exec.js`;
@@ -281,8 +321,8 @@ compose hooks with review, fee and confirmation UI.
   `createSplendorClient`, `evmAddress` and the deprecated hook names.
 - Prune the SDK's duplicate client constructors and EVM leftovers; rename the unit helpers
   (aliases ship in a minor first).
-- New widgets: activity feed, NFT gallery, receive with QR, fee selector, address book,
-  token balances.
+- New widgets: fee selector (the rest shipped in Phase 1); a staking flow once validator
+  registration is open to the widgets.
 - API: workspace members and roles, metrics, OpenAPI, Postgres migration lock, shared
   rate-limit store (the API stays a single instance until then).
 - Studio: multi-select and a command palette.

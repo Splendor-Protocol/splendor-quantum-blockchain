@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { useConnectState } from '../context.js';
 import { notReady } from '../hookErrors.js';
 import { useDeployAction, useTxAction, type TxHookStatus } from '../useTxAction.js';
-import { useWallet } from './core.js';
+import { useReadConnection, useWallet } from './core.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
 export function useBridge(bridgeAddress: string | null): {
@@ -25,23 +25,21 @@ export function useBridge(bridgeAddress: string | null): {
   reset: () => void;
 } {
   const { wallet, ready } = useWallet();
+  const readConnection = useReadConnection();
   const network = useConnectState((s) => s.network);
   const tx = useTxAction(network);
 
-  const info = useCallback(async () => {
-    if (!bridgeAddress || !ready || !wallet) throw notReady('Bridge not ready', ready && wallet ? 'bridge' : null);
+  // Reads use the page connection, so bridge status shows before the user connects.
+  const reader = useCallback(async () => {
+    const conn = readConnection ?? (ready && wallet ? wallet.connection : null);
+    if (!bridgeAddress || !conn) throw notReady('Bridge not ready', conn ? 'bridge' : null);
     const { BridgeModule } = await import('@splendor/sqc-sdk/bridge');
-    return new BridgeModule(wallet.connection, bridgeAddress).info();
-  }, [bridgeAddress, ready, wallet]);
+    return new BridgeModule(conn, bridgeAddress);
+  }, [bridgeAddress, readConnection, ready, wallet]);
 
-  const claimed = useCallback(
-    async (id: number) => {
-      if (!bridgeAddress || !ready || !wallet) throw notReady('Bridge not ready', ready && wallet ? 'bridge' : null);
-      const { BridgeModule } = await import('@splendor/sqc-sdk/bridge');
-      return new BridgeModule(wallet.connection, bridgeAddress).claimed(id);
-    },
-    [bridgeAddress, ready, wallet],
-  );
+  const info = useCallback(async () => (await reader()).info(), [reader]);
+
+  const claimed = useCallback(async (id: number) => (await reader()).claimed(id), [reader]);
 
   const claim = useCallback(
     async (params: {

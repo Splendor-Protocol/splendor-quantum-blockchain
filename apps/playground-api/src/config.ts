@@ -70,10 +70,16 @@ function parseOrigin(value: string): string {
   return value;
 }
 
-function parseTrustProxy(raw: string | undefined): ApiConfig['trustProxy'] {
+function parseTrustProxy(raw: string | undefined, production: boolean, allowAll: boolean): ApiConfig['trustProxy'] {
   const v = (raw ?? '').trim();
   if (!v || v === 'false' || v === '0') return false;
-  if (v === 'true') return true;
+  if (v === 'true') {
+    // Trusting every peer lets any client that reaches the API directly pick its own IP.
+    if (production && !allowAll) {
+      throw new Error('TRUST_PROXY=true trusts every peer in production; list your proxies instead (e.g. loopback or 10.0.0.0/8), or set TRUST_PROXY_ALLOW_ALL=1');
+    }
+    return true;
+  }
   // Fastify ignores hop counts (they cannot tell who the immediate peer is), so say so instead.
   if (/^\d+$/.test(v)) throw new Error('TRUST_PROXY must list proxy addresses or CIDRs (e.g. loopback or 10.0.0.0/8), not a hop count');
   return list(v);
@@ -123,7 +129,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     cookieSecure,
     cookieSameSite: sameSite as ApiConfig['cookieSameSite'],
     cookieName: cookieSecure ? '__Host-sqc_pg_session' : 'sqc_pg_session',
-    trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    trustProxy: parseTrustProxy(env.TRUST_PROXY, production, env.TRUST_PROXY_ALLOW_ALL === '1'),
     chainId: env.SIGNIN_CHAIN_ID || undefined,
     github: {
       token: env.GITHUB_TOKEN || undefined,

@@ -57,7 +57,7 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly issues?: { path: string; message: string }[],
-    /** Machine-readable code when the API sends one (`CONFLICT`, `NOT_FOUND`, …). */
+    /** Machine-readable code when the API sends one (`CONFLICT`, `NOT_FOUND`, …), or `TIMEOUT` from the client. */
     readonly code?: string,
     /** For `CONFLICT`: the project as it is now on the server. */
     readonly current?: ProjectSummary,
@@ -66,18 +66,46 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** A request (including reading its body) that takes longer than this fails with code `TIMEOUT`. */
+export const REQUEST_TIMEOUT_MS = 20_000;
+
+export type RequestOptions = RequestInit & {
+  /** Overrides `REQUEST_TIMEOUT_MS`. */
+  timeoutMs?: number;
+};
+
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+  const { timeoutMs = REQUEST_TIMEOUT_MS, signal, ...rest } = init;
+  // One controller for both the caller's signal and the timeout, so the request stops either way.
+  const ctrl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort();
+  }, timeoutMs);
+  const forward = () => ctrl.abort(signal?.reason);
+  if (signal?.aborted) forward();
+  else signal?.addEventListener('abort', forward, { once: true });
+
   let res: Response;
+  let text: string;
   try {
     res = await fetch(`${API_URL}${path}`, {
-      ...init,
+      ...rest,
+      signal: ctrl.signal,
       credentials: 'include',
-      headers: { ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
+      headers: { ...(rest.body ? { 'content-type': 'application/json' } : {}), ...rest.headers },
     });
-  } catch {
+    text = await res.text();
+  } catch (e) {
+    if (timedOut) throw new ApiError('Playground API did not answer in time', 0, undefined, 'TIMEOUT');
+    // The caller cancelled: let it see its own abort, not a network error.
+    if (signal?.aborted) throw e;
     throw new ApiError('Playground API is not reachable', 0);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', forward);
   }
-  const text = await res.text();
   let body: Record<string, unknown> | null = {};
   try {
     body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
@@ -147,7 +175,7 @@ export const api = {
   shareProject: (id: string, expiresInDays?: number) =>
     request<ShareLink>(`/projects/${encodeURIComponent(id)}/share`, json('POST', expiresInDays ? { expiresInDays } : {})),
   unshareProject: (id: string) => request<{ ok: true }>(`/projects/${encodeURIComponent(id)}/share`, json('DELETE')),
-  getShared: (shareId: string) => request<{ name: string; spec: DappSpec }>(`/share/${encodeURIComponent(shareId)}`),
+  getShared: (shareId: string, signal?: AbortSignal) => request<{ name: string; spec: DappSpec }>(`/share/${encodeURIComponent(shareId)}`, { signal }),
 
   catalogFlags: () => request<{ flags: Record<string, CatalogFlag> }>('/catalog'),
   setCatalogFlag: (id: string, flag: CatalogFlag) => request<{ flags: Record<string, CatalogFlag> }>(`/admin/catalog/${encodeURIComponent(id)}`, json('PUT', flag)),

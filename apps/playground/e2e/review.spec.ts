@@ -235,6 +235,30 @@ test.describe('trash, version history and share links', () => {
     await expect(page.getByRole('alert')).toContainText('expired');
   });
 
+  test('a share link shows a protected page behind its sign-in gate, as a visitor would see it', async ({ page }) => {
+    // The home page must stay public, so the gated page is the second one.
+    const spec = {
+      version: 1,
+      name: 'Gated share',
+      network: 'testnet',
+      theme: { base: 'dark', overrides: {} },
+      pages: [
+        { path: '/', title: 'Home', blocks: [{ id: 'hero', widget: 'hero', props: { heading: 'Welcome' } }] },
+        { path: '/members', title: 'Members', access: 'signin', blocks: [{ id: 'secret', widget: 'hero', props: { heading: 'Members only content' } }] },
+      ],
+    };
+    await page.route('**/api/share/**', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ name: spec.name, spec }) }),
+    );
+    await page.goto('/s/abcdefghijkl');
+    await expect(preview(page).getByRole('heading', { name: 'Welcome' })).toBeVisible();
+    await preview(page).getByRole('link', { name: 'Members' }).click();
+    await expect(preview(page).getByText('Sign in to continue')).toBeVisible();
+    await expect(preview(page).getByText('Members only content')).toHaveCount(0);
+    // Visitor mode, not the builder: no "Visitors must sign in" note in place of the gate.
+    await expect(preview(page).getByText(/Visitors must sign in/)).toHaveCount(0);
+  });
+
   test('Escape in the stop-sharing confirm closes only the confirm, and the link stays live', async ({ page }) => {
     await savedProject(page);
     await page.getByTestId('tab-project').click();

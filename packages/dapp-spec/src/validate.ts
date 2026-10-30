@@ -40,6 +40,32 @@ const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const ADDRESS_RE = /^SQ:[0-9a-fA-F]{64}$/;
 const AMOUNT_RE = /^(0|[1-9]\d*)(\.\d{1,18})?$/;
 const INTEGER_RE = /^(0|[1-9]\d*)$/;
+/** Same cap as connect-react's TokenBalances. */
+const MAX_TOKEN_LIST = 20;
+
+/** "1-12, 5" style id lists: whole numbers or ascending ranges, comma / whitespace / newline separated. */
+function validIdRanges(value: string): boolean {
+  return value
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .every((part) => {
+      if (INTEGER_RE.test(part)) return true;
+      const m = /^(0|[1-9]\d*)-(0|[1-9]\d*)$/.exec(part);
+      return !!m && Number(m[1]) <= Number(m[2]);
+    });
+}
+
+/** https anywhere; http only for localhost / 127.0.0.1; never credentials in the URL. */
+function isHttpsOrLocalhost(value: string): boolean {
+  try {
+    const u = new URL(value);
+    if (u.username || u.password) return false;
+    if (u.protocol === 'https:') return true;
+    return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+  } catch {
+    return false;
+  }
+}
 const SIGNATURE_RE = /^[A-Za-z_$][A-Za-z0-9_$]*\([^()]*\)$/;
 /**
  * Theme / style values end up in CSS; keep them to plain tokens. `+` and `*` are allowed for
@@ -345,6 +371,17 @@ function checkProps(
       if (entry.id === 'nft-gallery' && name === 'tokenIds') {
         const parts = listItems(value).map((s) => s.trim()).filter(Boolean);
         if (parts.some((s) => !INTEGER_RE.test(s))) add(p, 'token ids must be whole numbers, comma or newline separated');
+      }
+      if ((entry.id === 'nft721-gallery' || entry.id === 'nft-panel') && name === 'tokenIds' && !validIdRanges(value)) {
+        add(p, 'token ids must be whole numbers or ranges like 1-12, comma separated');
+      }
+      if ((entry.id === 'x402-paywall' && name === 'resourceUrl') || (entry.id === 'activity-feed' && name === 'indexerUrl')) {
+        if (!isHttpsOrLocalhost(value)) add(p, 'must be an https URL (http is allowed only for localhost)');
+      }
+      if (entry.id === 'token-balances' && name === 'tokens') {
+        const parts = value.split(/[\s,]+/).filter(Boolean);
+        if (parts.some((s) => !ADDRESS_RE.test(s))) add(p, 'each token must be an SQ: address, comma separated');
+        else if (parts.length > MAX_TOKEN_LIST) add(p, `at most ${MAX_TOKEN_LIST} tokens`);
       }
     }
   }

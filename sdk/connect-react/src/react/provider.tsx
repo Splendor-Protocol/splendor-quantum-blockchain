@@ -101,23 +101,6 @@ function isUsableNetworkId(id: string, allowPlaceholder: boolean): boolean {
   return !isPlaceholderNetwork(net);
 }
 
-function initialNetworkId(
-  networkProp: NetworkId | undefined,
-  persistNetwork: boolean,
-  customNetworks: NetworkConfig[] | undefined,
-  allowPlaceholder: boolean,
-): NetworkId {
-  syncRegisterCustomNetworks(customNetworks);
-  if (networkProp && isUsableNetworkId(String(networkProp), allowPlaceholder)) {
-    return networkProp;
-  }
-  if (persistNetwork && typeof window !== 'undefined') {
-    const last = getLastNetworkId();
-    if (last && isUsableNetworkId(last, allowPlaceholder)) return last;
-  }
-  return 'local';
-}
-
 export function SplendorConnectProvider(props: SplendorConnectProviderProps) {
   const {
     children,

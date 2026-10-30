@@ -2,10 +2,15 @@ export { WidgetShell } from './WidgetShell.js';
 export type { WidgetShellProps } from './WidgetShell.js';
 export { WalletGate } from './WalletGate.js';
 export type { WalletGateProps } from './WalletGate.js';
+export { QrCode } from './QrCode.js';
+export type { QrCodeProps } from './QrCode.js';
+export { encodeQr, qrSvgPath } from './qr.js';
+export type { QrEcc, QrMatrix } from './qr.js';
 export {
   AddressInput,
   AmountInput,
   RecentRecipients,
+  ContactPicks,
   addressFieldError,
   amountFieldError,
 } from './inputs.js';

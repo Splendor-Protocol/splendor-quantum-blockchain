@@ -456,6 +456,110 @@ export function HomePage() {
 }
 `;
 
+exports[`generateProject > next: nft-membership > files 1`] = `
+[
+  ".env.example",
+  ".gitignore",
+  "README.md",
+  "app/HomePage.tsx",
+  "app/actions.ts",
+  "app/app.css",
+  "app/client-root.tsx",
+  "app/contracts.ts",
+  "app/layout.tsx",
+  "app/members/MembersPage.tsx",
+  "app/members/page.tsx",
+  "app/networks.ts",
+  "app/page.tsx",
+  "app/providers.tsx",
+  "blocks/AccessGate.tsx",
+  "blocks/Hero.tsx",
+  "blocks/HeroGradient.tsx",
+  "blocks/Nft721Gallery.tsx",
+  "blocks/pageHref.ts",
+  "blocks/parseList.ts",
+  "next-env.d.ts",
+  "next.config.mjs",
+  "package.json",
+  "scripts/copy-sqc-wasm.mjs",
+  "tsconfig.json",
+]
+`;
+
+exports[`generateProject > next: nft-membership > pages 1`] = `
+{
+  "app/HomePage.tsx": "'use client';
+
+import { HeroGradient } from '../blocks/HeroGradient';
+import { Nft721Gallery } from '../blocks/Nft721Gallery';
+
+export function HomePage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+        <HeroGradient
+          heading={"Members pass"}
+          text={"Each QRC-721 pass in this collection opens the members area. Signed with post-quantum keys."}
+          ctaLabel={"Open members area"}
+          ctaPath={"/members"}
+        />
+        <Nft721Gallery
+          title={"The collection"}
+          collection={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
+          tokenIds={"1-12"}
+          showOwner
+        />
+      </div>
+    </div>
+  );
+}
+",
+  "app/members/MembersPage.tsx": "'use client';
+
+import { ActivityFeed, AddressBook, NftPanel, ReceiveWidget } from '@splendor/connect-react';
+import { Hero } from '../../blocks/Hero';
+import { AccessGate } from '../../blocks/AccessGate';
+
+export function MembersPage() {
+  return (
+    <div className="dapp-page">
+      <AccessGate access="wallet" title={"Members"}>
+        <div className="dapp-section" data-node-id="members-root"
+          style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+          <Hero
+            heading={"Members area"}
+            text={"Your passes, your address and your recent activity."}
+          />
+          <div className="dapp-row" data-node-id="members-top"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="members-left"
+              style={{ gap: "1rem" }}>
+              <NftPanel
+                title={"Your passes"}
+                collectionAddress={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
+                tokenIds={"1-12"}
+                showTransfer
+                showMint
+                toast
+              />
+            </div>
+            <div className="dapp-column" data-node-id="members-right"
+              style={{ gap: "1rem" }}>
+              <ReceiveWidget showAmount qrSize={176} />
+              <AddressBook allowEdit />
+            </div>
+          </div>
+          <ActivityFeed blocks={2000} limit={25} showPending />
+        </div>
+      </AccessGate>
+    </div>
+  );
+}
+",
+}
+`;
+
 exports[`generateProject > next: tip-jar > files 1`] = `
 [
   ".env.example",
@@ -1261,6 +1365,102 @@ export function HomePage() {
           <PendingTxList pollMs={5000} />
         </div>
       </div>
+    </div>
+  );
+}
+",
+}
+`;
+
+exports[`generateProject > vite: nft-membership > files 1`] = `
+[
+  ".env.example",
+  ".gitignore",
+  "README.md",
+  "index.html",
+  "package.json",
+  "src/App.tsx",
+  "src/actions.ts",
+  "src/app.css",
+  "src/blocks/AccessGate.tsx",
+  "src/blocks/Hero.tsx",
+  "src/blocks/HeroGradient.tsx",
+  "src/blocks/Nft721Gallery.tsx",
+  "src/blocks/pageHref.ts",
+  "src/blocks/parseList.ts",
+  "src/contracts.ts",
+  "src/main.tsx",
+  "src/networks.ts",
+  "src/pages/HomePage.tsx",
+  "src/pages/MembersPage.tsx",
+  "tsconfig.json",
+  "vite.config.ts",
+]
+`;
+
+exports[`generateProject > vite: nft-membership > pages 1`] = `
+{
+  "src/pages/HomePage.tsx": "import { HeroGradient } from '../blocks/HeroGradient';
+import { Nft721Gallery } from '../blocks/Nft721Gallery';
+
+export function HomePage() {
+  return (
+    <div className="dapp-page">
+      <div className="dapp-section" data-node-id="home-root"
+        style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+        <HeroGradient
+          heading={"Members pass"}
+          text={"Each QRC-721 pass in this collection opens the members area. Signed with post-quantum keys."}
+          ctaLabel={"Open members area"}
+          ctaPath={"/members"}
+        />
+        <Nft721Gallery
+          title={"The collection"}
+          collection={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
+          tokenIds={"1-12"}
+          showOwner
+        />
+      </div>
+    </div>
+  );
+}
+",
+  "src/pages/MembersPage.tsx": "import { ActivityFeed, AddressBook, NftPanel, ReceiveWidget } from '@splendor/connect-react';
+import { Hero } from '../blocks/Hero';
+import { AccessGate } from '../blocks/AccessGate';
+
+export function MembersPage() {
+  return (
+    <div className="dapp-page">
+      <AccessGate access="wallet" title={"Members"}>
+        <div className="dapp-section" data-node-id="members-root"
+          style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
+          <Hero
+            heading={"Members area"}
+            text={"Your passes, your address and your recent activity."}
+          />
+          <div className="dapp-row" data-node-id="members-top"
+            style={{ gap: "1rem", alignItems: "stretch" }}>
+            <div className="dapp-column" data-node-id="members-left"
+              style={{ gap: "1rem" }}>
+              <NftPanel
+                title={"Your passes"}
+                collectionAddress={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
+                tokenIds={"1-12"}
+                showTransfer
+                showMint
+                toast
+              />
+            </div>
+            <div className="dapp-column" data-node-id="members-right"
+              style={{ gap: "1rem" }}>
+              <ReceiveWidget showAmount qrSize={176} />
+              <AddressBook allowEdit />
+            </div>
+          </div>
+          <ActivityFeed blocks={2000} limit={25} showPending />
+        </div>
+      </AccessGate>
     </div>
   );
 }

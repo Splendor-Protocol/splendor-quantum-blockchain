@@ -76,6 +76,14 @@ export class SubdomainTakenError extends Error {
   }
 }
 
+/** Thrown when a write would leave the owner with more live projects than `maxProjects`. */
+export class ProjectLimitError extends Error {
+  constructor(readonly maxProjects: number) {
+    super(`Project limit reached (${maxProjects})`);
+    this.name = 'ProjectLimitError';
+  }
+}
+
 /** Persistence used by the API. One SQL implementation runs on SQLite (dev) and Postgres (prod). */
 export interface Store {
   /** Applies pending schema migrations in order; safe to run on every start. */
@@ -138,7 +146,14 @@ export interface Store {
   getProject(id: string): Promise<ProjectRow | null>;
   /** A live project with this share id. */
   getProjectByShareId(shareId: string): Promise<ProjectRow | null>;
-  createProject(row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'> & { workspaceId?: string | null }): Promise<ProjectRow>;
+  /**
+   * With `maxProjects`, the count and the insert are one atomic step: throws `ProjectLimitError`
+   * when the owner already has that many live projects, even under concurrent requests.
+   */
+  createProject(
+    row: Pick<ProjectRow, 'id' | 'owner' | 'name' | 'spec'> & { workspaceId?: string | null },
+    opts?: { maxProjects?: number },
+  ): Promise<ProjectRow>;
   /**
    * Applies `patch` and bumps `version`. With `expectedVersion`, only updates a row still at that
    * version. `null`: no such project, or it moved past `expectedVersion`. A new spec is kept as a
@@ -150,8 +165,11 @@ export interface Store {
   recordShareView(id: string): Promise<void>;
   /** Moves a project to the trash; past `MAX_TRASHED_PROJECTS` the owner's oldest trash is purged. */
   deleteProject(id: string): Promise<boolean>;
-  /** Brings a trashed project back (out of its workspace if that is still in the trash). */
-  restoreProject(id: string): Promise<boolean>;
+  /**
+   * Brings a trashed project back (out of its workspace if that is still in the trash). With
+   * `maxProjects`, throws `ProjectLimitError` atomically like `createProject`.
+   */
+  restoreProject(id: string, opts?: { maxProjects?: number }): Promise<boolean>;
   /** Deletes a project, its revisions and deployments for good. */
   purgeProject(id: string): Promise<boolean>;
   /** Saved versions, newest first. */

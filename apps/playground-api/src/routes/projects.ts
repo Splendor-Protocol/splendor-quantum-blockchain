@@ -1,6 +1,6 @@
 import type { FastifyReply } from 'fastify';
 import type { DappSpec } from '@splendor/dapp-spec';
-import type { ListProjectsOptions, ProjectPatch } from '../store/types.js';
+import { ProjectLimitError, type ListProjectsOptions, type ProjectPatch } from '../store/types.js';
 import { ID, MAX_PROJECTS_PER_USER, idParams, newId, obj, parseStoredSpec, str, summary, type RouteContext } from './context.js';
 
 /** `baseVersion`: the version the edit started from; a stale one is refused with 409 instead of overwriting. */
@@ -42,6 +42,17 @@ export function registerProjectRoutes(ctx: RouteContext) {
     await audit(req, actor, 'project.update', id, detail);
   };
 
+  /** Runs a write that counts toward the project cap; on `ProjectLimitError` replies 429 and returns null. */
+  const withinLimit = async <T>(reply: FastifyReply, write: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await write();
+    } catch (e) {
+      if (!(e instanceof ProjectLimitError)) throw e;
+      reply.code(429).send({ error: `Project limit reached (${MAX_PROJECTS_PER_USER})`, code: 'PROJECT_LIMIT' });
+      return null;
+    }
+  };
+
   const conflict = async (reply: FastifyReply, id: string) => {
     const current = await store.getProject(id);
     if (!current || current.deletedAt) return reply.code(404).send({ error: 'Not found' });
@@ -60,18 +71,15 @@ export function registerProjectRoutes(ctx: RouteContext) {
   app.post<{ Body: { spec: unknown; workspaceId?: string } }>('/projects', { preHandler: requireUser, schema: { body: createProjectBody } }, async (req, reply) => {
     const r = checkSpec(req.body.spec);
     if (!r.ok) return reply.code(422).send({ error: 'Invalid spec', issues: r.issues });
-    if ((await store.countProjects(req.session!.address)) >= MAX_PROJECTS_PER_USER) {
-      return reply.code(429).send({ error: `Project limit reached (${MAX_PROJECTS_PER_USER})` });
-    }
     const workspaceId = req.body.workspaceId ?? null;
     if (workspaceId && !(await ownsWorkspace(req.session!.address, workspaceId))) return reply.code(400).send({ error: 'Unknown workspace' });
-    const row = await store.createProject({
-      id: newId(),
-      owner: req.session!.address,
-      name: r.spec.name,
-      spec: JSON.stringify(r.spec),
-      workspaceId,
-    });
+    const row = await withinLimit(reply, () =>
+      store.createProject(
+        { id: newId(), owner: req.session!.address, name: r.spec.name, spec: JSON.stringify(r.spec), workspaceId },
+        { maxProjects: MAX_PROJECTS_PER_USER },
+      ),
+    );
+    if (!row) return reply;
     await audit(req, row.owner, 'project.create', row.id, { name: row.name });
     return reply.code(201).send({ ...summary(row), createdAt: row.createdAt, spec: r.spec });
   });
@@ -90,6 +98,9 @@ export function registerProjectRoutes(ctx: RouteContext) {
       if (!p) return reply;
       const r = checkSpec(req.body.spec);
       if (!r.ok) return reply.code(422).send({ error: 'Invalid spec', issues: r.issues });
+      // Without `baseVersion` the write lands on whatever is stored (last write wins); that path is
+      // kept for older clients only and is flagged so it can be removed.
+      if (req.body.baseVersion === undefined) reply.header('deprecation', 'true');
       const row = await store.updateProject(p.id, { name: r.spec.name, spec: JSON.stringify(r.spec) }, req.body.baseVersion);
       if (!row) return conflict(reply, p.id);
       await auditUpdate(req, p.owner, p.id);
@@ -131,12 +142,12 @@ export function registerProjectRoutes(ctx: RouteContext) {
   app.post<{ Params: { id: string } }>('/projects/:id/duplicate', { preHandler: requireUser, schema: { params: idParams, body: obj() } }, async (req, reply) => {
     const p = await ownedProject(req, reply);
     if (!p) return reply;
-    if ((await store.countProjects(req.session!.address)) >= MAX_PROJECTS_PER_USER) {
-      return reply.code(429).send({ error: `Project limit reached (${MAX_PROJECTS_PER_USER})` });
-    }
     const name = `${p.name} copy`.slice(0, 80);
     const spec = { ...parseStoredSpec(p), name };
-    const row = await store.createProject({ id: newId(), owner: p.owner, name, spec: JSON.stringify(spec), workspaceId: p.workspaceId });
+    const row = await withinLimit(reply, () =>
+      store.createProject({ id: newId(), owner: p.owner, name, spec: JSON.stringify(spec), workspaceId: p.workspaceId }, { maxProjects: MAX_PROJECTS_PER_USER }),
+    );
+    if (!row) return reply;
     await audit(req, p.owner, 'project.create', row.id, { name, from: p.id });
     return reply.code(201).send({ ...summary(row), createdAt: row.createdAt, spec });
   });
@@ -157,10 +168,9 @@ export function registerProjectRoutes(ctx: RouteContext) {
       const p = await ownedProject(req, reply, { includeDeleted: true });
       if (!p) return reply;
       if (!p.deletedAt) return reply.code(404).send({ error: 'Not found' });
-      if ((await store.countProjects(p.owner)) >= MAX_PROJECTS_PER_USER) {
-        return reply.code(429).send({ error: `Project limit reached (${MAX_PROJECTS_PER_USER})` });
-      }
-      await store.restoreProject(p.id);
+      const restored = await withinLimit(reply, () => store.restoreProject(p.id, { maxProjects: MAX_PROJECTS_PER_USER }));
+      if (restored === null) return reply;
+      if (!restored) return reply.code(404).send({ error: 'Not found' });
       await audit(req, p.owner, 'project.restore', p.id);
       return { ok: true };
     },

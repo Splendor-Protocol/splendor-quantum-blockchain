@@ -161,7 +161,7 @@ export function PreviewFrame({
     if (navigatedAway.current) return;
     // An opaque origin cannot be named as a target. The spec is the user's own draft, and the
     // frame is addressed by its window, not broadcast.
-    ref.current?.contentWindow?.postMessage(msg, ISOLATED ? '*' : window.location.origin);
+    ref.current?.contentWindow?.postMessage({ ...msg, token: tokenRef.current }, ISOLATED ? '*' : window.location.origin);
   };
 
   // Selection travels on its own, so selecting a block does not resend the whole spec.

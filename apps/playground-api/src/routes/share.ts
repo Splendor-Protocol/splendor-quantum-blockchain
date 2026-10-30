@@ -36,13 +36,19 @@ export function registerShareRoutes(ctx: RouteContext) {
     return { ok: true };
   });
 
-  app.get<{ Params: { shareId: string } }>('/share/:shareId', { schema: { params: obj({ shareId: str(40, ID) }, ['shareId']) } }, async (req, reply) => {
-    const p = await store.getProjectByShareId(req.params.shareId);
-    if (!p) return reply.code(404).send({ error: 'Not found' });
-    if (expired(p.shareExpiresAt)) return reply.code(404).send({ error: 'This share link has expired', code: 'EXPIRED' });
-    // Fastify answers HEAD with this handler too; only a real GET is a view.
-    if (req.method === 'GET') await store.recordShareView(p.id);
-    reply.header('cache-control', 'no-cache');
-    return { name: p.name, spec: parseStoredSpec(p) };
-  });
+  // Public and unauthenticated: a tighter per-IP limit than the global one slows link guessing and view inflation.
+  const shareReadLimit = { rateLimit: { max: 60, timeWindow: '1 minute' } };
+  app.get<{ Params: { shareId: string } }>(
+    '/share/:shareId',
+    { config: shareReadLimit, schema: { params: obj({ shareId: str(40, ID) }, ['shareId']) } },
+    async (req, reply) => {
+      const p = await store.getProjectByShareId(req.params.shareId);
+      if (!p) return reply.code(404).send({ error: 'Not found' });
+      if (expired(p.shareExpiresAt)) return reply.code(404).send({ error: 'This share link has expired', code: 'EXPIRED' });
+      // Fastify answers HEAD with this handler too; only a real GET is a view.
+      if (req.method === 'GET') await store.recordShareView(p.id);
+      reply.header('cache-control', 'no-cache');
+      return { name: p.name, spec: parseStoredSpec(p) };
+    },
+  );
 }

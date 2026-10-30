@@ -105,28 +105,68 @@ export function getExtensionProvider(): SplendorProviderLike | undefined {
   return p && isExtensionProvider(p) ? p : undefined;
 }
 
+/** EIP-6963 reverse-DNS id the Splendor Quantum Wallet announces itself with. */
+export const SPLENDOR_WALLET_RDNS = 'network.splendor.wallet';
+
 /** Negative discovery cache — avoid re-waiting full timeout after a miss. */
 let notFoundUntil = 0;
 const NOT_FOUND_TTL_MS = 30_000;
+/**
+ * The first provider discovery settled on. Later calls return it even if `window.splendor` is
+ * replaced afterwards, so a script that runs after the wallet cannot swap itself in.
+ */
+let pinnedProvider: SplendorProviderLike | null = null;
 
-/** Clear the "extension not found" cache (tests / after install). */
+/** Clear the discovery caches ("not found" and the pinned provider) — tests / after install. */
 export function clearExtensionDiscoveryCache(): void {
   notFoundUntil = 0;
+  pinnedProvider = null;
+}
+
+function pin(p: SplendorProviderLike): SplendorProviderLike {
+  notFoundUntil = 0;
+  pinnedProvider = p;
+  return p;
 }
 
 /**
- * Wait for the Splendor Quantum Wallet inject (poll + EIP-6963 + splendor#initialized).
- * Use before connect when the extension may inject after first paint.
+ * Ask EIP-6963 wallets to announce themselves and return the Splendor one if it answers
+ * synchronously (wallets announce from their `eip6963:requestProvider` listener).
+ */
+function requestAnnouncedProvider(): SplendorProviderLike | undefined {
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined;
+  let found: SplendorProviderLike | undefined;
+  const onAnnounce = (ev: Event) => {
+    const detail = (ev as CustomEvent).detail as { info?: { rdns?: string }; provider?: SplendorProviderLike } | undefined;
+    if (!found && detail?.info?.rdns === SPLENDOR_WALLET_RDNS && isExtensionProvider(detail.provider)) found = detail.provider;
+  };
+  window.addEventListener('eip6963:announceProvider', onAnnounce);
+  try {
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
+  } catch {
+    /* ignore */
+  } finally {
+    window.removeEventListener('eip6963:announceProvider', onAnnounce);
+  }
+  return found;
+}
+
+/**
+ * Wait for the Splendor Quantum Wallet (EIP-6963 announcement, then `window.splendor` poll and
+ * `splendor#initialized`). An EIP-6963 announcement with the Splendor rdns wins over a
+ * `window.splendor` global, and the provider found first stays pinned for the page's lifetime.
+ * Any same-origin script can still fake either source; this only removes the easiest swaps.
  * After a miss, caches "not found" for 30s so ConnectModal reopen stays fast.
  */
 export async function discoverExtensionProvider(
   timeoutMs = 5_000,
 ): Promise<SplendorProviderLike> {
+  if (pinnedProvider && isExtensionProvider(pinnedProvider)) return pinnedProvider;
+
+  const announced = requestAnnouncedProvider();
+  if (announced) return pin(announced);
   const existing = getExtensionProvider();
-  if (existing) {
-    notFoundUntil = 0;
-    return existing;
-  }
+  if (existing) return pin(existing);
 
   if (typeof window === 'undefined') {
     throw BridgeError.noProvider(
@@ -147,9 +187,8 @@ export async function discoverExtensionProvider(
     const finish = (p: SplendorProviderLike | undefined) => {
       if (settled || !p || !isExtensionProvider(p)) return;
       settled = true;
-      notFoundUntil = 0;
       cleanup();
-      resolve(p);
+      resolve(pin(p));
     };
 
     const fail = () => {
@@ -168,7 +207,7 @@ export async function discoverExtensionProvider(
       const detail = (ev as CustomEvent).detail as
         | { info?: { rdns?: string }; provider?: SplendorProviderLike }
         | undefined;
-      if (detail?.info?.rdns === 'network.splendor.wallet' && detail.provider) {
+      if (detail?.info?.rdns === SPLENDOR_WALLET_RDNS && detail.provider) {
         finish(detail.provider);
       }
     };

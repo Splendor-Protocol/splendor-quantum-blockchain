@@ -15,6 +15,12 @@ export type BridgeOptions = RpcOptions & {
    * Default false — fail closed unless pin is provided.
    */
   allowUnpinnedWasm?: boolean;
+  /**
+   * Allow `signMessage(msg, { raw: true })`, which signs bytes without the
+   * SIGN_MESSAGE_DOMAIN prefix. Default false: a raw signature can be replayed
+   * as any other protocol's payload, so injected and extension providers never allow it.
+   */
+  allowRawSign?: boolean;
   /** Refuse to sign any tx whose fee (base units) exceeds this cap. */
   maxFee?: string;
   /**
@@ -321,9 +327,10 @@ export type SendTxResult = {
 
 export type SignMessageOpts = {
   /**
-   * When true, sign the message bytes as-is (Connect v2 challenges, etc.).
-   * Default false: domain-separate with SIGN_MESSAGE_DOMAIN unless the message
-   * already starts with a known protocol prefix.
+   * When true, sign the message bytes as-is. Requires `allowRawSign` on the
+   * wallet; refused otherwise. Default false: domain-separate with
+   * SIGN_MESSAGE_DOMAIN unless the message already starts with a known protocol
+   * prefix (Connect v2 challenges need no `raw`).
    */
   raw?: boolean;
 };

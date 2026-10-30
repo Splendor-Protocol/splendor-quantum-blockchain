@@ -28,6 +28,7 @@ export {
   discoverExtensionProvider,
   clearExtensionDiscoveryCache,
   requestWithAlias,
+  SPLENDOR_WALLET_RDNS,
 } from './extension-provider.js';
 export {
   SplendorPQBridge,
