@@ -687,6 +687,11 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 	if b.Header.ChainID != types.ChainID {
 		return fmt.Errorf("state snapshot is for chain %q, this node is on %q", b.Header.ChainID, types.ChainID)
 	}
+	// State sync skips the linkage that ties a replayed chain to block 0; once
+	// headers are bound, the head itself names its genesis and is held to it.
+	if err := e.verifyChainIdentity(b); err != nil {
+		return fmt.Errorf("state snapshot head block: %w", err)
+	}
 	if got := state.SnapshotRoot(snap.Leaves); got != b.Header.StateRoot {
 		return fmt.Errorf("%w: leaves hash to %x, head block %d commits to %x",
 			state.ErrSnapshotRootMismatch, got[:8], b.Header.Height, b.Header.StateRoot[:8])
@@ -778,6 +783,7 @@ func (e *Executor) ImportStateSnapshot(snap *types.StateSnapshot) error {
 
 	e.markSnapshotIndexCoverage(snap.Height)
 	e.recordTxIndex(b, nil)
+	e.adoptCommittedGenesis(b)
 	log.Info().Uint64("height", snap.Height).Int("leaves", len(snap.Leaves)).
 		Str("hash", fmt.Sprintf("%x", b.Hash[:8])).Msg("state snapshot imported successfully")
 	return nil
@@ -1062,6 +1068,9 @@ func (e *Executor) ImportSnapshotDownload(dir string) error {
 	if b.Header.ChainID != types.ChainID {
 		return fmt.Errorf("state snapshot is for chain %q, this node is on %q", b.Header.ChainID, types.ChainID)
 	}
+	if err := e.verifyChainIdentity(b); err != nil {
+		return fmt.Errorf("state snapshot head block: %w", err)
+	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1120,6 +1129,7 @@ func (e *Executor) ImportSnapshotDownload(dir string) error {
 	}
 	e.markSnapshotIndexCoverage(d.Height())
 	e.recordTxIndex(b, nil)
+	e.adoptCommittedGenesis(b)
 	log.Info().Uint64("height", d.Height()).
 		Str("hash", fmt.Sprintf("%x", b.Hash[:8])).Msg("state snapshot imported from disk staging")
 	return nil

@@ -102,8 +102,18 @@ type Executor struct {
 
 	// genesisHash pins the hash of block 0 when the operator supplied one.
 	// nil = unpinned, which is the pre-existing behaviour.
-	genesisHash       *[32]byte
-	genesisHashStored [32]byte
+	genesisHash *[32]byte
+	// genesisHashStored is the hash of block 0 of the chain this node is on,
+	// nil until it is known. It is what genesis_hash_v1 binds headers to: the
+	// stored block 0 when there is one (read at open, and taken when block 0
+	// commits), else the --genesis-hash pin, else the genesis named by the
+	// first bound block or snapshot head this node commits — a state-synced
+	// node holds no block 0. Atomic because the peer prober reads it without
+	// the block lock.
+	genesisHashStored atomic.Pointer[[32]byte]
+	// warnedUnknownGenesis makes the "no genesis to check genesis_hash
+	// against" warning fire once rather than on every block.
+	warnedUnknownGenesis atomic.Bool
 
 	// genesisValidatorKey supplies block 0's sealing key when the chain DB
 	// does not hold block 0; see WithGenesisValidatorKey.
@@ -221,6 +231,9 @@ func NewExecutor(stateDB *state.StateDB, chainDBPath string) (*Executor, error) 
 	ex.vmEngine.SetCallRules(func(h uint64) bool {
 		return ex.schedule().Active(forks.VMCallV1, h)
 	})
+	if g, ok := ex.storedGenesisHash(); ok {
+		ex.genesisHashStored.Store(&g)
+	}
 	return ex, nil
 }
 
@@ -444,34 +457,128 @@ func (e *Executor) markSnapshotIndexCoverage(height uint64) {
 // name that genesis as its parent, and a self-built block 0 must be the pinned
 // one — so a node cannot be walked onto a fabricated chain, nor silently start
 // a divergent one after its data dir is wiped.
+//
+// The pin is also this node's genesis for genesis_hash_v1, unless the chain DB
+// already holds a block 0: the stored chain is the one the node is on, so a pin
+// that contradicts it is reported rather than adopted.
 func (e *Executor) WithGenesisHash(h [32]byte) *Executor {
 	e.genesisHash = &h
+	if cur := e.genesisHashStored.Load(); cur != nil && *cur != h {
+		log.Error().
+			Str("pinned", fmt.Sprintf("%x", h[:8])).
+			Str("stored", fmt.Sprintf("%x", cur[:8])).
+			Msg("--genesis-hash does not match this node's stored chain; headers are checked against the stored chain " +
+				"(a reset chain mints a NEW genesis — update the pin, or wipe this data dir to join the new chain)")
+		return e
+	}
+	e.adoptGenesisHash(h)
 	return e
 }
 
-// verifyChainIdentity checks that a block's GenesisHash matches the node's
-// adopted genesis hash. This prevents cross-network replay attacks where a
-// spoofed ChainID could still reference a different chain's genesis block.
-// If genesisHashStored is zero (not pinned), the check is skipped to avoid
-// breaking existing nodes that haven't pinned a genesis.
+// GenesisHash reports the hash of block 0 of the chain this node is on, and
+// whether it is known yet; see genesisHashStored.
+func (e *Executor) GenesisHash() ([32]byte, bool) {
+	if p := e.genesisHashStored.Load(); p != nil {
+		return *p, true
+	}
+	return [32]byte{}, false
+}
+
+// adoptGenesisHash records h as this node's genesis unless one is already
+// known. The first source wins; see genesisHashStored for their order.
+func (e *Executor) adoptGenesisHash(h [32]byte) {
+	e.genesisHashStored.CompareAndSwap(nil, &h)
+}
+
+// storedGenesisHash reads this node's genesis from its own chain DB: block 0
+// when stored, else the genesis_hash its head carries (a state-synced node
+// holds no block 0, but its head names one once headers are bound).
+func (e *Executor) storedGenesisHash() ([32]byte, bool) {
+	if b0, err := e.GetBlockByHeight(0); err == nil && b0 != nil {
+		return b0.Hash, true
+	}
+	if head, err := e.LatestBlock(); err == nil && head != nil && head.Header.GenesisHash != ([32]byte{}) {
+		return head.Header.GenesisHash, true
+	}
+	return [32]byte{}, false
+}
+
+// adoptCommittedGenesis lets a node that did not know its genesis learn it
+// from a block it has just committed: block 0 itself, or the genesis a bound
+// header names. Only committed blocks teach it — never a proposal under vote.
+func (e *Executor) adoptCommittedGenesis(b *types.Block) {
+	if e.genesisHashStored.Load() != nil {
+		return
+	}
+	switch {
+	case b.Header.Height == 0:
+		e.adoptGenesisHash(b.Hash)
+	case b.Header.GenesisHash != ([32]byte{}):
+		e.adoptGenesisHash(b.Header.GenesisHash)
+		log.Info().Uint64("height", b.Header.Height).
+			Str("genesis_hash", fmt.Sprintf("%x", b.Header.GenesisHash[:8])).
+			Msg("genesis adopted from the first bound header this node committed")
+	}
+}
+
+// verifyChainIdentity checks that a block belongs to this node's chain: its
+// chain id, and — once genesis_hash_v1 is active — the block 0 it names. A
+// spoofed or reused chain id cannot pass the second check, since a reset chain
+// keeps its id but mints a new genesis.
+//
+// Before the fork a block must NOT carry genesis_hash. A node on the previous
+// binary drops the unknown key and hashes the legacy header, so it refuses such
+// a block; accepting it here would let the two binaries disagree about validity
+// in the middle of a rolling upgrade. From the fork on, a block must name this
+// node's genesis. A node that cannot know its genesis (no block 0, no pin, no
+// bound block committed yet) accepts the block on its other checks — linkage,
+// the producer's seal and the certificate — warns once, and adopts the genesis
+// when the block commits.
 func (e *Executor) verifyChainIdentity(b *types.Block) error {
-	// ChainID must always match — cheap string comparison, first line of defense.
 	if b.Header.ChainID != types.ChainID {
+		return fmt.Errorf("wrong chain id: block %q, node %q", b.Header.ChainID, types.ChainID)
+	}
+	bound := b.Header.GenesisHash != ([32]byte{})
+	if !e.schedule().Active(forks.GenesisHashV1, b.Header.Height) {
+		if bound {
+			return fmt.Errorf("block %d carries genesis_hash %x before %s is active: nodes on the previous binary "+
+				"hash the legacy header and refuse it", b.Header.Height, b.Header.GenesisHash[:8], forks.GenesisHashV1)
+		}
 		return nil
 	}
-	if e.genesisHashStored == [32]byte{} {
-		// Not pinned; skip identity check for backwards compatibility
+	if !bound {
+		return fmt.Errorf("%s: block %d does not carry genesis_hash", forks.GenesisHashV1, b.Header.Height)
+	}
+	adopted, ok := e.GenesisHash()
+	if !ok {
+		if !e.warnedUnknownGenesis.Swap(true) {
+			log.Warn().Uint64("height", b.Header.Height).
+				Str("genesis_hash", fmt.Sprintf("%x", b.Header.GenesisHash[:8])).
+				Msg(forks.GenesisHashV1 + " is active but this node knows no genesis to check headers against " +
+					"(no block 0 stored, no --genesis-hash pin); accepting the genesis its chain names")
+		}
 		return nil
 	}
-	// Blocks 0 and 1 dont carry GenesisHash in their header yet — their
-	// linkage to the genesis is verified by verifyBlockLinkage (block 0s hash
-	// must equal the pinned genesis; block 1s PrevHash must equal it).
-	// Skip the genesis hash check for these initial blocks.
-	if b.Header.Height >= 2 && b.Header.GenesisHash != e.genesisHashStored {
-		return fmt.Errorf("block genesis hash %x does not match node's adopted genesis %x",
-			b.Header.GenesisHash[:], e.genesisHashStored[:])
+	if b.Header.GenesisHash != adopted {
+		return fmt.Errorf("block %d names genesis %x but this node is on genesis %x — another network, or a chain that was reset",
+			b.Header.Height, b.Header.GenesisHash[:8], adopted[:8])
 	}
 	return nil
+}
+
+// headerGenesisHash is the genesis_hash a block sealed at height must carry:
+// none before genesis_hash_v1, this node's genesis from it on.
+func (e *Executor) headerGenesisHash(height uint64) ([32]byte, error) {
+	if !e.schedule().Active(forks.GenesisHashV1, height) {
+		return [32]byte{}, nil
+	}
+	g, ok := e.GenesisHash()
+	if !ok {
+		return [32]byte{}, fmt.Errorf("%s is active at height %d but this node does not know its genesis hash "+
+			"(no block 0 stored, no --genesis-hash pin): refusing to seal a block every other node would refuse",
+			forks.GenesisHashV1, height)
+	}
+	return g, nil
 }
 
 // WithGenesisValidatorKey names the key that sealed block 0, for the one place
@@ -663,13 +770,6 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 		return ErrApplyHalted
 	}
 
-	// Verify chain identity: ensure the block's GenesisHash matches the node's
-	// adopted genesis hash. This prevents cross-network replay attacks where a
-	// spoofed ChainID could still reference a different chain's genesis block.
-	if err := e.verifyChainIdentity(b); err != nil {
-		return err
-	}
-
 	log.Info().
 		Uint64("height", b.Header.Height).
 		Int("txs", len(b.Transactions)).
@@ -697,6 +797,7 @@ func (e *Executor) ExecuteBlock(b *types.Block) error {
 
 	// The block is settled: its failed receipts are now a fact of the chain.
 	e.noteTxsFailed(countFailedReceipts(receipts))
+	e.adoptCommittedGenesis(b)
 
 	// Index block transactions and store receipts. Failures are not consensus
 	// fatal; IndexedHeight stays behind so ReconcileTxIndex can backfill.
@@ -750,6 +851,11 @@ func (e *Executor) applyBlockPending(b *types.Block, requireQC bool) ([]*types.R
 	// Chain-continuity checks before any state mutation.
 	if err := e.verifyBlockLinkage(b); err != nil {
 		return nil, zero, fmt.Errorf("block linkage rejected: %w", err)
+	}
+	// Here rather than in ExecuteBlock alone, so a validator refuses to vote
+	// for a block it would later refuse to commit.
+	if err := e.verifyChainIdentity(b); err != nil {
+		return nil, zero, fmt.Errorf("chain identity rejected: %w", err)
 	}
 	if err := e.verifyProducerAndQC(b, requireQC); err != nil {
 		return nil, zero, fmt.Errorf("block certificate rejected: %w", err)
@@ -1510,6 +1616,10 @@ func (e *Executor) assembleBlock(
 			return nil, nil, err
 		}
 	}
+	genesisHash, err := e.headerGenesisHash(height)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	if len(txs) > MaxTxPerBlock {
 		txs = txs[:MaxTxPerBlock]
@@ -1694,7 +1804,7 @@ func (e *Executor) assembleBlock(
 		StateRoot:     stateRoot,
 		ValidatorAddr: validatorAddr,
 		TxCount:       uint32(len(executed)),
-		GenesisHash:   e.genesisHashStored,
+		GenesisHash:   genesisHash,
 	}
 
 	b = &types.Block{Header: header, Transactions: executed}
