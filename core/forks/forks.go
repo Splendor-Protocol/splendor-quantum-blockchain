@@ -130,6 +130,15 @@ const (
 	// creator nonce, and deploy/CREATE collision checks fail closed on
 	// account-read errors. Unscheduled on live genesis.
 	VMCallV1 = "vm_call_v1"
+	// GenesisHashV1 binds every block header to its chain's block 0: from the
+	// activation height a block must carry genesis_hash equal to the hash of
+	// the genesis this node is on, and before it a block must not carry one.
+	// Before activation the header is the legacy header byte for byte, which
+	// is what keeps every existing block hash valid and lets nodes on the
+	// previous binary keep validating blocks during a rolling upgrade.
+	// Schedule it (by fork extension, above the head) only once every node
+	// runs a binary that knows it. Unscheduled on live genesis.
+	GenesisHashV1 = "genesis_hash_v1"
 )
 
 // Known lists every upgrade name this build understands.
@@ -141,7 +150,7 @@ const (
 var Known = []string{
 	MultiValidator, ModuleRevertV1, QRC20V2, QRC1155V1, ExchangeV1, VMRevertV1, BridgeV1,
 	VerifyV1, ValidatorsV1, LendingV1, OracleV1, MultisigV1, GovernanceV1, QRC721V1, QRC4626V1, MinFeeV1,
-	ModulesV2, ValidatorsAdmissionV1, BFTRoundsV1, VMGasV1, VerifyIdentityV1, VMCallV1,
+	ModulesV2, ValidatorsAdmissionV1, BFTRoundsV1, VMGasV1, VerifyIdentityV1, VMCallV1, GenesisHashV1,
 }
 
 // Schedule maps an upgrade name to the height at which it takes effect.
