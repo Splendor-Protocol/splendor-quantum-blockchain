@@ -34,8 +34,8 @@ func filled(b byte) [32]byte {
 // The peer probe is this node's handshake: the block-sync loop reads every
 // pooled peer's /status each second. A peer whose genesis differs from this
 // node's is on another network or on a reset chain, and is refused there.
-// Every node since v1.2 already reports genesis_hash in /status, so the check
-// needs nothing from peers that they do not send today.
+// /status has carried genesis_hash since v1.2 on every node that stores block
+// 0, so the check needs nothing from peers that they do not send today.
 func TestProbePeerRefusesAPeerOnAnotherGenesis(t *testing.T) {
 	ours, theirs := filled(0xaa), filled(0xbb)
 	known := func() ([32]byte, bool) { return ours, true }

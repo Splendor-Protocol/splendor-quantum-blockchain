@@ -420,12 +420,14 @@ var ErrPeerOnAnotherChain = errors.New("peer is on another chain")
 //
 // It compares genesis hashes, not chain ids: block 0's header carries the
 // chain id, so a different id means a different genesis, while a reset chain
-// keeps its id and mints a new genesis. Every node since v1.2 reports
-// genesis_hash in /status, so this asks peers for nothing they do not already
-// send. The check is skipped, not failed, when either side cannot name its
-// genesis (this node has not adopted one yet; the peer holds no block 0):
-// block validation still refuses another chain's blocks, this only saves
-// syncing from it.
+// keeps its id and mints a new genesis. /status has carried genesis_hash since
+// v1.2, so this asks peers for nothing they do not already send. Only a node
+// that stores block 0 reports it, though: the producer that minted the chain.
+// A joiner or follower applies from block 1 and never stores block 0, so the
+// probe catches a producer of another chain, not a joiner of one. The check
+// is skipped, not failed, when either side cannot name its genesis (this node
+// has not adopted one yet; the peer holds no block 0): block validation still
+// refuses another chain's blocks, this only saves syncing from it.
 func ProbePeer(addr string, localGenesis func() ([32]byte, bool)) (uint64, error) {
 	resp, err := dialClient.Get(addr + "/status")
 	if err != nil {
