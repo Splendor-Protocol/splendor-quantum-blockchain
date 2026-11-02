@@ -12,6 +12,7 @@ import (
 
 	"github.com/splendor-protocol/splendor-quantum-blockchain/consensus"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/block"
+	"github.com/splendor-protocol/splendor-quantum-blockchain/core/forks"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/types"
 	genesiscfg "github.com/splendor-protocol/splendor-quantum-blockchain/genesis"
@@ -141,6 +142,9 @@ func prepareStateSyncGenesis(g *genesiscfg.Genesis, pin *[32]byte, source string
 	if err := verifyGenesisDocument(g, pin, source); err != nil {
 		return err
 	}
+	if err := requireScheduledGenesis(executor, g.Forks); err != nil {
+		return err
+	}
 	if err := persistForkSchedule(stateDB, executor, g.Forks); err != nil {
 		return err
 	}
@@ -150,6 +154,17 @@ func prepareStateSyncGenesis(g *genesiscfg.Genesis, pin *[32]byte, source string
 	}
 	log.Info().Str("source", source).Str("genesis_doc_hash", g.HashHex()).Str("minted", minted.String()).
 		Msg("state sync: fork schedule and minted supply taken from the genesis document; allocations left to the snapshot")
+	return nil
+}
+
+// Snapshot joiners lack block 1, so schedule adoption must require an anchor
+// before the activation height, rather than discovering the omission there.
+func requireScheduledGenesis(executor *block.Executor, schedule forks.Schedule) error {
+	if at, scheduled := schedule.At(forks.GenesisHashV1); scheduled {
+		if _, known := executor.GenesisHash(); !known {
+			return fmt.Errorf("%s is scheduled at height %d but this node has no known genesis; configure --genesis-hash before adopting this schedule", forks.GenesisHashV1, at)
+		}
+	}
 	return nil
 }
 

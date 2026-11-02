@@ -62,7 +62,7 @@ func headerHasGenesisKey(t *testing.T, h types.BlockHeader) bool {
 // genesisHashStored was declared by #91 and never written, so the identity
 // check could never run. It is the genesis of the chain this node is on: the
 // stored block 0 (also after a restart), else the --genesis-hash pin, and a
-// pin that contradicts the stored chain does not replace it.
+// pin that contradicts the stored chain returns a startup error.
 func TestGenesisHashStoredIsAssignedWhereGenesisIsLoaded(t *testing.T) {
 	vpub, vpriv, _ := qcrypto.GenerateKeypair()
 	stateDir, chainDir := t.TempDir(), t.TempDir()
@@ -105,14 +105,21 @@ func TestGenesisHashStoredIsAssignedWhereGenesisIsLoaded(t *testing.T) {
 	if got, ok := ex2.GenesisHash(); !ok || got != g.Hash {
 		t.Fatalf("after restart: GenesisHash() = %x, %v; want the stored block 0 %x", got[:8], ok, g.Hash[:8])
 	}
-	ex2.WithGenesisHash(testHash(0xcc))
+	if err := ex2.WithGenesisHash(testHash(0xcc)); err == nil {
+		t.Fatal("a pin contradicting the stored genesis must fail startup")
+	}
+	if ex2.genesisHash != nil {
+		t.Fatal("a refused pin changed the configured identity")
+	}
 	if got, _ := ex2.GenesisHash(); got != g.Hash {
 		t.Fatalf("a contradicting pin replaced the stored genesis: %x", got[:8])
 	}
 
 	pinned, sdb3 := newTestExecutor(t)
 	t.Cleanup(func() { _ = pinned.Close(); _ = sdb3.Close() })
-	pinned.WithGenesisHash(testHash(0xaa))
+	if err := pinned.WithGenesisHash(testHash(0xaa)); err != nil {
+		t.Fatal(err)
+	}
 	if got, ok := pinned.GenesisHash(); !ok || got != testHash(0xaa) {
 		t.Fatalf("pinned empty executor: GenesisHash() = %x, %v; want the pin", got[:8], ok)
 	}
@@ -248,7 +255,9 @@ func TestProducerNeedsItsGenesisToSealAfterTheFork(t *testing.T) {
 		t.Fatalf("a refused production stored block %d", head.Header.Height)
 	}
 
-	ex.WithGenesisHash(testHash(0xaa))
+	if err := ex.WithGenesisHash(testHash(0xaa)); err != nil {
+		t.Fatal(err)
+	}
 	b, err := ex.ProduceBlock(nil, vaddr, vpub.Bytes(), vpriv, testHash(0xaa), 1)
 	if err != nil {
 		t.Fatalf("produce with a pin: %v", err)
@@ -258,10 +267,9 @@ func TestProducerNeedsItsGenesisToSealAfterTheFork(t *testing.T) {
 	}
 }
 
-// A node that holds no block 0 and no pin (a state-synced follower started
-// with only --validator-pubkey-hex) learns its genesis from the first bound
-// block it commits, then holds every later block to it.
-func TestNodeWithoutAGenesisAdoptsTheOneItsChainBinds(t *testing.T) {
+// A bound header cannot establish its own genesis. Both voting and apply
+// require a previously authenticated anchor, even with a valid producer seal.
+func TestNodeWithoutAGenesisRefusesBoundHeadersUntilPinned(t *testing.T) {
 	vpub, vpriv, _ := qcrypto.GenerateKeypair()
 	vaddr := qcrypto.DeriveAddress(vpub)
 	schedule := forks.Schedule{forks.GenesisHashV1: 1}
@@ -270,7 +278,9 @@ func TestNodeWithoutAGenesisAdoptsTheOneItsChainBinds(t *testing.T) {
 	producer, psdb := newTestExecutor(t)
 	t.Cleanup(func() { _ = producer.Close(); _ = psdb.Close() })
 	producer.SetForks(schedule)
-	producer.WithGenesisHash(genesis)
+	if err := producer.WithGenesisHash(genesis); err != nil {
+		t.Fatal(err)
+	}
 
 	follower, fsdb := newTestExecutor(t)
 	t.Cleanup(func() { _ = follower.Close(); _ = fsdb.Close() })
@@ -280,11 +290,20 @@ func TestNodeWithoutAGenesisAdoptsTheOneItsChainBinds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("produce 1: %v", err)
 	}
-	if err := follower.ValidateProposal(b1); err != nil {
-		t.Fatalf("validate 1: %v", err)
+	if err := follower.ValidateProposal(b1); err == nil || !strings.Contains(err.Error(), "known genesis") {
+		t.Fatalf("unpinned validation = %v, want unknown-genesis refusal", err)
+	}
+	if err := follower.ExecuteBlock(b1); err == nil || !strings.Contains(err.Error(), "known genesis") {
+		t.Fatalf("unpinned apply = %v, want unknown-genesis refusal", err)
+	}
+	if head, _ := follower.LatestBlock(); head != nil {
+		t.Fatal("a refused bound block changed the chain head")
 	}
 	if _, ok := follower.GenesisHash(); ok {
-		t.Fatal("judging a proposal adopted a genesis; only a committed block may")
+		t.Fatal("a refused bound header established its own identity")
+	}
+	if err := follower.WithGenesisHash(genesis); err != nil {
+		t.Fatal(err)
 	}
 	if err := follower.ExecuteBlock(b1); err != nil {
 		t.Fatalf("apply 1: %v", err)
@@ -307,10 +326,9 @@ func TestNodeWithoutAGenesisAdoptsTheOneItsChainBinds(t *testing.T) {
 }
 
 // State sync jumps straight to a head, so linkage never ties it to block 0;
-// once headers are bound, the head itself does. A pinned node refuses a
-// snapshot whose head names another genesis, an unpinned node adopts the
-// genesis the authenticated head names, and a node whose schedule has no
-// genesis_hash_v1 refuses a bound head as it would refuse the block.
+// the bound head must match a known genesis. An unpinned node refuses it;
+// a producer signature alone cannot anchor a snapshot across chain resets.
+// A node without the fork also refuses a bound snapshot head.
 func TestStateSnapshotHeadMustNameThisNodesGenesis(t *testing.T) {
 	vpub, vpriv, _ := qcrypto.GenerateKeypair()
 	vaddr := qcrypto.DeriveAddress(vpub)
@@ -320,7 +338,9 @@ func TestStateSnapshotHeadMustNameThisNodesGenesis(t *testing.T) {
 	src, ssdb := newTestExecutor(t)
 	t.Cleanup(func() { _ = src.Close(); _ = ssdb.Close() })
 	src.SetForks(schedule)
-	src.WithGenesisHash(genesis)
+	if err := src.WithGenesisHash(genesis); err != nil {
+		t.Fatal(err)
+	}
 	fund(t, ssdb, testAddr(0x55), 1_000) // a snapshot needs at least one leaf
 	prev := genesis
 	for h := uint64(1); h <= 3; h++ {
@@ -346,34 +366,108 @@ func TestStateSnapshotHeadMustNameThisNodesGenesis(t *testing.T) {
 	}{
 		{"pinned to another genesis", schedule, &[32]byte{0xcc}, "genesis"},
 		{"pinned to this genesis", schedule, &genesis, ""},
-		{"unpinned", schedule, nil, ""},
+		{"unpinned", schedule, nil, "known genesis"},
 		{"schedule without the fork", nil, nil, forks.GenesisHashV1},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dst, dsdb := newTestExecutor(t)
-			t.Cleanup(func() { _ = dst.Close(); _ = dsdb.Close() })
-			if tc.schedule != nil {
-				dst.SetForks(tc.schedule)
+		for _, disk := range []bool{false, true} {
+			name := "memory/"
+			if disk {
+				name = "download/"
 			}
-			if tc.pin != nil {
-				dst.WithGenesisHash(*tc.pin)
-			}
-			err := dst.ImportStateSnapshot(snap)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("import = %v, want an error mentioning %q", err, tc.wantErr)
+			t.Run(name+tc.name, func(t *testing.T) {
+				dst, dsdb := newTestExecutor(t)
+				t.Cleanup(func() { _ = dst.Close(); _ = dsdb.Close() })
+				if tc.schedule != nil {
+					dst.SetForks(tc.schedule)
 				}
-				if head, _ := dst.LatestBlock(); head != nil {
-					t.Fatalf("a refused snapshot stored head %d", head.Header.Height)
+				if tc.pin != nil {
+					if err := dst.WithGenesisHash(*tc.pin); err != nil {
+						t.Fatal(err)
+					}
 				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("import: %v", err)
-			}
-			if got, ok := dst.GenesisHash(); !ok || got != genesis {
-				t.Fatalf("after import GenesisHash() = %x, %v; want %x", got[:8], ok, genesis[:8])
-			}
-		})
+				var err error
+				if disk {
+					dir := dst.snapshotDownloadPath()
+					dl, openErr := state.OpenSnapshotDownload(dir, 1<<20)
+					if openErr != nil {
+						t.Fatal(openErr)
+					}
+					if err := dl.AcceptHead(snap.Block, snap.Height); err != nil {
+						t.Fatal(err)
+					}
+					if err := dl.AppendPage(snap.Leaves, nil, true, ""); err != nil {
+						t.Fatal(err)
+					}
+					err = dst.ImportSnapshotDownload(dir)
+				} else {
+					err = dst.ImportStateSnapshot(snap)
+				}
+				if tc.wantErr != "" {
+					if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+						t.Fatalf("import = %v, want an error mentioning %q", err, tc.wantErr)
+					}
+					if head, _ := dst.LatestBlock(); head != nil {
+						t.Fatalf("a refused snapshot stored head %d", head.Header.Height)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("import: %v", err)
+				}
+				if got, ok := dst.GenesisHash(); !ok || got != genesis {
+					t.Fatalf("after import GenesisHash() = %x, %v; want %x", got[:8], ok, genesis[:8])
+				}
+			})
+		}
+	}
+}
+
+func TestReplayJoinerRestoresGenesisAndRejectsConflictingPin(t *testing.T) {
+	pub, priv, err := qcrypto.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	producer, psdb := newTestExecutor(t)
+	t.Cleanup(func() { _ = producer.Close(); _ = psdb.Close() })
+	genesis := testHash(0xaa)
+	b1, err := producer.ProduceBlock(nil, qcrypto.DeriveAddress(pub), pub.Bytes(), priv, genesis, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sdb, err := state.NewStateDB(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sdb.Close() })
+	chainDir := t.TempDir()
+	ex, err := NewExecutor(sdb, chainDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.ValidateProposal(b1); err != nil {
+		t.Fatal(err)
+	}
+	if _, known := ex.GenesisHash(); known {
+		t.Fatal("proposal established a genesis before commit")
+	}
+	if err := ex.ExecuteBlock(b1); err != nil {
+		t.Fatal(err)
+	}
+	if err := ex.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ex, err = NewExecutor(sdb, chainDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ex.Close() })
+	if got, known := ex.GenesisHash(); !known || got != genesis {
+		t.Fatal("restart lost the block-1 genesis anchor")
+	}
+	if err := ex.WithGenesisHash(testHash(0xbb)); err == nil {
+		t.Fatal("conflicting pin accepted on a joiner without block 0")
+	}
+	if err := ex.WithGenesisHash(genesis); err != nil {
+		t.Fatal(err)
 	}
 }

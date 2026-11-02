@@ -962,6 +962,9 @@ func (e *Executor) restoreSnapshotBlockFromEvidence(marker *snapshotImportMarker
 	if d, err := e.openSnapshotDownload(); err != nil {
 		log.Warn().Err(err).Msg("recovery: download staging unreadable; trying legacy staging")
 	} else if d != nil && d.Head() != nil && d.Head().Hash == marker.BlockHash {
+		if err := e.verifyChainIdentity(d.Head()); err != nil {
+			return fmt.Errorf("recovery: snapshot head identity: %w", err)
+		}
 		if err := e.storeBlock(d.Head()); err != nil {
 			return fmt.Errorf("recovery: restore snapshot head: %w", err)
 		}
@@ -978,6 +981,9 @@ func (e *Executor) restoreSnapshotBlockFromEvidence(marker *snapshotImportMarker
 	if staged.Block.Hash != marker.BlockHash {
 		return fmt.Errorf("recovery: staged block hash %x != marker %x — evidence kept",
 			staged.Block.Hash[:8], marker.BlockHash[:8])
+	}
+	if err := e.verifyChainIdentity(staged.Block); err != nil {
+		return fmt.Errorf("recovery: snapshot head identity: %w", err)
 	}
 	if err := e.storeBlock(staged.Block); err != nil {
 		return fmt.Errorf("recovery: restore snapshot head: %w", err)

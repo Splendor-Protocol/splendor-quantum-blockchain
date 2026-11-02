@@ -29,8 +29,14 @@ func TestRefreshPeerHeightsDropsPeersOnAnotherGenesis(t *testing.T) {
 	pool.Add(&network.PeerInfo{Addr: same})
 	pool.Add(&network.PeerInfo{Addr: other})
 
-	refreshPeerHeights(pool, func() ([32]byte, bool) { return ours, true })
+	broadcaster := network.NewBroadcaster(nil, "", false)
+	broadcaster.AddPeer(same)
+	broadcaster.AddPeer(other)
+	refreshPeerHeights(pool, broadcaster, func() ([32]byte, bool) { return ours, true })
 
+	if got := broadcaster.PeerCount(); got != 1 {
+		t.Fatalf("broadcast targets = %d, want 1", got)
+	}
 	addrs := pool.Addrs()
 	if len(addrs) != 1 || addrs[0] != same {
 		t.Fatalf("pool after refresh = %v, want only %s", addrs, same)

@@ -105,15 +105,11 @@ type Executor struct {
 	genesisHash *[32]byte
 	// genesisHashStored is the hash of block 0 of the chain this node is on,
 	// nil until it is known. It is what genesis_hash_v1 binds headers to: the
-	// stored block 0 when there is one (read at open, and taken when block 0
-	// commits), else the --genesis-hash pin, else the genesis named by the
-	// first bound block or snapshot head this node commits — a state-synced
-	// node holds no block 0. Atomic because the peer prober reads it without
-	// the block lock.
+	// stored block 0, the parent of a committed block 1, or --genesis-hash.
+	// A previously validated bound head can restore it after a restart.
+	// An incoming bound header cannot establish its own identity. Atomic
+	// because the peer prober reads it without the block lock.
 	genesisHashStored atomic.Pointer[[32]byte]
-	// warnedUnknownGenesis makes the "no genesis to check genesis_hash
-	// against" warning fire once rather than on every block.
-	warnedUnknownGenesis atomic.Bool
 
 	// genesisValidatorKey supplies block 0's sealing key when the chain DB
 	// does not hold block 0; see WithGenesisValidatorKey.
@@ -458,21 +454,20 @@ func (e *Executor) markSnapshotIndexCoverage(height uint64) {
 // one — so a node cannot be walked onto a fabricated chain, nor silently start
 // a divergent one after its data dir is wiped.
 //
-// The pin is also this node's genesis for genesis_hash_v1, unless the chain DB
-// already holds a block 0: the stored chain is the one the node is on, so a pin
-// that contradicts it is reported rather than adopted.
-func (e *Executor) WithGenesisHash(h [32]byte) *Executor {
-	e.genesisHash = &h
-	if cur := e.genesisHashStored.Load(); cur != nil && *cur != h {
-		log.Error().
-			Str("pinned", fmt.Sprintf("%x", h[:8])).
-			Str("stored", fmt.Sprintf("%x", cur[:8])).
-			Msg("--genesis-hash does not match this node's stored chain; headers are checked against the stored chain " +
-				"(a reset chain mints a NEW genesis — update the pin, or wipe this data dir to join the new chain)")
-		return e
+// The pin must agree with the stored chain. Callers must stop startup on an
+// error; a requested network identity is never silently overridden by disk.
+func (e *Executor) WithGenesisHash(h [32]byte) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if h == ([32]byte{}) {
+		return errors.New("--genesis-hash must not be zero")
 	}
+	if cur := e.genesisHashStored.Load(); cur != nil && *cur != h {
+		return fmt.Errorf("--genesis-hash %x conflicts with stored genesis %x; refusing to start on another chain", h[:], cur[:])
+	}
+	e.genesisHash = &h
 	e.adoptGenesisHash(h)
-	return e
+	return nil
 }
 
 // GenesisHash reports the hash of block 0 of the chain this node is on, and
@@ -491,11 +486,14 @@ func (e *Executor) adoptGenesisHash(h [32]byte) {
 }
 
 // storedGenesisHash reads this node's genesis from its own chain DB: block 0
-// when stored, else the genesis_hash its head carries (a state-synced node
-// holds no block 0, but its head names one once headers are bound).
+// when stored, else block 1's parent. Only snapshot-joined nodes need the
+// fallback to a previously validated bound head already on disk.
 func (e *Executor) storedGenesisHash() ([32]byte, bool) {
 	if b0, err := e.GetBlockByHeight(0); err == nil && b0 != nil {
 		return b0.Hash, true
+	}
+	if b1, err := e.GetBlockByHeight(1); err == nil && b1 != nil && b1.Header.PrevHash != ([32]byte{}) {
+		return b1.Header.PrevHash, true
 	}
 	if head, err := e.LatestBlock(); err == nil && head != nil && head.Header.GenesisHash != ([32]byte{}) {
 		return head.Header.GenesisHash, true
@@ -504,8 +502,9 @@ func (e *Executor) storedGenesisHash() ([32]byte, bool) {
 }
 
 // adoptCommittedGenesis lets a node that did not know its genesis learn it
-// from a block it has just committed: block 0 itself, or the genesis a bound
-// header names. Only committed blocks teach it — never a proposal under vote.
+// from block 0 or the parent of a committed block 1. This lets replaying
+// joiners learn the same identity before activation without holding block 0.
+// A proposed or incoming bound header must never establish its own identity.
 func (e *Executor) adoptCommittedGenesis(b *types.Block) {
 	if e.genesisHashStored.Load() != nil {
 		return
@@ -513,11 +512,8 @@ func (e *Executor) adoptCommittedGenesis(b *types.Block) {
 	switch {
 	case b.Header.Height == 0:
 		e.adoptGenesisHash(b.Hash)
-	case b.Header.GenesisHash != ([32]byte{}):
-		e.adoptGenesisHash(b.Header.GenesisHash)
-		log.Info().Uint64("height", b.Header.Height).
-			Str("genesis_hash", fmt.Sprintf("%x", b.Header.GenesisHash[:8])).
-			Msg("genesis adopted from the first bound header this node committed")
+	case b.Header.Height == 1 && b.Header.PrevHash != ([32]byte{}):
+		e.adoptGenesisHash(b.Header.PrevHash)
 	}
 }
 
@@ -530,10 +526,9 @@ func (e *Executor) adoptCommittedGenesis(b *types.Block) {
 // binary drops the unknown key and hashes the legacy header, so it refuses such
 // a block; accepting it here would let the two binaries disagree about validity
 // in the middle of a rolling upgrade. From the fork on, a block must name this
-// node's genesis. A node that cannot know its genesis (no block 0, no pin, no
-// bound block committed yet) accepts the block on its other checks — linkage,
-// the producer's seal and the certificate — warns once, and adopts the genesis
-// when the block commits.
+// node's already established genesis. A node without it refuses proposals,
+// blocks and snapshots alike; otherwise validators with the same history
+// could disagree about the validity of a block naming an invented genesis.
 func (e *Executor) verifyChainIdentity(b *types.Block) error {
 	if b.Header.ChainID != types.ChainID {
 		return fmt.Errorf("wrong chain id: block %q, node %q", b.Header.ChainID, types.ChainID)
@@ -551,13 +546,8 @@ func (e *Executor) verifyChainIdentity(b *types.Block) error {
 	}
 	adopted, ok := e.GenesisHash()
 	if !ok {
-		if !e.warnedUnknownGenesis.Swap(true) {
-			log.Warn().Uint64("height", b.Header.Height).
-				Str("genesis_hash", fmt.Sprintf("%x", b.Header.GenesisHash[:8])).
-				Msg(forks.GenesisHashV1 + " is active but this node knows no genesis to check headers against " +
-					"(no block 0 stored, no --genesis-hash pin); accepting the genesis its chain names")
-		}
-		return nil
+		return fmt.Errorf("%s: cannot verify block %d without a known genesis; configure --genesis-hash before accepting bound headers",
+			forks.GenesisHashV1, b.Header.Height)
 	}
 	if b.Header.GenesisHash != adopted {
 		return fmt.Errorf("block %d names genesis %x but this node is on genesis %x — another network, or a chain that was reset",
@@ -1054,6 +1044,7 @@ func (e *Executor) reapplyBlock(b *types.Block) error {
 		return fmt.Errorf("reapply commit: %w", err)
 	}
 
+	e.adoptCommittedGenesis(b)
 	e.recordTxIndex(b, receipts)
 	return nil
 }
@@ -1843,6 +1834,7 @@ func (e *Executor) assembleBlock(
 
 	e.recordTxIndex(b, receipts)
 	e.noteTxsFailed(dropped + countFailedReceipts(receipts))
+	e.adoptCommittedGenesis(b)
 
 	log.Info().
 		Uint64("height", height).

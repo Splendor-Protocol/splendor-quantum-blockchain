@@ -503,7 +503,9 @@ func runNode(cmd *cobra.Command, args []string) error {
 		// The same pin anchors the bottom of the chain locally: block 1 applied
 		// to an empty chain has no stored parent, so without this it could be
 		// built on any genesis at all.
-		executor.WithGenesisHash(*genesisHashPin)
+		if err := executor.WithGenesisHash(*genesisHashPin); err != nil {
+			return err
+		}
 		log.Info().Str("genesis_hash", fmt.Sprintf("%x", genesisHashPin[:8])).Msg("Genesis hash pinned")
 	}
 
@@ -535,6 +537,11 @@ func runNode(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if headBlock != nil {
+		if err := requireScheduledGenesis(executor, forkSchedule); err != nil {
+			return err
+		}
 	}
 	executor.WithForks(forkSchedule)
 	for _, name := range forkSchedule.Names() {
@@ -1131,7 +1138,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 				// pull below and readyToPropose (IsSynced reads BestPeerHeight,
 				// which only this loop refreshes) sit behind it. A pass now
 				// costs one timeout however many peers are down.
-				refreshPeerHeights(peerPool, executor.GenesisHash)
+				refreshPeerHeights(peerPool, broadcaster, executor.GenesisHash)
 				if n, err := syncer.SyncOnceContext(ctx); err != nil {
 					log.Warn().Err(err).Msg("sync failed")
 				} else if n > 0 {
@@ -1333,9 +1340,7 @@ func runNode(cmd *cobra.Command, args []string) error {
 			if err := network.IsSafePeerURL(peer.Addr); err != nil {
 				return fmt.Errorf("rejected peer addr: %w", err)
 			}
-			peerPool.Add(&peer)
-			broadcaster.AddPeer(peer.Addr)
-			return nil
+			return admitAnnouncedPeer(peerPool, broadcaster, executor.GenesisHash, &peer)
 		},
 		// Read side of the sealed channel: lets a peer catch up without
 		// dropping to plaintext GET /block/{height}.
@@ -2209,15 +2214,15 @@ func setupLogging(level string) {
 // refreshPeerHeights polls every known peer's /status concurrently and records
 // the heights that answer. Peers that do not answer are left as they were;
 // DialPeer's own 5s timeout bounds the pass. A peer that answers with another
-// genesis than localGenesis is on another chain and is dropped from the pool
-// (network.ProbePeer); peer exchange may list it again, and the next pass
-// drops it again.
+// genesis than localGenesis is dropped from both the pool and the broadcaster.
+// Peer exchange can rediscover it for a later probe; announcements must pass
+// admitAnnouncedPeer before restoring it as an authenticated write target.
 //
 // maxPeerProbeFanout caps how many probes are in flight at once so a large
 // peer set cannot open a socket per peer every second.
 const maxPeerProbeFanout = 16
 
-func refreshPeerHeights(peerPool *network.PeerPool, localGenesis func() ([32]byte, bool)) {
+func refreshPeerHeights(peerPool *network.PeerPool, broadcaster *network.Broadcaster, localGenesis func() ([32]byte, bool)) {
 	addrs := peerPool.Addrs()
 	if len(addrs) == 0 {
 		return
@@ -2236,9 +2241,27 @@ func refreshPeerHeights(peerPool *network.PeerPool, localGenesis func() ([32]byt
 				peerPool.UpdatePeerHeight(addr, h)
 			case errors.Is(err, network.ErrPeerOnAnotherChain):
 				peerPool.Remove(addr)
+				broadcaster.RemovePeer(addr)
 				log.Warn().Err(err).Str("peer", addr).Msg("dropped peer: it is not on this node's chain")
+			default:
+				log.Debug().Err(err).Str("peer", addr).Msg("peer height probe failed")
 			}
 		}(addr)
 	}
 	wg.Wait()
+}
+
+// Announcing again must not undo a foreign-genesis refusal. Peer exchange only
+// adds sync candidates; this path also grants authenticated outbound writes.
+func admitAnnouncedPeer(peerPool *network.PeerPool, broadcaster *network.Broadcaster, localGenesis func() ([32]byte, bool), peer *network.PeerInfo) error {
+	if _, err := network.ProbePeer(peer.Addr, localGenesis); err != nil {
+		if errors.Is(err, network.ErrPeerOnAnotherChain) {
+			peerPool.Remove(peer.Addr)
+			broadcaster.RemovePeer(peer.Addr)
+		}
+		return fmt.Errorf("announced peer refused: %w", err)
+	}
+	peerPool.Add(peer)
+	broadcaster.AddPeer(peer.Addr)
+	return nil
 }

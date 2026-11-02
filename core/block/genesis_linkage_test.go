@@ -30,7 +30,9 @@ func TestBlockOneOnEmptyChainMustNameThePinnedGenesis(t *testing.T) {
 			ex, sdb := newTestExecutor(t)
 			defer ex.Close()
 			defer sdb.Close()
-			ex.WithGenesisHash(genesisHash)
+			if err := ex.WithGenesisHash(genesisHash); err != nil {
+				t.Fatal(err)
+			}
 
 			err := ex.ExecuteBlock(b)
 			if tc.wantReject && err == nil {
@@ -85,7 +87,9 @@ func TestPinnedExecutorRejectsAForeignGenesisBlock(t *testing.T) {
 		t.Fatalf("sign: %v", err)
 	}
 
-	matching.WithGenesisHash(hash)
+	if err := matching.WithGenesisHash(hash); err != nil {
+		t.Fatal(err)
+	}
 	if err := matching.ExecuteBlock(g); err != nil {
 		t.Fatalf("the pinned genesis block was rejected: %v", err)
 	}
@@ -93,7 +97,9 @@ func TestPinnedExecutorRejectsAForeignGenesisBlock(t *testing.T) {
 	foreign, sdb2 := newTestExecutor(t)
 	defer foreign.Close()
 	defer sdb2.Close()
-	foreign.WithGenesisHash(testHash(0xcc))
+	if err := foreign.WithGenesisHash(testHash(0xcc)); err != nil {
+		t.Fatal(err)
+	}
 	if err := foreign.ExecuteBlock(g); err == nil {
 		t.Fatal("a genesis block that is not the pinned one was committed")
 	}
