@@ -292,7 +292,9 @@ export class SqRpc {
   }
 
   async verifyProof(instructionId: string, instance: string): Promise<Record<string, unknown>> {
-    const id = String(instructionId).replace(/^0x/i, '');
+    const id = String(instructionId ?? '').trim().replace(/^0x/i, '');
+    if (!/^[0-9a-fA-F]{64}$/.test(id)) throw BridgeError.invalidParams('instruction id must be 32-byte hex');
+    instance = assertAddress(instance);
     return this.get(
       `/verify/proof/${encodeURIComponent(id)}?instance=${encodeURIComponent(instance)}`,
     );
@@ -307,11 +309,20 @@ export class SqRpc {
   }
 
   async listValidators(): Promise<{ validators: unknown[]; count: number; bond_spld: number }> {
-    return this.get('/validators');
+    const [list, bond] = await Promise.all([
+      this.moduleCall<unknown>({ module: 'validators', action: 'list', params: {} }).catch((e: unknown) => {
+        if (e instanceof Error && /decoded result is empty/i.test(e.message)) return [];
+        throw e;
+      }),
+      this.moduleCall<{ spld?: string }>({ module: 'validators', action: 'bond', params: {} }).catch(() => null),
+    ]);
+    const validators = Array.isArray(list) ? list : [];
+    const spld = Number(bond?.spld);
+    return { validators, count: validators.length, bond_spld: Number.isSafeInteger(spld) && spld > 0 ? spld : 2500 };
   }
 
   async getValidator(address: string): Promise<Record<string, unknown>> {
-    return this.get(`/validators/${encodeURIComponent(address)}`);
+    return this.moduleCall({ module: 'validators', action: 'validator', params: { address: assertAddress(address) } });
   }
 
   async x402Verify(

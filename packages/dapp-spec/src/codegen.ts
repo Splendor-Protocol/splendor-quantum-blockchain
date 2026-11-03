@@ -1,6 +1,6 @@
 import { bindBlockProps } from './bind.js';
 import { BLOCK_MANIFESTS, blockSource } from './blocks.js';
-import { blocksFromTree, styleToCss } from './tree.js';
+import { CONTAINER_KINDS, blocksFromTree, styleToCss } from './tree.js';
 import type { BlockAction, CatalogEntry, ContractRef, DappBlock, DappPage, DappSpec, LayoutNode, PropValue, ThemeOverrides } from './types.js';
 
 export type Framework = 'vite' | 'next';
@@ -127,7 +127,37 @@ function componentNames(pages: readonly DappPage[]): Map<DappPage, string> {
   return out;
 }
 
+const PAGE_PATH_RE = /^\/([a-z0-9][a-z0-9-]{0,39})?$/;
+const JSX_ATTR_RE = /^[A-Za-z_$][\w$-]*$/;
+const HIDE_ON = new Set(['mobile', 'desktop']);
+
+/**
+ * Page paths, prop names, container kinds and hideOn are written into generated code as-is, so a
+ * spec that skipped validateSpec must not reach the templates with anything else in them.
+ */
+function assertCodeSafe(spec: DappSpec): void {
+  const fail = (msg: string): never => {
+    throw new Error(`dapp-spec codegen: ${msg} (validate the spec first)`);
+  };
+  for (const page of spec.pages) {
+    if (typeof page.path !== 'string' || !PAGE_PATH_RE.test(page.path)) fail(`invalid page path ${JSON.stringify(page.path)}`);
+    const nodes: LayoutNode[] = page.root ? [page.root] : (page.blocks ?? []).map((block) => ({ kind: 'block' as const, block }));
+    while (nodes.length) {
+      const n = nodes.pop()!;
+      const hideOn = (n.kind === 'block' ? n.block.style : n.style)?.hideOn;
+      if (hideOn != null && !HIDE_ON.has(hideOn)) fail(`invalid hideOn ${JSON.stringify(hideOn)}`);
+      if (n.kind === 'block') {
+        for (const k of Object.keys(n.block.props ?? {})) if (!JSX_ATTR_RE.test(k)) fail(`invalid prop name ${JSON.stringify(k)}`);
+        continue;
+      }
+      if (!CONTAINER_KINDS.includes(n.kind)) fail(`invalid container kind ${JSON.stringify(n.kind)}`);
+      nodes.push(...(n.children ?? []));
+    }
+  }
+}
+
 function resolvePages(spec: DappSpec, catalog: readonly CatalogEntry[]): Resolved[] {
+  assertCodeSafe(spec);
   const byId = new Map(catalog.map((c) => [c.id, c]));
   const names = componentNames(spec.pages);
   return spec.pages.map((page) => {

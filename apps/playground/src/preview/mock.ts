@@ -339,6 +339,8 @@ export function createPlaygroundMock(opts: { network: NetworkId; state: MockWall
     onSend: (call, res) => {
       const o = (call.args[0] ?? {}) as Record<string, unknown>;
       const fee = o.fee ? big(o.fee) : DEFAULT_FEE;
+      // The node refuses any transaction whose sender cannot pay its fee.
+      if (fee > spld) throw new Error('Insufficient SPLD balance for the fee');
       height += 1;
       currentTx = res.hash;
       if (call.method === 'payX402') {

@@ -3,7 +3,10 @@ import { BLOCK_MANIFESTS, blockSnippet, blockSource, type CatalogEntry, type Net
 /** Same shape the Theme tab edits (`ThemeValue` in ThemeEditor). */
 export type CodeTheme = { base: string; overrides: Record<string, string | undefined> };
 
-/** Widgets the `@splendor/connect-react/embed` script can mount (see `src/embed.tsx`). */
+/**
+ * Widgets the published `@splendor/connect-react/embed` script mounts at the pinned version. The
+ * chain widgets in `src/embed.tsx` belong here once the connect-react-chain-widgets changeset ships.
+ */
 export const EMBED_WIDGETS: ReadonlySet<string> = new Set(['transfer', 'account-card', 'token-panel', 'deploy-token', 'sign-in', 'pending-tx']);
 
 /** Signer digests to put in copied code; the playground's own when it was built with them. */

@@ -36,6 +36,7 @@
     "test:webcontainer": "node scripts/webcontainer-smoke.mjs",
     "test:packages": "npm test -w @splendor/sqc-sdk && npm test -w @splendor/connect-react && npm test -w @splendor/dapp-spec && npm test -w create-splendor-dapp",
     "test:playground": "npm test -w @splendor/playground && npm test -w @splendor/playground-api",
+    "test:prod": "npm exec -w @splendor/sqc-sdk -- vitest run src/__tests__/prod && npm exec -w @splendor/connect-react -- vitest run src/__tests__/prod && npm exec -w @splendor/dapp-spec -- vitest run src/__tests__/prod-generate && npm exec -w @splendor/playground -- vitest run src/prod",
     "test:playground-api:pg": "node scripts/test-api-postgres.mjs",
     "test:e2e": "npm run e2e -w @splendor/playground",
     "test:codegen": "node scripts/codegen-build-matrix.mjs",

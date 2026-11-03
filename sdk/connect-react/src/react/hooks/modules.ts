@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { BridgeError, bindModules, listModules } from '@splendor/sqc-sdk';
+import { BridgeError, bindModules, getValidators, getVerify, listModules } from '@splendor/sqc-sdk';
 import { txExplorerUrl } from '@splendor/sqc-sdk/networks';
 import { connectErrorMessage } from '../../core/controller.js';
 import { useConnectState } from '../context.js';
@@ -10,6 +10,7 @@ import { useWallet } from './core.js';
 /**
  * Bound module clients for the connected wallet.
  * `registered` lists module ids from the SDK registry (built-ins + addons).
+ * `verify` and `validators` read the chain and build module calls; send those with `useModuleCall`.
  */
 export function useModules() {
   const { wallet, ready } = useWallet();
@@ -18,6 +19,8 @@ export function useModules() {
     const bound = bindModules(wallet.connection, wallet);
     return {
       ...bound,
+      verify: getVerify(wallet.connection),
+      validators: getValidators(wallet.connection),
       registered: listModules().map((m) => m.id),
     };
   }, [wallet, ready]);

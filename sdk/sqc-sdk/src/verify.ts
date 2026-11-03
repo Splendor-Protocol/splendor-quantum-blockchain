@@ -2,6 +2,10 @@ import type { Connection } from './core/connection.js';
 import type { Transport } from './core/transport/types.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import { buildModuleCall, type ModuleCall } from './core/module-call.js';
+import { assertAddress } from './address.js';
+import { BridgeError } from './errors.js';
+
+const INSTRUCTION_ID_RE = /^[0-9a-fA-F]{64}$/;
 
 export type VerifyInstruction = {
   version: number;
@@ -50,8 +54,10 @@ export class VerifyClient {
     }>('/verify/check', instruction, false);
   }
 
-  proof(instructionId: string, instance: string) {
-    const id = String(instructionId).replace(/^0x/i, '');
+  async proof(instructionId: string, instance: string) {
+    const id = String(instructionId ?? '').trim().replace(/^0x/i, '');
+    if (!INSTRUCTION_ID_RE.test(id)) throw BridgeError.invalidParams('instruction id must be 32-byte hex');
+    instance = assertAddress(instance);
     return this.io.get<Record<string, unknown>>(
       `/verify/proof/${encodeURIComponent(id)}?instance=${encodeURIComponent(instance)}`,
     );
