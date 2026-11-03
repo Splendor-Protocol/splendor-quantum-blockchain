@@ -287,6 +287,34 @@ compose hooks with review, fee and confirmation UI.
   x402 settlement; four Learn recipes; the "NFT membership" template; unit, preview and
   Playwright coverage.
 
+### Done in the production review of the builder (dApp Studio)
+
+- Builder fixes: column widths render as flex shares in the preview and the export alike, every
+  leaf is wrapped the same way in both (`.dapp-block`), rows stack below 720px, keyboard shortcuts
+  keep working after a click in the canvas (the preview forwards editor keys), multi-line navbar
+  links, one draft owner across tabs (take over, or keep a separate draft), work-in-progress
+  saves to the account, and a preview crash shows a banner instead of a blank frame.
+- Standard features: multi-line text fields, number ranges, address pickers fed by the spec's
+  contracts and recent addresses, inline style checks, layer rename and collapse, page path,
+  description and drag reorder, site settings (description, favicon, brand, footer, connect
+  button), a 404 page and per-page SEO in exports, project import and duplicate, a command
+  palette (Ctrl/Cmd+K) and a shortcut sheet (`?`).
+- Product UI: "Splendor dApp Studio" naming, a product home (hero, how it works, features,
+  templates, FAQ), a header menu below 768px, a footer, toasts, empty, loading and error states,
+  a gallery overview with search and categories, a Learn topic picker on phones, and in the studio
+  a "More" menu, drawers that are real dialogs (focus trap, Escape, sticky close), tap-to-inspect
+  and a foldable inspector between 1101 and 1400px. Device sizes come from `DEVICE_WIDTHS`. On a
+  laptop the Desktop canvas renders at 1024px and is zoomed to fit (a "62%" badge), because the
+  canvas between the panels is narrower than the app's 720px breakpoint and would otherwise show
+  the phone layout.
+- Deployment with the user's own accounts: exports call the RPC through `/rpc/<network>` on every
+  host (`vercel.json`, `netlify.toml`, Next rewrites), send a strict CSP that the signer satisfies
+  (sqc-sdk loads a pinned `wasm_exec.js` by SRI `<script>`, no `eval`), and ship lint, typecheck,
+  `.env.example`, engines, a deploy README and a CI workflow. The API adds "Push to GitHub" (OAuth
+  App, per-user token sealed with AES-GCM, Git Data API commit), and the Export dialog links the
+  pushed repository to Vercel's and Netlify's importers. `playground:build` packs the vendored SDK,
+  and CI builds vendor-mode exports.
+
 ### Phase 2: builder logic
 
 - Shared variables in the spec, props bound to variables or contract reads, stored `onSuccess`
@@ -295,14 +323,15 @@ compose hooks with review, fee and confirmation UI.
 
 ### Phase 3: builder UX
 
-- Command palette, multi-select and group edits, asset library, per-page SEO and favicon,
-  an accessibility checker in the issues panel, breakpoint overrides, shortcut help.
+- Multi-select and group edits, asset library, an accessibility checker in the issues panel,
+  breakpoint overrides (the command palette, shortcut help, per-page SEO and favicon shipped in
+  the production review).
 
 ### Phase 4: publishing
 
-- Hosted publishing: a worker that builds queued deployments (the route records them; nothing
-  builds them yet), preview subdomains, generated `_headers` / `vercel.json` with a CSP, CI and
-  smoke tests in exports, typed contract clients bound to the UI.
+- Out of scope for now: hosted publishing (the `/deployments` stub stays behind
+  `HOSTING_ENABLED` and is unused). Host configs with a CSP and CI in exports shipped in the
+  production review; still open: smoke tests in exports and typed contract clients bound to the UI.
 
 ### Phase 5: AI and collaboration
 
@@ -312,8 +341,8 @@ compose hooks with review, fee and confirmation UI.
 ### Next
 - connect-react: `useChainEvents`, consistent hook results, translatable `ui/` strings,
   `system` theme and mobile polish.
-- sqc-sdk: RPC total time budget and per-URL circuit breaker; CSP review for `wasm_exec.js`;
-  move `CHAIN_ID` out of `derive.ts`.
+- sqc-sdk: RPC total time budget and per-URL circuit breaker; move `CHAIN_ID` out of
+  `derive.ts`. (The `wasm_exec.js` CSP review is done: pinned loads use an SRI script.)
 
 ### Later (major versions)
 
@@ -325,4 +354,4 @@ compose hooks with review, fee and confirmation UI.
   registration is open to the widgets.
 - API: workspace members and roles, metrics, OpenAPI, Postgres migration lock, shared
   rate-limit store (the API stays a single instance until then).
-- Studio: multi-select and a command palette.
+- Studio: multi-select.

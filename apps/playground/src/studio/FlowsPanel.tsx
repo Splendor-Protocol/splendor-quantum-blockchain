@@ -3,10 +3,17 @@ import { blocksFromTree, type DappSpec } from '@splendor/dapp-spec';
 import './preview-app.css';
 
 /** Props that can hold a page link or URL. Shared with the Inspector's Actions tab. */
-export const ACTION_KEYS = ['href', 'ctaPath', 'buttonPath', 'link', 'action'] as const;
+export const ACTION_KEYS = ['href', 'ctaPath', 'buttonPath', 'link', 'action', 'successPath'] as const;
 
 /** Label prop that usually sits next to an action prop (`ctaPath` -> `ctaLabel`). */
-const LABEL_FOR: Record<string, string> = { href: 'label', ctaPath: 'ctaLabel', buttonPath: 'buttonLabel', link: 'label', action: 'label' };
+const LABEL_FOR: Record<string, string> = {
+  href: 'label',
+  ctaPath: 'ctaLabel',
+  buttonPath: 'buttonLabel',
+  link: 'label',
+  action: 'label',
+  successPath: 'buttonLabel',
+};
 
 export type FlowLink = {
   fromPath: string;
@@ -30,11 +37,11 @@ export function isExternalHref(value: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(value.trim()) || value.trim().startsWith('//');
 }
 
-/** `Label|/path,Label|/path` (the navbar block's `links` prop). */
+/** `Label|/path` items, one per line (list editor) or comma separated (the navbar block's `links` prop). */
 export function parseNavbarLinks(raw: unknown): { label: string; path: string }[] {
   if (typeof raw !== 'string') return [];
   return raw
-    .split(',')
+    .split(raw.includes('\n') ? /\r?\n/ : ',')
     .map((s) => s.trim())
     .filter(Boolean)
     .map((s) => {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GeneratedProject } from '@splendor/dapp-spec';
-import { deployLinks, downloadZip, openInStackBlitz } from './export';
+import { STACKBLITZ_MAX_BYTES, deployLinks, downloadZip, importLinks, openInStackBlitz } from './export';
+import { repoNameError } from './GitHubPush';
 
 const { zipped, generateAsync, openProject } = vi.hoisted(() => ({
   zipped: new Map<string, unknown>(),
@@ -53,9 +54,36 @@ describe('deployLinks', () => {
       'https://evil.example/org/repo',
       'https://github.com/org/repo?x=1',
       'javascript:alert(1)',
+      'https://github.com/org/sub/repo',
+      'https://gitlab.com/org/repo/-/tree/main',
+      'https://gitlab.com/org/../repo',
+      'https://bitbucket.org/org/sub/repo',
     ]) {
       expect(deployLinks(bad)).toBeNull();
     }
+  });
+
+  it('accepts GitLab subgroups', () => {
+    expect(deployLinks('https://gitlab.com/group/sub/team/repo')).not.toBeNull();
+  });
+});
+
+describe('importLinks and repo names', () => {
+  it('points Vercel and Netlify at a pushed GitHub repository', () => {
+    const repo = 'https://github.com/octo/my-dapp';
+    expect(importLinks(repo)).toEqual({
+      vercel: `https://vercel.com/new/import?s=${encodeURIComponent(repo)}`,
+      netlify: `https://app.netlify.com/start/deploy?repository=${encodeURIComponent(repo)}`,
+    });
+    expect(importLinks('https://evil.example/octo/x')).toBeNull();
+  });
+
+  it('checks repository names like the API', () => {
+    expect(repoNameError('my-dapp')).toBeNull();
+    expect(repoNameError('')).toMatch(/Enter/);
+    expect(repoNameError('has space')).toMatch(/letters/);
+    expect(repoNameError('x.git')).toMatch(/another/);
+    expect(repoNameError('..')).toMatch(/another/);
   });
 });
 
@@ -82,6 +110,12 @@ describe('openInStackBlitz', () => {
     expect(openProject).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'Vite app', template: 'node' }), expect.objectContaining({ openFile: 'src/App.tsx' }));
     await openInStackBlitz(project({ 'app/providers.tsx': '' }, 'next'), 'Next app');
     expect(openProject).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ openFile: 'app/providers.tsx' }));
+  });
+
+  it('refuses a payload StackBlitz would choke on and points at the zip', async () => {
+    openProject.mockClear();
+    await expect(openInStackBlitz(project({ 'big.txt': 'x'.repeat(STACKBLITZ_MAX_BYTES) }), 'Big')).rejects.toThrow(/Download the \.zip/);
+    expect(openProject).not.toHaveBeenCalled();
   });
 
   it('refuses an unsafe path without loading StackBlitz', async () => {

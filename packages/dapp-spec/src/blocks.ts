@@ -8,8 +8,11 @@ export type BlockManifest = CatalogEntry & {
   file: string;
 };
 
+/** Text props that usually hold a paragraph or more: the studio edits them in a text area. */
+const PARAGRAPH_PROPS = new Set(['text', 'content', 'quote', 'teaser', 'answer']);
+
 const text = (name: string, label: string, opts: Partial<CatalogEntry['props'][0]> = {}) =>
-  ({ name, label, type: 'string' as const, format: 'text' as const, ...opts });
+  ({ name, label, type: 'string' as const, format: 'text' as const, ...(PARAGRAPH_PROPS.has(name) ? { multiline: true } : {}), ...opts });
 
 /** Picker for a contract from `spec.contracts`; its address lands in `addressProp` before render. */
 const contractPick = (addressProp: string, contractKind: 'token' | 'contract' | 'any', label = 'Contract') =>
@@ -545,7 +548,7 @@ export const BLOCK_MANIFESTS: readonly BlockManifest[] = [
     kind: 'block',
     importName: 'SectionShell',
     file: 'SectionShell.tsx',
-    status: 'beta',
+    status: 'stable',
     placeable: true,
     container: true,
     thumb: 'section',
@@ -561,7 +564,7 @@ export const BLOCK_MANIFESTS: readonly BlockManifest[] = [
     kind: 'block',
     importName: 'RowShell',
     file: 'RowShell.tsx',
-    status: 'beta',
+    status: 'stable',
     placeable: true,
     container: true,
     thumb: 'row',
@@ -577,7 +580,7 @@ export const BLOCK_MANIFESTS: readonly BlockManifest[] = [
     kind: 'block',
     importName: 'ColumnsShell',
     file: 'ColumnsShell.tsx',
-    status: 'beta',
+    status: 'stable',
     placeable: true,
     container: true,
     thumb: 'columns',
@@ -604,7 +607,7 @@ export const BLOCK_MANIFESTS: readonly BlockManifest[] = [
     kind: 'block',
     importName: 'CardShell',
     file: 'CardShell.tsx',
-    status: 'beta',
+    status: 'stable',
     placeable: true,
     container: true,
     thumb: 'card',
@@ -798,7 +801,7 @@ export const BLOCK_MANIFESTS: readonly BlockManifest[] = [
   },
   {
     id: 'tx-history',
-    title: 'Transaction list',
+    title: 'Pending from this browser',
     description: 'Unconfirmed transactions sent from this browser.',
     category: 'activity',
     kind: 'block',
@@ -817,7 +820,7 @@ export const BLOCK_MANIFESTS: readonly BlockManifest[] = [
   },
   {
     id: 'nft-gallery',
-    title: 'NFT gallery',
+    title: 'NFT gallery (QRC-1155)',
     description: 'Grid of QRC-1155 token ids with your balance of each.',
     category: 'nft',
     kind: 'block',
@@ -858,7 +861,7 @@ export const BLOCK_MANIFESTS: readonly BlockManifest[] = [
     id: 'x402-paywall',
     title: 'Paywall (x402)',
     description: 'Pay-per-view content: pays the x402 price with the wallet, then shows what the server returns.',
-    category: 'modules',
+    category: 'chain',
     kind: 'block',
     importName: 'X402Paywall',
     file: 'X402Paywall.tsx',

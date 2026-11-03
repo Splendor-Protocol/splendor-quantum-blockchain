@@ -619,6 +619,152 @@ const ART: Record<string, Art> = {
     </>
   ),
 
+  // ---- Chain ----------------------------------------------------------------------------
+  'nft-panel': (a) => (
+    <>
+      {card(8, 6, 104, 64, 6)}
+      {text(16, 13, 40, 3.5)}
+      {[0, 1, 2, 3].map((i) => (
+        <rect key={i} x={16 + i * 23} y={22} width={19} height={19} rx={3} fill={a} opacity={i < 2 ? 0.75 : 0.2} />
+      ))}
+      {field(16, 47, 60, 8)}
+      {btn(a, 80, 47, 24, 8)}
+      {muted(16, 60, 50, 2)}
+    </>
+  ),
+  'nft721-gallery': (a) => (
+    <>
+      {[0, 1, 2, 3, 4, 5].map((i) => {
+        const x = 10 + (i % 3) * 35;
+        const y = 8 + Math.floor(i / 3) * 33;
+        return (
+          <g key={i}>
+            <rect x={x} y={y} width={30} height={22} rx={3} fill={a} opacity={i === 0 || i === 4 ? 0.8 : 0.22} />
+            {muted(x + 4, y + 25, 22, 2)}
+          </g>
+        );
+      })}
+    </>
+  ),
+  'bridge-claim': (a) => (
+    <>
+      <rect x={10} y={18} width={30} height={30} rx={6} fill={MUTED} />
+      <rect x={80} y={18} width={30} height={30} rx={6} fill={a} opacity={0.8} />
+      <path d="M42 33 H78" stroke={a} strokeWidth={2} strokeDasharray="3 3" />
+      <path d="M72 28 L78 33 L72 38" stroke={a} strokeWidth={2} fill="none" strokeLinecap="round" />
+      {muted(14, 56, 92, 2.5)}
+      {muted(14, 62, 60, 2.5)}
+    </>
+  ),
+  'validator-list': (a) => (
+    <>
+      {card(10, 6, 100, 64, 6)}
+      {[0, 1, 2, 3].map((i) => (
+        <g key={i}>
+          {dot(i === 3 ? MUTED : a, 20, 18 + i * 13, 3)}
+          {text(28, 16.5 + i * 13, 38, 3, 0.8)}
+          {muted(80, 17 + i * 13, 22, 2.5)}
+        </g>
+      ))}
+    </>
+  ),
+  'activity-feed': (a) => (
+    <>
+      {[0, 1, 2, 3].map((i) => (
+        <g key={i}>
+          <path
+            d={i % 2 ? `M14 ${20 + i * 14} l5 -5 l5 5` : `M14 ${15 + i * 14} l5 5 l5 -5`}
+            stroke={i % 2 ? '#ff7a8a' : a}
+            strokeWidth={1.6}
+            fill="none"
+            strokeLinecap="round"
+          />
+          {text(30, 14 + i * 14, 40, 3, 0.85)}
+          {muted(84, 14.5 + i * 14, 22, 2.5)}
+        </g>
+      ))}
+    </>
+  ),
+  receive: (a) => (
+    <>
+      <rect x={38} y={6} width={44} height={44} rx={4} fill="#fff" />
+      {[
+        [42, 10],
+        [66, 10],
+        [42, 34],
+      ].map(([x, y], i) => (
+        <rect key={i} x={x} y={y} width={12} height={12} fill="none" stroke="#111" strokeWidth={2.5} />
+      ))}
+      {[58, 62, 70, 74].map((x, i) => (
+        <rect key={i} x={x} y={30 + (i % 2) * 6} width={4} height={4} fill="#111" />
+      ))}
+      {text(24, 56, 72, 3, 0.8)}
+      {btn(a, 44, 63, 32, 7)}
+    </>
+  ),
+  'address-book': (a) => (
+    <>
+      {card(10, 6, 100, 64, 6)}
+      {[0, 1, 2].map((i) => (
+        <g key={i}>
+          {dot(a, 22, 20 + i * 15, 5, 0.6)}
+          {text(32, 17 + i * 15, 30, 3)}
+          {muted(32, 23 + i * 15, 56, 2)}
+        </g>
+      ))}
+      {btn(a, 72, 58, 30, 7, true)}
+    </>
+  ),
+  'token-balances': (a) => (
+    <>
+      {card(12, 6, 96, 64, 6)}
+      {['SPLD', 'DEMO', 'LAB'].map((s, i) => (
+        <g key={s}>
+          {dot(i === 0 ? a : MUTED, 24, 20 + i * 16, 4)}
+          <text x={32} y={22 + i * 16} fontSize={6.5} fontWeight={700} fill={INK} fontFamily="system-ui, sans-serif">
+            {s}
+          </text>
+          {text(74, 18.5 + i * 16, 24, 3, 0.7)}
+        </g>
+      ))}
+    </>
+  ),
+  'qr-code': () => (
+    <>
+      <rect x={36} y={6} width={48} height={64} rx={5} fill="#fff" />
+      {[
+        [41, 11],
+        [67, 11],
+        [41, 37],
+      ].map(([x, y], i) => (
+        <rect key={i} x={x} y={y} width={12} height={12} fill="none" stroke="#111" strokeWidth={2.5} />
+      ))}
+      {[
+        [58, 14],
+        [60, 26],
+        [70, 30],
+        [58, 40],
+        [66, 44],
+        [74, 52],
+        [44, 56],
+        [56, 58],
+      ].map(([x, y], i) => (
+        <rect key={i} x={x} y={y} width={5} height={5} fill="#111" />
+      ))}
+    </>
+  ),
+  'x402-paywall': (a) => (
+    <>
+      {card(10, 6, 100, 64, 6)}
+      {text(18, 14, 46, 4)}
+      {muted(18, 24, 84)}
+      <rect x={18} y={30} width={84} height={18} rx={3} fill={MUTED} opacity={0.5} />
+      <path d="M56 36 v-2 a4 4 0 0 1 8 0 v2" stroke={INK} strokeWidth={1.4} fill="none" />
+      <rect x={54} y={36} width={12} height={9} rx={2} fill={INK} />
+      {btn(a, 36, 54, 48, 9)}
+    </>
+  ),
+
   // ---- Forms ----------------------------------------------------------------------------
   'form-text': (a) => (
     <>
@@ -685,6 +831,7 @@ const FALLBACK: Record<string, string> = {
   activity: 'pending-tx',
   nft: 'nft-gallery',
   modules: 'contract-call',
+  chain: 'validator-list',
   forms: 'form-text',
 };
 
@@ -693,9 +840,10 @@ export function hasPieceArt(id: string): boolean {
 }
 
 /** Illustrated mini-mockup of a palette piece, drawn in the shelf's accent colour. */
-export function PieceArt({ id, category, tone, className }: { id: string; category: string; tone: string; className?: string }) {
+export function PieceArt({ id, category, tone, className, thumb }: { id: string; category: string; tone: string; className?: string; thumb?: string }) {
   const accent = TONE_COLORS[tone] ?? TONE_COLORS.violet!;
-  const draw = ART[id] ?? ART[FALLBACK[category] ?? 'card']!;
+  // Own drawing first, then the catalog's `thumb` hint (another piece's drawing), then the shelf's.
+  const draw = ART[id] ?? (thumb ? ART[thumb] : undefined) ?? ART[FALLBACK[category] ?? 'card']!;
   const uid = `pa${useId().replace(/:/g, '')}`;
   return (
     <svg className={className} viewBox="0 0 120 76" role="presentation" aria-hidden="true" preserveAspectRatio="xMidYMid meet">

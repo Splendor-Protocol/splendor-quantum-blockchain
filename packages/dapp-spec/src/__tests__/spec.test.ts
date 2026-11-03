@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { WIDGET_MANIFESTS } from '@splendor/connect-react/manifest';
 import {
   BLOCK_MANIFESTS,
+  DEFAULT_RPC_TARGETS,
+  EXPORT_CSP,
   PAGE_TEMPLATES,
   TEMPLATES,
   THEME_PRESETS,
@@ -268,6 +271,73 @@ describe('generateProject', () => {
     expect(next.files['next.config.mjs']).toContain('async headers()');
     expect(next.files['next.config.mjs']).toContain("frame-ancestors 'none'");
     expect(next.files['next.config.mjs']).toContain('poweredByHeader: false');
+  });
+
+  it('ships Vercel and Netlify configs with the same-origin RPC proxy and a CSP without eval', () => {
+    const files = generateProject(ready('wallet-dashboard'), { framework: 'vite', catalog, versions }).files;
+    const vercel = JSON.parse(files['vercel.json']!);
+    expect(vercel.outputDirectory).toBe('dist');
+    expect(vercel.rewrites).toContainEqual({ source: '/rpc/testnet/:path*', destination: 'https://quantum-rpc-testnet.splendor.org/:path*' });
+    const csp = vercel.headers[0].headers.find((h: { key: string }) => h.key === 'Content-Security-Policy').value as string;
+    expect(csp).toBe(EXPORT_CSP);
+    expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'");
+    expect(csp).not.toMatch(/'unsafe-eval'|script-src[^;]*'unsafe-inline'/);
+    expect(csp).toContain("frame-ancestors 'none'");
+    const netlify = files['netlify.toml']!;
+    expect(netlify).toContain('publish = "dist"');
+    expect(netlify).toContain('from = "/rpc/mainnet/*"\n  to = "https://quantum-rpc.splendor.org/:splat"\n  status = 200');
+    expect(netlify).toContain(`Content-Security-Policy = ${JSON.stringify(EXPORT_CSP)}`);
+    // Custom targets replace the defaults, and anything that is not a plain https URL is dropped.
+    const custom = generateProject(ready('wallet-dashboard'), {
+      framework: 'vite',
+      catalog,
+      versions,
+      rpcTargets: { testnet: 'https://rpc.example.org/', evil: 'http://x"\n[[redirects]]' },
+    }).files;
+    expect(JSON.parse(custom['vercel.json']!).rewrites).toEqual([{ source: '/rpc/testnet/:path*', destination: 'https://rpc.example.org/:path*' }]);
+    expect(custom['netlify.toml']).not.toContain('evil');
+    // Next.js keeps its own rewrites and headers; no static host files.
+    const next = generateProject(ready('wallet-dashboard'), { framework: 'next', catalog, versions }).files;
+    expect(next['vercel.json']).toBeUndefined();
+    expect(next['next.config.mjs']).toContain('async rewrites()');
+    expect(next['next.config.mjs']).toContain('Strict-Transport-Security');
+  });
+
+  it('DEFAULT_RPC_TARGETS matches the SDK networks file', () => {
+    const raw = JSON.parse(readFileSync(new URL('../../../../sdk/sqc-sdk/src/config/sqc.networks.json', import.meta.url), 'utf8')) as {
+      networks: Record<string, { rpcUrls: string[] }>;
+    };
+    const fromSdk = Object.fromEntries(
+      Object.entries(raw.networks)
+        .map(([id, n]) => [id, n.rpcUrls.find((u) => u.startsWith('https://'))])
+        .filter((e): e is [string, string] => !!e[1]),
+    );
+    expect(DEFAULT_RPC_TARGETS).toEqual(fromSdk);
+  });
+
+  it('proxies the RPC on every host and lets the environment pick the network', () => {
+    for (const framework of ['vite', 'next'] as const) {
+      const files = generateProject(ready('wallet-dashboard'), { framework, catalog, versions }).files;
+      const dir = framework === 'vite' ? 'src' : 'app';
+      const env = framework === 'vite' ? 'VITE' : 'NEXT_PUBLIC';
+      expect(files[`${dir}/networks.ts`]).not.toContain('localhost');
+      expect(files[`${dir}/networks.ts`]).toContain('export function pickNetwork');
+      expect(files[framework === 'vite' ? 'src/App.tsx' : 'app/providers.tsx']).toContain(`_SQC_NETWORK`);
+      expect(files['.env.example']).toContain(`${env}_SQC_NETWORK=`);
+      expect(files['.env.example']).toContain(`${env}_SQC_DIRECT_RPC=1`);
+      const pkg = JSON.parse(files['package.json']!);
+      expect(pkg.engines.node).toBe('>=20');
+      expect(pkg.scripts.lint).toBe('eslint .');
+      expect(pkg.scripts.typecheck).toBe('tsc --noEmit');
+      expect(pkg.scripts.preview).toBeTruthy();
+      expect(pkg.devDependencies.eslint).toBeTruthy();
+      expect(files['eslint.config.mjs']).toContain('typescript-eslint');
+      expect(files['.github/workflows/ci.yml']).toContain('npm run typecheck');
+      expect(files['.github/workflows/ci.yml']).toContain('npm run build');
+      expect(files['README.md']).toContain('## Deploy');
+    }
+    const vendor = generateProject(ready('wallet-dashboard'), { framework: 'vite', catalog, versions, sdk: 'vendor' }).files;
+    expect(vendor['.gitignore']).toContain('vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm\n');
   });
 
   it('escapes prop strings so they cannot break out of JSX', () => {
@@ -798,7 +868,9 @@ describe('validateSpec: https-only and integer props', () => {
 
 describe('styleToCss', () => {
   it('uses flex-basis on columns so .dapp-column flex does not override the width', () => {
-    expect(styleToCss({ width: '50%' }, 'column')).toEqual({ flex: '0 1 50%' });
+    expect(styleToCss({ width: '50%' }, 'column')).toEqual({ flex: '50 1 0%' });
+    expect(styleToCss({ width: '33%' }, 'column')).toEqual({ flex: '33 1 0%' });
+    expect(styleToCss({ width: '240px' }, 'column')).toEqual({ flex: '0 1 240px' });
     expect(styleToCss({ width: '50%' }, 'row')).toEqual({ width: '50%' });
     expect(styleToCss({ width: '50%' })).toEqual({ width: '50%' });
   });
@@ -822,8 +894,63 @@ describe('styleToCss', () => {
     };
     const page = generateProject(spec, { framework: 'vite', catalog, versions }).files['src/pages/HomePage.tsx']!;
     expect(page).toContain('alignItems: "center", justifyContent: "center"');
-    expect(page).toContain('flex: "0 1 40%"');
+    expect(page).toContain('flex: "40 1 0%"');
     expect(page).not.toContain('width: "40%"');
+  });
+
+  it('exported leaves keep their style and hide-on in the same wrapper as the preview', () => {
+    const spec = emptySpec('x');
+    const root = spec.pages[0]!.root as ContainerNode;
+    const block: DappBlock = { id: 'h', widget: 'hero', props: { heading: 'Hi' }, style: { maxWidth: '300px', background: '#111', hideOn: 'mobile' } };
+    spec.pages[0]!.root = { ...root, children: [{ kind: 'block', block }] };
+    spec.pages[0]!.blocks = [block];
+    const page = generateProject(spec, { framework: 'vite', catalog, versions }).files['src/pages/HomePage.tsx']!;
+    expect(page).toContain('<div className="dapp-block dapp-hide-mobile" data-block-id="h"');
+    expect(page).toContain('maxWidth: "300px", background: "#111"');
+    expect(page).toMatch(/data-block-id="h"[\s\S]*<Hero heading=[^>]*\/>\s*<\/div>/);
+  });
+
+  it('exports page SEO, the favicon and a 404 page for both frameworks', () => {
+    const spec = emptySpec('Acme <dApp>');
+    spec.description = 'Pay & build "fast"';
+    spec.favicon = 'https://cdn.example.com/icon.png';
+    spec.pages[0]!.description = 'Home of Acme';
+    expect(validateSpec(spec, { catalog }).ok).toBe(true);
+    const vite = generateProject(spec, { framework: 'vite', catalog, versions }).files;
+    expect(vite['index.html']).toContain('<title>Acme &lt;dApp&gt;</title>');
+    expect(vite['index.html']).toContain('<meta name="description" content="Pay &amp; build &quot;fast&quot;" />');
+    expect(vite['index.html']).toContain('<link rel="icon" href="https://cdn.example.com/icon.png" />');
+    expect(vite['src/App.tsx']).toContain('description: "Home of Acme"');
+    expect(vite['src/App.tsx']).toContain('function NotFound()');
+    expect(vite['src/App.tsx']).not.toContain('?? ROUTES[0]');
+    const next = generateProject(spec, { framework: 'next', catalog, versions }).files;
+    expect(next['app/layout.tsx']).toContain('icons: { icon: "https://cdn.example.com/icon.png" }');
+    expect(next['app/page.tsx']).toContain('description: "Home of Acme"');
+    expect(next['app/not-found.tsx']).toContain('Page not found');
+  });
+
+  it('rejects unsafe favicons and long page descriptions, and keeps the new fields on normalize', () => {
+    const spec = emptySpec('x');
+    spec.favicon = 'javascript:alert(1)';
+    spec.pages[0]!.description = 'x'.repeat(161);
+    const r = validateSpec(spec, { catalog });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.issues.map((i) => i.path)).toEqual(expect.arrayContaining(['favicon', 'pages[0].description']));
+    const ok = emptySpec('x');
+    ok.favicon = 'https://a.example/f.svg';
+    ok.pages[0]!.description = 'Short';
+    (ok.pages[0]!.root as ContainerNode).label = 'Main';
+    const v = validateSpec(ok, { catalog });
+    expect(v.ok && v.spec.favicon).toBe('https://a.example/f.svg');
+    expect(v.ok && v.spec.pages[0]!.description).toBe('Short');
+    expect(v.ok && (v.spec.pages[0]!.root as ContainerNode).label).toBe('Main');
+  });
+
+  it('app CSS stacks rows on phones and never needs a min width wider than the screen', () => {
+    const css = generateProject(emptySpec('x'), { framework: 'vite', catalog, versions }).files['src/app.css']!;
+    expect(css).toContain('box-sizing: border-box');
+    expect(css).toContain('minmax(min(320px, 100%), 1fr)');
+    expect(css).toMatch(/@media \(max-width: 720px\)[\s\S]*\.dapp-row \{ flex-direction: column; \}/);
   });
 });
 

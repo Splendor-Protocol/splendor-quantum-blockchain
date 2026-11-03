@@ -25,6 +25,8 @@ export type GenerateOptions = {
   vendorFiles?: Record<string, string>;
   /** Base64 of `sqc_signer.wasm` written as `vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm.b64`. */
   vendorWasmBase64?: string;
+  /** Network id to public https RPC, for the host rewrites in `vercel.json` / `netlify.toml`. Default `DEFAULT_RPC_TARGETS`. */
+  rpcTargets?: Readonly<Record<string, string>>;
 };
 
 /** Relative path → file contents. Pure data: the generator never writes to disk or runs code. */
@@ -38,7 +40,22 @@ const TOOLING = {
   typescript: '^5.7.2',
   next: '^15.3.0',
   typesNode: '^22.0.0',
+  eslint: '^9.17.0',
+  typescriptEslint: '^8.18.0',
+  reactHooks: '^5.1.0',
 };
+const NODE_ENGINES = { node: '>=20' };
+const LINT_DEPS = {
+  '@eslint/js': TOOLING.eslint,
+  eslint: TOOLING.eslint,
+  'eslint-plugin-react-hooks': TOOLING.reactHooks,
+  'typescript-eslint': TOOLING.typescriptEslint,
+};
+
+/** Text safe inside an HTML attribute or element (the spec is user input). */
+function htmlText(s: string): string {
+  return s.replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
 
 export function slugify(name: string): string {
   const s = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
@@ -137,11 +154,18 @@ function styleAttr(style: Record<string, string> | undefined, indent: string): s
   return `\n${indent}  style={{ ${inner} }}`;
 }
 
+/** A leaf in the same `.dapp-block` wrapper as the preview, so its style and hide-on survive export. */
+function renderLeaf(block: DappBlock, entry: CatalogEntry, indent: string, ctx?: RenderCtx): string {
+  const hide = block.style?.hideOn ? ` dapp-hide-${block.style.hideOn}` : '';
+  const open = `${indent}<div className="dapp-block${hide}" data-block-id=${JSON.stringify(block.id)}${styleAttr(styleToCss(block.style), indent)}>`;
+  return `${open}\n${renderBlock(block, entry, indent + '  ', ctx)}\n${indent}</div>`;
+}
+
 function renderTree(node: LayoutNode, byId: Map<string, CatalogEntry>, indent: string, ctx?: RenderCtx): string {
   if (node.kind === 'block') {
     const entry = byId.get(node.block.widget);
     if (!entry) throw new Error(`dapp-spec codegen: unknown widget "${node.block.widget}"`);
-    return renderBlock(node.block, entry, indent, ctx);
+    return renderLeaf(node.block, entry, indent, ctx);
   }
   const cls = `dapp-${node.kind}`;
   const hide = node.style?.hideOn ? ` dapp-hide-${node.style.hideOn}` : '';
@@ -168,7 +192,7 @@ function pageSource(
   const body = root
     ? renderTree(root, byId, indent, ctx)
     : pageBlocks(r.page).length
-      ? pageBlocks(r.page).map((b) => renderBlock(b, byId.get(b.widget)!, indent, ctx)).join('\n')
+      ? pageBlocks(r.page).map((b) => renderLeaf(b, byId.get(b.widget)!, indent, ctx)).join('\n')
       : `${indent}<p className="dapp-empty">This page has no blocks yet.</p>`;
 
   const lines: string[] = [];
@@ -221,9 +245,15 @@ body {
 /* Theme variables live on the provider's .sqc-root, so the page background is painted here, not on body. */
 .dapp-root {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--sqc-bg, #0b0d12);
   color: var(--sqc-text, #e8ecf3);
   font-family: var(--sqc-font-body, system-ui, sans-serif);
+}
+.dapp-root *,
+.dapp-root *::before,
+.dapp-root *::after {
+  box-sizing: border-box;
 }
 .dapp-shell {
   max-width: 1120px;
@@ -312,6 +342,12 @@ body {
   flex-direction: column;
   gap: 0.75rem;
 }
+.dapp-block {
+  min-width: 0;
+}
+.dapp-row > .dapp-block {
+  flex: 1 1 240px;
+}
 .dapp-card {
   border: 1px solid var(--sqc-border, #262b38);
   background: var(--sqc-surface, #12151d);
@@ -323,12 +359,16 @@ body {
 }
 .dapp-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 1rem;
   align-items: start;
 }
 @media (max-width: 720px) {
   .dapp-hide-mobile { display: none !important; }
+  .dapp-shell,
+  .dapp-section { padding: 0.75rem; }
+  .dapp-row { flex-direction: column; }
+  .dapp-row > * { flex: 0 0 auto !important; width: 100% !important; max-width: 100% !important; }
 }
 @media (min-width: 721px) {
   .dapp-hide-desktop { display: none !important; }
@@ -356,17 +396,27 @@ body {
 .dapp-empty {
   color: var(--sqc-text-muted, #9aa4b2);
 }
+.dapp-not-found {
+  align-items: center;
+  gap: 0.5rem;
+  padding: 3rem 1rem;
+  text-align: center;
+}
+.dapp-not-found a {
+  color: var(--sqc-accent, #7c5cff);
+}
 `;
 
 function readme(spec: DappSpec, framework: Framework): string {
   const dev = framework === 'vite' ? 'http://localhost:5173' : 'http://localhost:3000';
+  const env = framework === 'vite' ? 'VITE' : 'NEXT_PUBLIC';
   const pins =
     framework === 'vite'
       ? '`sqcWasmPlugin` serves the signer and defines `VITE_SQC_WASM_SHA256` / `VITE_SQC_EXEC_SHA256` from the files it serves, so production builds are pinned automatically.'
       : '`npm run dev` / `npm run build` first run `scripts/copy-sqc-wasm.mjs`, which copies the signer into `public/` and writes its digests to `.env.production.local` (`NEXT_PUBLIC_SQC_WASM_SHA256` / `NEXT_PUBLIC_SQC_EXEC_SHA256`), so production builds are pinned.';
   return `# ${spec.name}
 
-${spec.description ?? 'A dApp on Splendor Quantum Chain, generated by the Splendor dApp Playground.'}
+${spec.description ?? 'A dApp on Splendor Quantum Chain, generated by the Splendor dApp Studio.'}
 
 Built with [\`@splendor/connect-react\`](https://www.npmjs.com/package/@splendor/connect-react) and
 [\`@splendor/sqc-sdk\`](https://www.npmjs.com/package/@splendor/sqc-sdk) (${framework === 'vite' ? 'Vite' : 'Next.js'} + React).
@@ -382,44 +432,67 @@ Open ${dev}. Connect with the Splendor Quantum Wallet extension or an in-page se
 
 ## Network
 
-The app runs on **${spec.network}**. Change \`NETWORK\` in ${framework === 'vite' ? '`src/App.tsx`' : '`app/providers.tsx`'}
-to \`'mainnet'\`, \`'testnet'\`, \`'devnet'\` or \`'local'\`. Mainnet spends real SPLD.
+The app runs on **${spec.network}**. Set \`${env}_SQC_NETWORK\` to \`mainnet\`, \`testnet\`, \`devnet\` or
+\`local\` to change it (see \`.env.example\`). Mainnet spends real SPLD.
 
-On localhost the public RPCs are reached through a dev proxy at \`/rpc/<network>\` because they do
-not accept cross-origin calls from localhost. Set \`${framework === 'vite' ? 'VITE' : 'NEXT_PUBLIC'}_SQC_DIRECT_RPC=1\` to call the RPC
-directly (for example when deployed on an origin the RPC allows).
+The public RPCs send no CORS headers, so the app calls \`/rpc/<network>\` on its own origin and the
+${framework === 'vite' ? 'host proxies it: the Vite dev/preview server locally, `vercel.json` on Vercel and `netlify.toml` on Netlify.' : 'rewrites in `next.config.mjs` proxy it, locally and on any host that runs Next.js.'}
+On a host without that proxy, set \`${env}_SQC_DIRECT_RPC=1\` and use an RPC that accepts your origin.
 
 ## The signer (WASM)
 
 Keys are handled by the ML-DSA-65 signer bundle shipped in \`@splendor/sqc-sdk\`.
 ${pins} Never deploy with \`allowUnpinnedWasm\`.
 
+## Scripts
+
+| Command | What it does |
+| --- | --- |
+| \`npm run dev\` | Development server with hot reload |
+| \`npm run build\` | Typecheck and production build |
+| \`npm run preview\` | Serve the production build locally |
+| \`npm run typecheck\` | TypeScript only |
+| \`npm run lint\` | ESLint (\`eslint.config.mjs\`) |
+
+\`.github/workflows/ci.yml\` runs install, typecheck and build on every push and pull request.
+
 ## Deploy
 
-\`\`\`bash
-npm run build
-\`\`\`
+Push this folder to a GitHub repository (the studio's Export dialog can do it for you), then:
 
-${framework === 'vite' ? 'Upload `dist/` to any static host (Netlify, Vercel, Cloudflare Pages, S3).' : 'Deploy to Vercel (`npx vercel`) or any Node host that runs `next start`.'}
+${
+  framework === 'vite'
+    ? `- **Vercel:** "Add New… → Project", import the repository. \`vercel.json\` sets the build
+  (\`npm run build\`, output \`dist\`), the \`/rpc/<network>\` proxy and the security headers.
+- **Netlify:** "Add new site → Import an existing project". \`netlify.toml\` sets the same build,
+  proxy and headers.
+- **Anywhere else** (Cloudflare Pages, S3, nginx): upload \`dist/\`, proxy \`/rpc/<network>\` to the
+  network's RPC (or set \`VITE_SQC_DIRECT_RPC=1\`), and send the headers below.`
+    : `- **Vercel:** "Add New… → Project", import the repository. Next.js is detected; the rewrites and
+  headers in \`next.config.mjs\` apply as is.
+- **Netlify:** "Add new site → Import an existing project". Netlify's Next.js runtime applies the
+  same rewrites and headers.
+- **Any Node host:** \`npm run build && npm start\`.`
+}
+
+Set \`${env}_SQC_NETWORK\` in the host's environment settings to deploy on another network.
 
 ## Security headers
 
 ${
   framework === 'vite'
-    ? `A static host does not add these for you. Set them in its config (Netlify \`public/_headers\`,
-Vercel \`vercel.json\`, nginx \`add_header\`). The build has no inline scripts, so a strict CSP works:
+    ? `\`vercel.json\` and \`netlify.toml\` already send these. The build has no inline scripts and the signer
+loader uses Subresource Integrity, so a strict CSP works:
 
 \`\`\`
-Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://*.splendor.org; frame-ancestors 'none'; object-src 'none'; base-uri 'none'
-X-Content-Type-Options: nosniff
-Referrer-Policy: strict-origin-when-cross-origin
-Strict-Transport-Security: max-age=31536000; includeSubDomains
+${EXPORT_SECURITY_HEADERS.map(([k, v]) => `${k}: ${v}`).join('\n')}
 \`\`\`
 
-\`'wasm-unsafe-eval'\` is required for the signer. Add your RPC host to \`connect-src\` if it is not under \`splendor.org\`.`
-    : `\`next.config.mjs\` sends framing, MIME-sniffing, referrer and permissions headers on every route.
+\`'wasm-unsafe-eval'\` is required for the signer. Add your RPC host to \`connect-src\` if you call one
+directly that is not under \`splendor.org\`.`
+    : `\`next.config.mjs\` sends framing, MIME-sniffing, referrer, permissions and HSTS headers on every route.
 A script CSP with Next.js needs per-request nonces (see the Next.js "Content Security Policy" guide);
-when you add one, include \`'wasm-unsafe-eval'\` in \`script-src\` for the signer. Serve over HTTPS with HSTS.`
+when you add one, include \`'wasm-unsafe-eval'\` in \`script-src\` for the signer.`
 }
 
 ## Learn more
@@ -485,11 +558,14 @@ function viteFiles(
         private: true,
         version: '0.1.0',
         type: 'module',
+        engines: NODE_ENGINES,
         scripts: {
           ...(sdk === 'vendor' ? { postinstall: 'node scripts/decode-wasm.mjs' } : {}),
           dev: 'vite',
           build: 'tsc --noEmit && vite build',
           preview: 'vite preview',
+          typecheck: 'tsc --noEmit',
+          lint: 'eslint .',
         },
         dependencies: {
           '@splendor/connect-react': deps.connectReact,
@@ -498,6 +574,7 @@ function viteFiles(
           'react-dom': TOOLING.react,
         },
         devDependencies: {
+          ...LINT_DEPS,
           '@types/react': TOOLING.typesReact,
           '@types/react-dom': TOOLING.typesReact,
           '@vitejs/plugin-react': TOOLING.pluginReact,
@@ -558,7 +635,7 @@ export default defineConfig({
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${spec.name.replace(/[<>&"]/g, '')}</title>
+    <title>${htmlText(spec.name)}</title>${spec.description ? `\n    <meta name="description" content="${htmlText(spec.description)}" />` : ''}${spec.favicon ? `\n    <link rel="icon" href="${htmlText(spec.favicon)}" />` : ''}
   </head>
   <body>
     <div id="root"></div>
@@ -580,7 +657,7 @@ createRoot(document.getElementById('root')!).render(
 `;
   files['src/networks.ts'] = networksSource();
   files['src/app.css'] = APP_CSS;
-  const routes = pages.map((r) => ({ path: r.page.path, title: r.page.title, component: r.component }));
+  const routes = pages.map((r) => ({ path: r.page.path, title: r.page.title, description: r.page.description ?? '', component: r.component }));
   const shell = navModel(spec, pages);
   files['src/App.tsx'] = `import { useEffect, useState } from 'react';
 import {
@@ -590,17 +667,39 @@ ${shell.showConnect ? '  ConnectKit,\n' : ''}  SplendorConnectProvider,
   themeOverridesToStyle,
   type ThemeOverrides,
 } from '@splendor/connect-react';
-import { appNetworks } from './networks';
+import { appNetworks, pickNetwork } from './networks';
 ${routes.map((r) => `import { ${r.component} } from './pages/${r.component}';`).join('\n')}
 
-const NETWORK = ${JSON.stringify(spec.network)} as const;
+const NETWORK = pickNetwork(${JSON.stringify(spec.network)}, import.meta.env.VITE_SQC_NETWORK as string | undefined);
 const THEME = ${JSON.stringify(spec.theme.base)} as const;
 const THEME_OVERRIDES: ThemeOverrides = ${themeConst(spec.theme.overrides)};
 const CUSTOM_NETWORKS = appNetworks(import.meta.env.VITE_SQC_DIRECT_RPC === '1');
 
+const APP_NAME = ${JSON.stringify(spec.name)};
+const APP_DESCRIPTION = ${JSON.stringify(spec.description ?? '')};
+
 const ROUTES = [
-${routes.map((r) => `  { path: ${JSON.stringify(r.path)}, title: ${JSON.stringify(r.title)}, Page: ${r.component} },`).join('\n')}
+${routes.map((r) => `  { path: ${JSON.stringify(r.path)}, title: ${JSON.stringify(r.title)}, description: ${JSON.stringify(r.description)}, Page: ${r.component} },`).join('\n')}
 ];
+
+/** Title and description of the page shown, for tabs, bookmarks and link previews. */
+function usePageMeta(route: (typeof ROUTES)[number] | undefined) {
+  useEffect(() => {
+    document.title = route ? (route.path === '/' ? APP_NAME : \`\${route.title} · \${APP_NAME}\`) : \`Page not found · \${APP_NAME}\`;
+    const description = route?.description || APP_DESCRIPTION;
+    let meta = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+    if (!description) {
+      meta?.remove();
+      return;
+    }
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.name = 'description';
+      document.head.appendChild(meta);
+    }
+    meta.content = description;
+  }, [route]);
+}
 
 /** Nav links in display order (from the spec's nav). */
 const NAV_LINKS = ${JSON.stringify(shell.links)};
@@ -616,6 +715,16 @@ function useHashPath(): string {
   return path;
 }
 
+function NotFound() {
+  return (
+    <div className="dapp-page dapp-not-found">
+      <h1>Page not found</h1>
+      <p className="dapp-note">There is no page at this address.</p>
+      <a href="#/">Go to the home page</a>
+    </div>
+  );
+}
+
 export function App() {
   // sqcWasmPlugin defines both digests from the files it serves; .env values take precedence.
   const wasmSha256 = (import.meta.env.VITE_SQC_WASM_SHA256 as string | undefined)?.trim();
@@ -624,7 +733,8 @@ export function App() {
     throw new Error('VITE_SQC_WASM_SHA256 and VITE_SQC_EXEC_SHA256 are required for production builds.');
   }
   const path = useHashPath();
-  const route = ROUTES.find((r) => r.path === path) ?? ROUTES[0]!;
+  const route = ROUTES.find((r) => r.path === path);
+  usePageMeta(route);
   return (
     <SplendorConnectProvider
       network={NETWORK}
@@ -644,15 +754,13 @@ export function App() {
             {NAV_LINKS.length > 1 ? (
               <nav className="dapp-nav" aria-label="Pages">
                 {NAV_LINKS.map((r) => (
-                  <a key={r.path} href={\`#\${r.path}\`} aria-current={r.path === route.path ? 'page' : undefined}>
+                  <a key={r.path} href={\`#\${r.path}\`} aria-current={r.path === route?.path ? 'page' : undefined}>
                     {r.title}
                   </a>
                 ))}
               </nav>
             ) : null}
-            <main>
-              <route.Page />
-            </main>${shell.footer ? `\n            <footer className="dapp-footer">${shell.footer}</footer>` : ''}
+            <main>{route ? <route.Page /> : <NotFound />}</main>${shell.footer ? `\n            <footer className="dapp-footer">${shell.footer}</footer>` : ''}
           </div>
         </div>
       </TxToastHost>
@@ -664,27 +772,28 @@ export function App() {
     files[`src/pages/${r.component}.tsx`] = pageSource(r, { blocksDir: '../blocks', client: false, contractsPath: '../contracts' }, catalog, spec.contracts ?? []);
   }
   addBlocks(files, pages, 'src/blocks', 'vite');
-  files['.env.example'] = `# Call public RPCs directly instead of through the dev proxy (/rpc/<network>).
-# VITE_SQC_DIRECT_RPC=1
-`;
   return files;
 }
 
 function networksSource(): string {
-  return `import { listNetworks, type NetworkConfig } from '@splendor/sqc-sdk/networks';
+  return `import { listNetworks, type NetworkConfig, type NetworkId } from '@splendor/sqc-sdk/networks';
 
 /**
- * On localhost every https network is pointed at the dev-server proxy (/rpc/<id>), because the
- * public RPCs do not accept cross-origin calls from localhost. Elsewhere, or with \`direct\`, the
- * SDK's built-in RPC URLs are used.
+ * The public RPCs send no CORS headers, so every https network is called through /rpc/<id> on this
+ * app's own origin: the dev/preview proxy locally, the host rewrite when deployed (see README).
+ * With \`direct\` (or during server rendering) the SDK's built-in RPC URLs are used.
  */
 export function appNetworks(direct: boolean): NetworkConfig[] | undefined {
   if (typeof window === 'undefined' || direct) return undefined;
-  const host = window.location.hostname;
-  if (host !== 'localhost' && host !== '127.0.0.1') return undefined;
   return listNetworks()
     .filter((n) => n.rpcUrls.some((u) => u.startsWith('https://')))
     .map((n) => ({ ...n, rpcUrls: [\`\${window.location.origin}/rpc/\${n.id}\`] }));
+}
+
+/** The network from the environment when it names a known network, else the one chosen in the studio. */
+export function pickNetwork(fallback: NetworkId, fromEnv: string | undefined): NetworkId {
+  const id = fromEnv?.trim();
+  return id && listNetworks().some((n) => n.id === id) ? id : fallback;
 }
 `;
 }
@@ -738,6 +847,7 @@ function nextFiles(
         name,
         private: true,
         version: '0.1.0',
+        engines: NODE_ENGINES,
         scripts: {
           ...(sdk === 'vendor' ? { postinstall: 'node scripts/decode-wasm.mjs' } : {}),
           predev: 'node scripts/copy-sqc-wasm.mjs',
@@ -745,6 +855,9 @@ function nextFiles(
           prebuild: 'node scripts/copy-sqc-wasm.mjs',
           build: 'next build',
           start: 'next start',
+          preview: 'next build && next start',
+          typecheck: 'tsc --noEmit',
+          lint: 'eslint .',
         },
         dependencies: {
           '@splendor/connect-react': deps.connectReact,
@@ -754,6 +867,7 @@ function nextFiles(
           'react-dom': TOOLING.react,
         },
         devDependencies: {
+          ...LINT_DEPS,
           '@types/node': TOOLING.typesNode,
           '@types/react': TOOLING.typesReact,
           '@types/react-dom': TOOLING.typesReact,
@@ -765,7 +879,7 @@ function nextFiles(
     ) + '\n';
   files['next.config.mjs'] = `import { listNetworks } from '@splendor/sqc-sdk/networks';
 
-/** Public Splendor RPCs do not accept cross-origin calls from localhost: proxy them under /rpc/<id>. */
+/** Public Splendor RPCs send no CORS headers: the app calls /rpc/<id> on its own origin, in dev and deployed. */
 const rpcRewrites = listNetworks().flatMap((net) => {
   const target = net.rpcUrls.find((u) => u.startsWith('https://'));
   return target ? [{ source: \`/rpc/\${net.id}/:path*\`, destination: \`\${target}/:path*\` }] : [];
@@ -777,10 +891,7 @@ const rpcRewrites = listNetworks().flatMap((net) => {
  */
 const securityHeaders = [
   { key: 'Content-Security-Policy', value: "frame-ancestors 'none'; object-src 'none'; base-uri 'self'" },
-  { key: 'X-Frame-Options', value: 'DENY' },
-  { key: 'X-Content-Type-Options', value: 'nosniff' },
-  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=()' },
+${BASE_HEADERS.map(([key, value]) => `  { key: ${JSON.stringify(key)}, value: ${JSON.stringify(value)} },`).join('\n')}
 ];
 
 /** @type {import('next').NextConfig} */
@@ -847,7 +958,9 @@ import '@splendor/connect-react/style.css';
 import './app.css';
 import { ClientRoot } from './client-root';
 
-export const metadata = { title: ${JSON.stringify(spec.name)} };
+export const metadata = {
+  title: ${JSON.stringify(spec.name)},${spec.description ? `\n  description: ${JSON.stringify(spec.description)},` : ''}${spec.favicon ? `\n  icons: { icon: ${JSON.stringify(spec.favicon)} },` : ''}
+};
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
@@ -883,9 +996,9 @@ ${shell.showConnect ? '  ConnectKit,\n' : ''}  SplendorConnectProvider,
   themeOverridesToStyle,
   type ThemeOverrides,
 } from '@splendor/connect-react';
-import { appNetworks } from './networks';
+import { appNetworks, pickNetwork } from './networks';
 
-const NETWORK = ${JSON.stringify(spec.network)} as const;
+const NETWORK = pickNetwork(${JSON.stringify(spec.network)}, process.env.NEXT_PUBLIC_SQC_NETWORK);
 const THEME = ${JSON.stringify(spec.theme.base)} as const;
 const THEME_OVERRIDES: ThemeOverrides = ${themeConst(spec.theme.overrides)};
 /** Nav links in display order (from the spec's nav). */
@@ -942,21 +1055,34 @@ export function Providers({ children }: { children: ReactNode }) {
     );
     files[`${dir}/page.tsx`] = `import { ${r.component} } from './${r.component}';
 
-export const metadata = { title: ${JSON.stringify(r.page.title)} };
+export const metadata = {
+  title: ${JSON.stringify(r.page.path === '/' ? spec.name : `${r.page.title} · ${spec.name}`)},${r.page.description ? `\n  description: ${JSON.stringify(r.page.description)},` : ''}
+};
 
 export default function Page() {
   return <${r.component} />;
 }
 `;
   }
+  files['app/not-found.tsx'] = `import Link from 'next/link';
+
+export const metadata = { title: ${JSON.stringify(`Page not found · ${spec.name}`)} };
+
+export default function NotFound() {
+  return (
+    <div className="dapp-page dapp-not-found">
+      <h1>Page not found</h1>
+      <p className="dapp-note">There is no page at this address.</p>
+      <Link href="/">Go to the home page</Link>
+    </div>
+  );
+}
+`;
   addBlocks(files, pages, 'blocks', 'next');
   // Block components are client components; the shared .ts helpers stay plain modules.
   for (const [path, src] of Object.entries(files)) {
     if (path.startsWith('blocks/') && path.endsWith('.tsx')) files[path] = `'use client';\n\n${src}`;
   }
-  files['.env.example'] = `# Call public RPCs directly instead of through the /rpc/<network> rewrite.
-# NEXT_PUBLIC_SQC_DIRECT_RPC=1
-`;
   return files;
 }
 
@@ -1274,6 +1400,168 @@ function isSafeVendorPath(path: string): boolean {
   return path.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
 }
 
+/**
+ * Public https RPC of each Splendor network, for host-level rewrites (`vercel.json`, `netlify.toml`)
+ * that cannot call `listNetworks()`. Same values as `@splendor/sqc-sdk`'s networks file (checked by a test).
+ */
+export const DEFAULT_RPC_TARGETS: Readonly<Record<string, string>> = {
+  mainnet: 'https://quantum-rpc.splendor.org',
+  testnet: 'https://quantum-rpc-testnet.splendor.org',
+  devnet: 'https://quantum-rpc-devnet.splendor.org',
+};
+
+/**
+ * CSP for a static (Vite) export. The build has no inline scripts and the signer's `wasm_exec.js`
+ * is loaded as a same-origin script with SRI, so only `'wasm-unsafe-eval'` is needed for the WASM.
+ */
+export const EXPORT_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https:",
+  "font-src 'self' data:",
+  "connect-src 'self' https://*.splendor.org wss://*.splendor.org",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+].join('; ');
+
+const BASE_HEADERS: readonly [string, string][] = [
+  ['X-Content-Type-Options', 'nosniff'],
+  ['X-Frame-Options', 'DENY'],
+  ['Referrer-Policy', 'strict-origin-when-cross-origin'],
+  ['Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()'],
+  ['Strict-Transport-Security', 'max-age=31536000; includeSubDomains'],
+];
+
+/** Every header a Vite export's host should send. */
+export const EXPORT_SECURITY_HEADERS: readonly [string, string][] = [['Content-Security-Policy', EXPORT_CSP], ...BASE_HEADERS];
+
+function rpcEntries(targets: Readonly<Record<string, string>>): [string, string][] {
+  return Object.entries(targets)
+    .filter(([id, url]) => /^[a-z0-9-]{1,40}$/.test(id) && /^https:\/\/[^\s"'\\]+$/.test(url))
+    .map(([id, url]) => [id, url.replace(/\/+$/, '')]);
+}
+
+/** Vercel: build settings, the same-origin RPC proxy and security headers. */
+function vercelJson(targets: Readonly<Record<string, string>>): string {
+  return (
+    JSON.stringify(
+      {
+        $schema: 'https://openapi.vercel.sh/vercel.json',
+        framework: 'vite',
+        buildCommand: 'npm run build',
+        outputDirectory: 'dist',
+        rewrites: rpcEntries(targets).map(([id, url]) => ({ source: `/rpc/${id}/:path*`, destination: `${url}/:path*` })),
+        headers: [{ source: '/(.*)', headers: EXPORT_SECURITY_HEADERS.map(([key, value]) => ({ key, value })) }],
+      },
+      null,
+      2,
+    ) + '\n'
+  );
+}
+
+/** Netlify: build settings, the same-origin RPC proxy (status 200 = proxy) and security headers. */
+function netlifyToml(targets: Readonly<Record<string, string>>): string {
+  const toml = (s: string) => JSON.stringify(s);
+  const redirects = rpcEntries(targets)
+    .flatMap(([id, url]) => [
+      `[[redirects]]\n  from = ${toml(`/rpc/${id}`)}\n  to = ${toml(`${url}/`)}\n  status = 200\n  force = true`,
+      `[[redirects]]\n  from = ${toml(`/rpc/${id}/*`)}\n  to = ${toml(`${url}/:splat`)}\n  status = 200\n  force = true`,
+    ])
+    .join('\n\n');
+  const headers = EXPORT_SECURITY_HEADERS.map(([k, v]) => `    ${k} = ${toml(v)}`).join('\n');
+  return `[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# The public RPCs do not send CORS headers: the app calls /rpc/<network> on its own origin.
+${redirects}
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+${headers}
+`;
+}
+
+function eslintConfig(framework: Framework): string {
+  const ignores = framework === 'vite' ? "['dist', 'node_modules', 'vendor', 'scripts']" : "['.next', 'out', 'node_modules', 'vendor', 'scripts', 'public', 'next-env.d.ts']";
+  return `import js from '@eslint/js';
+import reactHooks from 'eslint-plugin-react-hooks';
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
+  { ignores: ${ignores} },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  {
+    files: ['**/*.{ts,tsx}'],
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+    },
+  },
+);
+`;
+}
+
+/** GitHub Actions: install, typecheck and build on every push and pull request. */
+function ciWorkflow(): string {
+  return `name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci || npm install
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+`;
+}
+
+function envExample(framework: Framework, network: string): string {
+  const p = framework === 'vite' ? 'VITE' : 'NEXT_PUBLIC';
+  const rpc = framework === 'vite'
+    ? 'Every host config in this project (vite.config.ts, vercel.json, netlify.toml) proxies /rpc/<network>'
+    : 'next.config.mjs rewrites /rpc/<network> on every host';
+  return `# Copy to .env.local (development) or set these in your host's environment settings.
+
+# Network to run on: mainnet, testnet, devnet or local. Default: ${network} (chosen in the studio).
+# ${p}_SQC_NETWORK=${network}
+
+# The public RPCs do not send CORS headers, so the app calls /rpc/<network> on its own origin.
+# ${rpc}.
+# Set this to 1 on a host without that proxy, if your RPC accepts calls from your origin.
+# ${p}_SQC_DIRECT_RPC=1
+
+# Signer integrity pins (hex SHA-256). ${framework === 'vite' ? 'sqcWasmPlugin sets them at build time' : 'scripts/copy-sqc-wasm.mjs writes them to .env.production.local'}; set them here only to override.
+# ${p}_SQC_WASM_SHA256=
+# ${p}_SQC_EXEC_SHA256=
+`;
+}
+
 /** Generate a ready-to-run project. Validate the spec first; this throws on unknown widgets. */
 export function generateProject(spec: DappSpec, opts: GenerateOptions): GeneratedProject {
   const sdk = opts.sdk ?? 'npm';
@@ -1281,10 +1569,19 @@ export function generateProject(spec: DappSpec, opts: GenerateOptions): Generate
   const files = opts.framework === 'vite'
     ? viteFiles(spec, pages, opts.catalog, opts.versions, sdk)
     : nextFiles(spec, pages, opts.catalog, opts.versions, sdk);
+  const targets = opts.rpcTargets ?? DEFAULT_RPC_TARGETS;
+  if (opts.framework === 'vite') {
+    files['vercel.json'] = vercelJson(targets);
+    files['netlify.toml'] = netlifyToml(targets);
+  }
   files['README.md'] = readme(spec, opts.framework);
+  files['eslint.config.mjs'] = eslintConfig(opts.framework);
+  files['.github/workflows/ci.yml'] = ciWorkflow();
+  files['.env.example'] = envExample(opts.framework, spec.network);
+  const decoded = sdk === 'vendor' ? 'vendor/@splendor/sqc-sdk/wasm/dist/sqc_signer.wasm\n' : '';
   files['.gitignore'] = opts.framework === 'vite'
-    ? 'node_modules\ndist\n.env*.local\n'
-    : 'node_modules\n.next\nout\n.env*.local\npublic/sqc_signer.wasm\npublic/wasm_exec.js\n';
+    ? `node_modules\ndist\n.env*.local\n${decoded}`
+    : `node_modules\n.next\nout\n.env*.local\npublic/sqc_signer.wasm\npublic/wasm_exec.js\n${decoded}`;
   const appDir = opts.framework === 'vite' ? 'src' : 'app';
   files[`${appDir}/contracts.ts`] = contractsSource(spec);
   files[`${appDir}/actions.ts`] = actionsSource(spec, { framework: opts.framework, catalog: opts.catalog });

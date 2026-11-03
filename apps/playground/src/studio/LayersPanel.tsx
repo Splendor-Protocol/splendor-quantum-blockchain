@@ -31,6 +31,8 @@ export type LayersPanelProps = {
   /** Starts dragging a layer (shares the studio's drag state, so the canvas accepts it too). */
   startDrag: (event: DragEvent, payload: { kind: 'block'; id: string }) => void;
   endDrag: () => void;
+  /** Rename a container (double-click or F2 on its row); an empty name goes back to the kind. */
+  onRename?: (id: string, label: string) => void;
 };
 
 type DropMark = { id: string; pos: 'before' | 'after' | 'inside' };
@@ -95,10 +97,22 @@ function whereIs(root: LayoutNode, id: string): { parent: ContainerNode; index: 
  * component as a list item under its container. Click to select, drag to reorder or nest,
  * Alt+Arrow to move within the parent, Delete to remove.
  */
-export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId, full = false, onSelect, onDuplicate, onRemove, onMove, onDrop, acceptsDrag, startDrag, endDrag }: LayersPanelProps) {
+export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId, full = false, onSelect, onDuplicate, onRemove, onMove, onDrop, acceptsDrag, startDrag, endDrag, onRename }: LayersPanelProps) {
   const root = useRef<HTMLDivElement>(null);
   const focusAfter = useRef<string | null>(null);
   const [mark, setMark] = useState<DropMark | null>(null);
+  /** Containers whose children are hidden in the tree. */
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  /** Container being renamed in place. */
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const toggle = (id: string, open?: boolean) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      const shut = open === undefined ? !next.has(id) : !open;
+      if (shut) next.add(id);
+      else next.delete(id);
+      return next;
+    });
 
   // After a keyboard move the row is re-created in a new place: give it focus back.
   useEffect(() => {
@@ -112,7 +126,7 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
   const titleOf = (node: LayoutNode): string => {
     if (node.kind === 'block') return catalog.find((e) => e.id === node.block.widget)?.title ?? node.block.widget;
     if (page.root.kind !== 'block' && page.root.id === node.id) return 'Page';
-    return KIND_TITLE[node.kind] ?? node.kind.charAt(0).toUpperCase() + node.kind.slice(1);
+    return node.label?.trim() || (KIND_TITLE[node.kind] ?? node.kind.charAt(0).toUpperCase() + node.kind.slice(1));
   };
 
   const dropPosition = (event: DragEvent<HTMLElement>, node: LayoutNode, isRoot: boolean): DropMark['pos'] => {
@@ -159,6 +173,20 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
       onSelect(id);
       return;
     }
+    // Tree pattern: Right opens a box, Left closes it; F2 renames it.
+    const node = whereIs(page.root, id)?.parent.children.find((c) => nodeId(c) === id);
+    if (node && isContainer(node)) {
+      if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+        event.preventDefault();
+        toggle(id, event.key === 'ArrowRight');
+        return;
+      }
+      if (event.key === 'F2' && onRename) {
+        event.preventDefault();
+        setRenaming(id);
+        return;
+      }
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && whereIs(page.root, id)) {
       event.preventDefault();
       if (!full) onDuplicate(id);
@@ -184,7 +212,7 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
       next?.focus();
       return;
     }
-    if (event.key === 'Delete' && whereIs(page.root, id)) {
+    if ((event.key === 'Delete' || event.key === 'Backspace') && whereIs(page.root, id)) {
       event.preventDefault();
       // Focus lands on the neighbour so the keyboard keeps its place.
       const buttons = [...(root.current?.querySelectorAll<HTMLElement>('[data-layer-select]') ?? [])];
@@ -228,23 +256,69 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
       },
       onDrop: (e: DragEvent<HTMLElement>) => onRowDrop(e, node, isRoot),
     } as const;
+    const open = !collapsed.has(id);
+    const canFold = isContainer(node) && !isRoot && node.children.length > 0;
     const body = (
       <>
-        <div
-          role="treeitem"
-          className="pg-layer-main"
-          data-layer-select=""
-          tabIndex={id === tabStop ? 0 : -1}
-          style={{ paddingLeft: `${0.35 + depth * 0.8}rem` }}
-          aria-level={depth + 1}
-          aria-selected={active}
-          aria-expanded={isContainer(node) ? true : undefined}
-          aria-keyshortcuts={isRoot ? undefined : 'Delete Control+D Alt+ArrowUp Alt+ArrowDown'}
-          onClick={() => onSelect(id)}
-        >
-          <KindIcon kind={node.kind === 'block' ? 'block' : node.kind} color={color} />
-          <span className="pg-layer-title">{title}</span>
-        </div>
+        {canFold ? (
+          <button
+            type="button"
+            className="pg-layer-fold"
+            aria-label={`${open ? 'Collapse' : 'Expand'} ${title}`}
+            aria-expanded={open}
+            tabIndex={-1}
+            onClick={() => toggle(id)}
+            style={{ marginLeft: `${depth * 0.8}rem` }}
+          >
+            {open ? '▾' : '▸'}
+          </button>
+        ) : null}
+        {renaming === id && isContainer(node) ? (
+          <input
+            className="pg-layer-rename"
+            aria-label={`Name for ${title}`}
+            autoFocus
+            maxLength={60}
+            defaultValue={node.label ?? ''}
+            placeholder={KIND_TITLE[node.kind] ?? node.kind}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onRename?.(id, e.currentTarget.value);
+                setRenaming(null);
+                focusAfter.current = id;
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setRenaming(null);
+                focusAfter.current = id;
+              }
+            }}
+            onBlur={(e) => {
+              onRename?.(id, e.currentTarget.value);
+              setRenaming(null);
+            }}
+          />
+        ) : (
+          <div
+            role="treeitem"
+            className="pg-layer-main"
+            data-layer-select=""
+            tabIndex={id === tabStop ? 0 : -1}
+            style={{ paddingLeft: `${(canFold ? 0.1 : 0.35) + (canFold ? 0 : depth * 0.8)}rem` }}
+            aria-level={depth + 1}
+            aria-selected={active}
+            aria-expanded={isContainer(node) ? open : undefined}
+            aria-keyshortcuts={isRoot ? undefined : 'Delete Control+D Alt+ArrowUp Alt+ArrowDown'}
+            onClick={() => onSelect(id)}
+            onDoubleClick={() => {
+              if (isContainer(node) && !isRoot && onRename) setRenaming(id);
+            }}
+          >
+            <KindIcon kind={node.kind === 'block' ? 'block' : node.kind} color={color} />
+            <span className="pg-layer-title">{title}</span>
+          </div>
+        )}
         {!isRoot ? (
           <>
             <button type="button" className="pg-icon-btn" aria-label={`Duplicate ${title}`} title="Duplicate" disabled={full} onClick={() => onDuplicate(id)}>
@@ -287,7 +361,7 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
       }
       flush();
       out.push(row(child, depth, false));
-      out.push(...children(child, depth + 1));
+      if (!collapsed.has(child.id)) out.push(...children(child, depth + 1));
     }
     flush();
     if (!container.children.length) out.push(<p key={`empty-${container.id}`} className="pg-layer-empty" style={{ paddingLeft: `${0.35 + depth * 0.8}rem` }}>Empty</p>);

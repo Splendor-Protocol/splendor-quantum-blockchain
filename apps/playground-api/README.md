@@ -1,7 +1,8 @@
-# Splendor dApp Playground API
+# Splendor dApp Studio API
 
-Fastify service behind the [dApp Playground](../playground): wallet sign-in, saved and shared
-projects, catalog flags, the package release dashboard, and the audit log.
+Fastify service behind the [dApp Studio](../playground) (`apps/playground`): wallet sign-in, saved and shared
+projects, "Push to GitHub" with the user's own account, catalog flags, the package release dashboard,
+and the audit log.
 
 ```bash
 cp .env.example .env.local      # put your address in ADMIN_ADDRESSES
@@ -49,10 +50,17 @@ Each test case gets its own schema, created and dropped by the suite. The two SQ
   - One SQL store over `node:sqlite` (development) or Postgres (production), chosen by `DATABASE_URL`.
   - Ordered migrations run on startup.
   - A housekeeping timer purges expired sessions and nonces, old audit rows, and trash older than 30 days.
-  - Routes live in `src/routes/` (auth, workspaces and trash, projects and revisions, share, admin, deployments); `src/app.ts` wires the store, hooks and limits.
+  - Routes live in `src/routes/` (auth, workspaces and trash, projects and revisions, share, admin, integrations, deployments); `src/app.ts` wires the store, hooks and limits.
 - **Releases**:
   - Reads repo versions, changesets and workflow runs from GitHub, and dist-tags from npm, each call with a 10-second timeout.
   - Dispatches `release-packages.yml`. It holds a GitHub token that can start the workflow, never an npm token.
+- **Push to GitHub** (`src/routes/integrations.ts`, on when `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` and `INTEGRATION_TOKEN_KEY` are set):
+  - Users connect their own GitHub account with the OAuth web flow of a GitHub OAuth App (scope `public_repo`, or `repo` for private repositories with `GITHUB_OAUTH_SCOPE=repo`). Register the app's callback as `<playground origin>/api/integrations/github/callback` (or set `GITHUB_OAUTH_CALLBACK_URL`).
+  - `start` stores sha256 of a random state for 10 minutes and sets it in a `SameSite=Lax` cookie; the callback needs both, uses the state once, and refuses a signed-in user other than the one who started. It then redirects to `/github-connected.html` on the playground, which tells the studio tab.
+  - The user's token is sealed with AES-256-GCM (`INTEGRATION_TOKEN_KEY`), with the owner and provider as associated data, and is only used for that user's pushes. `GITHUB_TOKEN` (the release token) is never used for it. Disconnect deletes it and revokes the grant on GitHub.
+  - `POST /integrations/github/push` creates `<login>/<repo>` (or reuses one the user can push to) and commits the export as the whole tree of the default branch in one new commit (Git Data API: blobs for binary files, then tree, commit and ref). Up to 2000 files and 20 MB; paths are checked (no traversal, no `.git`); `*.wasm.b64` becomes the binary `.wasm`. A token GitHub no longer accepts is dropped (`401`, code `GITHUB_RECONNECT`).
+  - Connect, disconnect and every push are audited (never the token).
+- **Hosted publishing** (`/deployments`, `HOSTING_ENABLED=1`) is an unused stub: it records a request and nothing builds it. Users deploy exports to their own Vercel, Netlify or other host.
 
 Every route is limited to 300 requests per minute per IP unless the table says otherwise.
 
@@ -69,7 +77,11 @@ Every route is limited to 300 requests per minute per IP unless the table says o
 | `GET /trash`, `POST /trash/projects/:id/restore`, `DELETE /trash/projects/:id`, `POST /trash/workspaces/:id/restore`, `DELETE /trash/workspaces/:id` | signed-in owner |
 | `PUT /admin/catalog/:id`, `GET /admin/releases`, `GET /admin/audit`, `GET /admin/admins`, `POST /admin/admins`, `DELETE /admin/admins/:address` | admins |
 | `POST /admin/releases` | admins (5/min) |
-| `POST /deployments`, `GET /deployments/:id` | signed-in, only with `HOSTING_ENABLED=1` (phase 2) |
+| `GET /integrations/github/status` | signed-in (`{ enabled: false }` when not configured) |
+| `POST /integrations/github/start`, `POST /integrations/github/disconnect` | signed-in (10/min) |
+| `GET /integrations/github/callback` | the browser coming back from GitHub, with the state cookie (20/min) |
+| `POST /integrations/github/push` | signed-in, connected (10/min, body up to 20.5 MB) |
+| `POST /deployments`, `GET /deployments/:id` | signed-in, only with `HOSTING_ENABLED=1` (unused stub) |
 | `POST /auth/test-login` | only with `ALLOW_TEST_LOGIN=1` (end-to-end tests) |
 
 Behind a reverse proxy, set `TRUST_PROXY` (e.g. `loopback`) so rate limits and the audit log see the

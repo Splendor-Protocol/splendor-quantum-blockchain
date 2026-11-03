@@ -23,7 +23,22 @@ import { decodeAnswers, specFromWizard } from './newProject';
 import { KitCards } from '../home/KitCards';
 import { NewProjectWizard } from '../home/NewProjectWizard';
 import { builderReducer, initBuilder } from './state';
-import { clearDraft, discardStashedDraft, loadDraft, peekStashedDraft, saveDraft, stashDraft, takeStashedDraft, type Draft } from './storage';
+import type { IssueTarget } from './issues';
+import {
+  claimDraft,
+  clearDraft,
+  discardStashedDraft,
+  draftHeldElsewhere,
+  loadDraft,
+  onDraftTakenElsewhere,
+  peekStashedDraft,
+  releaseDraft,
+  saveDraft,
+  splitOffDraft,
+  stashDraft,
+  takeStashedDraft,
+  type Draft,
+} from './storage';
 
 type EditorTab = 'block' | 'theme' | 'export' | 'project';
 
@@ -103,14 +118,14 @@ function TemplatePicker({ onPick, onRestore }: { onPick: (spec: DappSpec) => voi
       ) : null}
       <div className="pg-cards">
         {templates.filter((t) => !t.kit).map((t) => (
-          <button key={t.id} type="button" className="pg-card" style={{ textAlign: 'left', font: 'inherit', cursor: 'pointer' }} data-testid={`pick-${t.id}`} onClick={() => onPick(instantiateTemplate(t))}>
-            <h3>{t.title}</h3>
+          <button key={t.id} type="button" className="pg-card pg-card-btn" data-testid={`pick-${t.id}`} onClick={() => onPick(instantiateTemplate(t))}>
+            <strong className="pg-card-title">{t.title}</strong>
             <p>{t.description}</p>
             {t.setup.length ? <p style={{ marginTop: '0.5rem' }}>You will set: {t.setup.map((s) => s.label).join(', ')}</p> : null}
           </button>
         ))}
-        <button type="button" className="pg-card" style={{ textAlign: 'left', font: 'inherit', cursor: 'pointer' }} data-testid="pick-blank" onClick={() => onPick(emptySpec())}>
-          <h3>Blank page</h3>
+        <button type="button" className="pg-card pg-card-btn" data-testid="pick-blank" onClick={() => onPick(emptySpec())}>
+          <strong className="pg-card-title">Blank page</strong>
           <p>A heading, then an empty page. Drag pieces on and watch them appear.</p>
         </button>
       </div>
@@ -376,6 +391,8 @@ function Editor({
 
   const validation = useMemo(() => validateSpec(spec, { catalog: all }), [spec, all]);
   const issues = validation.ok ? [] : validation.issues;
+  /** Empty required fields are work in progress: the account copy keeps syncing (the API accepts drafts). */
+  const syncable = validation.ok || validation.issues.every((i) => i.message === 'required');
   // Live mode renders like the mock preview: empty setup fields show the block's own prompt.
   const renderable = useMemo(() => validateForPreview(spec, all).spec, [spec, all]);
 
@@ -408,14 +425,18 @@ function Editor({
     });
   }, [mode, spec.network, confirmMainnetLive]);
 
-  const goToIssue = (target: { pagePath: string; blockId: string; prop: string | null; entryId: string | null }) => {
+  const goToIssue = (target: IssueTarget) => {
     dispatch({ type: 'selectPage', path: target.pagePath });
     dispatch({ type: 'selectBlock', id: target.blockId });
     setTab('block');
-    if (target.prop && target.entryId) {
-      const id = `prop-${target.entryId}-${target.prop}`;
-      window.setTimeout(() => document.getElementById(id)?.focus(), 0);
-    }
+    const id = target.style ? `style-${target.style}` : target.prop && target.entryId ? `prop-${target.entryId}-${target.prop}` : null;
+    if (!id) return;
+    window.setTimeout(() => {
+      const el = document.getElementById(id);
+      // A list field's id is on its fieldset, which cannot take focus: use its first control.
+      const focusable = el?.matches('input, select, textarea, button') ? el : el?.querySelector<HTMLElement>('input, select, textarea, button');
+      focusable?.focus();
+    }, 0);
   };
   const page = spec.pages.find((p) => p.path === pagePath) ?? spec.pages[0]!;
   const selected = (page.blocks ?? []).find((b) => b.id === selectedBlockId) ?? null;
@@ -459,8 +480,28 @@ function Editor({
   const alive = useRef(true);
   /** The spec the last draft write stored. */
   const writtenSpec = useRef<DappSpec | null>(null);
+  /**
+   * Another tab is editing the shared draft slot. Until the user picks "Take over" or "Keep a
+   * separate copy", this tab writes nothing, so neither tab silently overwrites the other.
+   */
+  const [tabConflict, setTabConflict] = useState(() => draftHeldElsewhere());
+  const tabConflictRef = useRef(tabConflict);
+  tabConflictRef.current = tabConflict;
+  useEffect(() => {
+    if (tabConflict) return;
+    claimDraft();
+    const beat = window.setInterval(claimDraft, 3_000);
+    const off = onDraftTakenElsewhere(() => setTabConflict(true));
+    window.addEventListener('pagehide', releaseDraft);
+    return () => {
+      window.clearInterval(beat);
+      off();
+      window.removeEventListener('pagehide', releaseDraft);
+      releaseDraft();
+    };
+  }, [tabConflict]);
   const persistDraft = useCallback(() => {
-    if (!alive.current) return;
+    if (!alive.current || tabConflictRef.current) return;
     draftPending.current = false;
     const s = specRef.current;
     writtenSpec.current = s;
@@ -562,7 +603,7 @@ function Editor({
           if (p.version) versionRef.current = p.version;
           lastSaved.current = s;
           retryCount.current = 0;
-          setCloud({ status: 'saved' });
+          setCloud({ status: 'saved', at: Date.now() });
         } catch (e) {
           if (e instanceof ApiError && e.code === 'CONFLICT') {
             conflictRef.current = { version: e.current?.version };
@@ -593,7 +634,7 @@ function Editor({
   // Cloud autosave (debounced) once the project lives in the user's account.
   useEffect(() => {
     if (!session || !projectId || !hasPendingEdits(spec) || conflictRef.current) return;
-    if (!validation.ok) {
+    if (!syncable) {
       setCloud({ status: 'unsaved' });
       return;
     }
@@ -601,7 +642,7 @@ function Editor({
     const t = window.setTimeout(() => void saveToCloud(spec), 1500);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec, session, projectId, validation.ok, saveToCloud]);
+  }, [spec, session, projectId, syncable, saveToCloud]);
 
   /** Conflict: save these edits on top of the newer copy. */
   const keepMine = useCallback(async () => {
@@ -619,9 +660,28 @@ function Editor({
       const target = e.target as HTMLElement | null;
       if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
       // Behind an open dialog the page must not change.
-      if (target?.closest?.('[aria-modal="true"]') || document.querySelector('[aria-modal="true"]')) return;
-      if (!(e.ctrlKey || e.metaKey)) return;
+      // (A studio drawer is aria-modal too, but editing shortcuts still apply while it is open.)
+      const dialog = '[aria-modal="true"]:not([data-drawer])';
+      if (target?.closest?.(dialog) || document.querySelector(dialog)) return;
+      // Handled already (selection toolbar, layers row).
+      if (e.defaultPrevented) return;
+      const { spec: cur, selectedBlockId: sel } = selectionRef.current;
+      const isRoot = (id: string) => cur.pages.some((p) => p.root && 'id' in p.root && p.root.id === id);
+      if (!(e.ctrlKey || e.metaKey)) {
+        // Delete / Backspace remove the selection; Undo restores it.
+        if ((e.key === 'Delete' || e.key === 'Backspace') && sel && !isRoot(sel)) {
+          e.preventDefault();
+          dispatch({ type: 'removeNodeFromTree', id: sel });
+        }
+        return;
+      }
       const key = e.key.toLowerCase();
+      if (key === 'd') {
+        if (!sel || isRoot(sel)) return;
+        e.preventDefault();
+        dispatch({ type: 'duplicateNode', id: sel });
+        return;
+      }
       if (key === 'z') {
         e.preventDefault();
         dispatch({ type: e.shiftKey ? 'redo' : 'undo' });
@@ -709,7 +769,7 @@ function Editor({
       lastSaved.current = spec;
       versionRef.current = p.version;
       setProjectId(p.id);
-      setCloud({ status: 'saved' });
+      setCloud({ status: 'saved', at: Date.now() });
       // A browser-workspace copy would be listed as "only in this browser" and uploaded twice.
       if (localWorkspaceId && localProjectId.current) {
         localPending.current = null;
@@ -739,7 +799,7 @@ function Editor({
     async (version: number) => {
       const id = projectIdRef.current;
       if (!id) return;
-      if (hasPendingEdits(specRef.current) && !conflictRef.current && validation.ok) await saveToCloud(specRef.current);
+      if (hasPendingEdits(specRef.current) && !conflictRef.current && syncable) await saveToCloud(specRef.current);
       if (conflictRef.current) throw new Error('Resolve the save conflict first.');
       // A restore replaces what is open; edits the account does not have would be lost.
       if (hasPendingEdits(specRef.current)) {
@@ -749,7 +809,7 @@ function Editor({
       onOpen(migrateSpec(p.spec), p.id, p.version);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [onOpen, saveToCloud, validation.ok],
+    [onOpen, saveToCloud, syncable],
   );
 
   const openNewer = useCallback(async () => {
@@ -764,6 +824,34 @@ function Editor({
   return (
     <>
     {confirmDialog}
+    {tabConflict ? (
+      <div className="pg-local-notice" role="alert" data-testid="draft-other-tab">
+        <span>This draft is open in another tab. Edits here are not saved until you choose.</span>
+        <button
+          type="button"
+          className="pg-btn pg-btn-sm"
+          data-testid="draft-take-over"
+          onClick={() => {
+            // The other tab's latest edits are in the shared slot: reopen them here.
+            claimDraft();
+            window.location.reload();
+          }}
+        >
+          Take over
+        </button>
+        <button
+          type="button"
+          className="pg-btn pg-btn-ghost pg-btn-sm"
+          data-testid="draft-separate"
+          onClick={() => {
+            splitOffDraft({ spec: specRef.current, projectId: projectIdRef.current, dirty: projectIdRef.current != null });
+            setTabConflict(false);
+          }}
+        >
+          Keep a separate copy
+        </button>
+      </div>
+    ) : null}
     <StashNotice onRestore={onRestore} />
     {needsSignIn ? (
       <div className="pg-local-notice" role="status" data-testid="workspace-signin">

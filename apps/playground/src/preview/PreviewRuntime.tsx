@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { TxToastHost } from '@splendor/connect-react';
 import { MockSplendorProvider } from '@splendor/connect-react/testing';
 import { WIDGET_MANIFESTS } from '@splendor/connect-react/manifest';
 import { createCatalog, migrateSpec, type DappSpec } from '@splendor/dapp-spec';
 import { createPlaygroundMock } from './mock';
 import { validateForPreview } from './validatePreview';
-import { PREVIEW_SOURCE, frameTokenFrom, isPreviewMessage, type ParentToPreview, type PreviewRects, type PreviewToParent, type RenderRequest } from './protocol';
+import { PREVIEW_SOURCE, frameTokenFrom, isEditorKey, isPreviewMessage, type ParentToPreview, type PreviewRects, type PreviewToParent, type RenderRequest } from './protocol';
 import { pickDropTarget } from './dropTarget';
 import { measureRects, nodeIdAt } from './measure';
 import { SpecRenderer, hrefToPath } from './SpecRenderer';
@@ -54,6 +54,30 @@ export function frameLinkAction(href: string, pagePaths: readonly string[]): 'ap
   const path = hrefToPath(href);
   if (path !== null && pagePaths.includes(path)) return 'app';
   return /^https?:\/\//i.test(href) ? 'popup' : 'none';
+}
+
+/**
+ * Last line of defence around the whole frame: a crash outside any block boundary (the provider,
+ * the page shell) is reported to the studio, which offers a reload, instead of a blank canvas.
+ */
+export class PreviewCrashBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error) {
+    post({ type: 'crashed', message: error.message || 'Unknown error' });
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="pg-issues pg-pad" role="alert">
+          The preview crashed: {this.state.error.message}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function short(v: unknown): string {
@@ -184,6 +208,23 @@ export function PreviewRuntime() {
       window.removeEventListener('scroll', schedule, true);
     };
   }, [req]);
+
+  // Builder shortcuts keep working after a click on the canvas: the frame has focus then, so the
+  // studio's window listeners would never see the key. Typing in a widget's own field stays local.
+  useEffect(() => {
+    if (play) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+      const k = { key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey };
+      if (!isEditorKey(k)) return;
+      if (k.key === 'c' && window.getSelection()?.toString()) return;
+      e.preventDefault();
+      post({ type: 'key', ...k });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [play]);
 
   // Hover reporting + native drops that land inside the frame (the builder normally overlays the
   // frame while dragging, so this is the fallback path).

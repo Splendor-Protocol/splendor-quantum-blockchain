@@ -12,7 +12,14 @@ import { validateForPreview } from '../preview/validatePreview';
  * `conflict`: the account has a newer copy than the one these edits started from.
  * `storage`: the browser refused to keep the draft (storage full or disabled) and no account copy has it.
  */
-export type CloudState = { status: 'local' | 'saving' | 'saved' | 'unsaved' | 'conflict' | 'error' | 'storage'; message?: string };
+export type CloudState = {
+  status: 'local' | 'saving' | 'saved' | 'unsaved' | 'conflict' | 'error' | 'storage';
+  message?: string;
+  /** When the account copy was last written (`saved`). */
+  at?: number;
+};
+
+const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
 /** Short label for the studio top bar. */
 export function cloudLabel(cloud: CloudState): string {
@@ -22,7 +29,7 @@ export function cloudLabel(cloud: CloudState): string {
     case 'saving':
       return 'Syncing…';
     case 'saved':
-      return 'Synced';
+      return cloud.at ? `Saved ${clock(cloud.at)}` : 'Synced';
     case 'unsaved':
       return 'Not synced';
     case 'conflict':
@@ -210,8 +217,8 @@ export function ProjectPanel({
       void reload();
     });
 
-  const importSpec = () => {
-    const r = parseSpecJson(importText, catalog);
+  const importText_ = (text: string) => {
+    const r = parseSpecJson(text, catalog);
     if ('error' in r) {
       setImportError(r.error);
       return;
@@ -219,6 +226,33 @@ export function ProjectPanel({
     setImportError(null);
     setImportText('');
     onImport(r.spec);
+  };
+  const importSpec = () => importText_(importText);
+  /** A spec.json picked from disk; large files are refused before they are read. */
+  const importFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 1_000_000) {
+      setImportError('That file is over 1 MB, too big for a dApp spec.');
+      return;
+    }
+    importText_(await file.text());
+  };
+  const [duplicating, setDuplicating] = useState(false);
+  /** Account projects are copied on the server; a browser-only draft opens as an unsaved copy. */
+  const duplicate = async () => {
+    if (!projectId) {
+      onImport({ ...spec, name: `${spec.name} copy`.slice(0, 80) });
+      return;
+    }
+    setDuplicating(true);
+    try {
+      const copy = await api.duplicateProject(projectId);
+      await onOpen(copy.id);
+    } catch (e) {
+      setImportError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setDuplicating(false);
+    }
   };
 
   return (
@@ -233,7 +267,7 @@ export function ProjectPanel({
         {cloud.status === 'local' && 'Saved in this browser.'}
         {cloud.status === 'saving' && 'Saving to your account…'}
         {cloud.status === 'saved' && 'Saved to your account.'}
-        {cloud.status === 'unsaved' && 'Latest changes are only in this browser. Fix the listed issues to save them to your account.'}
+        {cloud.status === 'unsaved' && 'Latest changes are only in this browser. Fix the listed problems (empty fields are fine) to save them to your account.'}
         {cloud.status === 'conflict' && 'A newer copy was saved in another tab or device. Choose which one to keep.'}
         {cloud.status === 'error' && `Cloud save failed: ${cloud.message ?? 'unknown error'}`}
         {cloud.status === 'storage' &&
@@ -367,9 +401,14 @@ export function ProjectPanel({
           ) : null}
         </>
       ) : null}
-      <button type="button" className="pg-btn pg-btn-ghost" onClick={onNew}>
-        New project…
-      </button>
+      <div className="pg-row">
+        <button type="button" className="pg-btn pg-btn-ghost" onClick={onNew}>
+          New project…
+        </button>
+        <button type="button" className="pg-btn pg-btn-ghost" data-testid="duplicate-project" disabled={duplicating} onClick={() => void duplicate()}>
+          {duplicating ? 'Duplicating…' : 'Duplicate this project'}
+        </button>
+      </div>
       <details>
         <summary>Spec JSON</summary>
         <div className="pg-stack">
@@ -379,11 +418,25 @@ export function ProjectPanel({
           <pre className="pg-output">{JSON.stringify(spec, null, 2)}</pre>
           <div className="pg-field">
             <label htmlFor="import-spec">Import a spec (replaces this draft)</label>
-            <textarea id="import-spec" rows={5} className="pg-mono" value={importText} onChange={(e) => setImportText(e.target.value)} placeholder='{ "version": 1, … }' />
+            <textarea id="import-spec" rows={5} className="pg-mono" value={importText} onChange={(e) => setImportText(e.target.value)} placeholder='{ "version": 2, … }' />
           </div>
-          <button type="button" className="pg-btn pg-btn-sm" disabled={!importText.trim()} onClick={importSpec} data-testid="import-spec">
-            Import
-          </button>
+          <div className="pg-row">
+            <button type="button" className="pg-btn pg-btn-sm" disabled={!importText.trim()} onClick={importSpec} data-testid="import-spec">
+              Import
+            </button>
+            <label className="pg-btn pg-btn-ghost pg-btn-sm pg-file-btn">
+              Import a .json file…
+              <input
+                type="file"
+                accept="application/json,.json"
+                data-testid="import-spec-file"
+                onChange={(e) => {
+                  void importFile(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+          </div>
           {importError ? (
             <p className="pg-error" role="alert">
               {importError}

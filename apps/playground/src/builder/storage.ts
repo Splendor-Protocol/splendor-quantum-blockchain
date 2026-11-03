@@ -29,9 +29,93 @@ function isEditable(spec: DappSpec): boolean {
   );
 }
 
+/**
+ * One draft slot per browser, shared by every tab. A tab that chose "Keep a separate copy" writes
+ * its draft to sessionStorage (per tab) instead, so two editors never overwrite each other.
+ */
+let separate = false;
+function slotFor(key: string): Storage {
+  return separate && key === KEY ? sessionStorage : localStorage;
+}
+
+const LOCK_KEY = 'splendor-playground:draft-lock:v1';
+/** A lock older than this belongs to a tab that closed or froze. */
+export const DRAFT_LOCK_TTL_MS = 10_000;
+/** Identifies this tab for the draft lock. */
+export const TAB_ID = (() => {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+})();
+
+type Lock = { tab: string; at: number };
+
+function readLock(): Lock | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(LOCK_KEY) ?? 'null') as Partial<Lock> | null;
+    return v && typeof v.tab === 'string' && typeof v.at === 'number' ? { tab: v.tab, at: v.at } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True while another live tab is editing the shared draft (and this tab has not split off). */
+export function draftHeldElsewhere(now = Date.now()): boolean {
+  if (separate) return false;
+  const lock = readLock();
+  return !!lock && lock.tab !== TAB_ID && now - lock.at < DRAFT_LOCK_TTL_MS;
+}
+
+/** Take (or refresh) the shared draft for this tab. Call on open and on a heartbeat. */
+export function claimDraft(): void {
+  if (separate) return;
+  try {
+    localStorage.setItem(LOCK_KEY, JSON.stringify({ tab: TAB_ID, at: Date.now() }));
+  } catch {
+    /* storage disabled: there is nothing to share either */
+  }
+}
+
+/** Give the shared draft up when this tab closes. */
+export function releaseDraft(): void {
+  if (readLock()?.tab !== TAB_ID) return;
+  try {
+    localStorage.removeItem(LOCK_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Called when another tab takes the shared draft; returns an unsubscribe function. */
+export function onDraftTakenElsewhere(cb: () => void): () => void {
+  const onStorage = (e: StorageEvent) => {
+    if (e.key !== LOCK_KEY || !e.newValue) return;
+    if (draftHeldElsewhere()) cb();
+  };
+  window.addEventListener('storage', onStorage);
+  return () => window.removeEventListener('storage', onStorage);
+}
+
+/** From now on this tab keeps its own draft (sessionStorage), seeded with `draft`. */
+export function splitOffDraft(draft: Omit<Draft, 'savedAt'>): boolean {
+  separate = true;
+  return write(KEY, draft);
+}
+
+export function isSeparateDraft(): boolean {
+  return separate;
+}
+
+/** Test helper. */
+export function __resetDraftTabState(): void {
+  separate = false;
+}
+
 function read(key: string): Draft | null {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = slotFor(key).getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { spec?: unknown; projectId?: unknown; savedAt?: unknown; version?: unknown; dirty?: unknown; edited?: unknown };
     const spec = migrateSpec(parsed.spec);
@@ -52,7 +136,7 @@ function read(key: string): Draft | null {
 /** False when storage is full or disabled; the editor keeps working in memory and says so. */
 function write(key: string, draft: Omit<Draft, 'savedAt'>): boolean {
   try {
-    localStorage.setItem(key, JSON.stringify({ ...draft, savedAt: new Date().toISOString() }));
+    slotFor(key).setItem(key, JSON.stringify({ ...draft, savedAt: new Date().toISOString() }));
     return true;
   } catch {
     return false;
@@ -61,7 +145,7 @@ function write(key: string, draft: Omit<Draft, 'savedAt'>): boolean {
 
 function remove(key: string): void {
   try {
-    localStorage.removeItem(key);
+    slotFor(key).removeItem(key);
   } catch {
     /* ignore */
   }

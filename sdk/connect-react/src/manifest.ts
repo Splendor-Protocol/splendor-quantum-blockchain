@@ -27,7 +27,7 @@ export type PropSchema = {
   options?: { value: string; label: string }[];
 };
 
-export type WidgetCategory = 'wallet' | 'tokens' | 'nft' | 'auth' | 'modules' | 'activity' | (string & {});
+export type WidgetCategory = 'wallet' | 'tokens' | 'nft' | 'auth' | 'modules' | 'chain' | 'activity' | (string & {});
 
 export type WidgetManifest = {
   /** Stable id used in saved dApp specs. Never rename; add a new id instead. */
@@ -231,7 +231,7 @@ export const WIDGET_MANIFESTS: readonly WidgetManifest[] = [
     id: 'bridge-claim',
     title: 'Bridge status and claims',
     description: 'Bridge pause state, threshold, limits and totals, a burn-id lookup, and an opt-in operator claim form.',
-    category: 'modules',
+    category: 'chain',
     kind: 'widget',
     importName: 'BridgeClaimWidget',
     package: PACKAGE,
@@ -259,7 +259,7 @@ export const WIDGET_MANIFESTS: readonly WidgetManifest[] = [
     id: 'validator-list',
     title: 'Validator directory',
     description: 'Active validators with bond and join height, plus an admission-approval lookup. Read-only, no wallet needed.',
-    category: 'modules',
+    category: 'chain',
     kind: 'widget',
     importName: 'ValidatorList',
     package: PACKAGE,

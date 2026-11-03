@@ -62,6 +62,8 @@ export type NodeStyle = {
 export type ContainerNode = {
   kind: ContainerKind;
   id: string;
+  /** Name shown in the studio's layers ("Pricing", "Hero row"); not rendered in the app. */
+  label?: string;
   style?: NodeStyle;
   children: LayoutNode[];
 };
@@ -120,6 +122,8 @@ export type DappPage = {
   root: LayoutNode;
   /** Who may see the page (default `public`). Gated pages show a connect / sign-in panel first. */
   access?: PageAccess;
+  /** Search and link-preview summary (`<meta name="description">`, max 160 chars). */
+  description?: string;
   /**
    * Flat list kept for tooling that still walks blocks (export summaries, issue paths).
    * Always derived from `root` on normalize; may be absent on raw input before migrate.
@@ -132,6 +136,8 @@ export type DappSpec = {
   version: typeof DAPP_SPEC_VERSION;
   name: string;
   description?: string;
+  /** https URL of the site icon (png, ico, svg, webp or jpg). */
+  favicon?: string;
   network: NetworkId;
   theme: { base: ThemeName; overrides: ThemeOverrides; preset?: string };
   pages: DappPage[];
@@ -173,6 +179,8 @@ export type PropSchema = {
   min?: number;
   max?: number;
   options?: { value: string; label: string }[];
+  /** A `string` prop that holds paragraphs (body text, quotes, answers): the studio shows a text area. */
+  multiline?: boolean;
 };
 
 /**

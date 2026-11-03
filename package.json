@@ -30,7 +30,7 @@
     "build:packages": "npm run build:ts -w @splendor/sqc-sdk && npm run build -w @splendor/connect-react && npm run build -w @splendor/dapp-spec",
     "playground": "npm run build:packages && npm run dev -w @splendor/playground",
     "playground:api": "npm run dev -w @splendor/playground-api",
-    "playground:build": "npm run build:packages && npm run build -w @splendor/playground",
+    "playground:build": "npm run build:packages && npm run pack:sdk-vendor && npm run build -w @splendor/playground",
     "pack:sdk-vendor": "node scripts/pack-sdk-vendor.mjs",
     "check:sdk-vendor": "node scripts/pack-sdk-vendor.mjs --check",
     "test:webcontainer": "node scripts/webcontainer-smoke.mjs",

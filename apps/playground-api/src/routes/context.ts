@@ -40,7 +40,11 @@ export type RouteContext = {
   requireAdmin: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
   isAdmin: (address: string) => Promise<boolean>;
   cookieOptions: () => CookieSerializeOptions;
-  checkSpec: (input: unknown) => { ok: true; spec: DappSpec } | { ok: false; issues: { path: string; message: string }[] };
+  /**
+   * Validate a spec. `draft: true` (project saves) also accepts a spec whose only problems are
+   * empty required fields, so work in progress syncs; structure and values are always checked.
+   */
+  checkSpec: (input: unknown, opts?: { draft?: boolean }) => { ok: true; spec: DappSpec } | { ok: false; issues: { path: string; message: string }[] };
   /** The signed-in user's live project, or null after sending 404. */
   ownedProject: (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply, opts?: { includeDeleted?: boolean }) => Promise<ProjectRow | null>;
   ownsWorkspace: (owner: string, id: string) => Promise<boolean>;

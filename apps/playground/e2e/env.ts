@@ -10,3 +10,6 @@ export const E2E = {
   user: `SQ:${'0e'.repeat(32)}`,
   recipient: `SQ:${'5a'.repeat(32)}`,
 };
+
+/** The save chip once the account copy is written ("Synced", or "Saved 10:42" with the time). */
+export const SYNCED = /^(Synced|Saved \d)/;

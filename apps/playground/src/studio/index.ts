@@ -1,4 +1,14 @@
-export { StudioShell, StudioTopBar, DeviceSwitch, type StudioRail, type DeviceSize, type StudioDrawer } from './StudioShell';
+export {
+  StudioShell,
+  StudioTopBar,
+  DeviceSwitch,
+  DEVICE_WIDTHS,
+  NARROW_STUDIO,
+  useMediaQuery,
+  type StudioRail,
+  type DeviceSize,
+  type StudioDrawer,
+} from './StudioShell';
 export { Palette, type PaletteDragPayload } from './Palette';
 export { PagesPanel, PageSettings, isInNav } from './PagesPanel';
 export { LayersPanel, type LayersPanelProps, type LayerDrop } from './LayersPanel';

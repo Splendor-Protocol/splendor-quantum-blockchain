@@ -32,6 +32,44 @@ function assertPinMatches(recorded: string, pin: string | undefined, label: stri
   }
 }
 
+/** `sha256-…` SRI token for a hex digest. */
+export function sriFromHex(hex: string): string {
+  const clean = normalizePin(hex);
+  if (!/^[0-9a-f]{64}$/.test(clean)) throw BridgeError.wasm('execSha256 must be a 64-character hex SHA-256 digest');
+  let bin = '';
+  for (let i = 0; i < clean.length; i += 2) bin += String.fromCharCode(parseInt(clean.slice(i, i + 2), 16));
+  return `sha256-${btoa(bin)}`;
+}
+
+function canInjectScript(): boolean {
+  return typeof document !== 'undefined' && !!document.head && typeof document.createElement === 'function';
+}
+
+/**
+ * Runs wasm_exec.js as a classic script whose bytes the browser checks against the pin before it
+ * executes, then takes the `Go` class it defines.
+ */
+async function loadExecWithScript(g: Record<string, unknown>, src: string, execSha256: string): Promise<unknown> {
+  const integrity = sriFromHex(execSha256);
+  const before = (g as { Go?: unknown }).Go;
+  await new Promise<void>((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.integrity = integrity;
+    el.crossOrigin = 'anonymous';
+    el.async = true;
+    el.onload = () => resolve();
+    el.onerror = () =>
+      reject(BridgeError.wasm(`Failed to load ${src}: network error, blocked by CSP, or its SHA-256 does not match execSha256`));
+    document.head.appendChild(el);
+  });
+  const GoCtor = (g as { Go?: unknown }).Go;
+  if (typeof GoCtor !== 'function' || GoCtor === before) {
+    throw BridgeError.wasm(`${src} loaded but did not define the Go runtime`);
+  }
+  return GoCtor;
+}
+
 async function loadAndPinExecJs(g: Record<string, unknown>, opts?: LoadWasmOpts): Promise<unknown> {
   const existing = (g as { Go?: unknown }).Go;
   if (existing && existing === ownGo) {
@@ -50,6 +88,13 @@ async function loadAndPinExecJs(g: Record<string, unknown>, opts?: LoadWasmOpts)
     return existing;
   }
   const src = opts?.execUrl || '/wasm_exec.js';
+  // Pinned: a <script> with Subresource Integrity, so a strict CSP (no 'unsafe-eval') still works.
+  if (opts?.execSha256 && canInjectScript()) {
+    const GoCtor = await loadExecWithScript(g, src, opts.execSha256);
+    ownGo = GoCtor;
+    boundExecHash = normalizePin(opts.execSha256);
+    return GoCtor;
+  }
   const resp = await fetch(src);
   if (!resp.ok) {
     throw BridgeError.wasm(`Failed to fetch ${src}: ${resp.status}`);

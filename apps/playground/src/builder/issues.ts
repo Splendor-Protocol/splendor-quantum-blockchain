@@ -5,7 +5,18 @@ export type DescribedIssue = {
   where: string;
   message: string;
   /** Set when the issue belongs to a block or container, so the UI can jump to it. */
-  target: { pagePath: string; blockId: string; prop: string | null; entryId: string | null } | null;
+  target: IssueTarget | null;
+  /** Studio panel that fixes an issue with no block (theme tokens, navigation, contracts). */
+  panel?: 'theme' | 'pages' | 'contracts';
+};
+
+export type IssueTarget = {
+  pagePath: string;
+  blockId: string;
+  prop: string | null;
+  entryId: string | null;
+  /** A style property (Style tab) rather than a Content prop. */
+  style?: string;
 };
 
 const BLOCK_PATH_RE = /^pages\[(\d+)\](?:\.blocks\[(\d+)\](?:\.props\.([\w-]+)|\.style\.(\w+)|\.(\w+))?|\.(\w+))?$/;
@@ -89,7 +100,7 @@ export function describeIssue(spec: DappSpec, catalog: readonly CatalogEntry[], 
     return {
       where: [pageName(pi), blockName, detail].filter(Boolean).join(' → '),
       message,
-      target: page && block ? { pagePath: page.path, blockId: block.id, prop, entryId: entry?.id ?? null } : null,
+      target: page && block ? { pagePath: page.path, blockId: block.id, prop, entryId: entry?.id ?? null, ...(b[4] ? { style: b[4] } : {}) } : null,
     };
   }
 
@@ -108,7 +119,16 @@ export function describeIssue(spec: DappSpec, catalog: readonly CatalogEntry[], 
     return {
       where: [pageName(pi), name, detail].filter(Boolean).join(' → '),
       message,
-      target: page && id ? { pagePath: page.path, blockId: id, prop: null, entryId: node?.kind === 'block' ? (entryOf(node.block.widget)?.id ?? null) : null } : null,
+      target:
+        page && id
+          ? {
+              pagePath: page.path,
+              blockId: id,
+              prop: null,
+              entryId: node?.kind === 'block' ? (entryOf(node.block.widget)?.id ?? null) : null,
+              ...(r[3] && r[4] ? { style: r[4] } : {}),
+            }
+          : null,
     };
   }
 
@@ -117,13 +137,16 @@ export function describeIssue(spec: DappSpec, catalog: readonly CatalogEntry[], 
     const contract = spec.contracts?.[Number(c[1])];
     const fn = c[2] != null ? contract?.functions?.[Number(c[2])] : undefined;
     const parts = ['Contracts', contract?.name || `Contract ${Number(c[1]) + 1}`, c[2] != null ? (fn?.name || `Function ${Number(c[2]) + 1}`) : null, c[3] ?? null];
-    return { where: parts.filter(Boolean).join(' → '), message, target: null };
+    return { where: parts.filter(Boolean).join(' → '), message, target: null, panel: 'contracts' };
   }
 
   if (issue.path.startsWith('nav')) {
     const rest = issue.path.slice(3).replace(/^\./, '');
-    return { where: `Navigation${rest ? ` → ${rest}` : ''}`, message, target: null };
+    return { where: `Navigation${rest ? ` → ${rest}` : ''}`, message, target: null, panel: 'pages' };
   }
-  const where = issue.path.startsWith('theme') ? `Theme${issue.path.split('.').length > 2 ? ` → ${issue.path.split('.').pop()}` : ''}` : issue.path || 'dApp';
-  return { where: cap(where), message, target: null };
+  if (issue.path.startsWith('theme')) {
+    const where = `Theme${issue.path.split('.').length > 2 ? ` → ${issue.path.split('.').pop()}` : ''}`;
+    return { where, message, target: null, panel: 'theme' };
+  }
+  return { where: cap(issue.path || 'dApp'), message, target: null };
 }

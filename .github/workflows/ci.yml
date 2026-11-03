@@ -455,3 +455,29 @@ jobs:
           npm run build:packages
       - name: Generate, install and build every template
         run: npm run test:codegen
+
+  # The same projects the way the playground exports them before the packages are on npm:
+  # `file:vendor/@splendor/*` dependencies from the packed vendor bundle.
+  codegen-matrix-vendor:
+    name: generated dApps build (vendored SDK)
+    runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the signer and the packages, then pack the vendor bundle
+        run: |
+          set -euo pipefail
+          bash sdk/sqc-sdk/wasm/build.sh
+          npm ci
+          npm run build:packages
+          npm run pack:sdk-vendor
+          node scripts/pack-sdk-vendor.mjs --check
+      - name: Generate, install and build with the vendored SDK
+        run: node scripts/codegen-build-matrix.mjs --sdk=vendor --templates=wallet-dashboard,contract-app,nft-drop

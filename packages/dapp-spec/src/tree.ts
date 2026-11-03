@@ -139,8 +139,11 @@ const FLEX_ALIGN = { start: 'flex-start', center: 'center', end: 'flex-end' } as
 /**
  * Inline CSS for a node style. Pass the container `kind` so the preview and generated code agree:
  *
- * - `width` on a `column` becomes `flex: 0 1 <width>` (a plain `width` loses to the
- *   `.dapp-column { flex: 1 1 240px }` rule); on any other node it stays `width`.
+ * - `width` on a `column`: a percentage becomes `flex: <pct> 1 0%`, so columns share the row in
+ *   that ratio after the gaps and never wrap on wide screens (two `50%` columns plus a gap would);
+ *   any other unit becomes `flex: 0 1 <width>`. A plain `width` would lose to the
+ *   `.dapp-column { flex: 1 1 240px }` rule. On any other node `width` stays `width`. Rows stack
+ *   below 720px in the app CSS either way.
  * - `align` on a `row` (main axis horizontal): `start`/`center`/`end` set `justifyContent` and
  *   `alignItems` to that edge, `between` sets `justifyContent: space-between`, `stretch` stretches.
  *   On column-like nodes (section, stack, card, column, or no kind): `start`/`center`/`end`/`stretch`
@@ -150,8 +153,10 @@ export function styleToCss(style?: NodeStyle, kind?: ContainerKind | 'block'): R
   if (!style) return {};
   const out: Record<string, string> = {};
   if (style.width) {
-    if (kind === 'column') out.flex = `0 1 ${style.width}`;
-    else out.width = style.width;
+    if (kind === 'column') {
+      const pct = /^(\d+(?:\.\d+)?)%$/.exec(style.width.trim());
+      out.flex = pct ? `${Number(pct[1])} 1 0%` : `0 1 ${style.width}`;
+    } else out.width = style.width;
   }
   if (style.maxWidth) out.maxWidth = style.maxWidth;
   if (style.gap) out.gap = style.gap;

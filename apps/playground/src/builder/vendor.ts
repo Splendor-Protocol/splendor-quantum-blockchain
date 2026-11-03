@@ -59,6 +59,11 @@ export async function loadVendorOptions(): Promise<VendorOptions> {
   return cached;
 }
 
+/** The vendored SDK was asked for but the bundle is missing, so the export fell back to npm versions. */
+export function vendorFellBack(options: VendorOptions | null): boolean {
+  return !!options && options.sdk === 'npm' && sdkSource() === 'vendor';
+}
+
 export function sdkSourceLabel(options?: VendorOptions | null): string {
   const vendored = options ? options.sdk === 'vendor' : sdkSource() === 'vendor';
   return vendored ? 'vendored SDK (works offline / StackBlitz)' : 'npm registry';

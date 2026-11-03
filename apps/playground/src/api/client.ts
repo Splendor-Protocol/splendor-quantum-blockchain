@@ -52,6 +52,10 @@ export type ReleaseStatus = {
 };
 export type AuditEntry = { id: number; at: string; actor: string; action: string; target: string | null; detail: string | null };
 
+export type GitHubStatus = { enabled: boolean; connected: boolean; account?: string | null; scope?: string | null };
+export type GitHubPushInput = { repo: string; private?: boolean; description?: string; message?: string; files: Record<string, string> };
+export type GitHubPushResult = { repoUrl: string; fullName: string; branch: string; commitSha: string; created: boolean };
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -187,4 +191,11 @@ export const api = {
   admins: () => request<{ admins: { address: string; source: 'env' | 'db'; addedAt: string | null }[] }>('/admin/admins'),
   addAdmin: (address: string) => request<{ ok: true }>('/admin/admins', json('POST', { address })),
   removeAdmin: (address: string) => request<{ ok: true }>(`/admin/admins/${encodeURIComponent(address)}`, json('DELETE')),
+
+  githubStatus: () => request<GitHubStatus>('/integrations/github/status'),
+  /** The GitHub authorize URL to open; the API remembers who asked. */
+  githubStart: () => request<{ url: string }>('/integrations/github/start', json('POST', {})),
+  githubDisconnect: () => request<{ ok: true }>('/integrations/github/disconnect', json('POST', {})),
+  /** Large: a vendored export is several MB, and GitHub takes a while to take it. */
+  githubPush: (input: GitHubPushInput) => request<GitHubPushResult>('/integrations/github/push', { ...json('POST', input), timeoutMs: 180_000 }),
 };

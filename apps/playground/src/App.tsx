@@ -1,6 +1,8 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type RefObject } from 'react';
+import { Skeleton } from './components/Notice';
 import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom';
-import { ConnectKit, SplendorConnectProvider, TxToastHost } from '@splendor/connect-react';
+import { ConnectKit, SplendorConnectProvider, TxToastHost, connectErrorMessage } from '@splendor/connect-react';
+import { AppToasts, pushToast } from './components/Toasts';
 import { AccountMenu } from './auth/AccountMenu';
 import { SessionProvider, useSession } from './auth/session';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
@@ -37,6 +39,8 @@ function Shell() {
       autoReconnect
       persistNetwork
       customNetworks={CUSTOM_NETWORKS}
+      // Network switches and reconnects that fail would otherwise be silent.
+      onError={(err) => pushToast({ kind: 'error', title: 'Wallet', message: connectErrorMessage(err) })}
       {...wasmPins()}
     >
       <TxToastHost>
@@ -46,6 +50,7 @@ function Shell() {
           </RegistryProvider>
         </SessionProvider>
       </TxToastHost>
+      <AppToasts />
     </SplendorConnectProvider>
   );
 }
@@ -58,11 +63,18 @@ const TITLES: [RegExp, string][] = [
   [/^\/admin/, 'Admin'],
 ];
 
+export const PRODUCT_NAME = 'Splendor dApp Studio';
+const KNOWN_PATH = /^\/($|learn(\/|$)|widgets(\/|$)|build\/?$|s\/[^/]+\/?$|admin(\/|$))/;
+
 /** Tab title per area, so history, bookmarks and screen readers can tell pages apart. */
 function useDocumentTitle(pathname: string) {
   useEffect(() => {
+    if (!KNOWN_PATH.test(pathname)) {
+      document.title = `Page not found · ${PRODUCT_NAME}`;
+      return;
+    }
     const area = TITLES.find(([re]) => re.test(pathname))?.[1];
-    document.title = area ? `${area} · Splendor dApp Playground` : 'Splendor dApp Playground';
+    document.title = area ? `${area} · ${PRODUCT_NAME}` : PRODUCT_NAME;
   }, [pathname]);
 }
 
@@ -70,53 +82,132 @@ function NotFound() {
   return (
     <div className="pg-page">
       <h1>Page not found</h1>
-      <p className="pg-muted">This address does not match any playground page.</p>
+      <p className="pg-muted">This address does not match any page of the studio.</p>
       <div className="pg-row">
         <Link className="pg-btn" to="/">
           Home
         </Link>
         <Link className="pg-btn pg-btn-ghost" to="/build">
-          Open the builder
+          Open the studio
         </Link>
       </div>
     </div>
   );
 }
 
+/** Keeps `--pg-header-h` equal to the header's real height, so sticky panels never hide under it. */
+function useHeaderHeight(ref: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver !== 'function') return;
+    const ro = new ResizeObserver(() => document.documentElement.style.setProperty('--pg-header-h', `${el.offsetHeight}px`));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+}
+
+function Footer() {
+  return (
+    <footer className="pg-footer">
+      <div className="pg-footer-inner">
+        <div>
+          <strong>{PRODUCT_NAME}</strong>
+          <p className="pg-muted">Build, test and ship post-quantum dApps on Splendor Quantum Chain.</p>
+        </div>
+        <nav aria-label="Footer">
+          <ul>
+            <li>
+              <Link to="/learn">Docs and recipes</Link>
+            </li>
+            <li>
+              <Link to="/widgets">Widget gallery</Link>
+            </li>
+            <li>
+              <a href="https://github.com/Splendor-Protocol/splendor-quantum-blockchain" target="_blank" rel="noopener noreferrer">
+                GitHub
+              </a>
+            </li>
+            <li>
+              <a href="https://www.npmjs.com/package/@splendor/connect-react" target="_blank" rel="noopener noreferrer">
+                npm
+              </a>
+            </li>
+            <li>
+              <a href="https://github.com/Splendor-Protocol/splendor-quantum-blockchain/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">
+                License
+              </a>
+            </li>
+            <li>
+              <a href="https://github.com/Splendor-Protocol/splendor-quantum-blockchain/security/policy" target="_blank" rel="noopener noreferrer">
+                Security
+              </a>
+            </li>
+          </ul>
+        </nav>
+      </div>
+    </footer>
+  );
+}
+
 function Layout() {
   const { session } = useSession();
-  const { pathname } = useLocation();
+  const { pathname, key: locationKey } = useLocation();
   useDocumentTitle(pathname);
   const onBuild = /^\/build(\/|$)/.test(pathname);
+  const header = useRef<HTMLElement>(null);
+  useHeaderHeight(header);
+  /** Small screens: the nav and account controls live behind a menu button. */
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => setMenuOpen(false), [pathname]);
   return (
     <div className="pg-app">
       <a className="pg-skip-link" href="#main">
         Skip to content
       </a>
-      <header className="pg-header">
+      <header className="pg-header" ref={header}>
         <NavLink to="/" className="pg-logo">
-          Splendor <span>dApp Playground</span>
+          Splendor <span>dApp Studio</span>
         </NavLink>
-        <nav className="pg-tabs" aria-label="Playground">
-          <NavLink to="/learn">Learn</NavLink>
-          <NavLink to="/widgets">Widgets</NavLink>
-          <NavLink to="/build">Build</NavLink>
-          {session?.isAdmin ? <NavLink to="/admin">Admin</NavLink> : null}
-        </nav>
-        <div className="pg-header-right">
-          {/* The studio has its own network choice for the dApp: one picker on /build, not two. */}
-          {onBuild ? null : <NetworkSelect />}
-          <AccountMenu />
-          <ConnectKit showNetwork={false} />
+        <button
+          type="button"
+          className="pg-menu-toggle pg-btn pg-btn-ghost pg-btn-sm"
+          aria-expanded={menuOpen}
+          aria-controls="pg-header-menu"
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          {menuOpen ? 'Close' : 'Menu'}
+        </button>
+        <div
+          id="pg-header-menu"
+          className="pg-header-menu"
+          data-open={menuOpen ? 'true' : 'false'}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && menuOpen) setMenuOpen(false);
+          }}
+        >
+          <nav className="pg-tabs" aria-label="Studio">
+            <NavLink to="/learn">Learn</NavLink>
+            <NavLink to="/widgets">Widgets</NavLink>
+            <NavLink to="/build">Build</NavLink>
+            {session?.isAdmin ? <NavLink to="/admin">Admin</NavLink> : null}
+          </nav>
+          <div className="pg-header-right">
+            {/* The studio has its own network choice for the dApp: one picker on /build, not two. */}
+            {onBuild ? null : <NetworkSelect />}
+            <AccountMenu />
+            <ConnectKit showNetwork={false} />
+          </div>
         </div>
       </header>
       <main id="main" tabIndex={-1} className="pg-main">
-        <AppErrorBoundary resetKey={pathname}>
-          <Suspense fallback={<p className="pg-muted pg-pad" role="status">Loading…</p>}>
+        {/* Every navigation (also a new ?query on the same path) gets a fresh boundary. */}
+        <AppErrorBoundary resetKey={locationKey}>
+          <Suspense fallback={<Skeleton lines={4} label="Loading…" />}>
             <Outlet />
           </Suspense>
         </AppErrorBoundary>
       </main>
+      {onBuild ? null : <Footer />}
     </div>
   );
 }

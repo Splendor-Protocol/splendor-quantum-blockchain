@@ -41,11 +41,17 @@ export type BuilderAction =
   | { type: 'load'; spec: DappSpec }
   | { type: 'setName'; name: string }
   | { type: 'setDescription'; description: string }
+  | { type: 'setFavicon'; favicon: string }
+  | { type: 'setPageDescription'; path: string; description: string }
   | { type: 'setNetwork'; network: NetworkId }
   | { type: 'setTheme'; theme: { base: ThemeName; overrides: ThemeOverrides; preset?: string } }
   | { type: 'addPage'; title: string }
   | { type: 'addPageFromTemplate'; title: string; templateId: string }
   | { type: 'removePage'; path: string }
+  | { type: 'setPagePath'; path: string; nextPath: string }
+  | { type: 'renameNode'; id: string; label: string }
+  | { type: 'reorderPage'; path: string; index: number }
+  | { type: 'setNav'; nav: { brand?: string; footer?: string; showConnect?: boolean } }
   /** Copy a page (layout tree with fresh ids) to a new path, titled "<title> copy", and select it. */
   | { type: 'duplicatePage'; path: string }
   /** Make `path` the home page (`/`). The old home moves to a path derived from its title; links follow. */
@@ -90,9 +96,50 @@ const HISTORY_LIMIT = 100;
 export const MAX_BLOCKS_PER_PAGE = 40;
 export const MAX_PAGES = 20;
 /** Same caps as the spec validator. */
-const MAX_NODES_PER_PAGE = 200;
-const MAX_TREE_DEPTH = 6;
+export const MAX_NODES_PER_PAGE = 200;
+export const MAX_TREE_DEPTH = 6;
 const COALESCE_MS = 1000;
+
+const PAGE_PATH_RE = /^\/[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** Why `next` cannot be the new path of the page at `path`, or null when it can. */
+export function pagePathError(spec: Pick<DappSpec, 'pages'>, path: string, next: string): string | null {
+  if (path === '/') return 'The home page is always /';
+  if (!next.startsWith('/')) return 'Start the path with /';
+  if (!PAGE_PATH_RE.test(next)) return 'Use lowercase letters, digits and dashes after /, up to 40 characters (like /about-us)';
+  if (next !== path && spec.pages.some((p) => p.path === next)) return `Another page already uses ${next}`;
+  return null;
+}
+
+/** Where a new piece goes: after the selected component, inside the selected container, or at the end. */
+export function insertionPoint(root: LayoutNode, selectedId: string | null): { parentId: string; index: number } | null {
+  if (!isContainer(root)) return null;
+  const sel = selectedId ? findNode(root, selectedId) : null;
+  if (sel && isContainer(sel)) return { parentId: sel.id, index: sel.children.length };
+  if (sel) {
+    const at = locate(root, selectedId!);
+    if (at) return { parentId: at.parent.id, index: at.index + 1 };
+  }
+  return { parentId: root.id, index: root.children.length };
+}
+
+/** Why a piece cannot be added there, or null when it fits. */
+export function insertBlocker(page: DappPage, parentId: string): string | null {
+  if (pageBlocks(page).length >= MAX_BLOCKS_PER_PAGE) return `This page is full (${MAX_BLOCKS_PER_PAGE} components). Add a new page or remove something first.`;
+  if (countNodes(page.root) >= MAX_NODES_PER_PAGE) return `This page has the maximum of ${MAX_NODES_PER_PAGE} boxes and components.`;
+  const depth = (n: LayoutNode, d: number): number | null => {
+    if (!isContainer(n)) return null;
+    if (n.id === parentId) return d;
+    for (const c of n.children) {
+      const r = depth(c, d + 1);
+      if (r != null) return r;
+    }
+    return null;
+  };
+  const d = depth(page.root, 1);
+  if (d != null && d + 1 > MAX_TREE_DEPTH) return `Boxes can be nested at most ${MAX_TREE_DEPTH} levels deep. Add it to an outer box instead.`;
+  return null;
+}
 
 const VALID_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -375,7 +422,7 @@ function relocate(root: LayoutNode, id: string, parentId: string, index: number)
 }
 
 /** Props that hold a page path or URL (buttons, CTAs). Mirrors the keys the code generator reads. */
-const LINK_PROPS = ['href', 'ctaPath', 'buttonPath', 'link'] as const;
+const LINK_PROPS = ['href', 'ctaPath', 'buttonPath', 'link', 'successPath'] as const;
 
 /** New value for one link (`undefined` = untouched). A target mapped to '' was deleted: the link is cleared. */
 function remapLink(value: string, map: Map<string, string>): string | undefined {
@@ -418,14 +465,16 @@ function remapLinks(root: LayoutNode, map: Map<string, string>): LayoutNode {
     }
     const links = props.links;
     if (typeof links === 'string' && links.includes('|')) {
-      const items = links.split(',').flatMap((item) => {
+      // Same rule as parseList: the list editor writes one item per line, older specs use commas.
+      const sep = links.includes('\n') ? '\n' : ',';
+      const items = links.split(sep).flatMap((item) => {
         const [label, ...rest] = item.split('|');
         const target = rest.join('|').trim();
         const next = target && !/^[a-z]+:/i.test(target) ? remapLink(target, map) : undefined;
         if (next === undefined) return [item];
         return next === '' ? [] : [`${label}|${next}`];
       });
-      const joined = items.join(',');
+      const joined = items.join(sep);
       if (joined !== links) set('links', joined);
     }
     return props === n.block.props ? n : { kind: 'block', block: { ...n.block, props } };
@@ -504,8 +553,28 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
       const nav = s.nav && s.nav.brand === s.name ? { ...s.nav, brand: action.name } : s.nav;
       return commit(state, { ...s, name: action.name, ...(nav ? { nav } : {}) }, 'name');
     }
-    case 'setDescription':
-      return commit(state, { ...s, description: action.description }, 'description');
+    case 'setDescription': {
+      const next = { ...s };
+      if (action.description) next.description = action.description.slice(0, 500);
+      else delete next.description;
+      return commit(state, next, 'description');
+    }
+    case 'setFavicon': {
+      const next = { ...s };
+      if (action.favicon.trim()) next.favicon = action.favicon.trim();
+      else delete next.favicon;
+      return commit(state, next, 'favicon');
+    }
+    case 'setPageDescription': {
+      const pages = s.pages.map((p) => {
+        if (p.path !== action.path) return p;
+        const next = { ...p };
+        if (action.description.trim()) next.description = action.description.slice(0, 160);
+        else delete next.description;
+        return next;
+      });
+      return commit(state, { ...s, pages }, `page-desc:${action.path}`);
+    }
     case 'setNetwork':
       return commit(state, { ...s, network: action.network }, null);
     case 'setTheme':
@@ -575,6 +644,50 @@ export function builderReducer(state: BuilderState, action: BuilderAction): Buil
     }
     case 'renamePage':
       return commit(state, { ...s, pages: s.pages.map((p) => (p.path === action.path ? { ...p, title: action.title } : p)) }, `page:${action.path}`);
+    case 'setPagePath': {
+      const next = action.nextPath.trim();
+      if (action.path === '/' || next === action.path || pagePathError(s, action.path, next)) return state;
+      const map = new Map([[action.path, next]]);
+      const pages = s.pages.map((p) => withTree(p.path === action.path ? { ...p, path: next } : p, remapLinks(p.root, map)));
+      const links = s.nav?.links?.map((l) => (l === action.path ? next : l));
+      const nav = s.nav ? { ...s.nav, ...(links ? { links } : {}) } : s.nav;
+      return commit(state, { ...s, pages, ...(nav ? { nav } : {}) }, null, { pagePath: state.pagePath === action.path ? next : state.pagePath });
+    }
+    case 'renameNode': {
+      const label = action.label.replace(/\s+/g, ' ').slice(0, 60);
+      const pages = s.pages.map((p) => {
+        if (!p.root || !findNode(p.root, action.id)) return p;
+        const root = mapTree(p.root, (n) => {
+          if (!isContainer(n) || n.id !== action.id) return n;
+          const next: ContainerNode = { ...n };
+          if (label.trim()) next.label = label;
+          else delete next.label;
+          return next;
+        });
+        return withTree(p, root);
+      });
+      return commit(state, { ...s, pages }, `label:${action.id}`);
+    }
+    case 'reorderPage': {
+      const from = s.pages.findIndex((p) => p.path === action.path);
+      if (from < 0) return state;
+      const to = Math.max(0, Math.min(action.index, s.pages.length - 1));
+      if (from === to) return state;
+      const pages = [...s.pages];
+      const [moved] = pages.splice(from, 1);
+      pages.splice(to, 0, moved!);
+      // An explicit nav order follows the page order for the pages it lists.
+      const listed = s.nav?.links;
+      const nav = listed ? { ...s.nav, links: pages.map((p) => p.path).filter((p) => listed.includes(p)) } : s.nav;
+      return commit(state, { ...s, pages, ...(nav ? { nav } : {}) }, null);
+    }
+    case 'setNav': {
+      const nav = { ...(s.nav ?? {}), ...action.nav };
+      for (const k of Object.keys(action.nav) as (keyof typeof action.nav)[]) {
+        if (action.nav[k] === undefined) delete nav[k];
+      }
+      return commit(state, { ...s, nav }, 'nav');
+    }
     case 'selectPage':
       return reconcile({ ...state, pagePath: action.path, selectedBlockId: null });
     case 'addBlock': {

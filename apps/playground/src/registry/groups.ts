@@ -7,6 +7,7 @@ export const BLOCK_GROUPS: Record<string, { label: string; tone: string }> = {
   activity: { label: 'Activity', tone: 'rose' },
   nft: { label: 'Collectibles', tone: 'pink' },
   modules: { label: 'Contracts', tone: 'slate' },
+  chain: { label: 'Chain', tone: 'mint' },
   forms: { label: 'Forms', tone: 'sky' },
 };
 

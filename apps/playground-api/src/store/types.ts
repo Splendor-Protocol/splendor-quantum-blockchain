@@ -69,6 +69,20 @@ export type DeploymentRow = {
   createdAt: string;
 };
 
+/** A user's link to an outside account (GitHub). `token` is sealed by `integrations/tokenBox`, never plain. */
+export type IntegrationRow = {
+  owner: string;
+  provider: 'github';
+  /** Login on the provider, for display. */
+  account: string;
+  token: string;
+  scope: string;
+  createdAt: string;
+};
+
+/** One pending OAuth round trip: who started it and where to send the browser back. */
+export type OAuthStateRow = { owner: string; provider: 'github'; returnOrigin: string };
+
 export class SubdomainTakenError extends Error {
   constructor() {
     super('Subdomain is taken');
@@ -188,4 +202,13 @@ export interface Store {
   /** Throws `SubdomainTakenError` when the subdomain is already used. */
   createDeployment(row: Omit<DeploymentRow, 'createdAt' | 'url'>): Promise<DeploymentRow>;
   getDeployment(id: string): Promise<DeploymentRow | null>;
+
+  /** Insert or replace the owner's link to `provider`. */
+  putIntegration(row: Omit<IntegrationRow, 'createdAt'>): Promise<void>;
+  getIntegration(owner: string, provider: IntegrationRow['provider']): Promise<IntegrationRow | null>;
+  deleteIntegration(owner: string, provider: IntegrationRow['provider']): Promise<boolean>;
+  /** `stateHash` is sha256(state); the raw state only lives in a cookie and the provider's redirect. */
+  putOAuthState(stateHash: string, row: OAuthStateRow, expiresAtSec: number): Promise<void>;
+  /** Atomic: the row for the first caller with an unexpired state, then it is gone. */
+  consumeOAuthState(stateHash: string, nowSec: number): Promise<OAuthStateRow | null>;
 }

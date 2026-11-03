@@ -1,11 +1,14 @@
 export * from './types.js';
-export { validateSpec, isSafeLink, type ValidateOptions } from './validate.js';
+export { validateSpec, isSafeLink, isSafeCssValue, type ValidateOptions } from './validate.js';
 export { bindBlock, bindBlockProps, signatureTypes, type BoundBlock } from './bind.js';
 export { migrateSpec } from './migrate.js';
 export { BLOCK_MANIFESTS, blockSource, type BlockManifest } from './blocks.js';
 export { createCatalog, defaultProps, type CatalogFlags } from './catalog.js';
 export {
   APP_CSS,
+  DEFAULT_RPC_TARGETS,
+  EXPORT_CSP,
+  EXPORT_SECURITY_HEADERS,
   actionsSource,
   generateProject,
   blockSnippet,

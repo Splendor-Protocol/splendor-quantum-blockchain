@@ -82,7 +82,26 @@ export type PreviewToParent = FromFrame &
     | { type: 'hover'; id: string | null }
     /** A native drag was dropped inside the frame. `contractFn` is the raw contract-function MIME payload, if any. */
     | { type: 'drop'; parentId: string; index: number; contractFn?: string }
+    /** An editor shortcut pressed while the canvas had focus (see `isEditorKey`). */
+    | ({ type: 'key' } & EditorKey)
+    /** The page crashed outside any block boundary; the canvas offers a reload. */
+    | { type: 'crashed'; message: string }
   );
+
+export type EditorKey = { key: string; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean };
+
+const MOD_KEYS = new Set(['z', 'y', 'c', 'v', 'd', 'k']);
+const PLAIN_KEYS = new Set(['Delete', 'Backspace', 'Escape', '?']);
+
+/**
+ * Builder shortcuts the canvas forwards to the studio: Ctrl/Cmd + Z, Y, C, V, D, K and plain
+ * Delete, Backspace, Escape and `?`. Anything else stays inside the frame.
+ */
+export function isEditorKey(k: Partial<EditorKey>): k is EditorKey {
+  if (typeof k.key !== 'string' || k.key.length > 12) return false;
+  if (k.ctrlKey || k.metaKey) return MOD_KEYS.has(k.key.toLowerCase());
+  return !k.altKey && PLAIN_KEYS.has(k.key);
+}
 
 /** The token this frame document was opened with (`#t=…`), or an empty string. */
 export function frameTokenFrom(hash: string): string {

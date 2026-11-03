@@ -23,11 +23,86 @@ const send = (res, status, body) => {
 };
 const file = (text) => ({ content: Buffer.from(text).toString('base64'), encoding: 'base64' });
 
+// "Push to GitHub": the OAuth web flow and the Git Data API for one user. GET /__pushes lists
+// what was committed (repo, files, binary files).
+const USER_TOKEN = 'gho_e2e_user';
+const userRepos = new Map();
+const pushes = [];
+let sha = 0;
+const readBody = (req) =>
+  new Promise((resolve) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => resolve(raw ? JSON.parse(raw) : {}));
+  });
+
+async function githubUser(req, res, path, url) {
+  if (path === '/github-web/login/oauth/authorize') {
+    const back = new URL(url.searchParams.get('redirect_uri'));
+    back.searchParams.set('code', 'e2e-code');
+    back.searchParams.set('state', url.searchParams.get('state') ?? '');
+    res.writeHead(302, { location: back.toString() });
+    return res.end();
+  }
+  if (path === '/github-web/login/oauth/access_token') {
+    const body = await readBody(req);
+    return send(res, 200, body.code === 'e2e-code' ? { access_token: USER_TOKEN, scope: 'public_repo', token_type: 'bearer' } : { error: 'bad_verification_code' });
+  }
+  if (/^\/github\/applications\/[^/]+\/grant$/.test(path)) return send(res, 204);
+  if (req.headers.authorization !== `Bearer ${USER_TOKEN}`) return send(res, 401, { message: 'Bad credentials' });
+  if (path === '/github/user') return send(res, 200, { login: 'e2e-user' });
+  const repoJson = (name) => ({
+    name,
+    full_name: `e2e-user/${name}`,
+    html_url: `https://github.com/e2e-user/${name}`,
+    default_branch: 'main',
+    owner: { login: 'e2e-user' },
+    permissions: { push: true },
+  });
+  if (path === '/github/user/repos' && req.method === 'POST') {
+    const body = await readBody(req);
+    userRepos.set(body.name, { head: `init-${++sha}`, blobs: new Map() });
+    return send(res, 201, repoJson(body.name));
+  }
+  const m = /^\/github\/repos\/e2e-user\/([^/]+)(\/.*)?$/.exec(path);
+  const repo = m && userRepos.get(m[1]);
+  if (!repo) return send(res, 404, { message: 'Not Found' });
+  const rest = m[2] ?? '';
+  if (!rest) return send(res, 200, repoJson(m[1]));
+  if (rest === '/git/ref/heads/main') return send(res, 200, { object: { sha: repo.head } });
+  const body = req.method === 'GET' ? {} : await readBody(req);
+  if (rest === '/git/blobs') {
+    const id = `blob-${++sha}`;
+    repo.blobs.set(id, body.content.length);
+    return send(res, 201, { sha: id });
+  }
+  if (rest === '/git/trees') {
+    repo.tree = body.tree;
+    return send(res, 201, { sha: `tree-${++sha}` });
+  }
+  if (rest === '/git/commits') return send(res, 201, { sha: `commit-${++sha}` });
+  if (rest === '/git/refs/heads/main' && req.method === 'PATCH') {
+    repo.head = body.sha;
+    pushes.push({
+      repo: m[1],
+      files: repo.tree.map((e) => e.path).sort(),
+      binary: repo.tree.filter((e) => e.sha).map((e) => e.path),
+    });
+    return send(res, 200, { object: { sha: body.sha } });
+  }
+  return send(res, 404, { message: 'Not Found' });
+}
+
 createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
   const path = decodeURIComponent(url.pathname);
   if (path === '/__health') return send(res, 200, { ok: true });
   if (path === '/__dispatches') return send(res, 200, dispatches);
+  if (path === '/__pushes') return send(res, 200, pushes);
+  if (path.startsWith('/github-web/') || path === '/github/user' || path.startsWith('/github/user/') || path.startsWith('/github/applications/') || path.startsWith('/github/repos/e2e-user/')) {
+    void githubUser(req, res, path, url);
+    return;
+  }
 
   const npm = /^\/npm\/-\/package\/(.+)\/dist-tags$/.exec(path);
   if (npm) return distTags[npm[1]] ? send(res, 200, distTags[npm[1]]) : send(res, 404, { error: 'not found' });

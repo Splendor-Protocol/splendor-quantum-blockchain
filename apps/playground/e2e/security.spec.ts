@@ -20,6 +20,42 @@ test.describe('production protections', () => {
     expect(violations).toEqual([]);
   });
 
+  test('the signer loads under the deploy CSP: wasm_exec.js by SRI script, the .wasm with wasm-unsafe-eval', async ({ page }) => {
+    const violations: string[] = [];
+    page.on('console', (m) => {
+      if (/Content Security Policy|Refused to/i.test(m.text())) violations.push(m.text());
+    });
+    const res = await page.goto('/');
+    expect(res!.headers()['content-security-policy']).not.toContain("'unsafe-eval'");
+    // The same steps as sqc-sdk's browser loader when execSha256 is pinned.
+    const result = await page.evaluate(async () => {
+      const g = globalThis as unknown as { Go?: new () => { importObject: WebAssembly.Imports; run(i: WebAssembly.Instance): Promise<void> }; sqCreateSession?: unknown };
+      const sri = async (url: string) => {
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await (await fetch(url)).arrayBuffer()));
+        return `sha256-${btoa(String.fromCharCode(...digest))}`;
+      };
+      const load = (integrity: string) =>
+        new Promise<boolean>((resolve) => {
+          const el = document.createElement('script');
+          el.src = '/wasm_exec.js';
+          el.integrity = integrity;
+          el.crossOrigin = 'anonymous';
+          el.onload = () => resolve(true);
+          el.onerror = () => resolve(false);
+          document.head.appendChild(el);
+        });
+      const tampered = await load(`sha256-${btoa('x'.repeat(32))}`);
+      const pinned = await load(await sri('/wasm_exec.js'));
+      const go = new g.Go!();
+      const { instance } = await WebAssembly.instantiate(await (await fetch('/sqc_signer.wasm')).arrayBuffer(), go.importObject);
+      void go.run(instance);
+      for (let i = 0; i < 200 && typeof g.sqCreateSession !== 'function'; i++) await new Promise((r) => setTimeout(r, 25));
+      return { tampered, pinned, signer: typeof g.sqCreateSession };
+    });
+    expect(result).toEqual({ tampered: false, pinned: true, signer: 'function' });
+    expect(violations).toEqual([]);
+  });
+
   test('the preview iframe has an opaque origin and cannot reach the playground', async ({ page }) => {
     await openTemplate(page, 'wallet-dashboard');
     await expect(page.getByTestId('preview-frame')).toHaveAttribute('data-isolated', 'true');

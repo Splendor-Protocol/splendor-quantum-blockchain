@@ -5,7 +5,9 @@ import {
   type AuditEntry,
   type CatalogFlag,
   type DeploymentRow,
+  type IntegrationRow,
   type ListProjectsOptions,
+  type OAuthStateRow,
   type ProjectPatch,
   type ProjectRow,
   type ProjectSummaryRow,
@@ -193,6 +195,29 @@ CREATE INDEX IF NOT EXISTS projects_deleted ON projects (deleted_at);
 CREATE INDEX IF NOT EXISTS workspaces_deleted ON workspaces (deleted_at);
 `,
   },
+  {
+    id: 6,
+    name: 'integrations',
+    sql: () => `
+CREATE TABLE IF NOT EXISTS integrations (
+  owner TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  account TEXT NOT NULL,
+  token TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (owner, provider)
+);
+CREATE TABLE IF NOT EXISTS oauth_states (
+  state_hash TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  return_origin TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS oauth_states_expires ON oauth_states (expires_at);
+`,
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.id;
@@ -262,6 +287,7 @@ export class SqlStore implements Store {
   async purgeExpired(nowSec: number, auditBeforeIso: string, trashBeforeIso?: string) {
     const nonces = (await this.db.run('DELETE FROM nonces WHERE expires_at <= ?', [nowSec])).changes;
     const sessions = (await this.db.run('DELETE FROM sessions WHERE expires_at <= ?', [nowSec])).changes;
+    await this.db.run('DELETE FROM oauth_states WHERE expires_at <= ?', [nowSec]);
     const audit = (await this.db.run('DELETE FROM audit_log WHERE at < ?', [auditBeforeIso])).changes;
     let trash = 0;
     if (trashBeforeIso) {
@@ -677,5 +703,42 @@ export class SqlStore implements Store {
   async getDeployment(id: string) {
     const [r] = await this.db.all('SELECT * FROM deployments WHERE id = ?', [id]);
     return r ? deployment(r) : null;
+  }
+
+  async putIntegration(row: Omit<IntegrationRow, 'createdAt'>) {
+    await this.db.run(
+      `INSERT INTO integrations (owner, provider, account, token, scope, created_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (owner, provider) DO UPDATE SET account = excluded.account, token = excluded.token, scope = excluded.scope, created_at = excluded.created_at`,
+      [row.owner, row.provider, row.account, row.token, row.scope, now()],
+    );
+  }
+  async getIntegration(owner: string, provider: IntegrationRow['provider']) {
+    const [r] = await this.db.all('SELECT owner, provider, account, token, scope, created_at FROM integrations WHERE owner = ? AND provider = ?', [owner, provider]);
+    if (!r) return null;
+    return {
+      owner: String(r.owner),
+      provider: String(r.provider) as IntegrationRow['provider'],
+      account: String(r.account),
+      token: String(r.token),
+      scope: String(r.scope),
+      createdAt: String(r.created_at),
+    };
+  }
+  async deleteIntegration(owner: string, provider: IntegrationRow['provider']) {
+    return (await this.db.run('DELETE FROM integrations WHERE owner = ? AND provider = ?', [owner, provider])).changes > 0;
+  }
+  async putOAuthState(stateHash: string, row: OAuthStateRow, expiresAtSec: number) {
+    await this.db.run('DELETE FROM oauth_states WHERE expires_at <= ?', [Math.floor(Date.now() / 1000)]);
+    await this.db.run('INSERT INTO oauth_states (state_hash, owner, provider, return_origin, expires_at) VALUES (?, ?, ?, ?, ?)', [
+      stateHash,
+      row.owner,
+      row.provider,
+      row.returnOrigin,
+      expiresAtSec,
+    ]);
+  }
+  async consumeOAuthState(stateHash: string, nowSec: number) {
+    const [r] = await this.db.all('DELETE FROM oauth_states WHERE state_hash = ? AND expires_at > ? RETURNING owner, provider, return_origin', [stateHash, nowSec]);
+    return r ? { owner: String(r.owner), provider: String(r.provider) as OAuthStateRow['provider'], returnOrigin: String(r.return_origin) } : null;
   }
 }

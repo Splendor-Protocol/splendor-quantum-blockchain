@@ -7,7 +7,7 @@
  *   node scripts/pack-sdk-vendor.mjs --check   # fail when the packed versions differ from source
  *
  * Packing refuses a package whose `src` is newer than its `dist` (a stale build), unless
- * PACK_ALLOW_STALE=1.
+ * PACK_ALLOW_STALE=1. Source maps are left out of the bundle.
  *
  * What ends up where:
  * - `vendor/@splendor/sqc-sdk` and `vendor/@splendor/connect-react` are copied AND listed in
@@ -142,7 +142,12 @@ for (const p of packs) {
       writeFileSync(abs + '.b64', b64);
       continue;
     }
-    if (p.bundle !== false && isText(rel)) bundle[key] = readFileSync(abs, 'utf8');
+    // Source maps only grow the StackBlitz payload and the zip; `.d.ts` stays (exports typecheck on build).
+    if (rel.endsWith('.map')) continue;
+    if (p.bundle !== false && isText(rel)) {
+      const text = readFileSync(abs, 'utf8');
+      bundle[key] = /\.[cm]?js$/.test(rel) ? text.replace(/\n\/\/# sourceMappingURL=\S+\s*$/, '\n') : text;
+    }
   }
   packed.push({ name: p.name, bundled: p.bundle !== false });
   console.log(`[pack-sdk-vendor] ${p.name} (${files.length} files${p.bundle === false ? ', not bundled' : ''})`);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { WIDGET_MANIFESTS } from '@splendor/connect-react/manifest';
-import { TEMPLATES, createCatalog, instantiateTemplate, updateBlockProps, type DappSpec } from '@splendor/dapp-spec';
+import { TEMPLATES, createCatalog, instantiateTemplate, updateBlockProps, updateNodeStyle, type DappSpec } from '@splendor/dapp-spec';
 import { validateForPreview } from './validatePreview';
 
 const catalog = createCatalog(WIDGET_MANIFESTS);
@@ -35,6 +35,18 @@ describe('validateForPreview', () => {
     const r = validateForPreview(spec, catalog);
     expect(r.spec).toBeNull();
     expect(r.issues.map((i) => i.path)).toContain('theme.overrides.accent');
+  });
+
+  it('keeps rendering with a half-typed style value, dropping only that property', () => {
+    const spec = tipJar();
+    setRecipient(spec, 'SQ:' + 'ab'.repeat(32));
+    const page = spec.pages[0]!;
+    page.root = updateNodeStyle(page.root, 'tips', { maxWidth: '300px', background: 'url(x)' }) as typeof page.root;
+    const r = validateForPreview(spec, catalog);
+    expect(r.spec).not.toBeNull();
+    const tips = r.spec!.pages[0]!.blocks!.find((b) => b.id === 'tips')!;
+    expect(tips.style).toEqual({ maxWidth: '300px' });
+    expect(r.issues.some((i) => i.path.endsWith('.style.background'))).toBe(true);
   });
 
   it('passes a valid spec through with no issues', () => {

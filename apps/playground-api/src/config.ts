@@ -1,3 +1,5 @@
+import { parseTokenKey } from './integrations/tokenBox.js';
+
 export type ApiConfig = {
   port: number;
   host: string;
@@ -26,7 +28,21 @@ export type ApiConfig = {
   github: { token?: string; repo: string; workflow: string; ref: string; apiUrl: string; npmRegistry: string };
   /** Audit rows older than this are deleted by the housekeeping job. */
   auditRetentionDays: number;
-  /** Phase-2 hosted publishing routes. */
+  /**
+   * "Push to GitHub" for users (a GitHub OAuth App). Null when not configured. Users' tokens are
+   * sealed with `integrationKey`; `github.token` (the release token) is never used for this.
+   */
+  githubOAuth: {
+    clientId: string;
+    clientSecret: string;
+    scope: 'public_repo' | 'repo';
+    /** `https://github.com`, or a GitHub Enterprise host (authorize and token endpoints). */
+    webUrl: string;
+    /** Sent as `redirect_uri`; without it GitHub uses the OAuth App's registered callback. */
+    callbackUrl?: string;
+  } | null;
+  integrationKey: Buffer | null;
+  /** Phase-2 hosted publishing routes. Off by default and unused: users deploy to their own host. */
   hostingEnabled: boolean;
   /** Test-only password-less login for e2e. Refused in production and on non-loopback hosts. */
   allowTestLogin: boolean;
@@ -114,6 +130,33 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     return c;
   });
 
+  const clientId = env.GITHUB_OAUTH_CLIENT_ID?.trim();
+  const clientSecret = env.GITHUB_OAUTH_CLIENT_SECRET?.trim();
+  if (!!clientId !== !!clientSecret) throw new Error('Set both GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET, or neither');
+  const integrationKey = parseTokenKey(env.INTEGRATION_TOKEN_KEY);
+  if (env.INTEGRATION_TOKEN_KEY?.trim() && !integrationKey) {
+    throw new Error('INTEGRATION_TOKEN_KEY must be 32 random bytes, base64 or hex (e.g. `openssl rand -base64 32`)');
+  }
+  let githubOAuth: ApiConfig['githubOAuth'] = null;
+  if (clientId && clientSecret) {
+    if (!integrationKey) {
+      if (production) throw new Error('GITHUB_OAUTH_CLIENT_ID needs INTEGRATION_TOKEN_KEY to seal user tokens');
+      warnings.push('GITHUB_OAUTH_CLIENT_ID is set but INTEGRATION_TOKEN_KEY is not: Push to GitHub stays off');
+    } else {
+      const scope = (env.GITHUB_OAUTH_SCOPE ?? 'public_repo').trim();
+      if (scope !== 'public_repo' && scope !== 'repo') throw new Error('GITHUB_OAUTH_SCOPE must be public_repo or repo');
+      const callbackUrl = env.GITHUB_OAUTH_CALLBACK_URL?.trim() || undefined;
+      if (callbackUrl && !/^https?:\/\/[^\s]+$/.test(callbackUrl)) throw new Error('GITHUB_OAUTH_CALLBACK_URL must be an http(s) URL');
+      githubOAuth = {
+        clientId,
+        clientSecret,
+        scope,
+        webUrl: (env.GITHUB_OAUTH_WEB_URL || 'https://github.com').replace(/\/+$/, ''),
+        ...(callbackUrl ? { callbackUrl } : {}),
+      };
+    }
+  }
+
   const databaseUrl = env.DATABASE_URL ?? 'sqlite:./data/playground.db';
   if (production && databaseUrl.startsWith('sqlite:')) {
     warnings.push('DATABASE_URL is SQLite in production: fine for one small instance, but use Postgres for anything you need to back up and keep');
@@ -140,6 +183,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       npmRegistry: (env.NPM_REGISTRY_URL || 'https://registry.npmjs.org').replace(/\/+$/, ''),
     },
     auditRetentionDays: int(env, 'AUDIT_RETENTION_DAYS', 365, 1, 3650),
+    githubOAuth,
+    integrationKey,
     hostingEnabled: env.HOSTING_ENABLED === '1',
     allowTestLogin,
     production,

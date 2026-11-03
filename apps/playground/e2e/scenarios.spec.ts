@@ -255,7 +255,7 @@ test.describe('accessibility and navigation', () => {
 
   test('a skip link jumps past the header, and pages have their own titles', async ({ page }) => {
     await page.goto('/widgets');
-    await expect(page).toHaveTitle('Widgets · Splendor dApp Playground');
+    await expect(page).toHaveTitle('Widgets · Splendor dApp Studio');
     await page.keyboard.press('Tab');
     const skip = page.getByRole('link', { name: 'Skip to content' });
     await expect(skip).toBeFocused();

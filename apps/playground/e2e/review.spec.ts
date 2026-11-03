@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { E2E } from './env';
+import { E2E, SYNCED } from './env';
 import { openTemplate, preview, testLogin } from './helpers';
 
 // Scenarios from the review of the draft, trash, revision and preview-hardening work: each one is a
@@ -139,7 +139,7 @@ test.describe('saving to the account when things go wrong', () => {
     });
     await page.getByLabel('dApp name').fill('Retried');
     await expect(page.getByTestId('save-chip')).toHaveText('Sync failed');
-    await expect(page.getByTestId('save-chip')).toHaveText('Synced', { timeout: 20_000 });
+    await expect(page.getByTestId('save-chip')).toHaveText(SYNCED, { timeout: 20_000 });
     expect(puts).toBe(2);
 
     await page.unroute('**/api/projects/*');
@@ -217,7 +217,7 @@ test.describe('trash, version history and share links', () => {
     const put = page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().includes(`/projects/${id}`));
     await page.getByLabel('dApp name').fill('Second name');
     expect((await put).status()).toBe(200);
-    await expect(page.getByTestId('save-chip')).toHaveText('Synced');
+    await expect(page.getByTestId('save-chip')).toHaveText(SYNCED);
     await page.getByTestId('tab-project').click();
     await page.getByTestId('version-history').locator('summary').click();
     await page.getByRole('button', { name: 'Restore version 1' }).click();

@@ -5,6 +5,38 @@ const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select
 /** Open dialogs, innermost last: only that one handles Escape and Tab (a confirm inside Share, say). */
 const openDialogs: HTMLElement[] = [];
 
+/**
+ * Everything outside `el` becomes inert (no focus, no clicks, hidden from screen readers) while it
+ * is open: every sibling of `el` and of each of its ancestors up to <body>. Returns the undo.
+ */
+function inertOutside(el: HTMLElement): () => void {
+  const touched: HTMLElement[] = [];
+  for (let node: HTMLElement | null = el; node && node !== document.body; node = node.parentElement) {
+    const parent: HTMLElement | null = node.parentElement;
+    if (!parent) break;
+    for (const sib of Array.from(parent.children)) {
+      if (sib === node || !(sib instanceof HTMLElement) || sib.inert || sib.tagName === 'SCRIPT') continue;
+      // Toasts stay live so a save confirmation is still heard.
+      if (sib.classList.contains('pg-toasts')) continue;
+      sib.inert = true;
+      touched.push(sib);
+    }
+  }
+  return () => touched.forEach((s) => (s.inert = false));
+}
+
+let scrollLocks = 0;
+let savedOverflow = '';
+function lockScroll(): () => void {
+  if (scrollLocks++ === 0) {
+    savedOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  }
+  return () => {
+    if (--scrollLocks === 0) document.body.style.overflow = savedOverflow;
+  };
+}
+
 /** Modal dialog: focus moves in on open, Tab stays inside, Escape closes, focus returns on close. */
 export function ModalDialog({
   label,
@@ -32,6 +64,8 @@ export function ModalDialog({
     const opener = openerRef.current;
     const self = ref.current;
     if (self) openDialogs.push(self);
+    const undoInert = self ? inertOutside(self) : () => undefined;
+    const unlock = lockScroll();
     // Respect a child that already took focus with autoFocus.
     if (!ref.current?.contains(document.activeElement)) {
       const first = ref.current?.querySelector<HTMLElement>(FOCUSABLE);
@@ -71,12 +105,31 @@ export function ModalDialog({
       document.removeEventListener('keydown', onKey);
       const i = self ? openDialogs.lastIndexOf(self) : -1;
       if (i >= 0) openDialogs.splice(i, 1);
+      undoInert();
+      unlock();
       opener?.focus();
     };
   }, []);
 
+  // A press that starts and ends on the dim backdrop (not on the panel) closes the dialog.
+  const downOnBackdrop = useRef(false);
   return (
-    <div ref={ref} className={className} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1} data-testid={testId}>
+    <div
+      ref={ref}
+      className={className}
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      tabIndex={-1}
+      data-testid={testId}
+      onMouseDown={(e) => {
+        downOnBackdrop.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget) close.current();
+        downOnBackdrop.current = false;
+      }}
+    >
       {children}
     </div>
   );

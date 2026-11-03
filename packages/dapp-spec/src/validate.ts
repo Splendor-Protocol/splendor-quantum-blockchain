@@ -35,6 +35,9 @@ const MAX_NAME = 80;
 const MAX_NAV_LINKS = 20;
 const MAX_NAV_BRAND = 80;
 const MAX_NAV_FOOTER = 200;
+/** Search engines show about 160 characters of a meta description. */
+const MAX_PAGE_DESCRIPTION = 160;
+const FAVICON_RE = /^https:\/\/[^\s"'<>\\]{1,500}\.(png|ico|svg|webp|jpe?g)(\?[^\s"'<>\\]{0,200})?$/i;
 const PATH_RE = /^\/([a-z0-9][a-z0-9-]{0,39})?$/;
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const ADDRESS_RE = /^SQ:[0-9a-fA-F]{64}$/;
@@ -74,7 +77,8 @@ const SIGNATURE_RE = /^[A-Za-z_$][A-Za-z0-9_$]*\([^()]*\)$/;
 const CSS_VALUE_RE = /^[#(),.%+*\w\s"'/-]{1,200}$/;
 const CSS_FORBIDDEN_RE = /url\s*\(|expression|image-set|image\s*\(|src\s*\(|\/\//i;
 
-function isSafeCssValue(v: unknown): v is string {
+/** True for a style or theme value the validator accepts (plain CSS tokens, no url() or comments). */
+export function isSafeCssValue(v: unknown): v is string {
   return typeof v === 'string' && CSS_VALUE_RE.test(v) && !CSS_FORBIDDEN_RE.test(v);
 }
 
@@ -169,6 +173,7 @@ function normalizeTree(node: unknown, issues: ValidationIssue[], path: string): 
   return {
     kind: node.kind as ContainerKind,
     id: typeof node.id === 'string' ? node.id : '',
+    ...(typeof node.label === 'string' && node.label.trim() ? { label: node.label } : {}),
     ...(normalizeStyle(node.style) ? { style: normalizeStyle(node.style)! } : {}),
     children,
   };
@@ -236,12 +241,14 @@ function normalize(input: Record<string, unknown>, issues: ValidationIssue[]): D
       root,
       blocks: blocksFromTree(root),
       ...(page.access === 'wallet' || page.access === 'signin' ? { access: page.access } : {}),
+      ...(typeof page.description === 'string' && page.description.trim() ? { description: page.description } : {}),
     };
   });
   return {
     version: DAPP_SPEC_VERSION,
     name: input.name as string,
     ...(typeof input.description === 'string' ? { description: input.description } : {}),
+    ...(typeof input.favicon === 'string' && input.favicon.trim() ? { favicon: input.favicon } : {}),
     network: input.network as NetworkId,
     theme: {
       base: theme.base,
@@ -416,6 +423,7 @@ function checkTreeStructure(
   if (typeof node.id !== 'string' || !ID_RE.test(node.id)) add(`${path}.id`, 'id must be 1-64 letters, digits, _ or -');
   else if (ids.has(node.id)) add(`${path}.id`, 'duplicate node id');
   else ids.add(node.id);
+  if (node.label != null && (typeof node.label !== 'string' || node.label.length > 60)) add(`${path}.label`, 'label must be text (max 60 chars)');
   checkStyle(node.style, `${path}.style`, add);
   if (!Array.isArray(node.children)) return add(`${path}.children`, 'children must be an array');
   node.children.forEach((c, i) => checkTreeStructure(c, `${path}.children[${i}]`, add, ids, leafBlocks));
@@ -459,6 +467,9 @@ export function validateSpec(input: unknown, opts: ValidateOptions = {}): Valida
   if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 80) add('name', 'name is required (max 80 chars)');
   if (input.description != null && (typeof input.description !== 'string' || input.description.length > 500)) {
     add('description', 'description must be a string (max 500 chars)');
+  }
+  if (input.favicon != null && input.favicon !== '' && (typeof input.favicon !== 'string' || !FAVICON_RE.test(input.favicon))) {
+    add('favicon', 'favicon must be an https URL to an image (.png, .ico, .svg, .webp or .jpg)');
   }
   if (!NETWORK_IDS.includes(input.network as never)) add('network', `network must be one of ${NETWORK_IDS.join(', ')}`);
 
@@ -551,6 +562,9 @@ export function validateSpec(input: unknown, opts: ValidateOptions = {}): Valida
       else paths.add(page.path);
       if (typeof page.title !== 'string' || !page.title.trim() || page.title.length > 60) add(`${at}.title`, 'title is required (max 60 chars)');
       if (page.access != null && !PAGE_ACCESS.includes(page.access as PageAccess)) add(`${at}.access`, `access must be one of ${PAGE_ACCESS.join(', ')}`);
+      if (page.description != null && (typeof page.description !== 'string' || page.description.length > MAX_PAGE_DESCRIPTION)) {
+        add(`${at}.description`, `description must be text (max ${MAX_PAGE_DESCRIPTION} chars)`);
+      }
       if (page.path === '/' && page.access != null && page.access !== 'public') add(`${at}.access`, 'the home page must stay public (visitors land there)');
 
       if (page.root != null) {

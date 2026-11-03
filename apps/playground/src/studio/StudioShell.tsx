@@ -7,6 +7,46 @@ export type StudioDrawer = 'side' | 'inspector' | null;
 
 /** Same width as the `max-width: 1100px` rules in styles.css. */
 export const NARROW_STUDIO = '(max-width: 1100px)';
+/** Room for the inspector next to a usable canvas; below this (and above narrow) it can be hidden. */
+export const CROWDED_STUDIO = '(min-width: 1101px) and (max-width: 1400px)';
+
+/** Preview widths: one source for the studio canvas, the Preview app and the export's breakpoint. */
+export const DEVICE_WIDTHS: Record<DeviceSize, number | null> = { desktop: null, tablet: 768, mobile: 390 };
+
+const DRAWER_FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** While a drawer is open: focus moves in, Tab stays inside, focus returns to the opener on close. */
+function useDrawerFocus(ref: { current: HTMLElement | null }, open: boolean) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!open || !el) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const items = () => [...el.querySelectorAll<HTMLElement>(DRAWER_FOCUSABLE)].filter((x) => x.offsetParent !== null || x === document.activeElement);
+    (items()[0] ?? el).focus();
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Tab' || document.querySelector('[aria-modal="true"]:not([data-drawer])')) return;
+      const list = items();
+      if (!list.length) return;
+      const first = list[0]!;
+      const last = list[list.length - 1]!;
+      if (!el.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [ref, open]);
+}
 
 export function useMediaQuery(query: string): boolean {
   // Stable per query, so the listener is not re-added on every render.
@@ -117,6 +157,11 @@ export function StudioShell({
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const [dockOpen, setDockOpen] = useState(true);
   const narrow = useMediaQuery(NARROW_STUDIO);
+  const crowded = useMediaQuery(CROWDED_STUDIO);
+  /** Mid-size screens: the inspector can be folded away to give the canvas room. */
+  const [inspectorHidden, setInspectorHidden] = useState(false);
+  const sideRef = useRef<HTMLDivElement>(null);
+  const inspectorRef = useRef<HTMLElement>(null);
   const [ownDrawer, setOwnDrawer] = useState<StudioDrawer>(null);
   const drawer = narrow ? (drawerProp !== undefined ? drawerProp : ownDrawer) : null;
   const setDrawer = (next: StudioDrawer) => {
@@ -133,13 +178,15 @@ export function StudioShell({
   useEffect(() => {
     if (!drawer) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
-      // A dialog over the drawer handles its own Escape.
-      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
+      // A dialog over the drawer handles its own Escape (the drawer itself is aria-modal too).
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('[aria-modal="true"]:not([data-drawer])')) return;
       setDrawerRef.current(null);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [drawer]);
+  useDrawerFocus(sideRef, drawer === 'side');
+  useDrawerFocus(inspectorRef, drawer === 'inspector');
   const pickRail = (id: StudioRail) => {
     onRailChange(id);
     if (narrow) setDrawer(drawer === 'side' && rail === id ? null : 'side');
@@ -164,14 +211,20 @@ export function StudioShell({
     tabs.current[next]?.focus();
   };
 
+  // Sticky at the top of the drawer, so it never scrolls away.
   const closeDrawer = (
-    <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm pg-drawer-close" onClick={() => setDrawer(null)}>
-      Close
-    </button>
+    <div className="pg-drawer-head">
+      <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm pg-drawer-close" onClick={() => setDrawer(null)}>
+        Close
+      </button>
+    </div>
   );
 
+  const foldInspector = crowded && inspectorHidden;
+  const drawerProps = (label: string, open: boolean) =>
+    narrow && open ? ({ role: 'dialog', 'aria-modal': true, 'aria-label': label, 'data-drawer': '' } as const) : {};
   return (
-    <div className={`pg-studio pg-studio-shell${narrow ? ' is-narrow' : ''}`}>
+    <div className={`pg-studio pg-studio-shell${narrow ? ' is-narrow' : ''}${foldInspector ? ' is-inspector-hidden' : ''}`}>
       {topBar}
       <div className="pg-studio-body pg-studio-shell-body">
         {drawer ? <div className="pg-drawer-backdrop" aria-hidden="true" onClick={() => setDrawer(null)} /> : null}
@@ -216,7 +269,13 @@ export function StudioShell({
             </button>
           </div>
         ) : null}
-        <div className={`pg-studio-side${narrow ? ' is-drawer' : ''}`} hidden={narrow && drawer !== 'side'} data-testid="studio-side">
+        <div
+          ref={sideRef}
+          className={`pg-studio-side${narrow ? ' is-drawer' : ''}`}
+          hidden={narrow && drawer !== 'side'}
+          data-testid="studio-side"
+          {...drawerProps('Studio panel', drawer === 'side')}
+        >
           {narrow ? closeDrawer : null}
           <aside id={PANEL_ID} className="pg-toybox pg-studio-sidebar" role="tabpanel" aria-labelledby={tabId(rail)}>
             {sidebar}
@@ -242,13 +301,26 @@ export function StudioShell({
           ) : null}
         </div>
         <section className="pg-stage pg-studio-canvas" aria-label="Your page">
+          {crowded ? (
+            <button
+              type="button"
+              className="pg-btn pg-btn-ghost pg-btn-sm pg-inspector-fold"
+              aria-expanded={!inspectorHidden}
+              data-testid="inspector-fold"
+              onClick={() => setInspectorHidden((v) => !v)}
+            >
+              {inspectorHidden ? 'Show inspector' : 'Hide inspector'}
+            </button>
+          ) : null}
           {canvas}
         </section>
         <aside
+          ref={inspectorRef}
           className={`pg-inspector pg-studio-inspector${narrow ? ' is-drawer' : ''}`}
           aria-label="Inspector"
-          hidden={narrow && drawer !== 'inspector'}
+          hidden={(narrow && drawer !== 'inspector') || foldInspector}
           data-testid="studio-inspector"
+          {...drawerProps('Inspector', drawer === 'inspector')}
         >
           {narrow ? closeDrawer : null}
           {inspector}

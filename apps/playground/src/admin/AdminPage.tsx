@@ -123,7 +123,7 @@ function CatalogAdmin() {
         Hidden widgets cannot be added in the builder (existing projects keep rendering). Status overrides change the badge users see. A
         minimum version marks widgets that need a newer connect-react than the one this playground bundles.
       </p>
-      <table className="pg-table">
+      <div className="pg-table-wrap"><table className="pg-table">
         <thead>
           <tr>
             <th>Widget / block</th>
@@ -139,7 +139,7 @@ function CatalogAdmin() {
             <FlagRow key={e.id} id={e.id} title={e.title} kind={e.kind} status={baseStatus(e.id) ?? e.status} flag={flags[e.id] ?? {}} />
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   );
 }
@@ -150,7 +150,7 @@ function TemplatesAdmin() {
   return (
     <div className="pg-stack">
       <p className="pg-muted">Templates and SDK recipes ship with the playground; here you choose which ones users see.</p>
-      <table className="pg-table">
+      <div className="pg-table-wrap"><table className="pg-table">
         <thead>
           <tr>
             <th>Item</th>
@@ -166,7 +166,7 @@ function TemplatesAdmin() {
             <FlagRow key={x.flagId} id={x.flagId} title={x.title} kind={x.kind} flag={flags[x.flagId] ?? {}} />
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   );
 }
@@ -243,7 +243,7 @@ function ReleasesAdmin() {
       {data ? (
         <>
           <h3>Packages</h3>
-          <table className="pg-table" data-testid="release-packages">
+          <div className="pg-table-wrap"><table className="pg-table" data-testid="release-packages">
             <thead>
               <tr>
                 <th>Package</th>
@@ -262,7 +262,7 @@ function ReleasesAdmin() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
 
           <h3>Pending changesets ({data.changesets.length})</h3>
           {data.changesets.length ? (
@@ -279,7 +279,7 @@ function ReleasesAdmin() {
 
           <h3>Recent release runs</h3>
           {data.runs.length ? (
-            <table className="pg-table">
+            <div className="pg-table-wrap"><table className="pg-table">
               <thead>
                 <tr>
                   <th>Run</th>
@@ -306,7 +306,7 @@ function ReleasesAdmin() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           ) : (
             <p className="pg-muted">No runs yet.</p>
           )}
@@ -347,7 +347,7 @@ function AuditAdmin() {
   if (!data) return <p className="pg-muted" role="status">{loading ? 'Loading the audit log…' : 'No audit entries.'}</p>;
   if (!data.entries.length) return <p className="pg-muted" data-testid="audit-empty">No audit entries yet.</p>;
   return (
-    <table className="pg-table" data-testid="audit-log">
+    <div className="pg-table-wrap"><table className="pg-table" data-testid="audit-log">
       <thead>
         <tr>
           <th>When</th>
@@ -372,7 +372,7 @@ function AuditAdmin() {
           </tr>
         ))}
       </tbody>
-    </table>
+    </table></div>
   );
 }
 
@@ -397,7 +397,7 @@ function AdminsAdmin() {
     <div className="pg-stack">
       {confirmDialog}
       {error ? <p className="pg-error">{error}</p> : null}
-      <table className="pg-table">
+      <div className="pg-table-wrap"><table className="pg-table">
         <thead>
           <tr>
             <th>Address</th>
@@ -420,7 +420,7 @@ function AdminsAdmin() {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
       <form
         className="pg-row"
         onSubmit={(e) => {
@@ -454,7 +454,7 @@ export function AdminPage() {
         <h1>Admin</h1>
         <p className="pg-muted">Sign in with an admin wallet. Admins are listed in the API's ADMIN_ADDRESSES or added by another admin.</p>
         <div className="pg-panel" style={{ maxWidth: 520 }}>
-          <SignInPanel statement="Sign in to the Splendor dApp Playground admin" />
+          <SignInPanel statement="Sign in to the Splendor dApp Studio admin" />
         </div>
         {session && !session.isAdmin ? <p className="pg-error">This wallet is not an admin.</p> : null}
       </div>

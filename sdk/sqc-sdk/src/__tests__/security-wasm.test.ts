@@ -3,7 +3,7 @@
  * "Zeroize" here means lock prevents further signing and re-derive replaces the key binding —
  * tests assert unlock state / cannot-sign, not hardware memory forensics.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MIN_FEE, SplendorPQBridge, resetWasmLoader } from '../index.js';
 import { BridgeError, isBridgeError } from '../errors.js';
 import { assertWasmSha256 } from '../wasm-types.js';
@@ -138,6 +138,60 @@ describe('security-wasm integrity pin', () => {
       });
     } finally {
       g.Go = prev.Go;
+      if (prev.sqCreateSession !== undefined) g.sqCreateSession = prev.sqCreateSession;
+      resetBrowserWasmState();
+    }
+  });
+
+  it('turns a hex pin into a sha256 SRI token and rejects malformed pins', async () => {
+    const { sriFromHex } = await import('../wasm-loader.browser.js');
+    // SHA-256 of the empty string.
+    expect(sriFromHex('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')).toBe(
+      'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=',
+    );
+    expect(sriFromHex('0xE3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855')).toBe(
+      'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=',
+    );
+    expect(() => sriFromHex('abc')).toThrow(/64-character/);
+  });
+
+  it('loads a pinned wasm_exec.js with a <script integrity> tag instead of eval', async () => {
+    const { loadWasmInBrowser, resetBrowserWasmState } = await import('../wasm-loader.browser.js');
+    const g = globalThis as unknown as { Go?: unknown; sqCreateSession?: unknown; document?: unknown };
+    const prev = { Go: g.Go, sqCreateSession: g.sqCreateSession, document: g.document };
+    delete g.sqCreateSession;
+    delete g.Go;
+    const appended: Record<string, unknown>[] = [];
+    g.document = {
+      head: {
+        appendChild(el: Record<string, unknown> & { onload?: () => void }) {
+          appended.push(el);
+          // The browser ran the (integrity-checked) script: it defines Go.
+          g.Go = function Go() {
+            return { importObject: {}, run() {} };
+          };
+          el.onload?.();
+        },
+      },
+      createElement: () => ({}),
+    };
+    resetBrowserWasmState();
+    const fetchSpy = vi.fn(async () => new Response('x', { status: 404 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      // The .wasm fetch fails afterwards; what matters is how wasm_exec.js was loaded.
+      await expect(
+        loadWasmInBrowser({ execSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', wasmSha256: 'ab'.repeat(32) }),
+      ).rejects.toMatchObject({ code: 'WASM', message: expect.stringContaining('Failed to fetch WASM') });
+      expect(appended).toHaveLength(1);
+      expect(appended[0]).toMatchObject({ src: '/wasm_exec.js', integrity: 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=' });
+      // Only the .wasm was fetched; wasm_exec.js never went through fetch + new Function.
+      expect(fetchSpy.mock.calls.map((c) => String((c as unknown[])[0]))).toEqual(['/sqc_signer.wasm']);
+    } finally {
+      vi.unstubAllGlobals();
+      g.Go = prev.Go;
+      g.document = prev.document;
+      if (prev.document === undefined) delete g.document;
       if (prev.sqCreateSession !== undefined) g.sqCreateSession = prev.sqCreateSession;
       resetBrowserWasmState();
     }

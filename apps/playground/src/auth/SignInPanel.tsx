@@ -4,7 +4,7 @@ import { api } from '../api/client';
 import { useSession } from './session';
 
 /** Wallet sign-in against the playground API (nonce → ML-DSA signature → httpOnly session cookie). */
-export function SignInPanel({ statement = 'Sign in to the Splendor dApp Playground' }: { statement?: string }) {
+export function SignInPanel({ statement = 'Sign in to the Splendor dApp Studio' }: { statement?: string }) {
   const { session, apiAvailable, setSession, logout } = useSession();
   const { isConnected } = useAccount();
   const [error, setError] = useState<string | null>(null);

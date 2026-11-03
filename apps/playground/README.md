@@ -1,6 +1,6 @@
-# Splendor dApp Playground
+# Splendor dApp Studio
 
-A web app for learning `@splendor/sqc-sdk` and `@splendor/connect-react` and building dApps
+The Splendor dApp Studio (package `apps/playground`, formerly "dApp Playground") is a web app for learning `@splendor/sqc-sdk` and `@splendor/connect-react` and building dApps
 from them without writing code:
 
 - **Learn**: the SDK guides, plus runnable recipes (network status, balances, token reads,
@@ -8,8 +8,9 @@ from them without writing code:
 - **Widgets**: every widget and block, previewed on its own with editable props, a theme and
   copy-paste code.
 - **Build**: start from a template or a blank page, add blocks, edit their props and theme,
-  and preview against a mock wallet (nothing is signed) or live with a real wallet. Export a
-  Vite or Next.js project as a zip, open it in StackBlitz, or deploy it to Vercel or Netlify.
+  and preview against a mock wallet (nothing is signed) or live with a real wallet, on desktop
+  (at least 1024px, zoomed to fit a smaller canvas), tablet (768px) and phone (390px) sizes. Export a Vite or Next.js project as a zip, open it in
+  StackBlitz, or push it to the user's own GitHub and import it on Vercel or Netlify.
   Signed-in users save projects to their account and share read-only links that others can remix.
 - **Admin**: catalog flags (hide, feature, override status, set a minimum version), templates
   and recipes, the package release dashboard, the audit log, and the admin list.
@@ -39,6 +40,32 @@ admin flags (API /catalog)       ─┘
 - Export uses `generateProject`, the same code generator as `npm create splendor-dapp`. The
   generated project pins the connect-react and sqc-sdk versions bundled into this playground,
   so an export behaves like its preview.
+
+### What an export contains, and how it deploys
+
+The studio does not host apps: users deploy exports to their own accounts.
+
+- **Install.** `npm run playground:build` packs the SDK into `public/vendor` (`pack:sdk-vendor`),
+  and exports depend on `file:vendor/@splendor/*` until the packages are on npm
+  (`VITE_PLAYGROUND_SDK_SOURCE=npm` switches to registry versions). When the bundle is missing, the
+  Export dialog warns that `npm install` needs the pinned versions to be published.
+- **RPC.** The public RPCs send no CORS headers, so a generated app calls `/rpc/<network>` on its
+  own origin everywhere: the Vite dev/preview proxy, `vercel.json` and `netlify.toml` rewrites (Vite
+  exports), or the `next.config.mjs` rewrites (Next.js). `VITE_SQC_DIRECT_RPC=1` /
+  `NEXT_PUBLIC_SQC_DIRECT_RPC=1` calls the RPC directly instead.
+- **Headers.** Vite exports send a strict CSP (`script-src 'self' 'wasm-unsafe-eval'`, no
+  `unsafe-eval`), `frame-ancestors 'none'`, `nosniff` and HSTS from `vercel.json` and `netlify.toml`.
+  This works because sqc-sdk loads a pinned `wasm_exec.js` as a `<script>` with Subresource
+  Integrity instead of evaluating it. Next.js exports send the same non-script headers.
+- **Developer setup.** `lint` (ESLint flat config), `typecheck`, `preview`, `engines.node >= 20`,
+  `.env.example` (`*_SQC_NETWORK`, `*_SQC_DIRECT_RPC`, signer pins), a README with per-host deploy
+  steps, and `.github/workflows/ci.yml` (install, typecheck, build).
+- **Push to GitHub.** Signed-in users connect their GitHub account once (OAuth App on the API, see
+  [`apps/playground-api`](../playground-api#readme)); the Export dialog then creates a repository
+  and commits the project, and offers "Deploy on Vercel" (`vercel.com/new/import`) and "Deploy on
+  Netlify" for it. Pasting a GitHub, GitLab (subgroups too) or Bitbucket URL still works.
+- **StackBlitz.** Source maps are left out of the vendor bundle, and projects over 12 MB are refused
+  with a pointer to the zip.
 
 ### Extending it
 
@@ -75,7 +102,8 @@ address in `ADMIN_ADDRESSES`.
 | `npm run test:playground` | Builder state (undo/redo, copy and paste), drafts and stashes, preview frame checks (links, tokens, contract drops), gallery code pins, and API unit tests (auth, CSRF, projects, revisions, trash, search and pages, share expiry, flags, releases, audit). |
 | `npm run test:e2e` | Playwright: every template in the builder with the mock wallet (transfer, tip, sign-in, token deploy), zip export for both frameworks, save, share and remix, the draft-safety scenarios in `e2e/review.spec.ts` (fast leaves, stashes, failed links, autosave retries, trash and version history, narrow-screen drawers, contract drops), plus the admin flows (catalog flags, release dry run, audit) against a fake GitHub and npm. It also checks the CSP and that the preview iframe is isolated. It builds the playground and serves it with `vite preview` under the deploy headers, alongside its own API (in-memory SQLite) and a fake GitHub, on ports 5181, 8797 and 8798. `E2E_DEV=1` uses the dev server instead (faster, but no CSP and a same-origin preview). Run `npx playwright install chromium` in this folder first. |
 | `npm run test:playground-api:pg` | The API unit tests on Postgres (`TEST_DATABASE_URL`, default `postgres://postgres:pg@127.0.0.1:5432/postgres`); each test case gets its own schema. CI runs it against a `postgres:16` service. |
-| `npm run test:codegen` | Generates every template for Vite and Next.js, installs the SDKs from `npm pack` tarballs, and runs each production build. |
+| `npm run test:codegen` | Generates every template for Vite and Next.js, installs the SDKs from `npm pack` tarballs, and runs each production build. `node scripts/codegen-build-matrix.mjs --sdk=vendor` does the same with the vendored SDK (after `npm run pack:sdk-vendor`); CI runs both. |
+| Playwright `mobile` / `tablet` projects | `e2e/responsive.spec.ts` at 390x844 and 768x1024 (and desktop): no sideways scroll on home, gallery, learn and the studio, the header menu, drawers as dialogs, tap-to-inspect, and columns stacking on phones. |
 | `E2E_LIVE=1 E2E_LIVE_NETWORK=devnet npx playwright test e2e/live` | Read-only recipes against a real network (the nightly workflow runs this). |
 
 ## Deploying
@@ -234,8 +262,9 @@ off the host, and test a `pg_restore` into a scratch database. Projects and the 
 only there. With SQLite, back up the database file together with its `-wal` file, or run
 `sqlite3 playground.db ".backup out.db"`.
 
-**Secrets.** `GITHUB_TOKEN` (fine-grained, this repo only, Actions read/write and Contents read) and
-`DATABASE_URL` are the only secrets the API holds. Rotate the GitHub token on a schedule and when
+**Secrets.** `GITHUB_TOKEN` (fine-grained, this repo only, Actions read/write and Contents read),
+`DATABASE_URL`, and, with Push to GitHub, `GITHUB_OAUTH_CLIENT_SECRET` and `INTEGRATION_TOKEN_KEY`
+(which seals users' GitHub tokens; rotating it disconnects everyone) are the secrets the API holds. Rotate the GitHub token on a schedule and when
 an admin leaves. Signing out every session is `DELETE FROM sessions`.
 
 **Reporting.** See [SECURITY.md](../../SECURITY.md).

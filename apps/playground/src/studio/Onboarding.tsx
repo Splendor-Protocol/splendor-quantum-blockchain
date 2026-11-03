@@ -27,6 +27,19 @@ export const ONBOARDING_STEPS: readonly Step[] = [
   },
 ];
 
+/** Same tour for narrow screens, where the panels are drawers. */
+export const ONBOARDING_STEPS_NARROW: readonly Step[] = [
+  { ...ONBOARDING_STEPS[0]!, text: 'Open Components to add pieces: tap one and it lands on the page (after the selected piece, if any).' },
+  { ...ONBOARDING_STEPS[1]!, text: 'Tap anything in the live preview to select it and open its settings.' },
+  {
+    ...ONBOARDING_STEPS[2]!,
+    text: 'Settings for the selected piece open in a drawer (also from “Edit selection”). When you are happy, use Export for a Vite or Next.js project.',
+    target: '[data-testid="drawer-inspector"]',
+  },
+];
+
+const narrowNow = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1100px)').matches;
+
 function readFlag(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -54,10 +67,19 @@ export function markOnboarded(): void {
  * Three coach marks over the studio. They are a small card plus an outline on the area they
  * talk about: nothing is dimmed or blocked, so the studio stays usable while the tour is open.
  */
-export function Onboarding({ onRailChange }: { onRailChange?: (rail: StudioRail) => void }) {
+export function Onboarding({ onRailChange, replayKey = 0 }: { onRailChange?: (rail: StudioRail) => void; replayKey?: number }) {
   const [open, setOpen] = useState(shouldShowOnboarding);
   const [index, setIndex] = useState(0);
-  const step = ONBOARDING_STEPS[index]!;
+  // A new replayKey ("Replay the studio tour") starts the tour again from the first step.
+  const lastReplay = useRef(replayKey);
+  useEffect(() => {
+    if (replayKey === lastReplay.current) return;
+    lastReplay.current = replayKey;
+    setIndex(0);
+    setOpen(true);
+  }, [replayKey]);
+  const steps = narrowNow() ? ONBOARDING_STEPS_NARROW : ONBOARDING_STEPS;
+  const step = steps[index]!;
   const card = useRef<HTMLDivElement>(null);
 
   // Keyboard and screen-reader users start in the card; Escape (while focus is inside it) skips the tour.
@@ -81,7 +103,7 @@ export function Onboarding({ onRailChange }: { onRailChange?: (rail: StudioRail)
     markOnboarded();
     setOpen(false);
   };
-  const last = index === ONBOARDING_STEPS.length - 1;
+  const last = index === steps.length - 1;
 
   return (
     <div
@@ -100,7 +122,7 @@ export function Onboarding({ onRailChange }: { onRailChange?: (rail: StudioRail)
       }}
     >
       <p className="pg-coach-step pg-muted" data-testid="onboarding-step">
-        Step {index + 1} of {ONBOARDING_STEPS.length}
+        Step {index + 1} of {steps.length}
       </p>
       <strong>{step.title}</strong>
       <p style={{ margin: 0 }}>{step.text}</p>

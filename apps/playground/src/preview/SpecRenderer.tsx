@@ -35,6 +35,11 @@ export type SpecRendererProps = {
   /** Builder selection: outline a block and report clicks. */
   selectedBlockId?: string | null;
   onSelectBlock?: (id: string) => void;
+  /**
+   * Open web links in a new tab. Set when the renderer runs in the studio page itself (live wallet
+   * mode, no iframe), so a link in the dApp can never navigate the builder away.
+   */
+  externalLinksInNewTab?: boolean;
 };
 
 function renderBlockBody(block: DappBlock, entry: CatalogEntry | undefined, spec: DappSpec): ReactNode {
@@ -91,11 +96,12 @@ export function hrefToPath(href: string): string | null {
  * Renders a validated DappSpec with the real widgets and blocks. Shared by the builder preview
  * (mock and live), the widget gallery, share links and — in phase 2 — hosted builds.
  */
-export function SpecRenderer({ spec, catalog, pagePath, onNavigate, headerExtra, selectedBlockId, onSelectBlock }: SpecRendererProps) {
+export function SpecRenderer({ spec, catalog, pagePath, onNavigate, headerExtra, selectedBlockId, onSelectBlock, externalLinksInNewTab }: SpecRendererProps) {
   const byId = new Map(catalog.map((c) => [c.id, c]));
-  const page = spec.pages.find((p) => p.path === pagePath) ?? spec.pages[0];
   /** Builder mode: the caller wants selection + drop targets (the preview frame). */
   const builder = Boolean(onSelectBlock);
+  // Visitors on an unknown path get the same 404 as the exported app; the builder always edits a page.
+  const page = spec.pages.find((p) => p.path === pagePath) ?? (builder ? spec.pages[0] : undefined);
 
   /** Leaf blocks carry their own style and hide-on-device class, like containers. */
   const renderLeaf = (block: DappBlock): ReactNode => {
@@ -139,8 +145,14 @@ export function SpecRenderer({ spec, catalog, pagePath, onNavigate, headerExtra,
 
   const flatBlocks = page ? (page.blocks ?? blocksFromTree(page.root)) : [];
   const treeMode = Boolean(page?.root && isContainer(page.root));
-  const mainBody = treeMode ? (
-    renderTreeNode(page!.root)
+  const mainBody = !page ? (
+    <div className="dapp-page dapp-not-found" data-testid="dapp-not-found">
+      <h1>Page not found</h1>
+      <p className="dapp-note">There is no page at this address.</p>
+      <a href="#/">Go to the home page</a>
+    </div>
+  ) : treeMode ? (
+    renderTreeNode(page.root)
   ) : (
     <>
       {flatBlocks.map((block) => renderLeaf(block))}
@@ -153,13 +165,19 @@ export function SpecRenderer({ spec, catalog, pagePath, onNavigate, headerExtra,
    * the page here instead of navigating the frame away.
    */
   const onRootClick = (e: MouseEvent<HTMLDivElement>) => {
-    if (!onNavigate || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (e.defaultPrevented || e.button !== 0) return;
     const anchor = (e.target as Element).closest?.('a');
     if (!anchor || !e.currentTarget.contains(anchor)) return;
-    const target = anchor.getAttribute('target');
-    if (target && target !== '_self') return;
     const href = anchor.getAttribute('href');
     if (!href) return;
+    if (externalLinksInNewTab && hrefToPath(href) === null) {
+      e.preventDefault();
+      if (/^https?:\/\//i.test(href)) window.open(href, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (!onNavigate || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const target = anchor.getAttribute('target');
+    if (target && target !== '_self') return;
     const path = hrefToPath(href);
     if (path === null) return;
     const known = spec.pages.some((p) => p.path === path);
@@ -229,7 +247,9 @@ export function SpecRenderer({ spec, catalog, pagePath, onNavigate, headerExtra,
             ))}
           </nav>
         ) : null}
-        {treeMode ? (
+        {!page ? (
+          <main>{mainBody}</main>
+        ) : treeMode ? (
           <main>
             <div className="dapp-page">{gate(mainBody)}</div>
           </main>

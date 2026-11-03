@@ -69,7 +69,7 @@ export function registerProjectRoutes(ctx: RouteContext) {
   });
 
   app.post<{ Body: { spec: unknown; workspaceId?: string } }>('/projects', { preHandler: requireUser, schema: { body: createProjectBody } }, async (req, reply) => {
-    const r = checkSpec(req.body.spec);
+    const r = checkSpec(req.body.spec, { draft: true });
     if (!r.ok) return reply.code(422).send({ error: 'Invalid spec', issues: r.issues });
     const workspaceId = req.body.workspaceId ?? null;
     if (workspaceId && !(await ownsWorkspace(req.session!.address, workspaceId))) return reply.code(400).send({ error: 'Unknown workspace' });
@@ -96,7 +96,7 @@ export function registerProjectRoutes(ctx: RouteContext) {
     async (req, reply) => {
       const p = await ownedProject(req, reply);
       if (!p) return reply;
-      const r = checkSpec(req.body.spec);
+      const r = checkSpec(req.body.spec, { draft: true });
       if (!r.ok) return reply.code(422).send({ error: 'Invalid spec', issues: r.issues });
       // Without `baseVersion` the write lands on whatever is stored (last write wins); that path is
       // kept for older clients only and is flagged so it can be removed.
@@ -215,7 +215,7 @@ export function registerProjectRoutes(ctx: RouteContext) {
       const version = Number(req.params.version);
       const old = await store.getRevision(p.id, version);
       if (old === null) return reply.code(404).send({ error: 'Not found' });
-      const r = checkSpec(parseStoredSpec({ id: p.id, spec: old }));
+      const r = checkSpec(parseStoredSpec({ id: p.id, spec: old }), { draft: true });
       if (!r.ok) return reply.code(422).send({ error: 'That version no longer passes validation', issues: r.issues });
       const row = await store.updateProject(p.id, { name: r.spec.name, spec: JSON.stringify(r.spec) }, req.body.baseVersion);
       if (!row) return conflict(reply, p.id);

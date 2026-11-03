@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
-import type { CatalogEntry, ContainerNode, ContractRef, DappPage, LayoutNode, NodeStyle, PageAccess, PropValue } from '@splendor/dapp-spec';
-import { PropsForm } from '../components/PropsForm';
+import { isSafeCssValue, type CatalogEntry, type ContainerNode, type ContractRef, type DappPage, type LayoutNode, type NodeStyle, type PageAccess, type PropValue } from '@splendor/dapp-spec';
+import { PropsForm, type AddressSuggestion } from '../components/PropsForm';
 import { Tabs, type TabItem } from '../components/Tabs';
 import { StatusBadge } from '../gallery/GalleryPage';
 import { ACTION_KEYS, isExternalHref, pagePathOf } from './FlowsPanel';
@@ -24,26 +24,46 @@ const STYLE_FIELDS: { key: keyof NodeStyle; label: string; placeholder?: string 
 
 const KIND_LABEL: Record<string, string> = { section: 'Section', row: 'Row', column: 'Column', card: 'Card', stack: 'Stack' };
 
-/** Width, spacing, alignment, background and hide-on-device: shared by components and containers. */
-function StyleForm({ style, onStyleChange }: { style: NodeStyle; onStyleChange: (style: NodeStyle) => void }) {
+/** Message for a style value the validator would reject, or null. */
+export function styleFieldError(value: string | undefined): string | null {
+  if (!value?.trim()) return null;
+  return isSafeCssValue(value) ? null : 'Use a plain CSS value such as 1rem, 50%, 720px or #12151d (no url() or //)';
+}
+
+/**
+ * Width, spacing, alignment, background and hide-on-device: shared by components and containers.
+ * A component (leaf) is not a flex container, so it gets no Gap or Align.
+ */
+function StyleForm({ style, onStyleChange, leaf = false }: { style: NodeStyle; onStyleChange: (style: NodeStyle) => void; leaf?: boolean }) {
   return (
-    <div className="pg-form">
-      {STYLE_FIELDS.map(({ key, label, placeholder }) => (
-        <div key={key} className="pg-field">
-          <label htmlFor={`style-${key}`}>{label}</label>
-          <input
-            id={`style-${key}`}
-            value={style[key] ?? ''}
-            placeholder={placeholder}
-            onChange={(e) => {
-              const next: Record<string, string | undefined> = { ...style };
-              if (e.target.value.trim()) next[key] = e.target.value;
-              else delete next[key];
-              onStyleChange(next as NodeStyle);
-            }}
-          />
-        </div>
-      ))}
+    <div className="pg-form" data-testid="style-form">
+      {STYLE_FIELDS.filter((f) => !(leaf && f.key === 'gap')).map(({ key, label, placeholder }) => {
+        const err = styleFieldError(style[key] as string | undefined);
+        return (
+          <div key={key} className="pg-field">
+            <label htmlFor={`style-${key}`}>{label}</label>
+            <input
+              id={`style-${key}`}
+              value={style[key] ?? ''}
+              placeholder={placeholder}
+              aria-invalid={err ? true : undefined}
+              aria-describedby={err ? `style-${key}-error` : undefined}
+              onChange={(e) => {
+                const next: Record<string, string | undefined> = { ...style };
+                if (e.target.value.trim()) next[key] = e.target.value;
+                else delete next[key];
+                onStyleChange(next as NodeStyle);
+              }}
+            />
+            {err ? (
+              <small id={`style-${key}-error`} className="pg-error">
+                {err}
+              </small>
+            ) : null}
+          </div>
+        );
+      })}
+      {leaf ? null : (
       <div className="pg-field">
         <label htmlFor="style-align">Align</label>
         <select
@@ -64,6 +84,7 @@ function StyleForm({ style, onStyleChange }: { style: NodeStyle; onStyleChange: 
           <option value="between">Space between</option>
         </select>
       </div>
+      )}
       <div className="pg-field">
         <label htmlFor="style-hide">Hide on</label>
         <select
@@ -180,7 +201,13 @@ export const Inspector = memo(function Inspector({
   onMovePage,
   tab: tabProp,
   onTabChange,
+  addressSuggestions,
+  onRenameNode,
 }: {
+  /** Addresses an address field can be filled with. */
+  addressSuggestions?: readonly AddressSuggestion[];
+  /** Rename the selected container (its name in Layers). */
+  onRenameNode?: (id: string, label: string) => void;
   page: DappPage;
   /** The selected block or container (null: nothing selected). */
   selectedNode: LayoutNode | null;
@@ -228,7 +255,7 @@ export const Inspector = memo(function Inspector({
     return (
       <div className="pg-stack" data-testid="inspector-container">
         <div className="pg-row">
-          <h3 style={{ margin: 0 }}>{KIND_LABEL[container.kind] ?? container.kind}</h3>
+          <h3 style={{ margin: 0 }}>{container.label?.trim() || (KIND_LABEL[container.kind] ?? container.kind)}</h3>
         </div>
         <p className="pg-muted" style={{ margin: 0 }}>
           {isRoot ? 'This is the whole page.' : 'A layout box that holds other components.'} Style it here.
@@ -247,6 +274,18 @@ export const Inspector = memo(function Inspector({
             <button type="button" className="pg-btn pg-btn-danger pg-btn-sm" data-testid="inspector-delete" onClick={() => onRemoveNode?.(container.id)}>
               Delete
             </button>
+          </div>
+        ) : null}
+        {!isRoot && onRenameNode ? (
+          <div className="pg-field">
+            <label htmlFor="node-label">Name (shown in Layers)</label>
+            <input
+              id="node-label"
+              maxLength={60}
+              value={container.label ?? ''}
+              placeholder={KIND_LABEL[container.kind] ?? container.kind}
+              onChange={(e) => onRenameNode(container.id, e.target.value)}
+            />
           </div>
         ) : null}
         <StyleForm style={container.style ?? {}} onStyleChange={onStyleChange} />
@@ -302,12 +341,44 @@ export const Inspector = memo(function Inspector({
             <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" disabled={selectedIndex < 0 || selectedIndex >= blockCount - 1} onClick={() => onMoveBlock(1)}>
               Later
             </button>
+            {onDuplicateNode ? (
+              <button
+                type="button"
+                className="pg-btn pg-btn-ghost pg-btn-sm"
+                disabled={!canDuplicate}
+                data-testid="inspector-duplicate-block"
+                aria-keyshortcuts="Control+D Meta+D"
+                onClick={() => onDuplicateNode(selected.id)}
+              >
+                Duplicate
+              </button>
+            ) : null}
+            {onRemoveNode ? (
+              <button
+                type="button"
+                className="pg-btn pg-btn-danger pg-btn-sm"
+                data-testid="inspector-delete-block"
+                aria-keyshortcuts="Delete"
+                onClick={() => onRemoveNode(selected.id)}
+              >
+                Delete
+              </button>
+            ) : null}
           </div>
           {compatibilityNote(selectedEntry) ? <p className="pg-error">{compatibilityNote(selectedEntry)}</p> : null}
-          <PropsForm entry={selectedEntry} values={selected.props} errors={blockErrors} onChange={onPropChange} contracts={contracts} pages={pages} onOpenContracts={onOpenContracts} />
+          <PropsForm
+            entry={selectedEntry}
+            values={selected.props}
+            errors={blockErrors}
+            onChange={onPropChange}
+            contracts={contracts}
+            pages={pages}
+            onOpenContracts={onOpenContracts}
+            addressSuggestions={addressSuggestions}
+          />
         </div>
       ) : null}
-      {tab === 'style' ? <StyleForm style={selected.style ?? {}} onStyleChange={onStyleChange} /> : null}
+      {tab === 'style' ? <StyleForm style={selected.style ?? {}} onStyleChange={onStyleChange} leaf /> : null}
       {tab === 'actions' ? (
         actionProps.length ? (
           <div className="pg-form">

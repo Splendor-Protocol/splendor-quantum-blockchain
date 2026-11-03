@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DappSpec, NetworkId } from '@splendor/dapp-spec';
 import type { MockWalletState } from './mock';
-import { PREVIEW_SOURCE, PREVIEW_SRC, isPreviewMessage, sanitizeRects, type ParentToPreview, type PreviewMode, type PreviewRects, type PreviewToParent } from './protocol';
+import { PREVIEW_SOURCE, PREVIEW_SRC, isEditorKey, isPreviewMessage, sanitizeRects, type ParentToPreview, type PreviewMode, type PreviewRects, type PreviewToParent } from './protocol';
 
 export type PreviewFrameProps = {
   /** `edit` (default) is the builder canvas; `play` runs the app like a visitor (gates enforced, no selection). */
@@ -81,6 +81,8 @@ export function PreviewFrame({
   const [readyCount, setReadyCount] = useState(0);
   const ready = readyCount > 0;
   const [timedOut, setTimedOut] = useState(false);
+  /** The frame's page crashed outside any block boundary. */
+  const [crashed, setCrashed] = useState<string | null>(null);
   /** The frame kept leaving the preview document; it is left alone until the user reloads it. */
   const [stopped, setStopped] = useState(false);
   const loads = useRef(0);
@@ -104,6 +106,7 @@ export function PreviewFrame({
     handlers.current.onRects?.(null);
     setReadyCount(0);
     setTimedOut(false);
+    setCrashed(null);
     setFrame((f) => ({ key: f.key + 1, token: newToken() }));
   };
 
@@ -122,6 +125,7 @@ export function PreviewFrame({
           reloads.current = 0;
         }, STABLE_MS);
         setTimedOut(false);
+        setCrashed(null);
         setReadyCount((n) => n + 1);
       } else if (msg.type === 'navigate') {
         if (typeof msg.pagePath === 'string' && /^\/[a-z0-9-]{0,40}$/.test(msg.pagePath)) handlers.current.onNavigate?.(msg.pagePath);
@@ -138,6 +142,13 @@ export function PreviewFrame({
       }
       else if (msg.type === 'rects') handlers.current.onRects?.(sanitizeRects(msg));
       else if (msg.type === 'hover') handlers.current.onHover?.(typeof msg.id === 'string' && msg.id.length <= 120 ? msg.id : null);
+      else if (msg.type === 'key') {
+        // Replayed on this window, so every studio shortcut handler sees it as if typed here.
+        const k = { key: msg.key, ctrlKey: !!msg.ctrlKey, metaKey: !!msg.metaKey, shiftKey: !!msg.shiftKey, altKey: !!msg.altKey };
+        if (isEditorKey(k)) window.dispatchEvent(new KeyboardEvent('keydown', { ...k, bubbles: true, cancelable: true }));
+      } else if (msg.type === 'crashed') {
+        setCrashed(typeof msg.message === 'string' ? msg.message.slice(0, 300) : 'The preview crashed');
+      }
       else if (msg.type === 'drop') {
         if (typeof msg.parentId !== 'string' || !Number.isInteger(msg.index) || msg.index < 0) return;
         handlers.current.onDrop?.({
@@ -197,6 +208,14 @@ export function PreviewFrame({
       {stopped || (timedOut && !ready) ? (
         <div className="pg-local-notice pg-preview-notice" role="alert" data-testid="preview-timeout">
           <span>{stopped ? 'The preview left this page and was stopped.' : 'The preview has not started. Check your connection, or reload it.'}</span>
+          <button type="button" className="pg-btn pg-btn-sm" onClick={() => reload(true)}>
+            Reload preview
+          </button>
+        </div>
+      ) : null}
+      {crashed && !stopped ? (
+        <div className="pg-local-notice pg-preview-notice" role="alert" data-testid="preview-crashed">
+          <span>The preview stopped with an error: {crashed}</span>
           <button type="button" className="pg-btn pg-btn-sm" onClick={() => reload(true)}>
             Reload preview
           </button>

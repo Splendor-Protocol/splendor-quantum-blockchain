@@ -1,6 +1,6 @@
 import { PAGE_TEMPLATES, type DappPage, type DappSpec, type PageAccess } from '@splendor/dapp-spec';
 import { useEffect, useState, type Dispatch } from 'react';
-import { MAX_PAGES, type BuilderAction } from '../builder/state';
+import { MAX_PAGES, pagePathError, type BuilderAction } from '../builder/state';
 import { collectLinks } from './FlowsPanel';
 import { useConfirm } from '../components/ConfirmDialog';
 
@@ -25,6 +25,151 @@ export function PageTitleInput({ title, onRename, id, ariaLabel, className }: { 
         if (empty) setDraft(title);
       }}
     />
+  );
+}
+
+/** URL path of a page: edited as text, committed on Enter or blur when valid, explained when not. */
+export function PagePathInput({ spec, path, onCommit, id }: { spec: Pick<DappSpec, 'pages'>; path: string; onCommit: (next: string) => void; id: string }) {
+  const [draft, setDraft] = useState(path);
+  useEffect(() => setDraft(path), [path]);
+  const error = draft === path ? null : pagePathError(spec, path, draft.trim());
+  const commit = () => {
+    const next = draft.trim();
+    if (next === path) return;
+    if (pagePathError(spec, path, next)) return;
+    onCommit(next);
+  };
+  return (
+    <div className="pg-field">
+      <label htmlFor={id}>URL path</label>
+      <input
+        id={id}
+        className="pg-mono"
+        value={draft}
+        maxLength={41}
+        spellCheck={false}
+        autoComplete="off"
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : `${id}-hint`}
+        onChange={(e) => setDraft(e.target.value.toLowerCase().replace(/\s+/g, '-'))}
+        onBlur={() => {
+          if (error) setDraft(path);
+          else commit();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setDraft(path);
+          }
+        }}
+      />
+      {error ? (
+        <small id={`${id}-error`} className="pg-error" role="alert">
+          {error}
+        </small>
+      ) : (
+        <small id={`${id}-hint`} className="pg-muted">
+          Links to this page follow the change.
+        </small>
+      )}
+    </div>
+  );
+}
+
+/** Search summary of one page; counts toward the 160 characters search engines show. */
+export function PageDescriptionInput({ path, description, onChange, id }: { path: string; description?: string; onChange: (d: string) => void; id: string }) {
+  const value = description ?? '';
+  return (
+    <div className="pg-field">
+      <label htmlFor={id}>Search description</label>
+      <textarea
+        id={id}
+        rows={2}
+        maxLength={160}
+        value={value}
+        placeholder={path === '/' ? 'What this dApp does, in one sentence' : 'What visitors find on this page'}
+        aria-describedby={`${id}-count`}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <small id={`${id}-count`} className="pg-muted">
+        {value.length}/160 · shown by search engines and link previews
+      </small>
+    </div>
+  );
+}
+
+/** Site description, favicon, brand, footer and the Connect button of the dApp's header. */
+export function NavSettings({ spec, dispatch }: { spec: DappSpec; dispatch: Dispatch<BuilderAction> }) {
+  const nav = spec.nav ?? {};
+  const favicon = spec.favicon ?? '';
+  const faviconBad = favicon !== '' && !/^https:\/\/\S+\.(png|ico|svg|webp|jpe?g)(\?\S*)?$/i.test(favicon);
+  return (
+    <details className="pg-nav-settings" data-testid="nav-settings">
+      <summary>Site settings</summary>
+      <div className="pg-form">
+        <div className="pg-field">
+          <label htmlFor="site-description">Site description</label>
+          <textarea
+            id="site-description"
+            rows={2}
+            maxLength={500}
+            value={spec.description ?? ''}
+            placeholder="Used when a page has no description of its own"
+            onChange={(e) => dispatch({ type: 'setDescription', description: e.target.value })}
+          />
+        </div>
+        <div className="pg-field">
+          <label htmlFor="site-favicon">Favicon URL</label>
+          <input
+            id="site-favicon"
+            className="pg-mono"
+            inputMode="url"
+            value={favicon}
+            placeholder="https://…/icon.png"
+            aria-invalid={faviconBad ? true : undefined}
+            aria-describedby={faviconBad ? 'site-favicon-error' : undefined}
+            onChange={(e) => dispatch({ type: 'setFavicon', favicon: e.target.value })}
+          />
+          {faviconBad ? (
+            <small id="site-favicon-error" className="pg-error">
+              Use an https link to a .png, .ico, .svg, .webp or .jpg file
+            </small>
+          ) : null}
+        </div>
+        <div className="pg-field">
+          <label htmlFor="nav-brand">Brand name</label>
+          <input
+            id="nav-brand"
+            maxLength={60}
+            value={nav.brand ?? ''}
+            placeholder={spec.name}
+            onChange={(e) => dispatch({ type: 'setNav', nav: { brand: e.target.value || undefined } })}
+          />
+        </div>
+        <div className="pg-field">
+          <label htmlFor="nav-footer">Footer text</label>
+          <input
+            id="nav-footer"
+            maxLength={200}
+            value={nav.footer ?? ''}
+            placeholder="© 2026 My project"
+            onChange={(e) => dispatch({ type: 'setNav', nav: { footer: e.target.value || undefined } })}
+          />
+        </div>
+        <div className="pg-field pg-field-inline">
+          <input
+            id="nav-connect"
+            type="checkbox"
+            checked={nav.showConnect !== false}
+            onChange={(e) => dispatch({ type: 'setNav', nav: { showConnect: e.target.checked ? undefined : false } })}
+          />
+          <label htmlFor="nav-connect">Show the Connect wallet button</label>
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -104,6 +249,11 @@ export function PagesPanel({
   setNewPageTitle: (title: string | null) => void;
 }) {
   const [confirmDialog, confirm] = useConfirm();
+  /** Page template waiting for its title (the add form is reused for it). */
+  const [templateId, setTemplateId] = useState<string | null>(null);
+  const template = templateId ? PAGE_TEMPLATES.find((t) => t.id === templateId) : undefined;
+  /** Path of the page being dragged in the list (mouse reorder). */
+  const [dragPath, setDragPath] = useState<string | null>(null);
   const removePage = async (p: DappPage) => {
     const links = collectLinks(spec).filter((l) => l.to === p.path && l.fromPath !== p.path).length;
     const warning = links ? `${links} link${links === 1 ? '' : 's'} to it will break.` : 'Any links to it will break.';
@@ -117,7 +267,26 @@ export function PagesPanel({
       <p className="pg-toybox-lead">Pages</p>
       <ul className="pg-pages-list">
         {spec.pages.map((p, pageIndex) => (
-          <li key={p.path} className={p.path === pagePath ? 'is-active' : ''}>
+          <li
+            key={p.path}
+            className={[p.path === pagePath ? 'is-active' : '', dragPath && dragPath !== p.path ? 'is-drop-target' : ''].filter(Boolean).join(' ')}
+            draggable
+            data-testid={`page-row-${p.path}`}
+            onDragStart={(e) => {
+              setDragPath(p.path);
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', p.path);
+            }}
+            onDragOver={(e) => {
+              if (dragPath && dragPath !== p.path) e.preventDefault();
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragPath) dispatch({ type: 'reorderPage', path: dragPath, index: pageIndex });
+              setDragPath(null);
+            }}
+            onDragEnd={() => setDragPath(null)}
+          >
             <button
               type="button"
               className="pg-link-btn pg-pages-item"
@@ -170,6 +339,17 @@ export function PagesPanel({
               </button>
             ) : null}
             </div>
+            {p.path === pagePath && p.path !== '/' ? (
+              <PagePathInput id="pages-panel-path" spec={spec} path={p.path} onCommit={(nextPath) => dispatch({ type: 'setPagePath', path: p.path, nextPath })} />
+            ) : null}
+            {p.path === pagePath ? (
+              <PageDescriptionInput
+                id="pages-panel-description"
+                path={p.path}
+                description={p.description}
+                onChange={(description) => dispatch({ type: 'setPageDescription', path: p.path, description })}
+              />
+            ) : null}
             {p.path === pagePath ? (
               <PageSettings
                 page={p}
@@ -194,15 +374,22 @@ export function PagesPanel({
           className="pg-stack"
           onSubmit={(e) => {
             e.preventDefault();
-            if (newPageTitle.trim()) dispatch({ type: 'addPage', title: newPageTitle.trim() });
+            const title = newPageTitle.trim();
+            if (title && template) dispatch({ type: 'addPageFromTemplate', title, templateId: template.id });
+            else if (title) dispatch({ type: 'addPage', title });
             setNewPageTitle(null);
+            setTemplateId(null);
           }}
         >
+          <label className="pg-muted" htmlFor="new-page-title">
+            {template ? `Title for the new ${template.title} page` : 'Title for the new page'}
+          </label>
           <input
+            id="new-page-title"
             aria-label="New page title"
             autoFocus
             maxLength={60}
-            placeholder="Page title"
+            placeholder={template?.title ?? 'Page title'}
             value={newPageTitle}
             onChange={(e) => setNewPageTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -210,18 +397,27 @@ export function PagesPanel({
               // Handled here: the same Escape must not also close the drawer around this panel.
               e.preventDefault();
               setNewPageTitle(null);
+              setTemplateId(null);
             }}
           />
           <div className="pg-row">
             <button type="submit" className="pg-btn pg-btn-sm" disabled={!newPageTitle.trim()}>
-              Add blank
+              {template ? `Add ${template.title} page` : 'Add blank'}
             </button>
-            <button type="button" className="pg-btn pg-btn-ghost pg-btn-sm" onClick={() => setNewPageTitle(null)}>
+            <button
+              type="button"
+              className="pg-btn pg-btn-ghost pg-btn-sm"
+              onClick={() => {
+                setNewPageTitle(null);
+                setTemplateId(null);
+              }}
+            >
               Cancel
             </button>
           </div>
         </form>
       )}
+      <NavSettings spec={spec} dispatch={dispatch} />
       <p className="pg-list-title">Start from template</p>
       <div className="pg-toy-grid">
         {PAGE_TEMPLATES.filter((t) => t.id !== 'blank').map((t) => (
@@ -230,9 +426,10 @@ export function PagesPanel({
             type="button"
             className="pg-toy pg-palette-card"
             disabled={spec.pages.length >= MAX_PAGES}
+            data-testid={`page-template-${t.id}`}
             onClick={() => {
-              const title = t.title;
-              dispatch({ type: 'addPageFromTemplate', title, templateId: t.id });
+              setTemplateId(t.id);
+              setNewPageTitle(t.title);
             }}
           >
             <span className="pg-toy-mark" data-tone="violet" aria-hidden="true">

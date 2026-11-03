@@ -10,6 +10,8 @@ import {
   type PropValue,
 } from '@splendor/dapp-spec';
 import { CodeBlock } from '../components/CodeBlock';
+import { EmptyState } from '../components/Notice';
+import { PieceArt } from '../studio/PieceArt';
 import { PropsForm } from '../components/PropsForm';
 import { Tabs, type TabItem } from '../components/Tabs';
 import { ThemeEditor, type ThemeValue } from '../components/ThemeEditor';
@@ -122,7 +124,7 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
           {entry.description}
         </p>
         {entry.placeable ? (
-          <PreviewFrame spec={spec} pagePath="/" network={DEFAULT_NETWORK} walletState={walletState} height="calc(100vh - 280px)" title={`${entry.title} preview`} />
+          <PreviewFrame spec={spec} pagePath="/" network={DEFAULT_NETWORK} walletState={walletState} height="max(420px, calc(100dvh - 280px))" title={`${entry.title} preview`} />
         ) : (
           <div className="pg-panel pg-stack">
             <p style={{ margin: 0 }}>
@@ -209,15 +211,106 @@ function GalleryDetail({ entry }: { entry: CatalogEntry }) {
   );
 }
 
+/** Matches title, id, description and category label, so "nft" or "send" both find something. */
+export function galleryMatches(entry: CatalogEntry, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [entry.title, entry.id, entry.description, groupMeta(entry.category).label].some((s) => s?.toLowerCase().includes(q));
+}
+
+/** /widgets: every widget as a card, with search and category filters. */
+function GalleryOverview({ entries }: { entries: readonly CatalogEntry[] }) {
+  const { isFeatured } = useRegistry();
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<string | null>(null);
+  const categories = groupOrder([...new Set(entries.map((e) => e.category))]);
+  const shown = entries
+    .filter((e) => (category ? e.category === category : true) && galleryMatches(e, query))
+    .sort((a, b) => Number(isFeatured(b.id)) - Number(isFeatured(a.id)));
+  return (
+    <div className="pg-page pg-gallery-overview">
+      <header className="pg-stack">
+        <h1 style={{ margin: 0 }}>Widget gallery</h1>
+        <p className="pg-muted" style={{ margin: 0 }}>
+          Every piece you can put on a page, live with a test wallet. Open one to change its settings and copy the code.
+        </p>
+      </header>
+      <div className="pg-gallery-filters">
+        <input
+          type="search"
+          className="pg-gallery-search"
+          placeholder="Search widgets"
+          aria-label="Search widgets"
+          data-testid="gallery-search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <div className="pg-chips pg-gallery-cats" role="group" aria-label="Category">
+          <button type="button" className="pg-chip" aria-pressed={category === null} onClick={() => setCategory(null)}>
+            All
+          </button>
+          {categories.map((c) => (
+            <button key={c} type="button" className="pg-chip" aria-pressed={category === c} onClick={() => setCategory(category === c ? null : c)}>
+              {groupMeta(c).label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="pg-muted" role="status" style={{ margin: 0 }}>
+        {shown.length === entries.length ? `${entries.length} widgets` : `${shown.length} of ${entries.length} widgets`}
+      </p>
+      {shown.length ? (
+        <div className="pg-template-grid">
+          {shown.map((e) => (
+            <Link key={e.id} to={`/widgets/${e.id}`} className="pg-template-card pg-template-link pg-gallery-card" data-testid={`gallery-${e.id}`}>
+              <span className="pg-template-thumb">
+                <PieceArt id={e.id} category={e.category} tone={groupMeta(e.category).tone} />
+              </span>
+              <span className="pg-row" style={{ gap: '0.4rem' }}>
+                <strong>{e.title}</strong>
+                <StatusBadge status={e.status} />
+              </span>
+              <span className="pg-muted">{e.description}</span>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          title="No widget matches"
+          testId="gallery-empty"
+          action={
+            <button
+              type="button"
+              className="pg-btn pg-btn-ghost pg-btn-sm"
+              onClick={() => {
+                setQuery('');
+                setCategory(null);
+              }}
+            >
+              Clear filters
+            </button>
+          }
+        >
+          Try a shorter word, or show every category.
+        </EmptyState>
+      )}
+    </div>
+  );
+}
+
 export function GalleryPage() {
   const { id } = useParams();
   const { all, catalog, isFeatured } = useRegistry();
   const visible = all.filter((e) => catalog.includes(e) || !e.placeable);
-  const entry = visible.find((e) => e.id === id) ?? visible[0];
+  if (!id) return <GalleryOverview entries={visible} />;
+  const entry = visible.find((e) => e.id === id);
   const categories = [...new Set(visible.map((e) => e.category))];
   return (
     <div className="pg-gallery">
       <div className="pg-toy-rail" aria-label="Widgets">
+        <Link to="/widgets" className="pg-toy-chip pg-gallery-all" data-testid="gallery-all">
+          ← All widgets
+        </Link>
         {groupOrder(categories).map((c) => (
           <div key={c} className="pg-toy-group">
             <span className="pg-toy-group-label">{groupMeta(c).label}</span>
@@ -236,7 +329,23 @@ export function GalleryPage() {
           </div>
         ))}
       </div>
-      {entry ? <GalleryDetail key={entry.id} entry={entry} /> : <p className="pg-muted pg-pad">No widgets available.</p>}
+      {entry ? (
+        <GalleryDetail key={entry.id} entry={entry} />
+      ) : (
+        <div className="pg-page">
+          <EmptyState
+            title="Widget not found"
+            testId="gallery-not-found"
+            action={
+              <Link className="pg-btn pg-btn-sm" to="/widgets">
+                See all widgets
+              </Link>
+            }
+          >
+            There is no widget called “{id}”. It may have been renamed.
+          </EmptyState>
+        </div>
+      )}
     </div>
   );
 }

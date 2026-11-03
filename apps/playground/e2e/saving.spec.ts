@@ -1,5 +1,5 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
-import { E2E } from './env';
+import { E2E, SYNCED } from './env';
 import { openTemplate, testLogin } from './helpers';
 
 /** Template -> sign in -> Save to my account. Returns the new project id (kept in the URL). */
@@ -36,13 +36,13 @@ async function secondTab(browser: Browser, projectId: string) {
 test.describe('saving to the account', () => {
   test('the open project stays in the URL, so a reload reopens it from the account', async ({ page }) => {
     const id = await savedProject(page);
-    await expect(page.getByTestId('save-chip')).toHaveText('Synced');
+    await expect(page.getByTestId('save-chip')).toHaveText(SYNCED);
     expect((await renameAndSync(page, id, 'Reloaded dApp')).status()).toBe(200);
-    await expect(page.getByTestId('save-chip')).toHaveText('Synced');
+    await expect(page.getByTestId('save-chip')).toHaveText(SYNCED);
     await page.reload();
     await expect(page).toHaveURL(new RegExp(`project=${id}`));
     await expect(page.getByLabel('dApp name')).toHaveValue('Reloaded dApp');
-    await expect(page.getByTestId('save-chip')).toHaveText('Synced');
+    await expect(page.getByTestId('save-chip')).toHaveText(SYNCED);
   });
 
   test('opening a project does not save it again until something changes', async ({ page }) => {
@@ -88,7 +88,7 @@ test.describe('saving to the account', () => {
     const retry = page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().includes(`/projects/${id}`));
     await page.getByTestId('conflict-keep-mine').click();
     expect((await retry).status()).toBe(200);
-    await expect(page.getByTestId('save-chip')).toHaveText('Synced');
+    await expect(page.getByTestId('save-chip')).toHaveText(SYNCED);
     const saved = await page.request.get(`/api/projects/${id}`);
     expect((await saved.json()).name).toBe('Mine wins');
   });

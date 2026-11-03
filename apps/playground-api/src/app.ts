@@ -14,6 +14,7 @@ import { registerAdminRoutes } from './routes/admin.js';
 import { registerAuthRoutes, sha256 } from './routes/auth.js';
 import { ID_RE, type RouteContext } from './routes/context.js';
 import { registerDeploymentRoutes } from './routes/deployments.js';
+import { registerIntegrationRoutes } from './routes/integrations.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerShareRoutes } from './routes/share.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
@@ -40,6 +41,8 @@ const REQUEST_ID_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
 export async function buildApp(deps: AppDeps) {
   const { config, store } = deps;
   const catalog = createCatalog(WIDGET_MANIFESTS);
+  /** Same entries with nothing required: what a saved draft is checked against once only blanks remain. */
+  const draftCatalog = catalog.map((e) => ({ ...e, props: e.props.map((p) => ({ ...p, required: false })) }));
   const releases = deps.releases ?? createReleaseService(config.github, deps.fetch);
   const app = Fastify({
     logger: deps.logger ?? false,
@@ -143,9 +146,12 @@ export async function buildApp(deps: AppDeps) {
       sameSite: config.cookieSameSite,
       path: '/',
     }),
-    checkSpec(input) {
+    checkSpec(input, opts = {}) {
       try {
-        return validateSpec(migrateSpec(input), { catalog });
+        const spec = migrateSpec(input);
+        const strict = validateSpec(spec, { catalog });
+        if (strict.ok || !opts.draft || !strict.issues.every((i) => i.message === 'required')) return strict;
+        return validateSpec(spec, { catalog: draftCatalog });
       } catch (e) {
         return { ok: false, issues: [{ path: '', message: e instanceof Error ? e.message : String(e) }] };
       }
@@ -186,6 +192,7 @@ export async function buildApp(deps: AppDeps) {
   registerShareRoutes(ctx);
   registerAdminRoutes(ctx);
   registerDeploymentRoutes(ctx);
+  registerIntegrationRoutes(ctx, deps.fetch ?? fetch);
 
   if (deps.housekeepingIntervalMs) {
     const stop = startHousekeeping(store, config, app.log, deps.housekeepingIntervalMs);

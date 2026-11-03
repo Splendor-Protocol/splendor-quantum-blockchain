@@ -15,7 +15,9 @@ import {
   renameLocalProject,
   renameLocalWorkspace,
 } from '../workspaces/local';
+import { EmptyState, Skeleton } from '../components/Notice';
 import { KitCards } from './KitCards';
+import { Faq, FeatureGrid, HowItWorks, ProductHero, TemplateShowcase } from './ProductSections';
 import { LocalUpload } from './LocalUpload';
 import { Trash } from './Trash';
 import { NewProjectWizard, wizardQuery } from './NewProjectWizard';
@@ -328,40 +330,71 @@ export function HomePage() {
   const buildHref = (template: string) => `/build?template=${encodeURIComponent(template)}${workspaceId ? `&workspace=${encodeURIComponent(workspaceId)}` : ''}`;
   const studioHref = workspaceId ? `/build?workspace=${encodeURIComponent(workspaceId)}` : '/build';
 
+  // Returning users (signed in, or with workspaces in this browser) see their projects first.
+  const returning = !!session || (loaded && workspaces.length > 0);
+  const kits = (
+    <section aria-labelledby="home-kits-title" data-testid="home-kits">
+      <h2 id="home-kits-title">Start with a ready-made app</h2>
+      <p className="pg-muted">A landing page and a dashboard, wired to your token or contract. Point it at your own address, or try the demo first.</p>
+      <KitCards kits={templates.filter((t) => t.kit)} demoHref={buildHref} onPick={(id) => setWizard({ template: id })} />
+    </section>
+  );
+  const showcase = <TemplateShowcase templates={templates.filter((t) => !t.kit)} buildHref={buildHref} onCustomize={(id) => setWizard({ template: id })} />;
+  const explore = (
+    <section aria-labelledby="home-explore" className="pg-explore">
+      <h2 id="home-explore">Explore</h2>
+      <div className="pg-cards">
+        <Link to="/learn" className="pg-card">
+          <strong>Learn</strong>
+          <p>Guides and {recipes.length} runnable SDK recipes, live or in a mock sandbox.</p>
+        </Link>
+        <Link to="/widgets" className="pg-card">
+          <strong>Widgets</strong>
+          <p>{catalog.length} widgets and blocks {'\u2014'} preview, settings, React and embed code.</p>
+        </Link>
+        <Link to={studioHref} className="pg-card">
+          <strong>Studio</strong>
+          <p>Pages, drag-and-drop pieces, themes, contracts, mock or live preview, export and deploy.</p>
+        </Link>
+      </div>
+    </section>
+  );
+
   return (
-    <div className="pg-page">
+    <div className="pg-page pg-home">
       {confirmDialog}
-      <section className="pg-hero">
-        <h1>Splendor dApp Studio</h1>
-        <p>
-          Drag pieces onto a live page, bind contracts, pick a theme, then export a Vite or Next.js project that runs with{' '}
-          <code>npm install &amp;&amp; npm run dev</code>.
+      {returning ? (
+        <section className="pg-home-head" aria-labelledby="home-title">
+          <div>
+            <h1 id="home-title">Your dApps</h1>
+            <p className="pg-muted">Pick up where you left off, or start something new.</p>
+          </div>
+          <div className="pg-row">
+            <button type="button" className="pg-btn" data-testid="new-project" onClick={() => setWizard({ template: null })}>
+              New project
+            </button>
+            <Link className="pg-btn pg-btn-ghost" to={studioHref}>
+              Open the studio
+            </Link>
+          </div>
+        </section>
+      ) : (
+        <>
+          <ProductHero studioHref={studioHref} onNewProject={() => setWizard({ template: null })} />
+          <HowItWorks />
+          {kits}
+          {showcase}
+          <FeatureGrid />
+        </>
+      )}
+
+      <section aria-labelledby="home-workspaces">
+        <h2 id="home-workspaces">{returning ? 'Workspaces' : 'Your projects'}</h2>
+        <p className="pg-muted">
+          {returning
+            ? 'Group projects. Signed-in users sync to the API; everyone else keeps them in this browser.'
+            : 'Group projects in workspaces. They stay in this browser until you sign in with your wallet.'}
         </p>
-        <div className="pg-row">
-          <Link className="pg-btn" to={studioHref}>
-            Open the studio
-          </Link>
-          <button type="button" className="pg-btn pg-btn-ghost" data-testid="new-project" onClick={() => setWizard({ template: null })}>
-            New project
-          </button>
-          <Link className="pg-btn pg-btn-ghost" to="/widgets">
-            Browse widgets
-          </Link>
-          <Link className="pg-btn pg-btn-ghost" to="/learn">
-            Learn the SDK
-          </Link>
-        </div>
-      </section>
-
-      <section aria-labelledby="home-kits-title" data-testid="home-kits">
-        <h2 id="home-kits-title">Start with a ready-made app</h2>
-        <p className="pg-muted">A landing page and a dashboard, wired to your token or contract. Point it at your own address, or try the demo first.</p>
-        <KitCards kits={templates.filter((t) => t.kit)} demoHref={buildHref} onPick={(id) => setWizard({ template: id })} />
-      </section>
-
-      <section>
-        <h2>Workspaces</h2>
-        <p className="pg-muted">Group projects. Signed-in users sync to the API; everyone else keeps them in this browser.</p>
         <div className="pg-row" style={{ marginBottom: '0.75rem' }}>
           <input aria-label="New workspace name" placeholder="Workspace name" value={newWs} onChange={(e) => setNewWs(e.target.value)} />
           <button type="button" className="pg-btn pg-btn-sm" onClick={() => void addWorkspace()}>
@@ -444,11 +477,11 @@ export function HomePage() {
             </div>
           ))}
           {!loaded ? (
-            <p className="pg-muted" role="status">
-              Loading workspaces{'\u2026'}
-            </p>
+            <Skeleton lines={3} label={`Loading workspaces${'\u2026'}`} />
           ) : !workspaces.length ? (
-            <p className="pg-muted">No workspaces yet {'\u2014'} create one or start building.</p>
+            <EmptyState title="No workspaces yet" testId="workspaces-empty">
+              Name one above to group projects, or start building straight away; a project does not need a workspace.
+            </EmptyState>
           ) : null}
         </div>
       </section>
@@ -495,7 +528,7 @@ export function HomePage() {
               {projectsError}
             </p>
           ) : null}
-          {projectsLoading ? <p className="pg-muted">Loading projects{'\u2026'}</p> : null}
+          {projectsLoading ? <Skeleton lines={2} label={`Loading projects${'\u2026'}`} /> : null}
           <div className="pg-cards">
             {projects.map((p) => (
               <div key={p.id} className="pg-card" data-testid={`project-card-${p.id}`}>
@@ -553,11 +586,19 @@ export function HomePage() {
               </div>
             ))}
             {!projects.length && !projectsLoading && !projectsError ? (
-              <p className="pg-muted" data-testid="workspace-projects-empty">
-                {appliedQuery
-                  ? `No projects match "${appliedQuery}".`
-                  : 'No projects in this workspace yet. Start one from a template below, or use New project.'}
-              </p>
+              <EmptyState
+                testId="workspace-projects-empty"
+                title={appliedQuery ? `No projects match "${appliedQuery}".` : 'No projects in this workspace yet.'}
+                action={
+                  appliedQuery ? null : (
+                    <button type="button" className="pg-btn pg-btn-sm" onClick={() => setWizard({ template: null })}>
+                      Start a project
+                    </button>
+                  )
+                }
+              >
+                {appliedQuery ? 'Try another name, or clear the search.' : 'Start one from a ready-made app or a template.'}
+              </EmptyState>
             ) : null}
           </div>
           {nextCursor ? (
@@ -578,37 +619,14 @@ export function HomePage() {
         />
       ) : null}
 
-      <section className="pg-cards">
-        <Link to="/learn" className="pg-card">
-          <h2>Learn</h2>
-          <p>Guides and {recipes.length} runnable SDK recipes against testnet or devnet.</p>
-        </Link>
-        <Link to="/widgets" className="pg-card">
-          <h2>Widgets</h2>
-          <p>{catalog.length} widgets and blocks {'\u2014'} preview, settings, React + embed code.</p>
-        </Link>
-        <Link to={studioHref} className="pg-card">
-          <h2>Studio</h2>
-          <p>Pages, drag-and-drop pieces, themes, contracts, mock or live preview, export.</p>
-        </Link>
-      </section>
-
-      <section>
-        <h2>Start from a template</h2>
-        <div className="pg-cards">
-          {templates.filter((t) => !t.kit).map((t) => (
-            <div key={t.id} style={{ display: 'grid', gap: '0.35rem', alignContent: 'start' }}>
-              <Link to={buildHref(t.id)} className="pg-card" data-testid={`template-${t.id}`}>
-                <h3>{t.title}</h3>
-                <p>{t.description}</p>
-              </Link>
-              <button type="button" className="pg-link-btn" data-testid={`customize-${t.id}`} onClick={() => setWizard({ template: t.id })}>
-                Choose theme and name first
-              </button>
-            </div>
-          ))}
-        </div>
-      </section>
+      {returning ? (
+        <>
+          {kits}
+          {showcase}
+        </>
+      ) : null}
+      {explore}
+      <Faq />
 
       {wizard ? (
         <NewProjectWizard

@@ -1,11 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { generateProject, type CatalogEntry, type DappSpec, type Framework, type GeneratedProject } from '@splendor/dapp-spec';
+import { listNetworks } from '@splendor/sqc-sdk/networks';
 import { CodeBlock } from '../components/CodeBlock';
+import { Notice } from '../components/Notice';
 import { PACKAGE_VERSIONS } from '../config';
 import { deployLinks, downloadZip, openInStackBlitz } from './export';
-import { loadVendorOptions, sdkSourceLabel } from './vendor';
+import { GitHubPush } from './GitHubPush';
+import { loadVendorOptions, sdkSourceLabel, vendorFellBack } from './vendor';
 
 const FILE_LIST_LIMIT = 80;
+
+/** Host rewrites in exported projects follow this build's networks (custom RPCs included). */
+const RPC_TARGETS: Record<string, string> = Object.fromEntries(
+  listNetworks().flatMap((n) => {
+    const url = n.rpcUrls.find((u) => u.startsWith('https://'));
+    return url ? [[n.id, url]] : [];
+  }),
+);
 
 export function ExportPanel({
   spec,
@@ -40,6 +51,7 @@ export function ExportPanel({
         framework,
         catalog,
         versions: PACKAGE_VERSIONS,
+        rpcTargets: RPC_TARGETS,
         ...vendor,
       });
     } catch (e) {
@@ -91,15 +103,23 @@ export function ExportPanel({
         </div>
       ) : null}
       {project instanceof Error ? <p className="pg-error">{project.message}</p> : null}
-      <p className="pg-muted" style={{ margin: 0 }} role="status">
-        {vendor ? (
-          <>
-            Uses the {sdkSourceLabel(vendor)}. Set <code>VITE_PLAYGROUND_SDK_SOURCE=npm</code> after publishing the packages.
-          </>
-        ) : (
-          'Preparing the export…'
-        )}
-      </p>
+      {vendorFellBack(vendor) ? (
+        <Notice tone="warning" title="The export uses npm versions" testId="export-npm-fallback">
+          This server has no vendored SDK bundle, so the project depends on <code>@splendor/connect-react@{PACKAGE_VERSIONS.connectReact}</code> and{' '}
+          <code>@splendor/sqc-sdk@{PACKAGE_VERSIONS.sqcSdk}</code> from npm. <code>npm install</code> fails until those versions are published. The
+          operator fixes this with <code>npm run playground:build</code> (it packs the bundle).
+        </Notice>
+      ) : (
+        <p className="pg-muted" style={{ margin: 0 }} role="status">
+          {vendor ? (
+            <>
+              Uses the {sdkSourceLabel(vendor)}.{vendor.sdk === 'vendor' ? <> Set <code>VITE_PLAYGROUND_SDK_SOURCE=npm</code> after publishing the packages.</> : null}
+            </>
+          ) : (
+            'Preparing the export…'
+          )}
+        </p>
+      )}
       <button type="button" className="pg-btn" disabled={!ready || !!busy} data-testid="export-zip" onClick={() => ready && void run('zip', () => downloadZip(ready))}>
         {busy === 'zip' ? 'Preparing…' : 'Download .zip'}
       </button>
@@ -115,17 +135,23 @@ export function ExportPanel({
 
       <h3>Deploy</h3>
       <p className="pg-muted" style={{ margin: 0 }}>
-        Unzip, then deploy from your machine:
+        {framework === 'vite'
+          ? 'The project ships vercel.json and netlify.toml: build settings, the /rpc proxy the app needs, and security headers. Deploy it on your own account.'
+          : 'next.config.mjs carries the /rpc rewrites and security headers. Deploy it on your own account.'}
       </p>
-      <CodeBlock
-        code={
-          framework === 'vite'
-            ? `npm install\nnpm run build\n# Vercel\nnpx vercel deploy --prod\n# or Netlify\nnpx netlify deploy --prod --dir=dist`
-            : `npm install\n# Vercel (recommended for Next.js)\nnpx vercel deploy --prod\n# or Netlify\nnpx netlify deploy --prod --build`
-        }
-      />
+      <GitHubPush project={ready} appName={spec.name} description={spec.description} />
+      <details>
+        <summary>Deploy from your machine</summary>
+        <CodeBlock
+          code={
+            framework === 'vite'
+              ? `npm install\nnpm run build\n# Vercel\nnpx vercel deploy --prod\n# or Netlify\nnpx netlify deploy --prod --dir=dist`
+              : `npm install\n# Vercel (recommended for Next.js)\nnpx vercel deploy --prod\n# or Netlify\nnpx netlify deploy --prod --build`
+          }
+        />
+      </details>
       <div className="pg-field">
-        <label htmlFor="repo-url">Or push it to a Git repo and deploy with one click</label>
+        <label htmlFor="repo-url">Already pushed it yourself? Paste the repository URL</label>
         <input
           id="repo-url"
           type="url"

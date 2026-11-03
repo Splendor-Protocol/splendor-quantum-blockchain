@@ -4,6 +4,7 @@ import { ModalDialog } from '../components/ModalDialog';
 import type { MockWalletState } from '../preview/mock';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import { validateForPreview } from '../preview/validatePreview';
+import { DEVICE_WIDTHS, type DeviceSize } from './StudioShell';
 import './preview-app.css';
 
 export type PreviewAppProps = {
@@ -21,11 +22,12 @@ export type PreviewAppProps = {
   onClose: () => void;
 };
 
-type Device = 'desktop' | 'tablet' | 'mobile';
+type Device = DeviceSize;
+// Same widths as the studio canvas (DEVICE_WIDTHS), so a layout looks the same in both.
 const DEVICES: { id: Device; label: string; width: string }[] = [
   { id: 'desktop', label: 'Desktop', width: '100%' },
-  { id: 'tablet', label: 'Tablet', width: '820px' },
-  { id: 'mobile', label: 'Mobile', width: '390px' },
+  { id: 'tablet', label: 'Tablet', width: `${DEVICE_WIDTHS.tablet}px` },
+  { id: 'mobile', label: 'Mobile', width: `${DEVICE_WIDTHS.mobile}px` },
 ];
 
 const MAX_TRAIL = 12;

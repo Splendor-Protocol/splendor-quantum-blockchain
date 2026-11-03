@@ -31,6 +31,8 @@ export type CanvasOverlayProps = {
   onDuplicate: (id: string) => void;
   onRemove: (id: string) => void;
   onDrop: (drop: CanvasDrop) => void;
+  /** Scale transform on the canvas (frame and overlay together); pointer positions are divided by it. */
+  scale?: number;
 };
 
 const toStyle = (r: PreviewRect): CSSProperties => ({ top: r.top, left: r.left, width: r.width, height: r.height });
@@ -44,7 +46,7 @@ function defaultLabel(_id: string, kind: string): string {
  * clicking widgets and reporting hover) except while a drag is in flight, when it catches the drag
  * itself and shows the insertion points the frame reported.
  */
-export function CanvasOverlay({ store, selectedId, labelFor = defaultLabel, acceptsDrag, full = false, onSelect, onDuplicate, onRemove, onDrop }: CanvasOverlayProps) {
+export function CanvasOverlay({ store, selectedId, labelFor = defaultLabel, acceptsDrag, full = false, onSelect, onDuplicate, onRemove, onDrop, scale = 1 }: CanvasOverlayProps) {
   const rects = useCanvasRects(store);
   const hoverId = useCanvasHover(store);
   const root = useRef<HTMLDivElement>(null);
@@ -78,7 +80,7 @@ export function CanvasOverlay({ store, selectedId, labelFor = defaultLabel, acce
   const pick = (e: { clientX: number; clientY: number }): PreviewDropTarget | null => {
     if (!rects || !root.current) return null;
     const box = root.current.getBoundingClientRect();
-    return pickDropTarget(rects, e.clientX - box.left, e.clientY - box.top, movingId);
+    return pickDropTarget(rects, (e.clientX - box.left) / scale, (e.clientY - box.top) / scale, movingId);
   };
 
   // Touch and pen: HTML5 drag does not start from a finger, so the handle follows the pointer.

@@ -59,7 +59,7 @@ export function KitCards({
           <div key={kit.id} className={`pg-kit-card${selected === kit.id ? ' is-selected' : ''}`}>
             <button type="button" className="pg-kit-main" aria-pressed={selected === kit.id} data-testid={`${testIdPrefix}-${kit.id}`} onClick={() => onPick(kit.id)}>
               <span className="pg-kit-badge">Ready-made app</span>
-              <h3>{kit.title}</h3>
+              <strong className="pg-kit-title">{kit.title}</strong>
               <p>{kit.description}</p>
               {kit.outline?.length ? <Outline outline={kit.outline} /> : null}
             </button>
@@ -84,7 +84,7 @@ export function KitCards({
                 data-testid={`${testIdPrefix}-${t.id}`}
                 onClick={() => onPick(t.id)}
               >
-                <h3>{t.title}</h3>
+                <strong className="pg-card-title">{t.title}</strong>
                 <p>{t.description}</p>
               </button>
             ))}
@@ -96,7 +96,7 @@ export function KitCards({
                 data-testid={`${testIdPrefix}-blank`}
                 onClick={() => onPick('blank')}
               >
-                <h3>Blank page</h3>
+                <strong className="pg-card-title">Blank page</strong>
                 <p>A heading, then an empty page.</p>
               </button>
             ) : null}

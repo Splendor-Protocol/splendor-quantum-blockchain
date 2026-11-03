@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { addressFromPublicKey, createAuthMessage } from '@splendor/sqc-sdk/auth';
-import { TEMPLATES, instantiateTemplate } from '@splendor/dapp-spec';
+import { TEMPLATES, instantiateTemplate, updateBlockProps } from '@splendor/dapp-spec';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createReleaseService, type FetchLike } from './releases.js';
@@ -416,6 +416,19 @@ describe('projects', () => {
     const res = await app.inject({ method: 'POST', url: '/projects', ...json({ spec: bad }, cookie) });
     expect(res.statusCode).toBe(422);
     expect(res.json().issues[0].message).toMatch(/unknown widget/);
+  });
+
+  it('saves a work-in-progress spec whose only issues are empty required fields, but not bad values', async () => {
+    const { cookie } = await signIn(PUB_USER, USER);
+    const wip = instantiateTemplate(TEMPLATES.find((t) => t.id === 'tip-jar')!);
+    const created = await app.inject({ method: 'POST', url: '/projects', ...json({ spec: wip }, cookie) });
+    expect(created.statusCode).toBe(201);
+    const bad = structuredClone(wip);
+    const tips = bad.pages[0]!.blocks!.find((b) => b.id === 'tips')!;
+    tips.props.recipient = 'SQ:nope';
+    bad.pages[0]!.root = updateBlockProps(bad.pages[0]!.root, 'tips', tips.props) as typeof bad.pages[0]['root'];
+    const rejected = await app.inject({ method: 'PUT', url: `/projects/${created.json().id}`, ...json({ spec: bad, baseVersion: 1 }, cookie) });
+    expect(rejected.statusCode).toBe(422);
   });
 
   it('creates, updates, shares and isolates projects by owner', async () => {

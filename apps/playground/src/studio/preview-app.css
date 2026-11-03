@@ -292,7 +292,7 @@
 }
 .pg-kit-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: 1rem;
 }
 .pg-kit-card {
@@ -313,7 +313,8 @@
   border-radius: calc(var(--pg-radius) + 4px);
   background: linear-gradient(160deg, color-mix(in srgb, var(--pg-accent) 12%, var(--pg-surface)), var(--pg-surface));
 }
-.pg-kit-main h3 {
+.pg-kit-main h3,
+.pg-kit-title {
   margin: 0;
   font-size: 1.25rem;
 }
@@ -371,6 +372,11 @@
   text-align: left;
   font: inherit;
   cursor: pointer;
+}
+.pg-card-title {
+  display: block;
+  font-size: 1.05rem;
+  margin-bottom: 0.35rem;
 }
 .pg-card.is-selected {
   border-color: var(--pg-accent);

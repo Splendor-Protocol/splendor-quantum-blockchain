@@ -36,6 +36,13 @@ function pushRecent(id: string): string[] {
   return next;
 }
 
+/** Search over title, description, id, import name, category and the shelf's friendly name. */
+export function paletteMatches(e: CatalogEntry, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [e.title, e.description, e.id, e.importName, e.category, groupMeta(e.category).label].some((s) => s.toLowerCase().includes(q));
+}
+
 /** `rect` is the hovered tile; `edge` the palette column it sits in (so the card never covers other tiles). */
 type Hover = { entry: CatalogEntry; rect: DOMRect; edge: { left: number; right: number } };
 
@@ -60,7 +67,7 @@ function PieceTooltip({ hover }: { hover: Hover }) {
       data-side={fitsRight ? 'right' : 'left'}
     >
       <div className="pg-piece-tip-art">
-        <PieceArt id={entry.id} category={entry.category} tone={meta.tone} />
+        <PieceArt id={entry.id} category={entry.category} tone={meta.tone} thumb={entry.thumb} />
       </div>
       <div className="pg-piece-tip-body">
         <div className="pg-piece-tip-head">
@@ -77,7 +84,7 @@ function PieceTooltip({ hover }: { hover: Hover }) {
           {entry.status !== 'stable' ? <span className="is-status">{entry.status}</span> : null}
         </div>
         <p className="pg-piece-tip-hint">
-          <kbd>Drag</kbd> onto the page or <kbd>Click</kbd> / <kbd>Enter</kbd> to add (inside the selected container, else at the end)
+          <kbd>Drag</kbd> onto the page or <kbd>Click</kbd> / <kbd>Enter</kbd> to add (inside the selected box, after the selected component, or at the end)
         </p>
       </div>
     </div>,
@@ -95,7 +102,10 @@ export const Palette = memo(function Palette({
   endDrag,
   skipClick,
   insertTarget = null,
+  notice = null,
 }: {
+  /** Why the last add did not happen (page full, nested too deep). */
+  notice?: string | null;
   catalog: CatalogEntry[];
   query: string;
   onQueryChange: (q: string) => void;
@@ -104,7 +114,7 @@ export const Palette = memo(function Palette({
   startDrag: (event: DragEvent, payload: PaletteDragPayload) => void;
   endDrag: () => void;
   skipClick: { current: boolean };
-  /** Name of the selected container: clicking a component adds it there instead of at the end of the page. */
+  /** Where a click adds a component ("inside the selected card", "after Hero text"); null: end of the page. */
   insertTarget?: string | null;
 }) {
   const [shelf, setShelf] = useState<string>('all');
@@ -121,11 +131,8 @@ export const Palette = memo(function Palette({
   // `hidden` entries still render in old specs but are not offered for new pages.
   const placeable = catalog.filter((e) => e.placeable && !e.hidden);
   const shelves = shelfOrder([...new Set(placeable.map((e) => e.category))]);
-  const matches = placeable.filter(
-    (e) =>
-      (shelf === 'all' || e.category === shelf) &&
-      (!q || e.title.toLowerCase().includes(q) || e.description.toLowerCase().includes(q) || e.category.includes(q)),
-  );
+  // A search looks through every shelf: a hit on another shelf must not read as "no match".
+  const matches = placeable.filter((e) => (q ? paletteMatches(e, q) : shelf === 'all' || e.category === shelf));
   const categories = shelfOrder([...new Set(matches.map((e) => e.category))]);
   const recentEntries = !q && shelf === 'all' ? recent.map((id) => placeable.find((e) => e.id === id)).filter((e): e is CatalogEntry => !!e) : [];
 
@@ -177,15 +184,16 @@ export const Palette = memo(function Palette({
           if (art instanceof HTMLElement) event.dataTransfer.setDragImage(art, art.offsetWidth / 2, art.offsetHeight / 2);
           startDrag(event, { kind: 'widget', id: e.id });
         }}
-        onDragEnd={() => {
+        onDragEnd={(event) => {
           dragging.current = false;
-          setRecent(pushRecent(e.id));
+          // A cancelled drag (Escape, dropped outside the page) did not use the piece.
+          if (event.dataTransfer.dropEffect !== 'none') setRecent(pushRecent(e.id));
           endDrag();
         }}
         onClick={() => add(e)}
       >
         <span className="pg-piece-art">
-          <PieceArt id={e.id} category={e.category} tone={meta.tone} />
+          <PieceArt id={e.id} category={e.category} tone={meta.tone} thumb={e.thumb} />
           {e.status !== 'stable' ? <span className="pg-piece-status">{e.status}</span> : null}
           {e.requires?.wallet ? (
             <span className="pg-piece-wallet" title="Needs a wallet">
@@ -233,9 +241,14 @@ export const Palette = memo(function Palette({
       </div>
 
       {full ? <p className="pg-palette-full">This page is full. Remove a component to add more.</p> : null}
+      {notice && !full ? (
+        <p className="pg-palette-full" role="alert" data-testid="palette-add-notice">
+          {notice}
+        </p>
+      ) : null}
       {insertTarget && !full ? (
         <p className="pg-muted" role="status" data-testid="palette-insert-target" style={{ margin: '0 0 0.5rem' }}>
-          New components go inside the selected {insertTarget.toLowerCase()}.
+          New components go {insertTarget}.
         </p>
       ) : null}
 

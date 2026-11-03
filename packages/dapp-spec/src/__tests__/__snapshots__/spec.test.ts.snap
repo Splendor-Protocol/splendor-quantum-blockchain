@@ -3,6 +3,7 @@
 exports[`generateProject > next: contract-app > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -14,6 +15,7 @@ exports[`generateProject > next: contract-app > files 1`] = `
   "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/AccessGate.tsx",
@@ -27,6 +29,7 @@ exports[`generateProject > next: contract-app > files 1`] = `
   "blocks/TxHistoryTable.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -51,37 +54,47 @@ export function HomePage() {
     <div className="dapp-page">
       <div className="dapp-section" data-node-id="landing-root"
         style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-        <HeroCentered
-          heading={"My contract"}
-          text={"Live numbers straight from the contract. Sign in to take part."}
-          ctaLabel={"Open the app"}
-          ctaPath={"/app"}
-        />
+        <div className="dapp-block" data-block-id="hero">
+          <HeroCentered
+            heading={"My contract"}
+            text={"Live numbers straight from the contract. Sign in to take part."}
+            ctaLabel={"Open the app"}
+            ctaPath={"/app"}
+          />
+        </div>
         <div className="dapp-row" data-node-id="landing-stats"
           style={{ gap: "1rem", alignItems: "stretch" }}>
           <div className="dapp-column" data-node-id="landing-stat-1"
             style={{ gap: "1rem" }}>
-            <LiveStat
-              label={"Get"}
-              functionSig={"get()"}
-              format={"number"}
-              refreshMs={0}
-              fnParams={"[]"}
-              contract={CONTRACTS["app"].address}
-            />
+            <div className="dapp-block" data-block-id="landing-read-1">
+              <LiveStat
+                label={"Get"}
+                functionSig={"get()"}
+                format={"number"}
+                refreshMs={0}
+                fnParams={"[]"}
+                contract={CONTRACTS["app"].address}
+              />
+            </div>
           </div>
         </div>
-        <FeatureGrid
-          title={"How it works"}
-          items={"Read|Anyone can see the live numbers\\nSign in|Prove your wallet with a free signature\\nAct|Send transactions from the dashboard"}
-        />
-        <CtaBanner
-          heading={"Take part"}
-          text={"Sign in with your Splendor wallet."}
-          buttonLabel={"Open the app"}
-          buttonPath={"/app"}
-        />
-        <FooterBar text={"Built with the Splendor dApp Studio"} />
+        <div className="dapp-block" data-block-id="features">
+          <FeatureGrid
+            title={"How it works"}
+            items={"Read|Anyone can see the live numbers\\nSign in|Prove your wallet with a free signature\\nAct|Send transactions from the dashboard"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="cta">
+          <CtaBanner
+            heading={"Take part"}
+            text={"Sign in with your Splendor wallet."}
+            buttonLabel={"Open the app"}
+            buttonPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="footer">
+          <FooterBar text={"Built with the Splendor dApp Studio"} />
+        </div>
       </div>
     </div>
   );
@@ -103,42 +116,54 @@ export function AppPage() {
       <AccessGate access="signin" title={"Dashboard"}>
         <div className="dapp-section" data-node-id="app-root"
           style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-          <Hero heading={"Dashboard"} text={"Read and write My contract."} />
+          <div className="dapp-block" data-block-id="app-hero">
+            <Hero heading={"Dashboard"} text={"Read and write My contract."} />
+          </div>
           <div className="dapp-row" data-node-id="app-top"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-top-left"
               style={{ gap: "1rem" }}>
-              <AccountCard showBalance showNetwork />
+              <div className="dapp-block" data-block-id="account">
+                <AccountCard showBalance showNetwork />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-stat-1"
               style={{ gap: "1rem" }}>
-              <LiveStat
-                label={"Get"}
-                functionSig={"get()"}
-                format={"number"}
-                refreshMs={0}
-                fnParams={"[]"}
-                contract={CONTRACTS["app"].address}
-              />
+              <div className="dapp-block" data-block-id="app-read-1">
+                <LiveStat
+                  label={"Get"}
+                  functionSig={"get()"}
+                  format={"number"}
+                  refreshMs={0}
+                  fnParams={"[]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
             </div>
           </div>
-          <ContractForm
-            title={"Set"}
-            functionSig={"set(uint256)"}
-            buttonLabel={"Set"}
-            successMessage={"Transaction sent."}
-            fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
-            contract={CONTRACTS["app"].address}
-          />
-          <ContractForm
-            title={"Increment"}
-            functionSig={"increment()"}
-            buttonLabel={"Increment"}
-            successMessage={"Transaction sent."}
-            fnParams={"[]"}
-            contract={CONTRACTS["app"].address}
-          />
-          <TxHistoryTable title={"Recent transactions"} limit={10} />
+          <div className="dapp-block" data-block-id="app-form-1">
+            <ContractForm
+              title={"Set"}
+              functionSig={"set(uint256)"}
+              buttonLabel={"Set"}
+              successMessage={"Transaction sent."}
+              fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+              contract={CONTRACTS["app"].address}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="app-form-2">
+            <ContractForm
+              title={"Increment"}
+              functionSig={"increment()"}
+              buttonLabel={"Increment"}
+              successMessage={"Transaction sent."}
+              fnParams={"[]"}
+              contract={CONTRACTS["app"].address}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="history">
+            <TxHistoryTable title={"Recent transactions"} limit={10} />
+          </div>
         </div>
       </AccessGate>
     </div>
@@ -151,6 +176,7 @@ export function AppPage() {
 exports[`generateProject > next: landing > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -162,6 +188,7 @@ exports[`generateProject > next: landing > files 1`] = `
   "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/AccessGate.tsx",
@@ -179,6 +206,7 @@ exports[`generateProject > next: landing > files 1`] = `
   "blocks/TxHistoryTable.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -206,55 +234,71 @@ export function HomePage() {
     <div className="dapp-page">
       <div className="dapp-section" data-node-id="landing-root"
         style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-        <HeroGradient
-          heading={"Meet the Demo Token"}
-          text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
-          ctaLabel={"Launch app"}
-          ctaPath={"/app"}
-        />
-        <TokenStats
-          title={"Token at a glance"}
-          showSupply
-          showBalance={false}
-          layout={"row"}
-          decimals={18}
-          tokenAddress={CONTRACTS["token"].address}
-        />
+        <div className="dapp-block" data-block-id="hero">
+          <HeroGradient
+            heading={"Meet the Demo Token"}
+            text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
+            ctaLabel={"Launch app"}
+            ctaPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="stats">
+          <TokenStats
+            title={"Token at a glance"}
+            showSupply
+            showBalance={false}
+            layout={"row"}
+            decimals={18}
+            tokenAddress={CONTRACTS["token"].address}
+          />
+        </div>
         <div className="dapp-row" data-node-id="landing-info"
           style={{ gap: "1rem", alignItems: "stretch" }}>
           <div className="dapp-column" data-node-id="landing-info-left"
             style={{ gap: "1rem" }}>
-            <Tokenomics
-              title={"Tokenomics"}
-              chart={"donut"}
-              items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
-              decimals={18}
-              tokenAddress={CONTRACTS["token"].address}
-            />
+            <div className="dapp-block" data-block-id="tokenomics">
+              <Tokenomics
+                title={"Tokenomics"}
+                chart={"donut"}
+                items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
+                decimals={18}
+                tokenAddress={CONTRACTS["token"].address}
+              />
+            </div>
           </div>
           <div className="dapp-column" data-node-id="landing-info-right"
             style={{ gap: "1rem" }}>
-            <Steps
-              title={"How it works"}
-              items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
-            />
+            <div className="dapp-block" data-block-id="steps">
+              <Steps
+                title={"How it works"}
+                items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
+              />
+            </div>
           </div>
         </div>
-        <FeatureGrid
-          title={"Why hold DEMO"}
-          items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
-        />
-        <Faq
-          title={"FAQ"}
-          items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
-        />
-        <CtaBanner
-          heading={"Ready?"}
-          text={"Connect your wallet and open the dashboard."}
-          buttonLabel={"Launch app"}
-          buttonPath={"/app"}
-        />
-        <FooterBar text={"Built with the Splendor dApp Studio"} />
+        <div className="dapp-block" data-block-id="features">
+          <FeatureGrid
+            title={"Why hold DEMO"}
+            items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="faq">
+          <Faq
+            title={"FAQ"}
+            items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="cta">
+          <CtaBanner
+            heading={"Ready?"}
+            text={"Connect your wallet and open the dashboard."}
+            buttonLabel={"Launch app"}
+            buttonPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="footer">
+          <FooterBar text={"Built with the Splendor dApp Studio"} />
+        </div>
       </div>
     </div>
   );
@@ -277,60 +321,74 @@ export function AppPage() {
       <AccessGate access="wallet" title={"Dashboard"}>
         <div className="dapp-section" data-node-id="app-root"
           style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-          <Hero
-            heading={"Dashboard"}
-            text={"Your balance, your token and your contract in one place."}
-          />
+          <div className="dapp-block" data-block-id="app-hero">
+            <Hero
+              heading={"Dashboard"}
+              text={"Your balance, your token and your contract in one place."}
+            />
+          </div>
           <div className="dapp-row" data-node-id="app-top"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-top-left"
               style={{ gap: "1rem" }}>
-              <AccountCard showBalance showNetwork showExplorer />
+              <div className="dapp-block" data-block-id="account">
+                <AccountCard showBalance showNetwork showExplorer />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-top-right"
               style={{ gap: "1rem" }}>
-              <TokenStats
-                title={"Your DEMO"}
-                showSupply={false}
-                showBalance
-                layout={"card"}
-                decimals={18}
-                tokenAddress={CONTRACTS["token"].address}
-              />
+              <div className="dapp-block" data-block-id="my-token">
+                <TokenStats
+                  title={"Your DEMO"}
+                  showSupply={false}
+                  showBalance
+                  layout={"card"}
+                  decimals={18}
+                  tokenAddress={CONTRACTS["token"].address}
+                />
+              </div>
             </div>
           </div>
           <div className="dapp-row" data-node-id="app-actions"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-actions-left"
               style={{ gap: "1rem" }}>
-              <TokenPanel
-                tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
-                defaultAmount={"1"}
-                showFee
-                toast
-              />
+              <div className="dapp-block" data-block-id="send-token">
+                <TokenPanel
+                  tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
+                  defaultAmount={"1"}
+                  showFee
+                  toast
+                />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-actions-right"
               style={{ gap: "1rem" }}>
-              <LiveStat
-                label={"Current value"}
-                functionSig={"get()"}
-                format={"number"}
-                refreshMs={0}
-                fnParams={"[]"}
-                contract={CONTRACTS["app"].address}
-              />
-              <ContractForm
-                title={"Update the value"}
-                functionSig={"set(uint256)"}
-                buttonLabel={"Save on-chain"}
-                successMessage={"Saved."}
-                fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
-                contract={CONTRACTS["app"].address}
-              />
+              <div className="dapp-block" data-block-id="app-value">
+                <LiveStat
+                  label={"Current value"}
+                  functionSig={"get()"}
+                  format={"number"}
+                  refreshMs={0}
+                  fnParams={"[]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
+              <div className="dapp-block" data-block-id="app-set">
+                <ContractForm
+                  title={"Update the value"}
+                  functionSig={"set(uint256)"}
+                  buttonLabel={"Save on-chain"}
+                  successMessage={"Saved."}
+                  fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
             </div>
           </div>
-          <TxHistoryTable title={"Recent transactions"} limit={10} />
+          <div className="dapp-block" data-block-id="history">
+            <TxHistoryTable title={"Recent transactions"} limit={10} />
+          </div>
         </div>
       </AccessGate>
     </div>
@@ -343,6 +401,7 @@ export function AppPage() {
 exports[`generateProject > next: members-area > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -352,12 +411,14 @@ exports[`generateProject > next: members-area > files 1`] = `
   "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/Hero.tsx",
   "blocks/MembersArea.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -381,16 +442,22 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero
-            heading={"Members club"}
-            text={"Sign in with your wallet — no passwords, no email."}
-          />
-          <MembersArea
-            title={"Members area"}
-            statement={"Sign in to the members club"}
-            content={"Welcome back! Here is this week's members-only update."}
-          />
-          <AccountCard showBalance={false} />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero
+              heading={"Members club"}
+              text={"Sign in with your wallet — no passwords, no email."}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="members">
+            <MembersArea
+              title={"Members area"}
+              statement={"Sign in to the members club"}
+              content={"Welcome back! Here is this week's members-only update."}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="account">
+            <AccountCard showBalance={false} />
+          </div>
         </div>
       </div>
     </div>
@@ -403,6 +470,7 @@ export function HomePage() {
 exports[`generateProject > next: nft-drop > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -412,12 +480,14 @@ exports[`generateProject > next: nft-drop > files 1`] = `
   "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/Hero.tsx",
   "blocks/NftDrop.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -441,12 +511,18 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero
-            heading={"Genesis drop"}
-            text={"Mint your collectible on Splendor Quantum Chain."}
-          />
-          <NftDrop title={"Mint"} collectionName={"Genesis"} tokenId={"1"} amount={"1"} />
-          <PendingTxList pollMs={5000} />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero
+              heading={"Genesis drop"}
+              text={"Mint your collectible on Splendor Quantum Chain."}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="drop">
+            <NftDrop title={"Mint"} collectionName={"Genesis"} tokenId={"1"} amount={"1"} />
+          </div>
+          <div className="dapp-block" data-block-id="pending">
+            <PendingTxList pollMs={5000} />
+          </div>
         </div>
       </div>
     </div>
@@ -459,6 +535,7 @@ export function HomePage() {
 exports[`generateProject > next: nft-membership > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -470,6 +547,7 @@ exports[`generateProject > next: nft-membership > files 1`] = `
   "app/members/MembersPage.tsx",
   "app/members/page.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/AccessGate.tsx",
@@ -478,6 +556,7 @@ exports[`generateProject > next: nft-membership > files 1`] = `
   "blocks/Nft721Gallery.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -498,18 +577,22 @@ export function HomePage() {
     <div className="dapp-page">
       <div className="dapp-section" data-node-id="home-root"
         style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-        <HeroGradient
-          heading={"Members pass"}
-          text={"Each QRC-721 pass in this collection opens the members area. Signed with post-quantum keys."}
-          ctaLabel={"Open members area"}
-          ctaPath={"/members"}
-        />
-        <Nft721Gallery
-          title={"The collection"}
-          collection={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
-          tokenIds={"1-12"}
-          showOwner
-        />
+        <div className="dapp-block" data-block-id="hero">
+          <HeroGradient
+            heading={"Members pass"}
+            text={"Each QRC-721 pass in this collection opens the members area. Signed with post-quantum keys."}
+            ctaLabel={"Open members area"}
+            ctaPath={"/members"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="gallery">
+          <Nft721Gallery
+            title={"The collection"}
+            collection={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
+            tokenIds={"1-12"}
+            showOwner
+          />
+        </div>
       </div>
     </div>
   );
@@ -527,30 +610,40 @@ export function MembersPage() {
       <AccessGate access="wallet" title={"Members"}>
         <div className="dapp-section" data-node-id="members-root"
           style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-          <Hero
-            heading={"Members area"}
-            text={"Your passes, your address and your recent activity."}
-          />
+          <div className="dapp-block" data-block-id="members-hero">
+            <Hero
+              heading={"Members area"}
+              text={"Your passes, your address and your recent activity."}
+            />
+          </div>
           <div className="dapp-row" data-node-id="members-top"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="members-left"
               style={{ gap: "1rem" }}>
-              <NftPanel
-                title={"Your passes"}
-                collectionAddress={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
-                tokenIds={"1-12"}
-                showTransfer
-                showMint
-                toast
-              />
+              <div className="dapp-block" data-block-id="passes">
+                <NftPanel
+                  title={"Your passes"}
+                  collectionAddress={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
+                  tokenIds={"1-12"}
+                  showTransfer
+                  showMint
+                  toast
+                />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="members-right"
               style={{ gap: "1rem" }}>
-              <ReceiveWidget showAmount qrSize={176} />
-              <AddressBook allowEdit />
+              <div className="dapp-block" data-block-id="receive">
+                <ReceiveWidget showAmount qrSize={176} />
+              </div>
+              <div className="dapp-block" data-block-id="contacts">
+                <AddressBook allowEdit />
+              </div>
             </div>
           </div>
-          <ActivityFeed blocks={2000} limit={25} showPending />
+          <div className="dapp-block" data-block-id="activity">
+            <ActivityFeed blocks={2000} limit={25} showPending />
+          </div>
         </div>
       </AccessGate>
     </div>
@@ -563,6 +656,7 @@ export function MembersPage() {
 exports[`generateProject > next: tip-jar > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -572,6 +666,7 @@ exports[`generateProject > next: tip-jar > files 1`] = `
   "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/BalanceSummary.tsx",
@@ -579,6 +674,7 @@ exports[`generateProject > next: tip-jar > files 1`] = `
   "blocks/TipJar.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -602,13 +698,19 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero heading={"Buy me a coffee"} text={"Tips go straight to my Splendor address."} />
-          <TipJar
-            title={"Send a tip"}
-            recipient={"SQ:abababababababababababababababababababababababababababababababab"}
-            amount={"0.1"}
-          />
-          <BalanceSummary title={"Your wallet"} />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero heading={"Buy me a coffee"} text={"Tips go straight to my Splendor address."} />
+          </div>
+          <div className="dapp-block" data-block-id="tips">
+            <TipJar
+              title={"Send a tip"}
+              recipient={"SQ:abababababababababababababababababababababababababababababababab"}
+              amount={"0.1"}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="summary">
+            <BalanceSummary title={"Your wallet"} />
+          </div>
         </div>
       </div>
     </div>
@@ -621,6 +723,7 @@ export function HomePage() {
 exports[`generateProject > next: token-launchpad > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -632,11 +735,13 @@ exports[`generateProject > next: token-launchpad > files 1`] = `
   "app/manage/ManagePage.tsx",
   "app/manage/page.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/Hero.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -659,17 +764,26 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero heading={"Launch your token"} text={"Deploy a QRC-20 token in one transaction."} />
-          <DeployTokenWidget
-            defaultName={"My Token"}
-            defaultSymbol={"MYT"}
-            defaultSupply={"1000000"}
-            decimals={18}
-            review
-            showFee
-            toast
-          />
-          <AccountCard showBalance />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero
+              heading={"Launch your token"}
+              text={"Deploy a QRC-20 token in one transaction."}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="deploy">
+            <DeployTokenWidget
+              defaultName={"My Token"}
+              defaultSymbol={"MYT"}
+              defaultSupply={"1000000"}
+              decimals={18}
+              review
+              showFee
+              toast
+            />
+          </div>
+          <div className="dapp-block" data-block-id="account">
+            <AccountCard showBalance />
+          </div>
         </div>
       </div>
     </div>
@@ -687,8 +801,12 @@ export function ManagePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="manage-root-stack"
           style={{ gap: "1rem" }}>
-          <TokenPanel defaultAmount={"1"} showFee toast />
-          <PendingTxList pollMs={5000} />
+          <div className="dapp-block" data-block-id="token">
+            <TokenPanel defaultAmount={"1"} showFee toast />
+          </div>
+          <div className="dapp-block" data-block-id="pending">
+            <PendingTxList pollMs={5000} />
+          </div>
         </div>
       </div>
     </div>
@@ -701,6 +819,7 @@ export function ManagePage() {
 exports[`generateProject > next: token-project > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -712,6 +831,7 @@ exports[`generateProject > next: token-project > files 1`] = `
   "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/AccessGate.tsx",
@@ -729,6 +849,7 @@ exports[`generateProject > next: token-project > files 1`] = `
   "blocks/TxHistoryTable.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -756,55 +877,71 @@ export function HomePage() {
     <div className="dapp-page">
       <div className="dapp-section" data-node-id="landing-root"
         style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-        <HeroGradient
-          heading={"Meet the Demo Token"}
-          text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
-          ctaLabel={"Launch app"}
-          ctaPath={"/app"}
-        />
-        <TokenStats
-          title={"Token at a glance"}
-          showSupply
-          showBalance={false}
-          layout={"row"}
-          decimals={18}
-          tokenAddress={CONTRACTS["token"].address}
-        />
+        <div className="dapp-block" data-block-id="hero">
+          <HeroGradient
+            heading={"Meet the Demo Token"}
+            text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
+            ctaLabel={"Launch app"}
+            ctaPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="stats">
+          <TokenStats
+            title={"Token at a glance"}
+            showSupply
+            showBalance={false}
+            layout={"row"}
+            decimals={18}
+            tokenAddress={CONTRACTS["token"].address}
+          />
+        </div>
         <div className="dapp-row" data-node-id="landing-info"
           style={{ gap: "1rem", alignItems: "stretch" }}>
           <div className="dapp-column" data-node-id="landing-info-left"
             style={{ gap: "1rem" }}>
-            <Tokenomics
-              title={"Tokenomics"}
-              chart={"donut"}
-              items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
-              decimals={18}
-              tokenAddress={CONTRACTS["token"].address}
-            />
+            <div className="dapp-block" data-block-id="tokenomics">
+              <Tokenomics
+                title={"Tokenomics"}
+                chart={"donut"}
+                items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
+                decimals={18}
+                tokenAddress={CONTRACTS["token"].address}
+              />
+            </div>
           </div>
           <div className="dapp-column" data-node-id="landing-info-right"
             style={{ gap: "1rem" }}>
-            <Steps
-              title={"How it works"}
-              items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
-            />
+            <div className="dapp-block" data-block-id="steps">
+              <Steps
+                title={"How it works"}
+                items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
+              />
+            </div>
           </div>
         </div>
-        <FeatureGrid
-          title={"Why hold DEMO"}
-          items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
-        />
-        <Faq
-          title={"FAQ"}
-          items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
-        />
-        <CtaBanner
-          heading={"Ready?"}
-          text={"Connect your wallet and open the dashboard."}
-          buttonLabel={"Launch app"}
-          buttonPath={"/app"}
-        />
-        <FooterBar text={"Built with the Splendor dApp Studio"} />
+        <div className="dapp-block" data-block-id="features">
+          <FeatureGrid
+            title={"Why hold DEMO"}
+            items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="faq">
+          <Faq
+            title={"FAQ"}
+            items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="cta">
+          <CtaBanner
+            heading={"Ready?"}
+            text={"Connect your wallet and open the dashboard."}
+            buttonLabel={"Launch app"}
+            buttonPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="footer">
+          <FooterBar text={"Built with the Splendor dApp Studio"} />
+        </div>
       </div>
     </div>
   );
@@ -827,60 +964,74 @@ export function AppPage() {
       <AccessGate access="wallet" title={"Dashboard"}>
         <div className="dapp-section" data-node-id="app-root"
           style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-          <Hero
-            heading={"Dashboard"}
-            text={"Your balance, your token and your contract in one place."}
-          />
+          <div className="dapp-block" data-block-id="app-hero">
+            <Hero
+              heading={"Dashboard"}
+              text={"Your balance, your token and your contract in one place."}
+            />
+          </div>
           <div className="dapp-row" data-node-id="app-top"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-top-left"
               style={{ gap: "1rem" }}>
-              <AccountCard showBalance showNetwork showExplorer />
+              <div className="dapp-block" data-block-id="account">
+                <AccountCard showBalance showNetwork showExplorer />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-top-right"
               style={{ gap: "1rem" }}>
-              <TokenStats
-                title={"Your DEMO"}
-                showSupply={false}
-                showBalance
-                layout={"card"}
-                decimals={18}
-                tokenAddress={CONTRACTS["token"].address}
-              />
+              <div className="dapp-block" data-block-id="my-token">
+                <TokenStats
+                  title={"Your DEMO"}
+                  showSupply={false}
+                  showBalance
+                  layout={"card"}
+                  decimals={18}
+                  tokenAddress={CONTRACTS["token"].address}
+                />
+              </div>
             </div>
           </div>
           <div className="dapp-row" data-node-id="app-actions"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-actions-left"
               style={{ gap: "1rem" }}>
-              <TokenPanel
-                tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
-                defaultAmount={"1"}
-                showFee
-                toast
-              />
+              <div className="dapp-block" data-block-id="send-token">
+                <TokenPanel
+                  tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
+                  defaultAmount={"1"}
+                  showFee
+                  toast
+                />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-actions-right"
               style={{ gap: "1rem" }}>
-              <LiveStat
-                label={"Current value"}
-                functionSig={"get()"}
-                format={"number"}
-                refreshMs={0}
-                fnParams={"[]"}
-                contract={CONTRACTS["app"].address}
-              />
-              <ContractForm
-                title={"Update the value"}
-                functionSig={"set(uint256)"}
-                buttonLabel={"Save on-chain"}
-                successMessage={"Saved."}
-                fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
-                contract={CONTRACTS["app"].address}
-              />
+              <div className="dapp-block" data-block-id="app-value">
+                <LiveStat
+                  label={"Current value"}
+                  functionSig={"get()"}
+                  format={"number"}
+                  refreshMs={0}
+                  fnParams={"[]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
+              <div className="dapp-block" data-block-id="app-set">
+                <ContractForm
+                  title={"Update the value"}
+                  functionSig={"set(uint256)"}
+                  buttonLabel={"Save on-chain"}
+                  successMessage={"Saved."}
+                  fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
             </div>
           </div>
-          <TxHistoryTable title={"Recent transactions"} limit={10} />
+          <div className="dapp-block" data-block-id="history">
+            <TxHistoryTable title={"Recent transactions"} limit={10} />
+          </div>
         </div>
       </AccessGate>
     </div>
@@ -893,6 +1044,7 @@ export function AppPage() {
 exports[`generateProject > next: wallet-dashboard > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
   "app/HomePage.tsx",
@@ -902,11 +1054,13 @@ exports[`generateProject > next: wallet-dashboard > files 1`] = `
   "app/contracts.ts",
   "app/layout.tsx",
   "app/networks.ts",
+  "app/not-found.tsx",
   "app/page.tsx",
   "app/providers.tsx",
   "blocks/Hero.tsx",
   "blocks/pageHref.ts",
   "blocks/parseList.ts",
+  "eslint.config.mjs",
   "next-env.d.ts",
   "next.config.mjs",
   "package.json",
@@ -929,10 +1083,18 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero heading={"Wallet dashboard"} text={"Your Splendor account at a glance."} />
-          <AccountCard showBalance showNetwork showExplorer showDisconnect />
-          <TransferWidget defaultAmount={"0.01"} showFee toast />
-          <PendingTxList emptyText={"Nothing pending"} pollMs={5000} />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero heading={"Wallet dashboard"} text={"Your Splendor account at a glance."} />
+          </div>
+          <div className="dapp-block" data-block-id="account">
+            <AccountCard showBalance showNetwork showExplorer showDisconnect />
+          </div>
+          <div className="dapp-block" data-block-id="send">
+            <TransferWidget defaultAmount={"0.01"} showFee toast />
+          </div>
+          <div className="dapp-block" data-block-id="pending">
+            <PendingTxList emptyText={"Nothing pending"} pollMs={5000} />
+          </div>
         </div>
       </div>
     </div>
@@ -945,9 +1107,12 @@ export function HomePage() {
 exports[`generateProject > vite: contract-app > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -969,6 +1134,7 @@ exports[`generateProject > vite: contract-app > files 1`] = `
   "src/pages/AppPage.tsx",
   "src/pages/HomePage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -989,42 +1155,54 @@ export function AppPage() {
       <AccessGate access="signin" title={"Dashboard"}>
         <div className="dapp-section" data-node-id="app-root"
           style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-          <Hero heading={"Dashboard"} text={"Read and write My contract."} />
+          <div className="dapp-block" data-block-id="app-hero">
+            <Hero heading={"Dashboard"} text={"Read and write My contract."} />
+          </div>
           <div className="dapp-row" data-node-id="app-top"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-top-left"
               style={{ gap: "1rem" }}>
-              <AccountCard showBalance showNetwork />
+              <div className="dapp-block" data-block-id="account">
+                <AccountCard showBalance showNetwork />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-stat-1"
               style={{ gap: "1rem" }}>
-              <LiveStat
-                label={"Get"}
-                functionSig={"get()"}
-                format={"number"}
-                refreshMs={0}
-                fnParams={"[]"}
-                contract={CONTRACTS["app"].address}
-              />
+              <div className="dapp-block" data-block-id="app-read-1">
+                <LiveStat
+                  label={"Get"}
+                  functionSig={"get()"}
+                  format={"number"}
+                  refreshMs={0}
+                  fnParams={"[]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
             </div>
           </div>
-          <ContractForm
-            title={"Set"}
-            functionSig={"set(uint256)"}
-            buttonLabel={"Set"}
-            successMessage={"Transaction sent."}
-            fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
-            contract={CONTRACTS["app"].address}
-          />
-          <ContractForm
-            title={"Increment"}
-            functionSig={"increment()"}
-            buttonLabel={"Increment"}
-            successMessage={"Transaction sent."}
-            fnParams={"[]"}
-            contract={CONTRACTS["app"].address}
-          />
-          <TxHistoryTable title={"Recent transactions"} limit={10} />
+          <div className="dapp-block" data-block-id="app-form-1">
+            <ContractForm
+              title={"Set"}
+              functionSig={"set(uint256)"}
+              buttonLabel={"Set"}
+              successMessage={"Transaction sent."}
+              fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+              contract={CONTRACTS["app"].address}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="app-form-2">
+            <ContractForm
+              title={"Increment"}
+              functionSig={"increment()"}
+              buttonLabel={"Increment"}
+              successMessage={"Transaction sent."}
+              fnParams={"[]"}
+              contract={CONTRACTS["app"].address}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="history">
+            <TxHistoryTable title={"Recent transactions"} limit={10} />
+          </div>
         </div>
       </AccessGate>
     </div>
@@ -1043,37 +1221,47 @@ export function HomePage() {
     <div className="dapp-page">
       <div className="dapp-section" data-node-id="landing-root"
         style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-        <HeroCentered
-          heading={"My contract"}
-          text={"Live numbers straight from the contract. Sign in to take part."}
-          ctaLabel={"Open the app"}
-          ctaPath={"/app"}
-        />
+        <div className="dapp-block" data-block-id="hero">
+          <HeroCentered
+            heading={"My contract"}
+            text={"Live numbers straight from the contract. Sign in to take part."}
+            ctaLabel={"Open the app"}
+            ctaPath={"/app"}
+          />
+        </div>
         <div className="dapp-row" data-node-id="landing-stats"
           style={{ gap: "1rem", alignItems: "stretch" }}>
           <div className="dapp-column" data-node-id="landing-stat-1"
             style={{ gap: "1rem" }}>
-            <LiveStat
-              label={"Get"}
-              functionSig={"get()"}
-              format={"number"}
-              refreshMs={0}
-              fnParams={"[]"}
-              contract={CONTRACTS["app"].address}
-            />
+            <div className="dapp-block" data-block-id="landing-read-1">
+              <LiveStat
+                label={"Get"}
+                functionSig={"get()"}
+                format={"number"}
+                refreshMs={0}
+                fnParams={"[]"}
+                contract={CONTRACTS["app"].address}
+              />
+            </div>
           </div>
         </div>
-        <FeatureGrid
-          title={"How it works"}
-          items={"Read|Anyone can see the live numbers\\nSign in|Prove your wallet with a free signature\\nAct|Send transactions from the dashboard"}
-        />
-        <CtaBanner
-          heading={"Take part"}
-          text={"Sign in with your Splendor wallet."}
-          buttonLabel={"Open the app"}
-          buttonPath={"/app"}
-        />
-        <FooterBar text={"Built with the Splendor dApp Studio"} />
+        <div className="dapp-block" data-block-id="features">
+          <FeatureGrid
+            title={"How it works"}
+            items={"Read|Anyone can see the live numbers\\nSign in|Prove your wallet with a free signature\\nAct|Send transactions from the dashboard"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="cta">
+          <CtaBanner
+            heading={"Take part"}
+            text={"Sign in with your Splendor wallet."}
+            buttonLabel={"Open the app"}
+            buttonPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="footer">
+          <FooterBar text={"Built with the Splendor dApp Studio"} />
+        </div>
       </div>
     </div>
   );
@@ -1085,9 +1273,12 @@ export function HomePage() {
 exports[`generateProject > vite: landing > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -1113,6 +1304,7 @@ exports[`generateProject > vite: landing > files 1`] = `
   "src/pages/AppPage.tsx",
   "src/pages/HomePage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -1134,60 +1326,74 @@ export function AppPage() {
       <AccessGate access="wallet" title={"Dashboard"}>
         <div className="dapp-section" data-node-id="app-root"
           style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-          <Hero
-            heading={"Dashboard"}
-            text={"Your balance, your token and your contract in one place."}
-          />
+          <div className="dapp-block" data-block-id="app-hero">
+            <Hero
+              heading={"Dashboard"}
+              text={"Your balance, your token and your contract in one place."}
+            />
+          </div>
           <div className="dapp-row" data-node-id="app-top"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-top-left"
               style={{ gap: "1rem" }}>
-              <AccountCard showBalance showNetwork showExplorer />
+              <div className="dapp-block" data-block-id="account">
+                <AccountCard showBalance showNetwork showExplorer />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-top-right"
               style={{ gap: "1rem" }}>
-              <TokenStats
-                title={"Your DEMO"}
-                showSupply={false}
-                showBalance
-                layout={"card"}
-                decimals={18}
-                tokenAddress={CONTRACTS["token"].address}
-              />
+              <div className="dapp-block" data-block-id="my-token">
+                <TokenStats
+                  title={"Your DEMO"}
+                  showSupply={false}
+                  showBalance
+                  layout={"card"}
+                  decimals={18}
+                  tokenAddress={CONTRACTS["token"].address}
+                />
+              </div>
             </div>
           </div>
           <div className="dapp-row" data-node-id="app-actions"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-actions-left"
               style={{ gap: "1rem" }}>
-              <TokenPanel
-                tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
-                defaultAmount={"1"}
-                showFee
-                toast
-              />
+              <div className="dapp-block" data-block-id="send-token">
+                <TokenPanel
+                  tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
+                  defaultAmount={"1"}
+                  showFee
+                  toast
+                />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-actions-right"
               style={{ gap: "1rem" }}>
-              <LiveStat
-                label={"Current value"}
-                functionSig={"get()"}
-                format={"number"}
-                refreshMs={0}
-                fnParams={"[]"}
-                contract={CONTRACTS["app"].address}
-              />
-              <ContractForm
-                title={"Update the value"}
-                functionSig={"set(uint256)"}
-                buttonLabel={"Save on-chain"}
-                successMessage={"Saved."}
-                fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
-                contract={CONTRACTS["app"].address}
-              />
+              <div className="dapp-block" data-block-id="app-value">
+                <LiveStat
+                  label={"Current value"}
+                  functionSig={"get()"}
+                  format={"number"}
+                  refreshMs={0}
+                  fnParams={"[]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
+              <div className="dapp-block" data-block-id="app-set">
+                <ContractForm
+                  title={"Update the value"}
+                  functionSig={"set(uint256)"}
+                  buttonLabel={"Save on-chain"}
+                  successMessage={"Saved."}
+                  fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
             </div>
           </div>
-          <TxHistoryTable title={"Recent transactions"} limit={10} />
+          <div className="dapp-block" data-block-id="history">
+            <TxHistoryTable title={"Recent transactions"} limit={10} />
+          </div>
         </div>
       </AccessGate>
     </div>
@@ -1209,55 +1415,71 @@ export function HomePage() {
     <div className="dapp-page">
       <div className="dapp-section" data-node-id="landing-root"
         style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-        <HeroGradient
-          heading={"Meet the Demo Token"}
-          text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
-          ctaLabel={"Launch app"}
-          ctaPath={"/app"}
-        />
-        <TokenStats
-          title={"Token at a glance"}
-          showSupply
-          showBalance={false}
-          layout={"row"}
-          decimals={18}
-          tokenAddress={CONTRACTS["token"].address}
-        />
+        <div className="dapp-block" data-block-id="hero">
+          <HeroGradient
+            heading={"Meet the Demo Token"}
+            text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
+            ctaLabel={"Launch app"}
+            ctaPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="stats">
+          <TokenStats
+            title={"Token at a glance"}
+            showSupply
+            showBalance={false}
+            layout={"row"}
+            decimals={18}
+            tokenAddress={CONTRACTS["token"].address}
+          />
+        </div>
         <div className="dapp-row" data-node-id="landing-info"
           style={{ gap: "1rem", alignItems: "stretch" }}>
           <div className="dapp-column" data-node-id="landing-info-left"
             style={{ gap: "1rem" }}>
-            <Tokenomics
-              title={"Tokenomics"}
-              chart={"donut"}
-              items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
-              decimals={18}
-              tokenAddress={CONTRACTS["token"].address}
-            />
+            <div className="dapp-block" data-block-id="tokenomics">
+              <Tokenomics
+                title={"Tokenomics"}
+                chart={"donut"}
+                items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
+                decimals={18}
+                tokenAddress={CONTRACTS["token"].address}
+              />
+            </div>
           </div>
           <div className="dapp-column" data-node-id="landing-info-right"
             style={{ gap: "1rem" }}>
-            <Steps
-              title={"How it works"}
-              items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
-            />
+            <div className="dapp-block" data-block-id="steps">
+              <Steps
+                title={"How it works"}
+                items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
+              />
+            </div>
           </div>
         </div>
-        <FeatureGrid
-          title={"Why hold DEMO"}
-          items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
-        />
-        <Faq
-          title={"FAQ"}
-          items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
-        />
-        <CtaBanner
-          heading={"Ready?"}
-          text={"Connect your wallet and open the dashboard."}
-          buttonLabel={"Launch app"}
-          buttonPath={"/app"}
-        />
-        <FooterBar text={"Built with the Splendor dApp Studio"} />
+        <div className="dapp-block" data-block-id="features">
+          <FeatureGrid
+            title={"Why hold DEMO"}
+            items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="faq">
+          <Faq
+            title={"FAQ"}
+            items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="cta">
+          <CtaBanner
+            heading={"Ready?"}
+            text={"Connect your wallet and open the dashboard."}
+            buttonLabel={"Launch app"}
+            buttonPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="footer">
+          <FooterBar text={"Built with the Splendor dApp Studio"} />
+        </div>
       </div>
     </div>
   );
@@ -1269,9 +1491,12 @@ export function HomePage() {
 exports[`generateProject > vite: members-area > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -1285,6 +1510,7 @@ exports[`generateProject > vite: members-area > files 1`] = `
   "src/networks.ts",
   "src/pages/HomePage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -1302,16 +1528,22 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero
-            heading={"Members club"}
-            text={"Sign in with your wallet — no passwords, no email."}
-          />
-          <MembersArea
-            title={"Members area"}
-            statement={"Sign in to the members club"}
-            content={"Welcome back! Here is this week's members-only update."}
-          />
-          <AccountCard showBalance={false} />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero
+              heading={"Members club"}
+              text={"Sign in with your wallet — no passwords, no email."}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="members">
+            <MembersArea
+              title={"Members area"}
+              statement={"Sign in to the members club"}
+              content={"Welcome back! Here is this week's members-only update."}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="account">
+            <AccountCard showBalance={false} />
+          </div>
         </div>
       </div>
     </div>
@@ -1324,9 +1556,12 @@ export function HomePage() {
 exports[`generateProject > vite: nft-drop > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -1340,6 +1575,7 @@ exports[`generateProject > vite: nft-drop > files 1`] = `
   "src/networks.ts",
   "src/pages/HomePage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -1357,12 +1593,18 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero
-            heading={"Genesis drop"}
-            text={"Mint your collectible on Splendor Quantum Chain."}
-          />
-          <NftDrop title={"Mint"} collectionName={"Genesis"} tokenId={"1"} amount={"1"} />
-          <PendingTxList pollMs={5000} />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero
+              heading={"Genesis drop"}
+              text={"Mint your collectible on Splendor Quantum Chain."}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="drop">
+            <NftDrop title={"Mint"} collectionName={"Genesis"} tokenId={"1"} amount={"1"} />
+          </div>
+          <div className="dapp-block" data-block-id="pending">
+            <PendingTxList pollMs={5000} />
+          </div>
         </div>
       </div>
     </div>
@@ -1375,9 +1617,12 @@ export function HomePage() {
 exports[`generateProject > vite: nft-membership > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -1394,6 +1639,7 @@ exports[`generateProject > vite: nft-membership > files 1`] = `
   "src/pages/HomePage.tsx",
   "src/pages/MembersPage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -1408,18 +1654,22 @@ export function HomePage() {
     <div className="dapp-page">
       <div className="dapp-section" data-node-id="home-root"
         style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-        <HeroGradient
-          heading={"Members pass"}
-          text={"Each QRC-721 pass in this collection opens the members area. Signed with post-quantum keys."}
-          ctaLabel={"Open members area"}
-          ctaPath={"/members"}
-        />
-        <Nft721Gallery
-          title={"The collection"}
-          collection={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
-          tokenIds={"1-12"}
-          showOwner
-        />
+        <div className="dapp-block" data-block-id="hero">
+          <HeroGradient
+            heading={"Members pass"}
+            text={"Each QRC-721 pass in this collection opens the members area. Signed with post-quantum keys."}
+            ctaLabel={"Open members area"}
+            ctaPath={"/members"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="gallery">
+          <Nft721Gallery
+            title={"The collection"}
+            collection={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
+            tokenIds={"1-12"}
+            showOwner
+          />
+        </div>
       </div>
     </div>
   );
@@ -1435,30 +1685,40 @@ export function MembersPage() {
       <AccessGate access="wallet" title={"Members"}>
         <div className="dapp-section" data-node-id="members-root"
           style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-          <Hero
-            heading={"Members area"}
-            text={"Your passes, your address and your recent activity."}
-          />
+          <div className="dapp-block" data-block-id="members-hero">
+            <Hero
+              heading={"Members area"}
+              text={"Your passes, your address and your recent activity."}
+            />
+          </div>
           <div className="dapp-row" data-node-id="members-top"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="members-left"
               style={{ gap: "1rem" }}>
-              <NftPanel
-                title={"Your passes"}
-                collectionAddress={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
-                tokenIds={"1-12"}
-                showTransfer
-                showMint
-                toast
-              />
+              <div className="dapp-block" data-block-id="passes">
+                <NftPanel
+                  title={"Your passes"}
+                  collectionAddress={"SQ:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"}
+                  tokenIds={"1-12"}
+                  showTransfer
+                  showMint
+                  toast
+                />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="members-right"
               style={{ gap: "1rem" }}>
-              <ReceiveWidget showAmount qrSize={176} />
-              <AddressBook allowEdit />
+              <div className="dapp-block" data-block-id="receive">
+                <ReceiveWidget showAmount qrSize={176} />
+              </div>
+              <div className="dapp-block" data-block-id="contacts">
+                <AddressBook allowEdit />
+              </div>
             </div>
           </div>
-          <ActivityFeed blocks={2000} limit={25} showPending />
+          <div className="dapp-block" data-block-id="activity">
+            <ActivityFeed blocks={2000} limit={25} showPending />
+          </div>
         </div>
       </AccessGate>
     </div>
@@ -1471,9 +1731,12 @@ export function MembersPage() {
 exports[`generateProject > vite: tip-jar > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -1488,6 +1751,7 @@ exports[`generateProject > vite: tip-jar > files 1`] = `
   "src/networks.ts",
   "src/pages/HomePage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -1505,13 +1769,19 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero heading={"Buy me a coffee"} text={"Tips go straight to my Splendor address."} />
-          <TipJar
-            title={"Send a tip"}
-            recipient={"SQ:abababababababababababababababababababababababababababababababab"}
-            amount={"0.1"}
-          />
-          <BalanceSummary title={"Your wallet"} />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero heading={"Buy me a coffee"} text={"Tips go straight to my Splendor address."} />
+          </div>
+          <div className="dapp-block" data-block-id="tips">
+            <TipJar
+              title={"Send a tip"}
+              recipient={"SQ:abababababababababababababababababababababababababababababababab"}
+              amount={"0.1"}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="summary">
+            <BalanceSummary title={"Your wallet"} />
+          </div>
         </div>
       </div>
     </div>
@@ -1524,9 +1794,12 @@ export function HomePage() {
 exports[`generateProject > vite: token-launchpad > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -1540,6 +1813,7 @@ exports[`generateProject > vite: token-launchpad > files 1`] = `
   "src/pages/HomePage.tsx",
   "src/pages/ManagePage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -1556,17 +1830,26 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero heading={"Launch your token"} text={"Deploy a QRC-20 token in one transaction."} />
-          <DeployTokenWidget
-            defaultName={"My Token"}
-            defaultSymbol={"MYT"}
-            defaultSupply={"1000000"}
-            decimals={18}
-            review
-            showFee
-            toast
-          />
-          <AccountCard showBalance />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero
+              heading={"Launch your token"}
+              text={"Deploy a QRC-20 token in one transaction."}
+            />
+          </div>
+          <div className="dapp-block" data-block-id="deploy">
+            <DeployTokenWidget
+              defaultName={"My Token"}
+              defaultSymbol={"MYT"}
+              defaultSupply={"1000000"}
+              decimals={18}
+              review
+              showFee
+              toast
+            />
+          </div>
+          <div className="dapp-block" data-block-id="account">
+            <AccountCard showBalance />
+          </div>
         </div>
       </div>
     </div>
@@ -1582,8 +1865,12 @@ export function ManagePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="manage-root-stack"
           style={{ gap: "1rem" }}>
-          <TokenPanel defaultAmount={"1"} showFee toast />
-          <PendingTxList pollMs={5000} />
+          <div className="dapp-block" data-block-id="token">
+            <TokenPanel defaultAmount={"1"} showFee toast />
+          </div>
+          <div className="dapp-block" data-block-id="pending">
+            <PendingTxList pollMs={5000} />
+          </div>
         </div>
       </div>
     </div>
@@ -1596,9 +1883,12 @@ export function ManagePage() {
 exports[`generateProject > vite: token-project > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -1624,6 +1914,7 @@ exports[`generateProject > vite: token-project > files 1`] = `
   "src/pages/AppPage.tsx",
   "src/pages/HomePage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -1645,60 +1936,74 @@ export function AppPage() {
       <AccessGate access="wallet" title={"Dashboard"}>
         <div className="dapp-section" data-node-id="app-root"
           style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-          <Hero
-            heading={"Dashboard"}
-            text={"Your balance, your token and your contract in one place."}
-          />
+          <div className="dapp-block" data-block-id="app-hero">
+            <Hero
+              heading={"Dashboard"}
+              text={"Your balance, your token and your contract in one place."}
+            />
+          </div>
           <div className="dapp-row" data-node-id="app-top"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-top-left"
               style={{ gap: "1rem" }}>
-              <AccountCard showBalance showNetwork showExplorer />
+              <div className="dapp-block" data-block-id="account">
+                <AccountCard showBalance showNetwork showExplorer />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-top-right"
               style={{ gap: "1rem" }}>
-              <TokenStats
-                title={"Your DEMO"}
-                showSupply={false}
-                showBalance
-                layout={"card"}
-                decimals={18}
-                tokenAddress={CONTRACTS["token"].address}
-              />
+              <div className="dapp-block" data-block-id="my-token">
+                <TokenStats
+                  title={"Your DEMO"}
+                  showSupply={false}
+                  showBalance
+                  layout={"card"}
+                  decimals={18}
+                  tokenAddress={CONTRACTS["token"].address}
+                />
+              </div>
             </div>
           </div>
           <div className="dapp-row" data-node-id="app-actions"
             style={{ gap: "1rem", alignItems: "stretch" }}>
             <div className="dapp-column" data-node-id="app-actions-left"
               style={{ gap: "1rem" }}>
-              <TokenPanel
-                tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
-                defaultAmount={"1"}
-                showFee
-                toast
-              />
+              <div className="dapp-block" data-block-id="send-token">
+                <TokenPanel
+                  tokenAddress={"SQ:dededededededededededededededededededededededededededededededede"}
+                  defaultAmount={"1"}
+                  showFee
+                  toast
+                />
+              </div>
             </div>
             <div className="dapp-column" data-node-id="app-actions-right"
               style={{ gap: "1rem" }}>
-              <LiveStat
-                label={"Current value"}
-                functionSig={"get()"}
-                format={"number"}
-                refreshMs={0}
-                fnParams={"[]"}
-                contract={CONTRACTS["app"].address}
-              />
-              <ContractForm
-                title={"Update the value"}
-                functionSig={"set(uint256)"}
-                buttonLabel={"Save on-chain"}
-                successMessage={"Saved."}
-                fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
-                contract={CONTRACTS["app"].address}
-              />
+              <div className="dapp-block" data-block-id="app-value">
+                <LiveStat
+                  label={"Current value"}
+                  functionSig={"get()"}
+                  format={"number"}
+                  refreshMs={0}
+                  fnParams={"[]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
+              <div className="dapp-block" data-block-id="app-set">
+                <ContractForm
+                  title={"Update the value"}
+                  functionSig={"set(uint256)"}
+                  buttonLabel={"Save on-chain"}
+                  successMessage={"Saved."}
+                  fnParams={"[\\u007b\\"name\\":\\"value\\",\\"type\\":\\"uint256\\"\\u007d]"}
+                  contract={CONTRACTS["app"].address}
+                />
+              </div>
             </div>
           </div>
-          <TxHistoryTable title={"Recent transactions"} limit={10} />
+          <div className="dapp-block" data-block-id="history">
+            <TxHistoryTable title={"Recent transactions"} limit={10} />
+          </div>
         </div>
       </AccessGate>
     </div>
@@ -1720,55 +2025,71 @@ export function HomePage() {
     <div className="dapp-page">
       <div className="dapp-section" data-node-id="landing-root"
         style={{ maxWidth: "1120px", gap: "1.25rem", padding: "1.25rem" }}>
-        <HeroGradient
-          heading={"Meet the Demo Token"}
-          text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
-          ctaLabel={"Launch app"}
-          ctaPath={"/app"}
-        />
-        <TokenStats
-          title={"Token at a glance"}
-          showSupply
-          showBalance={false}
-          layout={"row"}
-          decimals={18}
-          tokenAddress={CONTRACTS["token"].address}
-        />
+        <div className="dapp-block" data-block-id="hero">
+          <HeroGradient
+            heading={"Meet the Demo Token"}
+            text={"A post-quantum token on Splendor. Live supply, clear tokenomics, one click to the app."}
+            ctaLabel={"Launch app"}
+            ctaPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="stats">
+          <TokenStats
+            title={"Token at a glance"}
+            showSupply
+            showBalance={false}
+            layout={"row"}
+            decimals={18}
+            tokenAddress={CONTRACTS["token"].address}
+          />
+        </div>
         <div className="dapp-row" data-node-id="landing-info"
           style={{ gap: "1rem", alignItems: "stretch" }}>
           <div className="dapp-column" data-node-id="landing-info-left"
             style={{ gap: "1rem" }}>
-            <Tokenomics
-              title={"Tokenomics"}
-              chart={"donut"}
-              items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
-              decimals={18}
-              tokenAddress={CONTRACTS["token"].address}
-            />
+            <div className="dapp-block" data-block-id="tokenomics">
+              <Tokenomics
+                title={"Tokenomics"}
+                chart={"donut"}
+                items={"Community|40|Airdrops and rewards\\nTreasury|25|Grants and partnerships\\nTeam|20|4-year vesting\\nLiquidity|15|Exchange pools"}
+                decimals={18}
+                tokenAddress={CONTRACTS["token"].address}
+              />
+            </div>
           </div>
           <div className="dapp-column" data-node-id="landing-info-right"
             style={{ gap: "1rem" }}>
-            <Steps
-              title={"How it works"}
-              items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
-            />
+            <div className="dapp-block" data-block-id="steps">
+              <Steps
+                title={"How it works"}
+                items={"Connect|Link your Splendor wallet\\nHold|Keep DEMO in your wallet\\nUse|Send tokens and use the app"}
+              />
+            </div>
           </div>
         </div>
-        <FeatureGrid
-          title={"Why hold DEMO"}
-          items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
-        />
-        <Faq
-          title={"FAQ"}
-          items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
-        />
-        <CtaBanner
-          heading={"Ready?"}
-          text={"Connect your wallet and open the dashboard."}
-          buttonLabel={"Launch app"}
-          buttonPath={"/app"}
-        />
-        <FooterBar text={"Built with the Splendor dApp Studio"} />
+        <div className="dapp-block" data-block-id="features">
+          <FeatureGrid
+            title={"Why hold DEMO"}
+            items={"Post-quantum|ML-DSA-65 signatures by default\\nFast|Seconds to finality\\nOpen|Every number on this page is read on-chain"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="faq">
+          <Faq
+            title={"FAQ"}
+            items={"Where does the supply come from?|It is read live from the token contract.\\nDo I need a wallet?|Yes, to open the app. The landing page is public."}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="cta">
+          <CtaBanner
+            heading={"Ready?"}
+            text={"Connect your wallet and open the dashboard."}
+            buttonLabel={"Launch app"}
+            buttonPath={"/app"}
+          />
+        </div>
+        <div className="dapp-block" data-block-id="footer">
+          <FooterBar text={"Built with the Splendor dApp Studio"} />
+        </div>
       </div>
     </div>
   );
@@ -1780,9 +2101,12 @@ export function HomePage() {
 exports[`generateProject > vite: wallet-dashboard > files 1`] = `
 [
   ".env.example",
+  ".github/workflows/ci.yml",
   ".gitignore",
   "README.md",
+  "eslint.config.mjs",
   "index.html",
+  "netlify.toml",
   "package.json",
   "src/App.tsx",
   "src/actions.ts",
@@ -1795,6 +2119,7 @@ exports[`generateProject > vite: wallet-dashboard > files 1`] = `
   "src/networks.ts",
   "src/pages/HomePage.tsx",
   "tsconfig.json",
+  "vercel.json",
   "vite.config.ts",
 ]
 `;
@@ -1811,10 +2136,18 @@ export function HomePage() {
         style={{ maxWidth: "1120px", gap: "1rem", padding: "1.25rem" }}>
         <div className="dapp-stack" data-node-id="home-root-stack"
           style={{ gap: "1rem" }}>
-          <Hero heading={"Wallet dashboard"} text={"Your Splendor account at a glance."} />
-          <AccountCard showBalance showNetwork showExplorer showDisconnect />
-          <TransferWidget defaultAmount={"0.01"} showFee toast />
-          <PendingTxList emptyText={"Nothing pending"} pollMs={5000} />
+          <div className="dapp-block" data-block-id="hero">
+            <Hero heading={"Wallet dashboard"} text={"Your Splendor account at a glance."} />
+          </div>
+          <div className="dapp-block" data-block-id="account">
+            <AccountCard showBalance showNetwork showExplorer showDisconnect />
+          </div>
+          <div className="dapp-block" data-block-id="send">
+            <TransferWidget defaultAmount={"0.01"} showFee toast />
+          </div>
+          <div className="dapp-block" data-block-id="pending">
+            <PendingTxList emptyText={"Nothing pending"} pollMs={5000} />
+          </div>
         </div>
       </div>
     </div>

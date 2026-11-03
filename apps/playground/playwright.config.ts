@@ -24,7 +24,12 @@ export default defineConfig({
     trace: 'retain-on-failure',
     acceptDownloads: true,
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // Small screens: the responsive smoke tests only (layout, drawers, menus, no sideways scroll).
+    { name: 'mobile', testMatch: /responsive\.spec\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, hasTouch: true } },
+    { name: 'tablet', testMatch: /responsive\.spec\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 }, hasTouch: true } },
+  ],
   webServer: [
     {
       command: `node e2e/fake-services.mjs ${FAKE_PORT}`,
@@ -48,6 +53,12 @@ export default defineConfig({
         GITHUB_REPO: 'Splendor-Protocol/splendor-quantum-blockchain',
         GITHUB_API_URL: `${E2E.fake}/github`,
         NPM_REGISTRY_URL: `${E2E.fake}/npm`,
+        // Push to GitHub against the fake OAuth app and Git Data API.
+        GITHUB_OAUTH_CLIENT_ID: 'e2e-client',
+        GITHUB_OAUTH_CLIENT_SECRET: 'e2e-secret',
+        GITHUB_OAUTH_WEB_URL: `${E2E.fake}/github-web`,
+        GITHUB_OAUTH_CALLBACK_URL: `${E2E.web}/api/integrations/github/callback`,
+        INTEGRATION_TOKEN_KEY: 'e2'.repeat(32),
       },
     },
     {

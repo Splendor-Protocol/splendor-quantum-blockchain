@@ -1,4 +1,4 @@
-import { blocksFromTree, isContainer, mapTree, validateSpec, type CatalogEntry, type DappSpec, type LayoutNode, type ValidationIssue } from '@splendor/dapp-spec';
+import { blocksFromTree, isContainer, isSafeCssValue, mapTree, validateSpec, type CatalogEntry, type DappSpec, type LayoutNode, type ValidationIssue } from '@splendor/dapp-spec';
 
 export type PreviewValidation = {
   /** Spec safe to render, or null when an issue blocks rendering. */
@@ -53,18 +53,47 @@ function withoutBadValues(input: unknown, issues: readonly ValidationIssue[]): u
   };
 }
 
+const STYLE_VALUE_MSG = 'style values must be plain CSS tokens';
+/** A half-typed style value (Width "50", Background "#12"): that one property is left out. */
+function isStyleValueIssue(issue: ValidationIssue): boolean {
+  return issue.message === STYLE_VALUE_MSG && /\.style\.[A-Za-z]+$/.test(issue.path);
+}
+
+const STYLE_TOKEN_KEYS = new Set(['width', 'maxWidth', 'gap', 'padding', 'background']);
+
+/** Copy of the spec with every unsafe style token dropped (the validator rejects the same ones). */
+function withoutBadStyles(input: unknown): unknown {
+  if (typeof input !== 'object' || input === null || !Array.isArray((input as DappSpec).pages)) return input;
+  const spec = input as DappSpec;
+  const clean = <T extends { style?: Record<string, unknown> }>(n: T): T => {
+    if (!n.style) return n;
+    const entries = Object.entries(n.style).filter(([k, v]) => !STYLE_TOKEN_KEYS.has(k) || isSafeCssValue(v));
+    return entries.length === Object.keys(n.style).length ? n : { ...n, style: Object.fromEntries(entries) };
+  };
+  return {
+    ...spec,
+    pages: spec.pages.map((p) => {
+      if (!p.root || !isContainer(p.root)) return p;
+      const root = mapTree(p.root, (n): LayoutNode => (n.kind === 'block' ? { ...n, block: clean(n.block as never) } : clean(n as never)));
+      return { ...p, root, blocks: blocksFromTree(root) };
+    }),
+  };
+}
+
 /**
  * Validate like the API does, but keep the preview alive while the user is mid-edit:
  * - empty required fields render (those blocks show their own "set this up" state);
- * - a known prop with a bad value (a half-typed address) renders with that prop left out.
- * Everything structural or unsafe (unknown widgets or props, theme and style tokens, ids, limits)
- * still blocks rendering. `issues` always lists every problem.
+ * - a known prop with a bad value (a half-typed address) renders with that prop left out;
+ * - a half-typed style value renders without that one property.
+ * Everything structural or unsafe (unknown widgets or props, theme tokens, ids, limits) still
+ * blocks rendering. `issues` always lists every problem.
  */
 export function validateForPreview(input: unknown, catalog: readonly CatalogEntry[]): PreviewValidation {
   const strict = validateSpec(input, { catalog });
   if (strict.ok) return { spec: strict.spec, issues: [] };
-  if (strict.issues.some((i) => i.message !== 'required' && !isValueIssue(i))) return { spec: null, issues: strict.issues };
-  const cleaned = strict.issues.some(isValueIssue) ? withoutBadValues(input, strict.issues) : input;
+  if (strict.issues.some((i) => i.message !== 'required' && !isValueIssue(i) && !isStyleValueIssue(i))) return { spec: null, issues: strict.issues };
+  const styled = strict.issues.some(isStyleValueIssue) ? withoutBadStyles(input) : input;
+  const cleaned = strict.issues.some(isValueIssue) ? withoutBadValues(styled, strict.issues) : styled;
   const relaxed = validateSpec(cleaned, { catalog: withoutRequired(catalog) });
   return { spec: relaxed.ok ? relaxed.spec : null, issues: strict.issues };
 }

@@ -294,9 +294,15 @@ export function NewProjectWizard({
                   title={p.description}
                   data-testid={`wizard-theme-${p.id}`}
                   onClick={() => setPreset(p.id)}
-                  style={{ background: p.overrides.bg ?? '#12151d', borderColor: p.overrides.accent ?? '#7c5cff' }}
+                  // A CSS variable, not borderColor: an inline border would hide the selected state.
+                  style={{ background: p.overrides.bg ?? '#12151d', ['--swatch-accent' as string]: p.overrides.accent ?? '#7c5cff' }}
                 >
                   <span style={{ color: p.overrides.accent ?? '#7c5cff' }}>{p.title}</span>
+                  {preset === p.id ? (
+                    <span className="pg-swatch-check" aria-hidden="true">
+                      ✓ Selected
+                    </span>
+                  ) : null}
                 </button>
               ))}
             </div>
