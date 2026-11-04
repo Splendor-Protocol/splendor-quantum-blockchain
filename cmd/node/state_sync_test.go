@@ -101,6 +101,28 @@ func TestPrepareStateSyncGenesisWritesBookkeepingOnly(t *testing.T) {
 	}
 }
 
+func TestScheduledGenesisNeedsAnAnchorBeforeSnapshotJoin(t *testing.T) {
+	withCleanChainID(t)
+	sdb, ex := newBootstrapNode(t)
+	g := forkGenesis(t, forks.Schedule{forks.GenesisHashV1: 1000})
+	docPin := g.Hash()
+	if err := requireScheduledGenesis(ex, g.Forks); err == nil {
+		t.Fatal("an existing snapshot-joined node can schedule activation without knowing its genesis")
+	}
+	if err := prepareStateSyncGenesis(g, &docPin, "test", sdb, ex); err == nil {
+		t.Fatal("a fresh snapshot join can schedule activation without knowing its genesis")
+	}
+	if _, known, err := readStoredForkSchedule(sdb); err != nil || known {
+		t.Fatalf("refused snapshot join persisted its schedule: known=%v err=%v", known, err)
+	}
+	if err := ex.WithGenesisHash([32]byte{0xaa}); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareStateSyncGenesis(g, &docPin, "test", sdb, ex); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNodeReadyStatusRequiresAppliedAndIndex(t *testing.T) {
 	st := nodeReadyStatus(nil, nil, nil, false, nil)
 	if st.Ready {

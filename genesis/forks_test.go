@@ -109,6 +109,7 @@ func TestScheduledUpgradeNamesAgainstThisBuild(t *testing.T) {
 		{forks.QRC20V2, true},        // PR-4
 		{forks.QRC1155V1, true},      // PR-5
 		{forks.ExchangeV1, true},     // PR-6
+		{forks.GenesisHashV1, true},  // header binding to block 0
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := baseGenesis()

@@ -718,6 +718,41 @@ schedule.
   reports `forks` on every node that has one. Nodes disagreeing about an
   activation height do not fail at startup — they split at the height.
 
+### Activating genesis_hash_v1
+
+The compatibility binary preserves existing header hashes while this fork is
+unscheduled. Roll out the binary to devnet first with no schedule change.
+Scheduling `genesis_hash_v1` is a separate consensus upgrade:
+
+1. Upgrade every node on the tier before choosing an activation height above
+   the current head. Ship the matching Pay and mobile-wallet finality verifiers
+   before activation on any tier those consumers follow.
+2. Establish the same genesis identity on every validator. A node with block 0
+   uses its hash; a replaying joiner learns it from the parent of committed block
+   1, including after restart. A snapshot joiner without that history needs an
+   independently verified `--genesis-hash` pin before adopting the schedule.
+   Prefer explicit verified pins on all validators to also protect bootstrap
+   across resets that reuse the chain id and validator key.
+3. Keep the two pins distinct: `--genesis-hash` is block 0's hash;
+   `--genesis-doc-hash` is the genesis document hash. Extending the schedule
+   changes the document pin, while the existing block-0 pin stays unchanged.
+4. Distribute the same extended schedule and updated document pin using
+   `--allow-fork-extension`. Confirm the schedule on every node before the
+   activation height, and exercise the transition on devnet first.
+
+A conflicting block-0 pin is a startup error. From activation, a node with no
+known genesis refuses to vote for, apply, or import a bound header. It never
+learns its identity from an incoming header's own claim. Existing snapshot
+nodes are refused at startup when they adopt this schedule without an anchor;
+fresh snapshot joins are checked before their schedule is persisted.
+
+The peer probe removes a known foreign-genesis peer from both sync selection
+and authenticated broadcasts. A new announcement must pass a probe before it
+can restore broadcasts. This is a routing check over peer-reported status;
+block validation and configured identity pins remain the trust boundaries.
+The header binding does not prevent cross-reset transaction replay: transaction
+signatures still bind the chain id, not block 0.
+
 ---
 
 ## 7. Running as a System Service
