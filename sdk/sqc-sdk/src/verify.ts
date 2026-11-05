@@ -2,6 +2,7 @@ import type { Connection } from './core/connection.js';
 import type { Transport } from './core/transport/types.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import { buildModuleCall, type ModuleCall } from './core/module-call.js';
+import { chainIo, type ChainIo } from './core/chain-io.js';
 import { assertAddress } from './address.js';
 import { BridgeError } from './errors.js';
 
@@ -25,20 +26,11 @@ export type VerifyInstruction = {
   sig_slh: string;
 };
 
-type ChainIo = Pick<Transport, 'get' | 'post'>;
-
-function asIo(source: Connection | Transport | ChainIo): ChainIo {
-  if ('transport' in source && source.transport && typeof source.transport.get === 'function') {
-    return source.transport;
-  }
-  return source as ChainIo;
-}
-
 export class VerifyClient {
   private readonly io: ChainIo;
 
   constructor(source: Connection | Transport | ChainIo) {
-    this.io = asIo(source);
+    this.io = chainIo(source);
   }
 
   check(instruction: VerifyInstruction) {

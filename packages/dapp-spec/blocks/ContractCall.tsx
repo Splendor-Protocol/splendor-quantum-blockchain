@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from 'react';
 import { TxResult, WidgetShell, connectErrorMessage, useContract } from '@splendor/connect-react';
+import { parseArgs } from './parseList';
 
 export type ContractCallProps = {
   title?: string;
@@ -19,13 +20,6 @@ export type ContractCallProps = {
   decode?: 'raw' | 'uint256';
   buttonLabel?: string;
 };
-
-function parseArgs(raw: string): string[] {
-  return raw
-    .split(',')
-    .map((a) => a.trim())
-    .filter(Boolean);
-}
 
 /** Read or call one function of a deployed contract, with editable arguments. */
 export function ContractCall({

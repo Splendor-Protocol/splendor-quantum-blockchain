@@ -28,6 +28,7 @@ import {
   useNetworkSwitch,
 } from '../context.js';
 import { useRecordPendingTx, useSingleFlight, useTxAction, type TxHookStatus } from '../useTxAction.js';
+import { loadContracts } from '../lazySdk.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
 export function useConnect(): {
@@ -507,7 +508,7 @@ export function useDeployContract(): {
       setAddress(null);
       setExplorerUrl(null);
       try {
-        const { deployBytecode } = await import('@splendor/sqc-sdk/contracts');
+        const { deployBytecode } = await loadContracts();
         const { address: predicted, result } = await deployBytecode(wallet, opts.bytecode, opts);
         const h = result.hash ?? null;
         setHash(h);

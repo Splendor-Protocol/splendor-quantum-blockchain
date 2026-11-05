@@ -1,29 +1,12 @@
 import type { ReactNode } from 'react';
 import { WidgetShell, connectErrorMessage, useTokenInfo } from '@splendor/connect-react';
+import { formatUnits, pulse } from './parseList';
 
 export type TokenInfoCardProps = {
   title?: string;
   /** Contract id picked in the studio. Replaced by `tokenAddress` before render; ignored here. */
   contractId?: string;
   tokenAddress?: string;
-};
-
-/** Raw integer units → "1,234.56" (thousands separators, at most 2 decimals, truncated). */
-function formatUnits(raw: unknown, decimals: number, maxFrac = 2): string {
-  let v: bigint;
-  try {
-    v = BigInt(String(raw));
-  } catch {
-    return String(raw ?? '—');
-  }
-  const base = 10n ** BigInt(decimals);
-  const whole = (v / base).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  const frac = decimals > 0 ? (v % base).toString().padStart(decimals, '0').slice(0, maxFrac).replace(/0+$/, '') : '';
-  return `${whole}${frac ? `.${frac}` : ''}`;
-}
-
-const pulse = (el: HTMLElement | null) => {
-  el?.animate?.([{ opacity: 0.35 }, { opacity: 0.8 }], { duration: 900, iterations: Infinity, direction: 'alternate' });
 };
 
 function Skeleton({ width = '6rem' }: { width?: string }) {

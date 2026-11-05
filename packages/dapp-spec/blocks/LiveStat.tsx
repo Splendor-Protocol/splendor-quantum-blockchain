@@ -1,4 +1,5 @@
 import { WidgetShell, connectErrorMessage, useReadContract } from '@splendor/connect-react';
+import { formatUnits, parseArgs, pulse } from './parseList';
 
 export type LiveStatProps = {
   label?: string;
@@ -16,24 +17,6 @@ export type LiveStatProps = {
   refreshMs?: number;
   /** ABI params of the picked function (JSON). Passed by generated code; not used here. */
   fnParams?: string;
-};
-
-function parseArgs(raw: string): string[] {
-  return raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function formatUnits(raw: bigint, decimals: number, maxFrac = 2): string {
-  const base = 10n ** BigInt(decimals);
-  const whole = (raw / base).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  const frac = decimals > 0 ? (raw % base).toString().padStart(decimals, '0').slice(0, maxFrac).replace(/0+$/, '') : '';
-  return `${whole}${frac ? `.${frac}` : ''}`;
-}
-
-const pulse = (el: HTMLElement | null) => {
-  el?.animate?.([{ opacity: 0.35 }, { opacity: 0.8 }], { duration: 900, iterations: Infinity, direction: 'alternate' });
 };
 
 /** Hex digits of return data without the 0x prefix, or null when it is not hex. */

@@ -12,6 +12,9 @@ import { getDefaultNetwork, isLoopbackOrLocalhostUrl } from './networks.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import type { ModuleCall } from './core/module-call.js';
 import { encodeModuleCallHex } from './core/module-call.js';
+import type { ChainIo } from './core/chain-io.js';
+import { VerifyClient } from './verify.js';
+import { ValidatorsClient } from './validators.js';
 import { subscribe } from './core/subscribe.js';
 import { fromUnits, toUnits } from './units.js';
 import type {
@@ -292,12 +295,7 @@ export class SqRpc {
   }
 
   async verifyProof(instructionId: string, instance: string): Promise<Record<string, unknown>> {
-    const id = String(instructionId ?? '').trim().replace(/^0x/i, '');
-    if (!/^[0-9a-fA-F]{64}$/.test(id)) throw BridgeError.invalidParams('instruction id must be 32-byte hex');
-    instance = assertAddress(instance);
-    return this.get(
-      `/verify/proof/${encodeURIComponent(id)}?instance=${encodeURIComponent(instance)}`,
-    );
+    return new VerifyClient(this.chainIo()).proof(instructionId, instance);
   }
 
   async verifyAttest(signedTx: object): Promise<{ status: string; hash: string }> {
@@ -309,20 +307,20 @@ export class SqRpc {
   }
 
   async listValidators(): Promise<{ validators: unknown[]; count: number; bond_spld: number }> {
-    const [list, bond] = await Promise.all([
-      this.moduleCall<unknown>({ module: 'validators', action: 'list', params: {} }).catch((e: unknown) => {
-        if (e instanceof Error && /decoded result is empty/i.test(e.message)) return [];
-        throw e;
-      }),
-      this.moduleCall<{ spld?: string }>({ module: 'validators', action: 'bond', params: {} }).catch(() => null),
-    ]);
-    const validators = Array.isArray(list) ? list : [];
-    const spld = Number(bond?.spld);
-    return { validators, count: validators.length, bond_spld: Number.isSafeInteger(spld) && spld > 0 ? spld : 2500 };
+    return new ValidatorsClient(this.chainIo()).list();
   }
 
   async getValidator(address: string): Promise<Record<string, unknown>> {
-    return this.moduleCall({ module: 'validators', action: 'validator', params: { address: assertAddress(address) } });
+    return new ValidatorsClient(this.chainIo()).get(address);
+  }
+
+  /** This client as the get/post/moduleCall slice the verify and validators clients read through. */
+  private chainIo(): ChainIo {
+    return {
+      get: <T>(path: string) => this.get(path) as Promise<T>,
+      post: <T>(path: string, body: unknown, sticky = false) => this.post(path, body, sticky) as Promise<T>,
+      moduleCall: <T>(envelope: ModuleCall) => this.moduleCall<T>(envelope),
+    };
   }
 
   async x402Verify(

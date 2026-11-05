@@ -6,7 +6,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { EstimateGasRequest, EstimateGasResponse } from '@splendor/sqc-sdk';
 import { toUnits } from '@splendor/sqc-sdk';
 import { useReadConnection } from './core.js';
-import { loadTokens, validDecimals } from './qrc20.js';
+import { validDecimals } from './qrc20.js';
+import { loadContracts, loadTokens } from '../lazySdk.js';
 import { usePolledRead, type ReadState } from './polledRead.js';
 
 export type { ReadState } from './polledRead.js';
@@ -88,7 +89,7 @@ export function useReadContract(
   return usePolledRead<ReadContractResult>(
     key,
     async () => {
-      const { Contract } = await import('@splendor/sqc-sdk/contracts');
+      const { Contract } = await loadContracts();
       return (await new Contract(conn!, contractAddress!).read(functionSig!, args as never[])) as ReadContractResult;
     },
     opts.pollMs ?? 0,

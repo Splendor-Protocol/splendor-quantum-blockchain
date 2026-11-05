@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { TxResult, WidgetShell, connectErrorMessage, useContract } from '@splendor/connect-react';
+import { parseArgs } from './parseList';
 
 export type ContractActionProps = {
   title?: string;
@@ -33,11 +34,7 @@ export function ContractAction({
     setError(null);
     setHash(null);
     try {
-      const list = args
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const res = await c.call(functionSig, list, { waitForConfirmation: true });
+      const res = await c.call(functionSig, parseArgs(args), { waitForConfirmation: true });
       setHash(res.hash ?? null);
     } catch (e) {
       setError(connectErrorMessage(e));

@@ -43,6 +43,18 @@ describe('gallery catalog prod', () => {
     }
   });
 
+  it('[L2] "Download as component" for a block is one file: shared helpers are inlined, not imported', () => {
+    const blocks = placeable.filter((e) => e.kind === 'block');
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const entry of blocks) {
+      const { source } = componentExport(entry, snippetProps(galleryProps(entry)), 'testnet');
+      expect(source, entry.id).not.toMatch(/from '\.\//);
+      for (const fn of ['parseList', 'parseArgs', 'formatUnits', 'pulse', 'pageHref']) {
+        if (new RegExp(`\\b${fn}\\(`).test(source)) expect(source, `${entry.id} uses ${fn}`).toMatch(new RegExp(`^function ${fn}\\(`, 'm'));
+      }
+    }
+  });
+
   it('[L2] every embed-offered widget is a real catalog widget', () => {
     const ids = new Set(catalog.filter((e) => e.kind !== 'block').map((e) => e.id));
     for (const id of EMBED_WIDGETS) expect(ids.has(id), id).toBe(true);

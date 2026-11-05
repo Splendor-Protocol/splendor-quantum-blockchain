@@ -43,7 +43,8 @@
     "changeset": "changeset",
     "version-packages": "changeset version && npm install --package-lock-only --no-audit --no-fund",
     "release-packages": "changeset publish",
-    "release-packages:pack": "npm pack --dry-run -w @splendor/sqc-sdk -w @splendor/connect-react -w @splendor/dapp-spec -w create-splendor-dapp"
+    "release-packages:pack": "npm pack --dry-run -w @splendor/sqc-sdk -w @splendor/connect-react -w @splendor/dapp-spec -w create-splendor-dapp",
+    "release:check": "node sdk/sqc-sdk/scripts/check-wasm-dist.mjs && npm run build:packages && npm run build -w create-splendor-dapp && npm run test:packages && npm run test:prod && npm run release-packages:pack"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",

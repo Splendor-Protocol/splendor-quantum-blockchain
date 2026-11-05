@@ -1,7 +1,68 @@
 # SDK scenario audit
 
-**Date:** 2026-11-04 (previous pass 2026-09-23)  
+**Date:** 2026-11-06 final review (scenario pass 2026-11-04, previous pass 2026-09-23)  
 **Live chain:** not assumed (`SQC_LIVE` unset; `live-e2e` skipped)
+
+## Final review, 2026-11-06
+
+Everything below ran on Windows 11 with Node 22 and the pinned Go toolchain (go1.25.14).
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Pre-publish gate | `npm run release:check` | **pass**: pins, builds, every package suite, `test:prod`, dry-run pack of all four packages |
+| Signer, security, gateway | `npm run test:security -w @splendor/sqc-sdk` | **121** security tests, Go signer (golden vectors, domain) **ok**, gateway **26** |
+| Runtime dependencies | `npm audit --omit=dev` | **0 vulnerabilities** (a moderate `fast-uri` advisory under playground-api's Fastify was fixed in the lockfile) |
+| Registry signatures | `npm audit signatures` | **436** verified signatures, **131** attestations |
+| Browser e2e | `npm run test:e2e` | **120 passed**, 3 skipped (viewport-conditional), in 6.7 min, against the production build under the deploy CSP |
+| Responsive | `responsive.spec.ts` in `chromium` (1280), `tablet` (768×1024), `mobile` (390×844) | no sideways scroll on any page, phone menu, Learn topic picker, inspector drawer as a dialog, columns stack at ≤720 px, laptop canvas zoom |
+| Production security | `security.spec.ts` | deploy CSP with no violations, signer loads by SRI under `wasm-unsafe-eval`, opaque preview iframe, only `/assets` cross-origin |
+| Generated dApps | `scripts/codegen-build-matrix.mjs` | `wallet-dashboard` Vite from packed tarballs **ok**, Vite with vendored SDK **ok**, `nft-drop` Next.js **ok** |
+| Vendor bundle / StackBlitz | `pack:sdk-vendor`, `check:sdk-vendor`, `test:webcontainer` | **pass** |
+| Typecheck and build | playground, playground-api, all packages | **pass** |
+
+### Problems this review found and fixed
+
+| Area | Problem | Fix |
+|------|---------|-----|
+| `wasm/build.ps1` | Pinned `go1.25.0` while `build.sh` pins `go1.25.14` and `go.mod` requires ≥ 1.25.14, so `npm run build:wasm` could not build on Windows, and any build it did make differed from the pins | Pins `go1.25.14`, same as `build.sh`. Two Windows builds produced the same bytes, which are now the committed pins |
+| `@splendor/sqc-sdk` `prepack` | Called `bash` directly, so `npm pack` / `npm publish` failed on Windows | `scripts/prepack.mjs`: platform build script, re-pin, compile, `check-wasm-dist` |
+| Changeset | `create-splendor-dapp` was missing, so the published CLI would keep scaffolding against the previous SDK | Added (`patch`) |
+| Token stats block | Rendered "â€”" (mis-encoded) for missing values | Renders "—" |
+| Gallery "Download as component" | Blocks that use `parseList` / `pageHref` downloaded with an import of a file that was not included, so the file did not compile | Shared helpers the block uses are inlined; a test checks every block |
+| connect-react test timeout | Two jsdom widget flows (under 1 s alone) passed the 5 s default when 42 files ran in parallel on a loaded machine | `testTimeout: 15_000` |
+
+### Cleanup
+
+- Removed `commit-msg.txt`, a leftover draft of an already-made commit message.
+- sqc-sdk: `addresses` uses `@noble/hashes/utils` instead of its own hex and concat helpers; `verify.ts` and `validators.ts` share `core/chain-io.ts`; deprecated `SqRpc.verifyProof` / `listValidators` / `getValidator` delegate to `VerifyClient` / `ValidatorsClient` instead of repeating their logic.
+- connect-react: one lazy loader per sqc-sdk subpath (`react/lazySdk.ts`) replaces ten inline `import()` calls across the hooks.
+- dapp-spec blocks: `parseArgs`, `formatUnits` and `pulse` live once in `blocks/parseList.ts` instead of seven copies (ContractRead, ContractWrite, ContractCall, ContractAction, LiveStat, TokenInfoCard, TokenStats, Tokenomics). That file was already copied into every export, so generated file lists are unchanged.
+
+No public export was removed or renamed.
+
+### Size
+
+| Artifact | Size |
+|----------|------|
+| `@splendor/sqc-sdk` tarball | 1.3 MB packed, 4.8 MB unpacked, 157 files (the signer `.wasm` is most of it) |
+| `@splendor/connect-react` tarball | 298.5 kB packed, 1.1 MB unpacked, 214 files |
+| `@splendor/dapp-spec` tarball | 114.3 kB packed, 453 kB unpacked, 124 files |
+| `create-splendor-dapp` tarball | 7.7 kB packed, 6 files |
+| `connect-react/dist/embed.js` | 460.7 kB, 138.2 kB gzip |
+| Playground largest chunk (`templates`) | 552.9 kB, 158.9 kB gzip (under the 800 kB limit) |
+
+The 501 tarball entries contain no test files, no source maps, no `src/`, no env or key files. `sqc-sdk` ships `wasm/dist/sqc_signer.wasm`, `wasm/dist/wasm_exec.js` and both copies of `sqc.networks.json`, whose pins `check-wasm-dist` verified against those bytes.
+
+## Publishing
+
+The full runbook is [docs/RELEASING_PACKAGES.md](../docs/RELEASING_PACKAGES.md). Packages are published from GitHub Actions with npm provenance, not from a laptop.
+
+1. **Check locally:** `npm run release:check`. It needs Go (the signer is rebuilt by `prepack`) and ends with each tarball's file list.
+2. **Merge to `main`** with the pending changesets. `release-packages.yml` opens a **"chore: version packages"** PR with the bumps and changelogs.
+3. **Review and merge that PR.** The workflow builds, tests, verifies the signer pins and publishes every new version under `latest`, after a required reviewer approves the `npm-publish` environment.
+4. **Pre-release:** run the workflow with `channel=next` (Actions tab or Admin → Releases) to publish `x.y.z-next-<datetime>` under the `next` tag. `dry_run=true` builds and packs without publishing.
+
+One-time setup (the `npm-publish` environment, `NPM_TOKEN`, Actions permissions) is in the runbook's first section.
 
 ## Commands
 
@@ -12,11 +73,11 @@
 | `@splendor/connect-react` | `npm test` (cwd `sdk/connect-react`) | 458 passed | **550 passed** |
 | `@splendor/dapp-spec` | `npm test -w @splendor/dapp-spec` | 135 passed | **254 passed** (+ block typecheck) |
 | `create-splendor-dapp` | `npm test -w create-splendor-dapp` | — | **8 passed** |
-| `@splendor/playground` | `npm test -w @splendor/playground` | 300 passed | **405 passed** (+ `tsc --noEmit`) |
+| `@splendor/playground` | `npm test -w @splendor/playground` | 300 passed | **406 passed** (+ `tsc --noEmit`) |
 | `@splendor/playground-api` | `npm test -w @splendor/playground-api` | 83 passed | **83 passed** |
-| Production scenarios only | `npm run test:prod` (repo root) | — | **358 passed** |
+| Production scenarios only | `npm run test:prod` (repo root) | — | **359 passed** |
 
-No test takes more than 5 s. The slowest production file is `connect-react/src/__tests__/prod/widgets.prod.test.tsx` at about 3–4 s in total; its slowest case is about 0.4 s.
+Run alone, no test takes more than 5 s. The slowest production file is `connect-react/src/__tests__/prod/widgets.prod.test.tsx` at about 3–4 s in total; its slowest case is about 0.4 s.
 
 ## Difficulty levels
 
@@ -73,6 +134,7 @@ The gallery offers embed snippets for 6 widgets while `embed.tsx` mounts 14. The
 
 - No live RPC or chain node (`SQC_LIVE`, `E2E_LIVE` not set). Every chain answer is a mock, `MockTransport`, a scripted `fetch`, or the playground's in-memory chain.
 - No real browser extension process; the extension provider is mocked.
-- Playwright e2e was not expanded or run in this pass.
-- Widget tests run in jsdom; layout, focus order across real browsers, and visual regressions are not covered.
+- Playwright runs Chromium only (desktop, 768 px and 390 px viewports). Firefox and Safari/WebKit, and visual regressions, are not covered.
+- Unit widget tests run in jsdom; real-browser layout and focus are covered only through the Playwright playground flows.
+- The signer was rebuilt on Windows. CI's `wasm-drift` job rebuilds it on Linux on every push to `main` and re-pins automatically if the bytes differ, so the committed pins are confirmed there.
 - QRC-1155 rules are checked against the Go router source (`vm/module_router.go`, `vm/qrc1155.go`), not a running node.

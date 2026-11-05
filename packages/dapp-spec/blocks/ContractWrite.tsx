@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { TxResult, WidgetShell, connectErrorMessage, useAccount, useContract } from '@splendor/connect-react';
+import { parseArgs } from './parseList';
 
 export type ContractWriteProps = {
   title?: string;
@@ -12,13 +13,6 @@ export type ContractWriteProps = {
   args?: string;
   buttonLabel?: string;
 };
-
-function parseArgs(raw: string): string[] {
-  return raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
 
 /** Form to call a write function; args are a single comma-separated field. */
 export function ContractWrite({

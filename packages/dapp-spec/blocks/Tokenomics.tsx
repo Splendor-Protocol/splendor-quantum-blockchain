@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { WidgetShell, connectErrorMessage, useTokenInfo } from '@splendor/connect-react';
+import { formatUnits } from './parseList';
 
 export type TokenomicsProps = {
   title?: string;
@@ -42,21 +43,6 @@ function parseRows(raw: string): Row[] {
       return { label, percent: valid ? n : 0, note: note.join('|'), valid };
     })
     .filter((r) => r.label);
-}
-
-function formatUnits(raw: unknown, decimals: number, maxFrac = 2): string {
-  let v: bigint;
-  try {
-    v = BigInt(String(raw));
-  } catch {
-    return String(raw ?? '—');
-  }
-  const neg = v < 0n;
-  if (neg) v = -v;
-  const base = 10n ** BigInt(decimals);
-  const whole = (v / base).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  const frac = decimals > 0 ? (v % base).toString().padStart(decimals, '0').slice(0, maxFrac).replace(/0+$/, '') : '';
-  return `${neg ? '-' : ''}${whole}${frac ? `.${frac}` : ''}`;
 }
 
 const fmtPct = (n: number) => `${Math.round(n * 100) / 100}%`;

@@ -3,6 +3,7 @@ import { useConnectState } from '../context.js';
 import { notReady } from '../hookErrors.js';
 import { useDeployAction, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useReadConnection, useWallet } from './core.js';
+import { loadBridge } from '../lazySdk.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
 export function useBridge(bridgeAddress: string | null): {
@@ -33,7 +34,7 @@ export function useBridge(bridgeAddress: string | null): {
   const reader = useCallback(async () => {
     const conn = readConnection ?? (ready && wallet ? wallet.connection : null);
     if (!bridgeAddress || !conn) throw notReady('Bridge not ready', conn ? 'bridge' : null);
-    const { BridgeModule } = await import('@splendor/sqc-sdk/bridge');
+    const { BridgeModule } = await loadBridge();
     return new BridgeModule(conn, bridgeAddress);
   }, [bridgeAddress, readConnection, ready, wallet]);
 
@@ -52,7 +53,7 @@ export function useBridge(bridgeAddress: string | null): {
     }) => {
       if (!bridgeAddress || !ready || !wallet) throw notReady('Bridge not ready', ready && wallet ? 'bridge' : null);
       const res = await tx.run(async () => {
-        const { BridgeModule } = await import('@splendor/sqc-sdk/bridge');
+        const { BridgeModule } = await loadBridge();
         return new BridgeModule(wallet.connection, bridgeAddress).claim(wallet, params);
       });
       return { hash: res.hash };
@@ -99,7 +100,7 @@ export function useDeployBridge(): {
     network,
     async (params: DeployBridgeParams) => {
       if (!ready || !wallet) throw notReady('Wallet not connected');
-      const { deployBridge } = await import('@splendor/sqc-sdk/bridge');
+      const { deployBridge } = await loadBridge();
       return deployBridge(wallet, params, { fee: params.fee, waitForConfirmation: params.waitForConfirmation });
     },
     (params, res) => ({ kind: 'deploy', summary: `Deploy bridge ${params.splvSymbol} (${res.address})` }),

@@ -1,20 +1,12 @@
 import type { Connection } from './core/connection.js';
 import type { Transport } from './core/transport/types.js';
 import { buildModuleCall, encodeModuleCallHex, type ModuleCall } from './core/module-call.js';
+import { chainIo, type ChainIo } from './core/chain-io.js';
 import { MODULE_ROUTER_ADDRESS } from './addresses/index.js';
 import { assertAddress } from './address.js';
 import { BridgeError } from './errors.js';
 
 export const VALIDATOR_BOND_SPLD = 2500;
-
-type ChainIo = Pick<Transport, 'get' | 'post'> & Partial<Pick<Transport, 'moduleCall'>>;
-
-function asIo(source: Connection | Transport | ChainIo): ChainIo {
-  if ('transport' in source && source.transport && typeof source.transport.get === 'function') {
-    return source.transport;
-  }
-  return source as ChainIo;
-}
 
 /** The node answers an empty validator set with a null `decoded`, which the transport raises. */
 function isEmptyResult(e: unknown): boolean {
@@ -25,7 +17,7 @@ export class ValidatorsClient {
   private readonly io: ChainIo;
 
   constructor(source: Connection | Transport | ChainIo) {
-    this.io = asIo(source);
+    this.io = chainIo(source);
   }
 
   /** The node has no `/validators` route: every read is a `validators` module read on POST /call. */

@@ -131,6 +131,30 @@ ${indent(elementJsx(entry, props), 10)}
 
 export type ComponentExport = { fileName: string; source: string; readmeName: string; readme: string };
 
+const SHARED_IMPORT_RE = /^import \{([^}]*)\} from '\.\/(parseList|pageHref)';\r?\n/gm;
+
+/**
+ * A block's source with its `./parseList` / `./pageHref` imports replaced by the functions it uses,
+ * so "Download as component" is one file that compiles on its own.
+ */
+function selfContained(source: string): string {
+  const wanted = new Map<string, Set<string>>();
+  const body = source.replace(SHARED_IMPORT_RE, (_m, names: string, file: string) => {
+    const set = wanted.get(file) ?? new Set<string>();
+    for (const n of names.split(',')) if (n.trim()) set.add(n.trim());
+    wanted.set(file, set);
+    return '';
+  });
+  if (!wanted.size) return source;
+  const helpers = [...wanted].flatMap(([file, names]) =>
+    blockSource(`${file}.ts`)
+      .split(/\n\s*\n/)
+      .filter((chunk) => [...names].some((n) => new RegExp(`^export function ${n}\\(`, 'm').test(chunk)))
+      .map((chunk) => chunk.replace(/^export function /m, 'function ').trim()),
+  );
+  return `${body.trimEnd()}\n\n${helpers.join('\n\n')}\n`;
+}
+
 /**
  * Single-file component for "Download as component". Blocks ship their own source verbatim;
  * widgets get a one-component wrapper with the current settings baked in.
@@ -142,7 +166,7 @@ export function componentExport(entry: CatalogEntry, props: Record<string, PropV
   if (entry.kind === 'block') {
     const manifest = BLOCK_MANIFESTS.find((m) => m.id === entry.id);
     fileName = `${entry.importName}.tsx`;
-    source = manifest ? blockSource(manifest.file) : `// Source for ${entry.importName} is not available.\n`;
+    source = manifest ? selfContained(blockSource(manifest.file)) : `// Source for ${entry.importName} is not available.\n`;
     usage = `import { ${entry.importName} } from './${entry.importName}';\n\n${elementJsx(entry, props)}`;
   } else {
     const name = `${entry.importName}Example`;

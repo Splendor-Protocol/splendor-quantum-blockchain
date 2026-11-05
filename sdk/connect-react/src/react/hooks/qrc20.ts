@@ -8,18 +8,11 @@ import { onSharedReadsInvalidated, sharedRead } from '../../core/readCache.js';
 import { rememberDeployedToken } from '../../core/recentTokens.js';
 import { useRecordPendingTx, useSingleFlight, useTxAction, type TxHookStatus } from '../useTxAction.js';
 import { useWallet, useAccount, useReadConnection } from './core.js';
+import { loadTokens } from '../lazySdk.js';
 
 export type { TxHookStatus } from '../useTxAction.js';
 
-let tokensModule: Promise<typeof import('@splendor/sqc-sdk/tokens')> | null = null;
-/** One shared lazy import of the token module. */
-export function loadTokens(): Promise<typeof import('@splendor/sqc-sdk/tokens')> {
-  tokensModule ??= import('@splendor/sqc-sdk/tokens').catch((e) => {
-    tokensModule = null;
-    throw e;
-  });
-  return tokensModule;
-}
+export { loadTokens };
 
 /** Token decimals when they are an integer in 0..36, else null. */
 export function validDecimals(v: unknown): number | null {
