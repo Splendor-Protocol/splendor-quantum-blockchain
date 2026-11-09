@@ -197,13 +197,13 @@ func TestPendingStressMultiSenderFeePriority(t *testing.T) {
 	bSeen := 0
 	aSeen := 0
 	for _, tx := range got {
-		switch {
-		case tx.From == other:
+		switch tx.From {
+		case other:
 			if tx.Nonce != uint64(bSeen) {
 				t.Fatalf("B nonce=%d at position %d, want %d", tx.Nonce, bSeen, bSeen)
 			}
 			bSeen++
-		case tx.From == from:
+		case from:
 			if tx.Nonce != uint64(aSeen) {
 				t.Fatalf("A nonce=%d at position %d, want %d", tx.Nonce, aSeen, aSeen)
 			}
