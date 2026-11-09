@@ -553,6 +553,28 @@ func (s *StateDB) CommittedAccount(addr qcrypto.Address) (*types.Account, error)
 	return &acc, nil
 }
 
+// CommittedNonce reads an account's nonce from committed state only, ignoring
+// the pending overlay: zero for an account the committed state does not hold.
+// It decodes the nonce alone, so a caller that needs nothing else (the pool
+// choosing candidates for a block, once per sender) does not pay for the
+// account's 1952-byte public key on every read.
+func (s *StateDB) CommittedNonce(addr qcrypto.Address) (uint64, error) {
+	data, err := s.rawGet([]byte(prefixAccount + addr.String()))
+	if err == leveldb.ErrNotFound {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("state read error for %s: %w", addr, err)
+	}
+	var acc struct {
+		Nonce uint64 `json:"nonce"`
+	}
+	if err := json.Unmarshal(data, &acc); err != nil {
+		return 0, fmt.Errorf("failed to decode account %s: %w", addr, err)
+	}
+	return acc.Nonce, nil
+}
+
 // CommittedAccountView is an account and the committed head identity read in a
 // single coherent committed view.
 type CommittedAccountView struct {

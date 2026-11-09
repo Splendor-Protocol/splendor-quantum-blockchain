@@ -149,12 +149,14 @@ func TestPendingStressMaxPerAddrDrain(t *testing.T) {
 				t.Fatalf("block %d position %d: nonce=%d, want %d", block, i, tx.Nonce, wantNonce)
 			}
 		}
-		// Simulate RemoveBlock: included txs leave the pool so the next
-		// Pending() call advances to the following nonces.
+		// Simulate the commit: the sender's nonce advances in the state and
+		// RemoveBlock takes the included txs out of the pool, so the next
+		// Pending() call starts at the following nonce.
 		for _, tx := range got {
 			hash, _ := tx.FullHash()
 			m.Remove(hash)
 		}
+		setCommittedNonce(t, sdb, from, base+uint64(want))
 		remaining -= want
 		block++
 	}
@@ -235,7 +237,9 @@ func TestPendingStressOutOfOrderAdd(t *testing.T) {
 		to[i] = 0x55
 	}
 
-	order := []uint64{50, 0, 25, 10, 99, 5, 75, 1, 60, 30}
+	// Every nonce 0..9 once, shuffled. (A sparse set would not do: Pending
+	// only offers the unbroken run from the sender's next nonce.)
+	order := []uint64{5, 0, 8, 3, 9, 2, 7, 1, 6, 4}
 	for _, n := range order {
 		addTransfer(t, m, from, priv, n, MinFee, 1_700_000_000)
 	}
@@ -250,7 +254,7 @@ func TestPendingStressOutOfOrderAdd(t *testing.T) {
 		}
 	}
 
-	want := []uint64{0, 1, 5, 10, 25, 30, 50, 60, 75, 99}
+	want := []uint64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
 	for i, tx := range got {
 		if tx.Nonce != want[i] {
 			t.Fatalf("position %d: nonce=%d, want %d", i, tx.Nonce, want[i])
