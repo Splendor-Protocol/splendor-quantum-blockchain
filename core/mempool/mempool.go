@@ -321,6 +321,12 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 // stalls. The re-slotting happens BEFORE the cut at n: substituting after
 // truncation could emit nonce n+1 without n when the lower nonce's slot fell
 // past the cut.
+//
+// The per-address re-slot guarantees the executor's strict nonce-order
+// requirement (core/block/executor.go assembleBlock) is always satisfied:
+// a sender's lowest available nonce is always offered first, so no candidate
+// is ever skipped for a nonce gap. This is what lets a high-volume sender
+// drain their backlog instead of stalling at ~0-1 tx per block.
 func (m *Mempool) Pending(n int) []*types.Transaction {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -348,15 +354,28 @@ func (m *Mempool) Pending(n int) []*types.Transaction {
 	// Walking the full sorted pool and cutting at n is the same as
 	// substituting over the whole pool and then truncating: the k-th slot a
 	// sender occupies depends only on the entries before it.
+	//
+	// byAddr is kept nonce-sorted by Add, and every entry in m.txs has a
+	// corresponding entry in byAddr[from], so k is always a valid index.
+	// The bounds check below is defensive: if an invariant ever breaks,
+	// skip the slot rather than panicking the block producer.
 	result := make([]*types.Transaction, 0, n)
 	seen := make(map[qcrypto.Address]int)
 	for _, e := range entries {
 		if len(result) == n {
 			break
 		}
-		k := seen[e.tx.From]
-		seen[e.tx.From] = k + 1
-		result = append(result, m.byAddr[e.tx.From][k].tx)
+		addr := e.tx.From
+		k := seen[addr]
+		seen[addr] = k + 1
+		addrList := m.byAddr[addr]
+		if k >= len(addrList) {
+			// Invariant broken: byAddr is short for this sender. Skip this
+			// slot rather than panic; the missing nonce will surface on the
+			// next Pending() call once the pool is consistent again.
+			continue
+		}
+		result = append(result, addrList[k].tx)
 	}
 	return result
 }
