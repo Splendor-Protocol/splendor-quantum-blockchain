@@ -64,7 +64,11 @@ func TestAddRejectsNonceBelowCommitted(t *testing.T) {
 // must re-slot so every sender's nonces come out strictly ascending.
 func TestPendingStressBurstSameFeeTimestamp(t *testing.T) {
 	m, sdb, from, priv := fundedMempool(t)
-	defer sdb.Close()
+	defer func() {
+		if err := sdb.Close(); err != nil {
+			t.Fatalf("sdb.Close: %v", err)
+		}
+	}()
 
 	var to qcrypto.Address
 	for i := range to {
@@ -112,7 +116,11 @@ func TestPendingStressBurstSameFeeTimestamp(t *testing.T) {
 // can include k+1..., and the pool never fills with unusable high nonces.
 func TestPendingStressMaxPerAddrDrain(t *testing.T) {
 	m, sdb, from, priv := fundedMempool(t)
-	defer sdb.Close()
+	defer func() {
+		if err := sdb.Close(); err != nil {
+			t.Fatalf("sdb.Close: %v", err)
+		}
+	}()
 
 	var to qcrypto.Address
 	for i := range to {
@@ -161,7 +169,11 @@ func TestPendingStressMaxPerAddrDrain(t *testing.T) {
 // while nonce order within each sender is maintained.
 func TestPendingStressMultiSenderFeePriority(t *testing.T) {
 	m, sdb, from, priv := fundedMempool(t)
-	defer sdb.Close()
+	defer func() {
+		if err := sdb.Close(); err != nil {
+			t.Fatalf("sdb.Close: %v", err)
+		}
+	}()
 
 	other, otherKey := fundedSender(t, sdb)
 
@@ -185,17 +197,18 @@ func TestPendingStressMultiSenderFeePriority(t *testing.T) {
 	bSeen := 0
 	aSeen := 0
 	for _, tx := range got {
-		if tx.From == other {
+		switch {
+		case tx.From == other:
 			if tx.Nonce != uint64(bSeen) {
 				t.Fatalf("B nonce=%d at position %d, want %d", tx.Nonce, bSeen, bSeen)
 			}
 			bSeen++
-		} else if tx.From == from {
+		case tx.From == from:
 			if tx.Nonce != uint64(aSeen) {
 				t.Fatalf("A nonce=%d at position %d, want %d", tx.Nonce, aSeen, aSeen)
 			}
 			aSeen++
-		} else {
+		default:
 			t.Fatalf("unexpected sender %s", tx.From)
 		}
 	}
@@ -211,7 +224,11 @@ func TestPendingStressMultiSenderFeePriority(t *testing.T) {
 // nonce order still come out of Pending() in strict ascending nonce order.
 func TestPendingStressOutOfOrderAdd(t *testing.T) {
 	m, sdb, from, priv := fundedMempool(t)
-	defer sdb.Close()
+	defer func() {
+		if err := sdb.Close(); err != nil {
+			t.Fatalf("sdb.Close: %v", err)
+		}
+	}()
 
 	var to qcrypto.Address
 	for i := range to {
@@ -249,7 +266,11 @@ func TestPendingStressOutOfOrderAdd(t *testing.T) {
 // matches tx.Nonce == nextExpected.
 func TestPendingExecutorGapFree(t *testing.T) {
 	m, sdb, from, priv := fundedMempool(t)
-	defer sdb.Close()
+	defer func() {
+		if err := sdb.Close(); err != nil {
+			t.Fatalf("sdb.Close: %v", err)
+		}
+	}()
 
 	other, otherKey := fundedSender(t, sdb)
 
