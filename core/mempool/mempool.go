@@ -85,6 +85,10 @@ type Mempool struct {
 	curSize   int
 	state     *state.StateDB
 	baseFee   int64
+
+	// nonceOf overrides the committed-nonce read Pending makes per sender.
+	// Nil outside tests, where it stands in for a state read that fails.
+	nonceOf func(qcrypto.Address) (uint64, error)
 }
 
 type txEntry struct {
@@ -309,27 +313,46 @@ func (m *Mempool) Add(tx *types.Transaction) error {
 	return nil
 }
 
-// Pending returns up to n transactions in the order the block producer should
-// try them: by fee descending, then timestamp ascending (FIFO within a fee),
-// then tx hash, so the order is total and two calls over the same pool agree.
+// Pending returns up to n transactions for the block producer, in the order it
+// should try them: by fee descending, then timestamp ascending (FIFO within a
+// fee), then tx hash, so the order is total and two calls over the same pool
+// and the same committed state agree.
+//
+// Only nonce-ready transactions are candidates: for each sender, the unbroken
+// run of nonces that starts at its committed nonce (see nonceRunLocked). A
+// transaction past a hole in its sender's nonces cannot apply until the hole
+// is filled, and the pool keeps it, so if it competed for the n slots a
+// backlog of such entries at a higher fee would take every slot on every
+// block: the producer skips all of them for the gap, packs nothing, and a
+// cheaper transaction that is due is never offered. Leaving them out of the
+// selection costs them nothing (they could not be packed anyway) and they
+// stay in the pool until their turn comes.
 //
 // A sender's transactions are then re-slotted so they always come out in nonce
 // order: the i-th slot the fee sort gives sender S is filled with S's i-th
-// lowest pending nonce (byAddr is kept nonce-sorted by Add). Without this a
-// higher-fee nonce 2 could be handed to the producer before nonce 1; the
-// executor then rejects nonce 2 ("want 1") and the sender's whole batch
-// stalls. The re-slotting happens BEFORE the cut at n: substituting after
-// truncation could emit nonce n+1 without n when the lower nonce's slot fell
-// past the cut.
+// nonce-ready transaction. Without this a higher-fee nonce 2 could be handed
+// to the producer before nonce 1; the executor then rejects nonce 2 ("want
+// 1") and the sender's whole batch stalls. Slots are assigned while walking
+// the full fee order, before the cut at n, so a sender's lower nonce is never
+// left past the cut while a higher one is emitted.
 //
-// The per-address re-slot guarantees the executor's strict nonce-order
-// requirement (core/block/executor.go assembleBlock) is always satisfied:
-// a sender's lowest available nonce is always offered first, so no candidate
-// is ever skipped for a nonce gap. This is what lets a high-volume sender
-// drain their backlog instead of stalling at ~0-1 tx per block.
+// What this guarantees the executor (core/block/executor.go assembleBlock) is
+// the nonce order only: each candidate presents the nonce its sender is due,
+// provided the sender's earlier candidates in the same list apply. It does
+// not promise that a candidate applies: one can still fail on its balance, a
+// hook or its own execution, and the sender's later candidates are then
+// skipped for the gap that leaves.
+//
+// The walk reads a sender's nonce the first time it meets one of the
+// sender's entries and stops when n slots are filled, so the state reads are
+// bounded by the senders met up to that point, not by the pool.
 func (m *Mempool) Pending(n int) []*types.Transaction {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	if n <= 0 {
+		return []*types.Transaction{}
+	}
 
 	entries := make([]*txEntry, 0, len(m.txs))
 	for _, e := range m.txs {
@@ -351,33 +374,83 @@ func (m *Mempool) Pending(n int) []*types.Transaction {
 		n = len(entries)
 	}
 
-	// Walking the full sorted pool and cutting at n is the same as
-	// substituting over the whole pool and then truncating: the k-th slot a
-	// sender occupies depends only on the entries before it.
-	//
-	// byAddr is kept nonce-sorted by Add, and every entry in m.txs has a
-	// corresponding entry in byAddr[from], so k is always a valid index.
-	// The bounds check below is defensive: if an invariant ever breaks,
-	// skip the slot rather than panicking the block producer.
+	// Only an entry that is itself in its sender's run takes a slot, and the
+	// slot is filled with the sender's next unused run entry. A sender
+	// therefore takes exactly len(run) slots, at the fee positions of its
+	// run entries, and `used` is always a valid index when it is read: an
+	// entry outside the run, whatever it bids, moves nothing forward.
+	type senderRun struct {
+		run  []*txEntry
+		used int
+	}
+	runs := make(map[qcrypto.Address]*senderRun)
 	result := make([]*types.Transaction, 0, n)
-	seen := make(map[qcrypto.Address]int)
 	for _, e := range entries {
 		if len(result) == n {
 			break
 		}
 		addr := e.tx.From
-		k := seen[addr]
-		seen[addr] = k + 1
-		addrList := m.byAddr[addr]
-		if k >= len(addrList) {
-			// Invariant broken: byAddr is short for this sender. Skip this
-			// slot rather than panic; the missing nonce will surface on the
-			// next Pending() call once the pool is consistent again.
+		r, ok := runs[addr]
+		if !ok {
+			r = &senderRun{run: m.nonceRunLocked(addr)}
+			runs[addr] = r
+		}
+		// A sender's nonces are unique in the pool and its list is sorted, so
+		// lying between the run's first and last nonce is being in the run.
+		if len(r.run) == 0 || r.used >= len(r.run) ||
+			e.tx.Nonce < r.run[0].tx.Nonce || e.tx.Nonce > r.run[len(r.run)-1].tx.Nonce {
 			continue
 		}
-		result = append(result, addrList[k].tx)
+		result = append(result, r.run[r.used].tx)
+		r.used++
 	}
 	return result
+}
+
+// nonceRunLocked returns the part of a sender's nonce-sorted pending list that
+// is due now: the unbroken run of nonces starting at the sender's committed
+// nonce. Entries below that nonce are stale (the chain has passed them;
+// PruneStale removes them) and entries past the first hole are waiting on a
+// transaction the pool does not have. Neither is returned, and nothing is
+// removed. The result aliases the pool's list; the caller must hold m.mu and
+// must not modify it.
+//
+// The nonce is the committed one, not the pending overlay: Pending runs
+// outside the executor's lock, so the overlay may hold the half-applied
+// writes of a proposal being built or validated at that moment, which are
+// discarded before the producer assembles from this selection. The executor
+// starts from the committed nonce, so that is the one to match.
+//
+// If the read fails the sender's nonce is unknown and its whole list is
+// returned, as before this selection existed: the executor judges each entry
+// when it assembles the block.
+func (m *Mempool) nonceRunLocked(addr qcrypto.Address) []*txEntry {
+	list := m.byAddr[addr]
+	if len(list) == 0 {
+		return nil
+	}
+	next, err := m.committedNonce(addr)
+	if err != nil {
+		return list
+	}
+	start := 0
+	for start < len(list) && list[start].tx.Nonce < next {
+		start++
+	}
+	end := start
+	for end < len(list) && list[end].tx.Nonce == next {
+		end++
+		next++
+	}
+	return list[start:end]
+}
+
+// committedNonce is the sender's nonce in committed state.
+func (m *Mempool) committedNonce(addr qcrypto.Address) (uint64, error) {
+	if m.nonceOf != nil {
+		return m.nonceOf(addr)
+	}
+	return m.state.CommittedNonce(addr)
 }
 
 // minFeeLocked returns the fee floor for the pool's current occupancy. The
