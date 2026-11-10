@@ -961,8 +961,9 @@ describe('generateProject: spec.nav', () => {
     if (nav) spec.nav = nav;
     return spec;
   }
+  // validate: false so codegen's own handling of a stale nav link (a deleted page) is what runs.
   const shellOf = (spec: DappSpec, framework: 'vite' | 'next') =>
-    generateProject(spec, { framework, catalog, versions }).files[framework === 'vite' ? 'src/App.tsx' : 'app/providers.tsx']!;
+    generateProject(spec, { framework, catalog, versions, validate: false }).files[framework === 'vite' ? 'src/App.tsx' : 'app/providers.tsx']!;
 
   for (const framework of ['vite', 'next'] as const) {
     it(`${framework}: defaults to the app name, the connect button and page order`, () => {

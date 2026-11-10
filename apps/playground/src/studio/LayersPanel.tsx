@@ -233,8 +233,9 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
     const active = id === selectedId;
     const m = mark?.id === id ? mark.pos : null;
     const className = `pg-layer${node.kind === 'block' ? ' is-leaf' : ' is-container'}${active ? ' is-active' : ''}${m ? ` is-drop-${m}` : ''}`;
-    // The row is presentational; its tree item is the focusable label, with the actions beside it
-    // (a tree item must not contain buttons).
+    // The row is presentational; its tree item is the focusable label. A tree may own only tree items
+    // and groups, so the fold / duplicate / remove buttons beside it are mouse shortcuts hidden from
+    // assistive tech; the tree item does the same with Arrow keys, Ctrl+D and Delete (aria-keyshortcuts).
     const common = {
       className,
       'data-layer-id': id,
@@ -265,7 +266,7 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
             type="button"
             className="pg-layer-fold"
             aria-label={`${open ? 'Collapse' : 'Expand'} ${title}`}
-            aria-expanded={open}
+            aria-hidden="true"
             tabIndex={-1}
             onClick={() => toggle(id)}
             style={{ marginLeft: `${depth * 0.8}rem` }}
@@ -309,7 +310,11 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
             aria-level={depth + 1}
             aria-selected={active}
             aria-expanded={isContainer(node) ? open : undefined}
-            aria-keyshortcuts={isRoot ? undefined : 'Delete Control+D Alt+ArrowUp Alt+ArrowDown'}
+            aria-keyshortcuts={
+              isRoot
+                ? undefined
+                : `Delete Control+D Alt+ArrowUp Alt+ArrowDown${isContainer(node) ? ' ArrowLeft ArrowRight F2' : ''}`
+            }
             onClick={() => onSelect(id)}
             onDoubleClick={() => {
               if (isContainer(node) && !isRoot && onRename) setRenaming(id);
@@ -321,10 +326,10 @@ export const LayersPanel = memo(function LayersPanel({ page, catalog, selectedId
         )}
         {!isRoot ? (
           <>
-            <button type="button" className="pg-icon-btn" aria-label={`Duplicate ${title}`} title="Duplicate" disabled={full} onClick={() => onDuplicate(id)}>
+            <button type="button" className="pg-icon-btn" aria-label={`Duplicate ${title}`} aria-hidden="true" tabIndex={-1} title="Duplicate (Ctrl+D)" disabled={full} onClick={() => onDuplicate(id)}>
               ⧉
             </button>
-            <button type="button" className="pg-icon-btn" aria-label={`Remove ${title}`} title="Remove" onClick={() => onRemove(id)}>
+            <button type="button" className="pg-icon-btn" aria-label={`Remove ${title}`} aria-hidden="true" tabIndex={-1} title="Remove (Delete)" onClick={() => onRemove(id)}>
               ×
             </button>
           </>

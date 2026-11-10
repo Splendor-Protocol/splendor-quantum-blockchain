@@ -23,5 +23,5 @@ export const seedWalletFactory: Connector = {
   },
 };
 
-/** @deprecated Use {@link seedWalletFactory}. Name collides with connect-react UI connector. */
+/** @deprecated Removed in the next major version. Use {@link seedWalletFactory}. Name collides with connect-react UI connector. */
 export const seedConnector = seedWalletFactory;

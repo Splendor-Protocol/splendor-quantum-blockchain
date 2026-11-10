@@ -6,8 +6,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "sqc-copy-wasm": "./scripts/copy-wasm-assets.mjs",
-    "create-splendor-dapp": "./scripts/create-splendor-dapp.mjs"
+    "sqc-copy-wasm": "./scripts/copy-wasm-assets.mjs"
   },
   "exports": {
     ".": {
@@ -59,7 +58,6 @@
   "files": [
     "dist",
     "scripts",
-    "create-template",
     "README.md",
     "CHANGELOG.md",
     "docs"
@@ -99,7 +97,7 @@
     "react-dom": "^19.3.0",
     "typescript": "^5.7.2",
     "vite": "^8.3.0",
-    "vitest": "^3.0.5"
+    "vitest": "^5.1.0"
   },
   "keywords": [
     "splendor",

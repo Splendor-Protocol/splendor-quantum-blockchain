@@ -2,7 +2,7 @@
  * Read-only chain views: the active validator set and an address's token activity.
  * Both work without a connected wallet.
  */
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { toUnits } from '@splendor/sqc-sdk';
 import type { LogFilter } from '@splendor/sqc-sdk';
 import {
@@ -13,6 +13,7 @@ import {
   toSqAddress,
   type ActivityItem,
 } from '../../core/activity.js';
+import { devWarn } from '../../core/devWarn.js';
 import { useAccount, useReadConnection } from './core.js';
 import { usePendingTransactions, type PendingTx } from './pending.js';
 import { usePolledRead, type ReadState } from './polledRead.js';
@@ -171,6 +172,14 @@ export function useActivity(
   const who = (address ?? account.address)?.trim() || null;
   const me = who ? toSqAddress(who) : null;
   const indexer = safeIndexerUrl(opts.indexerUrl);
+  useEffect(() => {
+    if (opts.indexerUrl && !indexer) {
+      devWarn(
+        `indexer-url:${opts.indexerUrl}`,
+        `indexerUrl "${opts.indexerUrl}" was ignored (https only, or http on localhost); activity comes from node logs alone.`,
+      );
+    }
+  }, [opts.indexerUrl, indexer]);
   const limit = opts.limit ?? 25;
   const blocks = Math.max(1, Math.floor(opts.blocks ?? MAX_LOG_BLOCK_RANGE));
   const key = conn && me ? `${me}|${blocks}|${limit}|${indexer ?? ''}` : null;

@@ -93,6 +93,9 @@ jobs:
           npm run build -w create-splendor-dapp
       - name: Test packages
         run: npm run test:packages
+      # The production scenario tiers (L1-L4) the local `npm run release:check` runs.
+      - name: Production scenario tests
+        run: npm run test:prod
       - name: Signer pins match the built bytes
         run: node sdk/sqc-sdk/scripts/check-wasm-dist.mjs
 

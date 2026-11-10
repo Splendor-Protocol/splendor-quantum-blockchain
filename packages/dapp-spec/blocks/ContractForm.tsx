@@ -232,7 +232,7 @@ export function ContractForm({
             {explorer ? (
               <>
                 {' '}
-                <a href={explorer} target="_blank" rel="noreferrer">
+                <a href={explorer} target="_blank" rel="noopener noreferrer">
                   View in explorer
                 </a>
               </>

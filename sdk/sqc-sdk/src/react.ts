@@ -1,7 +1,7 @@
 /**
  * React hook for Splendor PQ bridge (SQDP-1) — lower-level, no UI.
  *
- * @deprecated Prefer `@splendor/connect-react` (`SplendorConnectProvider` / ConnectKit)
+ * @deprecated Removed in the next major version. Prefer `@splendor/connect-react` (`SplendorConnectProvider` / ConnectKit)
  * for dApps. Peer-depend on react: `import { useSplendorPQ } from '@splendor/sqc-sdk/react'`
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -16,7 +16,7 @@ export type UseSplendorPQOpts = CreateClientOptions & {
   seed?: string;
 };
 
-/** @deprecated Prefer `@splendor/connect-react` ConnectKit hooks. */
+/** @deprecated Removed in the next major version. Prefer `@splendor/connect-react` ConnectKit hooks. */
 export function useSplendorPQ(opts: UseSplendorPQOpts = {}) {
   const [client, setClient] = useState<ClientSession | null>(null);
   const [state, setState] = useState<ConnectionState | 'locked'>('disconnected');

@@ -95,6 +95,11 @@ async function loadAndPinExecJs(g: Record<string, unknown>, opts?: LoadWasmOpts)
     boundExecHash = normalizePin(opts.execSha256);
     return GoCtor;
   }
+  if (opts?.wasmSha256 && !opts.execSha256 && !opts.allowUnpinnedExec) {
+    throw BridgeError.wasm(
+      'execSha256 is required whenever wasmSha256 is set: an unverified wasm_exec.js could hand the signer any imports',
+    );
+  }
   const resp = await fetch(src);
   if (!resp.ok) {
     throw BridgeError.wasm(`Failed to fetch ${src}: ${resp.status}`);

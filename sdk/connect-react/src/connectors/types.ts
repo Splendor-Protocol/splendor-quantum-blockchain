@@ -20,7 +20,7 @@ import type {
  * Extends the SDK {@link WalletUnlockContext} with UI-facing provider/network.
  */
 export type ConnectorContext = WalletUnlockContext & {
-  /** @deprecated Prefer `connection` (same RPC). Kept for existing connectors. */
+  /** @deprecated Removed in the next major version. Prefer `connection` (same RPC). Kept for existing connectors. */
   provider: SqcProvider;
   network: NetworkConfig;
   /**

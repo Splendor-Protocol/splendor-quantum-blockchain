@@ -143,6 +143,39 @@ describe('security-wasm integrity pin', () => {
     }
   });
 
+  it('will not fetch and evaluate an unverified wasm_exec.js when only the .wasm is pinned', async () => {
+    const { loadWasmInBrowser, resetBrowserWasmState } = await import('../wasm-loader.browser.js');
+    const g = globalThis as unknown as { Go?: unknown; sqCreateSession?: unknown };
+    const prev = { Go: g.Go, sqCreateSession: g.sqCreateSession };
+    delete g.sqCreateSession;
+    delete g.Go;
+    resetBrowserWasmState();
+    const fetchSpy = vi.fn(async () => new Response('var Go = function () {};', { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      await expect(loadWasmInBrowser({ wasmSha256: 'ab'.repeat(32) })).rejects.toMatchObject({
+        code: 'WASM',
+        message: expect.stringContaining('execSha256 is required'),
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      // The explicit development opt-in still loads the glue; the .wasm pin then fails closed.
+      await expect(
+        loadWasmInBrowser({ wasmSha256: 'ab'.repeat(32), allowUnpinnedExec: true }),
+      ).rejects.toMatchObject({ code: 'WASM' });
+      expect(fetchSpy.mock.calls.map((c) => String((c as unknown[])[0]))).toEqual([
+        '/wasm_exec.js',
+        '/sqc_signer.wasm',
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+      g.Go = prev.Go;
+      if (prev.Go === undefined) delete g.Go;
+      if (prev.sqCreateSession !== undefined) g.sqCreateSession = prev.sqCreateSession;
+      resetBrowserWasmState();
+    }
+  });
+
   it('turns a hex pin into a sha256 SRI token and rejects malformed pins', async () => {
     const { sriFromHex } = await import('../wasm-loader.browser.js');
     // SHA-256 of the empty string.

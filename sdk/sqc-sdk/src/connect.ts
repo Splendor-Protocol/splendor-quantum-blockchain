@@ -74,12 +74,12 @@ export type ClientSession = {
   info: DeriveInfo | null;
 };
 
-/** @deprecated Use {@link ClientSession}. Kept as a type-only alias; prefer ClientSession
+/** @deprecated Removed in the next major version. Use {@link ClientSession}. Kept as a type-only alias; prefer ClientSession
  * to avoid colliding with the {@link SplendorClient} class in `client.ts`. */
 export type LegacySplendorClient = ClientSession;
 
 /**
- * @deprecated Use {@link ClientSession}. This type alias historically collided with the
+ * @deprecated Removed in the next major version. Use {@link ClientSession}. This type alias historically collided with the
  * `SplendorClient` class — new code must import ClientSession.
  */
 export type SplendorClientType = ClientSession;
@@ -167,7 +167,7 @@ export function buildBridgeOptions(opts: CreateClientOptions = {}): {
 /**
  * Create provider + wallet wired to the standard network config (no connect yet).
  *
- * @deprecated Prefer {@link createSession} from `@splendor/sqc-sdk` for headless apps,
+ * @deprecated Removed in the next major version. Prefer {@link createSession} from `@splendor/sqc-sdk` for headless apps,
  * or `@splendor/connect-react` ConnectKit for UI.
  */
 export function createSplendorClient(opts: CreateClientOptions = {}): ClientSession {
@@ -180,7 +180,7 @@ export function createSplendorClient(opts: CreateClientOptions = {}): ClientSess
 /**
  * One-touch: create client and optionally connect a signing session.
  *
- * @deprecated Prefer {@link createSession} (bound modules) or `connect()` from
+ * @deprecated Removed in the next major version. Prefer {@link createSession} (bound modules) or `connect()` from
  * `@splendor/sqc-sdk`. For React UI use `@splendor/connect-react` ConnectKit.
  */
 export async function connectSplendor(opts: ConnectSplendorOptions = {}): Promise<ClientSession> {

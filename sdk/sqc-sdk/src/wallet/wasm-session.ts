@@ -89,6 +89,7 @@ export class WasmSession {
       execUrl: opts.execUrl,
       wasmSha256: opts.wasmSha256,
       execSha256: opts.execSha256,
+      allowUnpinnedExec: opts.allowUnpinnedWasm,
     });
     this.syncChainId(opts.chainId);
     const wasmRouter = unwrap(this.wasm.sqGetModuleRouterAddress()) as string;

@@ -27,7 +27,7 @@ export type TransferWidgetProps = BaseWidgetProps<TransferSentResult, TransferWi
   defaultAmount?: string;
   /** Prefilled recipient (SQ: address). */
   defaultTo?: string;
-  /** @deprecated Use `onSuccess`. */
+  /** @deprecated Removed in the next major version. Use `onSuccess`. */
   onSent?: (result: TransferSentResult) => void;
   /** Show the node's fee estimate in the review step (default true). */
   showFee?: boolean;

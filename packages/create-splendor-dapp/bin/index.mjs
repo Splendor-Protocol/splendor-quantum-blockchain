@@ -5,6 +5,7 @@
  */
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { getTemplate } from '@splendor/dapp-spec';
 import { FRAMEWORKS, NETWORKS, TEMPLATES, buildProject, parseArgs, pinnedVersions, writeProject } from './lib.mjs';
 
 function usage() {
@@ -47,7 +48,7 @@ async function main() {
     const network = args.network ?? (await ask(`Network (${NETWORKS.join('/')})`, 'testnet'));
 
     const set = [...args.set];
-    const t = TEMPLATES.find((x) => x.id === template);
+    const t = getTemplate(template);
     for (const s of t?.setup ?? []) {
       if (set.some((x) => x.startsWith(`${s.blockId}.${s.prop}=`))) continue;
       const v = await ask(`${s.label} (SQ: address)`, '');

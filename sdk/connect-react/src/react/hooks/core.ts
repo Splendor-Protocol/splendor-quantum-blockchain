@@ -468,7 +468,7 @@ export function useCallContract(): {
   return { callContract, status, hash, explorerUrl, error, errorMessage: error ? connectErrorMessage(error, 'tx') : null, reset };
 }
 
-/** @deprecated Prefer `useDeployBytecode` — same underlying deployBytecode helper. */
+/** @deprecated Removed in the next major version. Prefer `useDeployBytecode` — same underlying deployBytecode helper. */
 export function useDeployContract(): {
   deployContract: (
     opts: DeployOpts,
@@ -545,8 +545,11 @@ export function useWaitForConfirmation(): {
   const { provider, ready } = useWallet();
   const [status, setStatus] = useState<TxHookStatus>('idle');
   const [error, setError] = useState<Error | null>(null);
+  // Only the latest wait() (or a reset) may set status; an older one still settles its own promise.
+  const latest = useRef(0);
 
   const reset = useCallback(() => {
+    latest.current += 1;
     setStatus('idle');
     setError(null);
   }, []);
@@ -559,15 +562,18 @@ export function useWaitForConfirmation(): {
       pollMs?: number;
     }) => {
       if (!ready || !provider) throw new Error('Provider not ready');
+      const id = ++latest.current;
       setStatus('pending');
       setError(null);
       try {
         await provider.waitForConfirmation(opts);
-        setStatus('success');
+        if (id === latest.current) setStatus('success');
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
-        setError(err);
-        setStatus('error');
+        if (id === latest.current) {
+          setError(err);
+          setStatus('error');
+        }
         throw err;
       }
     },

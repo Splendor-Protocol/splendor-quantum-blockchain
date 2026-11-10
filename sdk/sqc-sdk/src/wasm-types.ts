@@ -61,6 +61,11 @@ export type LoadWasmOpts = {
   wasmSha256?: string;
   /** Optional SHA-256 hex of wasm_exec.js — fail closed on mismatch when set. */
   execSha256?: string;
+  /**
+   * Browser only: evaluate an unverified wasm_exec.js even though `wasmSha256` is set.
+   * Local development escape hatch; never set it for a hosted dApp.
+   */
+  allowUnpinnedExec?: boolean;
 };
 
 /**

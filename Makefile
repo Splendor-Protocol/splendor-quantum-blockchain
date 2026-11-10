@@ -202,7 +202,7 @@ help:
 	@echo "  Receipts + Event Logs · TX Index Store · SSE subscriptions on /ws"
 	@echo "  QRC-20/721/1155 · DEX · lending · staking (native Go modules)"
 	@echo "  Peer discovery (PEX) · ML-KEM-768 sealed P2P · Prometheus :9100"
-	@echo "  JavaScript SDK (sdk/sqc-sdk.js) + @splendor/pq-bridge WASM signer"
+	@echo "  JavaScript SDK (@splendor/sqc-sdk) + its WASM ML-DSA signer"
 	@echo ""
 	@echo "Present in the tree but NOT wired into the binary:"
 	@echo "  consensus/bft.go  — nothing constructs it; Phase 1 is one validator"

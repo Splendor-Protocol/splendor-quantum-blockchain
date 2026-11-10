@@ -113,13 +113,15 @@ Native modules are also on subpaths `/tokens`, `/defi`, `/bridge`. See [SDK_ARCH
 
 ## Do not use in new code
 
-These stay exported so existing apps keep building. Removing them is a major-version change.
+These stay exported so existing apps keep building, and are **removed in the next major version**
+(every one carries `@deprecated` in its type declaration, so your editor strikes it through).
 
 | Export | Use instead |
 |--------|-------------|
 | `SplendorPQBridge` (default export), `Wallet` built by hand | `createSession` (headless) or `@splendor/connect-react` (UI) |
 | `connectSplendor`, `createSplendorClient`, `SplendorClient` | `createSession` |
-| `SqRpc`, `SqcProvider` | `Connection` |
+| `SqRpc`, `SqcProvider`, `connection.rpc`, `RpcTransport#toSqRpc()` | `Connection` / `Transport` methods |
+| `seedConnector`, `extensionConnector`, `Connector` (from `@splendor/sqc-sdk/wallet`) | `seedWalletFactory`, `extensionWalletFactory`, `WalletFactoryConnector` |
 | `seedFromEvmSignature` and the other `derive.ts` EVM helpers | Nothing — EVM→PQ unlock was removed |
 | `@splendor/sqc-sdk/defi` (DEX, Exchange) | Nothing — not routed by the node |
 | `@splendor/sqc-sdk/react` (`useSplendorPQ`) | `@splendor/connect-react` |
@@ -346,7 +348,7 @@ Env:
 |----------|---------|---------|
 | `SQC_RPC` | from network config | Chain node RPC |
 | `MODE` | `proxy` | `proxy` or `service-wallet` |
-| `ALLOW_CUSTODIAL_PROXY` | unset | Set `1` only on private backends to allow seed unlock (refused with CORS `*`); prefer `signedTx` |
+| `ALLOW_CUSTODIAL_PROXY` | unset | **Custodial: the gateway sees the seed.** Set `1` only on a private backend you control, never on a host end users reach. Refused with CORS `*`; requires `GATEWAY_API_KEY` unless `ALLOW_INSECURE=1` (local development only, logs a warning). Prefer `signedTx` |
 | `GATEWAY_API_KEY` | — | Required for service-wallet mutating routes when set |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated allowlist (not `*` by default) |
 | `PUBLIC_HEALTH` | `1` on local, else unset/`0` | Set `1` to expose `sqc_rpc` on `/health` |

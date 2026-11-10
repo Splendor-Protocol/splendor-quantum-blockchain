@@ -116,7 +116,7 @@ function Inline({ text, onAnchor }: { text: string; onAnchor: (slug: string) => 
       const [, label, href] = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/)!;
       if (/^https?:\/\//.test(href!)) {
         parts.push(
-          <a key={k++} href={href} target="_blank" rel="noreferrer">
+          <a key={k++} href={href} target="_blank" rel="noopener noreferrer">
             {label}
           </a>,
         );

@@ -1,6 +1,7 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { toUnits } from '@splendor/sqc-sdk';
 import { connectErrorMessage } from '../core/controller.js';
+import { devWarn } from '../core/devWarn.js';
 import { useAccount, useBridge, useNetwork, useReadConnection } from '../react/hooks.js';
 import { usePolledRead } from '../react/hooks/polledRead.js';
 import { normalizeSqAddress } from './utils.js';
@@ -90,6 +91,16 @@ export function BridgeClaimWidget({
 }: BridgeClaimWidgetProps) {
   const l = useWidgetLabels(BRIDGE_LABELS, labels, 'bridge');
   const bridge = normalizeSqAddress(bridgeAddress);
+  useEffect(() => {
+    if (!bridge) {
+      devWarn(
+        `bridge-address:${bridgeAddress ?? ''}`,
+        bridgeAddress
+          ? `<BridgeClaimWidget> bridgeAddress "${bridgeAddress}" is not an SQ: address; the widget shows only a hint.`
+          : '<BridgeClaimWidget> needs a bridgeAddress (the deployed bridge_v1 instance); the widget shows only a hint.',
+      );
+    }
+  }, [bridge, bridgeAddress]);
   const conn = useReadConnection();
   const { address } = useAccount();
   const { network, walletMismatch } = useNetwork();

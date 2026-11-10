@@ -107,7 +107,7 @@ describe('generateProject prod — fails closed on specs that skipped validation
     spec.pages[0]!.blocks![0]!.props = { 'heading={alert(1)} x': 'y' };
     spec.pages[0]!.root = wrapBlocks(spec.pages[0]!.blocks!);
     for (const framework of FRAMEWORKS) {
-      expect(() => generateProject(spec, { framework, catalog, versions })).toThrow(/prop name/);
+      expect(() => generateProject(spec, { framework, catalog, versions, validate: false })).toThrow(/prop name/);
     }
   });
 
@@ -116,17 +116,26 @@ describe('generateProject prod — fails closed on specs that skipped validation
     const block: DappBlock = { id: 'evil', widget: 'hero', props: { heading: 'x' } };
     spec.pages.push({ path: '/x";alert(1);//', title: 'Evil', root: wrapBlocks([block], 'evil-root'), blocks: [block] });
     for (const framework of FRAMEWORKS) {
-      expect(() => generateProject(spec, { framework, catalog, versions })).toThrow(/page path/);
+      expect(() => generateProject(spec, { framework, catalog, versions, validate: false })).toThrow(/page path/);
     }
   });
 
   it('[L3] a hideOn or container kind outside the allowed set', () => {
     const a = base();
     (a.pages[0]!.root as { style?: Record<string, unknown> }).style = { hideOn: 'x" onClick={alert}' };
-    expect(() => generateProject(a, { framework: 'vite', catalog, versions })).toThrow(/hideOn/);
+    expect(() => generateProject(a, { framework: 'vite', catalog, versions, validate: false })).toThrow(/hideOn/);
     const b = base();
     (b.pages[0]!.root as { kind: string }).kind = 'section" onClick={alert';
-    expect(() => generateProject(b, { framework: 'vite', catalog, versions })).toThrow(/container kind/);
+    expect(() => generateProject(b, { framework: 'vite', catalog, versions, validate: false })).toThrow(/container kind/);
+  });
+
+  it('[L3] by default generateProject validates first and names the failing path', () => {
+    const spec = base();
+    spec.pages[0]!.blocks![0]!.props = { 'bad name': 'y' };
+    spec.pages[0]!.root = wrapBlocks(spec.pages[0]!.blocks!);
+    for (const framework of FRAMEWORKS) {
+      expect(() => generateProject(spec, { framework, catalog, versions })).toThrow(/invalid spec — pages\[0\]/);
+    }
   });
 
   it('[L3] the validator rejects the same specs, so the UI never reaches codegen with them', () => {

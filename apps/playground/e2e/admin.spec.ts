@@ -62,10 +62,38 @@ test.describe('admin', () => {
     expect(res.status()).toBe(403);
   });
 
-  // Flags are global to the suite's API, so put the widget back even when an assertion fails.
+  // Flags are global to the suite's API, so put the widget and template back even when an assertion fails.
   test.afterEach(async ({ page }) => {
     await testLogin(page, E2E.admin);
     await page.request.put('/api/admin/catalog/transfer', { data: {}, headers: { origin: E2E.web } });
+    await page.request.put(`/api/admin/catalog/${encodeURIComponent('template:tip-jar')}`, { data: {}, headers: { origin: E2E.web } });
+  });
+
+  test('hiding a template removes it from the builder picker; showing it brings it back', async ({ page }) => {
+    await testLogin(page, E2E.admin);
+    await page.goto('/admin/templates');
+    const row = page.getByTestId('flag-template:tip-jar');
+    await expect(row).toBeVisible();
+    // Recipes are listed on the same page.
+    await expect(page.locator('[data-testid^="flag-recipe:"]').first()).toBeVisible();
+    const show = row.getByRole('checkbox', { name: /^Show / });
+    await expect(show).toBeChecked();
+    const saved = page.waitForResponse((r) => r.url().includes('/api/admin/catalog/') && r.request().method() === 'PUT');
+    await show.click();
+    expect((await saved).ok()).toBeTruthy();
+    await expect(show).not.toBeChecked();
+
+    await page.evaluate(() => localStorage.clear());
+    await page.goto('/build');
+    await expect(page.getByTestId('pick-blank')).toBeVisible();
+    await expect(page.getByTestId('pick-tip-jar')).toHaveCount(0);
+
+    await page.goto('/admin/templates');
+    const restored = page.waitForResponse((r) => r.url().includes('/api/admin/catalog/') && r.request().method() === 'PUT');
+    await page.getByTestId('flag-template:tip-jar').getByRole('checkbox', { name: /^Show / }).click();
+    expect((await restored).ok()).toBeTruthy();
+    await page.goto('/build');
+    await expect(page.getByTestId('pick-tip-jar')).toBeVisible();
   });
 
   test('hiding a widget removes it from the builder catalog and is audited', async ({ page }) => {

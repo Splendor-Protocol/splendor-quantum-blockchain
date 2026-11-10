@@ -414,7 +414,7 @@ describe('account explorer links', () => {
     const view = render(React.createElement(AccountCard), { wrapper: providerWrap(ctrl) });
     const link = within(view.container).getByRole('link', { name: /Explorer/i });
     expect(link.getAttribute('href')).toBe(`https://explorer.example/address/${ADDR}`);
-    expect(link.getAttribute('rel')).toBe('noreferrer');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
   it('AccountCard hides the link when the network has no explorer', () => {

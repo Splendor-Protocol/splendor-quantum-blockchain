@@ -8,6 +8,7 @@ import {
   type Contact,
   type SaveContactResult,
 } from '../../core/addressBook.js';
+import { devWarn } from '../../core/devWarn.js';
 import { useConnectState } from '../context.js';
 
 export type { Contact, SaveContactResult } from '../../core/addressBook.js';
@@ -28,8 +29,11 @@ export function useAddressBook(): {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const contacts = useMemo(() => getContacts(networkId), [all, networkId]);
   const save = useCallback(
-    (address: string, label: string): SaveContactResult =>
-      networkId ? saveContact({ address, label, network: networkId }) : { ok: false, reason: 'invalid' },
+    (address: string, label: string): SaveContactResult => {
+      if (networkId) return saveContact({ address, label, network: networkId });
+      devWarn('address-book-no-network', 'useAddressBook().save() was called before a network was set; nothing was saved.');
+      return { ok: false, reason: 'no-network' };
+    },
     [networkId],
   );
   const remove = useCallback((address: string) => {

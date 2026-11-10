@@ -20,12 +20,10 @@ cd my-dapp && npm install && npm run dev
 ```
 
 [`create-splendor-dapp`](../../packages/create-splendor-dapp) uses the same templates as the
-dApp Playground (`wallet-dashboard`, `token-launchpad`, `tip-jar`, `members-area`, `nft-drop`), for
-Vite or Next.js. It pins the connect-react and sqc-sdk versions it was released with. Generated
-projects pin the signer digests in production builds and proxy the public RPCs on localhost.
-
-The older `npm exec create-splendor-dapp` bin bundled in this package still works, but it only
-creates the single Vite starter (`ConnectKit` + `TransferWidget` + `AccountCard` + WASM plugin).
+dApp Playground (`wallet-dashboard`, `token-project`, `contract-app`, `token-launchpad`, `tip-jar`,
+`members-area`, `nft-drop`, `nft-membership`), for Vite or Next.js. It pins the connect-react and
+sqc-sdk versions it was released with. Generated projects pin the signer digests in production
+builds and proxy the public RPCs on localhost.
 
 ## Widget manifest
 
@@ -65,7 +63,8 @@ the box), each with a checklist and a Done / Failed result. See
 | Idle lock syncs UI | Yes — bridge `lock` event → `status: 'locked'` |
 | Inline / custom networks | Yes — `networks` / `networkConfig` / `registerNetwork` |
 | Tx hooks + receipt confirmation | Yes (receipt when node indexes) |
-| Drop-in widgets | Yes — **connect + SPLD/QRC-20 only**: `TransferWidget`, `TokenPanel`, `DeployTokenWidget`, `AccountCard` |
+| Drop-in widgets (stable) | Yes — `AccountCard`, `TransferWidget`, `TokenPanel`, `DeployTokenWidget`, `SignInButton` |
+| Drop-in widgets (beta) | Yes — `NftPanel` (QRC-721), `BridgeClaimWidget`, `ValidatorList`, `ActivityFeed`, `ReceiveWidget`, `AddressBook`, `TokenBalances` |
 | Optional `window.splendor` | Yes — `exposeInjectedProvider` |
 | QRC-20 hooks (`useQRC20`, `useDeployToken`) | Yes |
 | ML-DSA Sign-In | Yes — `useSignIn` / `createAuthMessage` |
@@ -75,7 +74,42 @@ the box), each with a checklist and a Done / Failed result. See
 
 ### Widget scope
 
-Connect-react ships **ConnectKit + native SPLD / QRC-20 widgets**. Bridge, QRC-1155, and bytecode contracts are available as **hooks** for app-built UI — not as packaged AppKit widgets. **DEX / Exchange are not public** until the node routes them (leftover adapters live under `@splendor/sqc-sdk/defi` only). WalletConnect remains deferred.
+Connect-react ships **ConnectKit, the stable SPLD / QRC-20 / sign-in widgets, and beta chain widgets**
+(QRC-721 gallery, bridge status and claims, validators, activity, receive with QR, address book, token
+balances). "Beta" means the props may still change in a minor release; the manifest (`status`) is the
+source of truth. QRC-1155 and bytecode contracts are available as **hooks** for app-built UI (the
+Playground's `nft-drop` and `contract-call` blocks build on them). **DEX / Exchange are not public**
+until the node routes them (leftover adapters live under `@splendor/sqc-sdk/defi` only). WalletConnect
+remains deferred.
+
+### ConnectKit and the UI kit
+
+`SplendorConnectProvider` hosts the connect, account and sign-approval modals itself (`hostModals`,
+default `true`), so the controls below only open them.
+
+| Component | Props | Notes |
+|-----------|-------|-------|
+| `ConnectKit` | `showNetwork` (default `true`), `connectLabel` | `NetworkBadge` + `ConnectButton` side by side |
+| `ConnectButton` | `label` (default `"Connect"`), `className`, `balancePollMs` (default 12000, `0` = off), `includeModals` | Connect → account chip with balance; "Unlock wallet" when locked; "Retry connect" after an error |
+| `NetworkBadge` | `switchable` (default `true`), `className` | Current network; opens a picker (arrow keys, Enter, Escape) when more than one network is selectable |
+| `WrongNetworkBanner` | `expectedNetworkId`, `message`, `className` | Shows when the wallet or app is on another chain, with a one-click switch |
+| `TxToastHost` | `autoDismissMs` (default 8000, `0` = never), `className` | Mount once; widgets push pending / success / error toasts into it |
+| `ModalHost` | — | Only when you set `hostModals={false}` and want the modals elsewhere |
+
+```tsx
+<SplendorConnectProvider network="testnet" theme="auto">
+  <TxToastHost>
+    <header>
+      <ConnectKit connectLabel="Sign in with Splendor" />
+    </header>
+    <WrongNetworkBanner expectedNetworkId="testnet" />
+    <TransferWidget />
+  </TxToastHost>
+</SplendorConnectProvider>
+```
+
+`theme` is `splendor` (default, dark), `dark`, `light`, `auto` (follows the visitor's OS setting), or
+an overrides object (see [Styling reference](#styling-reference)).
 
 ### Hook coverage matrix
 
@@ -243,11 +277,32 @@ function PayInvoice({ to, amount }: { to: string; amount: string }) {
 }
 ```
 
+The small parts work on their own too:
+
+```tsx
+import { FeeRow, PendingTxList, QrCode, buildPaymentUri, useEstimateFee } from '@splendor/connect-react';
+
+// A scannable payment request. Always dark-on-white, whatever the theme, so cameras read it.
+<QrCode value={buildPaymentUri({ address, amount: '1.5' })} size={200} label="Pay 1.5 SPLD" />
+
+// Unconfirmed transactions on the current network; they survive a reload and drop off once confirmed.
+<PendingTxList emptyText="Nothing pending" pollMs={5000} />
+
+// Fee line for your own review screen; turns red when the node predicts a revert.
+const fee = useEstimateFee({ from: address, to, value: '1000000000000000000' });
+<FeeRow estimate={fee} />
+```
+
 ### Styling reference
 
 Widgets use the theme tokens from `@splendor/connect-react/style.css`. Override them with CSS variables
-or `theme` on the provider (`accent`, `bg`, `surface`, `text`, `textMuted`, `border`, `danger`,
-`success`, `radius`, `widgetPadding`).
+or `theme` on the provider (`base`, `accent`, `accentText`, `accentHover`, `bg`, `surface`, `text`,
+`textMuted`, `border`, `danger`, `success`, `radius`, `widgetPadding`, `font*`). `accentText` colours
+links and Copy buttons; it defaults to `accent`, so set it when your accent is too light to read as text
+(the built-in themes keep every text colour at WCAG AA 4.5:1 or more, checked by `tokens-css.test.ts`).
+
+Layout: widgets fill their container (`--sqc-widget-max-width: none`) and wrap their button rows on
+narrow screens. On touch screens (`pointer: coarse`) buttons, Copy and menu rows grow to 44px targets.
 
 | Selector / attribute | Element |
 |----------------------|---------|
@@ -478,6 +533,20 @@ its characters back.
 
 **Links.** Explorer links only render for `https://` explorers (or `http://` on
 loopback) and open with `rel="noopener noreferrer"`.
+
+## Deprecated (removed in the next major version)
+
+Still exported so existing apps keep building; each carries `@deprecated` in its type declaration.
+
+| Deprecated | Use instead |
+|------------|-------------|
+| `useDeployContract` | `useDeployBytecode` |
+| `TransferReviewPanel` | `ReviewPanel` |
+| `onSent` (TransferWidget, TokenPanel), `onDeployed` (DeployTokenWidget), `onSignedIn` (SignInButton) | `onSuccess` |
+| `txStatus` on `useQRC20` / `useQRC1155` results | `status` |
+| `useQRC1155().refresh` (does nothing) | Call `balanceOf` again (reads are not cached) |
+| `provider` on a connector's connect result | `connection` (same RPC) |
+| The `create-splendor-dapp` bin that used to ship in this package (removed) | `npm create splendor-dapp@latest` |
 
 ## Subpath exports
 

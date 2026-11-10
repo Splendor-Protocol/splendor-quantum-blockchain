@@ -7,6 +7,7 @@ const live = process.env.E2E_LIVE === '1';
 // iframe. E2E_DEV=1 uses the dev server instead (faster to iterate, same-origin preview).
 const dev = process.env.E2E_DEV === '1';
 const web = `--host 127.0.0.1 --port ${WEB_PORT} --strictPort`;
+const SMALL_SCREEN_SPECS = /(responsive|responsive-flows|a11y)\.spec\.ts/;
 
 export default defineConfig({
   testDir: './e2e',
@@ -25,10 +26,10 @@ export default defineConfig({
     acceptDownloads: true,
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    // Small screens: the responsive smoke tests only (layout, drawers, menus, no sideways scroll).
-    { name: 'mobile', testMatch: /responsive\.spec\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, hasTouch: true } },
-    { name: 'tablet', testMatch: /responsive\.spec\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 }, hasTouch: true } },
+    { name: 'chromium', testIgnore: /responsive-flows\.spec\.ts/, use: { ...devices['Desktop Chrome'] } },
+    // Small screens: layout, drawers and menus, the main journeys, and the accessibility scan.
+    { name: 'mobile', testMatch: SMALL_SCREEN_SPECS, use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, hasTouch: true } },
+    { name: 'tablet', testMatch: SMALL_SCREEN_SPECS, use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 }, hasTouch: true } },
   ],
   webServer: [
     {

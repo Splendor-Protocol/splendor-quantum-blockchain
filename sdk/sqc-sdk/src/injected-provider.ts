@@ -57,7 +57,7 @@ export type InstallSplendorProviderOptions = {
    */
   onApprove?: (args: { method: string; params?: unknown }) => boolean | Promise<boolean>;
   /**
-   * @deprecated Ignored — extension/non-in-page providers are never overwritten.
+   * @deprecated Removed in the next major version. Ignored — extension/non-in-page providers are never overwritten.
    */
   force?: boolean;
 };

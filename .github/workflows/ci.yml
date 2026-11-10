@@ -359,6 +359,19 @@ jobs:
           npm run typecheck -w @splendor/playground-api
           npm test -w @splendor/playground-api
 
+      # The StackBlitz export: package.json, vendor bundle and signer decode step of every generated project.
+      - name: WebContainer export smoke
+        run: npm run test:webcontainer
+
+      # @splendor/pq-bridge sits outside the workspaces; it must still build and re-export the SDK.
+      - name: Deprecated @splendor/pq-bridge shim builds and re-exports the SDK
+        working-directory: sdk/bridge
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --ignore-scripts
+          npm run build
+          node -e "import('./dist/index.js').then((m) => { for (const k of ['SplendorPQBridge', 'Wallet', 'createSession']) if (!(k in m)) throw new Error('missing export ' + k); if (typeof m.default !== 'function') throw new Error('missing default export'); console.log('pq-bridge shim ok'); })"
+
   # The production database: migrations, transactions (row locks, client release), LIKE ... ESCAPE
   # and name-sorted keyset pages behave differently on Postgres than on the SQLite the js job uses.
   playground-api-postgres:
@@ -461,7 +474,7 @@ jobs:
   codegen-matrix-vendor:
     name: generated dApps build (vendored SDK)
     runs-on: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-24.04' }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -480,4 +493,4 @@ jobs:
           npm run pack:sdk-vendor
           node scripts/pack-sdk-vendor.mjs --check
       - name: Generate, install and build with the vendored SDK
-        run: node scripts/codegen-build-matrix.mjs --sdk=vendor --templates=wallet-dashboard,contract-app,nft-drop
+        run: node scripts/codegen-build-matrix.mjs --sdk=vendor

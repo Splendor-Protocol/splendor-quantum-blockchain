@@ -96,7 +96,8 @@ test.describe('templates in the builder (mock wallet)', () => {
     await page.getByTestId('add-transfer').click();
     await expect(blocks).toHaveCount(2);
     await expect(preview(page).getByText('Transfer SPLD')).toBeVisible();
-    await page.getByRole('button', { name: 'Remove SPLD transfer' }).click();
+    // Layer row buttons are mouse shortcuts, hidden from assistive tech (the tree item has Delete).
+    await page.getByTestId('block-list').locator('[data-layer-id]', { hasText: 'SPLD transfer' }).getByTitle('Remove (Delete)').click();
     await expect(blocks).toHaveCount(1);
     await page.getByRole('button', { name: 'Undo' }).click();
     await expect(blocks).toHaveCount(2);

@@ -4,6 +4,7 @@ import {
   DEMO_CONTRACT_ADDRESS,
   DEMO_TOKEN_ADDRESS,
   PAGE_TEMPLATES,
+  TEMPLATES,
   bindBlock,
   bindBlockProps,
   blocksFromTree,
@@ -116,6 +117,13 @@ describe('validation of bound props', () => {
 describe('kits', () => {
   it('offers the Token project and Contract app kits first', () => {
     expect(kitTemplates().map((t) => t.id)).toEqual(['token-project', 'contract-app']);
+  });
+
+  it('the retired "landing" id is an alias, not a second listed template', () => {
+    expect(TEMPLATES.map((t) => t.id)).not.toContain('landing');
+    expect(new Set(TEMPLATES.map((t) => t.id)).size).toBe(TEMPLATES.length);
+    expect(getTemplate('landing')?.id).toBe('token-project');
+    expect(getTemplate('constructor')).toBeUndefined();
   });
 
   it.each(['token-project', 'contract-app', 'landing'])('%s validates against the catalog as shipped', (id) => {

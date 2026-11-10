@@ -103,5 +103,5 @@ export function ReviewPanel({
   );
 }
 
-/** @deprecated Use `ReviewPanel`. */
+/** @deprecated Removed in the next major version. Use `ReviewPanel`. */
 export const TransferReviewPanel = ReviewPanel;

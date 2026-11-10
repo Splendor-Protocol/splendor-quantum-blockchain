@@ -1,6 +1,6 @@
 /**
  * SplendorPQBridge — signing wallet (WASM ML-DSA-65 sessions).
- * @deprecated Prefer importing `Wallet` — SplendorPQBridge remains an alias.
+ * @deprecated Removed in the next major version. Prefer importing `Wallet` — SplendorPQBridge remains an alias.
  */
 import {
   strip0x,
@@ -109,7 +109,7 @@ export class SplendorPQBridge {
   }
 
   /**
-   * @deprecated Prefer `connection` (Transport-backed). Only available when
+   * @deprecated Removed in the next major version. Prefer `connection` (Transport-backed). Only available when
    * Connection uses RpcTransport.
    */
   get rpc(): SqRpc {

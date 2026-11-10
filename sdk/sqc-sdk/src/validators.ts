@@ -41,7 +41,9 @@ export class ValidatorsClient {
       }),
       this.read<{ spld?: string }>('bond').catch(() => null),
     ]);
-    const validators = Array.isArray(list) ? list : [];
+    const validators = Array.isArray(list)
+      ? list.filter((v) => v != null && typeof v === 'object' && !Array.isArray(v))
+      : [];
     const spld = Number(bond?.spld);
     return {
       validators,
@@ -50,8 +52,12 @@ export class ValidatorsClient {
     };
   }
 
-  async get(address: string) {
-    return this.read<Record<string, unknown>>('validator', { address: assertAddress(address) });
+  async get(address: string): Promise<Record<string, unknown>> {
+    const res = await this.read<unknown>('validator', { address: assertAddress(address) });
+    if (res == null || typeof res !== 'object' || Array.isArray(res)) {
+      throw BridgeError.rpc('validators validator: node returned a malformed response', res);
+    }
+    return res as Record<string, unknown>;
   }
 
   registerCall(pubkeyHex: string): ModuleCall {

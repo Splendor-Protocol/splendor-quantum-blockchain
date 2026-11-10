@@ -1,12 +1,15 @@
 import type { CSSProperties } from 'react';
 
-export type ThemeName = 'splendor' | 'light' | 'dark';
+/** `auto` follows the OS colour scheme (`prefers-color-scheme`): light tokens when it asks for light. */
+export type ThemeName = 'splendor' | 'light' | 'dark' | 'auto';
 
 export type ThemeOverrides = {
   /** Built-in theme the overrides apply on top of. Default `splendor`. */
   base?: ThemeName;
   accent?: string;
   accentHover?: string;
+  /** Accent used for link and Copy text. Defaults to `accent`; set it when `accent` is too light to read on `surface`. */
+  accentText?: string;
   bg?: string;
   surface?: string;
   text?: string;
@@ -24,7 +27,7 @@ export type ThemeOverrides = {
 
 export type ThemeProp = ThemeName | ThemeOverrides;
 
-const THEME_NAMES: readonly ThemeName[] = ['splendor', 'light', 'dark'];
+const THEME_NAMES: readonly ThemeName[] = ['splendor', 'light', 'dark', 'auto'];
 
 export function resolveThemeAttr(theme: ThemeProp | undefined): ThemeName {
   if (!theme) return 'splendor';
@@ -36,6 +39,7 @@ export function themeOverridesToStyle(theme: ThemeProp | undefined): CSSProperti
   if (!theme || typeof theme !== 'object') return undefined;
   const style: Record<string, string> = {};
   if (theme.accent) style['--sqc-accent'] = theme.accent;
+  if (theme.accentText ?? theme.accent) style['--sqc-accent-text'] = (theme.accentText ?? theme.accent)!;
   if (theme.accentHover) style['--sqc-accent-hover'] = theme.accentHover;
   if (theme.bg) style['--sqc-bg'] = theme.bg;
   if (theme.surface) style['--sqc-surface'] = theme.surface;

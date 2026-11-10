@@ -21,6 +21,7 @@ export {
 } from './codegen.js';
 export {
   TEMPLATES,
+  TEMPLATE_ALIASES,
   PAGE_TEMPLATES,
   DEMO_TOKEN_ADDRESS,
   DEMO_CONTRACT_ADDRESS,

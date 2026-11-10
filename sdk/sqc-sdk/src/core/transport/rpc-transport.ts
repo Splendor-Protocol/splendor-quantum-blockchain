@@ -170,7 +170,7 @@ export class RpcTransport implements Transport {
     return this.rpc.subscribe(events, onEvent, onError);
   }
 
-  /** @deprecated Prefer Transport methods. */
+  /** @deprecated Removed in the next major version. Prefer Transport methods. */
   toSqRpc(): SqRpc {
     return this.rpc;
   }

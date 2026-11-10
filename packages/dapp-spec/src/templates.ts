@@ -412,17 +412,12 @@ export const TEMPLATES: readonly DappTemplate[] = [
       nav: { brand: 'NFT Membership', showConnect: true, links: ['/', '/members'], footer: '' },
     },
   },
-  {
-    // Kept for old links (`/build?template=landing`): the Token project kit with the demo token.
-    id: 'landing',
-    title: 'Landing page',
-    description: 'Landing page with live token data and a wallet-only dashboard (the Token project kit with a demo token).',
-    setup: [],
-    outline: ['Landing (public)', 'Dashboard (wallet)'],
-    slots: TOKEN_SLOTS,
-    spec: tokenProjectSpec(),
-  },
 ];
+
+/** Retired template ids that old links (`/build?template=landing`) still use; `getTemplate` resolves them. */
+export const TEMPLATE_ALIASES: Readonly<Record<string, string>> = {
+  landing: 'token-project',
+};
 
 /** Starter page layouts for the studio Pages panel. */
 export type PageTemplate = {
@@ -553,7 +548,8 @@ export const PAGE_TEMPLATES: readonly PageTemplate[] = [
 ];
 
 export function getTemplate(id: string): DappTemplate | undefined {
-  return TEMPLATES.find((t) => t.id === id);
+  const wanted = Object.hasOwn(TEMPLATE_ALIASES, id) ? TEMPLATE_ALIASES[id]! : id;
+  return TEMPLATES.find((t) => t.id === wanted);
 }
 
 export function getPageTemplate(id: string): PageTemplate | undefined {

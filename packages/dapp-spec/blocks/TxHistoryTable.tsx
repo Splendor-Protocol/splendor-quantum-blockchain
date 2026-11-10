@@ -88,7 +88,7 @@ export function TxHistoryTable({ title = 'Recent transactions', allNetworks = fa
                     </td>
                     <td style={cell} className="dapp-mono">
                       {href ? (
-                        <a href={href} target="_blank" rel="noreferrer">
+                        <a href={href} target="_blank" rel="noopener noreferrer">
                           {p.hash.slice(0, 10)}…
                         </a>
                       ) : (

@@ -38,7 +38,7 @@ export type DeployTokenWidgetProps = BaseWidgetProps<TokenDeployedResult, Deploy
   review?: boolean;
   /** Show the node's fee estimate in the review step (default true). */
   showFee?: boolean;
-  /** @deprecated Use `onSuccess`. */
+  /** @deprecated Removed in the next major version. Use `onSuccess`. */
   onDeployed?: (result: { address: string; hash?: string }) => void;
 };
 

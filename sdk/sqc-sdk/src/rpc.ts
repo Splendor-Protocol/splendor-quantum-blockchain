@@ -1,7 +1,7 @@
 /**
  * Splendor QC RPC client (read + submit) with multi-URL retry / failover.
  *
- * @deprecated Prefer {@link Connection} / {@link Transport}. SqRpc is the private
+ * @deprecated Removed in the next major version. Prefer {@link Connection} / {@link Transport}. SqRpc is the private
  * adapter behind RpcTransport — do not construct it in application code.
  */
 import { BridgeError, wrapUnknown } from './errors.js';

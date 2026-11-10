@@ -47,7 +47,7 @@ export interface WalletFactoryConnector {
 }
 
 /**
- * @deprecated Use {@link WalletFactoryConnector} — name collided with connect-react UI Connector.
+ * @deprecated Removed in the next major version. Use {@link WalletFactoryConnector} — name collided with connect-react UI Connector.
  */
 export type Connector = WalletFactoryConnector;
 

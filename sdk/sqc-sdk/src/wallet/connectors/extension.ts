@@ -23,7 +23,7 @@ export const extensionWalletFactory: Connector & {
   },
 };
 
-/** @deprecated Use {@link extensionWalletFactory}. Name collides with connect-react UI connector. */
+/** @deprecated Removed in the next major version. Use {@link extensionWalletFactory}. Name collides with connect-react UI connector. */
 export const extensionConnector = extensionWalletFactory;
 
 export type { ExtensionSigner };

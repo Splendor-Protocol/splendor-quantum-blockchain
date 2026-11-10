@@ -27,7 +27,7 @@ export type TokenPanelProps = BaseWidgetProps<TokenSentResult, TokenPanelLabels>
   tokenAddress?: string;
   /** Default transfer amount (decimal). Default "1". */
   defaultAmount?: string;
-  /** @deprecated Use `onSuccess`. */
+  /** @deprecated Removed in the next major version. Use `onSuccess`. */
   onSent?: (result: TokenSentResult) => void;
   /** Show the node's fee estimate in the review step (default true). */
   showFee?: boolean;

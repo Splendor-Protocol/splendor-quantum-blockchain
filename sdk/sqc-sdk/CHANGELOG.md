@@ -1,6 +1,6 @@
 # Changelog — `@splendor/sqc-sdk`
 
-Consumer-facing changes. The internal hardening log is [`../CHANGELOG-HARDENING.md`](../CHANGELOG-HARDENING.md).
+Consumer-facing changes. The internal hardening log is [`../../docs/reviews/archive/sdk-hardening-changelog.md`](../../docs/reviews/archive/sdk-hardening-changelog.md).
 
 ## 3.0.0
 
@@ -76,4 +76,4 @@ Major release: confirmation, submit retries and subscriptions behave differently
 
 ## 2.0.0
 
-See [`../CHANGELOG-HARDENING.md`](../CHANGELOG-HARDENING.md).
+See [`../../docs/reviews/archive/sdk-hardening-changelog.md`](../../docs/reviews/archive/sdk-hardening-changelog.md).

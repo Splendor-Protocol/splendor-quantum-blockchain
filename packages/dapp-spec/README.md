@@ -14,7 +14,7 @@ npm install @splendor/dapp-spec @splendor/connect-react
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "name": "Tip Jar",
   "network": "testnet",
   "theme": { "base": "splendor", "overrides": { "accent": "#7c5cff" } },
@@ -33,8 +33,10 @@ npm install @splendor/dapp-spec @splendor/connect-react
 
 A spec is data only (no code). `widget` is a catalog id: a drop-in widget from
 `@splendor/connect-react/manifest` (`transfer`, `token-panel`, …) or a block from this package
-(`hero`, `tip-jar`, `members-area`, `nft-drop`, `balance-summary`, `contract-call`).
-`contract-call` reads or calls one function of a deployed contract (`get()`, `set(uint256)`, …).
+(`hero`, `tip-jar`, `members-area`, `nft-drop`, `balance-summary`, `contract-call`, … — the full
+list with prop schemas is `BLOCK_MANIFESTS`). `contract-call` reads or calls one function of a
+deployed contract (`get()`, `set(uint256)`, …). Pages can also hold a layout tree (`root`:
+section → row → column → block); `blocks` is the flat list kept in step with it.
 
 ## Validate, migrate, generate
 
@@ -59,16 +61,32 @@ const project = generateProject(result.spec, {
   URLs) and keeps theme values to plain CSS tokens.
 - `migrateSpec` upgrades older specs. Every format change adds a migration; old ones are never
   edited, so saved projects stay loadable.
-- `generateProject` is pure: it returns file contents and never touches the disk.
+- `generateProject` is pure: it returns file contents and never touches the disk. It runs
+  `validateSpec` against `catalog` first and throws on an invalid spec; pass `validate: false` only
+  for a spec you validated yourself.
 
 Generated projects pin the signer WASM digests in production builds (Vite via `sqcWasmPlugin`,
 Next.js via a `prebuild` script) and proxy public RPCs under `/rpc/<network>` on localhost.
 
 ## Templates
 
-`TEMPLATES`: `wallet-dashboard`, `token-launchpad`, `tip-jar`, `members-area`, `nft-drop`.
-Each lists `setup` fields the user must fill (for example the tip-jar recipient) before the spec
-validates. Use `instantiateTemplate(t)` for an editable copy and `emptySpec()` for a blank one.
+| Id | Kind | What you get |
+|----|------|--------------|
+| `token-project` | kit | Public landing page with live token data, plus a wallet-only dashboard |
+| `contract-app` | kit | Landing page with live contract reads, plus a signed-in dashboard with a form per write function |
+| `wallet-dashboard` | app | Account, balance, SPLD transfer, pending transactions |
+| `token-launchpad` | app | Deploy a QRC-20 token, then manage it on a second page |
+| `tip-jar` | app | Fixed-recipient tips with the real fee (setup: recipient) |
+| `members-area` | app | Wallet sign-in that unlocks members-only content |
+| `nft-drop` | app | Deploy or use a QRC-1155 collection; mint and show balances |
+| `nft-membership` | app | Public QRC-721 gallery, plus a wallet-only members page |
+
+`TEMPLATES` lists them. Templates with `setup` fields (the tip-jar recipient) validate only once
+those are filled. Kits have `slots` (your token, your contract and ABI) that
+`instantiateTemplate(t, answers)` fills across every page; without answers they use demo values.
+Use `getTemplate(id)` to look one up: it also resolves retired ids in `TEMPLATE_ALIASES`
+(`landing` → `token-project`) so old links keep working. `PAGE_TEMPLATES` are single-page
+starters for adding a page to an existing spec; `emptySpec()` is a blank spec.
 
 ## Adding a block
 

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TEMPLATES, createCatalog, generateProject, instantiateTemplate, updateBlockProps, validateSpec } from '@splendor/dapp-spec';
+import { TEMPLATES, createCatalog, generateProject, getTemplate, instantiateTemplate, updateBlockProps, validateSpec } from '@splendor/dapp-spec';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const FRAMEWORKS = ['vite', 'next'];
@@ -63,7 +63,7 @@ export function coerceProp(schema, raw, arg = raw) {
 
 /** Build the project files for a template; throws with a readable message on bad input. */
 export function buildProject({ name, template, framework, network, set = [], sdk = 'npm', vendorFiles, vendorWasmBase64 }) {
-  const t = TEMPLATES.find((x) => x.id === template);
+  const t = getTemplate(template);
   if (!t) throw new Error(`Unknown template "${template}". Choose one of: ${TEMPLATES.map((x) => x.id).join(', ')}`);
   if (!FRAMEWORKS.includes(framework)) throw new Error(`--framework must be ${FRAMEWORKS.join(' or ')}`);
   if (!NETWORKS.includes(network)) throw new Error(`--network must be one of ${NETWORKS.join(', ')}`);

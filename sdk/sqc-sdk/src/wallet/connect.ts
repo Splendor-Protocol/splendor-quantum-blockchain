@@ -77,9 +77,9 @@ export async function connect(opts: ConnectOptions = {}): Promise<ConnectResult>
   throw BridgeError.rpc(`Unknown connect mode: ${mode}`);
 }
 
-/** @deprecated Use ClientSession — type name collided with SplendorClient class. */
+/** @deprecated Removed in the next major version. Use ClientSession — type name collided with SplendorClient class. */
 export type LegacyClientSession = ClientSession;
-/** @deprecated Use ClientSession */
+/** @deprecated Removed in the next major version. Use ClientSession */
 export type SplendorClient = ClientSession;
 
 export { createSplendorClient, connectSplendor, buildBridgeOptions };

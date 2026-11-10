@@ -362,7 +362,7 @@ Break-even: `(blocks/day × txs/block × fee) > $2.30`. If blocks are 12s apart 
 
 ### 7.1 SDKs
 
-**JavaScript/TypeScript** (`sdk/sqc-sdk.js`):
+**JavaScript/TypeScript** (`@splendor/sqc-sdk`, `sdk/sqc-sdk`; illustrative API — see its README for the real one):
 ```javascript
 import { SplendorSDK } from 'sqc-sdk';
 
@@ -398,7 +398,7 @@ function App() {
 }
 ```
 
-**WebAssembly Bridge** (`sdk/bridge/wasm`):
+**WebAssembly Bridge** (planned; today's WASM module is the ML-DSA signer in `sdk/sqc-sdk/wasm`):
 - Compile C/Rust code to WASM
 - Call SQC smart contracts from WASM modules
 - Use case: Complex crypto (e.g., custom ZK proof systems) that's too slow in SQC-VM bytecode

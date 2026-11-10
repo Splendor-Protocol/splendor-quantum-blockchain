@@ -114,7 +114,14 @@ export function ActivityFeed({
       hideTitle={hideTitle}
       gateLabels={l}
       headerExtra={
-        <button type="button" className="sqc-copy" onClick={() => void activity.refresh()} disabled={activity.loading}>
+        <button
+          type="button"
+          className="sqc-copy"
+          aria-label={l.refresh}
+          aria-busy={activity.loading}
+          onClick={() => void activity.refresh()}
+          disabled={activity.loading}
+        >
           {activity.loading ? '…' : l.refresh}
         </button>
       }

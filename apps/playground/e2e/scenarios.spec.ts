@@ -83,7 +83,7 @@ test.describe('builder scenarios (mock wallet)', () => {
     await openTemplate(page, 'wallet-dashboard');
     const blocks = page.getByTestId('block-list').locator('li');
     await expect(blocks).toHaveCount(4);
-    await page.getByRole('button', { name: 'Duplicate SPLD transfer' }).click();
+    await page.getByTestId('block-list').locator('[data-layer-id]', { hasText: 'SPLD transfer' }).getByTitle('Duplicate (Ctrl+D)').click();
     await expect(blocks).toHaveCount(5);
     await page.getByRole('tab', { name: 'Pages' }).click();
     await page.getByRole('button', { name: '+ Add page' }).click();

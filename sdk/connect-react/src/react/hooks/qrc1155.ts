@@ -12,7 +12,7 @@ export function useQRC1155(collectionAddress: string | null): {
   mint: (to: string, id: string, amount: string, uri?: string) => Promise<{ hash?: string }>;
   transfer: (to: string, id: string, amount: string) => Promise<{ hash?: string }>;
   setApprovalForAll: (operator: string, approved: boolean) => Promise<{ hash?: string }>;
-  /** @deprecated use `status` */
+  /** @deprecated Removed in the next major version. Use `status`. */
   txStatus: TxHookStatus;
   status: TxHookStatus;
   hash: string | null;
@@ -21,7 +21,7 @@ export function useQRC1155(collectionAddress: string | null): {
   /** UI copy for `error`. */
   errorMessage: string | null;
   reset: () => void;
-  /** @deprecated Does nothing: this hook's reads are not cached. Call `balanceOf` again instead. */
+  /** @deprecated Removed in the next major version. Does nothing: this hook's reads are not cached. Call `balanceOf` again instead. */
   refresh: () => void;
 } {
   const { wallet, ready } = useWallet();

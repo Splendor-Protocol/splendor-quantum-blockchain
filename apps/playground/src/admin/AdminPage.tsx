@@ -123,7 +123,7 @@ function CatalogAdmin() {
         Hidden widgets cannot be added in the builder (existing projects keep rendering). Status overrides change the badge users see. A
         minimum version marks widgets that need a newer connect-react than the one this playground bundles.
       </p>
-      <div className="pg-table-wrap"><table className="pg-table">
+      <div className="pg-table-wrap" tabIndex={0} role="region" aria-label="Widgets and blocks"><table className="pg-table">
         <thead>
           <tr>
             <th>Widget / block</th>
@@ -150,7 +150,7 @@ function TemplatesAdmin() {
   return (
     <div className="pg-stack">
       <p className="pg-muted">Templates and SDK recipes ship with the playground; here you choose which ones users see.</p>
-      <div className="pg-table-wrap"><table className="pg-table">
+      <div className="pg-table-wrap" tabIndex={0} role="region" aria-label="Templates and recipes"><table className="pg-table">
         <thead>
           <tr>
             <th>Item</th>
@@ -243,7 +243,7 @@ function ReleasesAdmin() {
       {data ? (
         <>
           <h3>Packages</h3>
-          <div className="pg-table-wrap"><table className="pg-table" data-testid="release-packages">
+          <div className="pg-table-wrap" tabIndex={0} role="region" aria-label="Packages"><table className="pg-table" data-testid="release-packages">
             <thead>
               <tr>
                 <th>Package</th>
@@ -279,7 +279,7 @@ function ReleasesAdmin() {
 
           <h3>Recent release runs</h3>
           {data.runs.length ? (
-            <div className="pg-table-wrap"><table className="pg-table">
+            <div className="pg-table-wrap" tabIndex={0} role="region" aria-label="Recent release runs"><table className="pg-table">
               <thead>
                 <tr>
                   <th>Run</th>
@@ -347,7 +347,7 @@ function AuditAdmin() {
   if (!data) return <p className="pg-muted" role="status">{loading ? 'Loading the audit log…' : 'No audit entries.'}</p>;
   if (!data.entries.length) return <p className="pg-muted" data-testid="audit-empty">No audit entries yet.</p>;
   return (
-    <div className="pg-table-wrap"><table className="pg-table" data-testid="audit-log">
+    <div className="pg-table-wrap" tabIndex={0} role="region" aria-label="Audit log"><table className="pg-table" data-testid="audit-log">
       <thead>
         <tr>
           <th>When</th>
@@ -397,7 +397,7 @@ function AdminsAdmin() {
     <div className="pg-stack">
       {confirmDialog}
       {error ? <p className="pg-error">{error}</p> : null}
-      <div className="pg-table-wrap"><table className="pg-table">
+      <div className="pg-table-wrap" tabIndex={0} role="region" aria-label="Admins"><table className="pg-table">
         <thead>
           <tr>
             <th>Address</th>

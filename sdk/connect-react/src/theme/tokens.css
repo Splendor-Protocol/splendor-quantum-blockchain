@@ -7,7 +7,8 @@
 
 :root,
 [data-sqc-theme='splendor'],
-[data-sqc-theme='dark'] {
+[data-sqc-theme='dark'],
+[data-sqc-theme='auto'] {
   --sqc-bg: #0b1218;
   --sqc-bg-elevated: rgba(12, 22, 30, 0.92);
   --sqc-surface: #132029;
@@ -18,6 +19,8 @@
   --sqc-accent: #2ec4b6;
   --sqc-accent-hover: #3dd9ca;
   --sqc-accent-soft: rgba(46, 196, 182, 0.14);
+  /* Accent used as text (links, Copy): kept at 4.5:1 or more on --sqc-surface. */
+  --sqc-accent-text: var(--sqc-accent);
   --sqc-danger: #f07178;
   --sqc-danger-soft: rgba(240, 113, 120, 0.12);
   --sqc-success: #4ade80;
@@ -48,6 +51,8 @@
   --sqc-accent: #0d9b8c;
   --sqc-accent-hover: #0b8578;
   --sqc-accent-soft: rgba(13, 155, 140, 0.12);
+  /* #0d9b8c is 3.4:1 on white: fine for buttons and borders, too light for link text. */
+  --sqc-accent-text: #0a7d71;
   --sqc-danger: #c4454a;
   --sqc-danger-soft: rgba(196, 69, 74, 0.1);
   --sqc-success: #15803d;
@@ -55,6 +60,30 @@
   --sqc-surface-2: #eef5f6;
   --sqc-shadow: 0 20px 48px rgba(15, 40, 50, 0.12);
   --sqc-backdrop: rgba(10, 25, 32, 0.4);
+}
+
+/* theme="auto": the light tokens above when the OS asks for light, dark otherwise. Keep in sync (tokens-css.test). */
+@media (prefers-color-scheme: light) {
+  [data-sqc-theme='auto'] {
+    --sqc-bg: #f4f8f9;
+    --sqc-bg-elevated: rgba(255, 255, 255, 0.96);
+    --sqc-surface: #ffffff;
+    --sqc-surface-hover: #eef5f6;
+    --sqc-border: rgba(20, 50, 60, 0.12);
+    --sqc-text: #0d1b22;
+    --sqc-text-muted: #5a737c;
+    --sqc-accent: #0d9b8c;
+    --sqc-accent-hover: #0b8578;
+    --sqc-accent-soft: rgba(13, 155, 140, 0.12);
+    --sqc-accent-text: #0a7d71;
+    --sqc-danger: #c4454a;
+    --sqc-danger-soft: rgba(196, 69, 74, 0.1);
+    --sqc-success: #15803d;
+    --sqc-success-soft: rgba(21, 128, 61, 0.12);
+    --sqc-surface-2: #eef5f6;
+    --sqc-shadow: 0 20px 48px rgba(15, 40, 50, 0.12);
+    --sqc-backdrop: rgba(10, 25, 32, 0.4);
+  }
 }
 
 /* —— Shared UI primitives —— */
@@ -154,7 +183,7 @@
 
 .sqc-account-chip__balance {
   background: var(--sqc-accent-soft);
-  color: var(--sqc-accent);
+  color: var(--sqc-accent-text);
   font-family: var(--sqc-font-mono);
   font-size: 0.75rem;
   font-weight: 500;
@@ -523,7 +552,7 @@
   min-height: 1.5rem;
   background: transparent;
   border: none;
-  color: var(--sqc-accent);
+  color: var(--sqc-accent-text);
   cursor: pointer;
   font-size: 0.75rem;
   font-weight: 600;
@@ -642,7 +671,7 @@
 }
 
 .sqc-account-link {
-  color: var(--sqc-accent);
+  color: var(--sqc-accent-text);
 }
 
 /* —— Drop-in dApp widgets —— */
@@ -679,6 +708,7 @@
 
 .sqc-widget__actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--sqc-widget-gap);
   margin-top: 0.75rem;
@@ -713,6 +743,7 @@
 
 .sqc-widget__header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
@@ -769,7 +800,7 @@
 }
 
 .sqc-review .sqc-account-row__value span {
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .sqc-widget__fieldset {
@@ -834,7 +865,7 @@
 }
 
 .sqc-tx-toast__link {
-  color: var(--sqc-accent);
+  color: var(--sqc-accent-text);
 }
 
 .sqc-tx-toast__err {
@@ -890,7 +921,7 @@
 }
 
 .sqc-activity__item--pending .sqc-list__label {
-  color: var(--sqc-accent);
+  color: var(--sqc-accent-text);
 }
 
 .sqc-activity__item--in .sqc-list__label {
@@ -1028,6 +1059,21 @@
 
 .sqc-wrong-network__msg {
   flex: 1 1 12rem;
+}
+
+/* Touch screens: 44px targets (WCAG 2.5.5) for the small text buttons and the menu rows. */
+@media (pointer: coarse) {
+  .sqc-btn,
+  .sqc-copy,
+  .sqc-connector-item,
+  .sqc-network-badge,
+  .sqc-tx-toast__close {
+    min-height: 2.75rem;
+  }
+  .sqc-copy,
+  .sqc-tx-toast__close {
+    min-width: 2.75rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

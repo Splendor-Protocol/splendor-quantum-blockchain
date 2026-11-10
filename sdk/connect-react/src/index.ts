@@ -55,7 +55,7 @@ export {
 export type { ConnectBroadcastMessage } from './core/storage.js';
 
 export { SplendorConnectProvider } from './react/provider.js';
-export { useConnectController, useConnectState, useNetworkSwitch } from './react/context.js';
+export { useBrandLabels, useConnectController, useConnectState, useNetworkSwitch } from './react/context.js';
 export type {
   SplendorConnectProviderProps,
   ConnectBrandLabels,

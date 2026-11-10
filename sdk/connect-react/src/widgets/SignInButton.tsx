@@ -26,7 +26,7 @@ export type SignInButtonProps = Omit<BaseWidgetProps<SignedAuth, SignInButtonLab
   nonce?: string | (() => string | Promise<string>);
   /** Challenge lifetime in seconds. Default 300. */
   expiresInSec?: number;
-  /** @deprecated Use `onSuccess`. */
+  /** @deprecated Removed in the next major version. Use `onSuccess`. */
   onSignedIn?: (auth: SignedAuth) => void;
   /** Button text; same as `labels.button`. */
   label?: string;

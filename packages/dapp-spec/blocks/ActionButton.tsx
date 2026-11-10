@@ -19,7 +19,7 @@ export function ActionButton({ label = 'Continue', href = '', variant = 'primary
   }
   if (/^https?:\/\//i.test(href)) {
     return (
-      <a className={className} href={href} target="_blank" rel="noreferrer" data-sqc-widget="action-button">
+      <a className={className} href={href} target="_blank" rel="noopener noreferrer" data-sqc-widget="action-button">
         {label}
       </a>
     );

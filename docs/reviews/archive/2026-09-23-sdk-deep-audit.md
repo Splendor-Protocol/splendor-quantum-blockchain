@@ -187,4 +187,4 @@
 
 ## Verdict
 
-After this deep rubric + P0/P1 fixes, the SDKs meet **first-party market practice** for security controls that are in scope, with honest gaps called out as `n/a`/`fail`. Automated suites are green. This document supersedes the short scorecard in [SDK_MARKET_AUDIT.md](./SDK_MARKET_AUDIT.md) for depth; keep [SDK_SCENARIO_AUDIT.md](./SDK_SCENARIO_AUDIT.md) for the earlier scenario-matrix run.
+After this deep rubric + P0/P1 fixes, the SDKs meet **first-party market practice** for security controls that are in scope, with honest gaps called out as `n/a`/`fail`. Automated suites are green. The scenario-matrix runs are in [2026-11-06-sdk-scenario-audit.md](./2026-11-06-sdk-scenario-audit.md).

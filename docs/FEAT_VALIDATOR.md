@@ -75,7 +75,7 @@ under the pinned go1.25.0 with `sqGetSLHPublicKeyHex`,
 (sha256 `bec3f8d6dcb4804ab191ca86263d91eb694379c828998170d9579bcecf700c2e`).
 Golden vectors gained a `verify` section pinned in Go and checked against the
 WASM build. **The wallet extension must re-pin its copy of the signer**
-(`sdk/CHANGELOG-HARDENING.md`).
+(`docs/reviews/archive/sdk-hardening-changelog.md`).
 
 Decision recorded, not made: SLH-DSA **128s** stays (7,856-byte signatures,
 seconds to sign in WASM, cheap to verify). Moving to 128f (17 KB, ~10× faster

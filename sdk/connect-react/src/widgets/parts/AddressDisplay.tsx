@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { isSafeExplorerUrl } from '@splendor/sqc-sdk/networks';
 import { copyText, truncateAddress } from '../utils.js';
 import { COMMON_LABELS, useWidgetLabels, type CommonWidgetLabels } from '../labels.js';
 
@@ -61,8 +62,8 @@ export function AddressDisplay({
         {shown}
       </span>
       {copy ? <CopyButton text={value} labels={l} onCopied={onCopy} /> : null}
-      {href ? (
-        <a href={href} target="_blank" rel="noreferrer" className="sqc-account-link">
+      {href && isSafeExplorerUrl(href) ? (
+        <a href={href} target="_blank" rel="noopener noreferrer" className="sqc-account-link">
           {l.explorer}
         </a>
       ) : null}

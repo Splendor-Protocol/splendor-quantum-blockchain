@@ -26,6 +26,48 @@ export type VerifyInstruction = {
   sig_slh: string;
 };
 
+export type VerifyCheckResult = {
+  valid: boolean;
+  reason?: string;
+  digest?: string;
+  signer?: string;
+  instruction_id?: string;
+  origin?: string;
+  settlement_hint?: string;
+  action?: string;
+};
+
+const CHECK_STRING_FIELDS = [
+  'reason',
+  'digest',
+  'signer',
+  'instruction_id',
+  'origin',
+  'settlement_hint',
+  'action',
+] as const;
+
+function asRecord(res: unknown, route: string): Record<string, unknown> {
+  if (res == null || typeof res !== 'object' || Array.isArray(res)) {
+    throw BridgeError.rpc(`${route}: node returned a malformed response`, res);
+  }
+  return res as Record<string, unknown>;
+}
+
+/** Only a literal `true` counts as valid; a node that answers `"true"` or `1` is not trusted. */
+function parseCheck(res: unknown): VerifyCheckResult {
+  const r = asRecord(res, '/verify/check');
+  const out: VerifyCheckResult = { valid: r.valid === true };
+  for (const k of CHECK_STRING_FIELDS) if (typeof r[k] === 'string') out[k] = r[k] as string;
+  return out;
+}
+
+function parseSubmit(res: unknown, route: string): { status: string; hash: string } {
+  const r = asRecord(res, route);
+  if (typeof r.hash !== 'string' || !r.hash) throw BridgeError.rpc(`${route}: response has no tx hash`, res);
+  return { status: typeof r.status === 'string' ? r.status : '', hash: r.hash };
+}
+
 export class VerifyClient {
   private readonly io: ChainIo;
 
@@ -33,42 +75,26 @@ export class VerifyClient {
     this.io = chainIo(source);
   }
 
-  check(instruction: VerifyInstruction) {
-    return this.io.post<{
-      valid: boolean;
-      reason?: string;
-      digest?: string;
-      signer?: string;
-      instruction_id?: string;
-      origin?: string;
-      settlement_hint?: string;
-      action?: string;
-    }>('/verify/check', instruction, false);
+  async check(instruction: VerifyInstruction): Promise<VerifyCheckResult> {
+    return parseCheck(await this.io.post<unknown>('/verify/check', instruction, false));
   }
 
-  async proof(instructionId: string, instance: string) {
+  async proof(instructionId: string, instance: string): Promise<Record<string, unknown>> {
     const id = String(instructionId ?? '').trim().replace(/^0x/i, '');
     if (!INSTRUCTION_ID_RE.test(id)) throw BridgeError.invalidParams('instruction id must be 32-byte hex');
     instance = assertAddress(instance);
-    return this.io.get<Record<string, unknown>>(
+    const res = await this.io.get<unknown>(
       `/verify/proof/${encodeURIComponent(id)}?instance=${encodeURIComponent(instance)}`,
     );
+    return asRecord(res, '/verify/proof');
   }
 
-  attest(signedTx: object) {
-    return this.io.post<{ status: string; hash: string }>(
-      '/verify/attest',
-      { tx: signedTx },
-      true,
-    );
+  async attest(signedTx: object): Promise<{ status: string; hash: string }> {
+    return parseSubmit(await this.io.post<unknown>('/verify/attest', { tx: signedTx }, true), '/verify/attest');
   }
 
-  settle(signedTx: object) {
-    return this.io.post<{ status: string; hash: string }>(
-      '/verify/settle',
-      { tx: signedTx },
-      true,
-    );
+  async settle(signedTx: object): Promise<{ status: string; hash: string }> {
+    return parseSubmit(await this.io.post<unknown>('/verify/settle', { tx: signedTx }, true), '/verify/settle');
   }
 
   moduleCall(action: string, params: Record<string, unknown>): ModuleCall {

@@ -37,31 +37,20 @@ const FILES = ['sqc_signer.wasm', 'wasm_exec.js'] as const;
 
 export function findSqcWasmDist(fromDir?: string): string | null {
   const here = fromDir || dirname(fileURLToPath(import.meta.url));
+  // Monorepo checkouts first (src/ and dist/ sit at different depths), then the installed package.
   const siblings = [
     resolve(here, '../../sqc-sdk/wasm/dist'),
-    resolve(here, '../../bridge/wasm/dist'),
     resolve(here, '../../../sqc-sdk/wasm/dist'),
-    resolve(here, '../../../bridge/wasm/dist'),
     resolve(here, '../sqc-sdk/wasm/dist'),
-    resolve(here, '../bridge/wasm/dist'),
   ];
   for (const sibling of siblings) {
     if (existsSync(join(sibling, 'sqc_signer.wasm'))) return sibling;
   }
   try {
-    for (const pkg of ['@splendor/sqc-sdk', '@splendor/pq-bridge']) {
-      try {
-        const pkgJson = require.resolve(`${pkg}/package.json`);
-        const candidates = [
-          join(dirname(pkgJson), 'wasm', 'dist'),
-          resolve(dirname(pkgJson), '..', 'wasm', 'dist'),
-        ];
-        for (const c of candidates) {
-          if (existsSync(join(c, 'sqc_signer.wasm'))) return c;
-        }
-      } catch {
-        /* not installed */
-      }
+    const pkgJson = require.resolve('@splendor/sqc-sdk/package.json');
+    const candidates = [join(dirname(pkgJson), 'wasm', 'dist'), resolve(dirname(pkgJson), '..', 'wasm', 'dist')];
+    for (const c of candidates) {
+      if (existsSync(join(c, 'sqc_signer.wasm'))) return c;
     }
   } catch {
     /* not installed */

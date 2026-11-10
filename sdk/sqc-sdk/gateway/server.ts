@@ -696,7 +696,10 @@ export async function buildServer(overrides: GatewayConfig = {}): Promise<BuiltG
     console.log('[gateway] MODE=proxy (non-custodial — clients sign, gateway relays signedTx)');
     if (ALLOW_CUSTODIAL_PROXY) {
       console.warn(
-        '[gateway] ALLOW_CUSTODIAL_PROXY=1 — seed unlock accepted only with GATEWAY_API_KEY (private use); prefer signedTx',
+        API_KEY
+          ? '[gateway] ALLOW_CUSTODIAL_PROXY=1 — seed unlock accepted only with GATEWAY_API_KEY (private use); prefer signedTx'
+          : '[gateway] WARNING: ALLOW_CUSTODIAL_PROXY=1 with ALLOW_INSECURE and no GATEWAY_API_KEY — anyone who can ' +
+              'reach this port can send seeds through it. Local development only.',
       );
     }
     console.log(

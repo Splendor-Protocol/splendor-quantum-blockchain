@@ -49,7 +49,7 @@ export function TxStatusCard({ title = 'Transaction status', hash = '' }: TxStat
           </p>
           {href ? (
             <p className="sqc-widget__msg" style={{ margin: '0.25rem 0 0' }}>
-              <a href={href} target="_blank" rel="noreferrer">
+              <a href={href} target="_blank" rel="noopener noreferrer">
                 View in explorer
               </a>
             </p>

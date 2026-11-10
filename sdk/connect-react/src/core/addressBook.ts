@@ -91,7 +91,8 @@ export function getContacts(network: string | null | undefined): Contact[] {
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
-export type SaveContactResult = { ok: true; contact: Contact } | { ok: false; reason: 'invalid' | 'full' };
+/** `no-network`: `useAddressBook().save()` was called before the provider had a network. */
+export type SaveContactResult = { ok: true; contact: Contact } | { ok: false; reason: 'invalid' | 'full' | 'no-network' };
 
 /** Add or relabel a contact. Fails for an invalid entry or when the network's book is full. */
 export function saveContact(entry: { address: string; label: string; network: string }): SaveContactResult {

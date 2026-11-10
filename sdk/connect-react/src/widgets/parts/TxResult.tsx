@@ -1,3 +1,4 @@
+import { isSafeExplorerUrl } from '@splendor/sqc-sdk/networks';
 import { truncateAddress } from '../utils.js';
 import { COMMON_LABELS, useWidgetLabels, type CommonWidgetLabels } from '../labels.js';
 import { CopyButton } from './AddressDisplay.js';
@@ -34,8 +35,8 @@ export function TxResult({ hash, confirmed, explorerUrl, extra, labels }: TxResu
             {confirmed ? l.confirmed : l.submitted}: {shorten(hash)}
           </span>
           <CopyButton text={hash} labels={l} />
-          {explorerUrl ? (
-            <a href={explorerUrl} target="_blank" rel="noreferrer" className="sqc-account-link">
+          {explorerUrl && isSafeExplorerUrl(explorerUrl) ? (
+            <a href={explorerUrl} target="_blank" rel="noopener noreferrer" className="sqc-account-link">
               {l.explorer}
             </a>
           ) : null}

@@ -17,28 +17,16 @@ const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 
 function findWasmDist() {
-  // Prefer sibling sqc-sdk package in monorepo (bridge shim has no wasm)
-  const siblings = [
-    resolve(here, '../../sqc-sdk/wasm/dist'),
-    resolve(here, '../../bridge/wasm/dist'),
-  ];
-  for (const sibling of siblings) {
-    if (existsSync(join(sibling, 'sqc_signer.wasm'))) return sibling;
-  }
+  // Prefer the sibling sqc-sdk package in this monorepo, then the installed one.
+  const sibling = resolve(here, '../../sqc-sdk/wasm/dist');
+  if (existsSync(join(sibling, 'sqc_signer.wasm'))) return sibling;
 
-  for (const pkg of ['@splendor/sqc-sdk', '@splendor/pq-bridge']) {
-    try {
-      const pkgJson = require.resolve(`${pkg}/package.json`);
-      const candidates = [
-        join(dirname(pkgJson), 'wasm', 'dist'),
-        join(dirname(pkgJson), 'dist', '..', 'wasm', 'dist'),
-      ];
-      for (const c of candidates) {
-        if (existsSync(join(c, 'sqc_signer.wasm'))) return c;
-      }
-    } catch {
-      /* not installed */
-    }
+  try {
+    const pkgJson = require.resolve('@splendor/sqc-sdk/package.json');
+    const candidate = join(dirname(pkgJson), 'wasm', 'dist');
+    if (existsSync(join(candidate, 'sqc_signer.wasm'))) return candidate;
+  } catch {
+    /* not installed */
   }
   return null;
 }

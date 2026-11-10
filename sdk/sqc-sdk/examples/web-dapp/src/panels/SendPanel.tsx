@@ -60,7 +60,7 @@ export function SendPanel() {
           {explorerUrl ? (
             <>
               {' · '}
-              <a href={explorerUrl} target="_blank" rel="noreferrer">
+              <a href={explorerUrl} target="_blank" rel="noopener noreferrer">
                 Explorer
               </a>
             </>

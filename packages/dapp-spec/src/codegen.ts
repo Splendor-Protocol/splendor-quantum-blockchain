@@ -1,6 +1,7 @@
 import { bindBlockProps } from './bind.js';
 import { BLOCK_MANIFESTS, blockSource } from './blocks.js';
 import { CONTAINER_KINDS, blocksFromTree, styleToCss } from './tree.js';
+import { validateSpec } from './validate.js';
 import type { BlockAction, CatalogEntry, ContractRef, DappBlock, DappPage, DappSpec, LayoutNode, PropValue, ThemeOverrides } from './types.js';
 
 export type Framework = 'vite' | 'next';
@@ -17,6 +18,8 @@ export type GenerateOptions = {
   versions: PackageVersions;
   /** How to depend on the Splendor packages. Default `npm`. */
   sdk?: SdkSource;
+  /** Run `validateSpec` against `catalog` before generating. Default `true`. */
+  validate?: boolean;
   /**
    * Extra files to merge into the project (e.g. vendored package trees under `vendor/`).
    * Keys are relative paths; values are file contents (text). Binary wasm should be provided
@@ -1592,8 +1595,19 @@ function envExample(framework: Framework, network: string): string {
 `;
 }
 
-/** Generate a ready-to-run project. Validate the spec first; this throws on unknown widgets. */
+/**
+ * Generate a ready-to-run project. The spec is validated against `opts.catalog` first and an
+ * invalid spec throws; pass `validate: false` only for a spec you have already validated.
+ */
 export function generateProject(spec: DappSpec, opts: GenerateOptions): GeneratedProject {
+  if (opts.validate !== false) {
+    const checked = validateSpec(spec, { catalog: opts.catalog });
+    if (!checked.ok) {
+      const first = checked.issues.slice(0, 3).map((i) => `${i.path || '(root)'}: ${i.message}`).join('; ');
+      const more = checked.issues.length > 3 ? ` (+${checked.issues.length - 3} more)` : '';
+      throw new Error(`dapp-spec codegen: invalid spec — ${first}${more}`);
+    }
+  }
   const sdk = opts.sdk ?? 'npm';
   const pages = resolvePages(spec, opts.catalog);
   const files = opts.framework === 'vite'

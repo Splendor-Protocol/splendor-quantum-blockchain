@@ -49,7 +49,7 @@ export class Connection {
   }
 
   /**
-   * @deprecated Prefer Transport-backed Connection methods. Only available when
+   * @deprecated Removed in the next major version. Prefer Transport-backed Connection methods. Only available when
    * the underlying transport is RpcTransport.
    */
   get rpc(): SqRpc {

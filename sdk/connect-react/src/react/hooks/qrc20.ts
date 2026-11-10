@@ -42,7 +42,7 @@ export function useQRC20(tokenAddress: string | null, pollMs = 12_000): {
   loading: boolean;
   /** Token decimals once `tokenInfo` has loaded and they are valid (0–36); null until then. */
   decimals: number | null;
-  /** @deprecated use `status` */
+  /** @deprecated Removed in the next major version. Use `status`. */
   txStatus: TxHookStatus;
   status: TxHookStatus;
   hash: string | null;

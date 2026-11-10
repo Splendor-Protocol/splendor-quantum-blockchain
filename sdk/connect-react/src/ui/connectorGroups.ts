@@ -4,7 +4,7 @@ export type ConnectorGroups = {
   /** Splendor PQ wallets — extension + native seed (what the modal offers). */
   native: Connector[];
   /**
-   * @deprecated MetaMask / ECDSA-derived paths removed. Always empty from
+   * @deprecated Removed in the next major version. MetaMask / ECDSA-derived paths removed. Always empty from
    * default connectors; non-native entries are dropped (not shown).
    */
   legacy: Connector[];

@@ -441,16 +441,18 @@ describe('LayersPanel', () => {
     expect(p.onSelect).toHaveBeenLastCalledWith((page.root as { id: string }).id);
   });
 
-  it('duplicates and removes through named buttons', () => {
+  it('duplicates and removes through the row buttons (mouse shortcuts, hidden from assistive tech)', () => {
     const spec = launchpad();
     const page = spec.pages[0]!;
     const p = props();
     const first = blocksFromTree(page.root)[0]!;
     const title = catalog.find((e) => e.id === first.widget)?.title ?? first.widget;
     render(<LayersPanel page={page} selectedId={null} {...p} />);
-    fireEvent.click(screen.getAllByRole('button', { name: `Duplicate ${title}` })[0]!);
+    expect(screen.queryAllByRole('button', { name: `Remove ${title}` })).toHaveLength(0);
+    const row = screen.getByTestId('block-list').querySelector<HTMLElement>(`[data-layer-id="${first.id}"]`)!;
+    fireEvent.click(within(row).getByTitle('Duplicate (Ctrl+D)'));
     expect(p.onDuplicate).toHaveBeenLastCalledWith(first.id);
-    fireEvent.click(screen.getAllByRole('button', { name: `Remove ${title}` })[0]!);
+    fireEvent.click(within(row).getByTitle('Remove (Delete)'));
     expect(p.onRemove).toHaveBeenLastCalledWith(first.id);
   });
 

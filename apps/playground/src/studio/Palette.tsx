@@ -170,8 +170,7 @@ export const Palette = memo(function Palette({
         style={{ ['--piece-accent' as string]: TONE_COLORS[meta.tone] ?? TONE_COLORS.violet }}
         draggable={!full}
         disabled={full}
-        aria-label={`${e.title}: ${e.description}`}
-        aria-describedby={hover?.entry.id === e.id ? `piece-tip-${e.id}` : undefined}
+        aria-describedby={[`piece-desc-${keyPrefix}${e.id}`, hover?.entry.id === e.id ? `piece-tip-${e.id}` : null].filter(Boolean).join(' ')}
         data-testid={keyPrefix ? undefined : `add-${e.id}`}
         onMouseEnter={(ev) => showTip(e, ev.currentTarget)}
         onMouseLeave={hideTip}
@@ -192,7 +191,9 @@ export const Palette = memo(function Palette({
         }}
         onClick={() => add(e)}
       >
-        <span className="pg-piece-art">
+        {/* Decorative preview (it can contain sample text); the name is the title below, and the
+            status and wallet badges are repeated as screen-reader text after it. */}
+        <span className="pg-piece-art" aria-hidden="true">
           <PieceArt id={e.id} category={e.category} tone={meta.tone} thumb={e.thumb} />
           {e.status !== 'stable' ? <span className="pg-piece-status">{e.status}</span> : null}
           {e.requires?.wallet ? (
@@ -205,6 +206,15 @@ export const Palette = memo(function Palette({
           ) : null}
         </span>
         <span className="pg-piece-title">{e.title}</span>
+        {e.status !== 'stable' || e.requires?.wallet ? (
+          <span className="pg-sr-only">
+            {e.status !== 'stable' ? ` (${e.status})` : ''}
+            {e.requires?.wallet ? ', needs a wallet' : ''}
+          </span>
+        ) : null}
+        <span id={`piece-desc-${keyPrefix}${e.id}`} hidden>
+          {e.description}
+        </span>
       </button>
     );
   };

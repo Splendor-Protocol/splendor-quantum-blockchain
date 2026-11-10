@@ -35,6 +35,10 @@ smoke.err
 # macOS finder metadata — never belongs in the tree
 .DS_Store
 
+# Python bytecode (scripts/aws/devnet-stress)
+__pycache__/
+*.pyc
+
 # Local R&D / reference clones (e.g. Splendor Quantum Wallet extension) — never push
 /research/
 
