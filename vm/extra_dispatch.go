@@ -74,10 +74,36 @@ func dispatchValidators(stateDB *state.StateDB, ctx ModuleContext, action string
 		if err != nil {
 			return fmt.Errorf("validators %s: address: %w", action, err)
 		}
+		if addr.IsZero() {
+			return fmt.Errorf("validators %s: address must not be zero", action)
+		}
+		if addr == ctx.Caller {
+			return fmt.Errorf("validators %s: cannot %s yourself", action, action)
+		}
 		if action == "approve" {
 			return reg.Approve(ctx.Caller, addr)
 		}
 		return reg.Revoke(ctx.Caller, addr)
+	case "slash":
+		if err := requireFork(ctx, forks.ValidatorsAdmissionV1); err != nil {
+			return err
+		}
+		var p struct {
+			Address string `json:"address"`
+			Amount  string `json:"amount"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return err
+		}
+		addr, err := qcrypto.AddressFromString(p.Address)
+		if err != nil {
+			return fmt.Errorf("validators slash: address: %w", err)
+		}
+		amt, ok := new(big.Int).SetString(p.Amount, 10)
+		if !ok || amt.Sign() <= 0 {
+			return fmt.Errorf("validators slash: invalid amount %q", p.Amount)
+		}
+		return reg.Slash(ctx.Caller, addr, amt, ctx.Height)
 	default:
 		return hard(fmt.Errorf("module call: unknown action %q", action))
 	}

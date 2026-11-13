@@ -1607,6 +1607,24 @@ func (e *Executor) assembleBlock(
 			return nil, nil, err
 		}
 	}
+	// validators_admission_v1: the producer must hold an admission pass (or be
+	// bond-exempt) to produce blocks. Checked here so a producer never wastes
+	// work building a block followers will reject, and so a single-path
+	// producer cannot seal blocks without a pass. Below two members the
+	// unregistered genesis validator may produce alone.
+	if e.schedule().Active(forks.ValidatorsAdmissionV1, height) {
+		reg := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).CommittedView()
+		canProduce, err := reg.CanProduce(validatorAddr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("validators: can-produce check for %s: %w", validatorAddr, err)
+		}
+		if !canProduce {
+			active, err2 := reg.ListActive()
+			if err2 == nil && len(active) >= 2 {
+				return nil, nil, fmt.Errorf("validators: %s is not authorized to produce at height %d", validatorAddr, height)
+			}
+		}
+	}
 	genesisHash, err := e.headerGenesisHash(height)
 	if err != nil {
 		return nil, nil, err
@@ -1951,7 +1969,24 @@ func (e *Executor) CommittedValidator(addr qcrypto.Address) (*vm.ValidatorRecord
 }
 
 func (e *Executor) committedActiveValidatorsLocked() ([]vm.ValidatorRecord, error) {
-	return vm.NewStakingContract(e.state, vm.DeployStaking(nil)).CommittedView().ListActive()
+	reg := vm.NewStakingContract(e.state, vm.DeployStaking(nil)).CommittedView()
+	active, err := reg.ListActive()
+	if err != nil {
+		return nil, err
+	}
+	// validators_admission_v1: an Active validator must hold an admission
+	// pass to be in the BFT producer set. Filter out registered-but-unpassed
+	// validators so they cannot produce or vote.
+	if e.schedule().Active(forks.ValidatorsAdmissionV1, 0) {
+		filtered := active[:0]
+		for _, rec := range active {
+			if rec.Passed || rec.BondExempt {
+				filtered = append(filtered, rec)
+			}
+		}
+		active = filtered
+	}
+	return active, nil
 }
 
 // genesisProducerKey returns the key that sealed block 0, or nil when this
@@ -1989,8 +2024,10 @@ func (e *Executor) verifyProducerAndQC(b *types.Block, requireQC bool) error {
 		return fmt.Errorf("validator set unreadable, refusing to judge block %d: %w", b.Header.Height, err)
 	}
 	byAddr := make(map[qcrypto.Address][]byte, len(active))
+	passed := make(map[qcrypto.Address]bool, len(active))
 	for _, rec := range active {
 		byAddr[rec.Address] = rec.PublicKey
+		passed[rec.Address] = rec.Passed
 	}
 	pub := byAddr[b.Header.ValidatorAddr]
 	// validators_admission_v1: below two members the genesis validator is the
@@ -2003,6 +2040,15 @@ func (e *Executor) verifyProducerAndQC(b *types.Block, requireQC bool) error {
 	if len(active) < 2 && len(pub) > 0 && sched.Active(forks.ValidatorsAdmissionV1, b.Header.Height) {
 		if gk := e.genesisProducerKey(); len(gk) > 0 {
 			pub = nil
+		}
+	}
+	// validators_admission_v1: an Active validator must also hold an admission
+	// pass to produce. A registered-but-unpassed validator is Active (they
+	// bonded) but must not produce until an active validator approves them.
+	if sched.Active(forks.ValidatorsAdmissionV1, b.Header.Height) && len(active) >= 2 {
+		if !passed[b.Header.ValidatorAddr] {
+			return fmt.Errorf("multi_validator: producer %s has no admission pass at height %d",
+				b.Header.ValidatorAddr, b.Header.Height)
 		}
 	}
 	if len(pub) == 0 {
