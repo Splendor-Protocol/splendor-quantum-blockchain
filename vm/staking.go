@@ -163,6 +163,9 @@ func (s *StakingContract) register(caller qcrypto.Address, pubKey []byte, curren
 	if err != nil {
 		return err
 	}
+	if acc.Balance == nil {
+		acc.Balance = big.NewInt(0)
+	}
 	if acc.Balance.Cmp(bond) < 0 {
 		return fmt.Errorf("validators: need %s units bond, have %s", bond, acc.Balance)
 	}
@@ -341,14 +344,20 @@ func (s *StakingContract) Unregister(caller qcrypto.Address, currentHeight uint6
 
 // Slash removes up to the whole bond from a validator for misbehavior
 // (equivocation, extended downtime, protocol violation). The slashed amount
-// stays in the staking contract pool (it is not returned to anyone) and the
-// validator is jailed: status set to Exiting so they cannot produce, and the
-// remaining bond (if any) follows the normal unbonding path via
-// unregister/finalize_exit. Only an active validator (or the genesis
-// validator's admin key) may call this.
+// is burned: removed from the bond pool and from totalStaked, and it can
+// never be withdrawn. The validator is jailed: status set to Exiting so they
+// cannot produce, and the remaining bond (if any) follows the normal
+// unbonding path via unregister/finalize_exit. Only an active validator (or
+// the genesis validator's admin key) may call this.
 func (s *StakingContract) Slash(authority, addr qcrypto.Address, amount *big.Int, currentHeight uint64) error {
-	if err := s.requireActive(authority, "slash"); err != nil {
+	// Authority must be an active validator or bond-exempt (the genesis
+	// validator may not be registered as Active but is implicitly passed).
+	arec, err := s.GetValidator(authority)
+	if err != nil {
 		return err
+	}
+	if arec == nil || (arec.Status != ValidatorActive && !arec.BondExempt) {
+		return fmt.Errorf("validators: %s is not authorized to slash", authority)
 	}
 	if amount == nil || amount.Sign() <= 0 {
 		return fmt.Errorf("validators: slash amount must be positive")
@@ -381,8 +390,7 @@ func (s *StakingContract) Slash(authority, addr qcrypto.Address, amount *big.Int
 	if pool.Balance.Cmp(amount) < 0 {
 		return fmt.Errorf("validators: bond pool underfunded for slash")
 	}
-	// Slashed SPLD stays in the pool (burned from circulation); totalStaked
-	// is reduced by the slashed amount.
+	// Slashed SPLD is burned: removed from the bond pool and totalStaked.
 	total, _ := s.TotalStaked()
 	s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, amount))
 	pool.Balance.Sub(pool.Balance, amount)
@@ -407,6 +415,9 @@ func (s *StakingContract) FinalizeExit(caller qcrypto.Address, currentHeight uin
 	if err != nil {
 		return err
 	}
+	if pool.Balance == nil {
+		pool.Balance = big.NewInt(0)
+	}
 	if pool.Balance.Cmp(bond) < 0 {
 		return fmt.Errorf("validators: bond pool underfunded")
 	}
@@ -415,6 +426,9 @@ func (s *StakingContract) FinalizeExit(caller qcrypto.Address, currentHeight uin
 	acc, err := s.stateDB.GetAccount(caller)
 	if err != nil {
 		return err
+	}
+	if acc.Balance == nil {
+		acc.Balance = big.NewInt(0)
 	}
 	acc.Balance.Add(acc.Balance, bond)
 	s.stateDB.SetAccount(acc)
