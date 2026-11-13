@@ -101,6 +101,7 @@ var KnownModuleActions = map[string]ModuleActions{
 		Writes: map[string]string{
 			"register": forks.ValidatorsV1, "unregister": forks.ValidatorsV1, "finalize_exit": forks.ValidatorsV1,
 			"approve": forks.ValidatorsAdmissionV1, "revoke": forks.ValidatorsAdmissionV1,
+			"slash": forks.ValidatorsAdmissionV1,
 		},
 		Reads: map[string]bool{"validator": true, "list": true, "count": true, "bond": true, "approved": true},
 	},

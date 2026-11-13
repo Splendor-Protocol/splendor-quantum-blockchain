@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/rs/zerolog/log"
+
 	qcrypto "github.com/splendor-protocol/splendor-quantum-blockchain/core/crypto"
 	"github.com/splendor-protocol/splendor-quantum-blockchain/core/state"
 )
@@ -48,6 +50,12 @@ type ValidatorRecord struct {
 	Status       ValidatorStatus `json:"status"`
 	JoinedHeight uint64          `json:"joined_height"`
 	ExitHeight   uint64          `json:"exit_height,omitempty"`
+	// Passed is set by SetPass under validators_admission_v1. A key must be
+	// passed to produce blocks (unless bond-exempt).
+	Passed bool `json:"passed"`
+	// BondExempt excuses the validator from the bond requirement. Only the
+	// genesis validator is bond-exempt implicitly; nothing in state sets this.
+	BondExempt bool `json:"bond_exempt"`
 }
 
 var (
@@ -64,6 +72,13 @@ func stakingValidatorSlot(addr qcrypto.Address) [32]byte {
 // validators_admission_v1. Absent or 0 means not approved.
 func stakingApprovalSlot(addr qcrypto.Address) [32]byte {
 	return qcrypto.Hash32(append([]byte("staking:approved:"), addr[:]...))
+}
+
+// stakingPassSlot holds a single byte, 1 while addr has an admission pass.
+// Absent or 0 means not passed. Under validators_admission_v1 a validator must
+// be passed to produce blocks (unless bond-exempt).
+func stakingPassSlot(addr qcrypto.Address) [32]byte {
+	return qcrypto.Hash32(append([]byte("staking:passed:"), addr[:]...))
 }
 
 // StakingContract is the validator registry (name kept so existing RPC compiles).
@@ -164,6 +179,13 @@ func (s *StakingContract) register(caller qcrypto.Address, pubKey []byte, curren
 	pool.Balance.Add(pool.Balance, bond)
 	s.stateDB.SetAccount(pool)
 
+	// addIndex before setValidator so a validator is never marked Active
+	// without being in the active-set index. If the index write fails, no
+	// record is persisted and the caller's bond deduction below is the only
+	// side effect — the operator can retry the register.
+	if err := s.addIndex(caller); err != nil {
+		return err
+	}
 	rec := &ValidatorRecord{
 		Address:      caller,
 		PublicKey:    append([]byte(nil), pubKey...),
@@ -172,9 +194,10 @@ func (s *StakingContract) register(caller qcrypto.Address, pubKey []byte, curren
 		JoinedHeight: currentHeight,
 	}
 	if err := s.setValidator(rec); err != nil {
-		return err
-	}
-	if err := s.addIndex(caller); err != nil {
+		// Roll back the index entry so the registry stays consistent.
+		if rerr := s.removeIndex(caller); rerr != nil {
+			log.Error().Err(rerr).Str("addr", caller.String()).Msg("validators: failed to roll back index after setValidator error")
+		}
 		return err
 	}
 	total, _ := s.TotalStaked()
@@ -233,6 +256,52 @@ func (s *StakingContract) IsApproved(addr qcrypto.Address) (bool, error) {
 	return len(v) == 1 && v[0] == 1, nil
 }
 
+// SetPass grants or revokes an admission pass for addr under
+// validators_admission_v1. Only an active validator may call it.
+func (s *StakingContract) SetPass(authority, addr qcrypto.Address, passed bool) error {
+	if err := s.requireActive(authority, "set_pass"); err != nil {
+		return err
+	}
+	if addr.IsZero() {
+		return fmt.Errorf("validators set_pass: address must not be zero")
+	}
+	v := []byte{0}
+	if passed {
+		v = []byte{1}
+	}
+	return s.stateDB.SetStorageValue(s.contract, stakingPassSlot(addr), v)
+}
+
+// IsPassed reports whether addr holds an admission pass.
+func (s *StakingContract) IsPassed(addr qcrypto.Address) (bool, error) {
+	v, err := s.stateDB.GetStorageValue(s.contract, stakingPassSlot(addr))
+	if err != nil {
+		return false, err
+	}
+	return len(v) == 1 && v[0] == 1, nil
+}
+
+// CanProduce reports whether addr is authorized to produce blocks:
+//   - active status is required (bond already enforced at register)
+//   - bond must meet the minimum unless bond-exempt
+//   - under validators_admission_v1 the caller must also check IsPassed(addr)
+func (s *StakingContract) CanProduce(addr qcrypto.Address) (bool, error) {
+	rec, err := s.GetValidator(addr)
+	if err != nil || rec == nil {
+		return false, nil
+	}
+	if rec.Status != ValidatorActive {
+		return false, nil // not active → cannot produce
+	}
+	if rec.BondExempt {
+		return true, nil // genesis validator: always allowed
+	}
+	if rec.Bond == nil || rec.Bond.Cmp(ValidatorBond()) < 0 {
+		return false, nil // bond below minimum
+	}
+	return true, nil
+}
+
 func (s *StakingContract) requireActive(who qcrypto.Address, what string) error {
 	active, err := s.IsActive(who)
 	if err != nil {
@@ -255,10 +324,69 @@ func (s *StakingContract) Unregister(caller qcrypto.Address, currentHeight uint6
 	if err := s.setValidator(rec); err != nil {
 		return err
 	}
+	// Bond is no longer actively staked; remove from totalStaked and the
+	// active count. finalize_exit will not touch totalStaked again.
+	total, _ := s.TotalStaked()
+	bondAmt := rec.Bond
+	if bondAmt == nil {
+		bondAmt = big.NewInt(0)
+	}
+	s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, bondAmt))
 	count, _ := s.ValidatorCount()
 	if count > 0 {
 		s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count-1)))
 	}
+	return nil
+}
+
+// Slash removes up to the whole bond from a validator for misbehavior
+// (equivocation, extended downtime, protocol violation). The slashed amount
+// stays in the staking contract pool (it is not returned to anyone) and the
+// validator is jailed: status set to Exiting so they cannot produce, and the
+// remaining bond (if any) follows the normal unbonding path via
+// unregister/finalize_exit. Only an active validator (or the genesis
+// validator's admin key) may call this.
+func (s *StakingContract) Slash(authority, addr qcrypto.Address, amount *big.Int, currentHeight uint64) error {
+	if err := s.requireActive(authority, "slash"); err != nil {
+		return err
+	}
+	if amount == nil || amount.Sign() <= 0 {
+		return fmt.Errorf("validators: slash amount must be positive")
+	}
+	rec, err := s.GetValidator(addr)
+	if err != nil || rec == nil || rec.Status != ValidatorActive {
+		return fmt.Errorf("validators: %s is not an active validator", addr)
+	}
+	if rec.Bond == nil || rec.Bond.Sign() <= 0 {
+		return fmt.Errorf("validators: %s has no bond to slash", addr)
+	}
+	if amount.Cmp(rec.Bond) > 0 {
+		amount = new(big.Int).Set(rec.Bond) // slash at most the full bond
+	}
+	rec.Bond.Sub(rec.Bond, amount)
+	if rec.Bond.Sign() <= 0 {
+		rec.Status = ValidatorExiting
+		rec.ExitHeight = currentHeight + UnbondingBlocks
+	}
+	if err := s.setValidator(rec); err != nil {
+		return err
+	}
+	pool, err := s.stateDB.GetAccount(s.contract)
+	if err != nil {
+		return err
+	}
+	if pool.Balance == nil {
+		pool.Balance = big.NewInt(0)
+	}
+	if pool.Balance.Cmp(amount) < 0 {
+		return fmt.Errorf("validators: bond pool underfunded for slash")
+	}
+	// Slashed SPLD stays in the pool (burned from circulation); totalStaked
+	// is reduced by the slashed amount.
+	total, _ := s.TotalStaked()
+	s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, amount))
+	pool.Balance.Sub(pool.Balance, amount)
+	s.stateDB.SetAccount(pool)
 	return nil
 }
 
@@ -296,8 +424,7 @@ func (s *StakingContract) FinalizeExit(caller qcrypto.Address, currentHeight uin
 	if err := s.setValidator(rec); err != nil {
 		return err
 	}
-	total, _ := s.TotalStaked()
-	s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, bond))
+	// totalStaked was already decremented at Unregister; do not subtract again.
 	return s.removeIndex(caller)
 }
 

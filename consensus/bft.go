@@ -554,9 +554,9 @@ func (e *BFTEngine) activeLocked() []ValidatorInfo {
 			out = append(out, v)
 		}
 	}
-	if len(out) == 0 {
-		return e.validators
-	}
+	// Fail-closed: if no validator is active, return an empty set so quorum
+	// cannot be formed and the chain halts rather than treating inactive
+	// validators as eligible to produce or vote.
 	return out
 }
 
