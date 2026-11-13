@@ -335,9 +335,9 @@ func (s *StakingContract) Unregister(caller qcrypto.Address, currentHeight uint6
 		bondAmt = big.NewInt(0)
 	}
 	if err := s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, bondAmt)); err != nil {
-			return err
-		}
-		count, _ := s.ValidatorCount()
+		return err
+	}
+	count, _ := s.ValidatorCount()
 	if count > 0 {
 		s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count-1)))
 	}
@@ -395,9 +395,9 @@ func (s *StakingContract) Slash(authority, addr qcrypto.Address, amount *big.Int
 	// Slashed SPLD is burned: removed from the bond pool and totalStaked.
 	total, _ := s.TotalStaked()
 	if err := s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, amount)); err != nil {
-			return err
-		}
-		pool.Balance.Sub(pool.Balance, amount)
+		return err
+	}
+	pool.Balance.Sub(pool.Balance, amount)
 	s.stateDB.SetAccount(pool)
 	return nil
 }
