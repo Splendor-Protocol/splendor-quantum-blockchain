@@ -128,7 +128,11 @@ func (s *StakingContract) register(caller qcrypto.Address, pubKey []byte, curren
 	if len(pubKey) != qcrypto.PublicKeySize {
 		return fmt.Errorf("validators: invalid public key size")
 	}
-	derived := qcrypto.DeriveAddress(mustPub(pubKey))
+	pk, err := qcrypto.PublicKeyFromBytes(pubKey)
+	if err != nil {
+		return fmt.Errorf("validators: invalid public key: %w", err)
+	}
+	derived := qcrypto.DeriveAddress(pk)
 	if derived != caller {
 		return fmt.Errorf("validators: pubkey does not match caller")
 	}
@@ -177,10 +181,20 @@ func (s *StakingContract) register(caller qcrypto.Address, pubKey []byte, curren
 	if err := s.addIndex(caller); err != nil {
 		return err
 	}
-	total, _ := s.TotalStaked()
-	s.setBigInt(slotStakingTotalStaked, new(big.Int).Add(total, bond))
-	count, _ := s.ValidatorCount()
-	s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count+1)))
+	total, err := s.TotalStaked()
+	if err != nil {
+		return err
+	}
+	if err := s.setBigInt(slotStakingTotalStaked, new(big.Int).Add(total, bond)); err != nil {
+		return err
+	}
+	count, err := s.ValidatorCount()
+	if err != nil {
+		return err
+	}
+	if err := s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count+1))); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -255,9 +269,14 @@ func (s *StakingContract) Unregister(caller qcrypto.Address, currentHeight uint6
 	if err := s.setValidator(rec); err != nil {
 		return err
 	}
-	count, _ := s.ValidatorCount()
+	count, err := s.ValidatorCount()
+	if err != nil {
+		return err
+	}
 	if count > 0 {
-		s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count-1)))
+		if err := s.setBigInt(slotStakingValidatorCount, big.NewInt(int64(count-1))); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -296,9 +315,58 @@ func (s *StakingContract) FinalizeExit(caller qcrypto.Address, currentHeight uin
 	if err := s.setValidator(rec); err != nil {
 		return err
 	}
-	total, _ := s.TotalStaked()
-	s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, bond))
+	total, err := s.TotalStaked()
+	if err != nil {
+		return err
+	}
+	if err := s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, bond)); err != nil {
+		return err
+	}
 	return s.removeIndex(caller)
+}
+
+// Slash reduces a validator's bond by amount for misbehavior.
+// Only an active validator may slash another. The slashed amount is
+// deducted from the bond and total_staked; it is not returned to anyone
+// (effectively burned). If the bond reaches zero the validator becomes
+// Inactive.
+func (s *StakingContract) Slash(caller, target qcrypto.Address, amount *big.Int) error {
+	if err := s.requireActive(caller, "slash"); err != nil {
+		return err
+	}
+	if amount == nil || amount.Sign() <= 0 {
+		return fmt.Errorf("validators: slash amount must be positive")
+	}
+	rec, err := s.GetValidator(target)
+	if err != nil || rec == nil {
+		return fmt.Errorf("validators: %s is not registered", target)
+	}
+	if rec.Status != ValidatorActive && rec.Status != ValidatorExiting {
+		return fmt.Errorf("validators: %s is not active or exiting", target)
+	}
+	bond := rec.Bond
+	if bond == nil {
+		bond = big.NewInt(0)
+	}
+	if amount.Cmp(bond) > 0 {
+		return fmt.Errorf("validators: slash amount %s exceeds bond %s", amount, bond)
+	}
+	newBond := new(big.Int).Sub(bond, amount)
+	rec.Bond = newBond
+	if newBond.Sign() == 0 {
+		rec.Status = ValidatorInactive
+	}
+	if err := s.setValidator(rec); err != nil {
+		return err
+	}
+	total, err := s.TotalStaked()
+	if err != nil {
+		return err
+	}
+	if err := s.setBigInt(slotStakingTotalStaked, new(big.Int).Sub(total, amount)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *StakingContract) GetValidator(addr qcrypto.Address) (*ValidatorRecord, error) {
@@ -373,7 +441,10 @@ func (s *StakingContract) ListActive() ([]ValidatorRecord, error) {
 }
 
 func (s *StakingContract) addIndex(addr qcrypto.Address) error {
-	raw, _ := s.stateDB.GetStorageValue(s.contract, slotStakingIndex)
+	raw, err := s.readSlot(slotStakingIndex)
+	if err != nil {
+		return err
+	}
 	var addrs []qcrypto.Address
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &addrs)
@@ -392,12 +463,15 @@ func (s *StakingContract) addIndex(addr qcrypto.Address) error {
 }
 
 func (s *StakingContract) removeIndex(addr qcrypto.Address) error {
-	raw, _ := s.stateDB.GetStorageValue(s.contract, slotStakingIndex)
+	raw, err := s.readSlot(slotStakingIndex)
+	if err != nil {
+		return err
+	}
 	var addrs []qcrypto.Address
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &addrs)
 	}
-	next := addrs[:0]
+	next := make([]qcrypto.Address, 0, len(addrs))
 	for _, a := range addrs {
 		if a != addr {
 			next = append(next, a)
@@ -428,12 +502,4 @@ func (s *StakingContract) getBigInt(slot [32]byte) (*big.Int, error) {
 		return big.NewInt(0), nil
 	}
 	return new(big.Int).SetBytes(b), nil
-}
-
-func mustPub(b []byte) *qcrypto.PublicKey {
-	pk, err := qcrypto.PublicKeyFromBytes(b)
-	if err != nil {
-		return &qcrypto.PublicKey{}
-	}
-	return pk
 }
