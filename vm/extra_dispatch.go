@@ -60,6 +60,23 @@ func dispatchValidators(stateDB *state.StateDB, ctx ModuleContext, action string
 		return reg.Unregister(ctx.Caller, ctx.Height)
 	case "finalize_exit":
 		return reg.FinalizeExit(ctx.Caller, ctx.Height)
+	case "slash":
+		var p struct {
+			Target string `json:"target"`
+			Amount string `json:"amount"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return err
+		}
+		target, err := qcrypto.AddressFromString(p.Target)
+		if err != nil {
+			return fmt.Errorf("validators slash: target: %w", err)
+		}
+		amt, err := parseAmt(p.Amount)
+		if err != nil {
+			return fmt.Errorf("validators slash: amount: %w", err)
+		}
+		return reg.Slash(ctx.Caller, target, amt)
 	case "approve", "revoke":
 		if err := requireFork(ctx, forks.ValidatorsAdmissionV1); err != nil {
 			return err
