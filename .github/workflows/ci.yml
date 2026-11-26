@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.11"
           cache: true
       - name: Check formatting guardrails
         run: make test-lint
@@ -56,7 +56,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.11"
           cache: true
       - name: go build
         run: go build ./...
@@ -146,7 +146,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.11"
           cache: true
 
       # A committed signer is the thing that drifts, and copies of it appear on
@@ -281,7 +281,7 @@ jobs:
           languages: go
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.11"
           cache: true
       - name: Build
         run: go build ./...
@@ -304,7 +304,7 @@ jobs:
           node-version: '22'
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.11"
           cache: true
 
       # The signer is a build output now, and these tests load the real one
